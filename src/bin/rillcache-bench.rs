@@ -16,7 +16,7 @@ use rillcache::{Config, Server};
 #[path = "support/profile.rs"]
 mod profile;
 
-const HELP: &str = "Usage: rillcache-bench [OPTIONS]\n\nWithout --addr, starts and shuts down a local embedded rillcache server.\nJSON results go to stdout; progress and errors go to stderr.\n\n  --addr IP:PORT       Benchmark an existing server instead\n  --label TEXT         Identify the server/build in JSON\n  --server-pid PID     Opt-in Linux accounting for this loopback server process\n  --profile-idle-ms N  Sample idle server before workloads (0..10000, default 0)\n  --requests N         Total measured commands per workload (default 100000)\n  --clients N          Parallel connections/threads (default 8, maximum 128)\n  --pipeline N         Commands per batch (default 16)\n  --keyspace N         Deterministically rotated keys (default 1024)\n  --value-size N       Value bytes, including zero (default 64)\n  --warmup N           Untimed commands per client (default 1000)\n  --runs N             Repetitions of each workload (default 3)\n  --workload NAME      ping, set, get, set-nx-existing, set-xx-existing, all (default)\n  --help              Show this help\n\nWrites only rillcache:bench:* keys. Use a disposable server, not production.\nLatency percentiles describe whole pipeline batches, NOT individual requests.";
+const HELP: &str = "Usage: rillcache-bench [OPTIONS]\n\nWithout --addr, starts and shuts down a local embedded rillcache server.\nJSON results go to stdout; progress and errors go to stderr.\n\n  --addr IP:PORT       Benchmark an existing server instead\n  --label TEXT         Identify the server/build in JSON\n  --server-threads N   Embedded fixed worker count, 1..64 (not with --addr)\n  --server-pid PID     Opt-in Linux accounting for this loopback server process\n  --profile-idle-ms N  Sample idle server before workloads (0..10000, default 0)\n  --requests N         Total measured commands per workload (default 100000)\n  --clients N          Parallel connections/threads (default 8, maximum 128)\n  --pipeline N         Commands per batch (default 16)\n  --keyspace N         Deterministically rotated keys (default 1024)\n  --value-size N       Value bytes, including zero (default 64)\n  --warmup N           Untimed commands per client (default 1000)\n  --runs N             Repetitions of each workload (default 3)\n  --workload NAME      ping, set, get, set-nx-existing, set-xx-existing, all (default)\n  --help              Show this help\n\nWrites only rillcache:bench:* keys. Use a disposable server, not production.\nLatency percentiles describe whole pipeline batches, NOT individual requests.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Workload {
@@ -47,11 +47,12 @@ impl Workload {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Options {
     addr: Option<SocketAddr>,
     label: Option<String>,
     server_pid: Option<u32>,
+    server_threads: Option<usize>,
     profile_idle_ms: usize,
     requests: usize,
     clients: usize,
@@ -69,6 +70,7 @@ impl Default for Options {
             addr: None,
             label: None,
             server_pid: None,
+            server_threads: None,
             profile_idle_ms: 0,
             requests: 100_000,
             clients: 8,
@@ -93,6 +95,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Option<Options
             "--addr",
             "--label",
             "--server-pid",
+            "--server-threads",
             "--profile-idle-ms",
             "--requests",
             "--clients",
@@ -119,6 +122,14 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Option<Options
                 )
             }
             "--label" => options.label = Some(value),
+            "--server-threads" => {
+                let count = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=64).contains(n))
+                    .ok_or("--server-threads must be in 1..=64")?;
+                options.server_threads = Some(count);
+            }
             "--server-pid" => {
                 options.server_pid = Some(
                     value
@@ -168,6 +179,11 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Option<Options
         if number == 0 || number > maximum {
             return Err(format!("--{name} must be in 1..={maximum}"));
         }
+    }
+    if options.addr.is_some() && options.server_threads.is_some() {
+        return Err(
+            "--server-threads configures embedded servers only; cannot be used with --addr".into(),
+        );
     }
     if options.clients > options.requests {
         return Err("--clients must not exceed --requests".into());
@@ -520,6 +536,17 @@ fn report(
         thread::available_parallelism().map_or(1, usize::from),
         profile_json(idle)
     );
+    // Additive mode provenance; external servers must be described by their launcher.
+    let configuration = match (options.addr, options.server_threads) {
+        (Some(_), _) => "null".to_owned(),
+        (None, Some(count)) => format!("{{\"mode\":\"fixed-workers\",\"workers\":{count}}}"),
+        (None, None) => "{\"mode\":\"thread-per-client\",\"workers\":null}".into(),
+    };
+    let insertion = output.len() - "\"results\":[".len();
+    output.insert_str(
+        insertion,
+        &format!("\"server_configuration\":{configuration},"),
+    );
     for (index, record) in records.iter().enumerate() {
         if index != 0 {
             output.push(',');
@@ -535,6 +562,7 @@ fn benchmark(options: &Options) -> io::Result<String> {
         Some(
             Server::bind(Config {
                 bind_addr: "127.0.0.1:0".parse().expect("literal address"),
+                worker_threads: options.server_threads,
                 ..Config::default()
             })?
             .spawn()?,
@@ -607,6 +635,9 @@ mod tests {
     fn validates_zero_overflow_and_resource_limits() {
         for arguments in [
             vec!["--clients", "0"],
+            vec!["--server-threads", "0"],
+            vec!["--server-threads", "65"],
+            vec!["--server-threads", "4", "--addr", "127.0.0.1:6379"],
             vec!["--requests", "0"],
             vec!["--pipeline", "0"],
             vec!["--runs", "0"],
@@ -820,11 +851,18 @@ mod tests {
             runs: 1,
             ..Options::default()
         };
-        let json = benchmark(&options).unwrap();
-        assert_eq!(json.matches("\"requests\":19").count(), Workload::ALL.len());
-        assert_eq!(json.matches("\"batches\":8").count(), Workload::ALL.len());
-        assert!(json.contains("\"workload\":\"get\""));
-        assert!(json.starts_with("{\"schema_version\":1,"));
-        assert!(json.ends_with("]}"));
+        for workers in [None, Some(1), Some(4)] {
+            let options = Options {
+                server_threads: workers,
+                ..options.clone()
+            };
+            let json = benchmark(&options).unwrap();
+            assert_eq!(json.matches("\"requests\":19").count(), Workload::ALL.len());
+            assert_eq!(json.matches("\"batches\":8").count(), Workload::ALL.len());
+            assert!(json.contains("\"workload\":\"get\""));
+            assert!(json.contains("\"server_configuration\":"));
+            assert!(json.starts_with("{\"schema_version\":1,"));
+            assert!(json.ends_with("]}"));
+        }
     }
 }

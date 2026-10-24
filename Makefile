@@ -21,7 +21,7 @@ BENCH_ORDER ?= rillcache redis valkey
 PROFILE ?= 0
 PROFILE_IDLE_MS ?= 1000
 
-.PHONY: help fmt fmt-check lint test check release run smoke bench-core bench metadata ci package competitors compare
+.PHONY: help fmt fmt-check lint test check release run smoke bench-core bench bench-threads metadata ci package competitors compare
 # Always validate cached tools: an interrupted linker may leave a truncated file.
 .PHONY: $(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server
 
@@ -38,7 +38,10 @@ lint:
 	$(CARGO) clippy $(CARGO_FLAGS) --all-targets --all-features -- -D warnings
 
 test:
-	$(CARGO) test $(CARGO_FLAGS)
+	for workers in 0 1 4; do
+		printf '\nTesting server mode (0=thread-per-client): %s\n' "$$workers"
+		RILLCACHE_TEST_THREADS="$$workers" $(CARGO) test $(CARGO_FLAGS)
+	done
 
 check: fmt-check lint test
 
@@ -61,12 +64,21 @@ metadata:
 smoke: release metadata
 	mkdir -p target/benchmarks
 	./target/release/rillcache-bench --requests 2000 --clients 4 --pipeline 8 --keyspace 128 --warmup 32 --runs 1 > target/benchmarks/smoke.json
+	for workers in 1 4; do
+		./target/release/rillcache-bench --server-threads "$$workers" --requests 2000 --clients 8 --pipeline 8 --keyspace 128 --warmup 32 --runs 1 > "target/benchmarks/smoke-threads-$$workers.json"
+	done
 
 bench-core:
 	mkdir -p target/benchmarks
 	$(CARGO) bench $(CARGO_FLAGS) --bench core > target/benchmarks/core.jsonl
 
-bench: release metadata bench-core
+bench-threads: release metadata
+	mkdir -p target/benchmarks/thread-modes
+	for workers in 1 4; do
+		./target/release/rillcache-bench --server-threads "$$workers" $(BENCH_ARGS) > "target/benchmarks/thread-modes/threads-$$workers.json"
+	done
+
+bench: release metadata bench-core bench-threads
 	./target/release/rillcache-bench $(BENCH_ARGS) > target/benchmarks/local.json
 
 ci: check smoke bench-core
@@ -74,7 +86,7 @@ ci: check smoke bench-core
 package: release
 	name="rillcache-$$(uname -s | tr '[:upper:]' '[:lower:]')-$$(uname -m)"
 	mkdir -p target/dist
-	tar -czf "target/dist/$$name.tar.gz" -C target/release rillcache rillcache-bench -C "$(CURDIR)" README.md docs/requirements.md docs/benchmarks.md docs/ci-benchmark-review.md
+	tar -czf "target/dist/$$name.tar.gz" -C target/release rillcache rillcache-bench -C "$(CURDIR)" README.md docs
 	(cd target/dist && sha256sum "$$name.tar.gz" > "$$name.tar.gz.sha256")
 
 # These are optional, isolated benchmark tools. They never enter Cargo's graph,

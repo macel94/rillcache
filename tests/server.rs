@@ -10,6 +10,14 @@ use rillcache::{Config, Server, ServerHandle};
 
 fn start(mut config: Config) -> ServerHandle {
     config.bind_addr = "127.0.0.1:0".parse().unwrap();
+    if let Ok(mode) = std::env::var("RILLCACHE_TEST_THREADS") {
+        config.worker_threads = match mode.as_str() {
+            "0" => None,
+            "1" => Some(1),
+            "4" => Some(4),
+            _ => panic!("test mode must be 0, 1 or 4"),
+        };
+    }
     Server::bind(config).unwrap().spawn().unwrap()
 }
 
@@ -396,6 +404,39 @@ fn conditional_set_oom_and_rejections_leave_the_connection_usable() {
     send(&mut stream, &[b"GET", b"k"], b"$4\r\n1234\r\n");
     send(&mut stream, &[b"SET", b"k", b"1", b"XX"], b"+OK\r\n");
     send(&mut stream, &[b"SET", b"x", b"12", b"NX"], b"+OK\r\n");
+}
+
+#[test]
+fn a_backpressured_large_reply_client_does_not_block_other_clients_or_shutdown() {
+    let server = start(Config::default());
+    let mut healthy = connect(&server);
+    let value = vec![b'x'; 1024 * 1024];
+    send(&mut healthy, &[b"SET", b"large", &value], b"+OK\r\n");
+    let mut slow = connect(&server);
+    let mut command = Vec::new();
+    encode_request(&[b"GET", b"large"], &mut command);
+    slow.write_all(&command.repeat(1000)).unwrap();
+    // Never drain the slow client's potentially 1 GiB of requested replies.
+    // This exercises bounded application buffering and nonblocking backpressure.
+    for _ in 0..32 {
+        send(&mut healthy, &[b"PING"], b"+PONG\r\n");
+    }
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn idle_clients_do_not_exhaust_fixed_worker_lanes() {
+    let server = start(Config::default());
+    let mut idle: Vec<_> = (0..24).map(|_| connect(&server)).collect();
+    for stream in &mut idle {
+        send(stream, &[b"PING"], b"+PONG\r\n");
+    }
+    let mut busy = connect(&server);
+    send(&mut busy, &[b"SET", b"shared", b"value"], b"+OK\r\n");
+    for stream in &mut idle {
+        send(stream, &[b"GET", b"shared"], b"$5\r\nvalue\r\n");
+    }
+    server.shutdown().unwrap();
 }
 
 #[test]

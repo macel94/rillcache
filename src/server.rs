@@ -1,4 +1,4 @@
-//! A bounded blocking-I/O baseline: one managed worker per connected client.
+//! Managed thread-per-client I/O, or an opt-in bounded nonblocking worker pool.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -10,10 +10,14 @@ use std::time::Duration;
 use crate::engine::{Action, Store};
 use crate::protocol::{Limits, parse_request};
 
+mod pool;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub max_clients: usize,
+    /// None: one blocking worker per client. Some(1..=64): fixed I/O/execution lanes.
+    pub worker_threads: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
     pub max_data_bytes: usize,
     pub limits: Limits,
@@ -25,6 +29,7 @@ impl Default for Config {
         Self {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 6379)),
             max_clients: 128,
+            worker_threads: None,
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
@@ -34,7 +39,10 @@ impl Default for Config {
 
 impl Config {
     fn validate(&self) -> io::Result<()> {
-        if self.max_clients == 0
+        if self
+            .worker_threads
+            .is_some_and(|count| !(1..=64).contains(&count))
+            || self.max_clients == 0
             || self.max_data_bytes == 0
             || self.limits.max_arguments == 0
             || self.limits.max_bulk_bytes == 0
@@ -90,6 +98,9 @@ impl Server {
     }
 
     fn serve(self, stopping: Arc<AtomicBool>) -> io::Result<()> {
+        if self.config.worker_threads.is_some() {
+            return pool::serve(self.listener, self.config, stopping);
+        }
         let store = Arc::new(Store::new(self.config.max_data_bytes));
         let mut workers: Vec<Worker> = Vec::new();
         let result = (|| {
@@ -253,6 +264,14 @@ mod tests {
     #[test]
     fn rejects_invalid_configuration_before_binding() {
         for config in [
+            Config {
+                worker_threads: Some(0),
+                ..Config::default()
+            },
+            Config {
+                worker_threads: Some(65),
+                ..Config::default()
+            },
             Config {
                 max_clients: 0,
                 ..Config::default()

@@ -24,8 +24,26 @@ Outputs under ignored `target/benchmarks/`:
   of 50,000 operations, median nanoseconds/op. Store replies are checked before
   and after timing; `std::hint::black_box` prevents dead-code elimination.
 - `local.json`: repeated end-to-end TCP PING/SET/GET and conditional-SET measurements.
-- `smoke.json`: short, reply-validated end-to-end smoke used on every PR/main push.
+- `smoke.json`: short, reply-validated thread-per-client smoke on every PR/main push.
+- `smoke-threads-1.json`, `smoke-threads-4.json`: the same five workloads with
+  eight clients in explicitly single-worker and multithreaded modes.
+- `thread-modes/threads-{1,4}.json`: repeated fixed-worker runs from
+  `make bench-threads` / `make bench`, also preserved by comparative CI.
 - `environment.txt`: source revision, dirty-tree status, `rustc -vV`, OS and CPU.
+
+`make test` runs the full suite three times, selecting per-client, one-worker
+and four-worker socket configurations. Standalone Linux tests verify the actual
+named worker count through procfs, not just the configuration flag. `make ci`
+uses this same matrix and all three reply-validated smoke modes on GitHub.
+
+`--server-threads N` configures only embedded benchmark servers and is rejected
+with `--addr`. Additive JSON `server_configuration` records mode/count; it is
+`null` for an external server whose launcher owns configuration. Thread counts
+are not CPU affinity budgets. Fixed workers use 64-command and bounded I/O
+quanta, a bounded output queue and a 1 ms idle polling wait; compare modes rather
+than assuming this portable scheduler is faster than blocking per-client I/O.
+The four native comparison profiles still use the unchanged per-client default;
+mode-scaling runs are separate evidence, not an extra Redis/Valkey victory table.
 
 Only Rust/rustup and GNU Make are needed for these targets. After the pinned
 Rust toolchain is installed, the Cargo commands use `--locked --offline`.

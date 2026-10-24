@@ -35,6 +35,8 @@ jobs:
         run: rustup show active-toolchain
       - name: Verify behavior before measuring it
         run: make check
+      - name: Benchmark fixed one-worker and four-worker execution with eight clients
+        run: make bench-threads BENCH_ARGS='--requests 10000 --clients 8 --pipeline 16 --keyspace 1024 --value-size 64 --warmup 100 --runs 3'
       - name: Build reference servers once and record their identities
         run: |
           make competitors

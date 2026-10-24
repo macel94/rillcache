@@ -57,13 +57,15 @@ fn standalone_profiling_validates_all_workloads_and_fails_without_a_target() {
             let _ = self.0.wait();
         }
     }
-    let mut server = ServerProcess(
-        Command::new(env!("CARGO_BIN_EXE_rillcache"))
-            .args(["--bind", "127.0.0.1:0"])
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+    command
+        .args(["--bind", "127.0.0.1:0"])
+        .stderr(Stdio::piped());
+    let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
+    if mode != "0" {
+        command.args(["--threads", &mode]);
+    }
+    let mut server = ServerProcess(command.spawn().unwrap());
     let mut ready = String::new();
     BufReader::new(server.0.stderr.take().unwrap())
         .read_line(&mut ready)
@@ -107,6 +109,17 @@ fn standalone_profiling_validates_all_workloads_and_fails_without_a_target() {
     assert!(json.contains("\"idle_profile\":{\"source\":\"linux-procfs\""));
     assert!(!json.contains("NaN"));
     assert!(!json.contains("inf"));
+    let named_workers = std::fs::read_dir(format!("/proc/{}/task", server.0.id()))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("comm")).ok())
+        .filter(|name| name.trim().starts_with("rillcache-io-"))
+        .count();
+    assert_eq!(
+        named_workers,
+        mode.parse::<usize>().unwrap(),
+        "actual fixed worker count differs from requested mode"
+    );
 
     let failure = Command::new(env!("CARGO_BIN_EXE_rillcache-bench"))
         .args(["--addr", addr, "--server-pid", "4294967295"])

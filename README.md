@@ -1,6 +1,7 @@
 # rillcache
 
-An experiment in building a Redis-compatible server from the ground up in Rust.
+A safe Rust server developed toward production Redis drop-in compatibility,
+with each compatibility and operational capability demonstrated by tests.
 
 ## Current performance
 
@@ -39,11 +40,17 @@ This is a collaboration between a human and AI:
 Bounded RESP2 TCP server, binary-safe `PING`, `ECHO`, `SET` with atomic `NX`/`XX`
 conditions, `GET`, `DEL`, `EXISTS`, and `QUIT`; ordered pipelines and fragmented
 requests; concurrent clients, payload/connection limits and inactivity timeouts.
+It is already multithreaded by default (one managed worker per client). Optional
+`--threads 1` or `--threads N` selects exactly 1..64 shared I/O/execution workers
+plus the accept/control thread; idle clients do not occupy an entire worker.
 
 This is **not** a drop-in Redis replacement or a production service. No TTL,
 other SET options, RESP3, authentication, TLS, persistence or other data types yet. It binds
 to loopback by default. See [INVEST stories and EARS requirements](docs/requirements.md)
-for acceptance criteria, exact compatibility boundaries and the next small stories.
+for acceptance criteria and exact compatibility boundaries. The
+[production-readiness plan](docs/production-readiness.md) tracks every remaining
+blocker; the goal is production compatibility, not silently redefining a subset
+as a drop-in replacement.
 
 ## Quick development loop
 
@@ -53,12 +60,17 @@ toolchain is installed, all application checks/builds run offline with no crates
 to download. No API keys, `.env` or services are required.
 
 ```sh
-make test                 # fastest behavior feedback
+make test                 # correctness in per-client, one-worker and four-worker modes
 make check                # formatting, all-target Clippy, tests and policy checks
 make ci                   # same checks + release build + validated benchmark smoke
 make run                  # server on 127.0.0.1:6379
 cargo run -- --help        # bind address, payload/client limits and idle timeout
 ```
+
+`cargo run -- --threads 4` selects four I/O/execution workers; `--threads 1`
+uses one shared worker, not one-client-at-a-time admission. Fixed workers use
+portable nonblocking polling with a 1 ms idle wait: lower thread counts are not
+an assertion of lower latency or higher throughput. The default is unchanged.
 
 A Redis CLI in RESP2 mode can exercise the supported commands. Some modern
 clients issue unsupported discovery commands; compatibility is not yet claimed
@@ -67,7 +79,8 @@ for arbitrary client libraries.
 ## Measure from day one
 
 ```sh
-make bench                # parser/store microbenchmarks + repeated local TCP tests
+make bench                # microbenchmarks + per-client/one/four-worker TCP runs
+make bench-threads        # fixed one/four-worker scaling runs with validated replies
 make compare              # build pinned competitors once, compare all three servers
 make compare BENCH_ARGS='--requests 10000 --clients 4 --pipeline 1 --runs 3'
 make compare PROFILE=1    # optional Linux CPU/RSS/thread-context and idle samples

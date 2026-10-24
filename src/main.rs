@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rillcache::{Config, Server};
 
-const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --help                  Show this help\n  --version               Show version\n\nExperimental: no authentication, TLS, persistence or eviction. Keep on loopback.";
+const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --help                  Show this help\n  --version               Show version\n\nExperimental: no authentication, TLS, persistence or eviction. Keep on loopback.";
 
 enum Options {
     Run(Config),
@@ -20,7 +20,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
         match option.as_str() {
             "--help" | "-h" => return Ok(Options::Help),
             "--version" | "-V" => return Ok(Options::Version),
-            "--bind" | "--max-clients" | "--max-data-bytes" | "--idle-timeout-ms" => {
+            "--bind" | "--max-clients" | "--threads" | "--max-data-bytes" | "--idle-timeout-ms" => {
                 let value = arguments
                     .next()
                     .ok_or_else(|| format!("missing value for {option}"))?;
@@ -29,6 +29,13 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                         config.bind_addr = value
                             .parse()
                             .map_err(|_| "--bind requires a numeric IP:port address")?
+                    }
+                    "--threads" => {
+                        let count = positive(&option, &value)?;
+                        if count > 64 {
+                            return Err("--threads must be in 1..=64".into());
+                        }
+                        config.worker_threads = Some(count);
                     }
                     "--max-clients" => config.max_clients = positive(&option, &value)?,
                     "--max-data-bytes" => config.max_data_bytes = positive(&option, &value)?,
@@ -100,6 +107,9 @@ mod tests {
             vec!["--bind"],
             vec!["--bind", "localhost:6379"],
             vec!["--max-clients", "0"],
+            vec!["--threads", "0"],
+            vec!["--threads", "65"],
+            vec!["--threads", "-1"],
             vec!["--max-data-bytes", "-1"],
             vec!["--idle-timeout-ms", "0"],
         ] {
@@ -109,6 +119,8 @@ mod tests {
             [
                 "--bind",
                 "127.0.0.1:0",
+                "--threads",
+                "4",
                 "--max-clients",
                 "4",
                 "--max-data-bytes",
@@ -124,6 +136,7 @@ mod tests {
         };
         assert_eq!(config.bind_addr.port(), 0);
         assert_eq!(config.max_clients, 4);
+        assert_eq!(config.worker_threads, Some(4));
         assert_eq!(config.max_data_bytes, 100);
         assert_eq!(config.idle_timeout, Duration::from_millis(250));
     }

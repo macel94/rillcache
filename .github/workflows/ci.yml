@@ -27,7 +27,7 @@ jobs:
           persist-credentials: false
       - name: Install the repository-pinned minimal Rust toolchain
         run: rustup show active-toolchain
-      - name: Same fast feedback loop as local development
+      - name: Same local checks and per-client, one-worker, four-worker test/benchmark matrix
         run: make ci
       - name: Package successful main builds for immediate testing
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

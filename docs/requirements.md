@@ -36,6 +36,7 @@ reason to couple all future commands into a single large story.
 | S08 | As a performance investigator, I can sample server CPU, RSS, idle behavior and thread scheduling in isolated comparisons so that I can choose an I/O change from evidence rather than blaming the key-map lock. | S | R47–R51; procfs fixtures, standalone CLI tests and profiled comparisons |
 | S09 | As a repository reader, I can read validated performance tables and an optional GPT-6 Luna review after each comparative run without downloading artifacts, so current tradeoffs are visible from the README. | S | R52–R56; archived-cohort, failure, publication and workflow tests |
 | S10 | As a repository owner, I get an actual Copilot assessment automatically without creating credentials, with an available-model fallback and visible failure if no review completes. | S | R57–R59; workflow-token inference, usage/fallback/gate and legacy-publication tests |
+| S11 | As an operator, I can select a fixed number of I/O/execution workers and verify concurrent behavior in every mode locally and on GitHub. | S | R60–R64; mode-matrix TCP, standalone-thread and benchmark tests |
 
 ## EARS acceptance requirements
 
@@ -195,6 +196,25 @@ reason to couple all future commands into a single large story.
   AI assessment, the workflow shall fail its AI-completion gate while preserving
   and publishing validated numeric reporting. Publication retries shall preserve
   immutable legacy manifest bytes rather than rewriting old archives with new fields.
+
+### Explicit multithreaded execution
+
+- **R60 (optional feature):** Where `--threads N` is supplied for N in 1..64,
+  the server shall create exactly N managed I/O/execution workers, independent of
+  client count. Without the option it shall retain managed thread-per-client I/O.
+  The accept/control thread is additional; one worker is not one OS thread total.
+- **R61 (state-driven):** While clients are idle, slow readers or submitting large
+  pipelines, fixed workers shall retain bounded buffers, fair command/I/O quanta,
+  connection limits and independent service to other clients, without unsafe code.
+- **R62 (event-driven):** When a server stops or a worker fails, it shall close
+  client sockets and join every started worker, including partial-start cleanup.
+- **R63 (event-driven):** When `make test` or `make ci` runs locally or on GitHub,
+  socket correctness shall run in thread-per-client, one-worker and four-worker
+  configurations, with concurrent clients and reply-validated mode benchmark smoke.
+- **R64 (event-driven):** When embedded thread modes are benchmarked, results shall
+  record the selected mode/worker count. Fixed worker options shall be rejected
+  for external targets; mode and affinity shall not be conflated or used to claim
+  linear scaling. Optional full comparisons shall preserve mode-scaling evidence.
 
 ## Compatibility boundary (v0.1)
 
