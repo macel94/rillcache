@@ -6,7 +6,9 @@ collect evidence, not a claim that this first server already wins.
 
 [Raw bootstrap comparison runs](../benchmarks/bootstrap/README.md) are preserved
 with source checksums and explicit shared-host limitations. They validate the
-harness, not a performance victory.
+harness, not a performance victory. The
+[CI benchmark review](ci-benchmark-review.md) records actual GitHub results,
+methodology defects found, and the resulting corrections.
 
 ## Fast local feedback
 
@@ -18,9 +20,10 @@ make bench                 # microbenchmarks and repeated embedded TCP measureme
 
 Outputs under ignored `target/benchmarks/`:
 
-- `core.jsonl`: parser/GET/SET microbenchmarks, seven samples of 50,000 operations,
-  median nanoseconds/op. `std::hint::black_box` prevents dead-code elimination.
-- `local.json`: repeated end-to-end TCP PING/SET/GET measurements.
+- `core.jsonl`: parser/GET/SET and conditional-SET microbenchmarks, seven samples
+  of 50,000 operations, median nanoseconds/op. Store replies are checked before
+  and after timing; `std::hint::black_box` prevents dead-code elimination.
+- `local.json`: repeated end-to-end TCP PING/SET/GET and conditional-SET measurements.
 - `smoke.json`: short, reply-validated end-to-end smoke used on every PR/main push.
 - `environment.txt`: source revision, dirty-tree status, `rustc -vV`, OS and CPU.
 
@@ -29,8 +32,8 @@ Rust toolchain is installed, the Cargo commands use `--locked --offline`.
 
 ## Compare native standalone servers
 
-On Linux, install normal C/C++ build tools (`cc`, `c++`, GNU Make), `curl`, `tar`
-and `sha256sum`, then run:
+On Linux, install normal C/C++ build tools (`cc`, `c++`, GNU Make), Git, `curl`,
+`tar` and `sha256sum`, then run:
 
 ```sh
 make compare
@@ -43,9 +46,12 @@ The build uses upstream default optimization and allocator settings (jemalloc on
 Linux), no extra modules or TLS. Subsequent invocations reuse those binaries.
 These C projects are **optional external benchmark tools**, not Rillcache code,
 Cargo dependencies, vendored sources in Git, or part of its release archive.
-No global installations, containers or root privileges are needed. The build
-prevents upstream scripts from discovering Rillcache's enclosing `.git`; archive
-identity comes from the pinned SHA-256, not an unavailable upstream Git revision.
+No global installations, containers or root privileges are needed. Each source
+cache is extracted once and given isolated, empty Git metadata, without staging
+or committing files. This prevents parent-repository discovery and Git's
+outside-repository no-index diff fallback from changing generated version metadata
+on every build. Archive identity comes from the pinned SHA-256, not this synthetic
+metadata. CI verifies unchanged reference binary digests across all profiles.
 
 Pins are in [`benchmarks/targets.mk`](../benchmarks/targets.mk): Redis 8.10.2 and
 Valkey 9.1.2, checked against upstream latest stable releases during bootstrap.
@@ -61,7 +67,15 @@ Optional overrides:
 make competitors COMPETITOR_JOBS=4
 make compare REDIS_SERVER=/absolute/path/to/redis-server VALKEY_SERVER=/absolute/path/to/valkey-server
 make compare RILLCACHE_PORT=17379 REDIS_PORT=17380 VALKEY_PORT=17381
+make compare SERVER_CPUS=0 CLIENT_CPUS=1-3 BENCH_ORDER='redis valkey rillcache'
 ```
+
+CPU pinning is optional and requires `taskset` (util-linux). Select CPUs allowed
+by your host/cgroup, not blindly the example's 0–3. Child server/client threads
+inherit the configured affinity. Requested and actual affinities and server order
+are recorded; the JSON CPU count reflects the benchmark client's available CPUs.
+`BENCH_ORDER` must name all three servers exactly once. The default leaves both
+CPU masks inherited and uses `rillcache redis valkey` order.
 
 Each server runs as a standalone native process on the same host and loopback TCP
 (ports 16379/16380/16381 by default). Redis/Valkey are started without a config
@@ -74,8 +88,19 @@ cleans up all child processes on success, error or interruption.
 Results and logs: `target/benchmarks/comparison/`. Its `environment.txt` records
 exact binary versions, checksums and configuration/client arguments in addition
 to the compiler/hardware/source metadata. Files are overwritten on the next run;
-copy the directory to preserve a baseline. The scheduled GitHub workflow preserves
-both pipeline-1 and pipeline-16 runs as downloadable artifacts.
+copy the directory to preserve a baseline. Old JSON/log files are invalidated
+before a rerun, so failures cannot masquerade as another server's old results.
+
+The scheduled/manual workflow preserves four profiles: `pipeline-1`,
+`pipeline-16`, `single-core-pipeline-1`, and `single-core-pipeline-16`. Both
+single-core profiles place every server on the same one allowed logical CPU and
+clients on the remaining allowed CPUs. The default-threading profiles leave
+scheduling inherited. Order rotates across profiles. Each uses three repetitions,
+100,000 commands at pipeline 1 or 1,000,000 at pipeline 16 to reduce short-sample
+noise. Pinned binaries are built once and their checksums checked after every
+profile; these files and environment logs are downloadable artifacts. These are
+logical-CPU budgets, not dedicated physical cores: SMT siblings and shared-VM
+resources can still contend, so they do not replace controlled-hardware tests.
 
 For an already-running disposable server:
 
@@ -89,10 +114,19 @@ reserved `rillcache:conformance:*` namespace. No AUTH/TLS is supported yet.
 
 ## What exactly is measured?
 
-- Workloads: PING, SET, GET; separate results, not a misleading blended score.
+- Workloads: PING, SET, GET, `set-nx-existing` and `set-xx-existing`; `all` includes
+  all five. Conditional workloads deliberately use seeded existing keys: NX
+  rejects every write with a null bulk; XX admits every overwrite with `+OK`.
+  They measure different paths and must not be blended into one throughput score.
+  Successful NX creation and missing-key XX rejection also have correctness tests;
+  these are not the steady-state conditional TCP benchmark workloads.
 - Deterministic, cyclic key rotation, not random/Zipfian traffic. Every value is
   the requested number of `x` bytes, including a possible zero-length value.
-- GET seeds all keys with acknowledged SETs and verifies them before timing.
+- GET and both conditional workloads seed all keys with acknowledged SETs and
+  verify them via GET before timing. Conditional workloads also verify the
+  resulting data after timing, including when only some keys are accessed.
+  Values are deliberately identical on repeated writes; tests with different
+  bytes separately verify whether conditional writes actually preserve/replace.
 - Connections, seed/verification traffic, thread creation and configurable
   per-client warmup are outside the timer.
 - Each client has its own thread and connection. Exactly `--requests` operations
@@ -130,6 +164,7 @@ pipeline 1..65,536, keyspace 1..1,000,000, value size 0..1 MiB, warmup
 
 1. Use an idle, controlled machine; record CPU model, governor, affinity, kernel,
    compiler and exact source revision. Never compare a dirty tree as a release.
+   Tiny smoke numbers cannot establish a regression or a performance victory.
 2. Match functionality, durability and memory conditions. A small cache-only
    subset is not equivalent to Redis/Valkey's complete feature set.
 3. Test both latency-oriented (pipeline 1) and throughput-oriented configurations,
@@ -140,8 +175,9 @@ pipeline 1..65,536, keyspace 1..1,000,000, value size 0..1 MiB, warmup
    fairly (including their I/O threads), profile both client and server, and run
    separate-host clients when necessary to find client-side saturation.
 5. Repeat, alternate server order, preserve raw runs, and report spread, not just
-   the best number. The initial Make recipe uses a fixed order, so control for
-   thermal/order effects before publishing a comparison.
+   the best number. The Make recipe accepts explicit order and CI rotates it;
+   full counterbalancing and frequency/thermal control are still needed before
+   publishing a general comparison.
 6. Measure memory/RSS and server CPU separately. These are not yet measured by the
    Rust tool, and payload accounting is not a substitute for RSS.
 7. Introduce performance budgets only after stable dedicated-runner baselines.
@@ -165,4 +201,6 @@ References:
 [Valkey benchmark pitfalls](https://valkey.io/topics/benchmark/),
 [Redis benchmarking guidance](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/benchmarks/),
 [Redis source build](https://github.com/redis/redis#build-redis-from-source),
-[Valkey source build](https://github.com/valkey-io/valkey#building-valkey-using-makefile).
+[Valkey source build](https://github.com/valkey-io/valkey#building-valkey-using-makefile),
+[taskset](https://man7.org/linux/man-pages/man1/taskset.1.html),
+[Git diff no-index behavior](https://git-scm.com/docs/git-diff).

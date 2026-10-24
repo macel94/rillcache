@@ -26,6 +26,24 @@ fn measure(name: &str, mut operation: impl FnMut()) {
     );
 }
 
+fn measure_store(name: &str, store: &Store, arguments: &[&[u8]], expected: &[u8]) {
+    let mut output = Vec::new();
+    assert_eq!(
+        store.execute(arguments, &mut output),
+        rillcache::engine::Action::Continue
+    );
+    assert_eq!(output, expected, "{name}: invalid benchmark setup");
+    measure(name, || {
+        output.clear();
+        black_box(store.execute(black_box(arguments), &mut output));
+        black_box(output.as_slice());
+    });
+    assert_eq!(
+        output, expected,
+        "{name}: benchmark returned an incorrect reply"
+    );
+}
+
 fn main() {
     // Cargo may invoke a harness-free bench in test mode: keep the fast test loop fast.
     if std::env::args().any(|argument| argument == "--test") {
@@ -43,14 +61,32 @@ fn main() {
     let store = Store::new(1024);
     let mut output = Vec::new();
     store.execute(&[b"SET", b"bench:key", &[b'x'; 64]], &mut output);
-    measure("store_get_64b", || {
-        output.clear();
-        black_box(store.execute(black_box(&[b"GET", b"bench:key"]), &mut output));
-        black_box(output.as_slice());
-    });
-    measure("store_set_64b", || {
-        output.clear();
-        black_box(store.execute(black_box(&[b"SET", b"bench:key", &[b'x'; 64]]), &mut output));
-        black_box(output.as_slice());
-    });
+    assert_eq!(output, b"+OK\r\n");
+    let mut bulk = Vec::new();
+    rillcache::protocol::encode_bulk(Some(&[b'x'; 64]), &mut bulk);
+    measure_store("store_get_64b", &store, &[b"GET", b"bench:key"], &bulk);
+    measure_store(
+        "store_set_64b",
+        &store,
+        &[b"SET", b"bench:key", &[b'x'; 64]],
+        b"+OK\r\n",
+    );
+    measure_store(
+        "store_set_nx_existing_64b",
+        &store,
+        &[b"SET", b"bench:key", &[b'x'; 64], b"NX"],
+        b"$-1\r\n",
+    );
+    measure_store(
+        "store_set_xx_existing_64b",
+        &store,
+        &[b"SET", b"bench:key", &[b'x'; 64], b"XX"],
+        b"+OK\r\n",
+    );
+    measure_store(
+        "store_set_xx_missing_64b",
+        &store,
+        &[b"SET", b"missing", &[b'x'; 64], b"XX"],
+        b"$-1\r\n",
+    );
 }

@@ -12,6 +12,33 @@ pub enum Action {
     Close,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SetCondition {
+    Always,
+    IfMissing,
+    IfPresent,
+}
+
+impl SetCondition {
+    fn parse(options: &[&[u8]]) -> Option<Self> {
+        let mut condition = Self::Always;
+        for option in options {
+            let next = if option.eq_ignore_ascii_case(b"NX") {
+                Self::IfMissing
+            } else if option.eq_ignore_ascii_case(b"XX") {
+                Self::IfPresent
+            } else {
+                return None;
+            };
+            if condition != Self::Always && condition != next {
+                return None;
+            }
+            condition = next;
+        }
+        Some(condition)
+    }
+}
+
 #[derive(Default)]
 struct Data {
     entries: HashMap<Vec<u8>, Vec<u8>>,
@@ -58,11 +85,11 @@ impl Store {
         } else if command.eq_ignore_ascii_case(b"SET") {
             if arguments.len() < 3 {
                 arity("set", output);
-            } else if arguments.len() > 3 {
-                // Options are deliberately not silently accepted in this slice.
-                output.extend_from_slice(b"-ERR syntax error\r\n");
+            } else if let Some(condition) = SetCondition::parse(&arguments[3..]) {
+                self.set(arguments[1], arguments[2], condition, output);
             } else {
-                self.set(arguments[1], arguments[2], output);
+                // Validate every option before testing the condition or mutating data.
+                output.extend_from_slice(b"-ERR syntax error\r\n");
             }
         } else if command.eq_ignore_ascii_case(b"GET") {
             if arguments.len() != 2 {
@@ -107,12 +134,21 @@ impl Store {
         Action::Continue
     }
 
-    fn set(&self, key: &[u8], value: &[u8], output: &mut Vec<u8>) {
+    fn set(&self, key: &[u8], value: &[u8], condition: SetCondition, output: &mut Vec<u8>) {
         let Ok(mut data) = self.data.write() else {
             internal_error(output);
             return;
         };
         let existing = data.entries.get(key);
+        let permitted = match condition {
+            SetCondition::Always => true,
+            SetCondition::IfMissing => existing.is_none(),
+            SetCondition::IfPresent => existing.is_some(),
+        };
+        if !permitted {
+            encode_bulk(None, output);
+            return;
+        }
         let old_size = existing.map_or(0, Vec::len);
         let key_size = if existing.is_some() { 0 } else { key.len() };
         let new_size = (data.payload_bytes - old_size)
@@ -201,7 +237,7 @@ mod tests {
     fn errors_do_not_mutate_data_or_inject_resp_frames() {
         let store = Store::new(100);
         assert_eq!(
-            execute(&store, &[b"SET", b"k", b"v", b"NX"]),
+            execute(&store, &[b"SET", b"k", b"v", b"EX", b"1"]),
             b"-ERR syntax error\r\n"
         );
         assert_eq!(execute(&store, &[b"GET", b"k"]), b"$-1\r\n");
@@ -223,6 +259,106 @@ mod tests {
                 format!("-ERR wrong number of arguments for '{command}' command\r\n").as_bytes()
             );
         }
+    }
+
+    #[test]
+    fn conditional_sets_distinguish_missing_existing_and_empty_values() {
+        for key in [b"".as_slice(), b"\0\xff"] {
+            let store = Store::new(100);
+            assert_eq!(execute(&store, &[b"SET", key, b"no", b"XX"]), b"$-1\r\n");
+            assert_eq!(execute(&store, &[b"GET", key]), b"$-1\r\n");
+            assert_eq!(execute(&store, &[b"SET", key, b"", b"nX"]), b"+OK\r\n");
+            assert_eq!(execute(&store, &[b"SET", key, b"no", b"NX"]), b"$-1\r\n");
+            assert_eq!(execute(&store, &[b"GET", key]), b"$0\r\n\r\n");
+            assert_eq!(
+                execute(&store, &[b"SET", key, b"\0\xff", b"xX"]),
+                b"+OK\r\n"
+            );
+            assert_eq!(execute(&store, &[b"GET", key]), b"$2\r\n\0\xff\r\n");
+            assert_eq!(execute(&store, &[b"DEL", key]), b":1\r\n");
+            assert_eq!(execute(&store, &[b"SET", key, b"no", b"XX"]), b"$-1\r\n");
+            assert_eq!(execute(&store, &[b"SET", key, b"new", b"NX"]), b"+OK\r\n");
+        }
+    }
+
+    #[test]
+    fn identical_conditional_flags_may_repeat() {
+        let store = Store::new(100);
+        assert_eq!(
+            execute(&store, &[b"SET", b"k", b"first", b"NX", b"nx"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            execute(&store, &[b"SET", b"k", b"no", b"nx", b"NX"]),
+            b"$-1\r\n"
+        );
+        assert_eq!(
+            execute(&store, &[b"SET", b"k", b"last", b"XX", b"xx"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(execute(&store, &[b"GET", b"k"]), b"$4\r\nlast\r\n");
+    }
+
+    #[test]
+    fn all_set_options_are_validated_even_when_a_condition_would_reject() {
+        let invalid: &[&[&[u8]]] = &[
+            &[b"NX", b"XX"],
+            &[b"XX", b"NX"],
+            &[b"NX", b"nx", b"XX"],
+            &[b"NX", b"GET"],
+            &[b"XX", b"EX", b"1"],
+            &[b""],
+            &[b"NXX"],
+            &[b"NX "],
+            &[b"NX\0suffix"],
+            &[b"XX\0suffix"],
+            &[b"\xff"],
+            &[b"PX", b"1"],
+            &[b"KEEPTTL"],
+        ];
+        for present in [false, true] {
+            let store = Store::new(100);
+            if present {
+                execute(&store, &[b"SET", b"k", b"old"]);
+            }
+            for flags in invalid {
+                let mut arguments: Vec<&[u8]> = vec![b"SET", b"k", b"new"];
+                arguments.extend_from_slice(flags);
+                assert_eq!(
+                    execute(&store, &arguments),
+                    b"-ERR syntax error\r\n",
+                    "{flags:?}"
+                );
+                assert_eq!(
+                    execute(&store, &[b"GET", b"k"]),
+                    if present {
+                        b"$3\r\nold\r\n".as_slice()
+                    } else {
+                        b"$-1\r\n"
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn conditional_rejection_does_not_consume_payload_budget() {
+        let store = Store::new(5);
+        assert_eq!(execute(&store, &[b"SET", b"k", b"1234", b"NX"]), b"+OK\r\n");
+        for arguments in [
+            [b"SET".as_slice(), b"k", b"123456", b"NX"],
+            [b"SET".as_slice(), b"missing", b"123456", b"XX"],
+        ] {
+            assert_eq!(execute(&store, &arguments), b"$-1\r\n");
+            assert_eq!(store.data.read().unwrap().payload_bytes, 5);
+        }
+        assert!(execute(&store, &[b"SET", b"k", b"12345", b"XX"]).starts_with(b"-OOM"));
+        assert_eq!(execute(&store, &[b"GET", b"k"]), b"$4\r\n1234\r\n");
+        assert_eq!(execute(&store, &[b"SET", b"k", b"1", b"XX"]), b"+OK\r\n");
+        assert_eq!(execute(&store, &[b"SET", b"x", b"12", b"NX"]), b"+OK\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 5);
+        assert_eq!(execute(&store, &[b"DEL", b"k", b"x"]), b":2\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
     }
 
     #[test]

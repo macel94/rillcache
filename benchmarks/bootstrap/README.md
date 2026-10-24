@@ -36,7 +36,8 @@ Measurements were collected from the bootstrap working tree before its first
 implementation commit. The environment files accurately show the preceding
 README-only commit and dirty/untracked files; this was not a clean release.
 `source.sha256` identifies the exact Rust, Cargo, toolchain, Make and target-pin
-files measured. From the repository root, verify them with:
+files measured, preserved in bootstrap commit `ed15e2f`. From that revision's
+repository root (not a later feature revision), verify them with:
 
 ```sh
 sha256sum --check benchmarks/bootstrap/source.sha256

@@ -39,6 +39,21 @@ fn supported_subset_matches_current_reference_wire_behavior() {
         (vec![b"GET", key], b"$0\r\n\r\n"),
         (vec![b"DEL", key, key, absent], b":1\r\n"),
         (vec![b"GET", key], b"$-1\r\n"),
+        (vec![b"SET", key, b"no", b"XX"], b"$-1\r\n"),
+        (vec![b"SET", key, b"\0\xff", b"NX", b"nx"], b"+OK\r\n"),
+        (vec![b"SET", key, b"no", b"NX"], b"$-1\r\n"),
+        (vec![b"GET", key], b"$2\r\n\0\xff\r\n"),
+        (
+            vec![b"SET", key, b"no", b"NX", b"XX"],
+            b"-ERR syntax error\r\n",
+        ),
+        (
+            vec![b"SET", key, b"no", b"XX", b"NX"],
+            b"-ERR syntax error\r\n",
+        ),
+        (vec![b"SET", key, b"", b"xx", b"XX"], b"+OK\r\n"),
+        (vec![b"GET", key], b"$0\r\n\r\n"),
+        (vec![b"DEL", key], b":1\r\n"),
         (
             vec![b"GET"],
             b"-ERR wrong number of arguments for 'get' command\r\n",

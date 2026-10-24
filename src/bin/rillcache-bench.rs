@@ -13,21 +13,33 @@ use std::time::{Duration, Instant};
 use rillcache::protocol::{encode_bulk, encode_request};
 use rillcache::{Config, Server};
 
-const HELP: &str = "Usage: rillcache-bench [OPTIONS]\n\nWithout --addr, starts and shuts down a local embedded rillcache server.\nJSON results go to stdout; progress and errors go to stderr.\n\n  --addr IP:PORT       Benchmark an existing server instead\n  --label TEXT         Identify the server/build in JSON\n  --requests N         Total measured commands per workload (default 100000)\n  --clients N          Parallel connections/threads (default 8, maximum 128)\n  --pipeline N         Commands per batch (default 16)\n  --keyspace N         Deterministically rotated keys (default 1024)\n  --value-size N       Value bytes, including zero (default 64)\n  --warmup N           Untimed commands per client (default 1000)\n  --runs N             Repetitions of each workload (default 3)\n  --workload NAME      ping, set, get or all (default all)\n  --help              Show this help\n\nWrites only rillcache:bench:* keys. Use a disposable server, not production.\nLatency percentiles describe whole pipeline batches, NOT individual requests.";
+const HELP: &str = "Usage: rillcache-bench [OPTIONS]\n\nWithout --addr, starts and shuts down a local embedded rillcache server.\nJSON results go to stdout; progress and errors go to stderr.\n\n  --addr IP:PORT       Benchmark an existing server instead\n  --label TEXT         Identify the server/build in JSON\n  --requests N         Total measured commands per workload (default 100000)\n  --clients N          Parallel connections/threads (default 8, maximum 128)\n  --pipeline N         Commands per batch (default 16)\n  --keyspace N         Deterministically rotated keys (default 1024)\n  --value-size N       Value bytes, including zero (default 64)\n  --warmup N           Untimed commands per client (default 1000)\n  --runs N             Repetitions of each workload (default 3)\n  --workload NAME      ping, set, get, set-nx-existing, set-xx-existing, all (default)\n  --help              Show this help\n\nWrites only rillcache:bench:* keys. Use a disposable server, not production.\nLatency percentiles describe whole pipeline batches, NOT individual requests.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Workload {
     Ping,
     Set,
     Get,
+    SetNxExisting,
+    SetXxExisting,
 }
 
 impl Workload {
+    const ALL: [Self; 5] = [
+        Self::Ping,
+        Self::Set,
+        Self::Get,
+        Self::SetNxExisting,
+        Self::SetXxExisting,
+    ];
+
     fn name(self) -> &'static str {
         match self {
             Self::Ping => "ping",
             Self::Set => "set",
             Self::Get => "get",
+            Self::SetNxExisting => "set-nx-existing",
+            Self::SetXxExisting => "set-xx-existing",
         }
     }
 }
@@ -58,7 +70,7 @@ impl Default for Options {
             value_size: 64,
             warmup: 1000,
             runs: 3,
-            workloads: vec![Workload::Ping, Workload::Set, Workload::Get],
+            workloads: Workload::ALL.to_vec(),
         }
     }
 }
@@ -98,15 +110,18 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Option<Options
                 )
             }
             "--label" => options.label = Some(value),
-            "--workload" => {
-                options.workloads = match value.as_str() {
-                    "ping" => vec![Workload::Ping],
-                    "set" => vec![Workload::Set],
-                    "get" => vec![Workload::Get],
-                    "all" => vec![Workload::Ping, Workload::Set, Workload::Get],
-                    _ => return Err("--workload must be ping, set, get or all".into()),
-                }
-            }
+            "--workload" => options.workloads = match value.as_str() {
+                "ping" => vec![Workload::Ping],
+                "set" => vec![Workload::Set],
+                "get" => vec![Workload::Get],
+                "set-nx-existing" => vec![Workload::SetNxExisting],
+                "set-xx-existing" => vec![Workload::SetXxExisting],
+                "all" => Workload::ALL.to_vec(),
+                _ => return Err(
+                    "--workload must be ping, set, get, set-nx-existing, set-xx-existing or all"
+                        .into(),
+                ),
+            },
             _ => {
                 let number = value
                     .parse::<usize>()
@@ -170,6 +185,8 @@ impl Commands {
                 Workload::Ping => vec![b"PING"],
                 Workload::Set => vec![b"SET", key.as_bytes(), &value],
                 Workload::Get => vec![b"GET", key.as_bytes()],
+                Workload::SetNxExisting => vec![b"SET", key.as_bytes(), &value, b"NX"],
+                Workload::SetXxExisting => vec![b"SET", key.as_bytes(), &value, b"XX"],
             };
             let mut command = Vec::new();
             encode_request(&arguments, &mut command);
@@ -178,8 +195,9 @@ impl Commands {
         let mut expected = Vec::new();
         match workload {
             Workload::Ping => expected.extend_from_slice(b"+PONG\r\n"),
-            Workload::Set => expected.extend_from_slice(b"+OK\r\n"),
+            Workload::Set | Workload::SetXxExisting => expected.extend_from_slice(b"+OK\r\n"),
             Workload::Get => encode_bulk(Some(&value), &mut expected),
+            Workload::SetNxExisting => encode_bulk(None, &mut expected),
         }
         Self { encoded, expected }
     }
@@ -288,11 +306,12 @@ fn run_one(
     options: &Options,
 ) -> io::Result<Record> {
     let commands = Arc::new(Commands::new(workload, options));
-    if workload == Workload::Get {
+    if !matches!(workload, Workload::Ping | Workload::Set) {
         let seed = Commands::new(Workload::Set, options);
+        let verification = Commands::new(Workload::Get, options);
         let mut connection = Connection::connect(addr)?;
         connection.untimed(&seed, options.keyspace, options.pipeline, 0)?;
-        connection.untimed(&commands, options.keyspace, options.pipeline, 0)?;
+        connection.untimed(&verification, options.keyspace, options.pipeline, 0)?;
     }
     // Connect and validate warmup before starting any timed worker.
     let mut prepared = Vec::new();
@@ -372,6 +391,10 @@ fn run_one(
         return Err(io::Error::other(
             "benchmark did not complete the exact requested operation count",
         ));
+    }
+    if matches!(workload, Workload::SetNxExisting | Workload::SetXxExisting) {
+        let verification = Commands::new(Workload::Get, options);
+        Connection::connect(addr)?.untimed(&verification, options.keyspace, options.pipeline, 0)?;
     }
     samples.sort_unstable();
     Ok(Record {
@@ -581,6 +604,64 @@ mod tests {
     }
 
     #[test]
+    fn conditional_workloads_encode_the_real_options_and_expected_replies() {
+        let options = Options {
+            keyspace: 1,
+            value_size: 7,
+            ..Options::default()
+        };
+        for (workload, option, reply) in [
+            (
+                Workload::SetNxExisting,
+                b"NX".as_slice(),
+                b"$-1\r\n".as_slice(),
+            ),
+            (
+                Workload::SetXxExisting,
+                b"XX".as_slice(),
+                b"+OK\r\n".as_slice(),
+            ),
+        ] {
+            let commands = Commands::new(workload, &options);
+            let parsed = rillcache::protocol::parse_request(
+                &commands.encoded[0],
+                rillcache::protocol::Limits::default(),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                parsed.arguments,
+                [
+                    b"SET".as_slice(),
+                    b"rillcache:bench:000000000000",
+                    b"xxxxxxx",
+                    option
+                ]
+            );
+            assert_eq!(commands.expected, reply);
+        }
+    }
+
+    #[test]
+    fn conditional_benchmarks_allow_sparse_access_without_warmup() {
+        let options = Options {
+            requests: 1,
+            clients: 1,
+            pipeline: 16,
+            keyspace: 17,
+            value_size: 7,
+            warmup: 0,
+            runs: 1,
+            workloads: vec![Workload::SetNxExisting, Workload::SetXxExisting],
+            ..Options::default()
+        };
+        let json = benchmark(&options).unwrap();
+        assert_eq!(json.matches("\"requests\":1,").count(), 2);
+        assert!(json.contains("\"workload\":\"set-nx-existing\""));
+        assert!(json.contains("\"workload\":\"set-xx-existing\""));
+    }
+
+    #[test]
     fn embedded_benchmark_validates_non_divisible_batches_and_empty_values() {
         let options = Options {
             requests: 19,
@@ -593,8 +674,8 @@ mod tests {
             ..Options::default()
         };
         let json = benchmark(&options).unwrap();
-        assert_eq!(json.matches("\"requests\":19").count(), 3);
-        assert_eq!(json.matches("\"batches\":8").count(), 3);
+        assert_eq!(json.matches("\"requests\":19").count(), Workload::ALL.len());
+        assert_eq!(json.matches("\"batches\":8").count(), Workload::ALL.len());
         assert!(json.contains("\"workload\":\"get\""));
         assert!(json.starts_with("{\"schema_version\":1,"));
         assert!(json.ends_with("]}"));

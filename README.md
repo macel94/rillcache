@@ -25,14 +25,14 @@ This is a collaboration between a human and AI:
 - **Compatibility target:** Redis protocol and behavior, developed incrementally
 - **Performance:** Aim to outperform current Redis/Valkey implementations, demonstrated by reproducible measurements—not assumed from the language choice.
 
-## First increment
+## Implemented so far
 
-Implemented: bounded RESP2 TCP server, binary-safe `PING`, `ECHO`, plain `SET`,
-`GET`, `DEL`, `EXISTS`, and `QUIT`; ordered pipelines and fragmented requests;
-concurrent clients, payload/connection limits and socket inactivity timeouts.
+Bounded RESP2 TCP server, binary-safe `PING`, `ECHO`, `SET` with atomic `NX`/`XX`
+conditions, `GET`, `DEL`, `EXISTS`, and `QUIT`; ordered pipelines and fragmented
+requests; concurrent clients, payload/connection limits and inactivity timeouts.
 
-This is **not** a drop-in Redis replacement or a production service. No TTL/SET
-options, RESP3, authentication, TLS, persistence or other data types yet. It binds
+This is **not** a drop-in Redis replacement or a production service. No TTL,
+other SET options, RESP3, authentication, TLS, persistence or other data types yet. It binds
 to loopback by default. See [INVEST stories and EARS requirements](docs/requirements.md)
 for acceptance criteria, exact compatibility boundaries and the next small stories.
 
@@ -67,7 +67,10 @@ The benchmark client is also safe, dependency-free Rust. It validates replies,
 seeds GET data, excludes setup/warmup, and writes JSON with throughput and
 **batch** latency percentiles. `make compare` uses native standalone processes
 for all three servers. Competitor C build tools are optional benchmark tooling,
-never Rillcache dependencies. See [benchmark methodology](docs/benchmarks.md).
+never Rillcache dependencies. Conditional SET benchmarks validate both rejected
+NX and admitted XX operations on seeded existing keys. Comparisons can pin equal
+server/client CPU budgets and rotate server order. See
+[benchmark methodology](docs/benchmarks.md).
 
 ## GitHub feedback and delivery
 

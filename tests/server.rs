@@ -301,6 +301,104 @@ fn dropping_the_handle_joins_and_disconnects_active_clients() {
 }
 
 #[test]
+fn conditional_set_pipeline_preserves_values_and_error_order() {
+    let server = start(Config::default());
+    let mut stream = connect(&server);
+    let cases: &[(&[&[u8]], &[u8])] = &[
+        (&[b"SET", b"\0\xff", b"missing", b"XX"], b"$-1\r\n"),
+        (&[b"SET", b"\0\xff", b"", b"NX", b"nx"], b"+OK\r\n"),
+        (&[b"SET", b"\0\xff", b"wrong", b"NX"], b"$-1\r\n"),
+        (&[b"GET", b"\0\xff"], b"$0\r\n\r\n"),
+        (
+            &[b"SET", b"\0\xff", b"wrong", b"XX", b"NX"],
+            b"-ERR syntax error\r\n",
+        ),
+        (
+            &[b"SET", b"\0\xff", b"\r\n\0\xff", b"xx", b"XX"],
+            b"+OK\r\n",
+        ),
+        (&[b"GET", b"\0\xff"], b"$4\r\n\r\n\0\xff\r\n"),
+    ];
+    let mut pipeline = Vec::new();
+    let mut expected = Vec::new();
+    for (arguments, reply) in cases {
+        encode_request(arguments, &mut pipeline);
+        expected.extend_from_slice(reply);
+    }
+    stream.write_all(&pipeline).unwrap();
+    expect(&mut stream, &expected);
+    send(
+        &mut connect(&server),
+        &[b"GET", b"\0\xff"],
+        b"$4\r\n\r\n\0\xff\r\n",
+    );
+}
+
+#[test]
+fn concurrent_set_nx_has_exactly_one_winner() {
+    const CLIENTS: usize = 16;
+    let server = start(Config::default());
+    let mut streams: Vec<_> = (0..CLIENTS).map(|_| connect(&server)).collect();
+    for stream in &mut streams {
+        send(stream, &[b"PING"], b"+PONG\r\n");
+    }
+    let ready = std::sync::Barrier::new(CLIENTS);
+    let replies = thread::scope(|scope| {
+        let workers: Vec<_> = streams
+            .into_iter()
+            .enumerate()
+            .map(|(client, mut stream)| {
+                let ready = &ready;
+                scope.spawn(move || {
+                    let value = format!("client:{client}");
+                    let mut command = Vec::new();
+                    encode_request(&[b"SET", b"race", value.as_bytes(), b"NX"], &mut command);
+                    ready.wait();
+                    stream.write_all(&command).unwrap();
+                    let mut reply = [0; 5];
+                    stream.read_exact(&mut reply).unwrap();
+                    assert!(reply == *b"+OK\r\n" || reply == *b"$-1\r\n");
+                    (value, reply == *b"+OK\r\n")
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let winners: Vec<_> = replies.iter().filter(|(_, success)| *success).collect();
+    assert_eq!(winners.len(), 1);
+    let mut expected = Vec::new();
+    rillcache::protocol::encode_bulk(Some(winners[0].0.as_bytes()), &mut expected);
+    send(&mut connect(&server), &[b"GET", b"race"], &expected);
+}
+
+#[test]
+fn conditional_set_oom_and_rejections_leave_the_connection_usable() {
+    let server = start(Config {
+        max_data_bytes: 5,
+        ..Config::default()
+    });
+    let mut stream = connect(&server);
+    send(&mut stream, &[b"SET", b"k", b"1234", b"NX"], b"+OK\r\n");
+    send(&mut stream, &[b"SET", b"k", b"12345", b"NX"], b"$-1\r\n");
+    send(
+        &mut stream,
+        &[b"SET", b"missing", b"12345", b"XX"],
+        b"$-1\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"SET", b"k", b"12345", b"XX"],
+        b"-OOM configured payload limit exceeded\r\n",
+    );
+    send(&mut stream, &[b"GET", b"k"], b"$4\r\n1234\r\n");
+    send(&mut stream, &[b"SET", b"k", b"1", b"XX"], b"+OK\r\n");
+    send(&mut stream, &[b"SET", b"x", b"12", b"NX"], b"+OK\r\n");
+}
+
+#[test]
 fn concurrent_clients_do_not_lose_or_cross_contaminate_values() {
     let server = start(Config::default());
     thread::scope(|scope| {

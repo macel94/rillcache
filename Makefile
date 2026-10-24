@@ -15,6 +15,9 @@ VALKEY_SERVER ?= $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valke
 RILLCACHE_PORT ?= 16379
 REDIS_PORT ?= 16380
 VALKEY_PORT ?= 16381
+SERVER_CPUS ?=
+CLIENT_CPUS ?=
+BENCH_ORDER ?= rillcache redis valkey
 
 .PHONY: help fmt fmt-check lint test check release run smoke bench-core bench metadata ci package competitors compare
 # Always validate cached tools: an interrupted linker may leave a truncated file.
@@ -69,7 +72,7 @@ ci: check smoke bench-core
 package: release
 	name="rillcache-$$(uname -s | tr '[:upper:]' '[:lower:]')-$$(uname -m)"
 	mkdir -p target/dist
-	tar -czf "target/dist/$$name.tar.gz" -C target/release rillcache rillcache-bench -C "$(CURDIR)" README.md docs/requirements.md docs/benchmarks.md
+	tar -czf "target/dist/$$name.tar.gz" -C target/release rillcache rillcache-bench -C "$(CURDIR)" README.md docs/requirements.md docs/benchmarks.md docs/ci-benchmark-review.md
 	(cd target/dist && sha256sum "$$name.tar.gz" > "$$name.tar.gz.sha256")
 
 # These are optional, isolated benchmark tools. They never enter Cargo's graph,
@@ -86,14 +89,29 @@ target/competitors/valkey-$(VALKEY_VERSION).tar.gz: benchmarks/targets.mk
 	printf '%s  %s\n' '$(VALKEY_SHA256)' '$@.tmp' | sha256sum --check --status
 	mv '$@.tmp' '$@'
 
-$(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server: target/competitors/redis-$(REDIS_VERSION).tar.gz
+# Extract each verified archive only once. Empty, isolated Git metadata prevents
+# upstream version scripts from discovering this repository OR interpreting
+# `git diff ../src ../deps` outside Git as a changing directory comparison.
+$(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/.rillcache-source: target/competitors/redis-$(REDIS_VERSION).tar.gz
+	printf '%s  %s\n' '$(REDIS_SHA256)' '$<' | sha256sum --check --status
+	rm -rf '$(CURDIR)/target/competitors/redis-$(REDIS_VERSION)'
 	tar -xzf '$<' -C target/competitors
+	git -c init.defaultBranch=benchmark init --quiet --template= '$(CURDIR)/target/competitors/redis-$(REDIS_VERSION)'
+	printf '%s\n' '$(REDIS_SHA256)' > '$@'
+
+$(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/.rillcache-source: target/competitors/valkey-$(VALKEY_VERSION).tar.gz
+	printf '%s  %s\n' '$(VALKEY_SHA256)' '$<' | sha256sum --check --status
+	rm -rf '$(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)'
+	tar -xzf '$<' -C target/competitors
+	git -c init.defaultBranch=benchmark init --quiet --template= '$(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)'
+	printf '%s\n' '$(VALKEY_SHA256)' > '$@'
+
+$(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server: $(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/.rillcache-source
 	if ! '$@' --version >/dev/null 2>&1; then rm -f '$@'; fi
 	GIT_CEILING_DIRECTORIES='$(CURDIR)/target/competitors' $(MAKE) -C target/competitors/redis-$(REDIS_VERSION)/src -j$(COMPETITOR_JOBS) redis-server
 	'$@' --version
 
-$(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server: target/competitors/valkey-$(VALKEY_VERSION).tar.gz
-	tar -xzf '$<' -C target/competitors
+$(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server: $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/.rillcache-source
 	if ! '$@' --version >/dev/null 2>&1; then rm -f '$@'; fi
 	GIT_CEILING_DIRECTORIES='$(CURDIR)/target/competitors' $(MAKE) -C target/competitors/valkey-$(VALKEY_VERSION)/src -j$(COMPETITOR_JOBS) valkey-server
 	'$@' --version
@@ -102,6 +120,23 @@ competitors: $(REDIS_SERVER) $(VALKEY_SERVER)
 
 compare: release metadata competitors
 	mkdir -p target/benchmarks/comparison/{redis-data,valkey-data}
+	# An aborted rerun must never leave another server's old JSON as new evidence.
+	rm -f target/benchmarks/comparison/{rillcache,redis,valkey}.{json,log} target/benchmarks/comparison/environment.txt
+	read -r -a order <<< '$(BENCH_ORDER)'
+	if [[ $${#order[@]} != 3 || "$$(printf '%s\n' "$${order[@]}" | sort | tr '\n' ' ')" != 'redis rillcache valkey ' ]]; then
+		printf 'BENCH_ORDER must contain rillcache, redis and valkey exactly once\n' >&2
+		exit 2
+	fi
+	server_prefix=()
+	client_prefix=()
+	if [[ -n '$(SERVER_CPUS)' ]]; then
+		taskset --cpu-list '$(SERVER_CPUS)' true
+		server_prefix=(taskset --cpu-list '$(SERVER_CPUS)')
+	fi
+	if [[ -n '$(CLIENT_CPUS)' ]]; then
+		taskset --cpu-list '$(CLIENT_CPUS)' true
+		client_prefix=(taskset --cpu-list '$(CLIENT_CPUS)')
+	fi
 	pids=()
 	cleanup() {
 		for pid in "$${pids[@]}"; do kill "$$pid" 2>/dev/null || true; done
@@ -110,11 +145,11 @@ compare: release metadata competitors
 	trap cleanup EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
-	./target/release/rillcache --bind '127.0.0.1:$(RILLCACHE_PORT)' > target/benchmarks/comparison/rillcache.log 2>&1 &
+	"$${server_prefix[@]}" ./target/release/rillcache --bind '127.0.0.1:$(RILLCACHE_PORT)' > target/benchmarks/comparison/rillcache.log 2>&1 &
 	pids+=("$$!")
-	'$(REDIS_SERVER)' --bind 127.0.0.1 --port '$(REDIS_PORT)' --save '' --appendonly no --daemonize no --loglevel warning --dir '$(CURDIR)/target/benchmarks/comparison/redis-data' > target/benchmarks/comparison/redis.log 2>&1 &
+	"$${server_prefix[@]}" '$(REDIS_SERVER)' --bind 127.0.0.1 --port '$(REDIS_PORT)' --save '' --appendonly no --daemonize no --loglevel warning --dir '$(CURDIR)/target/benchmarks/comparison/redis-data' > target/benchmarks/comparison/redis.log 2>&1 &
 	pids+=("$$!")
-	'$(VALKEY_SERVER)' --bind 127.0.0.1 --port '$(VALKEY_PORT)' --save '' --appendonly no --daemonize no --loglevel warning --dir '$(CURDIR)/target/benchmarks/comparison/valkey-data' > target/benchmarks/comparison/valkey.log 2>&1 &
+	"$${server_prefix[@]}" '$(VALKEY_SERVER)' --bind 127.0.0.1 --port '$(VALKEY_PORT)' --save '' --appendonly no --daemonize no --loglevel warning --dir '$(CURDIR)/target/benchmarks/comparison/valkey-data' > target/benchmarks/comparison/valkey.log 2>&1 &
 	pids+=("$$!")
 	cp target/benchmarks/environment.txt target/benchmarks/comparison/environment.txt
 	{
@@ -127,19 +162,29 @@ compare: release metadata competitors
 		printf '\nBinary checksums:\n'
 		sha256sum target/release/rillcache '$(REDIS_SERVER)' '$(VALKEY_SERVER)'
 		printf '\nClient arguments: %s\n' '$(BENCH_ARGS)'
+		printf 'Server CPU request: %s\nClient CPU request: %s\nServer order: %s\n' '$(or $(SERVER_CPUS),inherited)' '$(or $(CLIENT_CPUS),inherited)' '$(BENCH_ORDER)'
+		if command -v taskset >/dev/null; then
+			printf 'Actual client affinity:\n'
+			"$${client_prefix[@]}" bash -c 'taskset -pc "$$$$"'
+		fi
 		printf '\nCompetitor runtime: loopback TCP; no RDB/AOF; default I/O threads; no configuration file or modules loaded.\n'
 		printf 'Competitor builds: upstream default compiler optimization and allocator; no TLS.\n'
 	} >> target/benchmarks/comparison/environment.txt
 	names=(rillcache redis valkey)
 	ports=('$(RILLCACHE_PORT)' '$(REDIS_PORT)' '$(VALKEY_PORT)')
-	for i in "$${!names[@]}"; do
+	for name in "$${order[@]}"; do
+		case "$$name" in rillcache) i=0 ;; redis) i=1 ;; valkey) i=2 ;; esac
 		kill -0 "$${pids[$$i]}"
 		# Readiness is validated over RESP, never guessed using a fixed sleep.
-		./target/release/rillcache-bench --addr "127.0.0.1:$${ports[$$i]}" --requests 1 --clients 1 --pipeline 1 --keyspace 1 --warmup 0 --runs 1 --workload ping > /dev/null
+		"$${client_prefix[@]}" ./target/release/rillcache-bench --addr "127.0.0.1:$${ports[$$i]}" --requests 1 --clients 1 --pipeline 1 --keyspace 1 --warmup 0 --runs 1 --workload ping > /dev/null
 		kill -0 "$${pids[$$i]}"
+		if command -v taskset >/dev/null; then
+			printf '\n%s server affinity:\n' "$$name" >> target/benchmarks/comparison/environment.txt
+			taskset -apc "$${pids[$$i]}" >> target/benchmarks/comparison/environment.txt
+		fi
 		if (( i > 0 )); then
 			RILLCACHE_REFERENCE_ADDR="127.0.0.1:$${ports[$$i]}" $(CARGO) test $(CARGO_FLAGS) --test reference -- --ignored
 		fi
-		./target/release/rillcache-bench $(BENCH_ARGS) --addr "127.0.0.1:$${ports[$$i]}" --label "$${names[$$i]}" > "target/benchmarks/comparison/$${names[$$i]}.json"
+		"$${client_prefix[@]}" ./target/release/rillcache-bench $(BENCH_ARGS) --addr "127.0.0.1:$${ports[$$i]}" --label "$${names[$$i]}" > "target/benchmarks/comparison/$${names[$$i]}.json"
 		kill -0 "$${pids[$$i]}"
 	done

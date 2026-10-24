@@ -17,7 +17,7 @@ increments; it is not a claim of full Redis compatibility.
 - Rust alone is not evidence of speed. Performance claims require comparable,
   repeated end-to-end measurements against current Redis and Valkey releases.
 
-## INVEST stories: first increment
+## INVEST stories: implemented increments
 
 Each story provides a separately testable outcome. Estimates are relative scope
 (XS/S), not delivery promises. Internal design remains negotiable; the constraints
@@ -31,6 +31,8 @@ reason to couple all future commands into a single large story.
 | S03 | As a cache user, I can check and delete keys so that I can invalidate data. | XS | R23–R24; duplicate-key and shared-connection tests |
 | S04 | As a developer, I can run the same offline checks locally and on GitHub so that each change receives fast feedback. | S | R30–R32; `make ci` and CI workflow |
 | S05 | As a performance investigator, I can reproduce validated workloads against all three servers so that optimization starts with evidence. | S | R40–R43; benchmark tests, smoke and comparison targets |
+| S06 | As a cache user, I can create a value only when absent or replace it only when present so that concurrent clients do not race a separate existence check. | S | R25–R29; engine, pipeline, racing-client and current-reference tests |
+| S07 | As a performance investigator, I can compare equal CPU budgets using unchanged binaries so that parallelism and build churn do not masquerade as implementation improvements. | S | R44–R46; recorded affinities, rotated order and cross-profile digest checks |
 
 ## EARS acceptance requirements
 
@@ -66,13 +68,29 @@ reason to couple all future commands into a single large story.
   budget, the server shall atomically replace the value and reply `+OK`.
 - **R21 (event-driven):** When `GET key` is received, the server shall return the
   stored bytes or a null bulk for a missing key, distinguishing an empty value.
-- **R22 (unwanted behavior):** If a SET would exceed the key/value payload budget,
-  then the server shall return OOM and preserve the previous data. Overwrite and
+- **R22 (unwanted behavior):** If an admitted SET would exceed the key/value
+  payload budget, then the server shall return OOM and preserve the previous data. Overwrite and
   deletion shall reclaim payload budget. This is not an absolute RSS limit.
 - **R23 (event-driven):** When `DEL key [key ...]` is received, the server shall
   atomically remove existing keys and count each removed key only once.
 - **R24 (event-driven):** When `EXISTS key [key ...]` is received, the server shall
   count each existing argument, including duplicates, as Redis does.
+- **R25 (event-driven):** When `SET key value NX` is received, the server shall
+  atomically create the key and return `+OK` if absent; otherwise it shall return
+  a null bulk and preserve the existing value, including an empty value.
+- **R26 (event-driven):** When `SET key value XX` is received, the server shall
+  atomically replace the value and return `+OK` if present; otherwise it shall
+  return a null bulk without creating the key.
+- **R27 (unwanted behavior):** If SET options contain both NX and XX or an
+  unsupported token, then the server shall return a syntax error before checking
+  conditions or changing data. Complete ASCII NX/XX tokens shall be
+  case-insensitive; repeated identical conditions shall be accepted.
+- **R28 (event-driven):** When concurrent clients perform NX writes to one absent
+  key with sufficient payload budget and no intervening deletion, the server
+  shall accept exactly one write and preserve that winner's bytes.
+- **R29 (state-driven):** While a SET condition is not satisfied, the server shall
+  neither allocate stored payload nor consume its budget; admitted writes shall
+  retain R22's atomic OOM behavior and budget reclamation.
 
 ### Development and delivery
 
@@ -98,18 +116,32 @@ reason to couple all future commands into a single large story.
 - **R43 (ubiquitous):** Comparative results shall use the same client and workload
   parameters for all servers and record source/compiler/hardware and competitor
   versions. Shared-host CI timings shall not be treated as stable performance gates.
+- **R44 (event-driven):** When unchanged reference sources are reused across
+  profiles, the comparison workflow shall verify unchanged executable digests.
+  Source-cache bookkeeping shall not discover the enclosing project's Git history
+  or turn generated build output into source-version changes.
+- **R45 (event-driven):** When CPU budgets are configured, the comparison shall
+  apply them to every server and the benchmark client and record requested and
+  actual affinities. CI shall include equal single-core server budgets with
+  clients on separate CPUs, alongside default-threading measurements.
+- **R46 (event-driven):** When a comparison is rerun, the harness shall discard
+  previous result files before starting; if the run fails, it shall not leave
+  another server's stale JSON presented as that run's evidence.
 
 ## Compatibility boundary (v0.1)
 
 Supported: RESP2 nonempty arrays of non-null bulk strings, case-insensitive ASCII
 command names, binary keys/values, multiple connections and ordered pipelines;
-`PING`, `ECHO`, plain `SET`, `GET`, `DEL`, `EXISTS`, `QUIT`.
+`PING`, `ECHO`, `SET key value [NX | XX]`, `GET`, `DEL`, `EXISTS`, `QUIT`.
+NX/XX conditions are atomic, case-insensitive and repeatable when identical.
+Option tokens must match completely; embedded NULs/prefix matches are rejected.
 
 Deliberately not supported: inline/telnet commands, empty/null command arrays,
-RESP3/HELLO, SET options/TTL, other types, SELECT, AUTH/ACL/TLS, persistence,
-replication, clustering, transactions, pub/sub and streams. SET options return
-`ERR syntax error` and do not write. Redis normally ignores empty request arrays;
-this strict initial subset rejects them. Unknown-command error text is shorter
+RESP3/HELLO, other SET options/TTL (including GET/EX/PX), other types, SELECT,
+AUTH/ACL/TLS, persistence, replication, clustering, transactions, pub/sub and
+streams. Unsupported SET options return `ERR syntax error` and do not write.
+Redis normally ignores empty request arrays; this strict initial subset rejects
+them. Unknown-command error text is shorter
 than Redis's text. Limits are deliberately smaller than Redis defaults.
 
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
@@ -119,15 +151,16 @@ The CLI uses loopback by default. Do not expose it to untrusted clients.
 
 ## Next independently deliverable stories
 
-Not implemented or implied by the first increment:
+Not implemented or implied by the completed increments:
 
-1. SET NX/XX with atomic conditional-write tests.
-2. EX/PX expiration with an injectable clock, no sleep-dependent expiry tests.
-3. INCR/DECR with Redis integer parsing and overflow behavior.
-4. Common client handshake metadata, selected only after client compatibility tests.
-5. Profile measured bottlenecks, then evaluate sharding/I/O changes without unsafe
+1. EX/PX expiration with an injectable clock, no sleep-dependent expiry tests.
+   NX alone is not a distributed-lock implementation; TTL and token-safe release
+   are not implemented.
+2. INCR/DECR with Redis integer parsing and overflow behavior.
+3. Common client handshake metadata, selected only after client compatibility tests.
+4. Profile measured bottlenecks, then evaluate sharding/I/O changes without unsafe
    code, extra dependencies or regression of multi-key atomicity.
-6. Controlled-hardware performance budgets and repeated current-release comparisons;
+5. Controlled-hardware performance budgets and repeated current-release comparisons;
    later, richer types, pub/sub and streams driven by product judgment.
 
 Definition of done for each future story: EARS acceptance cases and limits agreed,
