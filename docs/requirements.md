@@ -37,6 +37,8 @@ reason to couple all future commands into a single large story.
 | S09 | As a repository reader, I can read validated performance tables and an optional GPT-6 Luna review after each comparative run without downloading artifacts, so current tradeoffs are visible from the README. | S | R52–R56; archived-cohort, failure, publication and workflow tests |
 | S10 | As a repository owner, I get an actual Copilot assessment automatically without creating credentials, with an available-model fallback and visible failure if no review completes. | S | R57–R59; workflow-token inference, usage/fallback/gate and legacy-publication tests |
 | S11 | As an operator, I can select a fixed number of I/O/execution workers and verify concurrent behavior in every mode locally and on GitHub. | S | R60–R64; mode-matrix TCP, standalone-thread and benchmark tests |
+| S12 | As a cache user, I can expire strings atomically and use Redis-compatible SET/expiry options without depending on polling or sleeps for correctness. | S | R65–R68; injected-clock, wire, budget and reference tests |
+| S13 | As a counter user, I can atomically change signed 64-bit integer strings without lost updates, overflow or changing their TTL. | S | R69–R71; boundary, many-writer and reference tests |
 
 ## EARS acceptance requirements
 
@@ -214,22 +216,59 @@ reason to couple all future commands into a single large story.
 - **R64 (event-driven):** When embedded thread modes are benchmarked, results shall
   record the selected mode/worker count. Fixed worker options shall be rejected
   for external targets; mode and affinity shall not be conflated or used to claim
-  linear scaling. Optional full comparisons shall preserve mode-scaling evidence.
+  linear scaling. Optional full comparisons shall preserve mode-scaling evidence;
+  reports shall validate and display it separately from native competitor rows,
+  reject corrupt/mismatched mode groups and retain historical cohort compatibility.
+
+### Expiration and integer compatibility
+
+- **R65 (event-driven):** When SET receives EX/PX/EXAT/PXAT, GET or KEEPTTL with
+  valid nonconflicting options, it shall apply the selected condition/value/TTL
+  atomically and return Redis-compatible old-value replies. Identical expiry kinds
+  may repeat with the final value winning; all syntax and final numeric/overflow
+  validation shall precede condition evaluation and mutation.
+- **R66 (state-driven):** While an entry has a deadline, reads, conditions and
+  multi-key counts shall use Redis's millisecond visibility boundary; observed
+  expiration shall not resurrect after a clock rollback. Expiration shall reclaim
+  payload, maintain at most one indexed expiry per key and never cause false OOM.
+  Injected-clock tests shall not depend on wall-clock sleeps.
+- **R67 (event-driven):** When TTL/PTTL/EXPIRETIME/PEXPIRETIME, EXPIRE/PEXPIRE/
+  EXPIREAT/PEXPIREAT with NX/XX/GT/LT, or PERSIST is used, the store shall preserve
+  missing/persistent sentinels, rounding, option compatibility and failure atomicity.
+- **R68 (event-driven):** When SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX is used, the
+  store shall implement value/expiry and reply semantics, including past absolute
+  deadlines, GETEX PERSIST and rejected/OOM writes retaining old state.
+- **R69 (event-driven):** When INCR/DECR/INCRBY/DECRBY receives a canonical signed
+  64-bit integer string (missing means zero), it shall atomically calculate and
+  return the new integer and retain an existing TTL. Concurrent updates shall not
+  lose or duplicate values.
+- **R70 (unwanted behavior):** If integer parsing, arithmetic, DECRBY negation or
+  payload admission fails, then the command shall return the corresponding error
+  without changing the live value or TTL, in debug and release builds.
+- **R71 (event-driven):** When optional native conformance runs, the new command
+  common corpus shall match pinned Redis and Valkey wire replies in per-client,
+  one-worker and four-worker Rillcache modes before comparative timing begins.
+  Deliberate vendor divergences shall have explicit per-vendor expectations;
+  Rillcache shall follow the documented Redis behavior.
 
 ## Compatibility boundary (v0.1)
 
 Supported: RESP2 nonempty arrays of non-null bulk strings, case-insensitive ASCII
 command names, binary keys/values, multiple connections and ordered pipelines;
-`PING`, `ECHO`, `SET key value [NX | XX]`, `GET`, `DEL`, `EXISTS`, `QUIT`.
-NX/XX conditions are atomic, case-insensitive and repeatable when identical.
-Option tokens must match completely; embedded NULs/prefix matches are rejected.
+`PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
+`EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
+PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
+INCR/DECR/INCRBY/DECRBY. See [string semantics](strings.md) for grammar, clocks,
+rounding, integer limits and atomic error behavior. Conditions are atomic and
+case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
 
 Deliberately not supported: inline/telnet commands, empty/null command arrays,
-RESP3/HELLO, other SET options/TTL (including GET/EX/PX), other types, SELECT,
+RESP3/HELLO, digest/value-match SET conditions, other data types, SELECT,
 AUTH/ACL/TLS, persistence, replication, clustering, transactions, pub/sub and
 streams. Unsupported SET options return `ERR syntax error` and do not write.
 Redis normally ignores empty request arrays; this strict initial subset rejects
-them. Unknown-command error text is shorter than Redis's text. Limits are deliberately smaller than Redis defaults.
+them. Unknown-command and unsupported-expire-option errors omit arbitrary input bytes
+rather than reflecting them into RESP error frames. Limits are deliberately smaller than Redis defaults.
 
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload. Payload
@@ -240,11 +279,13 @@ The CLI uses loopback by default. Do not expose it to untrusted clients.
 
 Not implemented or implied by the completed increments:
 
-1. EX/PX expiration with an injectable clock, no sleep-dependent expiry tests.
-   NX alone is not a distributed-lock implementation; TTL and token-safe release
-   are not implemented.
-2. INCR/DECR with Redis integer parsing and overflow behavior.
-3. Common client handshake metadata, selected only after client compatibility tests.
+1. RESP3/HELLO and common client handshake metadata, with real client compatibility tests.
+2. Authentication/ACL and a safe transport-security deployment boundary; durability
+   with crash/recovery and Redis-format interoperability tests.
+3. Richer data types, multi-key strings, transactions, scripts, pub/sub, streams,
+   replication and clustering: follow the [production-readiness plan](production-readiness.md).
+   NX plus TTL alone is not a complete distributed-lock protocol; token-safe
+   release, failover and fencing semantics are not implemented.
 4. Prioritize the measured single-core, low-pipeline and tail-latency weakness:
    use S08's server CPU/RSS/context-switch measurements with PING as a no-key-map
    control to evaluate bounded I/O scheduling before speculative sharding. Include idle

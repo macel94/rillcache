@@ -8,6 +8,9 @@ use std::path::Path;
 
 use super::json::{self, Json, Result};
 
+#[path = "thread_data.rs"]
+mod thread_data;
+
 pub(super) const PROFILES: [(&str, u64); 4] = [
     ("pipeline-1", 1),
     ("pipeline-16", 16),
@@ -527,6 +530,13 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Summary {
         issues.push("Cross-profile executable, compiler, hardware or version identity mismatch; cohort rejected.".into());
         profiles.clear();
     }
+    let thread_modes = match thread_data::summarize(root, sha) {
+        Ok(value) => value,
+        Err(error) => {
+            issues.push(format!("thread modes: {error}"));
+            None
+        }
+    };
     let records = profiles.len() * 45;
     let complete = issues.is_empty() && profiles.len() == 4;
     let mut out = format!(
@@ -596,6 +606,9 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Summary {
             .expect("String write");
         }
         out.push_str("\n</details>\n");
+    }
+    if let Some(thread_modes) = thread_modes {
+        out.push_str(&thread_modes);
     }
     out.push_str("\n### Interpretation limits\n\n- Batch p99 is **not per-request p99**; never divide it by the pipeline length. Percentiles are not pooled across runs.\n- CPU counters are tick-quantized; zero observed idle ticks do not prove zero CPU cost. CPU observation windows bracket, but are not identical to, request timers.\n- RSS is an approximate endpoint sample, not allocator accounting or a workload peak; VmHWM includes startup, warmup and previous workloads.\n- Context switches cover matched thread lifetimes only. Even unchanged endpoints cannot exclude threads born and destroyed between snapshots. PARTIAL coverage is not a process total.\n- NX-existing measures rejected writes; XX-existing measures admitted overwrites. This is a small Redis-compatible subset, not equivalent functionality.\n");
     Summary {

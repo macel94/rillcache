@@ -16,6 +16,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: '1'
   PROFILE: '1'
+  REQUIRE_THREAD_MODES: '1'
 
 jobs:
   compare:

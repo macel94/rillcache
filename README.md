@@ -37,15 +37,19 @@ This is a collaboration between a human and AI:
 
 ## Implemented so far
 
-Bounded RESP2 TCP server, binary-safe `PING`, `ECHO`, `SET` with atomic `NX`/`XX`
-conditions, `GET`, `DEL`, `EXISTS`, and `QUIT`; ordered pipelines and fragmented
+Bounded RESP2 TCP server, binary-safe `PING`, `ECHO`, `SET` with atomic `NX`/`XX`,
+`GET`, `KEEPTTL`, `EX`/`PX`/`EXAT`/`PXAT` options; `GET`, `DEL`, `EXISTS`, `QUIT`;
+TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
+`INCR`/`DECR`/`INCRBY`/`DECRBY`. See [string semantics](docs/strings.md).
+Ordered pipelines and fragmented
 requests; concurrent clients, payload/connection limits and inactivity timeouts.
 It is already multithreaded by default (one managed worker per client). Optional
 `--threads 1` or `--threads N` selects exactly 1..64 shared I/O/execution workers
 plus the accept/control thread; idle clients do not occupy an entire worker.
 
-This is **not** a drop-in Redis replacement or a production service. No TTL,
-other SET options, RESP3, authentication, TLS, persistence or other data types yet. It binds
+This is **not yet** a drop-in Redis replacement or a production service.
+RESP3/client negotiation, authentication/ACL, TLS, durable persistence, richer
+data types, transactions, replication and clustering remain production blockers. It binds
 to loopback by default. See [INVEST stories and EARS requirements](docs/requirements.md)
 for acceptance criteria and exact compatibility boundaries. The
 [production-readiness plan](docs/production-readiness.md) tracks every remaining

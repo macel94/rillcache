@@ -20,6 +20,7 @@ CLIENT_CPUS ?=
 BENCH_ORDER ?= rillcache redis valkey
 PROFILE ?= 0
 PROFILE_IDLE_MS ?= 1000
+REQUIRE_THREAD_MODES ?= 0
 
 .PHONY: help fmt fmt-check lint test check release run smoke bench-core bench bench-threads metadata ci package competitors compare
 # Always validate cached tools: an interrupted linker may leave a truncated file.
@@ -54,6 +55,7 @@ run:
 metadata:
 	@mkdir -p target/benchmarks
 	{
+		if [[ '$(REQUIRE_THREAD_MODES)' == 1 ]]; then printf 'Thread-mode measurements: required\n'; fi
 		printf 'Source revision: '; git rev-parse HEAD
 		printf '\nWorking-tree status (empty means clean):\n'; git status --short
 		printf '\nCompiler:\n'; rustc -vV
@@ -74,6 +76,8 @@ bench-core:
 
 bench-threads: release metadata
 	mkdir -p target/benchmarks/thread-modes
+	rm -f target/benchmarks/thread-modes/threads-{1,4}.json
+	cp target/benchmarks/environment.txt target/benchmarks/thread-modes/environment.txt
 	for workers in 1 4; do
 		./target/release/rillcache-bench --server-threads "$$workers" $(BENCH_ARGS) > "target/benchmarks/thread-modes/threads-$$workers.json"
 	done
@@ -209,7 +213,7 @@ compare: release metadata competitors
 			taskset -apc "$$pid" >> target/benchmarks/comparison/environment.txt
 		fi
 		if [[ $$name != rillcache ]]; then
-			RILLCACHE_REFERENCE_ADDR="127.0.0.1:$$port" $(CARGO) test $(CARGO_FLAGS) --test reference -- --ignored
+			RILLCACHE_REFERENCE_ADDR="127.0.0.1:$$port" RILLCACHE_REFERENCE_KIND="$$name" $(CARGO) test $(CARGO_FLAGS) --test reference -- --ignored
 		fi
 		profile_args=()
 		if [[ '$(PROFILE)' == 1 ]]; then

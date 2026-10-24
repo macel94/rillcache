@@ -117,7 +117,7 @@ fn semantic_errors_keep_the_connection_usable_and_do_not_write() {
     send(&mut stream, &[b"HELLO", b"3"], b"-ERR unknown command\r\n");
     send(
         &mut stream,
-        &[b"SET", b"k", b"v", b"EX", b"1"],
+        &[b"SET", b"k", b"v", b"UNSUPPORTED", b"1"],
         b"-ERR syntax error\r\n",
     );
     send(&mut stream, &[b"GET", b"k"], b"$-1\r\n");
@@ -226,7 +226,8 @@ fn shutdown_interrupts_idle_and_partial_clients_without_waiting_for_timeout() {
 #[test]
 fn idle_clients_are_disconnected() {
     let server = start(Config {
-        idle_timeout: Duration::from_millis(50),
+        // Verify eventual idle disconnect, not a 50 ms shared-host scheduling budget.
+        idle_timeout: Duration::from_millis(250),
         ..Config::default()
     });
     let mut stream = connect(&server);
@@ -295,6 +296,31 @@ fn oom_over_the_wire_preserves_values_and_reclaims_deleted_payload() {
     send(&mut stream, &[b"GET", b"k"], b"$4\r\n1234\r\n");
     send(&mut stream, &[b"DEL", b"k"], b":1\r\n");
     send(&mut stream, &[b"SET", b"new", b"12"], b"+OK\r\n");
+}
+
+#[test]
+fn repeated_shutdown_with_connections_in_flight_is_not_a_worker_failure() {
+    for _ in 0..32 {
+        let server = start(Config::default());
+        let addr = server.local_addr();
+        let ready = std::sync::Barrier::new(2);
+        thread::scope(|scope| {
+            let ready_ref = &ready;
+            let connector = scope.spawn(move || {
+                ready_ref.wait();
+                for _ in 0..8 {
+                    if let Ok(mut stream) =
+                        TcpStream::connect_timeout(&addr, Duration::from_millis(200))
+                    {
+                        let _ = stream.write_all(b"*1\r\n$4\r\nPING\r\n");
+                    }
+                }
+            });
+            ready.wait();
+            server.shutdown().unwrap();
+            connector.join().unwrap();
+        });
+    }
 }
 
 #[test]
@@ -404,6 +430,99 @@ fn conditional_set_oom_and_rejections_leave_the_connection_usable() {
     send(&mut stream, &[b"GET", b"k"], b"$4\r\n1234\r\n");
     send(&mut stream, &[b"SET", b"k", b"1", b"XX"], b"+OK\r\n");
     send(&mut stream, &[b"SET", b"x", b"12", b"NX"], b"+OK\r\n");
+}
+
+#[test]
+fn expiration_aliases_and_numeric_errors_preserve_pipeline_order() {
+    let server = start(Config::default());
+    let cases: &[(&[&[u8]], &[u8])] = &[
+        (&[b"SET", b"k", b"0", b"PXAT", b"4102444800123"], b"+OK\r\n"),
+        (&[b"INCR", b"k"], b":1\r\n"),
+        (&[b"DECRBY", b"k", b"-2"], b":3\r\n"),
+        (&[b"PEXPIRETIME", b"k"], b":4102444800123\r\n"),
+        (&[b"SET", b"k", b"x", b"NX", b"GET"], b"$1\r\n3\r\n"),
+        (
+            &[b"SET", b"k", b"x", b"NX", b"EX", b"0"],
+            b"-ERR invalid expire time in 'set' command\r\n",
+        ),
+        (&[b"GETEX", b"k", b"PERSIST"], b"$1\r\n3\r\n"),
+        (&[b"PTTL", b"k"], b":-1\r\n"),
+        (&[b"PEXPIREAT", b"k", b"1"], b":1\r\n"),
+        (&[b"GET", b"k"], b"$-1\r\n"),
+        (&[b"TTL", b"k"], b":-2\r\n"),
+    ];
+    let mut bytes = Vec::new();
+    let mut expected = Vec::new();
+    for (args, reply) in cases {
+        encode_request(args, &mut bytes);
+        expected.extend_from_slice(reply);
+    }
+    let mut stream = connect(&server);
+    stream.write_all(&bytes).unwrap();
+    expect(&mut stream, &expected);
+}
+
+#[test]
+fn concurrent_tcp_increments_on_one_key_have_no_lost_or_duplicate_results() {
+    use std::io::{BufRead, BufReader};
+    const CLIENTS: usize = 12;
+    const COMMANDS: usize = 256;
+    let server = start(Config::default());
+    send(
+        &mut connect(&server),
+        &[b"SET", b"count", b"0", b"PXAT", b"4102444800123"],
+        b"+OK\r\n",
+    );
+    let mut streams: Vec<_> = (0..CLIENTS).map(|_| connect(&server)).collect();
+    for stream in &mut streams {
+        send(stream, &[b"PING"], b"+PONG\r\n");
+    }
+    let ready = std::sync::Barrier::new(CLIENTS);
+    let values = thread::scope(|scope| {
+        let workers: Vec<_> = streams
+            .into_iter()
+            .map(|mut stream| {
+                let ready = &ready;
+                scope.spawn(move || {
+                    let mut bytes = Vec::new();
+                    for _ in 0..COMMANDS {
+                        encode_request(&[b"INCR", b"count"], &mut bytes);
+                    }
+                    ready.wait();
+                    stream.write_all(&bytes).unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut values = Vec::new();
+                    for _ in 0..COMMANDS {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        values.push(
+                            line.strip_prefix(':')
+                                .unwrap()
+                                .trim_end()
+                                .parse::<usize>()
+                                .unwrap(),
+                        );
+                    }
+                    values
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<std::collections::BTreeSet<_>>()
+    });
+    assert_eq!(values, (1..=CLIENTS * COMMANDS).collect());
+    send(
+        &mut connect(&server),
+        &[b"GET", b"count"],
+        b"$4\r\n3072\r\n",
+    );
+    send(
+        &mut connect(&server),
+        &[b"PEXPIRETIME", b"count"],
+        b":4102444800123\r\n",
+    );
 }
 
 #[test]

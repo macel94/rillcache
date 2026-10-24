@@ -5,7 +5,7 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::engine::{Action, Store};
 use crate::protocol::{Limits, parse_request};
@@ -103,8 +103,13 @@ impl Server {
         }
         let store = Arc::new(Store::new(self.config.max_data_bytes));
         let mut workers: Vec<Worker> = Vec::new();
+        let mut maintenance = Instant::now();
         let result = (|| {
             while !stopping.load(Ordering::Acquire) {
+                if maintenance.elapsed() >= Duration::from_millis(100) {
+                    store.purge_expired(128);
+                    maintenance = Instant::now();
+                }
                 let mut index = 0;
                 while index < workers.len() {
                     if workers[index].thread.is_finished() {

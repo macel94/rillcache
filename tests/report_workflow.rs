@@ -1,6 +1,23 @@
 #![forbid(unsafe_code)]
 
 #[test]
+fn local_and_github_checks_include_real_worker_mode_matrices() {
+    let make = include_str!("../Makefile");
+    assert!(
+        include_str!("../.github/workflows/benchmarks.yml").contains("REQUIRE_THREAD_MODES: '1'")
+    );
+    assert!(make.contains("Thread-mode measurements: required"));
+    assert!(make.contains("for workers in 0 1 4; do"));
+    assert!(make.contains("RILLCACHE_TEST_THREADS=\"$$workers\""));
+    assert!(make.contains("smoke-threads-$$workers.json"));
+    assert!(make.contains("bench: release metadata bench-core bench-threads"));
+    assert!(include_str!("../.github/workflows/ci.yml").contains("run: make ci"));
+    assert!(
+        include_str!("../.github/workflows/benchmarks.yml").contains("run: make bench-threads")
+    );
+}
+
+#[test]
 fn report_workflow_keeps_inference_separate_from_repository_write_access() {
     let workflow = include_str!("../.github/workflows/benchmarks.yml");
     let (before_review, rest) = workflow.split_once("\n  review:\n").unwrap();

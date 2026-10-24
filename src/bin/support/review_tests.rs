@@ -240,6 +240,74 @@ fn copy_evidence(destination: &Path) {
 }
 
 #[test]
+fn embedded_mode_tables_are_validated_separately_and_bad_modes_fail_quality() {
+    let root = Temp::new();
+    let evidence = root.0.join("input");
+    copy_evidence(&evidence);
+    let modes = evidence.join("thread-modes");
+    fs::create_dir(&modes).unwrap();
+    fs::copy(
+        source().join("pipeline-1/environment.txt"),
+        modes.join("environment.txt"),
+    )
+    .unwrap();
+    let mut records = Vec::new();
+    for run in 1..=3 {
+        for workload in ["ping", "set", "get", "set-nx-existing", "set-xx-existing"] {
+            records.push(format!("{{\"workload\":{},\"run\":{run},\"requests\":19,\"clients\":4,\"pipeline\":3,\"keyspace\":7,\"value_size\":0,\"warmup_per_client\":0,\"batches\":8,\"elapsed_seconds\":0.001,\"ops_per_second\":19000,\"batch_p50_us\":1,\"batch_p95_us\":2,\"batch_p99_us\":3,\"batch_max_us\":4,\"server_profile\":null}}", quoted(workload)));
+        }
+    }
+    for workers in [1, 4] {
+        fs::write(modes.join(format!("threads-{workers}.json")), format!("{{\"schema_version\":1,\"mode\":\"embedded\",\"server_configuration\":{{\"mode\":\"fixed-workers\",\"workers\":{workers}}},\"results\":[{}]}}", records.join(","))).unwrap();
+    }
+    let summary = data::summarize(&evidence, SHA);
+    assert!(summary.complete, "{}", summary.markdown);
+    assert_eq!(summary.records, 180);
+    assert!(
+        summary
+            .markdown
+            .contains("30/30 separate embedded records validated")
+    );
+    assert!(
+        summary
+            .markdown
+            .contains("| set | 19000 | 19000–19000 | 19000 | 19000–19000 | 3.0 | 3.0 |")
+    );
+    let file = modes.join("threads-4.json");
+    let valid = fs::read_to_string(&file).unwrap();
+    for bad in [
+        valid.replace("\"workers\":4", "\"workers\":1"),
+        valid.replacen("\"clients\":4", "\"clients\":3", 1),
+        valid.replacen("\"ops_per_second\":19000", "\"ops_per_second\":1", 1),
+    ] {
+        fs::write(&file, bad).unwrap();
+        let summary = data::summarize(&evidence, SHA);
+        assert!(!summary.complete);
+        assert!(
+            !summary
+                .markdown
+                .contains("### Fixed-worker mode measurements")
+        );
+        assert_eq!(summary.records, 180);
+    }
+    fs::remove_dir_all(&modes).unwrap();
+    let environment = evidence.join("pipeline-1/environment.txt");
+    let original = fs::read_to_string(&environment).unwrap();
+    fs::write(
+        environment,
+        format!("Thread-mode measurements: required\n{original}"),
+    )
+    .unwrap();
+    let missing = data::summarize(&evidence, SHA);
+    assert!(!missing.complete);
+    assert!(
+        missing
+            .markdown
+            .contains("required thread-mode evidence is missing")
+    );
+}
+
+#[test]
 fn malformed_duplicate_mismatched_and_truncated_measurements_are_rejected() {
     let root = Temp::new();
     let evidence = root.0.join("input");

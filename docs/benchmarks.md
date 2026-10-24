@@ -43,7 +43,13 @@ are not CPU affinity budgets. Fixed workers use 64-command and bounded I/O
 quanta, a bounded output queue and a 1 ms idle polling wait; compare modes rather
 than assuming this portable scheduler is faster than blocking per-client I/O.
 The four native comparison profiles still use the unchanged per-client default;
-mode-scaling runs are separate evidence, not an extra Redis/Valkey victory table.
+mode-scaling runs are separately validated and published as an embedded-mode
+throughput/spread/batch-p99 table in the automatic report, not an extra
+Redis/Valkey victory table. Their source metadata is retained beside the JSON;
+failed reruns invalidate both mode files rather than mixing stale results.
+New comparative workflows mark mode evidence as required, so missing/corrupt
+mode groups fail report quality instead of silently disappearing; immutable old
+cohorts without that marker remain readable.
 
 Only Rust/rustup and GNU Make are needed for these targets. After the pinned
 Rust toolchain is installed, the Cargo commands use `--locked --offline`.
@@ -101,7 +107,10 @@ Each server runs as a standalone native process on the same host and loopback TC
 file, with RDB/AOF disabled, no modules loaded and default I/O-thread settings.
 All servers get the same Rust client, keys, bytes, request count, concurrency,
 pipeline, warmup and run count. Wire conformance is checked against each
-competitor before it is timed. The recipe verifies process liveness/readiness and
+competitor before it is timed, in all three Rillcache execution modes. The
+launcher supplies both `RILLCACHE_REFERENCE_ADDR` and `RILLCACHE_REFERENCE_KIND`
+(`redis` or `valkey`). A separate GETEX error-edge test exposes their known
+vendor difference instead of claiming identical behavior where they disagree. The recipe verifies process liveness/readiness and
 cleans up all child processes on success, error or interruption. Only **one
 comparison server is alive at a time**: its peers' idle polling/cron threads must
 not contend for the measured CPU budget.

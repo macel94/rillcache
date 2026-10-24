@@ -65,6 +65,10 @@ impl Client {
         }
     }
 
+    fn open(&self, progress: bool, timeout: Duration) -> Option<bool> {
+        (progress || self.activity.elapsed() < timeout).then_some(progress)
+    }
+
     /// None means closed; Some indicates whether this pass made progress.
     fn poll(
         &mut self,
@@ -72,12 +76,11 @@ impl Client {
         config: &Config,
         chunk: &mut [u8],
     ) -> io::Result<Option<bool>> {
-        if self.activity.elapsed() >= config.idle_timeout {
-            return Ok(None);
-        }
+        // Like blocking I/O, service already-ready input/output before declaring
+        // inactivity; scheduler delay must not discard buffered commands.
         let mut progress = self.flush()?;
         if !self.output.is_empty() {
-            return Ok(Some(progress)); // Backpressure: do not read or execute more.
+            return Ok(self.open(progress, config.idle_timeout)); // Backpressure.
         }
         if self.closing {
             return Ok(None);
@@ -118,7 +121,7 @@ impl Client {
         }
         progress |= self.flush()?;
         if self.closing || !self.output.is_empty() || !need_input {
-            return Ok(Some(progress));
+            return Ok(self.open(progress, config.idle_timeout));
         }
         if self.eof {
             if self.input.is_empty() {
@@ -153,7 +156,7 @@ impl Client {
                 ) => {}
             Err(error) => return Err(error),
         }
-        Ok(Some(progress))
+        Ok(self.open(progress, config.idle_timeout))
     }
 }
 
@@ -179,12 +182,18 @@ pub(super) fn serve(
             let store = Arc::clone(&store);
             let stop = Arc::clone(&stopping);
             let config = config.clone();
+            let reaper = index == 0;
             let thread = thread::Builder::new()
                 .name(format!("rillcache-io-{index}"))
                 .spawn(move || {
                     let mut clients: Vec<Client> = Vec::new();
                     let mut chunk = [0; 16 * 1024];
+                    let mut maintenance = Instant::now();
                     while !stop.load(Ordering::Acquire) {
+                        if reaper && maintenance.elapsed() >= Duration::from_millis(100) {
+                            store.purge_expired(128);
+                            maintenance = Instant::now();
+                        }
                         let mut progress = false;
                         while let Ok(client) = receiver.try_recv() {
                             clients.push(client);
@@ -213,6 +222,9 @@ pub(super) fn serve(
         let mut next = 0;
         while !stopping.load(Ordering::Acquire) {
             if lanes.iter().any(|lane| lane.thread.is_finished()) {
+                if stopping.load(Ordering::Acquire) {
+                    break;
+                }
                 return Err(io::Error::other("I/O worker exited unexpectedly"));
             }
             let (mut stream, _) = match listener.accept() {
@@ -243,10 +255,14 @@ pub(super) fn serve(
                 activity: Instant::now(),
                 _permit: Permit(Arc::clone(&admitted)),
             };
-            lanes[next]
-                .sender
-                .send(client)
-                .map_err(|_| io::Error::other("I/O worker unavailable"))?;
+            if lanes[next].sender.send(client).is_err() {
+                // Shutdown may race an accept already in flight. Closed receiver
+                // after a stop request is cancellation, not a worker failure.
+                if stopping.load(Ordering::Acquire) {
+                    break;
+                }
+                return Err(io::Error::other("I/O worker unavailable"));
+            }
             lanes[next].thread.thread().unpark();
             next = (next + 1) % count;
         }
@@ -263,4 +279,48 @@ pub(super) fn serve(
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffered_work_is_not_dropped_because_the_worker_was_descheduled() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let mut client = Client {
+            stream,
+            input: b"*1\r\n$4\r\nPING\r\n".to_vec(),
+            output: Vec::new(),
+            sent: 0,
+            closing: false,
+            eof: false,
+            activity: Instant::now() - Duration::from_secs(2),
+            _permit: Permit(Arc::new(AtomicUsize::new(1))),
+        };
+        let config = Config {
+            idle_timeout: Duration::from_secs(1),
+            ..Config::default()
+        };
+        assert_eq!(
+            client
+                .poll(&Store::new(100), &config, &mut [0; 128])
+                .unwrap(),
+            Some(true)
+        );
+        let mut reply = [0; 7];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"+PONG\r\n");
+        client.activity = Instant::now() - Duration::from_secs(2);
+        assert_eq!(
+            client
+                .poll(&Store::new(100), &config, &mut [0; 128])
+                .unwrap(),
+            None
+        );
+    }
 }
