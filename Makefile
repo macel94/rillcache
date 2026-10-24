@@ -18,6 +18,8 @@ VALKEY_PORT ?= 16381
 SERVER_CPUS ?=
 CLIENT_CPUS ?=
 BENCH_ORDER ?= rillcache redis valkey
+PROFILE ?= 0
+PROFILE_IDLE_MS ?= 1000
 
 .PHONY: help fmt fmt-check lint test check release run smoke bench-core bench metadata ci package competitors compare
 # Always validate cached tools: an interrupted linker may leave a truncated file.
@@ -137,20 +139,20 @@ compare: release metadata competitors
 		taskset --cpu-list '$(CLIENT_CPUS)' true
 		client_prefix=(taskset --cpu-list '$(CLIENT_CPUS)')
 	fi
-	pids=()
+	if [[ '$(PROFILE)' != 0 && '$(PROFILE)' != 1 ]]; then
+		printf 'PROFILE must be 0 or 1\n' >&2; exit 2
+	fi
+	pid=''
 	cleanup() {
-		for pid in "$${pids[@]}"; do kill "$$pid" 2>/dev/null || true; done
-		for pid in "$${pids[@]}"; do wait "$$pid" 2>/dev/null || true; done
+		if [[ -n "$$pid" ]]; then
+			kill "$$pid" 2>/dev/null || true
+			wait "$$pid" 2>/dev/null || true
+			pid=''
+		fi
 	}
 	trap cleanup EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
-	"$${server_prefix[@]}" ./target/release/rillcache --bind '127.0.0.1:$(RILLCACHE_PORT)' > target/benchmarks/comparison/rillcache.log 2>&1 &
-	pids+=("$$!")
-	"$${server_prefix[@]}" '$(REDIS_SERVER)' --bind 127.0.0.1 --port '$(REDIS_PORT)' --save '' --appendonly no --daemonize no --loglevel warning --dir '$(CURDIR)/target/benchmarks/comparison/redis-data' > target/benchmarks/comparison/redis.log 2>&1 &
-	pids+=("$$!")
-	"$${server_prefix[@]}" '$(VALKEY_SERVER)' --bind 127.0.0.1 --port '$(VALKEY_PORT)' --save '' --appendonly no --daemonize no --loglevel warning --dir '$(CURDIR)/target/benchmarks/comparison/valkey-data' > target/benchmarks/comparison/valkey.log 2>&1 &
-	pids+=("$$!")
 	cp target/benchmarks/environment.txt target/benchmarks/comparison/environment.txt
 	{
 		printf '\nCompetitor versions:\n'
@@ -163,6 +165,7 @@ compare: release metadata competitors
 		sha256sum target/release/rillcache '$(REDIS_SERVER)' '$(VALKEY_SERVER)'
 		printf '\nClient arguments: %s\n' '$(BENCH_ARGS)'
 		printf 'Server CPU request: %s\nClient CPU request: %s\nServer order: %s\n' '$(or $(SERVER_CPUS),inherited)' '$(or $(CLIENT_CPUS),inherited)' '$(BENCH_ORDER)'
+		printf 'Server lifecycle: one live comparison server at a time\nProfiling: %s\nProfile idle milliseconds: %s\n' '$(PROFILE)' '$(PROFILE_IDLE_MS)'
 		if command -v taskset >/dev/null; then
 			printf 'Actual client affinity:\n'
 			"$${client_prefix[@]}" bash -c 'taskset -pc "$$$$"'
@@ -170,21 +173,37 @@ compare: release metadata competitors
 		printf '\nCompetitor runtime: loopback TCP; no RDB/AOF; default I/O threads; no configuration file or modules loaded.\n'
 		printf 'Competitor builds: upstream default compiler optimization and allocator; no TLS.\n'
 	} >> target/benchmarks/comparison/environment.txt
-	names=(rillcache redis valkey)
-	ports=('$(RILLCACHE_PORT)' '$(REDIS_PORT)' '$(VALKEY_PORT)')
 	for name in "$${order[@]}"; do
-		case "$$name" in rillcache) i=0 ;; redis) i=1 ;; valkey) i=2 ;; esac
-		kill -0 "$${pids[$$i]}"
+		# Idle polling/cron threads from other candidates must not consume the
+		# measured server's CPU budget. Start, measure and reap one at a time.
+		case "$$name" in
+			rillcache)
+				port='$(RILLCACHE_PORT)'
+				"$${server_prefix[@]}" ./target/release/rillcache --bind "127.0.0.1:$$port" > target/benchmarks/comparison/rillcache.log 2>&1 & ;;
+			redis)
+				port='$(REDIS_PORT)'
+				"$${server_prefix[@]}" '$(REDIS_SERVER)' --bind 127.0.0.1 --port "$$port" --save '' --appendonly no --daemonize no --loglevel warning --dir '$(CURDIR)/target/benchmarks/comparison/redis-data' > target/benchmarks/comparison/redis.log 2>&1 & ;;
+			valkey)
+				port='$(VALKEY_PORT)'
+				"$${server_prefix[@]}" '$(VALKEY_SERVER)' --bind 127.0.0.1 --port "$$port" --save '' --appendonly no --daemonize no --loglevel warning --dir '$(CURDIR)/target/benchmarks/comparison/valkey-data' > target/benchmarks/comparison/valkey.log 2>&1 & ;;
+		esac
+		pid=$$!
+		kill -0 "$$pid"
 		# Readiness is validated over RESP, never guessed using a fixed sleep.
-		"$${client_prefix[@]}" ./target/release/rillcache-bench --addr "127.0.0.1:$${ports[$$i]}" --requests 1 --clients 1 --pipeline 1 --keyspace 1 --warmup 0 --runs 1 --workload ping > /dev/null
-		kill -0 "$${pids[$$i]}"
+		"$${client_prefix[@]}" ./target/release/rillcache-bench --addr "127.0.0.1:$$port" --requests 1 --clients 1 --pipeline 1 --keyspace 1 --warmup 0 --runs 1 --workload ping > /dev/null
+		kill -0 "$$pid"
 		if command -v taskset >/dev/null; then
 			printf '\n%s server affinity:\n' "$$name" >> target/benchmarks/comparison/environment.txt
-			taskset -apc "$${pids[$$i]}" >> target/benchmarks/comparison/environment.txt
+			taskset -apc "$$pid" >> target/benchmarks/comparison/environment.txt
 		fi
-		if (( i > 0 )); then
-			RILLCACHE_REFERENCE_ADDR="127.0.0.1:$${ports[$$i]}" $(CARGO) test $(CARGO_FLAGS) --test reference -- --ignored
+		if [[ $$name != rillcache ]]; then
+			RILLCACHE_REFERENCE_ADDR="127.0.0.1:$$port" $(CARGO) test $(CARGO_FLAGS) --test reference -- --ignored
 		fi
-		"$${client_prefix[@]}" ./target/release/rillcache-bench $(BENCH_ARGS) --addr "127.0.0.1:$${ports[$$i]}" --label "$${names[$$i]}" > "target/benchmarks/comparison/$${names[$$i]}.json"
-		kill -0 "$${pids[$$i]}"
+		profile_args=()
+		if [[ '$(PROFILE)' == 1 ]]; then
+			profile_args=(--server-pid "$$pid" --profile-idle-ms '$(PROFILE_IDLE_MS)')
+		fi
+		"$${client_prefix[@]}" ./target/release/rillcache-bench $(BENCH_ARGS) --addr "127.0.0.1:$$port" --label "$$name" "$${profile_args[@]}" > "target/benchmarks/comparison/$$name.json"
+		kill -0 "$$pid"
+		cleanup
 	done

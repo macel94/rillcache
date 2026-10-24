@@ -61,6 +61,7 @@ for arbitrary client libraries.
 make bench                # parser/store microbenchmarks + repeated local TCP tests
 make compare              # build pinned competitors once, compare all three servers
 make compare BENCH_ARGS='--requests 10000 --clients 4 --pipeline 1 --runs 3'
+make compare PROFILE=1    # optional Linux CPU/RSS/thread-context and idle samples
 ```
 
 The benchmark client is also safe, dependency-free Rust. It validates replies,
@@ -69,7 +70,9 @@ seeds GET data, excludes setup/warmup, and writes JSON with throughput and
 for all three servers. Competitor C build tools are optional benchmark tooling,
 never Rillcache dependencies. Conditional SET benchmarks validate both rejected
 NX and admitted XX operations on seeded existing keys. Comparisons can pin equal
-server/client CPU budgets and rotate server order. See
+server/client CPU budgets and rotate server order. Only one comparison server
+runs at a time; optional safe, std-only Linux accounting records process CPU,
+RSS and matched-thread context switches without changing the request timer. See
 [benchmark methodology](docs/benchmarks.md).
 
 ## GitHub feedback and delivery

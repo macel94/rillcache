@@ -68,6 +68,7 @@ make competitors COMPETITOR_JOBS=4
 make compare REDIS_SERVER=/absolute/path/to/redis-server VALKEY_SERVER=/absolute/path/to/valkey-server
 make compare RILLCACHE_PORT=17379 REDIS_PORT=17380 VALKEY_PORT=17381
 make compare SERVER_CPUS=0 CLIENT_CPUS=1-3 BENCH_ORDER='redis valkey rillcache'
+make compare PROFILE=1 PROFILE_IDLE_MS=1000
 ```
 
 CPU pinning is optional and requires `taskset` (util-linux). Select CPUs allowed
@@ -83,7 +84,9 @@ file, with RDB/AOF disabled, no modules loaded and default I/O-thread settings.
 All servers get the same Rust client, keys, bytes, request count, concurrency,
 pipeline, warmup and run count. Wire conformance is checked against each
 competitor before it is timed. The recipe verifies process liveness/readiness and
-cleans up all child processes on success, error or interruption.
+cleans up all child processes on success, error or interruption. Only **one
+comparison server is alive at a time**: its peers' idle polling/cron threads must
+not contend for the measured CPU budget.
 
 Results and logs: `target/benchmarks/comparison/`. Its `environment.txt` records
 exact binary versions, checksums and configuration/client arguments in addition
@@ -98,8 +101,9 @@ clients on the remaining allowed CPUs. The default-threading profiles leave
 scheduling inherited. Order rotates across profiles. Each uses three repetitions,
 100,000 commands at pipeline 1 or 1,000,000 at pipeline 16 to reduce short-sample
 noise. Pinned binaries are built once and their checksums checked after every
-profile; these files and environment logs are downloadable artifacts. These are
-logical-CPU budgets, not dedicated physical cores: SMT siblings and shared-VM
+profile; these files and environment logs are downloadable artifacts. Profiling
+is enabled for these four CI profiles, including a one-second idle sample per
+server. These are logical-CPU budgets, not dedicated physical cores: SMT siblings and shared-VM
 resources can still contend, so they do not replace controlled-hardware tests.
 
 For an already-running disposable server:
@@ -128,7 +132,10 @@ reserved `rillcache:conformance:*` namespace. No AUTH/TLS is supported yet.
   Values are deliberately identical on repeated writes; tests with different
   bytes separately verify whether conditional writes actually preserve/replace.
 - Connections, seed/verification traffic, thread creation and configurable
-  per-client warmup are outside the timer.
+  per-client warmup are outside the timer. Every connection first completes a
+  validated PING, even with `--warmup 0`: a completed TCP handshake alone does not
+  prove the server has accepted it or created its worker. Connections are retained
+  through final accounting and closed outside the timer, before post-run checks.
 - Each client has its own thread and connection. Exactly `--requests` operations
   are divided across clients, including non-divisible counts and partial batches.
 - Every reply is checked byte-for-byte, including GET payloads. Wrong replies,
@@ -160,6 +167,71 @@ pipeline 1..65,536, keyspace 1..1,000,000, value size 0..1 MiB, warmup
 0..1,000,000 per client and runs 1..100. Estimated encoded templates must fit in
 64 MiB and a batch in 16 MiB; reduce sizes if validation rejects a combination.
 
+## Optional Linux server accounting
+
+```sh
+make compare PROFILE=1 PROFILE_IDLE_MS=1000
+# Or supply the PID of an already-running, disposable loopback server:
+./target/release/rillcache-bench --addr 127.0.0.1:6379 --server-pid "$server_pid" --profile-idle-ms 1000 > profiled.json
+```
+
+Profiling is off by default; ordinary embedded/remote benchmarks remain portable.
+`--server-pid` requires Linux procfs, an explicit loopback address and a separate
+process. The caller must supply the PID actually serving that endpoint; the tool
+checks PID/start-time identity and liveness, **not socket ownership**.
+`make compare` supplies its owned child PID. `--profile-idle-ms` is 0..10000 (default 0)
+and a nonzero value requires profiling; the Make override defaults to 1000 ms.
+The idle sample precedes benchmark connections; an otherwise isolated, disposable
+server is essential. Existing keys/background work are not automatically removed.
+
+Schema 1 gains additive fields: top-level `idle_profile` and each result's
+`server_profile`; either is `null` when disabled. Each profile contains:
+
+- Server PID and kernel process-start ticks, identifying the sampled lifetime.
+- Process-wide user/system CPU tick deltas from `/proc/PID/stat`, **excluding
+  child processes** but including exited server threads. Clock frequency comes
+  from the kernel's native-width/endian `AT_CLKTCK` in `/proc/self/auxv`; it is
+  never guessed and no C API, FFI or external collector is used.
+- `observation_seconds` and `cpu_percent_one_logical_cpu`: total observed server
+  CPU seconds / observation wall time × 100, **not** divided by available CPUs.
+  Multithreaded use can exceed 100%. Tick quantization can produce zero on short
+  samples or percentages slightly above an affinity budget; zero is not proof of
+  free CPU. Use longer runs, not smoke timings, for CPU conclusions.
+- `rss_bytes_before/after` and `lifetime_peak_rss_bytes` from `VmRSS`/`VmHWM`.
+  Linux `kB` is converted to bytes with checked multiplication. These are
+  approximate kernel RSS estimates, not PSS, allocator totals, a per-workload
+  peak, continuously sampled memory, or the configured key/value payload budget.
+  Lifetime high water includes startup, seed/warmup and previous workloads.
+- Voluntary/involuntary context-switch deltas summed from
+  `/proc/PID/task/TID/status`, matched by **TID and thread start time**. The leader's
+  status alone omits other threads. Scope is always `matched_thread_lifetimes`;
+  thread/sample/match counts and `thread_set_unchanged` expose endpoint churn or
+  sampling races. Missing/exited threads are not invented as zero. Even unchanged
+  endpoints cannot detect a thread created and destroyed entirely between them.
+
+The collector takes endpoint snapshots outside the request timer, after client
+warmup and before the start gate, then after every client thread is joined but
+**before its socket is dropped**. Thus server client-thread counters remain
+observable. CPU/RSS/context files are sequential, non-atomic reads; the separate
+observation window brackets the timed workload and includes some sampling/gate/
+join overhead and idle server activity. Do not divide CPU usage by a different
+window or treat these coarse counters as function-level profiling. Profiling can
+perturb caches/scheduling even outside the timer; compare matching modes and
+cross-check against an independent collector before attributing small differences.
+
+Missing/denied/malformed accounting, target exit/PID reuse or decreased counters
+fail the invocation without emitting JSON. A task disappearing during sampling
+instead marks partial endpoint coverage. Nothing reads command lines/environment
+or emits raw auxiliary-vector values/addresses; no root privileges are required
+when procfs policy permits access to the server's accounting.
+
+Sources: [stat](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html),
+[status](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html),
+[task directories](https://man7.org/linux/man-pages/man5/proc_pid_task.5.html),
+[auxv format](https://man7.org/linux/man-pages/man5/proc_pid_auxv.5.html),
+[AT_CLKTCK](https://man7.org/linux/man-pages/man3/getauxval.3.html),
+[Linux procfs accounting caveats](https://docs.kernel.org/filesystems/proc.html).
+
 ## How to make a defensible performance claim
 
 1. Use an idle, controlled machine; record CPU model, governor, affinity, kernel,
@@ -178,8 +250,9 @@ pipeline 1..65,536, keyspace 1..1,000,000, value size 0..1 MiB, warmup
    the best number. The Make recipe accepts explicit order and CI rotates it;
    full counterbalancing and frequency/thermal control are still needed before
    publishing a general comparison.
-6. Measure memory/RSS and server CPU separately. These are not yet measured by the
-   Rust tool, and payload accounting is not a substitute for RSS.
+6. Measure memory/RSS and server CPU separately with `PROFILE=1`, cross-check the
+   collector independently, and inspect coverage/quantization. Endpoint RSS and
+   payload accounting are not continuously sampled memory or allocator profiles.
 7. Introduce performance budgets only after stable dedicated-runner baselines.
    Shared GitHub runners are correctness/smoke and trend evidence, not a reliable
    source of hard throughput pass/fail thresholds.

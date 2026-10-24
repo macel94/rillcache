@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use rillcache::protocol::{encode_bulk, encode_request};
 use rillcache::{Config, Server};
 
-const HELP: &str = "Usage: rillcache-bench [OPTIONS]\n\nWithout --addr, starts and shuts down a local embedded rillcache server.\nJSON results go to stdout; progress and errors go to stderr.\n\n  --addr IP:PORT       Benchmark an existing server instead\n  --label TEXT         Identify the server/build in JSON\n  --requests N         Total measured commands per workload (default 100000)\n  --clients N          Parallel connections/threads (default 8, maximum 128)\n  --pipeline N         Commands per batch (default 16)\n  --keyspace N         Deterministically rotated keys (default 1024)\n  --value-size N       Value bytes, including zero (default 64)\n  --warmup N           Untimed commands per client (default 1000)\n  --runs N             Repetitions of each workload (default 3)\n  --workload NAME      ping, set, get, set-nx-existing, set-xx-existing, all (default)\n  --help              Show this help\n\nWrites only rillcache:bench:* keys. Use a disposable server, not production.\nLatency percentiles describe whole pipeline batches, NOT individual requests.";
+#[path = "support/profile.rs"]
+mod profile;
+
+const HELP: &str = "Usage: rillcache-bench [OPTIONS]\n\nWithout --addr, starts and shuts down a local embedded rillcache server.\nJSON results go to stdout; progress and errors go to stderr.\n\n  --addr IP:PORT       Benchmark an existing server instead\n  --label TEXT         Identify the server/build in JSON\n  --server-pid PID     Opt-in Linux accounting for this loopback server process\n  --profile-idle-ms N  Sample idle server before workloads (0..10000, default 0)\n  --requests N         Total measured commands per workload (default 100000)\n  --clients N          Parallel connections/threads (default 8, maximum 128)\n  --pipeline N         Commands per batch (default 16)\n  --keyspace N         Deterministically rotated keys (default 1024)\n  --value-size N       Value bytes, including zero (default 64)\n  --warmup N           Untimed commands per client (default 1000)\n  --runs N             Repetitions of each workload (default 3)\n  --workload NAME      ping, set, get, set-nx-existing, set-xx-existing, all (default)\n  --help              Show this help\n\nWrites only rillcache:bench:* keys. Use a disposable server, not production.\nLatency percentiles describe whole pipeline batches, NOT individual requests.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Workload {
@@ -48,6 +51,8 @@ impl Workload {
 struct Options {
     addr: Option<SocketAddr>,
     label: Option<String>,
+    server_pid: Option<u32>,
+    profile_idle_ms: usize,
     requests: usize,
     clients: usize,
     pipeline: usize,
@@ -63,6 +68,8 @@ impl Default for Options {
         Self {
             addr: None,
             label: None,
+            server_pid: None,
+            profile_idle_ms: 0,
             requests: 100_000,
             clients: 8,
             pipeline: 16,
@@ -85,6 +92,8 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Option<Options
         if ![
             "--addr",
             "--label",
+            "--server-pid",
+            "--profile-idle-ms",
             "--requests",
             "--clients",
             "--pipeline",
@@ -110,6 +119,15 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Option<Options
                 )
             }
             "--label" => options.label = Some(value),
+            "--server-pid" => {
+                options.server_pid = Some(
+                    value
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|&pid| pid > 0)
+                        .ok_or("--server-pid requires a positive 32-bit PID")?,
+                );
+            }
             "--workload" => options.workloads = match value.as_str() {
                 "ping" => vec![Workload::Ping],
                 "set" => vec![Workload::Set],
@@ -133,6 +151,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Option<Options
                     "--keyspace" => options.keyspace = number,
                     "--value-size" => options.value_size = number,
                     "--warmup" => options.warmup = number,
+                    "--profile-idle-ms" => options.profile_idle_ms = number,
                     "--runs" => options.runs = number,
                     _ => unreachable!(),
                 }
@@ -155,6 +174,22 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Option<Options
     }
     if options.value_size > 1024 * 1024 || options.warmup > 1_000_000 {
         return Err("--value-size must be <= 1048576 and --warmup <= 1000000".into());
+    }
+    if options.profile_idle_ms > 10_000 {
+        return Err("--profile-idle-ms must be <= 10000".into());
+    }
+    if options.profile_idle_ms > 0 && options.server_pid.is_none() {
+        return Err("--profile-idle-ms requires --server-pid".into());
+    }
+    if let Some(pid) = options.server_pid {
+        if !cfg!(target_os = "linux") {
+            return Err("--server-pid requires Linux procfs".into());
+        }
+        if pid == std::process::id() || !options.addr.is_some_and(|addr| addr.ip().is_loopback()) {
+            return Err(
+                "--server-pid requires --addr on loopback and a separate server process".into(),
+            );
+        }
     }
     let template_bytes = options.keyspace.checked_mul(options.value_size + 128);
     let batch_bytes = options.pipeline.checked_mul(options.value_size + 128);
@@ -289,6 +324,7 @@ struct Record {
     p95_us: f64,
     p99_us: f64,
     max_us: f64,
+    profile: Option<profile::Measurement>,
 }
 
 fn assigned(total: usize, clients: usize, client: usize) -> usize {
@@ -304,6 +340,7 @@ fn run_one(
     workload: Workload,
     run: usize,
     options: &Options,
+    profiler: Option<&profile::Profiler>,
 ) -> io::Result<Record> {
     let commands = Arc::new(Commands::new(workload, options));
     if !matches!(workload, Workload::Ping | Workload::Set) {
@@ -313,15 +350,18 @@ fn run_one(
         connection.untimed(&seed, options.keyspace, options.pipeline, 0)?;
         connection.untimed(&verification, options.keyspace, options.pipeline, 0)?;
     }
-    // Connect and validate warmup before starting any timed worker.
+    // A completed TCP handshake is not proof that the server accepted/spawned
+    // its worker. Validate a PING even with --warmup 0, outside all measurement.
+    let ping = Commands::new(Workload::Ping, options);
     let mut prepared = Vec::new();
     for client in 0..options.clients {
         let mut connection = Connection::connect(addr)?;
+        connection.exchange(&ping, 0, 1)?;
         connection.untimed(&commands, options.warmup, options.pipeline, client)?;
         prepared.push(connection);
     }
     let mut starts: Vec<mpsc::Sender<()>> = Vec::new();
-    let mut workers: Vec<thread::JoinHandle<io::Result<Samples>>> = Vec::new();
+    let mut workers: Vec<thread::JoinHandle<io::Result<(Samples, Connection)>>> = Vec::new();
     for (client, mut connection) in prepared.into_iter().enumerate() {
         let commands = Arc::clone(&commands);
         let requests = assigned(options.requests, options.clients, client);
@@ -347,7 +387,9 @@ fn run_one(
                         .push(start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
                     samples.operations += count;
                 }
-                Ok(samples)
+                // Retain the socket until the controller's final snapshot, so
+                // server client-thread counters do not disappear before sampling.
+                Ok((samples, connection))
             });
         match worker {
             Ok(worker) => {
@@ -363,6 +405,16 @@ fn run_one(
             }
         }
     }
+    let before = match profiler.map(profile::Profiler::snapshot).transpose() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            drop(starts);
+            for worker in workers {
+                let _ = worker.join();
+            }
+            return Err(error);
+        }
+    };
     let started = Instant::now();
     let mut failure = None;
     for sender in starts {
@@ -372,12 +424,14 @@ fn run_one(
     }
     let mut operations = 0;
     let mut samples = Vec::new();
+    let mut connections = Vec::new();
     // Join EVERY worker even when one fails; errors must not leave background load.
     for worker in workers {
         match worker.join() {
-            Ok(Ok(mut result)) => {
+            Ok(Ok((mut result, connection))) => {
                 operations += result.operations;
                 samples.append(&mut result.batch_ns);
+                connections.push(connection);
             }
             Ok(Err(error)) => failure = Some(error),
             Err(_) => failure = Some(io::Error::other("benchmark worker panicked")),
@@ -387,11 +441,16 @@ fn run_one(
     if let Some(error) = failure {
         return Err(error);
     }
-    if operations != options.requests || samples.is_empty() {
+    if operations != options.requests || samples.is_empty() || elapsed_seconds <= 0.0 {
         return Err(io::Error::other(
             "benchmark did not complete the exact requested operation count",
         ));
     }
+    let profile = match (profiler, before) {
+        (Some(profiler), Some(before)) => Some(profiler.measure(before, profiler.snapshot()?)?),
+        _ => None,
+    };
+    drop(connections);
     if matches!(workload, Workload::SetNxExisting | Workload::SetXxExisting) {
         let verification = Commands::new(Workload::Get, options);
         Connection::connect(addr)?.untimed(&verification, options.keyspace, options.pipeline, 0)?;
@@ -406,6 +465,7 @@ fn run_one(
         p95_us: percentile(&samples, 95),
         p99_us: percentile(&samples, 99),
         max_us: *samples.last().expect("nonempty samples") as f64 / 1000.0,
+        profile,
     })
 }
 
@@ -426,7 +486,16 @@ fn quoted(value: &str) -> String {
     output
 }
 
-fn report(addr: SocketAddr, options: &Options, records: &[Record]) -> String {
+fn profile_json(value: Option<&profile::Measurement>) -> String {
+    value.map_or_else(|| "null".into(), profile::Measurement::json)
+}
+
+fn report(
+    addr: SocketAddr,
+    options: &Options,
+    records: &[Record],
+    idle: Option<&profile::Measurement>,
+) -> String {
     let mode = if options.addr.is_some() {
         "external"
     } else {
@@ -441,20 +510,21 @@ fn report(addr: SocketAddr, options: &Options, records: &[Record]) -> String {
             "rillcache"
         });
     let mut output = format!(
-        "{{\"schema_version\":1,\"tool_version\":{},\"label\":{},\"mode\":{},\"address\":{},\"os\":{},\"arch\":{},\"logical_cpus\":{},\"results\":[",
+        "{{\"schema_version\":1,\"tool_version\":{},\"label\":{},\"mode\":{},\"address\":{},\"os\":{},\"arch\":{},\"logical_cpus\":{},\"idle_profile\":{},\"results\":[",
         quoted(env!("CARGO_PKG_VERSION")),
         quoted(label),
         quoted(mode),
         quoted(&addr.to_string()),
         quoted(std::env::consts::OS),
         quoted(std::env::consts::ARCH),
-        thread::available_parallelism().map_or(1, usize::from)
+        thread::available_parallelism().map_or(1, usize::from),
+        profile_json(idle)
     );
     for (index, record) in records.iter().enumerate() {
         if index != 0 {
             output.push(',');
         }
-        write!(output, "{{\"workload\":{},\"run\":{},\"requests\":{},\"clients\":{},\"pipeline\":{},\"keyspace\":{},\"value_size\":{},\"warmup_per_client\":{},\"batches\":{},\"elapsed_seconds\":{:.9},\"ops_per_second\":{:.2},\"batch_p50_us\":{:.3},\"batch_p95_us\":{:.3},\"batch_p99_us\":{:.3},\"batch_max_us\":{:.3}}}", quoted(record.workload.name()), record.run, options.requests, options.clients, options.pipeline, options.keyspace, options.value_size, options.warmup, record.batches, record.elapsed_seconds, options.requests as f64 / record.elapsed_seconds, record.p50_us, record.p95_us, record.p99_us, record.max_us).expect("String write");
+        write!(output, "{{\"workload\":{},\"run\":{},\"requests\":{},\"clients\":{},\"pipeline\":{},\"keyspace\":{},\"value_size\":{},\"warmup_per_client\":{},\"batches\":{},\"elapsed_seconds\":{:.9},\"ops_per_second\":{:.2},\"batch_p50_us\":{:.3},\"batch_p95_us\":{:.3},\"batch_p99_us\":{:.3},\"batch_max_us\":{:.3},\"server_profile\":{}}}", quoted(record.workload.name()), record.run, options.requests, options.clients, options.pipeline, options.keyspace, options.value_size, options.warmup, record.batches, record.elapsed_seconds, options.requests as f64 / record.elapsed_seconds, record.p50_us, record.p95_us, record.p99_us, record.max_us, profile_json(record.profile.as_ref())).expect("String write");
     }
     output.push_str("]}");
     output
@@ -475,10 +545,19 @@ fn benchmark(options: &Options) -> io::Result<String> {
     let addr = options
         .addr
         .unwrap_or_else(|| local.as_ref().expect("embedded server").local_addr());
+    let profiler = options.server_pid.map(profile::Profiler::new).transpose()?;
+    let idle = match profiler.as_ref() {
+        Some(profiler) if options.profile_idle_ms > 0 => {
+            let before = profiler.snapshot()?;
+            thread::sleep(Duration::from_millis(options.profile_idle_ms as u64));
+            Some(profiler.measure(before, profiler.snapshot()?)?)
+        }
+        _ => None,
+    };
     let mut records = Vec::new();
     for run in 1..=options.runs {
         for &workload in &options.workloads {
-            let record = run_one(addr, workload, run, options)?;
+            let record = run_one(addr, workload, run, options, profiler.as_ref())?;
             eprintln!(
                 "{} run {}: {:.0} ops/s, batch p50 {:.1} us, p99 {:.1} us",
                 workload.name(),
@@ -493,7 +572,7 @@ fn benchmark(options: &Options) -> io::Result<String> {
     if let Some(local) = local {
         local.shutdown()?;
     }
-    Ok(report(addr, options, &records))
+    Ok(report(addr, options, &records, idle.as_ref()))
 }
 
 fn main() -> ExitCode {
@@ -542,6 +621,13 @@ mod tests {
             vec!["--requests", "99999999999999999999999999999"],
             vec!["--keyspace", "1000000", "--value-size", "1048576"],
             vec!["--pipeline", "65536", "--value-size", "1048576"],
+            vec!["--server-pid", "0"],
+            vec!["--server-pid", "4294967296"],
+            vec!["--server-pid", "-1"],
+            vec!["--server-pid", "42"],
+            vec!["--server-pid", "42", "--addr", "192.0.2.1:6379"],
+            vec!["--profile-idle-ms", "1"],
+            vec!["--profile-idle-ms", "10001"],
         ] {
             assert!(
                 options(arguments.iter().map(|s| (*s).to_string())).is_err(),
@@ -557,6 +643,67 @@ mod tests {
             .unwrap()
             .is_some()
         );
+    }
+
+    #[test]
+    fn profile_options_reject_the_client_pid_and_accept_separate_loopback_targets() {
+        let own_pid = std::process::id().to_string();
+        assert!(
+            options(
+                ["--server-pid", &own_pid, "--addr", "127.0.0.1:6379"]
+                    .into_iter()
+                    .map(str::to_owned)
+            )
+            .is_err()
+        );
+        let result = options(
+            [
+                "--server-pid",
+                "4294967295",
+                "--addr",
+                "[::1]:6379",
+                "--profile-idle-ms",
+                "10000",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        assert_eq!(result.is_ok(), cfg!(target_os = "linux"));
+    }
+
+    #[test]
+    fn zero_warmup_still_validates_an_untimed_ping_before_the_workload() {
+        let options = Options {
+            requests: 1,
+            clients: 1,
+            warmup: 0,
+            keyspace: 1,
+            ..Options::default()
+        };
+        let ping = Commands::new(Workload::Ping, &options).encoded.remove(0);
+        let set = Commands::new(Workload::Set, &options).encoded.remove(0);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            for (expected, reply) in [
+                (ping, b"+PONG\r\n".as_slice()),
+                (set, b"+OK\r\n".as_slice()),
+            ] {
+                let mut actual = vec![0; expected.len()];
+                stream.read_exact(&mut actual).unwrap();
+                assert_eq!(actual, expected);
+                stream.write_all(reply).unwrap();
+            }
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        });
+        let record = run_one(addr, Workload::Set, 1, &options, None).unwrap();
+        assert_eq!(record.batches, 1);
+        assert!(record.profile.is_none());
+        server.join().unwrap();
     }
 
     #[test]

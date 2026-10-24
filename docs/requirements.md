@@ -33,6 +33,7 @@ reason to couple all future commands into a single large story.
 | S05 | As a performance investigator, I can reproduce validated workloads against all three servers so that optimization starts with evidence. | S | R40–R43; benchmark tests, smoke and comparison targets |
 | S06 | As a cache user, I can create a value only when absent or replace it only when present so that concurrent clients do not race a separate existence check. | S | R25–R29; engine, pipeline, racing-client and current-reference tests |
 | S07 | As a performance investigator, I can compare equal CPU budgets using unchanged binaries so that parallelism and build churn do not masquerade as implementation improvements. | S | R44–R46; recorded affinities, rotated order and cross-profile digest checks |
+| S08 | As a performance investigator, I can sample server CPU, RSS, idle behavior and thread scheduling in isolated comparisons so that I can choose an I/O change from evidence rather than blaming the key-map lock. | S | R47–R51; procfs fixtures, standalone CLI tests and profiled comparisons |
 
 ## EARS acceptance requirements
 
@@ -128,6 +129,28 @@ reason to couple all future commands into a single large story.
   previous result files before starting; if the run fails, it shall not leave
   another server's stale JSON presented as that run's evidence.
 
+- **R47 (optional feature):** Where Linux server profiling is explicitly enabled
+  for a separate loopback server PID, the tool shall report process user/system
+  CPU tick deltas, the kernel-provided clock frequency, observation duration,
+  CPU percentage relative to one logical CPU, RSS endpoint samples and lifetime
+  peak RSS, without FFI, external commands or additional Rust dependencies.
+- **R48 (event-driven):** When context switches are sampled, the tool shall match
+  per-thread counters by TID and thread start time, report their deltas and coverage,
+  and label endpoint thread-set changes or sampling races. It shall not call the
+  leader's counters process totals or imply recovery of exited-thread counters.
+- **R49 (event-driven):** When a timed workload starts, every client shall have
+  completed a validated untimed PING and its configured warmup. Profiling reads
+  shall occur outside the request timer, with sockets retained through the final
+  snapshot and disconnected before post-run data verification.
+- **R50 (unwanted behavior):** If the profile target exits, its PID/start-time
+  identity changes, counters decrease, or required accounting is unavailable or
+  malformed, then the invocation shall fail without emitting result JSON.
+  Disappearing nonleader tasks shall instead be explicitly marked as partial
+  endpoint coverage; stable endpoints cannot prove absence of intermediate churn.
+- **R51 (state-driven):** While one comparison server is measured, the harness
+  shall not leave other comparison servers running. Optional idle sampling shall
+  precede benchmark connections and report its actual observation duration.
+
 ## Compatibility boundary (v0.1)
 
 Supported: RESP2 nonempty arrays of non-null bulk strings, case-insensitive ASCII
@@ -158,8 +181,8 @@ Not implemented or implied by the completed increments:
 2. INCR/DECR with Redis integer parsing and overflow behavior.
 3. Common client handshake metadata, selected only after client compatibility tests.
 4. Prioritize the measured single-core, low-pipeline and tail-latency weakness:
-   measure server CPU/RSS/context switches with PING as a no-key-map control,
-   then evaluate bounded I/O scheduling before speculative sharding. Include idle
+   use S08's server CPU/RSS/context-switch measurements with PING as a no-key-map
+   control to evaluate bounded I/O scheduling before speculative sharding. Include idle
    CPU, backpressure, shutdown and multi-key atomicity in acceptance criteria;
    unsafe code and external dependencies remain forbidden.
 5. Controlled-hardware performance budgets and repeated current-release comparisons;

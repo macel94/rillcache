@@ -44,6 +44,79 @@ fn invalid_cli_arguments_fail_with_usage_status() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn standalone_profiling_validates_all_workloads_and_fails_without_a_target() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Child, Stdio};
+
+    struct ServerProcess(Child);
+    impl Drop for ServerProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut server = ServerProcess(
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--bind", "127.0.0.1:0"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut ready = String::new();
+    BufReader::new(server.0.stderr.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert!(ready.contains(" listening on "), "{ready}");
+    let addr = ready.split_whitespace().last().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rillcache-bench"))
+        .args([
+            "--addr",
+            addr,
+            "--server-pid",
+            &server.0.id().to_string(),
+            "--profile-idle-ms",
+            "20",
+            "--requests",
+            "19",
+            "--clients",
+            "4",
+            "--pipeline",
+            "3",
+            "--keyspace",
+            "7",
+            "--value-size",
+            "0",
+            "--warmup",
+            "0",
+            "--runs",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(json.matches("\"requests\":19,").count(), 5);
+    assert_eq!(json.matches("\"server_profile\":{").count(), 5);
+    assert_eq!(json.matches("\"source\":\"linux-procfs\"").count(), 6);
+    assert!(json.contains("\"idle_profile\":{\"source\":\"linux-procfs\""));
+    assert!(!json.contains("NaN"));
+    assert!(!json.contains("inf"));
+
+    let failure = Command::new(env!("CARGO_BIN_EXE_rillcache-bench"))
+        .args(["--addr", addr, "--server-pid", "4294967295"])
+        .output()
+        .unwrap();
+    assert_eq!(failure.status.code(), Some(1));
+    assert!(failure.stdout.is_empty());
+    assert!(!failure.stderr.is_empty());
+}
+
 #[test]
 fn bind_failure_is_reported_with_a_nonzero_status() {
     let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
