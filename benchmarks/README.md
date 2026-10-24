@@ -1,12 +1,12 @@
 # Current benchmark performance
 
-Generated: 2026-10-24T19:53:18Z · [Benchmark run #4](https://github.com/macel94/rillcache/actions/runs/40126874559) · [Tested source `2a4b590`](https://github.com/macel94/rillcache/commit/2a4b590f8b8dcd23a39090b3b1ce6e2ed0582926)
+Generated: 2026-10-24T19:59:31Z · [Benchmark run #4](https://github.com/macel94/rillcache/actions/runs/40126874559) · [Tested source `2a4b590`](https://github.com/macel94/rillcache/commit/2a4b590f8b8dcd23a39090b3b1ce6e2ed0582926)
 
 **Benchmark job: success. Data: validated. Luna review: unavailable: configure the COPILOT\_GITHUB\_TOKEN repository secret (fine-grained personal token, Copilot Requests permission).**
 
-Benchmark attempt: 1; review attempt: 1. Requested model: `gpt-6-luna` via **GitHub Copilot**.
+Benchmark attempt: 1; review attempt: 2. Requested model: `gpt-6-luna` via **GitHub Copilot**.
 
-[This report's permanent copy](https://github.com/macel94/rillcache/blob/main/benchmarks/reports/40126874559-1.md) · [Report history](https://github.com/macel94/rillcache/tree/main/benchmarks/reports) · [Methodology](https://github.com/macel94/rillcache/blob/main/docs/benchmarks.md)
+[This report's permanent copy](https://github.com/macel94/rillcache/blob/main/benchmarks/reports/40126874559-2.md) · [Report history](https://github.com/macel94/rillcache/tree/main/benchmarks/reports) · [Methodology](https://github.com/macel94/rillcache/blob/main/docs/benchmarks.md)
 
 ## AI review
 
