@@ -20,9 +20,63 @@ This is a collaboration between a human and AI:
 ## Constraints
 
 - **Language:** Rust
-- **Dependencies:** None beyond the Rust standard library and runtime
+- **Dependencies:** None beyond the Rust standard library and runtime, including tests and benchmarks
+- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. Safe standard-library APIs are allowed; their internals are outside this policy's scope.
 - **Compatibility target:** Redis protocol and behavior, developed incrementally
+- **Performance:** Aim to outperform current Redis/Valkey implementations, demonstrated by reproducible measurements—not assumed from the language choice.
 
-## Status
+## First increment
 
-Early-stage project. The goals above describe the intended direction, not a claim of current Redis compatibility or implemented features.
+Implemented: bounded RESP2 TCP server, binary-safe `PING`, `ECHO`, plain `SET`,
+`GET`, `DEL`, `EXISTS`, and `QUIT`; ordered pipelines and fragmented requests;
+concurrent clients, payload/connection limits and socket inactivity timeouts.
+
+This is **not** a drop-in Redis replacement or a production service. No TTL/SET
+options, RESP3, authentication, TLS, persistence or other data types yet. It binds
+to loopback by default. See [INVEST stories and EARS requirements](docs/requirements.md)
+for acceptance criteria, exact compatibility boundaries and the next small stories.
+
+## Quick development loop
+
+Install [Rust via rustup](https://rust-lang.org/tools/install/) and GNU Make. The
+repository pins Rust, rustfmt and Clippy in `rust-toolchain.toml`. Once that
+toolchain is installed, all application checks/builds run offline with no crates
+to download. No API keys, `.env` or services are required.
+
+```sh
+make test                 # fastest behavior feedback
+make check                # formatting, all-target Clippy, tests and policy checks
+make ci                   # same checks + release build + validated benchmark smoke
+make run                  # server on 127.0.0.1:6379
+cargo run -- --help        # bind address, payload/client limits and idle timeout
+```
+
+A Redis CLI in RESP2 mode can exercise the supported commands. Some modern
+clients issue unsupported discovery commands; compatibility is not yet claimed
+for arbitrary client libraries.
+
+## Measure from day one
+
+```sh
+make bench                # parser/store microbenchmarks + repeated local TCP tests
+make compare              # build pinned competitors once, compare all three servers
+make compare BENCH_ARGS='--requests 10000 --clients 4 --pipeline 1 --runs 3'
+```
+
+The benchmark client is also safe, dependency-free Rust. It validates replies,
+seeds GET data, excludes setup/warmup, and writes JSON with throughput and
+**batch** latency percentiles. `make compare` uses native standalone processes
+for all three servers. Competitor C build tools are optional benchmark tooling,
+never Rillcache dependencies. See [benchmark methodology](docs/benchmarks.md).
+
+## GitHub feedback and delivery
+
+[CI](.github/workflows/ci.yml) runs the same `make ci` on PRs and main pushes,
+cancels superseded runs, and publishes benchmark evidence. Successful main builds
+also provide a Linux binary archive and SHA-256 checksum as Actions artifacts for
+immediate testing. There is no automatic public deployment of this experimental,
+unauthenticated server.
+
+[Comparative benchmarks](.github/workflows/benchmarks.yml) run manually or weekly,
+separately from the fast feedback path. Timing on shared runners is evidence, not
+a flaky performance gate. No claim of beating Redis or Valkey is made yet.

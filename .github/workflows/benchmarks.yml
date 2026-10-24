@@ -1,0 +1,44 @@
+name: Comparative benchmarks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '21 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the repository-pinned minimal Rust toolchain
+        run: rustup show active-toolchain
+      - name: Verify behavior before measuring it
+        run: make check
+      - name: Repeated native-process comparisons, unpipelined and pipelined
+        run: |
+          make compare BENCH_ARGS='--requests 100000 --clients 8 --pipeline 1 --keyspace 1024 --value-size 64 --warmup 1000 --runs 3'
+          mv target/benchmarks/comparison target/benchmarks/pipeline-1
+          make compare BENCH_ARGS='--requests 100000 --clients 8 --pipeline 16 --keyspace 1024 --value-size 64 --warmup 1000 --runs 3'
+          mv target/benchmarks/comparison target/benchmarks/pipeline-16
+      - name: Preserve raw evidence, exact versions and environment
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: comparisons-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/benchmarks/
+          if-no-files-found: warn
+          retention-days: 30

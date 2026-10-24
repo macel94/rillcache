@@ -1,0 +1,23 @@
+[package]
+name = "rillcache"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "A safe, standard-library-only Redis-compatible server experiment"
+repository = "https://github.com/macel94/rillcache"
+publish = false
+default-run = "rillcache"
+build = false
+
+# No dependencies, including development and build dependencies.
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[[bench]]
+name = "core"
+harness = false
+
+[profile.release]
+# Keep overflow checks in optimized builds too. Measure before tuning further.
+overflow-checks = true

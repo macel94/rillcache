@@ -1,0 +1,94 @@
+Source revision: 9c49e2b5beaddb3fa5abb07aea3c4f3182065e90
+
+Working-tree status (empty means clean):
+ M README.md
+?? .github/
+?? .gitignore
+?? CONTRIBUTING.md
+?? Cargo.lock
+?? Cargo.toml
+?? Makefile
+?? benches/
+?? benchmarks/
+?? docs/
+?? rust-toolchain.toml
+?? src/
+?? tests/
+
+Compiler:
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+binary: rustc
+commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
+commit-date: 2026-10-13
+host: x86_64-unknown-linux-gnu
+release: 1.99.1
+LLVM version: 23.1.1
+
+Kernel and CPU:
+Linux vmi3474918 6.12.113+deb13-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           48 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  6
+On-line CPU(s) list:                     0-5
+Vendor ID:                               AuthenticAMD
+Model name:                              AMD EPYC Processor (with IBPB)
+CPU family:                              23
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      6
+Socket(s):                               1
+Stepping:                                2
+BogoMIPS:                                5599.99
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl xtopology cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext ssbd ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 rdseed adx smap clflushopt sha_ni xsaveopt xsavec xgetbv1 arat
+Hypervisor vendor:                       KVM
+Virtualization type:                     full
+L1d cache:                               192 KiB (6 instances)
+L1i cache:                               384 KiB (6 instances)
+L2 cache:                                3 MiB (6 instances)
+L3 cache:                                8 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-5
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Mitigation; untrained return thunk; SMT disabled
+Vulnerability Spec rstack overflow:      Vulnerable: Safe RET, no microcode
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Retpolines; IBPB conditional; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+
+Competitor versions:
+Redis server v=8.10.2 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=f8f9f7656e4c60bc
+Valkey server v=9.1.2 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=ba576493ec63e11
+
+Default source pins (custom binary overrides may differ):
+Redis 8.10.2 sha256:541a374b753a8405683dd88560465791acc98cf09445ef10ec1bd286904273e8
+Valkey 9.1.2 sha256:19c23908e7d57e8d91ef85b41f5646307582f10f4f0fb999bbf89ed24ec9c983
+
+C compiler:
+cc (Debian 14.2.0-19) 14.2.0
+Copyright (C) 2024 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+
+Binary checksums:
+32d1c5b8493e1dd37a7b1a7c502323e9b647563079bde5ca772b67e3905a9da3  target/release/rillcache
+2ef10419a89d46af47fec0ce97cdb16e048ff3ccd272fa3046983fc5b9bba9bb  /root/sources/rillcache/target/competitors/redis-8.10.2/src/redis-server
+8b29640d26558924f9089986fdc3ef073b5ba7fd92292395adc096557a7839f0  /root/sources/rillcache/target/competitors/valkey-9.1.2/src/valkey-server
+
+Client arguments: --requests 10000 --clients 8 --pipeline 16 --keyspace 1024 --value-size 64 --warmup 100 --runs 3
+
+Competitor runtime: loopback TCP; no RDB/AOF; default I/O threads; no configuration file or modules loaded.
+Competitor builds: upstream default compiler optimization and allocator; no TLS.
