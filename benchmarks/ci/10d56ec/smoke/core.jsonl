@@ -1,0 +1,6 @@
+{"benchmark":"resp2_parse_set_64b","iterations":50000,"samples":7,"median_ns_per_op":42.22}
+{"benchmark":"store_get_64b","iterations":50000,"samples":7,"median_ns_per_op":66.69}
+{"benchmark":"store_set_64b","iterations":50000,"samples":7,"median_ns_per_op":79.53}
+{"benchmark":"store_set_nx_existing_64b","iterations":50000,"samples":7,"median_ns_per_op":41.06}
+{"benchmark":"store_set_xx_existing_64b","iterations":50000,"samples":7,"median_ns_per_op":81.39}
+{"benchmark":"store_set_xx_missing_64b","iterations":50000,"samples":7,"median_ns_per_op":31.29}

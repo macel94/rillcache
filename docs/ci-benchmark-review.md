@@ -148,12 +148,101 @@ backpressure, shutdown and multi-key atomicity, and measure idle CPU plus tail
 latency rather than maximizing a single throughput number. Unsafe code, FFI or
 external Rust dependencies are not an escape hatch.
 
+## CPU/RSS/scheduling investigation: 10d56ec
+
+- [Fast CI 40114110305](https://github.com/macel94/rillcache/actions/runs/40114110305):
+  successful; **59 fast tests**, five smoke workloads and six core benchmarks.
+  The whole verification job took about 18 seconds.
+- [Comparison 40114117073](https://github.com/macel94/rillcache/actions/runs/40114117073):
+  successful; **180 active records plus 12 idle samples**, eight reference
+  conformance invocations, unchanged binary digests across four profiles and
+  exactly one link per reference. The comparison job took about 9 minutes 17 seconds.
+- All JSON was independently validated, including exact batch counts, tick/time/
+  CPU-percentage consistency, PID/start-time identity, RSS and observation windows.
+  Every active sample retained unchanged endpoint thread sets: nine Rillcache,
+  six Redis or seven Valkey threads, with per-thread context counters matched by
+  TID/start time. This does not prove absence of intermediate, unobserved churn.
+- The delivered archive was checksummed and its two executables independently
+  exercised, including all five profiled workloads and binary-safe NX/XX/error/
+  QUIT pipelines. The **server executable is bit-for-bit identical to b654fa6**
+  (SHA-256 `61bd3f2f84977a6a9a1b8f6ccd9b6deeb88867289450a7be675ea7cb8ec3a582`).
+  This increment changes measurement, not the server implementation.
+- [Unmodified evidence](../benchmarks/ci/10d56ec/README.md) is preserved in Git.
+
+Two more harness issues were corrected: with zero warmup, a TCP handshake did not
+prove server-side accept/worker setup had completed; every connection now first
+validates an untimed PING. Also, previously all three candidates remained alive
+while only one was measured. Their idle polling/cron threads could consume the
+shared CPU budget. Candidates are now started, measured and reaped individually.
+These changes and optional profiling make this a new measurement cohort, not a
+clean before/after server optimization experiment.
+
+### Equal-one-logical-CPU SET
+
+Medians of three runs; eight clients, 64-byte values and other parameters as in
+the corrected comparison. CPU is observed process user+system seconds divided by
+measured commands, not client CPU or function-level profiling. Voluntary context
+switches cover matched thread lifetimes over the separate observation window.
+
+| Pipeline | Server | Commands/s | Batch p99, µs | CPU µs/command | Voluntary switches/command |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | Rillcache | 48,952 | 326.5 | 20.4 | 1.0078 |
+| 1 | Redis 8.10.2 | 58,672 | 188.1 | 17.0 | 0.0001 |
+| 1 | Valkey 9.1.2 | 57,526 | 192.2 | 17.4 | 0.0001 |
+| 16 | Rillcache | 673,558 | 381.8 | 1.48 | 0.0632 |
+| 16 | Redis 8.10.2 | 597,827 | 305.6 | 1.67 | <0.0001 |
+| 16 | Valkey 9.1.2 | 538,714 | 341.4 | 1.85 | <0.0001 |
+
+This reproduces the important tradeoff: weaker unpipelined throughput/tails;
+higher pipelined SET throughput, but worse batch p99. Different shared-VM runs
+must not turn these figures into a claimed runtime improvement or regression.
+
+### What the new counters establish
+
+- **Scheduling/I/O deserves priority over speculative sharding.** At pipeline 1,
+  even map-free PING consumes about **19.8 µs of Rillcache CPU/command**, versus
+  16.0 for Redis and 16.4 for Valkey. About **94.5% of Rillcache's observed PING
+  CPU time is system time**; it makes about **1.0075 voluntary switches/command**.
+  SET/GET show the same approximately one-switch-per-command pattern. The map
+  lock cannot be the sole explanation; the blocking I/O/scheduling path is a
+  strong candidate. These counters do not identify a precise kernel hot function
+  or establish that every extra switch causes the latency difference.
+- **Batching amortizes that pattern.** Pipeline-16 SET has about 0.0632 voluntary
+  switches/command, approximately one per 16-command batch, and 1.48 CPU µs/command.
+  Its better throughput does not erase the worse tail latency in the table.
+- **Unrestricted throughput uses more CPU.** Default-threading pipeline-1 SET
+  reaches about 120,355 commands/s using about **188% of one logical CPU**, versus
+  about 58,174 at 100% for Redis. This is not an equal-per-core victory.
+- **Idle wakeups are measurable.** Across four profiles Rillcache records roughly
+  **937–938 voluntary switches/second with no clients**, versus about 10 for each
+  reference. Its one-second samples record one CPU tick (about 1% of one CPU);
+  references record zero ticks. Tick quantization means neither zero-cost
+  references nor a precise idle-CPU ratio can be inferred from these short windows.
+- **RSS is now visible, not equivalent functionality.** Single-core SET endpoint
+  RSS is about 2.8–2.9 MiB for Rillcache, versus about 12.8–14.8 MiB for Redis and
+  12.7–12.8 MiB for Valkey. These are approximate process endpoint readings with
+  different allocators/features, not per-workload peaks, allocator accounting or
+  a general memory-efficiency claim. VmHWM includes startup and previous work.
+
+Local checks also covered five repeated socket/CLI suites, release tests,
+packaging, invalid configuration, stale-result invalidation and success/failure
+process cleanup. A local `pidstat -u -r -w -t` smoke cross-check confirmed the
+counter scopes and approximate units. A longer local probe exceeded its time
+bound on a heavily loaded six-CPU host and was **not** used as performance evidence.
+
+The next runtime experiment should be a separately specified, bounded safe-std
+I/O/scheduling change, tested against this cohort's PING/SET/GET controls. Include
+no-client and many-idle-client CPU, fairness under large pipelines, backpressure,
+all resource limits, joined shutdown, binary safety and multi-key atomicity. Do
+not trade these properties for a busy-spin throughput score or bypass the
+no-unsafe/no-dependencies policy.
+
 ## Reading subsequent runs
 
 Check the source SHA, compiler, CPU model, affinity, client/server order and
 reference binary digests before comparing values. Compare matching workloads,
-pipeline lengths and CPU-budget profiles; request counts differ intentionally
-between pipeline 1 and 16. Read all repetitions and batch-latency spread, not
-just the fastest rate. A controlled dedicated-host baseline, independent client
-cross-check, CPU/RSS measurement and realistic mixed/miss workloads remain future
-work before a general performance claim.
+pipeline lengths, profiling modes and CPU-budget profiles; request counts differ
+intentionally between pipeline 1 and 16. Read all repetitions, batch-latency spread,
+CPU windows and thread coverage, not just the fastest rate. A controlled dedicated-
+host baseline, independent client cross-check, finer-grained CPU/memory attribution
+and realistic mixed/miss workloads remain future work before a general claim.
