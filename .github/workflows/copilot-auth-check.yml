@@ -1,0 +1,50 @@
+name: Copilot workflow authentication check
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      copilot-requests: write
+    steps:
+      - name: Install the verified Copilot CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/copilot"
+          curl --proto '=https' --tlsv1.2 --fail --location --show-error --retry 2 --connect-timeout 10 --max-time 120 \
+            https://github.com/github/copilot-cli/releases/download/v1.0.103/copilot-linux-x64.tar.gz \
+            -o "$RUNNER_TEMP/copilot/archive.tar.gz"
+          printf '%s  %s\n' 9aeb4430e9ac9523546db07b227c7aba179a4710a55f9ac29ad143b0f9e1b325 "$RUNNER_TEMP/copilot/archive.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/copilot/archive.tar.gz" -C "$RUNNER_TEMP/copilot"
+      - name: Verify real inference with the workflow token and an available model
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/copilot-check"
+          cd "$RUNNER_TEMP/copilot-check"
+          timeout --signal=TERM --kill-after=10s 120s "$RUNNER_TEMP/copilot/copilot" \
+            --model auto --prompt 'Reply only with: Benchmark AI review authentication is working. Do not use tools.' \
+            --silent --stream off --output-format text --available-tools= \
+            --deny-tool shell --deny-tool write --deny-tool url --disallow-temp-dir \
+            --disable-builtin-mcps --no-custom-instructions --no-ask-user --no-auto-update \
+            --no-color --disable-client-telemetry --sync-session=off --max-ai-credits 30 \
+            --max-autopilot-continues 0 --secret-env-vars GITHUB_TOKEN \
+            --usage-output-file "$RUNNER_TEMP/copilot-check/usage.json" \
+            > "$RUNNER_TEMP/copilot-check/response.txt"
+          test -s "$RUNNER_TEMP/copilot-check/response.txt"
+          printf '%s\n' 'Real Copilot inference succeeded using the short-lived workflow token.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Save public response and model usage only
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: copilot-workflow-auth-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/copilot-check/response.txt
+            ${{ runner.temp }}/copilot-check/usage.json
+          if-no-files-found: warn
+          retention-days: 1
