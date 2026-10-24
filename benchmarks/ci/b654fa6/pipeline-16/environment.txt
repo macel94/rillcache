@@ -1,0 +1,109 @@
+Source revision: b654fa651d5eb851acc0928e5a5037b13ca87205
+
+Working-tree status (empty means clean):
+
+Compiler:
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+binary: rustc
+commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
+commit-date: 2026-10-13
+host: x86_64-unknown-linux-gnu
+release: 1.99.1
+LLVM version: 23.1.1
+
+Kernel and CPU:
+Linux runnervm8k3b6 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           48 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  4
+On-line CPU(s) list:                     0-3
+Vendor ID:                               AuthenticAMD
+Model name:                              AMD EPYC 7763 64-Core Processor
+CPU family:                              25
+Model:                                   1
+Thread(s) per core:                      2
+Core(s) per socket:                      2
+Socket(s):                               1
+Stepping:                                1
+BogoMIPS:                                4890.85
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl tsc_reliable nonstop_tsc cpuid extd_apicid aperfmperf tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves user_shstk clzero xsaveerptr rdpru arat npt nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold v_vmsave_vmload umip vaes vpclmulqdq rdpid fsrm
+Virtualization:                          AMD-V
+Hypervisor vendor:                       Microsoft
+Virtualization type:                     full
+L1d cache:                               64 KiB (2 instances)
+L1i cache:                               64 KiB (2 instances)
+L2 cache:                                1 MiB (2 instances)
+L3 cache:                                32 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-3
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Vulnerable: Safe RET, no microcode
+Vulnerability Spec store bypass:         Vulnerable
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Retpolines; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Vulnerable: No microcode
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+
+Competitor versions:
+Redis server v=8.10.2 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=c38fed08fe53f5db
+Valkey server v=9.1.2 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=5469407125c88688
+
+Default source pins (custom binary overrides may differ):
+Redis 8.10.2 sha256:541a374b753a8405683dd88560465791acc98cf09445ef10ec1bd286904273e8
+Valkey 9.1.2 sha256:19c23908e7d57e8d91ef85b41f5646307582f10f4f0fb999bbf89ed24ec9c983
+
+C compiler:
+cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Copyright (C) 2023 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+
+Binary checksums:
+61bd3f2f84977a6a9a1b8f6ccd9b6deeb88867289450a7be675ea7cb8ec3a582  target/release/rillcache
+4f613e6463897f2356f7c97f2a0088ec1059d2d4e2525138c1b997d6b1a72614  /home/runner/work/rillcache/rillcache/target/competitors/redis-8.10.2/src/redis-server
+32e874312543788794128e100d852aa83bc356818e1c9d0f22e856aee63148e2  /home/runner/work/rillcache/rillcache/target/competitors/valkey-9.1.2/src/valkey-server
+
+Client arguments: --requests 1000000 --clients 8 --pipeline 16 --keyspace 1024 --value-size 64 --warmup 1000 --runs 3
+Server CPU request: inherited
+Client CPU request: inherited
+Server order: valkey redis rillcache
+Actual client affinity:
+pid 15731's current affinity list: 0-3
+
+Competitor runtime: loopback TCP; no RDB/AOF; default I/O threads; no configuration file or modules loaded.
+Competitor builds: upstream default compiler optimization and allocator; no TLS.
+
+valkey server affinity:
+pid 15714's current affinity list: 0-3
+pid 15725's current affinity list: 0-3
+pid 15726's current affinity list: 0-3
+pid 15727's current affinity list: 0-3
+pid 15728's current affinity list: 0-3
+pid 15729's current affinity list: 0-3
+pid 15730's current affinity list: 0-3
+
+redis server affinity:
+pid 15713's current affinity list: 0-3
+pid 15717's current affinity list: 0-3
+pid 15718's current affinity list: 0-3
+pid 15719's current affinity list: 0-3
+pid 15720's current affinity list: 0-3
+pid 15721's current affinity list: 0-3
+
+rillcache server affinity:
+pid 15712's current affinity list: 0-3

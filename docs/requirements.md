@@ -69,8 +69,8 @@ reason to couple all future commands into a single large story.
 - **R21 (event-driven):** When `GET key` is received, the server shall return the
   stored bytes or a null bulk for a missing key, distinguishing an empty value.
 - **R22 (unwanted behavior):** If an admitted SET would exceed the key/value
-  payload budget, then the server shall return OOM and preserve the previous data. Overwrite and
-  deletion shall reclaim payload budget. This is not an absolute RSS limit.
+  payload budget, then the server shall return OOM and preserve the previous
+  data. Overwrite and deletion shall reclaim payload budget. This is not an absolute RSS limit.
 - **R23 (event-driven):** When `DEL key [key ...]` is received, the server shall
   atomically remove existing keys and count each removed key only once.
 - **R24 (event-driven):** When `EXISTS key [key ...]` is received, the server shall
@@ -141,8 +141,7 @@ RESP3/HELLO, other SET options/TTL (including GET/EX/PX), other types, SELECT,
 AUTH/ACL/TLS, persistence, replication, clustering, transactions, pub/sub and
 streams. Unsupported SET options return `ERR syntax error` and do not write.
 Redis normally ignores empty request arrays; this strict initial subset rejects
-them. Unknown-command error text is shorter
-than Redis's text. Limits are deliberately smaller than Redis defaults.
+them. Unknown-command error text is shorter than Redis's text. Limits are deliberately smaller than Redis defaults.
 
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload. Payload
@@ -158,8 +157,11 @@ Not implemented or implied by the completed increments:
    are not implemented.
 2. INCR/DECR with Redis integer parsing and overflow behavior.
 3. Common client handshake metadata, selected only after client compatibility tests.
-4. Profile measured bottlenecks, then evaluate sharding/I/O changes without unsafe
-   code, extra dependencies or regression of multi-key atomicity.
+4. Prioritize the measured single-core, low-pipeline and tail-latency weakness:
+   measure server CPU/RSS/context switches with PING as a no-key-map control,
+   then evaluate bounded I/O scheduling before speculative sharding. Include idle
+   CPU, backpressure, shutdown and multi-key atomicity in acceptance criteria;
+   unsafe code and external dependencies remain forbidden.
 5. Controlled-hardware performance budgets and repeated current-release comparisons;
    later, richer types, pub/sub and streams driven by product judgment.
 

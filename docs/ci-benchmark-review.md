@@ -68,10 +68,85 @@ The global `RwLock`, argument allocation, value copies and thread-per-client
 scaling remain profiling candidates. A 64-byte, cyclic-key, all-hit workload is
 not production traffic or a test of the complete Redis feature set.
 
-The next implemented story is atomic conditional SET (`NX`/`XX`), with racing-client,
+The follow-up implemented atomic conditional SET (`NX`/`XX`), with racing-client,
 binary/empty data, invalid-option and payload-budget tests. Its rejection/update
 paths have reply-validated TCP and core benchmarks. No unsafe project code or
 external Rust dependency is permitted to obtain better numbers.
+
+## Corrected comparison: b654fa6
+
+- [Fast CI 40103835947](https://github.com/macel94/rillcache/actions/runs/40103835947):
+  successful; 47 fast tests, five TCP smoke workloads and six core benchmarks.
+  `make ci` still took about 3 seconds; the whole job about 21 seconds.
+- [Comparison 40103838600](https://github.com/macel94/rillcache/actions/runs/40103838600):
+  successful; four profiles, five workloads, three runs per server: **180 validated
+  records**. All eight current-reference conformance invocations passed.
+- Reference build logs contain exactly one server link per competitor, exclusively
+  in the dedicated build step. Both binary digests stayed identical across all
+  four profiles. Native builds took about 3 minutes 21 seconds; the expanded
+  comparison job about 9 minutes, deliberately outside the fast feedback path.
+- The delivered CI archive's checksum was verified and its extracted executable
+  independently exercised with binary keys, NX/XX, rejected writes, invalid
+  combinations and a pipeline. All replies matched.
+- [Unmodified corrected evidence](../benchmarks/ci/b654fa6/README.md) and
+  [original evidence](../benchmarks/ci/ed15e2f/README.md) are preserved in Git rather
+  than relying only on expiring Actions artifacts.
+
+The comparison host again reported AMD EPYC 7763 and four available logical CPUs.
+The single-core profiles restricted every server to logical CPU 0 and clients to
+CPUs 1–3; actual affinity and client CPU-count fields were checked. These are
+logical-CPU budgets, not isolated physical cores; SMT/shared-host interference
+still applies. Pipeline 1 used 100,000 commands; pipeline 16 used 1,000,000.
+Other workload parameters match the bootstrap comparison.
+
+### Equal-budget results
+
+Median throughput, operations/second; three repetitions:
+
+| Pipeline | Server | PING | SET | GET |
+| --- | --- | ---: | ---: | ---: |
+| 1 | Rillcache | 50,185 | 48,827 | 48,645 |
+| 1 | Redis 8.10.2 | 60,555 | 57,031 | 58,587 |
+| 1 | Valkey 9.1.2 | 59,290 | 55,889 | 57,563 |
+| 16 | Rillcache | 756,589 | 671,622 | 681,666 |
+| 16 | Redis 8.10.2 | 777,299 | 573,319 | 650,088 |
+| 16 | Valkey 9.1.2 | 728,221 | 529,268 | 596,916 |
+
+Median of the three runs' SET **batch p99** values, microseconds:
+
+| Pipeline | Rillcache | Redis | Valkey |
+| --- | ---: | ---: | ---: |
+| 1 | 333.7 | 204.9 | 208.9 |
+| 16 | 385.8 | 334.1 | 362.4 |
+
+This reveals a genuine performance limitation, not a protocol correctness failure:
+
+- At pipeline 1, Rillcache's SET throughput is about **14% below Redis** and **13%
+  below Valkey** under the equal one-logical-CPU budget, with substantially worse
+  tail latency. Its original default-threading lead is not a per-core victory.
+- At pipeline 16, SET throughput is about **17% above Redis** and **27% above
+  Valkey** for this narrow workload, but batch p99 is still worse. GET's lead over
+  Redis is only about 5%, and PING slightly trails Redis. No general win is established.
+- The unrestricted profile still shows high throughput (about 1.65M SET/s), but
+  answers an out-of-box parallel-throughput question, not isolated per-core latency.
+- PING also slows under the one-CPU budget even though it does not access the key
+  map. Therefore the shared `RwLock` cannot be the sole explanation. The blocking
+  thread-per-connection model, scheduling/context switches and I/O fairness are
+  strong profiling candidates; these measurements do **not** prove a precise hot
+  function or justify speculative sharding.
+- Longer pipelined runs reduced variability: unrestricted PING's observed
+  min-to-max throughput spread was roughly 3%, versus roughly 28% in the short
+  bootstrap sample. That is better evidence, not a dedicated-hardware guarantee.
+- The fast-CI microbenchmark host changed from EPYC 9V74 to EPYC 7763, and the
+  store benchmark harness now validates replies using a shared helper. Do not
+  interpret the old/new raw nanoseconds/op as a clean engine regression measurement.
+
+The next performance story should measure server CPU, RSS and scheduling/context
+switches alongside PING/SET/GET before selecting a bounded, safe-standard-library
+I/O change. It must preserve binary safety, connection/frame/payload limits,
+backpressure, shutdown and multi-key atomicity, and measure idle CPU plus tail
+latency rather than maximizing a single throughput number. Unsafe code, FFI or
+external Rust dependencies are not an escape hatch.
 
 ## Reading subsequent runs
 
