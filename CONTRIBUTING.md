@@ -42,7 +42,11 @@ run the binary on loopback. This is continuous delivery for testing, not automat
 production deployment. Heavier reference builds/comparisons run manually/weekly.
 
 When updating Rust or GitHub Actions, verify official upstream releases and update
-pins deliberately. Actions are pinned by commit SHA, permissions are read-only,
-checkout credentials are not persisted, and fork PRs never receive a privileged
-`pull_request_target` execution path. Do not commit credentials, benchmark build
-sources, generated target output or private environment files.
+pins deliberately. Actions are pinned by commit SHA. Normal CI, benchmarking and
+inference jobs use read-only permissions and do not persist checkout credentials.
+Only the separate default-branch benchmark-report publication job has contents
+write permission and persisted credentials; it stages generated report paths only
+and never runs inference. Fork PRs never receive a privileged
+`pull_request_target` execution path. See [automatic reporting](docs/benchmark-reports.md).
+Do not commit credentials, benchmark build sources, generated target output or
+private environment files.

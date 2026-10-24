@@ -34,6 +34,7 @@ reason to couple all future commands into a single large story.
 | S06 | As a cache user, I can create a value only when absent or replace it only when present so that concurrent clients do not race a separate existence check. | S | R25–R29; engine, pipeline, racing-client and current-reference tests |
 | S07 | As a performance investigator, I can compare equal CPU budgets using unchanged binaries so that parallelism and build churn do not masquerade as implementation improvements. | S | R44–R46; recorded affinities, rotated order and cross-profile digest checks |
 | S08 | As a performance investigator, I can sample server CPU, RSS, idle behavior and thread scheduling in isolated comparisons so that I can choose an I/O change from evidence rather than blaming the key-map lock. | S | R47–R51; procfs fixtures, standalone CLI tests and profiled comparisons |
+| S09 | As a repository reader, I can read validated performance tables and an optional GPT-6 Luna review after each comparative run without downloading artifacts, so current tradeoffs are visible from the README. | S | R52–R56; archived-cohort, failure, publication and workflow tests |
 
 ## EARS acceptance requirements
 
@@ -150,6 +151,31 @@ reason to couple all future commands into a single large story.
 - **R51 (state-driven):** While one comparison server is measured, the harness
   shall not leave other comparison servers running. Optional idle sampling shall
   precede benchmark connections and report its actual observation duration.
+
+- **R52 (event-driven):** When a comparative benchmark finishes, reporting shall
+  validate workload counts, matching parameters, timers, percentiles, CPU/thread
+  accounting, source identity, affinities and recorded executable digests before
+  presenting comparative tables. Markdown shall identify source/run, data quality,
+  medians, spread, batch p99, CPU, RSS and context-switch scope.
+- **R53 (optional feature):** Where Copilot credentials and a complete successful
+  cohort are available, the reviewer shall request exactly `gpt-6-luna` through
+  pinned GitHub Copilot tooling with bounded time/credits and no model tools,
+  repository instructions or MCP access. AI interpretation shall be visibly
+  separate from deterministic measurements, with no model substitution.
+- **R54 (unwanted behavior):** If measurements are incomplete/invalid or Copilot
+  authentication, model access, inference, budget or output fails, then reporting
+  shall clearly identify the missing assessment and preserve available validated
+  numeric profiles. It shall not reuse a previous narrative as a new review or
+  turn benchmark failure into a performance victory.
+- **R55 (event-driven):** When a default-branch report is published, automation
+  shall retain an immutable per-run/review-attempt report and update the README-
+  linked dashboard only for a newer workflow run/attempt. Older reruns shall not
+  clobber newer results. Publication shall stage only report paths, never force-
+  push source changes, and retain a link to the last successful numeric report.
+- **R56 (ubiquitous):** Reporting tests shall run offline without credentials or
+  external Rust dependencies. Benchmarking/inference jobs shall not have repository
+  write permission; a separate default-branch publication job alone shall receive
+  the narrowly scoped permission needed to push generated Markdown.
 
 ## Compatibility boundary (v0.1)
 

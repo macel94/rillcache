@@ -2,6 +2,14 @@
 
 An experiment in building a Redis-compatible server from the ground up in Rust.
 
+## Current performance
+
+**[Read the latest benchmark summary →](benchmarks/README.md)** — validated tables,
+CPU/memory/tail-latency tradeoffs, and GPT-6 Luna analysis through GitHub Copilot.
+Reports are published automatically after full comparison runs, with per-run
+Markdown history; no artifact download is needed. AI availability is explicit.
+[Copilot setup and reporting details](docs/benchmark-reports.md).
+
 ## Project vision
 
 The initial goal is to implement a useful Redis-compatible server using only Rust’s standard library and runtime—no external dependencies. Over time, the project may explore newer and more advanced functionality, including streams and richer pub/sub capabilities.
