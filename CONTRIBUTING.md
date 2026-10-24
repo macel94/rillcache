@@ -43,7 +43,9 @@ production deployment. Heavier reference builds/comparisons run manually/weekly.
 
 When updating Rust or GitHub Actions, verify official upstream releases and update
 pins deliberately. Actions are pinned by commit SHA. Normal CI, benchmarking and
-inference jobs use read-only permissions and do not persist checkout credentials.
+inference jobs use read-only repository permissions and do not persist checkout
+credentials. The inference job additionally grants `copilot-requests: write` to
+its short-lived workflow token; no personal secret is required.
 Only the separate default-branch benchmark-report publication job has contents
 write permission and persisted credentials; it stages generated report paths only
 and never runs inference. Fork PRs never receive a privileged

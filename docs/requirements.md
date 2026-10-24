@@ -35,6 +35,7 @@ reason to couple all future commands into a single large story.
 | S07 | As a performance investigator, I can compare equal CPU budgets using unchanged binaries so that parallelism and build churn do not masquerade as implementation improvements. | S | R44–R46; recorded affinities, rotated order and cross-profile digest checks |
 | S08 | As a performance investigator, I can sample server CPU, RSS, idle behavior and thread scheduling in isolated comparisons so that I can choose an I/O change from evidence rather than blaming the key-map lock. | S | R47–R51; procfs fixtures, standalone CLI tests and profiled comparisons |
 | S09 | As a repository reader, I can read validated performance tables and an optional GPT-6 Luna review after each comparative run without downloading artifacts, so current tradeoffs are visible from the README. | S | R52–R56; archived-cohort, failure, publication and workflow tests |
+| S10 | As a repository owner, I get an actual Copilot assessment automatically without creating credentials, with an available-model fallback and visible failure if no review completes. | S | R57–R59; workflow-token inference, usage/fallback/gate and legacy-publication tests |
 
 ## EARS acceptance requirements
 
@@ -158,10 +159,11 @@ reason to couple all future commands into a single large story.
   presenting comparative tables. Markdown shall identify source/run, data quality,
   medians, spread, batch p99, CPU, RSS and context-switch scope.
 - **R53 (optional feature):** Where Copilot credentials and a complete successful
-  cohort are available, the reviewer shall request exactly `gpt-6-luna` through
-  pinned GitHub Copilot tooling with bounded time/credits and no model tools,
-  repository instructions or MCP access. AI interpretation shall be visibly
-  separate from deterministic measurements, with no model substitution.
+  cohort are available, the reviewer shall prefer `gpt-6-luna` through pinned
+  GitHub Copilot tooling with bounded time/credits and no model tools, repository
+  instructions or MCP access. AI interpretation shall be visibly separate from
+  deterministic measurements; any available-model fallback shall be disclosed
+  and attributed using actual Copilot usage, not labelled as Luna.
 - **R54 (unwanted behavior):** If measurements are incomplete/invalid or Copilot
   authentication, model access, inference, budget or output fails, then reporting
   shall clearly identify the missing assessment and preserve available validated
@@ -176,6 +178,23 @@ reason to couple all future commands into a single large story.
   external Rust dependencies. Benchmarking/inference jobs shall not have repository
   write permission; a separate default-branch publication job alone shall receive
   the narrowly scoped permission needed to push generated Markdown.
+
+- **R57 (event-driven):** When a complete successful default-branch comparison
+  reaches review, the job shall authenticate with its built-in short-lived
+  `GITHUB_TOKEN` and `copilot-requests: write`, without requiring a stored personal
+  token or granting inference repository-write access. Only trusted default-branch
+  reviews shall receive that token in the model process environment.
+- **R58 (unwanted behavior):** If the pinned CLI rejects the preferred model
+  before inference with an absent or verified zero-usage file, then the reviewer shall permit
+  one automatic available-model selection within the original deadline/credit
+  bound. It shall accept only completed Copilot-provider accounting with concrete
+  models and generated tokens, record those models and the selection/auth method,
+  and never retry authentication, network or charged-inference failures by routing
+  them to another model.
+- **R59 (event-driven):** When an eligible default-branch comparison has no accepted
+  AI assessment, the workflow shall fail its AI-completion gate while preserving
+  and publishing validated numeric reporting. Publication retries shall preserve
+  immutable legacy manifest bytes rather than rewriting old archives with new fields.
 
 ## Compatibility boundary (v0.1)
 

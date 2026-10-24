@@ -14,46 +14,57 @@ No artifact download is needed to understand current performance. Raw JSON/logs
 remain separate evidence artifacts. The short embedded smoke on ordinary CI is
 not a performance comparison and intentionally does not update this page or call AI.
 
-## Enable GPT-6 Luna
+## Automatic Copilot authentication and model selection
 
-GitHub Models was [retired on July 30, 2026](https://docs.github.com/en/github-models).
-This integration uses **GitHub Copilot**, never the retired Models API, OpenAI
-BYOK, or a substitute model.
+Run **Comparative benchmarks** on the default branch. **No personal token or
+repository secret needs to be created.** The review job grants
+`copilot-requests: write` and supplies its built-in, short-lived `GITHUB_TOKEN`.
+Its repository permission remains `contents: read`; inference cannot push source.
 
-For this personally owned repository:
+GitHub explicitly supports personally owned repositories: usage is billed to the
+repository owner's Copilot seat. Organization-owned repositories use the
+organization's seat/policy, including its policy allowing workflow-token usage.
+Normal Copilot entitlement, model policy and quota still apply; an authenticated
+GitHub CLI session alone does not establish inference access. This repository's
+[manual authentication check](../.github/workflows/copilot-auth-check.yml) has
+verified real inference with the workflow token and recorded **GPT-6 Luna** in
+Copilot's usage output, without creating or storing a PAT.
 
-1. Have a Copilot plan/policy that permits Copilot CLI and `gpt-6-luna`.
-2. Create a **personal-account-owned fine-grained PAT** with the **Copilot Requests**
-   account permission. Repository write permission is not needed for inference.
-   Do not use a classic PAT or copy a broad repository-administration token.
-3. Save it as the Actions repository secret **`COPILOT_GITHUB_TOKEN`**. Do not paste
-   credentials into issues, Markdown, artifacts or chat.
-4. Run **Comparative benchmarks** from Actions. If adding the secret after a run,
-   rerun the review/publish jobs: their input uses the original comparison artifact
-   ID and benchmark-attempt identity, not a guessed latest artifact name.
+See [Copilot in Actions](https://docs.github.com/en/copilot/how-tos/copilot-cli/automate-copilot-cli/automate-with-actions)
+and [authentication and billing](https://docs.github.com/en/copilot/concepts/agent-capabilities/agent-powered-workflows-and-operations/copilot-cli-in-github-actions).
+GitHub Models was [retired on July 30, 2026](https://docs.github.com/en/github-models);
+this integration uses **GitHub Copilot**, not that API or OpenAI BYOK.
 
-The secret's user's Copilot entitlement/billing applies. One review is bounded by
-**120 seconds plus a 10-second termination grace, 30 AI credits, and 16 KiB of
-accepted output**. Thirty credits is this pinned CLI's minimum permitted session
-cap, not a claim that every review consumes that amount. Copilot CLI is pinned to `v1.0.103` with an archive SHA-256;
-auto-updates are disabled. The exact requested model is `gpt-6-luna`, not `auto`.
-Unknown/unavailable models are failures, not an excuse to select another model.
+The reviewer first requests `gpt-6-luna`. If the pinned CLI explicitly rejects
+that model **before inference**, with an absent or verified zero-usage file, it retries once with Copilot's
+`auto` model selection. Authentication/network failures and charged inference
+failures are not retried with another model. Accepted output must have complete
+Copilot usage accounting with concrete model IDs and generated tokens. Reports
+and JSON manifests disclose **the actual models**, preferred/fallback selection,
+and workflow/local authentication method. An `auto` label is never passed off as
+an identified model, and an alternative is never labelled a Luna assessment.
 
-Missing credentials, unavailable CLI/model access, budget exhaustion, timeout or
-unusable output produce an explicit **AI unavailable** notice. Valid numeric
-reports are still published. Incomplete/failed comparisons never invoke Copilot.
-A missing AI review is **not** represented as a successful model assessment.
+One review shares a **120-second deadline plus a 10-second termination grace**
+and a **30-AI-credit session cap**, with **16 KiB of accepted output**. The only
+permitted retry is the pre-inference model rejection above. Thirty credits is the
+pinned CLI's minimum session cap, not a claim that each review consumes that
+amount. Copilot CLI is pinned to `v1.0.103` with an archive SHA-256; auto-updates
+are disabled.
 
-An ignored `.env` placeholder and a tracked `.env.example` document the optional
-local variable. Nothing automatically loads `.env`; it is not Actions secret
-configuration. The server, benchmark client, report generation and offline tests
-require **no API key**.
+Missing access, unavailable CLI/models, budget exhaustion, timeout or unusable
+output produces an explicit **AI unavailable** notice. A successful, validated
+default-branch comparison then **fails the review job's AI-completion gate**;
+it cannot silently pass as a successful AI review. The public report still
+uploads and publishes its independently validated numbers. Failed/incomplete
+comparisons never invoke Copilot. Review-only reruns reuse the original comparison
+artifact ID and benchmark-attempt identity; competitors are not rebuilt.
 
-Organization-owned repositories may separately enable GitHub's supported
-`GITHUB_TOKEN` Copilot policy; this workflow deliberately uses the explicit,
-least-privilege personal credential above rather than assuming that policy exists.
-See [Copilot authentication](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli)
-and [Copilot in Actions](https://docs.github.com/en/copilot/how-tos/copilot-cli/automate-copilot-cli/automate-with-actions).
+An ignored `.env` placeholder and tracked `.env.example` describe an **optional
+local** `COPILOT_GITHUB_TOKEN` (fine-grained personal token with Copilot Requests
+permission). Actions does not need or read that secret. Nothing automatically
+loads `.env`. Never copy a broad repository-administration token or paste
+credentials into chat/Git. The server, benchmark client, offline report generation
+and tests require **no API key**.
 
 ## What readers see
 
@@ -85,15 +96,16 @@ are not converted into a hard timing gate or a general performance victory.
 ## Workflow security and publication
 
 1. **compare**: read-only repository token; builds/tests/benchmarks as before.
-2. **review**: read-only repository token; downloads that job's exact artifact,
-   validates it offline, then optionally runs Copilot. The model child has a fresh
+2. **review**: `contents: read` plus `copilot-requests: write` on its short-lived
+   workflow token; downloads that job's exact artifact, validates it offline,
+   then runs Copilot for eligible default-branch data. The model child has a fresh
    home/working directory, a minimal environment, no available model tools,
    explicit shell/write/URL denials, built-in MCP disabled and custom instructions
    disabled. Copilot private state, output and
    diagnostics are not included in uploaded public reports.
 3. **publish**: separate, default-branch-only job with `contents: write`. It never
-   runs inference or receives the Copilot secret. It checks report/run identity,
-   stages only the dashboard/history paths and pushes a bot documentation commit.
+   runs inference or receives the inference job's token or billing permission.
+   It checks report/run identity, stages only the dashboard/history paths and pushes a bot documentation commit.
 
 Publication is serialized and compares `(workflow run number, review attempt)`:
 a late rerun of an older run is archived but cannot overwrite the current page.
@@ -103,7 +115,7 @@ and retries ordinary pushes after concurrent changes, **never force-pushing** or
 restoring an old source tree. Its hard reset operates only in its disposable
 Actions checkout, not a developer's workspace. Built-in-token report pushes do
 not recursively trigger new benchmark runs. Non-default branches can generate
-Actions reports but receive no Copilot secret and cannot publish to main.
+numeric Actions reports but receive no inference token and cannot publish to main.
 
 A cancelled workflow may not reach reporting; a runner-wide outage can also
 prevent publication. These cases do not fabricate new results. If Git push is
@@ -113,12 +125,18 @@ and publication fails visibly.
 ## Local verification
 
 `make ci` includes offline tests of the archived 180-record cohort, corrupt-data
-rejection, model-unavailable/error/unsafe-output handling, immutable history,
+rejection, token isolation, model usage/fallback/error/unsafe-output handling,
+the AI-completion gate, legacy-manifest compatibility, immutable history,
 out-of-order/rerun publication and last-successful links. No inference is used by
 tests. `cargo run --locked --offline --bin rillcache-review -- --help` describes
 standalone generation/review/publication commands. The CLI prepares files only;
 Git commits/pushes belong to the explicitly authorized publication workflow.
 
-Copilot is an optional external CI review tool, like the optional native reference
+The current released `actionlint` v1.7.12 predates `copilot-requests`; when
+linting, ignore only `^unknown permission scope "copilot-requests"\.`. GitHub's
+workflow parser and live authentication check validate that documented scope;
+all other linter diagnostics still fail verification.
+
+Copilot is an external CI review tool, like the optional native reference
 servers are external benchmark tools. It is **not** an application dependency,
 Rust dependency, native extension, FFI binding or part of the server release.

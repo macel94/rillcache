@@ -5,10 +5,11 @@ An experiment in building a Redis-compatible server from the ground up in Rust.
 ## Current performance
 
 **[Read the latest benchmark summary →](benchmarks/README.md)** — validated tables,
-CPU/memory/tail-latency tradeoffs, and GPT-6 Luna analysis through GitHub Copilot.
-Reports are published automatically after full comparison runs, with per-run
-Markdown history; no artifact download is needed. AI availability is explicit.
-[Copilot setup and reporting details](docs/benchmark-reports.md).
+CPU/memory/tail-latency tradeoffs, and GitHub Copilot analysis (preferring GPT-6
+Luna, with the actual model disclosed). Default-branch comparisons authenticate
+with the built-in workflow token: no personal token or repository secret to set
+up. Reports publish automatically with per-run Markdown history; no artifact
+download is needed. [Reporting details](docs/benchmark-reports.md).
 
 ## Project vision
 

@@ -86,10 +86,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      copilot-requests: write # Short-lived inference billing permission, not repository write access.
     outputs:
       artifact-id: ${{ steps.report.outputs.artifact-id }}
-    env:
-      HAS_COPILOT_TOKEN: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && secrets.COPILOT_GITHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,7 +119,7 @@ jobs:
             --status "$BENCHMARK_STATUS"
           echo "complete=$(<target/report/complete.txt)" >> "$GITHUB_OUTPUT"
       - name: Install checksum-pinned Copilot only when review can run
-        if: env.HAS_COPILOT_TOKEN == 'true' && steps.prepare.outputs.complete == 'true'
+        if: steps.prepare.outputs.complete == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         continue-on-error: true
         run: |
           mkdir -p "$RUNNER_TEMP/copilot"
@@ -129,10 +128,13 @@ jobs:
             -o "$RUNNER_TEMP/copilot/archive.tar.gz"
           printf '%s  %s\n' 9aeb4430e9ac9523546db07b227c7aba179a4710a55f9ac29ad143b0f9e1b325 "$RUNNER_TEMP/copilot/archive.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/copilot/archive.tar.gz" -C "$RUNNER_TEMP/copilot"
-      - name: Review with GPT-6 Luna, or explicitly report why AI is unavailable
+      - name: Review with Copilot and record the actual model used
         env:
-          COPILOT_GITHUB_TOKEN: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && secrets.COPILOT_GITHUB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.token || '' }}
         run: ./target/release/rillcache-review review --out target/report --copilot "$RUNNER_TEMP/copilot/copilot"
+      - name: Require a genuine AI assessment for successful default-branch comparisons
+        if: steps.prepare.outputs.complete == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: ./target/release/rillcache-review require-ai --out target/report
       - name: Reject an allegedly successful run with invalid or incomplete evidence
         if: needs.compare.result == 'success' && steps.prepare.outputs.complete != 'true'
         run: |

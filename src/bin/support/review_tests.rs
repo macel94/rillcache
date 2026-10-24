@@ -2,6 +2,8 @@ use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const SHA: &str = "10d56eca165f14a2b5fb043e36d2c33cc52ed762";
+// Shape verified against the pinned CLI's real pre-inference model rejection.
+const ZERO_USAGE: &str = r#"{"totalPremiumRequestCost":0,"totalUserRequests":0,"totalNanoAiu":0,"totalApiDurationMs":0,"lastCallInputTokens":0,"lastCallOutputTokens":0,"modelMetrics":{},"agentMetrics":{},"providerModelMetrics":[]}"#;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Temp(PathBuf);
@@ -22,6 +24,22 @@ impl Drop for Temp {
     }
 }
 
+fn assessment(text: impl Into<String>) -> Assessment {
+    Assessment {
+        text: text.into(),
+        models: vec![MODEL.into()],
+        selection: "preferred".into(),
+        authentication: "workflow-token".into(),
+    }
+}
+
+fn usage_json(model: &str) -> String {
+    format!(
+        "{{\"aiCreditsStatus\":\"complete\",\"providerModelMetrics\":[{{\"provider\":{{\"id\":\"copilot\",\"kind\":\"copilot\"}},\"modelId\":{},\"metrics\":{{\"requests\":{{\"count\":1}},\"usage\":{{\"outputTokens\":20}}}}}}]}}",
+        quoted(model)
+    )
+}
+
 fn source() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/ci/10d56ec")
 }
@@ -37,6 +55,9 @@ fn metadata(number: u64, attempt: u64) -> Manifest {
         status: "success".into(),
         complete: true,
         ai_status: "pending".into(),
+        actual_models: Vec::new(),
+        model_selection: "not-run".into(),
+        authentication: "not-run".into(),
     }
 }
 fn prepared(root: &Temp, number: u64, attempt: u64) -> PathBuf {
@@ -54,22 +75,25 @@ fn missing_credentials_preserve_verified_numbers_and_make_no_model_call() {
     })
     .unwrap();
     let text = fs::read_to_string(output.join("report.md")).unwrap();
-    assert!(text.contains("configure the COPILOT"));
+    assert!(text.contains("GITHUB\\_TOKEN needs copilot-requests"));
     assert!(text.contains("48952 | 58672 | 57526"));
     assert_ne!(manifest(&output).unwrap().ai_status, "completed");
-    assert!(text.contains("no other model is substituted"));
+    assert!(text.contains("none recorded"));
+    assert!(manifest(&output).unwrap().actual_models.is_empty());
 }
 
 #[test]
 fn completed_review_is_separate_from_numbers_and_model_markup_is_inert() {
     let root = Temp::new();
     let output = prepared(&root, 1, 1);
-    review_with(&output, Some("test-credential"), |_| Ok("## Tradeoff\n- Lower throughput; batch tails matter.\n<img src=x> ![tracking](https://invalid.example/)".into())).unwrap();
+    review_with(&output, Some("test-credential"), |_| Ok(assessment("## Tradeoff\n- Lower throughput; batch tails matter.\n<img src=x> ![tracking](https://invalid.example/)"))).unwrap();
     let text = fs::read_to_string(output.join("report.md")).unwrap();
     assert!(text.contains("> \\#\\# Tradeoff"));
     assert!(text.contains("&lt;img src=x&gt;"));
     assert!(!text.contains("![tracking]"));
     assert_eq!(manifest(&output).unwrap().ai_status, "completed");
+    assert_eq!(manifest(&output).unwrap().actual_models, [MODEL]);
+    assert!(text.contains("Authentication: workflow-token"));
     assert!(text.contains("48952 | 58672 | 57526"));
 }
 
@@ -86,14 +110,20 @@ fn failure_empty_oversized_and_secret_output_never_reuse_a_previous_review() {
         Ok("A control character \u{1b} in a long enough answer".into()),
     ] {
         review_with(&output, Some("test-credential"), |_| {
-            Ok("A previous valid narrative that must disappear.".into())
+            Ok(assessment(
+                "A previous valid narrative that must disappear.",
+            ))
         })
         .unwrap();
-        review_with(&output, Some("test-credential"), |_| response).unwrap();
+        review_with(&output, Some("test-credential"), |_| {
+            response.map(assessment)
+        })
+        .unwrap();
         let text = fs::read_to_string(output.join("report.md")).unwrap();
         assert!(!text.contains("A previous valid narrative"));
         assert!(!text.contains("test-credential"));
         assert!(text.contains("No AI assessment was accepted"));
+        assert!(manifest(&output).unwrap().actual_models.is_empty());
     }
 }
 
@@ -271,8 +301,8 @@ fn changed_binary_provenance_or_overlapping_cpu_budgets_are_rejected() {
 }
 
 #[test]
-fn model_command_is_exact_readonly_bounded_and_not_auto_routed() {
-    let args = copilot_args("Only numeric facts", Path::new("usage.json"));
+fn model_command_is_exact_readonly_bounded_with_explicit_fallback() {
+    let args = copilot_args(MODEL, "Only numeric facts", Path::new("usage.json"));
     for pair in [
         ["--model", "gpt-6-luna"],
         ["--deny-tool", "shell"],
@@ -295,6 +325,9 @@ fn model_command_is_exact_readonly_bounded_and_not_auto_routed() {
     for forbidden in ["auto", "--allow-all", "--allow-all-tools", "--allow-tool"] {
         assert!(!args.iter().any(|s| s == forbidden));
     }
+    let fallback = copilot_args("auto", "Only numeric facts", Path::new("usage.json"));
+    assert_eq!(&fallback[..2], ["--model", "auto"]);
+    assert!(fallback.iter().any(|s| s == "--available-tools="));
 }
 
 #[cfg(target_os = "linux")]
@@ -304,10 +337,17 @@ fn bounded_process_wrapper_uses_an_empty_home_and_exact_model_without_network() 
     let root = Temp::new();
     let output = prepared(&root, 1, 1);
     let executable = root.0.join("fake-copilot");
-    fs::write(&executable, "#!/bin/sh\nset -eu\n[ \"$COPILOT_GITHUB_TOKEN\" = test-credential ]\n[ -z \"${GITHUB_TOKEN:-}\" ]\n[ -z \"${GH_TOKEN:-}\" ]\n[ -z \"${COPILOT_PROVIDER_API_KEY:-}\" ]\n[ \"$1\" = --model ]\n[ \"$2\" = gpt-6-luna ]\n[ ! -e AGENTS.md ]\nprintf '%s\\n' 'A bounded fake assessment: compare equal CPU budgets and batch p99.'\n").unwrap();
+    fs::write(&executable, format!("#!/bin/sh\nset -eu\n[ \"${{GITHUB_TOKEN:-}}${{COPILOT_GITHUB_TOKEN:-}}\" = test-credential ]\n[ -z \"${{GH_TOKEN:-}}\" ]\n[ -z \"${{COPILOT_PROVIDER_API_KEY:-}}\" ]\n[ \"$1\" = --model ]\n[ \"$2\" = gpt-6-luna ]\n[ ! -e AGENTS.md ]\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = --usage-output-file ]; then shift; usage=$1; fi; shift; done\nprintf '%s' '{}' > \"$usage\"\nprintf '%s\\n' 'A bounded fake assessment: compare equal CPU budgets and batch p99.'\n", usage_json(MODEL))).unwrap();
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-    let response = call_copilot(&output, &executable, "test-credential").unwrap();
-    assert!(response.contains("bounded fake assessment"));
+    for (token_env, method) in [
+        ("GITHUB_TOKEN", "workflow-token"),
+        ("COPILOT_GITHUB_TOKEN", "personal-token"),
+    ] {
+        let response = call_copilot(&output, &executable, "test-credential", token_env).unwrap();
+        assert!(response.text.contains("bounded fake assessment"));
+        assert_eq!(response.models, [MODEL]);
+        assert_eq!(response.authentication, method);
+    }
     assert_eq!(
         fs::metadata(output.join("copilot-private"))
             .unwrap()
@@ -321,7 +361,141 @@ fn bounded_process_wrapper_uses_an_empty_home_and_exact_model_without_network() 
         "#!/bin/sh\nprintf 'An error from the CLI' >&2\nexit 1\n",
     )
     .unwrap();
-    assert!(call_copilot(&output, &executable, "test-credential").is_err());
+    assert!(call_copilot(&output, &executable, "test-credential", "GITHUB_TOKEN").is_err());
+    fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'A plausible assessment without verified model usage.'\n",
+    )
+    .unwrap();
+    assert!(call_copilot(&output, &executable, "test-credential", "GITHUB_TOKEN").is_err());
+}
+
+#[test]
+fn model_usage_requires_real_tokens_concrete_models_and_copilot_provider() {
+    let usage = usage_json(MODEL);
+    assert_eq!(used_models(&usage).unwrap(), [MODEL]);
+    for invalid in [
+        usage.replace("\"complete\"", "\"partial\""),
+        usage.replace("\"outputTokens\":20", "\"outputTokens\":0"),
+        usage.replace("\"count\":1", "\"count\":0"),
+        usage.replace("\"kind\":\"copilot\"", "\"kind\":\"byok\""),
+        usage.replace(MODEL, "auto"),
+        usage.replace(MODEL, "--bad-option"),
+        usage.replace(MODEL, "ghs_accidentally_leaked"),
+        "{}".into(),
+    ] {
+        assert!(used_models(&invalid).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn fallback_requires_zero_or_absent_inference_not_incomplete_or_charged_usage() {
+    assert!(zero_inference_usage(ZERO_USAGE).unwrap());
+    for invalid in [
+        ZERO_USAGE.replace("\"totalNanoAiu\":0", "\"totalNanoAiu\":1"),
+        ZERO_USAGE.replace("\"totalUserRequests\":0", "\"totalUserRequests\":1"),
+        ZERO_USAGE.replace(
+            "\"modelMetrics\":{}",
+            "\"modelMetrics\":{\"some-model\":{}}",
+        ),
+        ZERO_USAGE.replace(
+            "\"totalNanoAiu\":0",
+            "\"aiCreditsStatus\":\"partial\",\"totalNanoAiu\":0",
+        ),
+        "{}".into(),
+    ] {
+        assert!(!zero_inference_usage(&invalid).unwrap_or(false));
+    }
+}
+
+#[test]
+fn require_ai_gate_cannot_pass_missing_or_failed_assessments() {
+    let root = Temp::new();
+    let output = prepared(&root, 1, 1);
+    let args = BTreeMap::from([("--out".into(), output.to_str().unwrap().into())]);
+    assert!(execute("require-ai", &args).is_err());
+    review_with(&output, Some("test-credential"), |_| {
+        Ok(assessment("A validated offline assessment fixture."))
+    })
+    .unwrap();
+    execute("require-ai", &args).unwrap();
+    review_with(&output, Some("test-credential"), |_| {
+        Err("provider failure".into())
+    })
+    .unwrap();
+    assert!(execute("require-ai", &args).is_err());
+    assert!(
+        fs::read_to_string(output.join("report.md"))
+            .unwrap()
+            .contains("48952 | 58672 | 57526")
+    );
+}
+
+#[test]
+fn legacy_manifests_remain_byte_identical_on_publication_retries() {
+    let root = Temp::new();
+    let output = prepared(&root, 1, 1);
+    let legacy = metadata(1, 1).json().replace(
+        ",\"actual_models\":[],\"model_selection\":\"not-run\",\"authentication\":\"not-run\"",
+        "",
+    );
+    assert!(!legacy.contains("actual_models"));
+    fs::write(output.join("manifest.json"), &legacy).unwrap();
+    let destination = root.0.join("benchmarks");
+    publish(&output, &destination).unwrap();
+    publish(&output, &destination).unwrap();
+    assert_eq!(
+        fs::read_to_string(destination.join("reports/1001-1.json")).unwrap(),
+        legacy
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unavailable_preferred_model_uses_auto_but_auth_or_charged_failures_never_retry() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = Temp::new();
+    let output = prepared(&root, 1, 1);
+    let executable = root.0.join("fake-copilot");
+    let script = format!(
+        "#!/bin/sh\nset -eu\nmodel=$2\nprintf '%s\\n' \"$model\" >> attempts.txt\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = --usage-output-file ]; then shift; usage=$1; fi; shift; done\nif [ \"$model\" = gpt-6-luna ]; then printf '%s' 'Error: Model \"gpt-6-luna\" from --model flag is not available.' >&2; exit 1; fi\nprintf '%s' '{}' > \"$usage\"\nprintf '%s' 'A fake fallback assessment with explicit model provenance.'\n",
+        usage_json("available-test-model")
+    );
+    fs::write(&executable, &script).unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let response = call_copilot(&output, &executable, "test-credential", "GITHUB_TOKEN").unwrap();
+    assert_eq!(response.models, ["available-test-model"]);
+    assert_eq!(response.selection, "automatic-fallback");
+    let attempts = output.join("copilot-private/work/attempts.txt");
+    assert_eq!(fs::read_to_string(&attempts).unwrap(), "gpt-6-luna\nauto\n");
+    let zero_script = script.replace(
+        "then printf '%s' 'Error:",
+        &format!(
+            "then printf '%s' '{}' > \"$usage\"; printf '%s' 'Error:",
+            ZERO_USAGE
+        ),
+    );
+    fs::write(&executable, zero_script).unwrap();
+    fs::remove_file(&attempts).unwrap();
+    let zero_response =
+        call_copilot(&output, &executable, "test-credential", "GITHUB_TOKEN").unwrap();
+    assert_eq!(zero_response.selection, "automatic-fallback");
+    assert_eq!(fs::read_to_string(&attempts).unwrap(), "gpt-6-luna\nauto\n");
+    for failed in [
+        script.replace(
+            "Error: Model \"gpt-6-luna\" from --model flag is not available.",
+            "Authentication failed",
+        ),
+        script.replace(
+            "then printf '%s' 'Error:",
+            "then printf '{}' > \"$usage\"; printf '%s' 'Error:",
+        ),
+    ] {
+        fs::write(&executable, failed).unwrap();
+        fs::remove_file(&attempts).unwrap();
+        assert!(call_copilot(&output, &executable, "test-credential", "GITHUB_TOKEN").is_err());
+        assert_eq!(fs::read_to_string(&attempts).unwrap(), "gpt-6-luna\n");
+    }
 }
 
 #[cfg(unix)]

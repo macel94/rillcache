@@ -8,6 +8,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 #[path = "support/review_data.rs"]
 mod data;
@@ -17,7 +18,7 @@ mod json;
 use json::{Json, Result, quoted};
 
 const MODEL: &str = "gpt-6-luna";
-const HELP: &str = "Usage: rillcache-review COMMAND [OPTIONS]\n\nCommands:\n  generate --input DIR --out DIR --repo OWNER/REPO --sha SHA --run-id N\n           --run-number N --attempt N --benchmark-attempt N --date UTC --status STATUS\n  review   --out DIR --copilot EXECUTABLE\n  publish  --out DIR --destination DIR\n\ngenerate validates a complete four-profile, three-repetition comparison offline.\nreview optionally uses COPILOT_GITHUB_TOKEN and the exact gpt-6-luna model.\npublish only prepares Markdown/manifest files; it never executes Git commands.\nNo third-party Rust dependencies; no credentials are required for offline reports.";
+const HELP: &str = "Usage: rillcache-review COMMAND [OPTIONS]\n\nCommands:\n  generate --input DIR --out DIR --repo OWNER/REPO --sha SHA --run-id N\n           --run-number N --attempt N --benchmark-attempt N --date UTC --status STATUS\n  review   --out DIR --copilot EXECUTABLE\n  require-ai --out DIR\n  publish  --out DIR --destination DIR\n\ngenerate validates a complete four-profile, three-repetition comparison offline.\nreview uses GITHUB_TOKEN (workflow) or COPILOT_GITHUB_TOKEN (local), preferring gpt-6-luna with an available-model fallback.\npublish only prepares Markdown/manifest files; it never executes Git commands.\nNo third-party Rust dependencies; no credentials are required for offline reports.";
 
 #[derive(Clone)]
 struct Manifest {
@@ -31,6 +32,29 @@ struct Manifest {
     status: String,
     complete: bool,
     ai_status: String,
+    actual_models: Vec<String>,
+    model_selection: String,
+    authentication: String,
+}
+
+struct Assessment {
+    text: String,
+    models: Vec<String>,
+    selection: String,
+    authentication: String,
+}
+
+fn valid_model(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value != "auto"
+        && !["gho_", "ghp_", "ghs_", "ghu_", "ghr_", "github_pat_"]
+            .iter()
+            .any(|prefix| value.contains(prefix))
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._:/+-".contains(&b))
 }
 
 fn positive(value: &str) -> Result<u64> {
@@ -75,6 +99,28 @@ impl Manifest {
             || self.benchmark_attempt == 0
             || !utc_stamp(&self.date)
             || !["success", "failure", "cancelled", "skipped"].contains(&self.status.as_str())
+            || self.actual_models.len() > 8
+            || self.actual_models.iter().any(|model| !valid_model(model))
+            || self
+                .actual_models
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.actual_models.len()
+            || (self.ai_status == "completed"
+                && (self.actual_models.is_empty()
+                    || self.model_selection == "not-run"
+                    || self.authentication == "not-run"
+                    || !self.complete
+                    || self.status != "success"))
+            || (self.ai_status != "completed"
+                && (!self.actual_models.is_empty()
+                    || self.model_selection != "not-run"
+                    || self.authentication != "not-run"))
+            || !["not-run", "preferred", "automatic-fallback"]
+                .contains(&self.model_selection.as_str())
+            || !["not-run", "workflow-token", "personal-token"]
+                .contains(&self.authentication.as_str())
         {
             return Err("invalid source, run identity, timestamp or benchmark status".into());
         }
@@ -85,7 +131,7 @@ impl Manifest {
         if value.get("schema_version")?.integer()? != 1
             || value.get("requested_model")?.text()? != MODEL
         {
-            return Err("unsupported report manifest or substituted model".into());
+            return Err("unsupported report manifest or preferred model".into());
         }
         let manifest = Self {
             repo: value.get("repository")?.text()?.into(),
@@ -98,6 +144,28 @@ impl Manifest {
             status: value.get("benchmark_status")?.text()?.into(),
             complete: value.get("complete")?.boolean()?,
             ai_status: value.get("ai_status")?.text()?.into(),
+            actual_models: match value.get("actual_models") {
+                Ok(models) => models
+                    .array()?
+                    .iter()
+                    .map(|v| v.text().map(str::to_owned))
+                    .collect::<Result<Vec<_>>>()?,
+                Err(_) => Vec::new(), // Existing immutable schema-1 reports predate model usage recording.
+            },
+            model_selection: value
+                .get("model_selection")
+                .ok()
+                .map(|v| v.text())
+                .transpose()?
+                .unwrap_or("not-run")
+                .into(),
+            authentication: value
+                .get("authentication")
+                .ok()
+                .map(|v| v.text())
+                .transpose()?
+                .unwrap_or("not-run")
+                .into(),
         };
         manifest.validate()?;
         Ok(manifest)
@@ -105,7 +173,7 @@ impl Manifest {
 
     fn json(&self) -> String {
         format!(
-            "{{\"schema_version\":1,\"repository\":{},\"source_sha\":{},\"run_id\":{},\"run_number\":{},\"review_attempt\":{},\"benchmark_attempt\":{},\"generated_at\":{},\"benchmark_status\":{},\"complete\":{},\"requested_model\":{},\"ai_status\":{}}}\n",
+            "{{\"schema_version\":1,\"repository\":{},\"source_sha\":{},\"run_id\":{},\"run_number\":{},\"review_attempt\":{},\"benchmark_attempt\":{},\"generated_at\":{},\"benchmark_status\":{},\"complete\":{},\"requested_model\":{},\"ai_status\":{},\"actual_models\":[{}],\"model_selection\":{},\"authentication\":{}}}\n",
             quoted(&self.repo),
             quoted(&self.sha),
             self.run_id,
@@ -116,7 +184,14 @@ impl Manifest {
             quoted(&self.status),
             self.complete,
             quoted(MODEL),
-            quoted(&self.ai_status)
+            quoted(&self.ai_status),
+            self.actual_models
+                .iter()
+                .map(|model| quoted(model))
+                .collect::<Vec<_>>()
+                .join(","),
+            quoted(&self.model_selection),
+            quoted(&self.authentication)
         )
     }
 
@@ -158,7 +233,7 @@ fn write(path: &Path, text: &str) -> Result<()> {
 fn render(directory: &Path, manifest: &Manifest, narrative: Option<&str>) -> Result<()> {
     let facts = data::read(&directory.join("measurements.md"), 128 * 1024)?;
     let mut out = format!(
-        "# Current benchmark performance\n\nGenerated: {} · [Benchmark run #{}]({}) · [Tested source `{}`](https://github.com/{}/commit/{})\n\n**Benchmark job: {}. Data: {}. Luna review: {}.**\n\nBenchmark attempt: {}; review attempt: {}. Requested model: `{MODEL}` via **GitHub Copilot**.\n\n[This report's permanent copy]({}) · [Report history](https://github.com/{}/tree/main/benchmarks/reports) · [Methodology](https://github.com/{}/blob/main/docs/benchmarks.md)\n\n## AI review\n\n",
+        "# Current benchmark performance\n\nGenerated: {} · [Benchmark run #{}]({}) · [Tested source `{}`](https://github.com/{}/commit/{})\n\n**Benchmark job: {}. Data: {}. Copilot review: {}.**\n\nBenchmark attempt: {}; review attempt: {}. Preferred model: `{MODEL}` via **GitHub Copilot**.\n\n[This report's permanent copy]({}) · [Report history](https://github.com/{}/tree/main/benchmarks/reports) · [Methodology](https://github.com/{}/blob/main/docs/benchmarks.md)\n\n## AI review\n\n",
         manifest.date,
         manifest.run_number,
         manifest.run_url(),
@@ -178,13 +253,25 @@ fn render(directory: &Path, manifest: &Manifest, narrative: Option<&str>) -> Res
         manifest.repo,
         manifest.repo
     );
+    writeln!(
+        out,
+        "Actual model(s): **{}**. Selection: {}. Authentication: {}.\n",
+        if manifest.actual_models.is_empty() {
+            "none recorded".into()
+        } else {
+            data::escaped(&manifest.actual_models.join(", "))
+        },
+        data::escaped(&manifest.model_selection),
+        data::escaped(&manifest.authentication)
+    )
+    .expect("String write");
     if let Some(narrative) = narrative {
         out.push_str("AI interpretation, **not measurements or a performance gate**. Verify claims against the deterministic tables below.\n\n");
         for line in narrative.lines() {
             writeln!(out, "> {}", data::escaped(line)).expect("String write");
         }
     } else {
-        writeln!(out, "**No AI assessment was accepted.** {}. The numeric tables remain independently generated; no other model is substituted.\n", data::escaped(&manifest.ai_status)).expect("String write");
+        writeln!(out, "**No AI assessment was accepted.** {}. The numeric tables remain independently generated. An unavailable preferred model may use Copilot automatic selection, but an unverified assessment is never presented as complete.\n", data::escaped(&manifest.ai_status)).expect("String write");
     }
     out.push('\n');
     out.push_str(&facts);
@@ -197,7 +284,10 @@ fn generate(input: &Path, output: &Path, mut manifest: Manifest) -> Result<()> {
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     let summary = data::summarize(input, &manifest.sha);
     manifest.complete = summary.complete;
-    manifest.ai_status = "pending optional Copilot review".into();
+    manifest.ai_status = "pending Copilot review".into();
+    manifest.actual_models.clear();
+    manifest.model_selection = "not-run".into();
+    manifest.authentication = "not-run".into();
     write(&output.join("measurements.md"), &summary.markdown)?;
     write(
         &output.join("complete.txt"),
@@ -215,10 +305,10 @@ fn generate(input: &Path, output: &Path, mut manifest: Manifest) -> Result<()> {
     render(output, &manifest, None)
 }
 
-fn copilot_args(prompt: &str, usage: &Path) -> Vec<String> {
+fn copilot_args(model: &str, prompt: &str, usage: &Path) -> Vec<String> {
     [
         "--model",
-        MODEL,
+        model,
         "--prompt",
         prompt,
         "--silent",
@@ -246,6 +336,7 @@ fn copilot_args(prompt: &str, usage: &Path) -> Vec<String> {
         "--max-autopilot-continues",
         "0",
         "--secret-env-vars",
+        "GITHUB_TOKEN",
         "COPILOT_GITHUB_TOKEN",
         "--usage-output-file",
         usage.to_str().unwrap_or("usage.json"),
@@ -263,7 +354,7 @@ fn accepted_narrative(text: &str, token: &str) -> Result<String> {
             .chars()
             .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
         || (!token.is_empty() && text.contains(token))
-        || ["gho_", "ghp_", "github_pat_"]
+        || ["gho_", "ghp_", "ghs_", "ghu_", "ghr_", "github_pat_"]
             .iter()
             .any(|prefix| text.contains(prefix))
     {
@@ -272,7 +363,67 @@ fn accepted_narrative(text: &str, token: &str) -> Result<String> {
     Ok(text.into())
 }
 
-fn call_copilot(output: &Path, executable: &Path, token: &str) -> Result<String> {
+fn used_models(usage: &str) -> Result<Vec<String>> {
+    let usage = json::parse(usage)?;
+    if usage.get("aiCreditsStatus")?.text()? != "complete" {
+        return Err("Copilot usage accounting is incomplete".into());
+    }
+    let mut models = std::collections::BTreeSet::new();
+    for entry in usage.get("providerModelMetrics")?.array()? {
+        let provider = entry.get("provider")?;
+        if provider.get("id")?.text()? != "copilot" || provider.get("kind")?.text()? != "copilot" {
+            return Err("unexpected non-Copilot inference provider".into());
+        }
+        let metrics = entry.get("metrics")?;
+        if metrics.get("requests")?.get("count")?.integer()? == 0 {
+            continue;
+        }
+        let model = entry.get("modelId")?.text()?;
+        if !valid_model(model) || metrics.get("usage")?.get("outputTokens")?.integer()? == 0 {
+            return Err("Copilot did not record a concrete model with generated tokens".into());
+        }
+        models.insert(model.to_owned());
+    }
+    if models.is_empty() || models.len() > 8 {
+        return Err("missing or excessive Copilot model usage".into());
+    }
+    Ok(models.into_iter().collect())
+}
+
+fn zero_inference_usage(text: &str) -> Result<bool> {
+    let usage = json::parse(text)?;
+    for field in [
+        "totalPremiumRequestCost",
+        "totalUserRequests",
+        "totalNanoAiu",
+        "totalApiDurationMs",
+        "lastCallInputTokens",
+        "lastCallOutputTokens",
+    ] {
+        if usage.get(field)?.integer()? != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(
+        matches!(usage.get("modelMetrics")?, Json::Object(values) if values.is_empty())
+            && matches!(usage.get("agentMetrics")?, Json::Object(values) if values.is_empty())
+            && usage.get("providerModelMetrics")?.array()?.is_empty()
+            && usage
+                .get("aiCreditsStatus")
+                .ok()
+                .is_none_or(|state| state.text().is_ok_and(|value| value == "complete")),
+    )
+}
+
+fn call_copilot(
+    output: &Path,
+    executable: &Path,
+    token: &str,
+    token_env: &str,
+) -> Result<Assessment> {
+    if !["GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"].contains(&token_env) {
+        return Err("unsupported Copilot authentication environment".into());
+    }
     let executable =
         fs::canonicalize(executable).map_err(|_| "pinned Copilot CLI is unavailable")?;
     let directory = fs::canonicalize(output).map_err(|_| "report directory unavailable")?;
@@ -289,55 +440,147 @@ fn call_copilot(output: &Path, executable: &Path, token: &str) -> Result<String>
         .map_err(|_| "cannot prepare isolated Copilot work directory")?;
     let prompt = data::read(&directory.join("prompt.txt"), 64 * 1024)?;
     let stdout = scratch.join("response.txt");
-    let mut command = Command::new("timeout");
-    command
-        .args(["--signal=TERM", "--kill-after=10s", "120s"])
-        .arg(executable)
-        .args(copilot_args(&prompt, &scratch.join("usage.json")))
-        .current_dir(scratch.join("work"))
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", scratch.join("home"))
-        .env("COPILOT_GITHUB_TOKEN", token)
-        .env("CI", "true")
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
-        .stdout(fs::File::create(&stdout).map_err(|_| "cannot create private response file")?)
-        .stderr(
-            fs::File::create(scratch.join("stderr.txt"))
-                .map_err(|_| "cannot create private diagnostic file")?,
-        );
-    for name in ["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE"] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
+    let stderr = scratch.join("stderr.txt");
+    let usage = scratch.join("usage.json");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    for model in [MODEL, "auto"] {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| *remaining >= Duration::from_millis(1))
+            .ok_or("Copilot review deadline exceeded")?;
+        match fs::remove_file(&usage) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err("cannot clear previous private Copilot usage".into()),
         }
+        let mut command = Command::new("timeout");
+        command
+            .args(["--signal=TERM", "--kill-after=10s"])
+            .arg(format!("{:.3}s", remaining.as_secs_f64()))
+            .arg(&executable)
+            .args(copilot_args(model, &prompt, &usage))
+            .current_dir(scratch.join("work"))
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", scratch.join("home"))
+            .env(token_env, token)
+            .env("CI", "true")
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null())
+            .stdout(fs::File::create(&stdout).map_err(|_| "cannot create private response file")?)
+            .stderr(
+                fs::File::create(&stderr).map_err(|_| "cannot create private diagnostic file")?,
+            );
+        // Retain only documented workflow identity/network context. Never pass other
+        // credentials, BYOK routing or arbitrary configuration. The inference job's
+        // supplied workflow token has contents: read, never repository-write access.
+        for name in [
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "NO_PROXY",
+            "SSL_CERT_FILE",
+            "GITHUB_ACTIONS",
+            "GITHUB_API_URL",
+            "GITHUB_SERVER_URL",
+            "GITHUB_REPOSITORY",
+            "GITHUB_REPOSITORY_ID",
+            "GITHUB_REPOSITORY_OWNER",
+            "GITHUB_REPOSITORY_OWNER_ID",
+            "GITHUB_RUN_ID",
+            "GITHUB_RUN_NUMBER",
+            "GITHUB_RUN_ATTEMPT",
+            "GITHUB_JOB",
+            "GITHUB_WORKFLOW",
+            "GITHUB_WORKFLOW_REF",
+            "GITHUB_WORKFLOW_SHA",
+            "GITHUB_REF",
+            "GITHUB_SHA",
+            "GITHUB_ACTOR",
+            "GITHUB_ACTOR_ID",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        if !command
+            .status()
+            .map_err(|_| "cannot launch bounded Copilot CLI")?
+            .success()
+        {
+            // This CLI error occurs before inference. Do not retry failed/charged
+            // inference, authentication errors or network failures with another model.
+            let unavailable = format!("Model \"{MODEL}\" from --model flag is not available.");
+            if model == MODEL
+                && data::read(&stderr, 8192).is_ok_and(|text| text.contains(&unavailable))
+            {
+                let unbilled = match fs::symlink_metadata(&usage) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+                    Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                        data::read(&usage, 256 * 1024)
+                            .is_ok_and(|text| zero_inference_usage(&text).unwrap_or(false))
+                    }
+                    _ => false,
+                };
+                if unbilled {
+                    continue;
+                }
+            }
+            return Err("Copilot authentication, model, budget, network or execution failed; no review accepted".into());
+        }
+        let text = accepted_narrative(&data::read(&stdout, 16000)?, token)?;
+        let models = used_models(&data::read(&usage, 256 * 1024)?)?;
+        if model != "auto" && models != [MODEL] {
+            return Err("preferred request used an unexpected model".into());
+        }
+        return Ok(Assessment {
+            text,
+            models,
+            selection: if model == MODEL {
+                "preferred"
+            } else {
+                "automatic-fallback"
+            }
+            .into(),
+            authentication: if token_env == "GITHUB_TOKEN" {
+                "workflow-token"
+            } else {
+                "personal-token"
+            }
+            .into(),
+        });
     }
-    if !command
-        .status()
-        .map_err(|_| "cannot launch bounded Copilot CLI")?
-        .success()
-    {
-        return Err("Copilot authentication, model access, budget, network or execution failed (120-second limit); no review accepted".into());
-    }
-    accepted_narrative(&data::read(&stdout, 16000)?, token)
+    Err("no available Copilot model completed the review".into())
 }
 
 fn review_with(
     output: &Path,
     token: Option<&str>,
-    invoke: impl FnOnce(&str) -> Result<String>,
+    invoke: impl FnOnce(&str) -> Result<Assessment>,
 ) -> Result<()> {
     let mut manifest = manifest(output)?;
+    manifest.actual_models.clear();
+    manifest.model_selection = "not-run".into();
+    manifest.authentication = "not-run".into();
     let narrative = if !manifest.complete || manifest.status != "success" {
         manifest.ai_status = "not run: benchmark failed or evidence is incomplete/invalid".into();
         None
     } else if let Some(token) =
         token.filter(|value| !value.trim().is_empty() && !value.starts_with("replace-"))
     {
-        match invoke(token).and_then(|text| accepted_narrative(&text, token)) {
-            Ok(text) => {
+        match invoke(token).and_then(|mut assessment| {
+            assessment.text = accepted_narrative(&assessment.text, token)?;
+            if assessment.models.is_empty() || assessment.models.iter().any(|m| !valid_model(m)) {
+                return Err("missing concrete model attribution".into());
+            }
+            Ok(assessment)
+        }) {
+            Ok(assessment) => {
                 manifest.ai_status = "completed".into();
-                Some(text)
+                manifest.actual_models = assessment.models;
+                manifest.model_selection = assessment.selection;
+                manifest.authentication = assessment.authentication;
+                manifest.validate()?;
+                Some(assessment.text)
             }
             Err(_) => {
                 manifest.ai_status = "unavailable: Copilot failed, timed out, exceeded its budget, or returned unusable output; check the Copilot credential/model entitlement".into();
@@ -345,7 +588,7 @@ fn review_with(
             }
         }
     } else {
-        manifest.ai_status = "unavailable: configure the COPILOT_GITHUB_TOKEN repository secret (fine-grained personal token, Copilot Requests permission)".into();
+        manifest.ai_status = "unavailable: workflow GITHUB_TOKEN needs copilot-requests: write (or a local Copilot credential)".into();
         None
     };
     render(output, &manifest, narrative.as_deref())
@@ -376,6 +619,7 @@ fn immutable(path: &Path, content: &str) -> Result<()> {
 
 fn publish(output: &Path, destination: &Path) -> Result<()> {
     let incoming = manifest(output)?;
+    let original_manifest = data::read(&output.join("manifest.json"), 8192)?;
     let report = data::read(&output.join("report.md"), 128 * 1024)?;
     let reports = destination.join("reports");
     for path in [destination, reports.as_path()] {
@@ -396,7 +640,7 @@ fn publish(output: &Path, destination: &Path) -> Result<()> {
     immutable(&reports.join(format!("{}.md", incoming.stem())), &report)?;
     immutable(
         &reports.join(format!("{}.json", incoming.stem())),
-        &incoming.json(),
+        &original_manifest,
     )?;
     if latest
         .as_ref()
@@ -413,7 +657,7 @@ fn publish(output: &Path, destination: &Path) -> Result<()> {
             );
         }
         write(&destination.join("README.md"), &dashboard)?;
-        write(&reports.join("latest.json"), &incoming.json())?;
+        write(&reports.join("latest.json"), &original_manifest)?;
     }
     if incoming.complete
         && incoming.status == "success"
@@ -421,7 +665,7 @@ fn publish(output: &Path, destination: &Path) -> Result<()> {
             .as_ref()
             .is_none_or(|previous| incoming.key() > previous.key())
     {
-        write(&reports.join("last-successful.json"), &incoming.json())?;
+        write(&reports.join("last-successful.json"), &original_manifest)?;
     }
     Ok(())
 }
@@ -446,6 +690,7 @@ fn arguments(args: impl IntoIterator<Item = String>) -> Result<(String, BTreeMap
             "--status",
         ],
         "review" => &["--out", "--copilot"],
+        "require-ai" => &["--out"],
         "publish" => &["--out", "--destination"],
         _ => return Err("unknown command".into()),
     };
@@ -482,15 +727,41 @@ fn execute(command: &str, values: &BTreeMap<String, String>) -> Result<()> {
                 status: values["--status"].clone(),
                 complete: false,
                 ai_status: String::new(),
+                actual_models: Vec::new(),
+                model_selection: "not-run".into(),
+                authentication: "not-run".into(),
             },
         ),
         "review" => {
             let output = path("--out");
             let executable = path("--copilot");
-            let token = std::env::var("COPILOT_GITHUB_TOKEN").ok();
-            review_with(&output, token.as_deref(), |token| {
-                call_copilot(&output, &executable, token)
-            })
+            let credential = ["GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"]
+                .into_iter()
+                .find_map(|name| {
+                    std::env::var(name)
+                        .ok()
+                        .filter(|v| !v.trim().is_empty() && !v.starts_with("replace-"))
+                        .map(|v| (name, v))
+                });
+            review_with(
+                &output,
+                credential.as_ref().map(|(_, value)| value.as_str()),
+                |token| {
+                    call_copilot(
+                        &output,
+                        &executable,
+                        token,
+                        credential.as_ref().expect("credential exists").0,
+                    )
+                },
+            )
+        }
+        "require-ai" => {
+            let report = manifest(&path("--out"))?;
+            if report.ai_status != "completed" || report.actual_models.is_empty() {
+                return Err("AI review did not complete; numeric report is preserved, but this is not a successful AI assessment".into());
+            }
+            Ok(())
         }
         "publish" => {
             let incoming = manifest(&path("--out"))?;
