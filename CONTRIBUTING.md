@@ -39,7 +39,14 @@ would add overhead; revisit only with measured evidence.
 GitHub main builds deliver checksummed Linux binaries as short-lived Actions
 artifacts. Verify the archive using its adjacent SHA-256 file, extract it, then
 run the binary on loopback. This is continuous delivery for testing, not automatic public
-production deployment. Heavier reference builds/comparisons run manually/weekly.
+production deployment. A separate [container workflow](.github/workflows/container.yml)
+tests native amd64/arm64 scratch images and publishes the exact tested archives to
+GHCR using only its workflow token. Only its trusted publisher gets `packages: write`;
+fresh unprivileged jobs must prove anonymous pull/run. Docker/Kubernetes examples
+and the one-time GitHub public-visibility setting are in [container delivery](docs/containers.md).
+`make container` / `make container-smoke` are optional: container tooling and network
+access remain outside the offline fast path. Heavier reference builds/comparisons
+run manually/weekly.
 
 When updating Rust or GitHub Actions, verify official upstream releases and update
 pins deliberately. Actions are pinned by commit SHA. Normal CI, benchmarking and

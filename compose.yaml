@@ -1,0 +1,15 @@
+services:
+  rillcache:
+    image: ghcr.io/macel94/rillcache:latest
+    # Loopback on the host; the image itself listens on its container interface.
+    ports:
+      - "127.0.0.1:6379:6379"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: 1.0
+    stop_grace_period: 5s
+    # No volume: this release is in-memory only. Mounting /data would NOT persist it.

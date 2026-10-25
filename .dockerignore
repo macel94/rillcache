@@ -1,0 +1,13 @@
+# Explicit allowlist: never send Git history, credentials, evidence or host build outputs.
+**
+!Dockerfile
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!src/
+!src/**
+!benches/
+!benches/**
+!container/
+!container/notices/
+!container/notices/**

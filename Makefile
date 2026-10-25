@@ -21,13 +21,15 @@ BENCH_ORDER ?= rillcache redis valkey
 PROFILE ?= 0
 PROFILE_IDLE_MS ?= 1000
 REQUIRE_THREAD_MODES ?= 0
+CONTAINER_ENGINE ?= docker
+CONTAINER_IMAGE ?= rillcache:local
 
-.PHONY: help fmt fmt-check lint test check release run smoke bench-core bench bench-threads metadata ci package competitors compare
+.PHONY: help fmt fmt-check lint test check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
 # Always validate cached tools: an interrupted linker may leave a truncated file.
 .PHONY: $(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server
 
 help:
-	@printf '%s\n' 'make test       Fast unit, TCP, benchmark and policy tests' 'make check      Formatting, all-target Clippy and tests (offline)' 'make ci         Same fast verification as GitHub, plus release benchmark smoke' 'make run        Run on loopback:6379' 'make bench      Microbenchmarks and repeated local TCP benchmarks' 'make compare    Build pinned competitors once; compare three native servers' 'make package    Build a release archive and SHA-256 checksum'
+	@printf '%s\n' 'make test       Fast unit, TCP, benchmark and policy tests' 'make check      Formatting, all-target Clippy and tests (offline)' 'make ci         Same fast verification as GitHub, plus release benchmark smoke' 'make run        Run on loopback:6379' 'make bench      Microbenchmarks and repeated local TCP benchmarks' 'make compare    Build pinned competitors once; compare three native servers' 'make package    Build a release archive and SHA-256 checksum' 'make container  Build the optional thin, non-root container image' 'make container-smoke  Test a built image in all three worker modes'
 
 fmt:
 	$(CARGO) fmt --all
@@ -90,8 +92,17 @@ ci: check smoke bench-core
 package: release
 	name="rillcache-$$(uname -s | tr '[:upper:]' '[:lower:]')-$$(uname -m)"
 	mkdir -p target/dist
-	tar -czf "target/dist/$$name.tar.gz" -C target/release rillcache rillcache-bench -C "$(CURDIR)" README.md docs
+	tar -czf "target/dist/$$name.tar.gz" -C target/release rillcache rillcache-bench -C "$(CURDIR)" README.md docs compose.yaml deploy
 	(cd target/dist && sha256sum "$$name.tar.gz" > "$$name.tar.gz.sha256")
+
+# Container tools/network access are optional and never enter normal offline CI.
+container:
+	revision="$$(git rev-parse HEAD)"
+	if [[ -n "$$(git status --porcelain)" ]]; then revision="$$revision-dirty"; fi
+	$(CONTAINER_ENGINE) build --build-arg "VCS_REF=$$revision" --tag '$(CONTAINER_IMAGE)' .
+
+container-smoke: release
+	CONTAINER_ENGINE='$(CONTAINER_ENGINE)' CARGO='$(CARGO)' bash scripts/container-smoke.sh '$(CONTAINER_IMAGE)'
 
 # These are optional, isolated benchmark tools. They never enter Cargo's graph,
 # the application release archive, or the normal check/CI path.

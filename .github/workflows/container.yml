@@ -1,0 +1,192 @@
+name: Container image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate version tags against the real application version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(awk -F '"' '/^version = "/ {print $2; exit}' Cargo.toml)
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo '::error::A release tag must equal v<Cargo package version>.'
+            exit 1
+          fi
+      - name: Same offline safety, dependency, mode and benchmark checks as normal CI
+        run: make ci
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build a native, statically linked scratch image without publishing credentials
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          push: false
+          tags: rillcache:tested-${{ matrix.arch }}
+          build-args: VCS_REF=${{ github.sha }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=container-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.arch }}
+      - name: Build only host-side test tools, never include them in the image
+        run: cargo build --locked --offline --release --bin rillcache-bench
+      - name: Test default networking, health, size, static linking and all three worker modes
+        run: bash scripts/container-smoke.sh 'rillcache:tested-${{ matrix.arch }}'
+      - name: Export the exact tested image, not a subsequent rebuild
+        run: docker image save 'rillcache:tested-${{ matrix.arch }}' -o 'target/image-${{ matrix.arch }}.tar'
+      - name: Preserve the tested image and evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rillcache-container-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            target/image-${{ matrix.arch }}.tar
+            target/container-smoke/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: container-publication
+      cancel-in-progress: false
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download only this run's exact tested images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rillcache-container-*-${{ github.sha }}
+          path: target/images
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Authenticate with the short-lived workflow token, not a stored PAT
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish both tested architectures and a source-labelled manifest
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          sources=()
+          for arch in amd64 arm64; do
+            docker image load --input "target/images/image-$arch.tar"
+            ref="$image:sha-$GITHUB_SHA-$arch"
+            docker image tag "rillcache:tested-$arch" "$ref"
+            docker image push "$ref"
+            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            sources+=("$image@$digest")
+          done
+          tags=(--tag "$image:sha-$GITHUB_SHA")
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+            if [[ "$head" == "$GITHUB_SHA" ]]; then
+              tags+=(--tag "$image:latest")
+            else
+              echo '::notice::An older source run cannot move latest backwards; source tag still published.'
+            fi
+          else
+            tags+=(--tag "$image:$GITHUB_REF_NAME")
+          fi
+          docker buildx imagetools create "${tags[@]}" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation 'index:org.opencontainers.image.description=Experimental safe-std-only Rillcache; no authentication, TLS or persistence' \
+            "${sources[@]}"
+          ref="$image:sha-$GITHUB_SHA"
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker buildx imagetools inspect "$ref" --raw | jq -e \
+            '([.manifests[].platform | .os + "/" + .architecture] | sort) == ["linux/amd64", "linux/arm64"]'
+          echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo '## Tested thin container image'
+            echo
+            echo "Digest-pinned image: \`$image@$digest\`"
+            echo
+            echo 'Both native architectures passed default/per-client, one-worker and four-worker tests.'
+            echo 'Public availability is checked separately without registry credentials.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  public-pull:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require anonymous access to the exact published manifest
+        env:
+          IMAGE: ${{ needs.publish.outputs.image }}
+        run: |
+          config=$(mktemp -d)
+          trap 'rm -rf "$config"' EXIT
+          if ! DOCKER_CONFIG="$config" docker image pull "$IMAGE"; then
+            echo '::error::GHCR defaults new packages to PRIVATE. Open the repository Packages > rillcache > Package settings > Change visibility > Public, then rerun this job. No personal token is required.'
+            exit 1
+          fi
+      - name: Verify the public image really runs, with no publishing credential
+        env:
+          IMAGE: ${{ needs.publish.outputs.image }}
+        run: |
+          cargo build --locked --offline --release --bin rillcache-bench
+          bash scripts/container-smoke.sh "$IMAGE"

@@ -1,0 +1,89 @@
+# Single volatile instance, not replication/HA. Keep this unauthenticated service private.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rillcache
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rillcache
+  template:
+    metadata:
+      labels:
+        app: rillcache
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rillcache
+          image: ghcr.io/macel94/rillcache:latest
+          imagePullPolicy: Always
+          ports:
+            - name: redis
+              containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 32Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          startupProbe:
+            exec:
+              command: [/rillcache, --healthcheck, "127.0.0.1:6379"]
+            periodSeconds: 1
+            timeoutSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: [/rillcache, --healthcheck, "127.0.0.1:6379"]
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          # No PING liveness restart on client-capacity overload; process exit still restarts.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rillcache
+spec:
+  type: ClusterIP
+  selector:
+    app: rillcache
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rillcache-clients
+spec:
+  podSelector:
+    matchLabels:
+      app: rillcache
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # Opt in clients in this namespace. Requires a NetworkPolicy-capable CNI.
+        - podSelector:
+            matchLabels:
+              rillcache-client: "true"
+      ports:
+        - protocol: TCP
+          port: 6379

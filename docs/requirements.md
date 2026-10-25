@@ -39,6 +39,8 @@ reason to couple all future commands into a single large story.
 | S11 | As an operator, I can select a fixed number of I/O/execution workers and verify concurrent behavior in every mode locally and on GitHub. | S | R60–R64; mode-matrix TCP, standalone-thread and benchmark tests |
 | S12 | As a cache user, I can expire strings atomically and use Redis-compatible SET/expiry options without depending on polling or sleeps for correctness. | S | R65–R68; injected-clock, wire, budget and reference tests |
 | S13 | As a counter user, I can atomically change signed 64-bit integer strings without lost updates, overflow or changing their TTL. | S | R69–R71; boundary, many-writer and reference tests |
+| S14 | As an operator, I can run a tiny non-root image without configuration, append worker options and probe it without installing a shell/client. | S | R72–R74/R78; static/size/default-network/health/mode tests and deployment examples |
+| S15 | As a user, I get tested native amd64/arm64 images from GHCR automatically, with a visible anonymous-access gate instead of an unverified public-publishing claim. | S | R75–R77; isolated publishing, tested archives, manifest and anonymous pull/run jobs |
 
 ## EARS acceptance requirements
 
@@ -107,8 +109,9 @@ reason to couple all future commands into a single large story.
   benchmark smoke test that validates actual replies.
 - **R32 (event-driven):** When main passes CI, the workflow shall make a Linux
   release archive, checksum and benchmark evidence available as downloadable
-  artifacts, without publishing to a registry or deploying an unauthenticated
-  experimental server. No deployment environment has been specified.
+  artifacts, without automatically deploying an unauthenticated experimental
+  server. The separate S15 container workflow may publish tested images to GHCR;
+  publishing an image is not deployment or a production-readiness claim.
 
 ### Performance evidence
 
@@ -250,6 +253,37 @@ reason to couple all future commands into a single large story.
   one-worker and four-worker Rillcache modes before comparative timing begins.
   Deliberate vendor divergences shall have explicit per-vendor expectations;
   Rillcache shall follow the documented Redis behavior.
+
+### Thin container delivery (S14–S15)
+
+- **R72 (ubiquitous):** The Linux runtime image shall use scratch, contain a
+  statically linked safe-std-only Rillcache binary and runtime license notices,
+  run as numeric non-root UID/GID 65532, and stay below 8 MiB uncompressed.
+  Compilers, shells, package managers and benchmark/review executables shall not ship.
+- **R73 (event-driven):** When the image is run without arguments, it shall listen
+  on container TCP port 6379 on all IPv4 interfaces. Appended options (including
+  worker counts and an overriding bind address) shall work without a wrapper script.
+  The standalone binary/library shall retain loopback defaults.
+- **R74 (event-driven):** When `--healthcheck IP:port` runs, the same binary shall
+  send a read-only RESP2 PING, require an exact PONG, remain quiet on success and
+  fail on rejection, malformed/truncated replies, connection errors or a bounded
+  one-second I/O deadline. No external runtime probe tool shall be required.
+- **R75 (event-driven):** When trusted main/tag/manual publication runs, automation
+  shall first pass offline checks and native amd64/arm64 container tests in all
+  three worker modes, then publish only those tested images as one GHCR manifest
+  with source tags/labels. PRs shall test but receive no publishing credential.
+  Only a separate trusted publishing job shall receive `packages: write`.
+- **R76 (unwanted behavior):** If an architecture/test fails, an image is too large
+  or dynamically linked, or a version tag disagrees with Cargo, then publication
+  shall fail. A manifest shall not silently omit a required architecture.
+- **R77 (event-driven):** After publication, a separate credential-free check
+  shall verify anonymous registry access and run the published image. If GitHub's
+  first-package private visibility blocks this, then the job shall fail with the
+  explicit one-time public-visibility action, not claim public availability.
+- **R78 (ubiquitous):** Docker/Kubernetes examples shall use restricted networking,
+  non-root/read-only execution and bounded resources; keep data-loss, payload-not-
+  RSS, missing authentication/TLS and non-graceful process-termination limitations
+  explicit. A single replica/Service shall not imply persistence, replication or HA.
 
 ## Compatibility boundary (v0.1)
 

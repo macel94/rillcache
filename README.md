@@ -56,6 +56,21 @@ for acceptance criteria and exact compatibility boundaries. The
 blocker; the goal is production compatibility, not silently redefining a subset
 as a drop-in replacement.
 
+## Run with Docker or Kubernetes
+
+```sh
+docker run --rm --init -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest
+# Or: docker compose up -d
+# Or: kubectl apply -f deploy/kubernetes.yaml
+```
+
+The thin multi-architecture image runs non-root, binds container port 6379 without
+extra arguments, and has a built-in PING health check—no shell or redis-cli inside.
+Append options normally, e.g. `--threads 4`. **In-memory/experimental: no AUTH, TLS
+or persistence.** Keep it private. See [container delivery](docs/containers.md)
+for resource bounds, Kubernetes networking, digest pinning, shutdown limitations
+and GitHub's one-time public-package visibility setting.
+
 ## Quick development loop
 
 Install [Rust via rustup](https://rust-lang.org/tools/install/) and GNU Make. The
@@ -106,8 +121,9 @@ RSS and matched-thread context switches without changing the request timer. See
 [CI](.github/workflows/ci.yml) runs the same `make ci` on PRs and main pushes,
 cancels superseded runs, and publishes benchmark evidence. Successful main builds
 also provide a Linux binary archive and SHA-256 checksum as Actions artifacts for
-immediate testing. There is no automatic public deployment of this experimental,
-unauthenticated server.
+immediate testing. [Container delivery](.github/workflows/container.yml) separately
+tests and publishes thin amd64/arm64 images to GHCR using the workflow token.
+There is no automatic public deployment of this experimental, unauthenticated server.
 
 [Comparative benchmarks](.github/workflows/benchmarks.yml) run manually or weekly,
 separately from the fast feedback path. Timing on shared runners is evidence, not

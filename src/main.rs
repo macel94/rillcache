@@ -1,16 +1,20 @@
 #![forbid(unsafe_code)]
 
+use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use rillcache::{Config, Server};
 
-const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --help                  Show this help\n  --version               Show version\n\nExperimental: no authentication, TLS, persistence or eviction. Keep on loopback.";
+mod healthcheck;
+
+const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                  Show this help\n  --version               Show version\n\nExperimental: no authentication, TLS, persistence or eviction. Keep on loopback.";
 
 enum Options {
     Run(Config),
     Help,
     Version,
+    Healthcheck(SocketAddr),
 }
 
 fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, String> {
@@ -20,6 +24,19 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
         match option.as_str() {
             "--help" | "-h" => return Ok(Options::Help),
             "--version" | "-V" => return Ok(Options::Version),
+            "--healthcheck" => {
+                let address = arguments
+                    .next()
+                    .ok_or("missing value for --healthcheck")?
+                    .parse::<SocketAddr>()
+                    .ok()
+                    .filter(|address| address.port() != 0)
+                    .ok_or("--healthcheck requires a numeric IP:port with a nonzero port")?;
+                if arguments.next().is_some() {
+                    return Err("unexpected arguments after --healthcheck".into());
+                }
+                return Ok(Options::Healthcheck(address));
+            }
             "--bind" | "--max-clients" | "--threads" | "--max-data-bytes" | "--idle-timeout-ms" => {
                 let value = arguments
                     .next()
@@ -75,6 +92,13 @@ fn main() -> ExitCode {
             println!("rillcache {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        Ok(Options::Healthcheck(address)) => match healthcheck::check(address) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("rillcache: health check failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(Options::Run(config)) => match Server::bind(config).and_then(|server| {
             eprintln!(
                 "rillcache {} listening on {}",
@@ -101,6 +125,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn standalone_defaults_and_appended_container_options_are_distinct() {
+        let Options::Run(defaults) = options(Vec::new()).unwrap() else {
+            panic!("expected defaults");
+        };
+        assert!(defaults.bind_addr.ip().is_loopback());
+        let Options::Run(container) =
+            options(["--bind", "0.0.0.0:6379", "--threads", "4"].map(str::to_owned)).unwrap()
+        else {
+            panic!("expected container config");
+        };
+        assert!(container.bind_addr.ip().is_unspecified());
+        assert_eq!(container.worker_threads, Some(4));
+        let Options::Run(overridden) =
+            options(["--bind", "0.0.0.0:6379", "--bind", "127.0.0.1:26379"].map(str::to_owned))
+                .unwrap()
+        else {
+            panic!("expected override");
+        };
+        assert_eq!(overridden.bind_addr, "127.0.0.1:26379".parse().unwrap());
+        let Options::Healthcheck(address) =
+            options(["--bind", "0.0.0.0:6379", "--healthcheck", "[::1]:6379"].map(str::to_owned))
+                .unwrap()
+        else {
+            panic!("expected health check");
+        };
+        assert_eq!(address, "[::1]:6379".parse().unwrap());
+    }
+
+    #[test]
     fn cli_validates_arguments() {
         for arguments in [
             vec!["--unknown"],
@@ -112,6 +165,10 @@ mod tests {
             vec!["--threads", "-1"],
             vec!["--max-data-bytes", "-1"],
             vec!["--idle-timeout-ms", "0"],
+            vec!["--healthcheck"],
+            vec!["--healthcheck", "localhost:6379"],
+            vec!["--healthcheck", "127.0.0.1:0"],
+            vec!["--healthcheck", "127.0.0.1:6379", "--unknown"],
         ] {
             assert!(options(arguments.into_iter().map(str::to_owned)).is_err());
         }

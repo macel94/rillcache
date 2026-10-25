@@ -131,6 +131,43 @@ fn standalone_profiling_validates_all_workloads_and_fails_without_a_target() {
 }
 
 #[test]
+fn healthcheck_is_quiet_on_success_and_fails_for_an_unavailable_endpoint() {
+    use rillcache::{Config, Server};
+    let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        worker_threads: match mode.as_str() {
+            "0" => None,
+            _ => Some(mode.parse().unwrap()),
+        },
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let address = server.local_addr().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+        .args(["--healthcheck", &address])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    server.shutdown().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+        .args(["--healthcheck", &address])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("health check failed"));
+}
+
+#[test]
 fn bind_failure_is_reported_with_a_nonzero_status() {
     let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_rillcache"))
