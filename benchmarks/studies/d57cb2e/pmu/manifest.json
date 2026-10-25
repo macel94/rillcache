@@ -1,0 +1,274 @@
+{
+  "kind": "diagnostic-user-PMU-not-native-timing",
+  "baseline_source": "3dca0c7fb4beb9923bd05f0d891602a5cd9b3790",
+  "candidate_source": "d57cb2ed0e077eb7d33109d4deee989d534daa4c",
+  "binary_sha256": {
+    "before": "32fe6462f0b87d44c7ce5dfee950c84f3586c90292c45af77f46b24555849422",
+    "after": "bf0236570862202983474f17137430b69d3c40796f263138fc75ad847c3c3669",
+    "client": "0488d011657dfb805f8e4b025964ea04dcd0a7f4b41855178144643efbe3490e"
+  },
+  "perf_version": "perf version 6.12.113",
+  "server_cpus": [
+    0
+  ],
+  "client_cpus": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "requests": 500000,
+  "clients": 8,
+  "pipeline": 16,
+  "keyspace": 1024,
+  "value_size": 64,
+  "warmup_per_client": 100,
+  "note": "Counters cover the entire frozen-client invocation including setup/warmup/verification and server background work; user-space only. Instrumented elapsed/throughput/latency are not performance evidence.",
+  "records": [
+    {
+      "workload": "ping",
+      "run": 1,
+      "variant": "before",
+      "instructions:u": 263431606,
+      "cycles:u": 267401029
+    },
+    {
+      "workload": "ping",
+      "run": 1,
+      "variant": "after",
+      "instructions:u": 179208004,
+      "cycles:u": 216360236
+    },
+    {
+      "workload": "ping",
+      "run": 2,
+      "variant": "after",
+      "instructions:u": 179229804,
+      "cycles:u": 223279943
+    },
+    {
+      "workload": "ping",
+      "run": 2,
+      "variant": "before",
+      "instructions:u": 263376358,
+      "cycles:u": 266463680
+    },
+    {
+      "workload": "ping",
+      "run": 3,
+      "variant": "before",
+      "instructions:u": 263603315,
+      "cycles:u": 308879452
+    },
+    {
+      "workload": "ping",
+      "run": 3,
+      "variant": "after",
+      "instructions:u": 179367958,
+      "cycles:u": 250439131
+    },
+    {
+      "workload": "set",
+      "run": 1,
+      "variant": "before",
+      "instructions:u": 1423986554,
+      "cycles:u": 1239506839
+    },
+    {
+      "workload": "set",
+      "run": 1,
+      "variant": "after",
+      "instructions:u": 775409436,
+      "cycles:u": 798581747
+    },
+    {
+      "workload": "set",
+      "run": 2,
+      "variant": "after",
+      "instructions:u": 775489393,
+      "cycles:u": 779364742
+    },
+    {
+      "workload": "set",
+      "run": 2,
+      "variant": "before",
+      "instructions:u": 1423651278,
+      "cycles:u": 1185640655
+    },
+    {
+      "workload": "set",
+      "run": 3,
+      "variant": "before",
+      "instructions:u": 1424760194,
+      "cycles:u": 1180825335
+    },
+    {
+      "workload": "set",
+      "run": 3,
+      "variant": "after",
+      "instructions:u": 774901028,
+      "cycles:u": 769865029
+    },
+    {
+      "workload": "get",
+      "run": 1,
+      "variant": "before",
+      "instructions:u": 862789826,
+      "cycles:u": 896865906
+    },
+    {
+      "workload": "get",
+      "run": 1,
+      "variant": "after",
+      "instructions:u": 475555212,
+      "cycles:u": 605036064
+    },
+    {
+      "workload": "get",
+      "run": 2,
+      "variant": "after",
+      "instructions:u": 475708701,
+      "cycles:u": 663072714
+    },
+    {
+      "workload": "get",
+      "run": 2,
+      "variant": "before",
+      "instructions:u": 863272616,
+      "cycles:u": 945664112
+    },
+    {
+      "workload": "get",
+      "run": 3,
+      "variant": "before",
+      "instructions:u": 863258845,
+      "cycles:u": 956269512
+    },
+    {
+      "workload": "get",
+      "run": 3,
+      "variant": "after",
+      "instructions:u": 475587057,
+      "cycles:u": 638220848
+    },
+    {
+      "workload": "set-nx-existing",
+      "run": 1,
+      "variant": "before",
+      "instructions:u": 904242836,
+      "cycles:u": 799527062
+    },
+    {
+      "workload": "set-nx-existing",
+      "run": 1,
+      "variant": "after",
+      "instructions:u": 648351430,
+      "cycles:u": 750391934
+    },
+    {
+      "workload": "set-nx-existing",
+      "run": 2,
+      "variant": "after",
+      "instructions:u": 648385771,
+      "cycles:u": 759165574
+    },
+    {
+      "workload": "set-nx-existing",
+      "run": 2,
+      "variant": "before",
+      "instructions:u": 904364191,
+      "cycles:u": 876281395
+    },
+    {
+      "workload": "set-nx-existing",
+      "run": 3,
+      "variant": "before",
+      "instructions:u": 904371780,
+      "cycles:u": 817224930
+    },
+    {
+      "workload": "set-nx-existing",
+      "run": 3,
+      "variant": "after",
+      "instructions:u": 648345186,
+      "cycles:u": 728403223
+    },
+    {
+      "workload": "set-xx-existing",
+      "run": 1,
+      "variant": "before",
+      "instructions:u": 1511306492,
+      "cycles:u": 1212697516
+    },
+    {
+      "workload": "set-xx-existing",
+      "run": 1,
+      "variant": "after",
+      "instructions:u": 857190254,
+      "cycles:u": 841659629
+    },
+    {
+      "workload": "set-xx-existing",
+      "run": 2,
+      "variant": "after",
+      "instructions:u": 857172694,
+      "cycles:u": 878967994
+    },
+    {
+      "workload": "set-xx-existing",
+      "run": 2,
+      "variant": "before",
+      "instructions:u": 1511514980,
+      "cycles:u": 1273707102
+    },
+    {
+      "workload": "set-xx-existing",
+      "run": 3,
+      "variant": "before",
+      "instructions:u": 1511291846,
+      "cycles:u": 1221682175
+    },
+    {
+      "workload": "set-xx-existing",
+      "run": 3,
+      "variant": "after",
+      "instructions:u": 857201476,
+      "cycles:u": 797866339
+    }
+  ],
+  "counter_sha256": {
+    "get-1-after.csv": "1bd8711a47c0c677075e8790d5f804539d047b9c8f2709b777366acd83829fdf",
+    "get-1-before.csv": "6188facc1ae5151a6071b25a6d65aa787cfac63316d37d9472b35baf930cba7f",
+    "get-2-after.csv": "03bebd85d0a05d0126e1c349daa1eac7338991a85d569cedbdea426c91a46547",
+    "get-2-before.csv": "9675fd4bf0b1f22e2b72bbaef0d9296b4ed0889f7c70116d5257d8819f950228",
+    "get-3-after.csv": "593020d637d4045ddc7d89f30b93dd0db088457502847c22f1a7a923ef181c3d",
+    "get-3-before.csv": "5e3b989f21ce8baae2ef68f2d70264b63ad380f5f226f5a9d23f4f4c0b730a25",
+    "ping-1-after.csv": "2909d0bcd6a1adfdf4353410c88b794c0b0041d9bade36d71ef81161e8204db1",
+    "ping-1-before.csv": "c0bf582db024509f1a15717f4172c1bc1aeeac06e02c2e2c4851e5c053180cf1",
+    "ping-2-after.csv": "efaf837ca5e01ef4304c6ca31667dcf2bfd780780b72921592a49c8e80bf3504",
+    "ping-2-before.csv": "3e3be41fbaf22cac1bd6205a942eaa3cec1ae47fd49ecff1d42ad2824b429e25",
+    "ping-3-after.csv": "0aa679c4a8487962be6179b46a6706535e365fc015a9ed651570f96ca387c233",
+    "ping-3-before.csv": "355d3e46982583d08281530bd2c6ee024b9851f7f7882bd38721e8bdbf4340b1",
+    "set-1-after.csv": "2a92f1fd6f153b95e6cde10cf386f8b53dd9f846e241ba358ae10c086bbd6b8b",
+    "set-1-before.csv": "2fa423e075554f6ab9434a33b072718566c64e321152e8aba19c8a394ba55887",
+    "set-2-after.csv": "3eea5fbb2102aa9fe5148081b942e3f4ad0b5a6f50eec5f72a9ae51c0c16c8dc",
+    "set-2-before.csv": "d2d19ab872afc22f9e839bac43befceb33fa17aaddb92b9cf8987fb13d6fda40",
+    "set-3-after.csv": "1276115380f7f72520c471f9fd370b7d4e9b2b5fad52bd12d910bc4b46a4af7d",
+    "set-3-before.csv": "9a54919815cac2034f3caa925722629c3a1cb96b2189b35df560842946fb34d1",
+    "set-nx-existing-1-after.csv": "d68d2e5cd027fd36cc27522efb484174c0be727d084d8b7754d1d3ee0e4d1f93",
+    "set-nx-existing-1-before.csv": "12661d0e9650ea68cf4a3372d0535abc66a442c1b628c87769e2ca5888b2e5ba",
+    "set-nx-existing-2-after.csv": "f787702317ba6bc3ac1c470a05565b9b74a3281c7b8d3bd44c7610066948db25",
+    "set-nx-existing-2-before.csv": "9aef0bd185921f4852c09d4fb28f321354188dd1a418c234d74a9a6a512d3a4f",
+    "set-nx-existing-3-after.csv": "35d5d40f03ab594dd7e64965b9a8afbae0434962ee40efacbefd03ca113239c8",
+    "set-nx-existing-3-before.csv": "50a66199f25cc859608de3dbf448ff5341cc67dfb7be18239ae8f1c213d167b1",
+    "set-xx-existing-1-after.csv": "55319af5e5509c7265094f5b2865cf1375ee3323fe42637da6bd630fa4c78ce5",
+    "set-xx-existing-1-before.csv": "898a155efac55205733869029203aba160f7522229103a9039adc68bf9215178",
+    "set-xx-existing-2-after.csv": "18241a9382bc30be893435ef5a9aa00bb1a17d7460cda0d583d1005912114a7d",
+    "set-xx-existing-2-before.csv": "0ae2383993104f2e1fd7499a001c873b47500be88b6ad376996ab0e02ed398b0",
+    "set-xx-existing-3-after.csv": "e5c545166c0c52b8431c7bfa3b151c6a2347e13c8906ee5498a8df8c99ac3875",
+    "set-xx-existing-3-before.csv": "e06d5c1ef0409187c247bc0424f1da9b58c5d9ae4795f06be3fb366402d62393"
+  },
+  "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1\n",
+  "runtime": "default managed thread-per-client; no worker flag; normal Cargo release profile; overflow checks retained"
+}

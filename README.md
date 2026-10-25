@@ -11,6 +11,8 @@ Luna, with the actual model disclosed). Default-branch comparisons authenticate
 with the built-in workflow token: no personal token or repository secret to set
 up. Reports publish automatically with per-run Markdown history; no artifact
 download is needed. [Reporting details](docs/benchmark-reports.md).
+[Profile-guided before/after results](benchmarks/studies/d57cb2e/README.md) preserve
+all 60 native conditions, including gains, regressions and worker-tail tradeoffs.
 
 ## Project vision
 
@@ -91,7 +93,9 @@ uses one shared worker, not one-client-at-a-time admission. Fixed workers use
 portable nonblocking polling with a 1 ms idle wait and a bounded 50 µs active
 window after progress; this trades CPU work for fewer premature sleeps, not free
 CPU or kernel readiness. Lower thread counts are not an assertion of lower
-latency or higher throughput. The default is unchanged.
+latency or higher throughput. Four workers sharing one CPU worsened batch p99
+in the matched study despite higher throughput; evaluate `--threads 1` for that
+budget. The default is unchanged.
 
 A Redis CLI in RESP2 mode can exercise the supported commands. Some modern
 clients issue unsupported discovery commands; compatibility is not yet claimed

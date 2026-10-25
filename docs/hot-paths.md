@@ -101,9 +101,26 @@ wrapper's regression. Matched store-path instruction diagnostics also fell;
 these are isolated hot-path findings, not network throughput promises. The shared
 six-CPU development VM produced severe timing variance (including roughly 67k–321k
 SET commands/s for one intermediate TCP candidate). Those TCP samples cannot
-establish an end-to-end win. The owned parser remains explicitly measured: removing allocation from server
-dispatch must not hide a wrapper regression. Fresh source-labeled runs, spreads, CPU and tails take precedence over
-these exploratory numbers.
+establish an end-to-end win. The owned parser remains explicitly measured:
+removing allocation from server dispatch must not hide a wrapper regression.
+Fresh source-labeled runs, spreads, CPU and tails take precedence over these
+exploratory numbers.
+
+## Verified delivery results
+
+The [archived native A/B study](../benchmarks/studies/d57cb2e/README.md) contains
+360 independently checked records and a byte-identical 60-row generated table.
+Default/inherited pipeline-16 SET throughput rose 40.8% and existing XX 34.1%;
+one-CPU default gains were smaller. Separate user-instruction diagnostics fell
+28–46% across all five workloads, not an equivalent wall-time reduction.
+
+**Not all results improved:** default/inherited pipeline-1 XX fell 5.1% and
+pipeline-16 GET fell 0.8%. Four workers sharing one CPU gained throughput but
+worsened pipeline-1 batch p99 from roughly 1.2 ms to 4.4 ms. Evaluate `--threads 1`
+when CPU-limited; more workers are not a latency guarantee. The fresh default-mode
+Redis comparison still shows a 16.9% one-CPU pipeline-1 SET rate gap, with over
+93% system-CPU share in those Rillcache store workloads. I/O/scheduling, mixed
+traffic and oversubscribed-worker tails remain explicit optimization targets.
 
 ## Reproduce the matched before/after study
 
