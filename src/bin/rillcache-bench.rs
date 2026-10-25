@@ -552,10 +552,11 @@ fn report(
         (None, None) => {
             let policy = scheduling.expect("embedded scheduling policy");
             format!(
-                "{{\"mode\":\"thread-per-client\",\"workers\":null,\"single_reply_yield\":{},\"client_handoff_idle_us\":{},\"client_handoff_policy_version\":{}}}",
+                "{{\"mode\":\"thread-per-client\",\"workers\":null,\"single_reply_yield\":{},\"client_handoff_idle_us\":{},\"client_handoff_policy_version\":{},\"client_handoff_max_epoch_ms\":{}}}",
                 policy.single_reply_yield,
                 policy.client_handoff_idle_us,
-                policy.client_handoff_policy_version()
+                policy.client_handoff_policy_version(),
+                policy.client_handoff_max_epoch_ms()
             )
         }
     };
@@ -875,7 +876,8 @@ mod tests {
         );
         assert!(text.contains("\"single_reply_yield\":true"));
         assert!(text.contains("\"client_handoff_idle_us\":50"));
-        assert!(text.contains("\"client_handoff_policy_version\":1"));
+        assert!(text.contains("\"client_handoff_policy_version\":2"));
+        assert!(text.contains("\"client_handoff_max_epoch_ms\":100"));
         let policy = rillcache::server::SchedulingPolicy {
             single_reply_yield: false,
             client_handoff_idle_us: 0,
@@ -891,6 +893,7 @@ mod tests {
         assert!(text.contains("\"single_reply_yield\":false"));
         assert!(text.contains("\"client_handoff_idle_us\":0"));
         assert!(text.contains("\"client_handoff_policy_version\":0"));
+        assert!(text.contains("\"client_handoff_max_epoch_ms\":0"));
     }
 
     #[test]

@@ -41,7 +41,10 @@ TCP suite on one allowed CPU, exercising real automatic client handoffs.
 `--server-threads N` configures only embedded benchmark servers and is rejected
 with `--addr`. Additive JSON `server_configuration` records mode/count, fixed-worker
 `active_poll_us` / `run_quantum_us`, and per-client `single_reply_yield`,
-`client_handoff_idle_us` / `client_handoff_policy_version`.
+`client_handoff_idle_us` / `client_handoff_policy_version` /
+`client_handoff_max_epoch_ms`. V2 requires recent reply activity to create an
+epoch, returns quiet borrowers independently and bounds a busy epoch to 100 ms
+between existing bounded passes; it does not add a permanent I/O worker.
 It serializes the actual immutable bind-time policy, not a later CPU resample;
 it is `null` for an external server whose launcher owns configuration. Thread counts
 are not CPU affinity budgets. Fixed workers use 64-command and bounded I/O

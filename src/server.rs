@@ -15,7 +15,10 @@ mod pool;
 
 /// Busy clients may briefly lend I/O to an existing client thread on one CPU.
 pub const CLIENT_HANDOFF_IDLE_US: u64 = 50;
-pub const CLIENT_HANDOFF_POLICY_VERSION: u64 = 1;
+/// Continuous traffic cannot retain a coordinator/admission slot indefinitely.
+pub const CLIENT_HANDOFF_MAX_EPOCH_MS: u64 = 100;
+/// v2 requires recent reply activity before creating a new handoff epoch.
+pub const CLIENT_HANDOFF_POLICY_VERSION: u64 = 2;
 
 /// Fixed workers keep polling briefly after progress, then return to idle parking.
 /// This is bounded active polling, not readiness notification or free CPU work.
@@ -43,11 +46,21 @@ impl SchedulingPolicy {
         }
     }
 
+    /// Version of the captured client I/O policy; zero means disabled.
     pub fn client_handoff_policy_version(self) -> u64 {
         if self.client_handoff_idle_us == 0 {
             0
         } else {
             CLIENT_HANDOFF_POLICY_VERSION
+        }
+    }
+
+    /// Captured policy's maximum epoch; checked between bounded passes.
+    pub fn client_handoff_max_epoch_ms(self) -> u64 {
+        if self.client_handoff_idle_us == 0 {
+            0
+        } else {
+            CLIENT_HANDOFF_MAX_EPOCH_MS
         }
     }
 
@@ -371,7 +384,9 @@ fn serve_client(
         if !output.is_empty() {
             stream.write_all(&output)?;
             output.clear();
-            if let Some(sharing) = sharing.filter(|_| permit.has_peers()) {
+            if let Some(sharing) =
+                sharing.filter(|sharing| permit.has_peers() && sharing.should_lend())
+            {
                 if sharing.exchange(stream, &mut input, &mut output, store)? {
                     return Ok(());
                 }
@@ -412,7 +427,7 @@ mod tests {
         assert_eq!(SchedulingPolicy::new(None, None).client_handoff_idle_us, 0);
         assert_eq!(many_cpu.client_handoff_idle_us, 0);
         assert_eq!(one_cpu.client_handoff_idle_us, CLIENT_HANDOFF_IDLE_US);
-        assert_eq!(one_cpu.client_handoff_policy_version(), 1);
+        assert_eq!(one_cpu.client_handoff_policy_version(), 2);
         assert_eq!(many_cpu.client_handoff_policy_version(), 0);
         assert_eq!((one_cpu.active_poll_us, one_cpu.run_quantum_us), (0, 0));
         let counter = Arc::new(AtomicUsize::new(0));

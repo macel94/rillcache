@@ -1,6 +1,6 @@
 use super::*;
 
-fn pair(input: Vec<u8>) -> (Client, TcpStream) {
+pub(super) fn pair(input: Vec<u8>) -> (Client, TcpStream) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
     peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
@@ -31,13 +31,14 @@ fn pair(input: Vec<u8>) -> (Client, TcpStream) {
     )
 }
 
-fn loan(client: Client, stopping: &Arc<AtomicBool>) -> (Loan, Receiver<Option<Client>>) {
+pub(super) fn loan(client: Client, stopping: &Arc<AtomicBool>) -> (Loan, Receiver<Option<Client>>) {
     let (home, returned) = mpsc::channel();
     (
         Loan {
             client: Some(client),
             home,
             stopping: Arc::clone(stopping),
+            coordinator: false,
         },
         returned,
     )

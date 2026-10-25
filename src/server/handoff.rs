@@ -10,9 +10,45 @@ use std::sync::{
 
 pub(super) struct Sharing {
     leader: Mutex<Option<Sender<Loan>>>,
+    recent: Mutex<Burst>,
     config: Config,
     stopping: Arc<AtomicBool>,
     idle: Duration,
+    max_epoch: Duration,
+}
+
+#[derive(Default)]
+struct Burst {
+    previous: Option<Instant>,
+}
+impl Burst {
+    fn observe(&mut self, now: Instant, window: Duration) -> bool {
+        self.previous
+            .replace(now)
+            .and_then(|then| now.checked_duration_since(then))
+            .is_some_and(|elapsed| elapsed < window)
+    }
+}
+
+struct EpochWindow {
+    until: Instant,
+    deadline: Instant,
+    idle: Duration,
+}
+impl EpochWindow {
+    fn new(now: Instant, idle: Duration, maximum: Duration) -> Self {
+        Self {
+            until: now + idle,
+            deadline: now + maximum,
+            idle,
+        }
+    }
+    fn active(&mut self, now: Instant, progress: bool) -> bool {
+        if progress {
+            self.until = now + self.idle;
+        }
+        now < self.until && now < self.deadline
+    }
 }
 
 // One outstanding loan per admitted client. Returning exactly once also bounds
@@ -21,6 +57,18 @@ struct Loan {
     client: Option<Client>,
     home: Sender<Option<Client>>,
     stopping: Arc<AtomicBool>,
+    coordinator: bool,
+}
+impl Loan {
+    fn quiet(&self, now: Instant, idle: Duration) -> bool {
+        // The coordinator cannot block waiting for its own returned socket
+        // while it still services others. At most that one quiet loan remains.
+        !self.coordinator
+            && self.client.as_ref().is_some_and(|client| {
+                now.checked_duration_since(client.activity)
+                    .is_some_and(|elapsed| elapsed >= idle)
+            })
+    }
 }
 impl Drop for Loan {
     fn drop(&mut self) {
@@ -52,10 +100,28 @@ impl Sharing {
     pub(super) fn new(config: Config, stopping: Arc<AtomicBool>, idle_us: u64) -> Self {
         Self {
             leader: Mutex::new(None),
+            recent: Mutex::new(Burst::default()),
             config,
             stopping,
             idle: Duration::from_micros(idle_us),
+            max_epoch: Duration::from_millis(CLIENT_HANDOFF_MAX_EPOCH_MS),
         }
+    }
+
+    /// v2 avoids lease allocation/polling for isolated sparse replies. Joining
+    /// an existing epoch is allowed even if the previous local observation is old.
+    pub(super) fn should_lend(&self) -> bool {
+        let recent = self
+            .recent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .observe(Instant::now(), self.idle);
+        recent
+            || self
+                .leader
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some()
     }
 
     /// Called only after actual socket progress, with already-compacted input
@@ -91,6 +157,7 @@ impl Sharing {
             client: Some(client),
             home,
             stopping: Arc::clone(&self.stopping),
+            coordinator: false,
         };
         let mut leader = self
             .leader
@@ -138,10 +205,11 @@ impl Sharing {
         Ok(closing)
     }
 
-    fn run(&self, first: Loan, leadership: Leadership<'_>, store: &Store) {
+    fn run(&self, mut first: Loan, leadership: Leadership<'_>, store: &Store) {
+        first.coordinator = true;
         let mut clients = vec![first];
         let mut chunk = [0; 16 * 1024];
-        let mut until = Instant::now() + self.idle;
+        let mut window = EpochWindow::new(Instant::now(), self.idle, self.max_epoch);
         loop {
             if self.stopping.load(Ordering::Acquire) {
                 for loan in &mut clients {
@@ -163,7 +231,11 @@ impl Sharing {
                 ) {
                     Ok(Some(made_progress)) => {
                         progress |= made_progress;
-                        index += 1;
+                        if !made_progress && clients[index].quiet(Instant::now(), self.idle) {
+                            clients.swap_remove(index); // Return this borrower, not a busy epoch.
+                        } else {
+                            index += 1;
+                        }
                     }
                     _ => {
                         // EOF/error/timeout: shut down before waking the owner.
@@ -175,12 +247,9 @@ impl Sharing {
             if clients.is_empty() {
                 break;
             }
-            let now = Instant::now();
-            if progress {
-                until = now + self.idle;
-            } else if now >= until {
+            if !window.active(Instant::now(), progress) {
                 break;
-            } else {
+            } else if !progress {
                 std::hint::spin_loop();
             }
         }
@@ -194,3 +263,7 @@ impl Sharing {
 #[cfg(test)]
 #[path = "handoff_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "handoff_burst_tests.rs"]
+mod burst_tests;

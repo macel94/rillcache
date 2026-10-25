@@ -353,9 +353,13 @@ reason to couple all future commands into a single large story.
 
 - **R89 (optional feature):** Where the bind-time capacity hint is one CPU,
   managed per-client workers may lend I/O only after actual reply progress and
-  while multiple clients are admitted. Fixed modes, multicore/unknown hints and
-  an initially lone client shall retain their existing policy. Quiet epochs
-  shall return sockets to blocking owners rather than permanently polling them.
+  while multiple clients are admitted. A new epoch shall require recent reply
+  activity within its window; isolated sparse replies shall not allocate a
+  lease or activate post-reply polling. An active epoch may accept new loans.
+  Fixed modes, multicore/unknown hints and an initially lone client shall retain
+  their existing policy. Quiet borrowers shall return independently while busy
+  peers continue; the coordinator shall keep its own socket serviced. Quiet
+  epochs shall return sockets to blocking owners rather than permanently polling.
 - **R90 (state-driven):** While a client's socket is lent, its original worker
   shall wait and perform no I/O through its handle. Exactly one lease shall own
   its buffers/active I/O; returning it shall restore the shared socket's blocking
@@ -368,6 +372,9 @@ reason to couple all future commands into a single large story.
   a send fails, leadership unwinds or shutdown starts, then each active/queued
   lease shall return ownership exactly once or close before waking its owner.
   There shall be no stranded waiting worker, detached thread or stale epoch.
+  Continuous progress shall not extend the separate 100 ms maximum epoch,
+  checked between bounded passes, or indefinitely retain a closed coordinator's
+  admission slot. Returning an epoch shall preserve ready input and reply offsets.
 - **R93 (ubiquitous):** Handoffs shall retain aggregate admission, one outstanding
   lease per admitted client, bounded input/output, 64-command and bounded I/O
   quanta, atomic shared storage, backpressure and joined library shutdown. They
@@ -375,7 +382,8 @@ reason to couple all future commands into a single large story.
   additional socket handle per loan and bounded channel metadata are permitted;
   this resource/active-poll tradeoff is not readiness notification or free CPU.
 - **R94 (event-driven):** When handoffs are measured, embedded JSON shall record
-  the actual captured idle window/policy version. Linux local/ordinary CI shall
+  the actual captured idle window, maximum epoch and policy version. Linux
+  local/ordinary CI shall
   exercise the complete default TCP suite on one allowed CPU when taskset is
   available, alongside all existing modes. Frozen-client native comparisons
   shall retain baseline/default modes, CPU budgets, singleton/batched controls,

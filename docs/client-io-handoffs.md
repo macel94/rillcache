@@ -41,8 +41,16 @@ bounded nonblocking `Client::poll` implementation as explicit fixed workers.
 This amortizes server-thread scheduling across an active burst rather than
 requesting a yield for every short response.
 
+V2 starts a new epoch only after at least two reply-progress observations within
+50 µs, or joins an already active epoch. Isolated sparse replies therefore avoid
+lease/channel/clone allocation and post-reply active polling. V1 activated after
+every eligible reply; its separate results remain attributed to that source.
 After 50 µs without real progress, the epoch closes and sockets return to their
-blocking owners. There is no new permanent worker, no changed default thread
+blocking owners. V2 also returns individually quiet borrowers while others stay
+busy, avoiding an O(idle-clients) scan after a mixed burst. The coordinator keeps
+its own socket serviced rather than waiting on itself. A separate 100 ms maximum
+epoch, checked between bounded passes, prevents continuous traffic from retaining
+a closed coordinator's admission slot indefinitely. There is no new permanent worker, no changed default thread
 count, no unsafe readiness multiplexer, no flag selecting a different benchmark
 mode, and no 1 ms fixed-worker idle park on this path. An initially lone client,
 unknown/multicore capacity hint and explicit fixed modes do not enable handoffs.
@@ -69,8 +77,10 @@ all client control handles and joins every started worker.
   channel metadata per lending client. This is not zero allocation or RSS-free.
 - Active polling trades CPU for wake/scheduling work. Sparse multi-client bursts
   may pay handoff/channel/clone costs; quiet connections return to blocking I/O.
-  A permanently busy epoch can last longer than its idle window. Checks occur
-  between bounded passes, not at hard real-time deadlines.
+  A busy epoch can outlast its idle window, but progress does not extend its
+  separate 100 ms maximum. Checks occur between bounded passes, not at hard
+  real-time deadlines. At most the coordinator's own quiet socket stays polled
+  while other borrowers return to their blocking owners.
 - No correctness relies on CPU-hint accuracy or OS yield/fairness behavior.
 - Deterministic tests cover epoch closure with queued/late senders, cancellation,
   unwind, exact 64-command round robin, partial reply suffixes, buffer retention,
@@ -78,9 +88,16 @@ all client control handles and joins every started worker.
 - `make check`/`make ci` add the complete default TCP suite on one allowed Linux
   CPU when taskset is available; existing per-client/one/four-mode tests remain.
   The benchmark records the captured `client_handoff_idle_us` and
-  `client_handoff_policy_version` rather than resampling CPU capacity later.
+  `client_handoff_policy_version` and `client_handoff_max_epoch_ms` rather than
+  resampling CPU capacity later.
 
-Fresh hosted A/B and current-reference results determine acceptance; local
+The [first handoff reference cohort](../benchmarks/reports/40243686729-1.md)
+beat Valkey in rate and batch p99 across all five equal-one-CPU workloads at
+pipelines 1 and 16. That result identifies source `9062847` (v1), not an unmeasured
+claim for v2 or all traffic. A paced local diagnostic exposed extra sparse CPU
+cost in v1, motivating the activation guard and deterministic boundary tests.
+
+Fresh hosted A/B and current-reference results determine final acceptance; local
 screens are not a release speed claim. Keep all CPU/tail/rate regressions and
 unequal feature sets visible. Native TLS, persistence, broad compatibility and
 production acceptance remain separate [readiness gates](production-readiness.md).
