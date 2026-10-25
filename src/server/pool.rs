@@ -41,21 +41,24 @@ impl PollWindow {
     }
 }
 
-struct Client {
-    stream: TcpStream,
-    input: Vec<u8>,
-    output: Vec<u8>,
-    sent: usize,
-    closing: bool,
-    eof: bool,
-    activity: Instant,
-    _permit: Permit,
+pub(super) struct Client {
+    pub(super) stream: TcpStream,
+    pub(super) input: Vec<u8>,
+    pub(super) output: Vec<u8>,
+    pub(super) sent: usize,
+    pub(super) closing: bool,
+    pub(super) eof: bool,
+    pub(super) activity: Instant,
+    pub(super) _permit: Option<Permit>,
+    pub(super) shutdown_on_drop: bool,
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
         // Shut down before close even with unread input, as in blocking mode.
-        let _ = self.stream.shutdown(Shutdown::Both);
+        if self.shutdown_on_drop {
+            let _ = self.stream.shutdown(Shutdown::Both);
+        }
     }
 }
 
@@ -126,7 +129,7 @@ impl Client {
     }
 
     /// None means closed; Some indicates whether this pass made progress.
-    fn poll(
+    pub(super) fn poll(
         &mut self,
         store: &Store,
         config: &Config,
@@ -314,7 +317,8 @@ pub(super) fn serve(
                 closing: false,
                 eof: false,
                 activity: Instant::now(),
-                _permit: Permit::acquire(&admitted),
+                _permit: Some(Permit::acquire(&admitted)),
+                shutdown_on_drop: true,
             };
             if lanes[next].sender.send(client).is_err() {
                 // Shutdown may race an accept already in flight. Closed receiver
@@ -418,7 +422,8 @@ mod tests {
                 closing: false,
                 eof: false,
                 activity: Instant::now(),
-                _permit: Permit(Arc::new(AtomicUsize::new(1))),
+                _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
+                shutdown_on_drop: true,
             },
             peer,
         )
@@ -504,7 +509,8 @@ mod tests {
             closing: false,
             eof: false,
             activity: Instant::now() - Duration::from_secs(2),
-            _permit: Permit(Arc::new(AtomicUsize::new(1))),
+            _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
+            shutdown_on_drop: true,
         };
         let config = Config {
             idle_timeout: Duration::from_secs(1),

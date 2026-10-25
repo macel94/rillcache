@@ -24,7 +24,7 @@ REQUIRE_THREAD_MODES ?= 0
 CONTAINER_ENGINE ?= docker
 CONTAINER_IMAGE ?= rillcache:local
 
-.PHONY: help fmt fmt-check lint test check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
+.PHONY: help fmt fmt-check lint test test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
 # Always validate cached tools: an interrupted linker may leave a truncated file.
 .PHONY: $(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server
 
@@ -46,7 +46,20 @@ test:
 		RILLCACHE_TEST_THREADS="$$workers" $(CARGO) test $(CARGO_FLAGS)
 	done
 
-check: fmt-check lint test
+# Exercise the automatic single-CPU handoff path, not just fake policy guards.
+# Cargo-only checks stay portable; Linux make/CI also uses its existing taskset.
+test-constrained:
+	if [[ "$$(uname -s)" == Linux ]] && command -v taskset >/dev/null; then
+		allowed="$$(awk '/Cpus_allowed_list:/ {print $$2}' /proc/self/status)"
+		cpu="$${allowed%%[-,]*}"
+		[[ "$$cpu" =~ ^[0-9]+$$ ]]
+		printf '\nTesting default client I/O on one allowed CPU: %s\n' "$$cpu"
+		taskset -c "$$cpu" env RILLCACHE_TEST_THREADS=0 $(CARGO) test $(CARGO_FLAGS) --test server
+	else
+		printf 'Single-CPU affinity test unavailable here; portable policy/ownership tests still run.\n'
+	fi
+
+check: fmt-check lint test test-constrained
 
 release:
 	$(CARGO) build $(CARGO_FLAGS) --release --bins

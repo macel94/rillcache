@@ -10,7 +10,12 @@ use std::time::{Duration, Instant};
 use crate::engine::{Action, Store};
 use crate::protocol::{Limits, dispatch_request};
 
+mod handoff;
 mod pool;
+
+/// Busy clients may briefly lend I/O to an existing client thread on one CPU.
+pub const CLIENT_HANDOFF_IDLE_US: u64 = 50;
+pub const CLIENT_HANDOFF_POLICY_VERSION: u64 = 1;
 
 /// Fixed workers keep polling briefly after progress, then return to idle parking.
 /// This is bounded active polling, not readiness notification or free CPU work.
@@ -26,6 +31,7 @@ pub struct SchedulingPolicy {
     pub active_poll_us: u64,
     pub run_quantum_us: u64,
     pub single_reply_yield: bool,
+    pub client_handoff_idle_us: u64,
 }
 impl SchedulingPolicy {
     /// Version of this binary's multi-lane run policy; zero means no run budget.
@@ -34,6 +40,14 @@ impl SchedulingPolicy {
             0
         } else {
             FIXED_WORKER_RUN_POLICY_VERSION
+        }
+    }
+
+    pub fn client_handoff_policy_version(self) -> u64 {
+        if self.client_handoff_idle_us == 0 {
+            0
+        } else {
+            CLIENT_HANDOFF_POLICY_VERSION
         }
     }
 
@@ -50,6 +64,11 @@ impl SchedulingPolicy {
                 0
             },
             single_reply_yield: workers.is_none() && capacity == Some(1),
+            client_handoff_idle_us: if workers.is_none() && capacity == Some(1) {
+                CLIENT_HANDOFF_IDLE_US
+            } else {
+                0
+            },
         }
     }
     fn yield_reply(self, commands: usize, permit: &Permit) -> bool {
@@ -175,6 +194,13 @@ impl Server {
         }
         let store = Arc::new(Store::new(self.config.max_data_bytes));
         let admitted = Arc::new(AtomicUsize::new(0));
+        let sharing = (self.policy.client_handoff_idle_us > 0).then(|| {
+            Arc::new(handoff::Sharing::new(
+                self.config.clone(),
+                Arc::clone(&stopping),
+                self.policy.client_handoff_idle_us,
+            ))
+        });
         let mut workers: Vec<Worker> = Vec::new();
         let mut maintenance = Instant::now();
         let result = (|| {
@@ -214,12 +240,20 @@ impl Server {
                 let limits = self.config.limits;
                 let policy = self.policy;
                 let permit = Permit::acquire(&admitted);
+                let sharing = sharing.clone();
                 let thread = thread::Builder::new()
                     .name("rillcache-client".into())
                     .stack_size(256 * 1024)
                     .spawn(move || {
                         // Disconnects, idle timeouts and malformed input affect only this client.
-                        let _ = serve_client(&mut stream, &store, limits, policy, &permit);
+                        let _ = serve_client(
+                            &mut stream,
+                            &store,
+                            limits,
+                            policy,
+                            &permit,
+                            sharing.as_deref(),
+                        );
                         let _ = stream.shutdown(Shutdown::Both);
                     })?;
                 workers.push(Worker { control, thread });
@@ -295,6 +329,7 @@ fn serve_client(
     limits: Limits,
     policy: SchedulingPolicy,
     permit: &Permit,
+    sharing: Option<&handoff::Sharing>,
 ) -> io::Result<()> {
     let mut input = Vec::with_capacity(8192.min(limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
@@ -336,7 +371,13 @@ fn serve_client(
         if !output.is_empty() {
             stream.write_all(&output)?;
             output.clear();
-            if policy.yield_reply(commands, permit) {
+            if let Some(sharing) = sharing.filter(|_| permit.has_peers()) {
+                if sharing.exchange(stream, &mut input, &mut output, store)? {
+                    return Ok(());
+                }
+                // A lease may return ready/partial input. Parse before reading again.
+                continue;
+            } else if policy.yield_reply(commands, permit) {
                 thread::yield_now();
             }
         }
@@ -368,6 +409,11 @@ mod tests {
         let one_cpu = SchedulingPolicy::new(None, Some(1));
         let many_cpu = SchedulingPolicy::new(None, Some(4));
         assert!(!SchedulingPolicy::new(None, None).single_reply_yield);
+        assert_eq!(SchedulingPolicy::new(None, None).client_handoff_idle_us, 0);
+        assert_eq!(many_cpu.client_handoff_idle_us, 0);
+        assert_eq!(one_cpu.client_handoff_idle_us, CLIENT_HANDOFF_IDLE_US);
+        assert_eq!(one_cpu.client_handoff_policy_version(), 1);
+        assert_eq!(many_cpu.client_handoff_policy_version(), 0);
         assert_eq!((one_cpu.active_poll_us, one_cpu.run_quantum_us), (0, 0));
         let counter = Arc::new(AtomicUsize::new(0));
         let first = Permit::acquire(&counter);
@@ -387,6 +433,8 @@ mod tests {
         for workers in [1, 4, 64] {
             let policy = SchedulingPolicy::new(Some(workers), Some(1));
             assert!(!policy.single_reply_yield);
+            assert_eq!(policy.client_handoff_idle_us, 0);
+            assert_eq!(policy.client_handoff_policy_version(), 0);
             assert_eq!(policy.active_poll_us, FIXED_WORKER_ACTIVE_POLL_US);
             assert_eq!(
                 policy.run_quantum_us,

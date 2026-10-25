@@ -8,6 +8,8 @@ fn local_and_github_checks_include_real_worker_mode_matrices() {
     );
     assert!(make.contains("Thread-mode measurements: required"));
     assert!(make.contains("for workers in 0 1 4; do"));
+    assert!(make.contains("check: fmt-check lint test test-constrained"));
+    assert!(make.contains("taskset -c \"$$cpu\" env RILLCACHE_TEST_THREADS=0"));
     assert!(make.contains("RILLCACHE_TEST_THREADS=\"$$workers\""));
     assert!(make.contains("smoke-threads-$$workers.json"));
     assert!(make.contains("bench: release metadata bench-core bench-threads"));

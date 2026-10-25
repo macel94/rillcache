@@ -549,12 +549,15 @@ fn report(
                 policy.run_policy_version()
             )
         }
-        (None, None) => format!(
-            "{{\"mode\":\"thread-per-client\",\"workers\":null,\"single_reply_yield\":{}}}",
-            scheduling
-                .expect("embedded scheduling policy")
-                .single_reply_yield
-        ),
+        (None, None) => {
+            let policy = scheduling.expect("embedded scheduling policy");
+            format!(
+                "{{\"mode\":\"thread-per-client\",\"workers\":null,\"single_reply_yield\":{},\"client_handoff_idle_us\":{},\"client_handoff_policy_version\":{}}}",
+                policy.single_reply_yield,
+                policy.client_handoff_idle_us,
+                policy.client_handoff_policy_version()
+            )
+        }
     };
     let insertion = output.len() - "\"results\":[".len();
     output.insert_str(
@@ -861,6 +864,7 @@ mod tests {
             active_poll_us: 0,
             run_quantum_us: 0,
             single_reply_yield: true,
+            client_handoff_idle_us: rillcache::server::CLIENT_HANDOFF_IDLE_US,
         };
         let text = report(
             "127.0.0.1:1".parse().unwrap(),
@@ -870,8 +874,11 @@ mod tests {
             Some(policy),
         );
         assert!(text.contains("\"single_reply_yield\":true"));
+        assert!(text.contains("\"client_handoff_idle_us\":50"));
+        assert!(text.contains("\"client_handoff_policy_version\":1"));
         let policy = rillcache::server::SchedulingPolicy {
             single_reply_yield: false,
+            client_handoff_idle_us: 0,
             ..policy
         };
         let text = report(
@@ -882,6 +889,8 @@ mod tests {
             Some(policy),
         );
         assert!(text.contains("\"single_reply_yield\":false"));
+        assert!(text.contains("\"client_handoff_idle_us\":0"));
+        assert!(text.contains("\"client_handoff_policy_version\":0"));
     }
 
     #[test]

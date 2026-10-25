@@ -35,10 +35,13 @@ Outputs under ignored `target/benchmarks/`:
 and four-worker socket configurations. Standalone Linux tests verify the actual
 named worker count through procfs, not just the configuration flag. `make ci`
 uses this same matrix and all three reply-validated smoke modes on GitHub.
+On Linux with taskset, `make check`/`make ci` additionally run the complete default
+TCP suite on one allowed CPU, exercising real automatic client handoffs.
 
 `--server-threads N` configures only embedded benchmark servers and is rejected
 with `--addr`. Additive JSON `server_configuration` records mode/count, fixed-worker
-`active_poll_us` / `run_quantum_us`, and the per-client `single_reply_yield` hint.
+`active_poll_us` / `run_quantum_us`, and per-client `single_reply_yield`,
+`client_handoff_idle_us` / `client_handoff_policy_version`.
 It serializes the actual immutable bind-time policy, not a later CPU resample;
 it is `null` for an external server whose launcher owns configuration. Thread counts
 are not CPU affinity budgets. Fixed workers use 64-command and bounded I/O
@@ -53,7 +56,10 @@ hint is one CPU and multiple clients are admitted. These are scheduling hints,
 not correctness dependencies, hard deadlines or OS fairness guarantees. Compare
 modes rather than assuming the portable scheduler is faster; see the
 [kernel-guided follow-up](io-scheduling.md).
-The four native comparison profiles still use the unchanged per-client default;
+The four native comparison profiles still use managed per-client workers; the
+new one-CPU [client handoff policy](client-io-handoffs.md) shares active I/O within
+that same default mode. No benchmark-mode flag, worker-count or CPU-budget change
+is hidden as a code speedup. Quiet sockets return to blocking owners. The
 mode-scaling runs are separately validated and published as an embedded-mode
 throughput/spread/batch-p99 table in the automatic report, not an extra
 Redis/Valkey victory table. Their source metadata is retained beside the JSON;
@@ -303,6 +309,8 @@ Sources: [stat](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html),
 The initial server uses a capped, managed blocking worker per client, `TCP_NODELAY`,
 a borrowing parser, buffered pipeline replies and a single `RwLock<HashMap>`.
 The accept loop sleeps for up to 1 ms when idle; connection setup is untimed.
+S21 adds one-CPU busy-client I/O leases between those existing threads; there is
+no new permanent poller and quiet sockets return to blocking readers.
 GET uses shared locking; SET/DEL use exclusive locking. Locks are released before
 network I/O; multi-key DEL/EXISTS are atomic with respect to other commands.
 

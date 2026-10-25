@@ -46,6 +46,8 @@ reason to couple all future commands into a single large story.
 | S18 | As a performance investigator, I can assess a bounded fixed-worker wait policy with reproducible frozen-client before/after evidence instead of assuming that busy polling is faster or free. | S | R83–R84; deterministic window/metadata tests, all-mode validation and isolated A/B workflow |
 | S19 | As a CPU-limited client, I get guarded cooperative scheduling hints without changing worker counts, deadlines or correctness, and can inspect the exact policy used. | S | R85–R86/R88; policy/permit/run-budget tests and matched CPU/tail evidence |
 | S20 | As a fixed-worker client, my ready complete request can execute in the receive pass without exceeding existing work or buffer bounds. | S | R87–R88; same-pass/execute-once/quantum, fragmentation, backpressure and shutdown tests |
+| S21 | As a CPU-constrained client, I can share active I/O with other managed client threads without a context switch per request, while quiet sockets return to blocking owners. | S | R89–R93; lease/epoch/quantum/partial-reply tests and the full TCP suite on one CPU |
+| S22 | As a performance investigator, I can verify the actual handoff policy and default-mode gains against frozen source and current Valkey without changing the benchmark's mode or CPU budget. | XS | R94; captured policy, constrained CI, rotated native A/B and reference comparisons |
 
 ## EARS acceptance requirements
 
@@ -212,6 +214,8 @@ reason to couple all future commands into a single large story.
 - **R60 (optional feature):** Where `--threads N` is supplied for N in 1..64,
   the server shall create exactly N managed I/O/execution workers, independent of
   client count. Without the option it shall retain managed thread-per-client I/O.
+  S21 may lend busy-client I/O between those existing per-client workers; it
+  does not replace their admission/thread-count contract or add a permanent lane.
   The accept/control thread is additional; one worker is not one OS thread total.
 - **R61 (state-driven):** While clients are idle, slow readers or submitting large
   pipelines, fixed workers shall retain bounded buffers, fair command/I/O quanta,
@@ -344,6 +348,38 @@ reason to couple all future commands into a single large story.
   validated independently of historical poll-only cohorts. Before adoption,
   frozen-client native comparisons shall include CPU, tails, singleton/batched
   controls and oversubscribed workers; rejected/noisy experiments stay explicit.
+
+### Single-CPU client I/O handoffs (S21–S22)
+
+- **R89 (optional feature):** Where the bind-time capacity hint is one CPU,
+  managed per-client workers may lend I/O only after actual reply progress and
+  while multiple clients are admitted. Fixed modes, multicore/unknown hints and
+  an initially lone client shall retain their existing policy. Quiet epochs
+  shall return sockets to blocking owners rather than permanently polling them.
+- **R90 (state-driven):** While a client's socket is lent, its original worker
+  shall wait and perform no I/O through its handle. Exactly one lease shall own
+  its buffers/active I/O; returning it shall restore the shared socket's blocking
+  option before the original loop resumes. No store lock shall span socket I/O.
+- **R91 (event-driven):** When a lease returns buffered input or a partly sent
+  response, the original loop shall parse ready bytes before reading again and
+  send only the unsent reply suffix. Fragments, errors, EOF and QUIT shall retain
+  ordered, execute-once behavior and existing deadlines/frame limits.
+- **R92 (unwanted behavior):** If an epoch closes while a sender is in flight,
+  a send fails, leadership unwinds or shutdown starts, then each active/queued
+  lease shall return ownership exactly once or close before waking its owner.
+  There shall be no stranded waiting worker, detached thread or stale epoch.
+- **R93 (ubiquitous):** Handoffs shall retain aggregate admission, one outstanding
+  lease per admitted client, bounded input/output, 64-command and bounded I/O
+  quanta, atomic shared storage, backpressure and joined library shutdown. They
+  shall add no permanent worker, unsafe code or Rust dependency. At most one
+  additional socket handle per loan and bounded channel metadata are permitted;
+  this resource/active-poll tradeoff is not readiness notification or free CPU.
+- **R94 (event-driven):** When handoffs are measured, embedded JSON shall record
+  the actual captured idle window/policy version. Linux local/ordinary CI shall
+  exercise the complete default TCP suite on one allowed CPU when taskset is
+  available, alongside all existing modes. Frozen-client native comparisons
+  shall retain baseline/default modes, CPU budgets, singleton/batched controls,
+  process CPU, whole-batch tails and regressions; no all-traffic victory follows.
 
 ## Compatibility boundary (v0.1)
 

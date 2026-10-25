@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  BASELINE_SOURCE: 7b5f08b7d18bf86052fd4f93a5e5d92277ef8a67
+  BASELINE_SOURCE: 6cea8cc2370c14401f8b7736db99a930de1bc02f
 
 jobs:
   compare:
