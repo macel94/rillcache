@@ -543,8 +543,10 @@ fn report(
         (None, Some(count)) => {
             let policy = scheduling.expect("embedded scheduling policy");
             format!(
-                "{{\"mode\":\"fixed-workers\",\"workers\":{count},\"active_poll_us\":{},\"run_quantum_us\":{}}}",
-                policy.active_poll_us, policy.run_quantum_us
+                "{{\"mode\":\"fixed-workers\",\"workers\":{count},\"active_poll_us\":{},\"run_quantum_us\":{},\"run_policy_version\":{}}}",
+                policy.active_poll_us,
+                policy.run_quantum_us,
+                policy.run_policy_version()
             )
         }
         (None, None) => format!(

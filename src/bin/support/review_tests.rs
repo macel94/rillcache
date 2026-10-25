@@ -368,6 +368,41 @@ fn embedded_mode_tables_are_validated_separately_and_bad_modes_fail_quality() {
     let known = fs::read_to_string(&mode_environment).unwrap();
     fs::write(
         &mode_environment,
+        known.replace("cooperative-v1", "cooperative-v2"),
+    )
+    .unwrap();
+    assert!(
+        !data::summarize(&evidence, SHA).complete,
+        "v2 must record its version"
+    );
+    for workers in [1, 4] {
+        let file = modes.join(format!("threads-{workers}.json"));
+        let text = fs::read_to_string(&file).unwrap().replace(
+            "\"active_poll_us\":50",
+            &format!(
+                "\"active_poll_us\":50,\"run_policy_version\":{}",
+                if workers == 1 { 0 } else { 2 }
+            ),
+        );
+        fs::write(file, text).unwrap();
+    }
+    let v2 = data::summarize(&evidence, SHA);
+    assert!(v2.complete, "{}", v2.markdown);
+    assert!(v2.markdown.contains("after a yield/park returns"));
+    let v2_text = fs::read_to_string(&active_file).unwrap();
+    for version in ["0", "1", "3", "null"] {
+        fs::write(
+            &active_file,
+            v2_text.replace(
+                "\"run_policy_version\":2",
+                &format!("\"run_policy_version\":{version}"),
+            ),
+        )
+        .unwrap();
+        assert!(!data::summarize(&evidence, SHA).complete);
+    }
+    fs::write(
+        &mode_environment,
         known.replace("cooperative-v1", "unknown-v2"),
     )
     .unwrap();

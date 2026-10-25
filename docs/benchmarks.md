@@ -61,8 +61,9 @@ failed reruns invalidate both mode files rather than mixing stale results.
 New comparative workflows mark mode evidence as required, so missing/corrupt
 mode groups fail report quality instead of silently disappearing; immutable old
 cohorts without that marker remain readable. Run-budget evidence uses the
-versioned `cooperative-v1 (required)` marker, so later tuning must not relabel
-historical no-budget or v1 cohorts.
+versioned markers: current `cooperative-v2 (required)` validates the serialized
+`run_policy_version` and excludes explicit yield/park wait from the next interval.
+Historical no-budget and v1 cohorts remain readable without relabeling.
 
 Only Rust/rustup and GNU Make are needed for these targets. After the pinned
 Rust toolchain is installed, the Cargo commands use `--locked --offline`.

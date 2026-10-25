@@ -25,11 +25,13 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
     let run_marker = environment
         .lines()
         .find(|line| line.starts_with("Thread-mode run budget:"));
-    ensure(
-        run_marker.is_none_or(|line| line == "Thread-mode run budget: cooperative-v1 (required)"),
-        "unsupported thread-mode run policy",
-    )?;
-    let run_required = run_marker.is_some();
+    let run_version = match run_marker {
+        None => 0,
+        Some("Thread-mode run budget: cooperative-v1 (required)") => 1,
+        Some("Thread-mode run budget: cooperative-v2 (required)") => 2,
+        Some(_) => return Err("unsupported thread-mode run policy".into()),
+    };
+    let run_required = run_version != 0;
     let mut run_policies = Vec::new();
     let mut policies = Vec::new();
     let mut signatures = Vec::new();
@@ -69,7 +71,7 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
         };
         // Versioned evidence describes its source policy, not a future reader's
         // possibly retuned runtime constant. Poll-only cohorts remain unchanged.
-        let expected_run = if workers > 1 { 100 } else { 0 }; // cooperative-v1
+        let expected_run = if workers > 1 { 100 } else { 0 }; // cooperative-v1/v2
         ensure(
             if run_required {
                 run == expected_run
@@ -77,6 +79,16 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
                 run == 0
             },
             "thread-mode run budget differs from runtime",
+        )?;
+        let expected_version = if workers > 1 { run_version } else { 0 };
+        let recorded_version = match configuration.get("run_policy_version") {
+            Ok(value) => value.integer()?,
+            Err(_) if run_version < 2 => expected_version, // v1 did not serialize a version.
+            Err(_) => return Err("required thread-mode run version is missing".into()),
+        };
+        ensure(
+            recorded_version == expected_version,
+            "thread-mode run version mismatch",
         )?;
         run_policies.push(run);
         let records = value.get("results")?.array()?;
@@ -179,11 +191,16 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
             policies[0]
         )
     };
+    let resume_note = if run_version == 2 {
+        "The v2 interval restarts after a yield/park returns, excluding that explicit wait; involuntary descheduling can still consume wall time."
+    } else {
+        "The initial v1 interval restarts at the yield request, so descheduling can consume its next budget."
+    };
     let run_note = if run_policies[1] == 0 {
         "No separate multi-lane cooperative run budget was recorded.".to_owned()
     } else {
         format!(
-            "Multiple lanes also request a cooperative yield after {} µs of continuous active passes when more than one client is admitted. Progress does not rearm that separate budget; single lanes/lone clients do not periodically yield. This is checked between bounded passes, not a hard deadline or an OS fairness guarantee.",
+            "Multiple lanes also request a cooperative yield after {} µs of continuous active passes when more than one client is admitted. Progress does not rearm that separate budget; single lanes/lone clients do not periodically yield. This is checked between bounded passes, not a hard deadline or an OS fairness guarantee. {resume_note}",
             run_policies[1]
         )
     };

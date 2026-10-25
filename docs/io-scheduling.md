@@ -54,8 +54,10 @@ hint; correctness never depends on another thread running or a fairness promise.
 
 Multiple lanes request a yield after 100 µs of continuous active passes when
 multiple clients are admitted. Progress rearms the existing 50 µs active-poll
-window but **does not rearm this separate run budget**. Parking resets the run
-budget. A single lane or lone client avoids periodic fairness yields.
+window but **does not rearm this separate run budget**. The v2 interval restarts
+when a voluntary yield or park returns, excluding that explicit wait from the
+next interval. Involuntary descheduling can still consume wall time. A single
+lane or lone client avoids periodic fairness yields.
 
 Checks occur between existing bounded passes, not at a hard real-time deadline.
 The OS may ignore a yield. Existing per-client command/I/O quanta, admission,
@@ -75,14 +77,16 @@ readiness notification, epoll or a new I/O dependency.
 
 `ServerHandle::scheduling_policy()` returns the immutable policy captured at bind
 time, and embedded benchmark JSON serializes that snapshot rather than resampling
-capacity after measurement. Fixed-worker configuration adds `run_quantum_us`;
+capacity after measurement. Fixed-worker configuration adds `run_quantum_us`
+and `run_policy_version`;
 per-client configuration adds `single_reply_yield`. Native external configuration
 remains launcher-owned/null and source/arguments/affinity identify its policy.
 
-New mode evidence has a separate versioned `cooperative-v1 (required)` run-budget
-marker; v1's 100 µs value is interpreted independently of future runtime tuning. Reporting rejects
-missing/wrong new budgets while retaining old no-poll and poll-only cohorts
-unchanged. Tests cover guard decisions, permit release, immutable snapshots,
+Current mode evidence uses `cooperative-v2 (required)` and records its version
+explicitly. V1 remains readable: its 100 µs interval restarted at the yield
+request rather than resumption, so descheduled time could consume the next
+interval. Both versions are interpreted independently of future runtime tuning.
+Reporting rejects missing/wrong new budgets/versions without relabeling history. Tests cover guard decisions, permit release, immutable snapshots,
 progress-independent budget expiry, post-park reset, same-pass execute-once,
 64-command fairness, partial frames, slow readers and shutdown in all modes.
 

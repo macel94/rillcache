@@ -331,7 +331,8 @@ reason to couple all future commands into a single large story.
 - **R86 (state-driven):** While multiple fixed lanes and multiple clients remain
   active, real progress shall not indefinitely rearm a separate cooperative run
   budget. Its expiry shall request a yield between bounded passes, retain the
-  post-progress poll window and idle parking, and reset after parking. A single
+  post-progress poll window and idle parking, and reset after explicit yielding
+  or parking returns, without charging that wait to its next interval. A single
   lane or a lone client shall not incur periodic fairness yields.
 - **R87 (event-driven):** When a fixed worker receives a complete command into an
   empty input buffer, it shall be able to dispatch it in that same bounded pass.

@@ -36,7 +36,7 @@ impl PollWindow {
         self.run_since = now;
         true
     }
-    fn parked(&mut self, now: Instant) {
+    fn resumed(&mut self, now: Instant) {
         self.run_since = now;
     }
 }
@@ -268,12 +268,13 @@ pub(super) fn serve(
                                 admitted.load(Ordering::Relaxed) > 1,
                             ) {
                                 thread::yield_now();
+                                polling.resumed(Instant::now());
                             } else if !progress {
                                 std::hint::spin_loop();
                             }
                         } else {
                             thread::park_timeout(Duration::from_millis(1));
-                            polling.parked(Instant::now());
+                            polling.resumed(Instant::now());
                         }
                     }
                     // Dropping clients and queued transfers closes every socket and permit.
@@ -377,9 +378,28 @@ mod tests {
         let later = due + Duration::from_secs(1);
         assert!(!window.yield_due(later, 0, true));
         assert!(!window.yield_due(later, budget, false));
-        window.parked(later);
+        window.resumed(later);
         assert!(!window.yield_due(later, budget, true));
         assert!(window.yield_due(later + Duration::from_micros(budget), budget, true));
+    }
+
+    #[test]
+    fn explicit_yield_wait_is_not_charged_to_the_next_run_budget() {
+        let now = Instant::now();
+        let budget = FIXED_WORKER_RUN_QUANTUM_US;
+        let mut window = PollWindow::new(now);
+        let due = now + Duration::from_micros(budget);
+        assert!(window.active(due, true));
+        assert!(window.yield_due(due, budget, true));
+        let returned = due + Duration::from_secs(1);
+        window.resumed(returned);
+        assert!(!window.yield_due(returned, budget, true));
+        assert!(
+            !window.active(returned, false),
+            "resumption must not rearm active polling"
+        );
+        assert!(!window.yield_due(returned + Duration::from_micros(budget - 1), budget, true));
+        assert!(window.yield_due(returned + Duration::from_micros(budget), budget, true));
     }
 
     fn test_client(input: Vec<u8>) -> (Client, TcpStream) {

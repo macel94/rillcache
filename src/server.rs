@@ -17,6 +17,8 @@ mod pool;
 pub const FIXED_WORKER_ACTIVE_POLL_US: u64 = 50;
 /// A cooperative hint between bounded passes, not a hard real-time deadline.
 pub const FIXED_WORKER_RUN_QUANTUM_US: u64 = 100;
+/// v2 starts a fresh run interval after a voluntary yield/park returns.
+pub const FIXED_WORKER_RUN_POLICY_VERSION: u64 = 2;
 
 /// Immutable bind-time scheduling decisions. Capacity is a hint, not a CPU budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +28,15 @@ pub struct SchedulingPolicy {
     pub single_reply_yield: bool,
 }
 impl SchedulingPolicy {
+    /// Version of this binary's multi-lane run policy; zero means no run budget.
+    pub fn run_policy_version(self) -> u64 {
+        if self.run_quantum_us == 0 {
+            0
+        } else {
+            FIXED_WORKER_RUN_POLICY_VERSION
+        }
+    }
+
     fn new(workers: Option<usize>, capacity: Option<usize>) -> Self {
         Self {
             active_poll_us: if workers.is_some() {
