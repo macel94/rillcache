@@ -326,6 +326,52 @@ fn embedded_mode_tables_are_validated_separately_and_bad_modes_fail_quality() {
         .unwrap();
         assert!(!data::summarize(&evidence, SHA).complete);
     }
+    fs::write(&active_file, &active_text).unwrap();
+    let env = fs::read_to_string(&mode_environment).unwrap();
+    fs::write(
+        &mode_environment,
+        format!("{env}\nThread-mode run budget: cooperative-v1 (required)\n"),
+    )
+    .unwrap();
+    assert!(!data::summarize(&evidence, SHA).complete);
+    for workers in [1, 4] {
+        let file = modes.join(format!("threads-{workers}.json"));
+        let text = fs::read_to_string(&file).unwrap().replace(
+            "\"active_poll_us\":50",
+            &format!(
+                "\"active_poll_us\":50,\"run_quantum_us\":{}",
+                if workers == 1 { 0 } else { 100 }
+            ),
+        );
+        fs::write(file, text).unwrap();
+    }
+    let bounded = data::summarize(&evidence, SHA);
+    assert!(bounded.complete, "{}", bounded.markdown);
+    assert!(
+        bounded
+            .markdown
+            .contains("100 µs of continuous active passes")
+    );
+    let current = fs::read_to_string(&active_file).unwrap();
+    for value in ["0", "101", "-1", "null"] {
+        fs::write(
+            &active_file,
+            current.replace(
+                "\"run_quantum_us\":100",
+                &format!("\"run_quantum_us\":{value}"),
+            ),
+        )
+        .unwrap();
+        assert!(!data::summarize(&evidence, SHA).complete);
+    }
+    fs::write(&active_file, &current).unwrap();
+    let known = fs::read_to_string(&mode_environment).unwrap();
+    fs::write(
+        &mode_environment,
+        known.replace("cooperative-v1", "unknown-v2"),
+    )
+    .unwrap();
+    assert!(!data::summarize(&evidence, SHA).complete);
     fs::remove_dir_all(&modes).unwrap();
     let environment = evidence.join("pipeline-1/environment.txt");
     let original = fs::read_to_string(&environment).unwrap();

@@ -44,6 +44,8 @@ reason to couple all future commands into a single large story.
 | S16 | As a cache user, I get profiled storage fast paths without sacrificing expiry, atomic payload admission or bounded retained value capacity. | S | R79/R81; preserved profiles, capacity/accounting/expiry/OOM and concurrent tests |
 | S17 | As a client user, I get bounded borrowing dispatch and specialized RESP headers with unchanged framing, errors and owned-parser behavior. | S | R80/R82; fragmentation, stack/fallback, execute-once and decimal-boundary tests |
 | S18 | As a performance investigator, I can assess a bounded fixed-worker wait policy with reproducible frozen-client before/after evidence instead of assuming that busy polling is faster or free. | S | R83–R84; deterministic window/metadata tests, all-mode validation and isolated A/B workflow |
+| S19 | As a CPU-limited client, I get guarded cooperative scheduling hints without changing worker counts, deadlines or correctness, and can inspect the exact policy used. | S | R85–R86/R88; policy/permit/run-budget tests and matched CPU/tail evidence |
+| S20 | As a fixed-worker client, my ready complete request can execute in the receive pass without exceeding existing work or buffer bounds. | S | R87–R88; same-pass/execute-once/quantum, fragmentation, backpressure and shutdown tests |
 
 ## EARS acceptance requirements
 
@@ -317,6 +319,30 @@ reason to couple all future commands into a single large story.
   Relevant debug/release/reference and all-mode tests shall pass before publication.
   Slower/noisy results and remaining blockers shall remain visible; no all-workload
   performance victory or production-compatibility claim shall follow from a subset.
+
+### Profile-guided scheduling and ready I/O (S19–S20)
+
+- **R85 (optional feature):** Where a bind-time single-CPU capacity hint and
+  multiple admitted clients make short-reply scheduling eligible, blocking
+  workers may yield once after a single-command flush, without yielding after
+  batched replies, holding a store lock, removing socket deadlines or changing
+  default thread-per-client admission/shutdown behavior. Scheduling hints shall
+  not be relied on for correctness or advertised as OS fairness guarantees.
+- **R86 (state-driven):** While multiple fixed lanes and multiple clients remain
+  active, real progress shall not indefinitely rearm a separate cooperative run
+  budget. Its expiry shall request a yield between bounded passes, retain the
+  post-progress poll window and idle parking, and reset after parking. A single
+  lane or a lone client shall not incur periodic fairness yields.
+- **R87 (event-driven):** When a fixed worker receives a complete command into an
+  empty input buffer, it shall be able to dispatch it in that same bounded pass.
+  Each pass shall retain the read, command, reply/backpressure and frame limits;
+  partial/malformed frames, EOF and QUIT shall preserve execute-once/order rules.
+- **R88 (event-driven):** When scheduling policies are benchmarked, embedded
+  results shall record the actual bind-time policy used by the server, not a
+  later recomputed CPU estimate. New run-budget evidence shall be required and
+  validated independently of historical poll-only cohorts. Before adoption,
+  frozen-client native comparisons shall include CPU, tails, singleton/batched
+  controls and oversubscribed workers; rejected/noisy experiments stay explicit.
 
 ## Compatibility boundary (v0.1)
 

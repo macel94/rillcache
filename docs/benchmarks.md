@@ -37,15 +37,22 @@ named worker count through procfs, not just the configuration flag. `make ci`
 uses this same matrix and all three reply-validated smoke modes on GitHub.
 
 `--server-threads N` configures only embedded benchmark servers and is rejected
-with `--addr`. Additive JSON `server_configuration` records mode/count and fixed-worker
-`active_poll_us` policy; it is
-`null` for an external server whose launcher owns configuration. Thread counts
+with `--addr`. Additive JSON `server_configuration` records mode/count, fixed-worker
+`active_poll_us` / `run_quantum_us`, and the per-client `single_reply_yield` hint.
+It serializes the actual immutable bind-time policy, not a later CPU resample;
+it is `null` for an external server whose launcher owns configuration. Thread counts
 are not CPU affinity budgets. Fixed workers use 64-command and bounded I/O
 quanta, a bounded output queue and a 1 ms idle polling wait. After progress they
 actively poll for at most 50 µs before returning to idle parking; empty passes do
 not rearm the window. This trades active CPU work for fewer premature sleeps, not
-kernel readiness or a free-CPU improvement. Compare modes rather than assuming
-this portable scheduler is faster than blocking per-client I/O.
+kernel readiness or a free-CPU improvement. Multiple lanes/clients also request
+a cooperative yield after 100 µs of active passes; progress does not reset that
+separate budget. Lone clients/single lanes avoid periodic fairness yields.
+Blocking mode can yield after a single-command flush when its bind-time capacity
+hint is one CPU and multiple clients are admitted. These are scheduling hints,
+not correctness dependencies, hard deadlines or OS fairness guarantees. Compare
+modes rather than assuming the portable scheduler is faster; see the
+[kernel-guided follow-up](io-scheduling.md).
 The four native comparison profiles still use the unchanged per-client default;
 mode-scaling runs are separately validated and published as an embedded-mode
 throughput/spread/batch-p99 table in the automatic report, not an extra
@@ -53,7 +60,9 @@ Redis/Valkey victory table. Their source metadata is retained beside the JSON;
 failed reruns invalidate both mode files rather than mixing stale results.
 New comparative workflows mark mode evidence as required, so missing/corrupt
 mode groups fail report quality instead of silently disappearing; immutable old
-cohorts without that marker remain readable.
+cohorts without that marker remain readable. Run-budget evidence uses the
+versioned `cooperative-v1 (required)` marker, so later tuning must not relabel
+historical no-budget or v1 cohorts.
 
 Only Rust/rustup and GNU Make are needed for these targets. After the pinned
 Rust toolchain is installed, the Cargo commands use `--locked --offline`.

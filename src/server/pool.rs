@@ -11,10 +11,14 @@ const OUTPUT_CHUNK: usize = 64 * 1024;
 
 struct PollWindow {
     until: Instant,
+    run_since: Instant,
 }
 impl PollWindow {
     fn new(now: Instant) -> Self {
-        Self { until: now }
+        Self {
+            until: now,
+            run_since: now,
+        }
     }
     fn active(&mut self, now: Instant, progress: bool) -> bool {
         if progress {
@@ -22,12 +26,18 @@ impl PollWindow {
         }
         now < self.until
     }
-}
-
-struct Permit(Arc<AtomicUsize>);
-impl Drop for Permit {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Release);
+    fn yield_due(&mut self, now: Instant, budget_us: u64, peers: bool) -> bool {
+        if budget_us == 0
+            || !peers
+            || now.duration_since(self.run_since) < Duration::from_micros(budget_us)
+        {
+            return false;
+        }
+        self.run_since = now;
+        true
+    }
+    fn parked(&mut self, now: Instant) {
+        self.run_since = now;
     }
 }
 
@@ -84,6 +94,37 @@ impl Client {
         (progress || self.activity.elapsed() < timeout).then_some(progress)
     }
 
+    /// At most one bounded socket read per client/pass.
+    fn receive(&mut self, limits: Limits, chunk: &mut [u8]) -> io::Result<bool> {
+        let room = (limits.max_frame_bytes - self.input.len()).min(chunk.len());
+        if room == 0 {
+            self.output
+                .extend_from_slice(b"-ERR Protocol error: request frame limit exceeded\r\n");
+            self.closing = true;
+            return Ok(true);
+        }
+        match self.stream.read(&mut chunk[..room]) {
+            Ok(0) => {
+                self.eof = true;
+                Ok(true)
+            }
+            Ok(size) => {
+                self.input.extend_from_slice(&chunk[..size]);
+                self.activity = Instant::now();
+                Ok(true)
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// None means closed; Some indicates whether this pass made progress.
     fn poll(
         &mut self,
@@ -99,6 +140,13 @@ impl Client {
         }
         if self.closing {
             return Ok(None);
+        }
+        let read_first = self.input.is_empty() && !self.eof;
+        if read_first {
+            progress |= self.receive(config.limits, chunk)?;
+            if self.input.is_empty() || self.closing {
+                return Ok(self.open(progress, config.idle_timeout));
+            }
         }
         let mut consumed = 0;
         let mut need_input = false;
@@ -148,29 +196,8 @@ impl Client {
             self.closing = true;
             return Ok(Some(true));
         }
-        let room = (config.limits.max_frame_bytes - self.input.len()).min(chunk.len());
-        if room == 0 {
-            self.output
-                .extend_from_slice(b"-ERR Protocol error: request frame limit exceeded\r\n");
-            self.closing = true;
-            return Ok(Some(true));
-        }
-        match self.stream.read(&mut chunk[..room]) {
-            Ok(0) => {
-                self.eof = true;
-                progress = true;
-            }
-            Ok(size) => {
-                self.input.extend_from_slice(&chunk[..size]);
-                self.activity = Instant::now();
-                progress = true;
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) => {}
-            Err(error) => return Err(error),
+        if !read_first {
+            progress |= self.receive(config.limits, chunk)?;
         }
         Ok(self.open(progress, config.idle_timeout))
     }
@@ -185,6 +212,7 @@ pub(super) fn serve(
     listener: TcpListener,
     config: Config,
     stopping: Arc<AtomicBool>,
+    policy: SchedulingPolicy,
 ) -> io::Result<()> {
     let count = config.worker_threads.expect("fixed worker configuration");
     let store = Arc::new(Store::new(config.max_data_bytes));
@@ -196,6 +224,7 @@ pub(super) fn serve(
             // active clients and in-flight transfers by max_clients.
             let (sender, receiver) = mpsc::channel::<Client>();
             let store = Arc::clone(&store);
+            let admitted = Arc::clone(&admitted);
             let stop = Arc::clone(&stopping);
             let config = config.clone();
             let reaper = index == 0;
@@ -231,12 +260,20 @@ pub(super) fn serve(
                         // Replies in flight are not an idle connection. Give the
                         // next client request a short bounded window to arrive,
                         // without rearming that window on empty/spurious scans.
-                        if polling.active(Instant::now(), progress) {
-                            if !progress {
+                        let now = Instant::now();
+                        if polling.active(now, progress) {
+                            if polling.yield_due(
+                                now,
+                                policy.run_quantum_us,
+                                admitted.load(Ordering::Relaxed) > 1,
+                            ) {
+                                thread::yield_now();
+                            } else if !progress {
                                 std::hint::spin_loop();
                             }
                         } else {
                             thread::park_timeout(Duration::from_millis(1));
+                            polling.parked(Instant::now());
                         }
                     }
                     // Dropping clients and queued transfers closes every socket and permit.
@@ -268,7 +305,6 @@ pub(super) fn serve(
                 continue;
             }
             stream.set_nonblocking(true)?;
-            admitted.fetch_add(1, Ordering::AcqRel);
             let client = Client {
                 stream,
                 input: Vec::with_capacity(8192.min(config.limits.max_frame_bytes)),
@@ -277,7 +313,7 @@ pub(super) fn serve(
                 closing: false,
                 eof: false,
                 activity: Instant::now(),
-                _permit: Permit(Arc::clone(&admitted)),
+                _permit: Permit::acquire(&admitted),
             };
             if lanes[next].sender.send(client).is_err() {
                 // Shutdown may race an accept already in flight. Closed receiver
@@ -322,6 +358,115 @@ mod tests {
         assert!(!window.active(now + Duration::from_secs(10), false));
         assert!(window.active(now + Duration::from_secs(10), true));
         assert!(!window.active(now + Duration::from_secs(10) + budget, false));
+    }
+
+    #[test]
+    fn continuous_progress_never_rearms_the_cooperative_run_budget() {
+        let now = Instant::now();
+        let budget = FIXED_WORKER_RUN_QUANTUM_US;
+        let mut window = PollWindow::new(now);
+        for elapsed in 0..budget {
+            let t = now + Duration::from_micros(elapsed);
+            assert!(window.active(t, true));
+            assert!(!window.yield_due(t, budget, true));
+        }
+        let due = now + Duration::from_micros(budget);
+        assert!(window.active(due, true));
+        assert!(window.yield_due(due, budget, true));
+        assert!(!window.yield_due(due, budget, true));
+        let later = due + Duration::from_secs(1);
+        assert!(!window.yield_due(later, 0, true));
+        assert!(!window.yield_due(later, budget, false));
+        window.parked(later);
+        assert!(!window.yield_due(later, budget, true));
+        assert!(window.yield_due(later + Duration::from_micros(budget), budget, true));
+    }
+
+    fn test_client(input: Vec<u8>) -> (Client, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        peer.set_nodelay(true).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        (
+            Client {
+                stream,
+                input,
+                output: Vec::new(),
+                sent: 0,
+                closing: false,
+                eof: false,
+                activity: Instant::now(),
+                _permit: Permit(Arc::new(AtomicUsize::new(1))),
+            },
+            peer,
+        )
+    }
+
+    #[test]
+    fn a_fresh_complete_read_executes_in_the_same_pass_exactly_once() {
+        let (mut client, mut peer) = test_client(Vec::new());
+        let request = b"*2\r\n$4\r\nINCR\r\n$7\r\ncounter\r\n";
+        peer.write_all(request).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut queued = [0; 128];
+        loop {
+            if client
+                .stream
+                .peek(&mut queued)
+                .is_ok_and(|n| n == request.len())
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        let store = Store::new(1024);
+        let config = Config::default();
+        assert_eq!(
+            client.poll(&store, &config, &mut [0; 1024]).unwrap(),
+            Some(true)
+        );
+        let mut reply = [0; 4];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b":1\r\n");
+        assert!(client.input.is_empty());
+        assert_eq!(
+            client.poll(&store, &config, &mut [0; 1024]).unwrap(),
+            Some(false)
+        );
+        let mut output = Vec::new();
+        store.execute(&[b"GET", b"counter"], &mut output);
+        assert_eq!(output, b"$1\r\n1\r\n");
+    }
+
+    #[test]
+    fn ready_input_still_obeys_the_command_quantum() {
+        let request = b"*2\r\n$4\r\nINCR\r\n$7\r\ncounter\r\n";
+        let (mut client, mut peer) = test_client(request.repeat(QUANTUM + 1));
+        let store = Store::new(1024);
+        let config = Config::default();
+        assert_eq!(
+            client.poll(&store, &config, &mut [0; 1024]).unwrap(),
+            Some(true)
+        );
+        assert_eq!(client.input, request);
+        let expected: Vec<u8> = (1..=QUANTUM)
+            .flat_map(|n| format!(":{n}\r\n").into_bytes())
+            .collect();
+        let mut reply = vec![0; expected.len()];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(reply, expected);
+        assert_eq!(
+            client.poll(&store, &config, &mut [0; 1024]).unwrap(),
+            Some(true)
+        );
+        let expected = format!(":{}\r\n", QUANTUM + 1);
+        let mut reply = vec![0; expected.len()];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(reply, expected.as_bytes());
+        assert!(client.input.is_empty());
     }
 
     #[test]

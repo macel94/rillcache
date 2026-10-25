@@ -13,6 +13,8 @@ up. Reports publish automatically with per-run Markdown history; no artifact
 download is needed. [Reporting details](docs/benchmark-reports.md).
 [Profile-guided before/after results](benchmarks/studies/d57cb2e/README.md) preserve
 all 60 native conditions, including gains, regressions and worker-tail tradeoffs.
+The [kernel-guided I/O follow-up](docs/io-scheduling.md) targets receive deferral
+and scheduling costs rather than assuming more map tuning fixes system CPU.
 
 ## Project vision
 
@@ -91,11 +93,13 @@ cargo run -- --help        # bind address, payload/client limits and idle timeou
 `cargo run -- --threads 4` selects four I/O/execution workers; `--threads 1`
 uses one shared worker, not one-client-at-a-time admission. Fixed workers use
 portable nonblocking polling with a 1 ms idle wait and a bounded 50 µs active
-window after progress; this trades CPU work for fewer premature sleeps, not free
-CPU or kernel readiness. Lower thread counts are not an assertion of lower
-latency or higher throughput. Four workers sharing one CPU worsened batch p99
-in the matched study despite higher throughput; evaluate `--threads 1` for that
-budget. The default is unchanged.
+window after progress, plus a separate 100 µs cooperative run-budget hint for
+multiple lanes/clients. This trades CPU work for fewer premature sleeps, not
+free CPU, kernel readiness or an OS fairness guarantee. Earlier four-worker,
+one-CPU tail regressions motivated this separate budget; measure real traffic
+rather than assuming more workers improve latency. Default threading is unchanged;
+a guarded bind-time single-CPU hint can yield after single-command replies while
+multiple clients are admitted. Socket deadlines and joined shutdown remain intact.
 
 A Redis CLI in RESP2 mode can exercise the supported commands. Some modern
 clients issue unsupported discovery commands; compatibility is not yet claimed

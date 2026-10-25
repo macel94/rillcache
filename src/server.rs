@@ -3,7 +3,7 @@
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,54 @@ mod pool;
 /// Fixed workers keep polling briefly after progress, then return to idle parking.
 /// This is bounded active polling, not readiness notification or free CPU work.
 pub const FIXED_WORKER_ACTIVE_POLL_US: u64 = 50;
+/// A cooperative hint between bounded passes, not a hard real-time deadline.
+pub const FIXED_WORKER_RUN_QUANTUM_US: u64 = 100;
+
+/// Immutable bind-time scheduling decisions. Capacity is a hint, not a CPU budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedulingPolicy {
+    pub active_poll_us: u64,
+    pub run_quantum_us: u64,
+    pub single_reply_yield: bool,
+}
+impl SchedulingPolicy {
+    fn new(workers: Option<usize>, capacity: Option<usize>) -> Self {
+        Self {
+            active_poll_us: if workers.is_some() {
+                FIXED_WORKER_ACTIVE_POLL_US
+            } else {
+                0
+            },
+            run_quantum_us: if workers.is_some_and(|n| n > 1) {
+                FIXED_WORKER_RUN_QUANTUM_US
+            } else {
+                0
+            },
+            single_reply_yield: workers.is_none() && capacity == Some(1),
+        }
+    }
+    fn yield_reply(self, commands: usize, permit: &Permit) -> bool {
+        self.single_reply_yield && commands == 1 && permit.has_peers()
+    }
+}
+
+// Also serves as a scheduling hint in blocking mode; admission there remains
+// bounded by managed workers. Construct before spawn so failure drops the permit.
+struct Permit(Arc<AtomicUsize>);
+impl Permit {
+    fn acquire(counter: &Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(Arc::clone(counter))
+    }
+    fn has_peers(&self) -> bool {
+        self.0.load(Ordering::Relaxed) > 1
+    }
+}
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -66,6 +114,7 @@ impl Config {
 pub struct Server {
     listener: TcpListener,
     config: Config,
+    policy: SchedulingPolicy,
 }
 
 impl Server {
@@ -73,7 +122,13 @@ impl Server {
         config.validate()?;
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
-        Ok(Self { listener, config })
+        let capacity = thread::available_parallelism().ok().map(usize::from);
+        let policy = SchedulingPolicy::new(config.worker_threads, capacity);
+        Ok(Self {
+            listener,
+            config,
+            policy,
+        })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -91,21 +146,24 @@ impl Server {
         let addr = self.local_addr()?;
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
+        let policy = self.policy;
         let thread = thread::Builder::new()
             .name("rillcache-accept".into())
             .spawn(move || self.serve(stop))?;
         Ok(ServerHandle {
             addr,
             stopping,
+            policy,
             thread: Some(thread),
         })
     }
 
     fn serve(self, stopping: Arc<AtomicBool>) -> io::Result<()> {
         if self.config.worker_threads.is_some() {
-            return pool::serve(self.listener, self.config, stopping);
+            return pool::serve(self.listener, self.config, stopping, self.policy);
         }
         let store = Arc::new(Store::new(self.config.max_data_bytes));
+        let admitted = Arc::new(AtomicUsize::new(0));
         let mut workers: Vec<Worker> = Vec::new();
         let mut maintenance = Instant::now();
         let result = (|| {
@@ -143,12 +201,14 @@ impl Server {
                 let control = stream.try_clone()?;
                 let store = Arc::clone(&store);
                 let limits = self.config.limits;
+                let policy = self.policy;
+                let permit = Permit::acquire(&admitted);
                 let thread = thread::Builder::new()
                     .name("rillcache-client".into())
                     .stack_size(256 * 1024)
                     .spawn(move || {
                         // Disconnects, idle timeouts and malformed input affect only this client.
-                        let _ = serve_client(&mut stream, &store, limits);
+                        let _ = serve_client(&mut stream, &store, limits, policy, &permit);
                         let _ = stream.shutdown(Shutdown::Both);
                     })?;
                 workers.push(Worker { control, thread });
@@ -183,10 +243,16 @@ fn join(thread: JoinHandle<()>) -> io::Result<()> {
 pub struct ServerHandle {
     addr: SocketAddr,
     stopping: Arc<AtomicBool>,
+    policy: SchedulingPolicy,
     thread: Option<JoinHandle<io::Result<()>>>,
 }
 
 impl ServerHandle {
+    /// The policy captured at bind time and used by these workers.
+    pub fn scheduling_policy(&self) -> SchedulingPolicy {
+        self.policy
+    }
+
     pub fn local_addr(&self) -> SocketAddr {
         self.addr
     }
@@ -212,12 +278,19 @@ impl Drop for ServerHandle {
     }
 }
 
-fn serve_client(stream: &mut TcpStream, store: &Store, limits: Limits) -> io::Result<()> {
+fn serve_client(
+    stream: &mut TcpStream,
+    store: &Store,
+    limits: Limits,
+    policy: SchedulingPolicy,
+    permit: &Permit,
+) -> io::Result<()> {
     let mut input = Vec::with_capacity(8192.min(limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; 16 * 1024];
     loop {
         let mut consumed = 0;
+        let mut commands = 0;
         loop {
             let (action, used) = match dispatch_request(&input[consumed..], limits, |args| {
                 store.execute(args, &mut output)
@@ -231,9 +304,14 @@ fn serve_client(stream: &mut TcpStream, store: &Store, limits: Limits) -> io::Re
                 }
             };
             consumed += used;
+            commands += 1;
             if output.len() >= 64 * 1024 || action == Action::Close {
                 stream.write_all(&output)?;
                 output.clear();
+                if action != Action::Close && policy.yield_reply(commands, permit) {
+                    thread::yield_now();
+                }
+                commands = 0;
             }
             if action == Action::Close {
                 return Ok(());
@@ -247,6 +325,9 @@ fn serve_client(stream: &mut TcpStream, store: &Store, limits: Limits) -> io::Re
         if !output.is_empty() {
             stream.write_all(&output)?;
             output.clear();
+            if policy.yield_reply(commands, permit) {
+                thread::yield_now();
+            }
         }
         let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
         if room == 0 {
@@ -270,6 +351,101 @@ fn serve_client(stream: &mut TcpStream, store: &Store, limits: Limits) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scheduling_hints_are_guarded_and_permits_release_on_drop() {
+        let one_cpu = SchedulingPolicy::new(None, Some(1));
+        let many_cpu = SchedulingPolicy::new(None, Some(4));
+        assert!(!SchedulingPolicy::new(None, None).single_reply_yield);
+        assert_eq!((one_cpu.active_poll_us, one_cpu.run_quantum_us), (0, 0));
+        let counter = Arc::new(AtomicUsize::new(0));
+        let first = Permit::acquire(&counter);
+        assert!(!one_cpu.yield_reply(1, &first));
+        {
+            let _second = Permit::acquire(&counter);
+            assert!(one_cpu.yield_reply(1, &first));
+            for commands in [0, 2, 16, 64] {
+                assert!(!one_cpu.yield_reply(commands, &first));
+            }
+            assert!(!many_cpu.yield_reply(1, &first));
+        }
+        assert_eq!(counter.load(Ordering::Acquire), 1);
+        assert!(!one_cpu.yield_reply(1, &first));
+        drop(first);
+        assert_eq!(counter.load(Ordering::Acquire), 0);
+        for workers in [1, 4, 64] {
+            let policy = SchedulingPolicy::new(Some(workers), Some(1));
+            assert!(!policy.single_reply_yield);
+            assert_eq!(policy.active_poll_us, FIXED_WORKER_ACTIVE_POLL_US);
+            assert_eq!(
+                policy.run_quantum_us,
+                if workers > 1 {
+                    FIXED_WORKER_RUN_QUANTUM_US
+                } else {
+                    0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn handle_reports_the_immutable_policy_used_by_its_workers() {
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            worker_threads: Some(4),
+            ..Config::default()
+        })
+        .unwrap();
+        let expected = server.policy;
+        let handle = server.spawn().unwrap();
+        assert_eq!(handle.scheduling_policy(), expected);
+        let mut copy = handle.scheduling_policy();
+        copy.run_quantum_us = 0;
+        assert_ne!(copy, handle.scheduling_policy());
+        handle.shutdown().unwrap();
+    }
+
+    #[test]
+    fn constrained_reply_hints_preserve_wire_order_quit_and_shutdown() {
+        let mut server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..Config::default()
+        })
+        .unwrap();
+        server.policy = SchedulingPolicy::new(None, Some(1));
+        let handle = server.spawn().unwrap();
+        assert!(handle.scheduling_policy().single_reply_yield);
+        let mut first = TcpStream::connect(handle.local_addr()).unwrap();
+        let mut second = TcpStream::connect(handle.local_addr()).unwrap();
+        for stream in [&mut first, &mut second] {
+            stream.set_nodelay(true).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            stream.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+            let mut reply = [0; 7];
+            stream.read_exact(&mut reply).unwrap();
+            assert_eq!(&reply, b"+PONG\r\n");
+        }
+        first
+            .write_all(&b"*1\r\n$4\r\nPING\r\n".repeat(16))
+            .unwrap();
+        let mut replies = vec![0; 7 * 16];
+        first.read_exact(&mut replies).unwrap();
+        assert_eq!(replies, b"+PONG\r\n".repeat(16));
+        first
+            .write_all(b"*1\r\n$4\r\nQUIT\r\n*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n")
+            .unwrap();
+        let mut reply = Vec::new();
+        first.read_to_end(&mut reply).unwrap();
+        assert_eq!(reply, b"+OK\r\n");
+        second.write_all(b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n").unwrap();
+        let mut reply = [0; 5];
+        second.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"$-1\r\n");
+        handle.shutdown().unwrap();
+        assert_eq!(second.read(&mut [0]).unwrap(), 0);
+    }
 
     #[test]
     fn rejects_invalid_configuration_before_binding() {

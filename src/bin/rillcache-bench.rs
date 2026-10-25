@@ -511,6 +511,7 @@ fn report(
     options: &Options,
     records: &[Record],
     idle: Option<&profile::Measurement>,
+    scheduling: Option<rillcache::server::SchedulingPolicy>,
 ) -> String {
     let mode = if options.addr.is_some() {
         "external"
@@ -539,11 +540,19 @@ fn report(
     // Additive mode provenance; external servers must be described by their launcher.
     let configuration = match (options.addr, options.server_threads) {
         (Some(_), _) => "null".to_owned(),
-        (None, Some(count)) => format!(
-            "{{\"mode\":\"fixed-workers\",\"workers\":{count},\"active_poll_us\":{}}}",
-            rillcache::server::FIXED_WORKER_ACTIVE_POLL_US
+        (None, Some(count)) => {
+            let policy = scheduling.expect("embedded scheduling policy");
+            format!(
+                "{{\"mode\":\"fixed-workers\",\"workers\":{count},\"active_poll_us\":{},\"run_quantum_us\":{}}}",
+                policy.active_poll_us, policy.run_quantum_us
+            )
+        }
+        (None, None) => format!(
+            "{{\"mode\":\"thread-per-client\",\"workers\":null,\"single_reply_yield\":{}}}",
+            scheduling
+                .expect("embedded scheduling policy")
+                .single_reply_yield
         ),
-        (None, None) => "{\"mode\":\"thread-per-client\",\"workers\":null}".into(),
     };
     let insertion = output.len() - "\"results\":[".len();
     output.insert_str(
@@ -576,6 +585,7 @@ fn benchmark(options: &Options) -> io::Result<String> {
     let addr = options
         .addr
         .unwrap_or_else(|| local.as_ref().expect("embedded server").local_addr());
+    let scheduling = local.as_ref().map(|server| server.scheduling_policy());
     let profiler = options.server_pid.map(profile::Profiler::new).transpose()?;
     let idle = match profiler.as_ref() {
         Some(profiler) if options.profile_idle_ms > 0 => {
@@ -603,7 +613,7 @@ fn benchmark(options: &Options) -> io::Result<String> {
     if let Some(local) = local {
         local.shutdown()?;
     }
-    Ok(report(addr, options, &records, idle.as_ref()))
+    Ok(report(addr, options, &records, idle.as_ref(), scheduling))
 }
 
 fn main() -> ExitCode {
@@ -840,6 +850,36 @@ mod tests {
         assert_eq!(json.matches("\"requests\":1,").count(), 2);
         assert!(json.contains("\"workload\":\"set-nx-existing\""));
         assert!(json.contains("\"workload\":\"set-xx-existing\""));
+    }
+
+    #[test]
+    fn report_uses_captured_scheduling_policy_without_resampling_capacity() {
+        let options = Options::default();
+        let policy = rillcache::server::SchedulingPolicy {
+            active_poll_us: 0,
+            run_quantum_us: 0,
+            single_reply_yield: true,
+        };
+        let text = report(
+            "127.0.0.1:1".parse().unwrap(),
+            &options,
+            &[],
+            None,
+            Some(policy),
+        );
+        assert!(text.contains("\"single_reply_yield\":true"));
+        let policy = rillcache::server::SchedulingPolicy {
+            single_reply_yield: false,
+            ..policy
+        };
+        let text = report(
+            "127.0.0.1:1".parse().unwrap(),
+            &options,
+            &[],
+            None,
+            Some(policy),
+        );
+        assert!(text.contains("\"single_reply_yield\":false"));
     }
 
     #[test]

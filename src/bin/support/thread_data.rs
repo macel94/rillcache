@@ -22,6 +22,15 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
     let policy_required = environment
         .lines()
         .any(|line| line == "Thread-mode polling policy: required");
+    let run_marker = environment
+        .lines()
+        .find(|line| line.starts_with("Thread-mode run budget:"));
+    ensure(
+        run_marker.is_none_or(|line| line == "Thread-mode run budget: cooperative-v1 (required)"),
+        "unsupported thread-mode run policy",
+    )?;
+    let run_required = run_marker.is_some();
+    let mut run_policies = Vec::new();
     let mut policies = Vec::new();
     let mut signatures = Vec::new();
     let mut groups = Vec::new();
@@ -53,6 +62,23 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
             "required thread-mode polling policy differs from runtime",
         )?;
         policies.push(active_poll);
+        let run = match configuration.get("run_quantum_us") {
+            Ok(value) => value.integer()?,
+            Err(_) if !run_required => 0,
+            Err(_) => return Err("required thread-mode run budget is missing".into()),
+        };
+        // Versioned evidence describes its source policy, not a future reader's
+        // possibly retuned runtime constant. Poll-only cohorts remain unchanged.
+        let expected_run = if workers > 1 { 100 } else { 0 }; // cooperative-v1
+        ensure(
+            if run_required {
+                run == expected_run
+            } else {
+                run == 0
+            },
+            "thread-mode run budget differs from runtime",
+        )?;
+        run_policies.push(run);
         let records = value.get("results")?.array()?;
         ensure(
             records.len() == 15,
@@ -153,9 +179,17 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
             policies[0]
         )
     };
+    let run_note = if run_policies[1] == 0 {
+        "No separate multi-lane cooperative run budget was recorded.".to_owned()
+    } else {
+        format!(
+            "Multiple lanes also request a cooperative yield after {} µs of continuous active passes when more than one client is admitted. Progress does not rearm that separate budget; single lanes/lone clients do not periodically yield. This is checked between bounded passes, not a hard deadline or an OS fairness guarantee.",
+            run_policies[1]
+        )
+    };
     let signature = &signatures[0];
     let mut out = format!(
-        "\n### Fixed-worker mode measurements\n\n30/30 separate embedded records validated. {} clients; {} commands/workload/run; pipeline {}; three repetitions. These share the client/server host and inherited CPU affinity; they are **not native competitor comparisons or equal-per-core scaling evidence**. No process CPU/RSS accounting was collected for this group. Fixed lanes have a 1 ms idle polling wait. {policy_note}\n\n| Workload | 1 worker median cmd/s | 1 worker min–max | 4 workers median cmd/s | 4 workers min–max | 1 worker batch p99 µs | 4 workers batch p99 µs |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+        "\n### Fixed-worker mode measurements\n\n30/30 separate embedded records validated. {} clients; {} commands/workload/run; pipeline {}; three repetitions. These share the client/server host and inherited CPU affinity; they are **not native competitor comparisons or equal-per-core scaling evidence**. No process CPU/RSS accounting was collected for this group. Fixed lanes have a 1 ms idle polling wait. {policy_note} {run_note}\n\n| Workload | 1 worker median cmd/s | 1 worker min–max | 4 workers median cmd/s | 4 workers min–max | 1 worker batch p99 µs | 4 workers batch p99 µs |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n",
         signature.clients, signature.requests, signature.pipeline
     );
     for workload in WORKLOADS {

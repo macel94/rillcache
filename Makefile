@@ -80,7 +80,7 @@ bench-threads: release metadata
 	mkdir -p target/benchmarks/thread-modes
 	rm -f target/benchmarks/thread-modes/threads-{1,4}.json
 	cp target/benchmarks/environment.txt target/benchmarks/thread-modes/environment.txt
-	printf '\nThread-mode polling policy: required\n' >> target/benchmarks/thread-modes/environment.txt
+	printf '\nThread-mode polling policy: required\nThread-mode run budget: cooperative-v1 (required)\n' >> target/benchmarks/thread-modes/environment.txt
 	for workers in 1 4; do
 		./target/release/rillcache-bench --server-threads "$$workers" $(BENCH_ARGS) > "target/benchmarks/thread-modes/threads-$$workers.json"
 	done
