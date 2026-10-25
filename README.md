@@ -13,8 +13,9 @@ up. Reports publish automatically with per-run Markdown history; no artifact
 download is needed. [Reporting details](docs/benchmark-reports.md).
 [Profile-guided before/after results](benchmarks/studies/d57cb2e/README.md) preserve
 all 60 native conditions, including gains, regressions and worker-tail tradeoffs.
-The [kernel-guided I/O follow-up](docs/io-scheduling.md) targets receive deferral
-and scheduling costs rather than assuming more map tuning fixes system CPU.
+The [kernel-guided I/O follow-up](benchmarks/studies/io-scheduling/README.md)
+records receive/scheduling bottlenecks, measured fixes, large worker-tail reductions
+and remaining regressions—not an all-workload performance claim.
 
 ## Project vision
 

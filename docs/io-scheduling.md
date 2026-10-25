@@ -34,6 +34,21 @@ boundaries and perf itself introduces counter/MSR/context-switch overhead.
 `/proc` runqueue-delay statistics were disabled; zeros were not treated as proof
 of no waiting. Raw profiles remain separate from native elapsed comparisons.
 
+## Verified results
+
+The [archived v1/v2 studies](../benchmarks/studies/io-scheduling/README.md) retain
+720 checked native records and exact generated 60-row tables for each version.
+In the final v2 cohort, four-worker/inherited SET rose 13.7% at pipeline 1 and
+16.5% at pipeline 16, with much lower batch p99. Four-worker/one-CPU SET batch
+p99 fell 3222.1 → 383.6 µs at pipeline 1, with rate near baseline. One-worker
+single-CPU pipeline-1 rates improved 5.8–10.3% across workloads.
+
+Not all results improved: four-worker/one-CPU pipeline-16 PING lost 7.4% rate
+while gaining a much lower tail; some default-mode rates/tails regressed. The
+current separate reference cohort still has a 10.1% default single-CPU pipeline-1
+SET rate gap to Redis. Inspect all rows, CPU and spreads; do not blend different
+runners/cohorts or call this an all-workload victory.
+
 ## Focused changes
 
 ### Short-reply hint for a CPU-limited blocking server

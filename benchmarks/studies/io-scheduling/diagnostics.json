@@ -1,0 +1,632 @@
+{
+  "kind": "diagnostic-only-not-native-timing",
+  "baseline_source": "7b5f08b7d18bf86052fd4f93a5e5d92277ef8a67",
+  "client_sha256": "5519d1797df7b1b588f4c3a96d49fdbe253aaa00cc6d3558f45102c58e324a98",
+  "server_sha256": "bf0236570862202983474f17137430b69d3c40796f263138fc75ad847c3c3669",
+  "perf_version": "perf version 6.12.113",
+  "kernel_requested_profiles": [
+    {
+      "name": "blocking-ping",
+      "event": "cycles:k",
+      "lost_samples": 0,
+      "top_self_samples": [
+        {
+          "sample_percent": 10.99,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__pv_queued_spin_lock_slowpath"
+        },
+        {
+          "sample_percent": 4.83,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nft_do_chain"
+        },
+        {
+          "sample_percent": 2.24,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "native_read_msr"
+        },
+        {
+          "sample_percent": 2.09,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "native_write_msr"
+        },
+        {
+          "sample_percent": 1.39,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "psi_group_change"
+        },
+        {
+          "sample_percent": 1.24,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "update_curr"
+        },
+        {
+          "sample_percent": 1.12,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_ack"
+        },
+        {
+          "sample_percent": 1.08,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__schedule"
+        },
+        {
+          "sample_percent": 1.07,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "update_load_avg"
+        },
+        {
+          "sample_percent": 0.95,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nf_conntrack_tcp_packet"
+        },
+        {
+          "sample_percent": 0.9,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_sendmsg_locked"
+        },
+        {
+          "sample_percent": 0.86,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_recvmsg_locked"
+        },
+        {
+          "sample_percent": 0.84,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "rep_movs_alternative"
+        },
+        {
+          "sample_percent": 0.83,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__tcp_transmit_skb"
+        }
+      ]
+    },
+    {
+      "name": "blocking-set",
+      "event": "cycles:k",
+      "lost_samples": 0,
+      "top_self_samples": [
+        {
+          "sample_percent": 12.31,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__pv_queued_spin_lock_slowpath"
+        },
+        {
+          "sample_percent": 5.09,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nft_do_chain"
+        },
+        {
+          "sample_percent": 2.43,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "native_write_msr"
+        },
+        {
+          "sample_percent": 2.16,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "native_read_msr"
+        },
+        {
+          "sample_percent": 1.36,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "psi_group_change"
+        },
+        {
+          "sample_percent": 1.26,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "update_curr"
+        },
+        {
+          "sample_percent": 1.21,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__schedule"
+        },
+        {
+          "sample_percent": 1.17,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_ack"
+        },
+        {
+          "sample_percent": 1.02,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "update_load_avg"
+        },
+        {
+          "sample_percent": 1.01,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nf_conntrack_tcp_packet"
+        },
+        {
+          "sample_percent": 1.0,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_recvmsg_locked"
+        },
+        {
+          "sample_percent": 0.89,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nf_hook_slow"
+        },
+        {
+          "sample_percent": 0.83,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_sendmsg_locked"
+        }
+      ]
+    },
+    {
+      "name": "fixed4-ping",
+      "event": "cycles:k",
+      "lost_samples": 0,
+      "top_self_samples": [
+        {
+          "sample_percent": 4.4,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nft_do_chain"
+        },
+        {
+          "sample_percent": 3.71,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__pv_queued_spin_lock_slowpath"
+        },
+        {
+          "sample_percent": 3.27,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__sys_recvfrom"
+        },
+        {
+          "sample_percent": 2.63,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_recvmsg_locked"
+        },
+        {
+          "sample_percent": 2.42,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "native_write_msr"
+        },
+        {
+          "sample_percent": 2.15,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_recvmsg"
+        },
+        {
+          "sample_percent": 1.92,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "entry_SYSCALL_64_after_hwframe"
+        },
+        {
+          "sample_percent": 1.79,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "fdget"
+        },
+        {
+          "sample_percent": 1.62,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "do_syscall_64"
+        },
+        {
+          "sample_percent": 1.49,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "release_sock"
+        },
+        {
+          "sample_percent": 1.48,
+          "object": "[vdso]",
+          "kind": ".",
+          "symbol": "__vdso_clock_gettime"
+        },
+        {
+          "sample_percent": 1.37,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "aa_sk_perm"
+        },
+        {
+          "sample_percent": 1.34,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "sock_recvmsg"
+        },
+        {
+          "sample_percent": 1.27,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "security_socket_recvmsg"
+        },
+        {
+          "sample_percent": 1.12,
+          "object": "rillcache",
+          "kind": ".",
+          "symbol": "_RINvNtNtCs8ZKwes1zzDd_3std3sys9backtrace28___rust_begin_short_backtraceNCNCNvNtNtCs1Bpw9sud0AL_9rillcache6server4pool5serve00uEB1h_"
+        },
+        {
+          "sample_percent": 1.07,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "_raw_spin_lock_bh"
+        },
+        {
+          "sample_percent": 1.06,
+          "object": "rillcache",
+          "kind": ".",
+          "symbol": "_RNvMs1_NtNtCs1Bpw9sud0AL_9rillcache6server4poolNtB5_6Client4poll"
+        },
+        {
+          "sample_percent": 1.01,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "lock_sock_nested"
+        },
+        {
+          "sample_percent": 1.01,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__local_bh_enable_ip"
+        },
+        {
+          "sample_percent": 0.95,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "inet_recvmsg"
+        },
+        {
+          "sample_percent": 0.93,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_ack"
+        },
+        {
+          "sample_percent": 0.88,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "entry_SYSCALL_64"
+        },
+        {
+          "sample_percent": 0.87,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "native_read_msr"
+        },
+        {
+          "sample_percent": 0.83,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nf_conntrack_tcp_packet"
+        },
+        {
+          "sample_percent": 0.81,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "arch_exit_to_user_mode_prepare.isra.0"
+        }
+      ]
+    },
+    {
+      "name": "valkey-ping",
+      "event": "cycles:k",
+      "lost_samples": 0,
+      "top_self_samples": [
+        {
+          "sample_percent": 6.69,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nft_do_chain"
+        },
+        {
+          "sample_percent": 6.18,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__pv_queued_spin_lock_slowpath"
+        },
+        {
+          "sample_percent": 2.48,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "native_write_msr"
+        },
+        {
+          "sample_percent": 2.38,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_ack"
+        },
+        {
+          "sample_percent": 1.7,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__tcp_transmit_skb"
+        },
+        {
+          "sample_percent": 1.27,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "__inet_lookup_established"
+        },
+        {
+          "sample_percent": 1.25,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_sendmsg_locked"
+        },
+        {
+          "sample_percent": 1.17,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "memset_orig"
+        },
+        {
+          "sample_percent": 1.13,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_write_xmit"
+        },
+        {
+          "sample_percent": 1.13,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nft_match_eval"
+        },
+        {
+          "sample_percent": 1.09,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_rcv_established"
+        },
+        {
+          "sample_percent": 0.96,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nft_match_large_eval"
+        },
+        {
+          "sample_percent": 0.94,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "pvclock_clocksource_read_nowd"
+        },
+        {
+          "sample_percent": 0.94,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "skb_release_data"
+        },
+        {
+          "sample_percent": 0.89,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "tcp_v4_rcv"
+        },
+        {
+          "sample_percent": 0.89,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "psi_group_change"
+        },
+        {
+          "sample_percent": 0.86,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "fib_table_lookup"
+        },
+        {
+          "sample_percent": 0.84,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nf_conntrack_in"
+        },
+        {
+          "sample_percent": 0.83,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "nf_hook_slow"
+        },
+        {
+          "sample_percent": 0.82,
+          "object": "[kernel.kallsyms]",
+          "kind": "k",
+          "symbol": "sk_filter_trim_cap"
+        }
+      ]
+    }
+  ],
+  "syscall_counts": {
+    "blocking-ping": [
+      {
+        "syscall": "recvfrom",
+        "calls": 10816,
+        "errors": 0
+      },
+      {
+        "syscall": "sendto",
+        "calls": 10808,
+        "errors": 0
+      },
+      {
+        "syscall": "clock_nanosleep",
+        "calls": 1198,
+        "errors": 0
+      },
+      {
+        "syscall": "accept4",
+        "calls": 1207,
+        "errors": 1199
+      },
+      {
+        "syscall": "mmap",
+        "calls": 22,
+        "errors": 0
+      },
+      {
+        "syscall": "setsockopt",
+        "calls": 24,
+        "errors": 0
+      },
+      {
+        "syscall": "mprotect",
+        "calls": 22,
+        "errors": 0
+      },
+      {
+        "syscall": "rt_sigprocmask",
+        "calls": 24,
+        "errors": 0
+      },
+      {
+        "syscall": "clone3",
+        "calls": 8,
+        "errors": 0
+      },
+      {
+        "syscall": "ioctl",
+        "calls": 8,
+        "errors": 0
+      },
+      {
+        "syscall": "fcntl",
+        "calls": 8,
+        "errors": 0
+      },
+      {
+        "syscall": "restart_syscall",
+        "calls": 1,
+        "errors": 0
+      },
+      {
+        "syscall": "prctl",
+        "calls": 8,
+        "errors": 0
+      },
+      {
+        "syscall": "rseq",
+        "calls": 8,
+        "errors": 0
+      },
+      {
+        "syscall": "set_robust_list",
+        "calls": 8,
+        "errors": 0
+      },
+      {
+        "syscall": "sigaltstack",
+        "calls": 16,
+        "errors": 0
+      },
+      {
+        "syscall": "sched_getaffinity",
+        "calls": 8,
+        "errors": 0
+      },
+      {
+        "syscall": "munmap",
+        "calls": 4,
+        "errors": 0
+      },
+      {
+        "syscall": "gettid",
+        "calls": 8,
+        "errors": 0
+      }
+    ],
+    "fixed4-ping": [
+      {
+        "syscall": "recvfrom",
+        "calls": 16375,
+        "errors": 5560
+      },
+      {
+        "syscall": "sendto",
+        "calls": 10808,
+        "errors": 0
+      },
+      {
+        "syscall": "futex",
+        "calls": 2495,
+        "errors": 2483
+      },
+      {
+        "syscall": "clock_nanosleep",
+        "calls": 1973,
+        "errors": 0
+      },
+      {
+        "syscall": "accept4",
+        "calls": 1981,
+        "errors": 1973
+      },
+      {
+        "syscall": "setsockopt",
+        "calls": 8,
+        "errors": 0
+      },
+      {
+        "syscall": "shutdown",
+        "calls": 6,
+        "errors": 0
+      },
+      {
+        "syscall": "ioctl",
+        "calls": 8,
+        "errors": 0
+      },
+      {
+        "syscall": "close",
+        "calls": 5,
+        "errors": 0
+      },
+      {
+        "syscall": "restart_syscall",
+        "calls": 1,
+        "errors": 0
+      },
+      {
+        "syscall": "brk",
+        "calls": 1,
+        "errors": 0
+      }
+    ]
+  },
+  "notes": [
+    "No attached-profiler elapsed/rate is performance evidence.",
+    "VM skid can attribute samples across privilege boundaries; perf adds overhead.",
+    "No sysctl/firewall/scheduler policy or unrelated-process affinity was changed.",
+    "Runqueue-delay collection was disabled; zero was not interpreted as no waiting.",
+    "Raw kernel addresses/callgraph data are intentionally not included."
+  ]
+}
