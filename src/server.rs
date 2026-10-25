@@ -8,9 +8,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::engine::{Action, Store};
-use crate::protocol::{Limits, parse_request};
+use crate::protocol::{Limits, dispatch_request};
 
 mod pool;
+
+/// Fixed workers keep polling briefly after progress, then return to idle parking.
+/// This is bounded active polling, not readiness notification or free CPU work.
+pub const FIXED_WORKER_ACTIVE_POLL_US: u64 = 50;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -215,8 +219,10 @@ fn serve_client(stream: &mut TcpStream, store: &Store, limits: Limits) -> io::Re
     loop {
         let mut consumed = 0;
         loop {
-            let request = match parse_request(&input[consumed..], limits) {
-                Ok(Some(request)) => request,
+            let (action, used) = match dispatch_request(&input[consumed..], limits, |args| {
+                store.execute(args, &mut output)
+            }) {
+                Ok(Some(result)) => result,
                 Ok(None) => break,
                 Err(error) => {
                     write!(output, "-ERR Protocol error: {error}\r\n")?;
@@ -224,8 +230,7 @@ fn serve_client(stream: &mut TcpStream, store: &Store, limits: Limits) -> io::Re
                     return Ok(());
                 }
             };
-            let action = store.execute(&request.arguments, &mut output);
-            consumed += request.consumed;
+            consumed += used;
             if output.len() >= 64 * 1024 || action == Action::Close {
                 stream.write_all(&output)?;
                 output.clear();

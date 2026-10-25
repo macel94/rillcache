@@ -26,6 +26,10 @@ impl Data {
         Some(entry)
     }
     pub fn expire_key(&mut self, key: &[u8], now: i64) {
+        // The index is exact: no expirations means no key can be expired.
+        if self.expirations.is_empty() {
+            return;
+        }
         if self.entries.get(key).is_some_and(|entry| !entry.alive(now)) {
             self.remove(key);
         }
@@ -47,22 +51,42 @@ impl Data {
     }
     pub fn set_expiry(&mut self, key: &[u8], expires: Option<i64>) {
         let entry = self.entries.get_mut(key).expect("existing entry");
+        Self::replace_expiry(&mut self.expirations, key, entry, expires);
+    }
+    fn replace_expiry(
+        index: &mut BTreeSet<(i64, Vec<u8>)>,
+        key: &[u8],
+        entry: &mut Entry,
+        expires: Option<i64>,
+    ) {
         if entry.expires == expires {
             return;
         }
         if let Some(at) = entry.expires {
-            self.expirations.remove(&(at, key.to_vec()));
+            index.remove(&(at, key.to_vec()));
         }
         entry.expires = expires;
         if let Some(at) = expires {
-            self.expirations.insert((at, key.to_vec()));
+            index.insert((at, key.to_vec()));
         }
     }
-    pub fn reserve(&mut self, key: &[u8], bytes: usize, maximum: usize, now: i64) -> Option<usize> {
+    /// `previous` is the live value length already looked up under this write lock.
+    /// Reaping cannot remove that key: callers have expired it at the same `now`.
+    pub fn reserve(
+        &mut self,
+        key: &[u8],
+        bytes: usize,
+        previous: Option<usize>,
+        maximum: usize,
+        now: i64,
+    ) -> Option<usize> {
+        debug_assert_eq!(
+            self.entries.get(key).map(|entry| entry.value.len()),
+            previous
+        );
         let size = |data: &Self| {
-            let existing = data.entries.get(key);
-            (data.payload_bytes - existing.map_or(0, |entry| entry.value.len()))
-                .checked_add(if existing.is_none() { key.len() } else { 0 })?
+            (data.payload_bytes - previous.unwrap_or(0))
+                .checked_add(if previous.is_none() { key.len() } else { 0 })?
                 .checked_add(bytes)
                 .filter(|&size| size <= maximum)
         };
@@ -75,17 +99,25 @@ impl Data {
     }
     pub fn put(&mut self, key: &[u8], value: &[u8], expires: Option<i64>, payload: usize) {
         if let Some(entry) = self.entries.get_mut(key) {
-            entry.value = value.to_vec();
-            self.set_expiry(key, expires);
+            // Reuse admitted overwrites, but release disproportionate old capacity
+            // on shrink (and all capacity for an empty replacement).
+            if entry.value.capacity() > value.len().saturating_mul(2) {
+                entry.value = value.to_vec();
+            } else {
+                value.clone_into(&mut entry.value);
+            }
+            Self::replace_expiry(&mut self.expirations, key, entry, expires);
         } else {
             self.entries.insert(
                 key.to_vec(),
                 Entry {
                     value: value.to_vec(),
-                    expires: None,
+                    expires,
                 },
             );
-            self.set_expiry(key, expires);
+            if let Some(at) = expires {
+                self.expirations.insert((at, key.to_vec()));
+            }
         }
         self.payload_bytes = payload;
     }

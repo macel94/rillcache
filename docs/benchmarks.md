@@ -37,11 +37,15 @@ named worker count through procfs, not just the configuration flag. `make ci`
 uses this same matrix and all three reply-validated smoke modes on GitHub.
 
 `--server-threads N` configures only embedded benchmark servers and is rejected
-with `--addr`. Additive JSON `server_configuration` records mode/count; it is
+with `--addr`. Additive JSON `server_configuration` records mode/count and fixed-worker
+`active_poll_us` policy; it is
 `null` for an external server whose launcher owns configuration. Thread counts
 are not CPU affinity budgets. Fixed workers use 64-command and bounded I/O
-quanta, a bounded output queue and a 1 ms idle polling wait; compare modes rather
-than assuming this portable scheduler is faster than blocking per-client I/O.
+quanta, a bounded output queue and a 1 ms idle polling wait. After progress they
+actively poll for at most 50 µs before returning to idle parking; empty passes do
+not rearm the window. This trades active CPU work for fewer premature sleeps, not
+kernel readiness or a free-CPU improvement. Compare modes rather than assuming
+this portable scheduler is faster than blocking per-client I/O.
 The four native comparison profiles still use the unchanged per-client default;
 mode-scaling runs are separately validated and published as an embedded-mode
 throughput/spread/batch-p99 table in the automatic report, not an extra
@@ -293,9 +297,12 @@ GET uses shared locking; SET/DEL use exclusive locking. Locks are released befor
 network I/O; multi-key DEL/EXISTS are atomic with respect to other commands.
 
 This is a correctness/performance baseline, not the final scalability design.
-Contention, per-request argument allocation, value copies, and thread-per-client
-scaling are candidates to profile. Changing synchronization or I/O must retain
-safe Rust, zero dependencies, command atomicity and all conformance tests.
+The [profile-guided hot-path investigation](hot-paths.md) records concrete
+allocation/lookup/encoding reductions, the bounded fixed-worker policy and an
+optional matched before/after workflow with raw evidence and readable tables.
+Contention, mixed TTL/traffic, client saturation and thread-per-client scaling
+still need profiling. Changing synchronization or I/O must retain safe Rust,
+zero Rust dependencies, command atomicity and all conformance tests.
 
 References:
 [Valkey benchmark pitfalls](https://valkey.io/topics/benchmark/),

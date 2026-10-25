@@ -1,0 +1,9 @@
+{"benchmark":"resp2_parse_set_64b","iterations":50000,"samples":7,"median_ns_per_op":67.22}
+{"benchmark":"resp2_dispatch_set_64b","iterations":50000,"samples":7,"median_ns_per_op":75.38}
+{"benchmark":"store_ping","iterations":50000,"samples":7,"median_ns_per_op":10.13}
+{"benchmark":"resp2_encode_bulk_64b","iterations":50000,"samples":7,"median_ns_per_op":26.88}
+{"benchmark":"store_get_64b","iterations":50000,"samples":7,"median_ns_per_op":74.41}
+{"benchmark":"store_set_64b","iterations":50000,"samples":7,"median_ns_per_op":146.09}
+{"benchmark":"store_set_nx_existing_64b","iterations":50000,"samples":7,"median_ns_per_op":103.24}
+{"benchmark":"store_set_xx_existing_64b","iterations":50000,"samples":7,"median_ns_per_op":147.22}
+{"benchmark":"store_set_xx_missing_64b","iterations":50000,"samples":7,"median_ns_per_op":126.49}

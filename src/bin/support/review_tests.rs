@@ -290,6 +290,42 @@ fn embedded_mode_tables_are_validated_separately_and_bad_modes_fail_quality() {
         );
         assert_eq!(summary.records, 180);
     }
+    fs::write(&file, &valid).unwrap();
+    let mode_environment = modes.join("environment.txt");
+    let original_mode_environment = fs::read_to_string(&mode_environment).unwrap();
+    fs::write(
+        &mode_environment,
+        format!("{original_mode_environment}\nThread-mode polling policy: required\n"),
+    )
+    .unwrap();
+    assert!(
+        !data::summarize(&evidence, SHA).complete,
+        "new evidence must declare its policy"
+    );
+    for workers in [1, 4] {
+        let file = modes.join(format!("threads-{workers}.json"));
+        let text = fs::read_to_string(&file).unwrap().replace(
+            &format!("\"workers\":{workers}"),
+            &format!("\"workers\":{workers},\"active_poll_us\":50"),
+        );
+        fs::write(file, text).unwrap();
+    }
+    let active = data::summarize(&evidence, SHA);
+    assert!(active.complete, "{}", active.markdown);
+    assert!(active.markdown.contains("at most 50 µs after progress"));
+    let active_file = modes.join("threads-4.json");
+    let active_text = fs::read_to_string(&active_file).unwrap();
+    for value in ["0", "51", "-1", "null"] {
+        fs::write(
+            &active_file,
+            active_text.replace(
+                "\"active_poll_us\":50",
+                &format!("\"active_poll_us\":{value}"),
+            ),
+        )
+        .unwrap();
+        assert!(!data::summarize(&evidence, SHA).complete);
+    }
     fs::remove_dir_all(&modes).unwrap();
     let environment = evidence.join("pipeline-1/environment.txt");
     let original = fs::read_to_string(&environment).unwrap();

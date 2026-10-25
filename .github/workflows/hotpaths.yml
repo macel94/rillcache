@@ -1,0 +1,58 @@
+name: Hot-path before-after study
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hotpath-study-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  BASELINE_SOURCE: 3dca0c7fb4beb9923bd05f0d891602a5cd9b3790
+
+jobs:
+  compare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify the candidate and the optional evidence validator
+        run: |
+          make check
+          python3 scripts/compare-builds.py --self-test
+      - name: Build exact baseline sources with the same toolchain and normal release profile
+        run: |
+          mkdir -p "$RUNNER_TEMP/baseline-source" "$RUNNER_TEMP/frozen"
+          git archive "$BASELINE_SOURCE" | tar -x -C "$RUNNER_TEMP/baseline-source"
+          cargo build --locked --offline --release --bins --manifest-path "$RUNNER_TEMP/baseline-source/Cargo.toml"
+          cp "$RUNNER_TEMP/baseline-source/target/release/rillcache" "$RUNNER_TEMP/frozen/before"
+          cp "$RUNNER_TEMP/baseline-source/target/release/rillcache-bench" "$RUNNER_TEMP/frozen/client"
+          cargo build --locked --offline --release --bins
+          cp target/release/rillcache "$RUNNER_TEMP/frozen/after"
+      - name: Record environment, alternating native measurements, CPU and batch tails
+        run: |
+          mkdir -p target
+          { rustc -vV; uname -a; lscpu; git status --short; } > target/hotpath-environment.txt
+          python3 scripts/compare-builds.py \
+            --before "$RUNNER_TEMP/frozen/before" --after "$RUNNER_TEMP/frozen/after" \
+            --client "$RUNNER_TEMP/frozen/client" --before-source "$BASELINE_SOURCE" \
+            --after-source "$GITHUB_SHA" --out target/hotpath-study
+          tee -a "$GITHUB_STEP_SUMMARY" < target/hotpath-study/summary.md
+      - name: Preserve raw validated evidence, hashes and readable before-after tables
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hotpath-study-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            target/hotpath-study/
+            target/hotpath-environment.txt
+          if-no-files-found: warn
+          retention-days: 30

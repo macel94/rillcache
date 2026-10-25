@@ -539,7 +539,10 @@ fn report(
     // Additive mode provenance; external servers must be described by their launcher.
     let configuration = match (options.addr, options.server_threads) {
         (Some(_), _) => "null".to_owned(),
-        (None, Some(count)) => format!("{{\"mode\":\"fixed-workers\",\"workers\":{count}}}"),
+        (None, Some(count)) => format!(
+            "{{\"mode\":\"fixed-workers\",\"workers\":{count},\"active_poll_us\":{}}}",
+            rillcache::server::FIXED_WORKER_ACTIVE_POLL_US
+        ),
         (None, None) => "{\"mode\":\"thread-per-client\",\"workers\":null}".into(),
     };
     let insertion = output.len() - "\"results\":[".len();

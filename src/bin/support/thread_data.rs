@@ -19,6 +19,10 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
             && environment.contains("Working-tree status (empty means clean):\n\n"),
         "thread-mode source is stale or dirty",
     )?;
+    let policy_required = environment
+        .lines()
+        .any(|line| line == "Thread-mode polling policy: required");
+    let mut policies = Vec::new();
     let mut signatures = Vec::new();
     let mut groups = Vec::new();
     for workers in [1, 4] {
@@ -34,6 +38,21 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
                 && integer(configuration, "workers")? == workers,
             "thread-mode identity mismatch",
         )?;
+        let policy = configuration.get("active_poll_us");
+        let active_poll = match policy {
+            Ok(value) => value.integer()?,
+            Err(_) if !policy_required => 0, // Historical cohorts predate bounded active polling.
+            Err(_) => return Err("required thread-mode polling policy is missing".into()),
+        };
+        ensure(
+            [0, 50].contains(&active_poll),
+            "unsupported thread-mode polling policy",
+        )?;
+        ensure(
+            !policy_required || active_poll == rillcache::server::FIXED_WORKER_ACTIVE_POLL_US,
+            "required thread-mode polling policy differs from runtime",
+        )?;
+        policies.push(active_poll);
         let records = value.get("results")?.array()?;
         ensure(
             records.len() == 15,
@@ -122,9 +141,21 @@ pub(super) fn summarize(root: &Path, sha: &str) -> Result<Option<String>> {
             .all(|signature| signature == &signatures[0]),
         "cross-mode workload parameters differ",
     )?;
+    ensure(
+        policies.iter().all(|policy| *policy == policies[0]),
+        "cross-mode polling policies differ",
+    )?;
+    let policy_note = if policies[0] == 0 {
+        "No post-progress active polling was recorded.".to_owned()
+    } else {
+        format!(
+            "They actively poll for at most {} µs after progress before returning to idle parking; this trades active CPU work for fewer premature sleeps, not epoll readiness or free CPU.",
+            policies[0]
+        )
+    };
     let signature = &signatures[0];
     let mut out = format!(
-        "\n### Fixed-worker mode measurements\n\n30/30 separate embedded records validated. {} clients; {} commands/workload/run; pipeline {}; three repetitions. These share the client/server host and inherited CPU affinity; they are **not native competitor comparisons or equal-per-core scaling evidence**. No process CPU/RSS accounting was collected for this group. Fixed lanes have a 1 ms idle polling wait.\n\n| Workload | 1 worker median cmd/s | 1 worker min–max | 4 workers median cmd/s | 4 workers min–max | 1 worker batch p99 µs | 4 workers batch p99 µs |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+        "\n### Fixed-worker mode measurements\n\n30/30 separate embedded records validated. {} clients; {} commands/workload/run; pipeline {}; three repetitions. These share the client/server host and inherited CPU affinity; they are **not native competitor comparisons or equal-per-core scaling evidence**. No process CPU/RSS accounting was collected for this group. Fixed lanes have a 1 ms idle polling wait. {policy_note}\n\n| Workload | 1 worker median cmd/s | 1 worker min–max | 4 workers median cmd/s | 4 workers min–max | 1 worker batch p99 µs | 4 workers batch p99 µs |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n",
         signature.clients, signature.requests, signature.pipeline
     );
     for workload in WORKLOADS {

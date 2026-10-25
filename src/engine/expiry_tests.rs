@@ -344,6 +344,65 @@ fn maximum_absolute_deadline_queries_do_not_overflow_rounding() {
 }
 
 #[test]
+fn admitted_overwrites_reuse_capacity_but_release_disproportionate_shrinks() {
+    let (store, _) = setup(4096);
+    let mut expected_capacity = 0;
+    for (length, byte) in [
+        (1024, b'a'),
+        (768, b'b'),
+        (1024, b'c'),
+        (17, b'd'),
+        (0, b'e'),
+        (65, b'f'),
+    ] {
+        let value = vec![byte; length];
+        assert_eq!(
+            exec(&store, &[b"SET", b"k", &value, b"PX", b"100"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(exec(&store, &[b"GET", b"k"]), bulk(&value));
+        assert_eq!(exec(&store, &[b"PTTL", b"k"]), b":100\r\n");
+        let data = store.data.read().unwrap();
+        let entry = &data.entries[b"k".as_slice()];
+        let capacity = entry.value.capacity();
+        if length == 768 {
+            assert_eq!(
+                capacity, expected_capacity,
+                "overwrite should reuse the old buffer"
+            );
+        }
+        if length == 17 || length == 0 {
+            assert_eq!(
+                capacity, length,
+                "large/empty shrink should release old capacity"
+            );
+        }
+        assert_eq!(data.payload_bytes, 1 + length);
+        assert_eq!(data.expirations.len(), 1);
+        expected_capacity = capacity;
+    }
+}
+
+#[test]
+fn cached_admission_metadata_survives_reaping_other_keys_and_preserves_live_oom_state() {
+    let (store, clock) = setup(10);
+    exec(&store, &[b"SET", b"live", b"1"]);
+    exec(&store, &[b"SET", b"dead", b"x", b"PX", b"1"]);
+    clock.0.store(1002, Ordering::SeqCst);
+    assert_eq!(
+        exec(&store, &[b"SET", b"live", b"123456", b"GET"]),
+        bulk(b"1")
+    );
+    assert_eq!(store.data.read().unwrap().payload_bytes, 10);
+    assert_eq!(
+        exec(&store, &[b"SET", b"live", b"1234567", b"GET"]),
+        options::OOM
+    );
+    assert_eq!(exec(&store, &[b"GET", b"live"]), bulk(b"123456"));
+    assert!(store.data.read().unwrap().expirations.is_empty());
+}
+
+#[test]
 fn increments_preserve_expiration_and_shared_key_updates_are_atomic() {
     let (store, clock) = setup(100);
     exec(&store, &[b"SET", b"count", b"0", b"PX", b"100"]);

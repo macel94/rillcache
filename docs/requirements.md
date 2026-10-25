@@ -41,6 +41,9 @@ reason to couple all future commands into a single large story.
 | S13 | As a counter user, I can atomically change signed 64-bit integer strings without lost updates, overflow or changing their TTL. | S | R69–R71; boundary, many-writer and reference tests |
 | S14 | As an operator, I can run a tiny non-root image without configuration, append worker options and probe it without installing a shell/client. | S | R72–R74/R78; static/size/default-network/health/mode tests and deployment examples |
 | S15 | As a user, I get tested native amd64/arm64 images from GHCR automatically, with a visible anonymous-access gate instead of an unverified public-publishing claim. | S | R75–R77; isolated publishing, tested archives, manifest and anonymous pull/run jobs |
+| S16 | As a cache user, I get profiled storage fast paths without sacrificing expiry, atomic payload admission or bounded retained value capacity. | S | R79/R81; preserved profiles, capacity/accounting/expiry/OOM and concurrent tests |
+| S17 | As a client user, I get bounded borrowing dispatch and specialized RESP headers with unchanged framing, errors and owned-parser behavior. | S | R80/R82; fragmentation, stack/fallback, execute-once and decimal-boundary tests |
+| S18 | As a performance investigator, I can assess a bounded fixed-worker wait policy with reproducible frozen-client before/after evidence instead of assuming that busy polling is faster or free. | S | R83–R84; deterministic window/metadata tests, all-mode validation and isolated A/B workflow |
 
 ## EARS acceptance requirements
 
@@ -285,6 +288,36 @@ reason to couple all future commands into a single large story.
   RSS, missing authentication/TLS and non-graceful process-termination limitations
   explicit. A single replica/Service shall not imply persistence, replication or HA.
 
+### Profile-guided hot-path delivery acceptance (S16–S18)
+
+- **R79 (event-driven):** Before changing a measured hot path, profiling shall
+  identify workload-specific costs using preserved baseline binaries/source/flags.
+  Sampled user-space cycles, syscall counts and uninstrumented elapsed/CPU results
+  shall remain separate; profiler-distorted throughput shall not become a speed claim.
+- **R80 (event-driven):** When the server dispatches a complete RESP request with
+  at most eight arguments, it shall borrow stack-held argument references without
+  allocating an argument vector. Larger commands retain bounded fallback storage.
+  The public owned Request API, framing/length errors, fragmentation, one-command
+  consumption, ordered pipelines and execute-once behavior shall remain compatible.
+- **R81 (state-driven):** While reads/writes reuse already-validated lookup/admission
+  metadata or value capacity, the store shall retain randomized hashing, exclusive
+  atomic writes, exact payload/expiry accounting, TTL and failed-write semantics.
+  Disproportionate shrink/empty overwrites shall release retained value capacity.
+- **R82 (event-driven):** When RESP array/bulk headers are encoded, specialized
+  decimal encoding shall produce byte-identical results for zero, digit boundaries
+  and usize::MAX without heap formatting or weakening overflow checks.
+- **R83 (optional feature):** Where bounded active polling is adopted for fixed
+  workers, its active interval shall expire after real progress stops, retain idle
+  parking, unchanged fairness/backpressure/admission and joined shutdown, and expose
+  its actual policy in benchmark evidence. Busy polling shall not be called epoll
+  readiness or a free/idle-CPU improvement.
+- **R84 (event-driven):** When an optimization is assessed, repeated before/after
+  measurements shall use the same frozen client, workloads, CPU budgets and runtime
+  settings, rotate order, preserve digests/raw evidence and disclose spread/CPU/tails.
+  Relevant debug/release/reference and all-mode tests shall pass before publication.
+  Slower/noisy results and remaining blockers shall remain visible; no all-workload
+  performance victory or production-compatibility claim shall follow from a subset.
+
 ## Compatibility boundary (v0.1)
 
 Supported: RESP2 nonempty arrays of non-null bulk strings, case-insensitive ASCII
@@ -320,11 +353,12 @@ Not implemented or implied by the completed increments:
    replication and clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe
    release, failover and fencing semantics are not implemented.
-4. Prioritize the measured single-core, low-pipeline and tail-latency weakness:
-   use S08's server CPU/RSS/context-switch measurements with PING as a no-key-map
-   control to evaluate bounded I/O scheduling before speculative sharding. Include idle
-   CPU, backpressure, shutdown and multi-key atomicity in acceptance criteria;
-   unsafe code and external dependencies remain forbidden.
+4. Continue investigating the single-core, low-pipeline and tail-latency weakness:
+   extend S16–S18's [profile-guided work](hot-paths.md) with mixed TTL/traffic and
+   client/server saturation evidence, using PING as a no-key-map control. Evaluate
+   a safe readiness boundary before speculative sharding; retain idle CPU,
+   backpressure, shutdown and multi-key atomicity gates. Unsafe project code and
+   external Rust dependencies remain forbidden.
 5. Controlled-hardware performance budgets and repeated current-release comparisons;
    later, richer types, pub/sub and streams driven by product judgment.
 

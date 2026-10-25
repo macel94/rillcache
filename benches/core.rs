@@ -4,7 +4,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use rillcache::engine::Store;
-use rillcache::protocol::{Limits, encode_request, parse_request};
+use rillcache::protocol::{Limits, dispatch_request, encode_bulk, encode_request, parse_request};
 
 fn measure(name: &str, mut operation: impl FnMut()) {
     const ITERATIONS: usize = 50_000;
@@ -58,12 +58,28 @@ fn main() {
                 .unwrap(),
         );
     });
+    measure("resp2_dispatch_set_64b", || {
+        black_box(
+            dispatch_request(black_box(&request), Limits::default(), |args| {
+                black_box(args);
+            })
+            .unwrap()
+            .unwrap(),
+        );
+    });
     let store = Store::new(1024);
     let mut output = Vec::new();
     store.execute(&[b"SET", b"bench:key", &[b'x'; 64]], &mut output);
     assert_eq!(output, b"+OK\r\n");
     let mut bulk = Vec::new();
     rillcache::protocol::encode_bulk(Some(&[b'x'; 64]), &mut bulk);
+    measure_store("store_ping", &store, &[b"PING"], b"+PONG\r\n");
+    measure("resp2_encode_bulk_64b", || {
+        output.clear();
+        encode_bulk(Some(black_box(&[b'x'; 64])), &mut output);
+        black_box(output.as_slice());
+    });
+    assert_eq!(output, bulk);
     measure_store("store_get_64b", &store, &[b"GET", b"bench:key"], &bulk);
     measure_store(
         "store_set_64b",

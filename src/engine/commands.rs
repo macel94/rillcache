@@ -15,11 +15,9 @@ impl Store {
             return;
         };
         let now = self.now(&data);
-        if data.entries.get(key).is_none_or(|entry| entry.alive(now)) {
-            encode_bulk(
-                data.entries.get(key).map(|entry| entry.value.as_slice()),
-                output,
-            );
+        let entry = data.entries.get(key);
+        if entry.is_none_or(|entry| entry.alive(now)) {
+            encode_bulk(entry.map(|entry| entry.value.as_slice()), output);
             return;
         }
         drop(data);
@@ -134,7 +132,9 @@ impl Store {
             data.remove(key);
             return;
         }
-        let Some(payload) = data.reserve(key, value.len(), self.max_payload_bytes, now) else {
+        let previous = existing.map(|entry| entry.value.len());
+        let Some(payload) = data.reserve(key, value.len(), previous, self.max_payload_bytes, now)
+        else {
             output.extend_from_slice(OOM);
             return;
         };
@@ -351,8 +351,14 @@ impl Store {
         };
         let expires = entry.and_then(|entry| entry.expires);
         let encoded = value.to_string();
-        let Some(payload) = data.reserve(arguments[1], encoded.len(), self.max_payload_bytes, now)
-        else {
+        let previous = entry.map(|entry| entry.value.len());
+        let Some(payload) = data.reserve(
+            arguments[1],
+            encoded.len(),
+            previous,
+            self.max_payload_bytes,
+            now,
+        ) else {
             output.extend_from_slice(OOM);
             return;
         };

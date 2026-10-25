@@ -88,8 +88,10 @@ cargo run -- --help        # bind address, payload/client limits and idle timeou
 
 `cargo run -- --threads 4` selects four I/O/execution workers; `--threads 1`
 uses one shared worker, not one-client-at-a-time admission. Fixed workers use
-portable nonblocking polling with a 1 ms idle wait: lower thread counts are not
-an assertion of lower latency or higher throughput. The default is unchanged.
+portable nonblocking polling with a 1 ms idle wait and a bounded 50 µs active
+window after progress; this trades CPU work for fewer premature sleeps, not free
+CPU or kernel readiness. Lower thread counts are not an assertion of lower
+latency or higher throughput. The default is unchanged.
 
 A Redis CLI in RESP2 mode can exercise the supported commands. Some modern
 clients issue unsupported discovery commands; compatibility is not yet claimed
@@ -114,7 +116,8 @@ NX and admitted XX operations on seeded existing keys. Comparisons can pin equal
 server/client CPU budgets and rotate server order. Only one comparison server
 runs at a time; optional safe, std-only Linux accounting records process CPU,
 RSS and matched-thread context switches without changing the request timer. See
-[benchmark methodology](docs/benchmarks.md).
+[benchmark methodology](docs/benchmarks.md) and the [profile-guided hot-path
+study](docs/hot-paths.md), including an optional frozen-client before/after workflow.
 
 ## GitHub feedback and delivery
 

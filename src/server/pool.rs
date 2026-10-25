@@ -9,6 +9,21 @@ use std::time::Instant;
 const QUANTUM: usize = 64;
 const OUTPUT_CHUNK: usize = 64 * 1024;
 
+struct PollWindow {
+    until: Instant,
+}
+impl PollWindow {
+    fn new(now: Instant) -> Self {
+        Self { until: now }
+    }
+    fn active(&mut self, now: Instant, progress: bool) -> bool {
+        if progress {
+            self.until = now + Duration::from_micros(FIXED_WORKER_ACTIVE_POLL_US);
+        }
+        now < self.until
+    }
+}
+
 struct Permit(Arc<AtomicUsize>);
 impl Drop for Permit {
     fn drop(&mut self) {
@@ -88,10 +103,11 @@ impl Client {
         let mut consumed = 0;
         let mut need_input = false;
         for _ in 0..QUANTUM {
-            match parse_request(&self.input[consumed..], config.limits) {
-                Ok(Some(request)) => {
-                    let action = store.execute(&request.arguments, &mut self.output);
-                    consumed += request.consumed;
+            match dispatch_request(&self.input[consumed..], config.limits, |args| {
+                store.execute(args, &mut self.output)
+            }) {
+                Ok(Some((action, used))) => {
+                    consumed += used;
                     progress = true;
                     if action == Action::Close {
                         self.closing = true;
@@ -189,6 +205,7 @@ pub(super) fn serve(
                     let mut clients: Vec<Client> = Vec::new();
                     let mut chunk = [0; 16 * 1024];
                     let mut maintenance = Instant::now();
+                    let mut polling = PollWindow::new(maintenance);
                     while !stop.load(Ordering::Acquire) {
                         if reaper && maintenance.elapsed() >= Duration::from_millis(100) {
                             store.purge_expired(128);
@@ -211,7 +228,14 @@ pub(super) fn serve(
                                 }
                             }
                         }
-                        if !progress {
+                        // Replies in flight are not an idle connection. Give the
+                        // next client request a short bounded window to arrive,
+                        // without rearming that window on empty/spurious scans.
+                        if polling.active(Instant::now(), progress) {
+                            if !progress {
+                                std::hint::spin_loop();
+                            }
+                        } else {
                             thread::park_timeout(Duration::from_millis(1));
                         }
                     }
@@ -284,6 +308,21 @@ pub(super) fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_polling_expires_and_empty_passes_never_rearm_it() {
+        let now = Instant::now();
+        let mut window = PollWindow::new(now);
+        assert!(!window.active(now, false));
+        assert!(window.active(now, true));
+        let budget = Duration::from_micros(FIXED_WORKER_ACTIVE_POLL_US);
+        assert!(window.active(now + budget / 2, false));
+        assert!(!window.active(now + budget, false));
+        assert!(!window.active(now + budget * 2, false));
+        assert!(!window.active(now + Duration::from_secs(10), false));
+        assert!(window.active(now + Duration::from_secs(10), true));
+        assert!(!window.active(now + Duration::from_secs(10) + budget, false));
+    }
 
     #[test]
     fn buffered_work_is_not_dropped_because_the_worker_was_descheduled() {

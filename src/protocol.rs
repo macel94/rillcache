@@ -1,7 +1,6 @@
 //! Bounded, binary-safe RESP2 command parsing. No payload is interpreted as UTF-8.
 
 use std::fmt;
-use std::io::Write;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -60,6 +59,33 @@ impl std::error::Error for ProtocolError {}
 /// `Ok(None)` means more bytes are needed. `consumed` excludes subsequent
 /// pipelined commands. Advertised lengths are checked before allocating payloads.
 pub fn parse_request(input: &[u8], limits: Limits) -> Result<Option<Request<'_>>, ProtocolError> {
+    decode::<Vec<&[u8]>, _>(input, limits, |arguments, consumed| Request {
+        arguments,
+        consumed,
+    })
+}
+
+/// Invoke `execute` exactly once for a complete valid command, never for a
+/// partial/error frame. Common commands borrow up to eight stack-held argument
+/// references; larger commands use a bounded-growing vector. Payloads are borrowed.
+/// The callback cannot retain a reference to the temporary argument container.
+pub fn dispatch_request<'a, T>(
+    input: &'a [u8],
+    limits: Limits,
+    execute: impl FnOnce(&[&'a [u8]]) -> T,
+) -> Result<Option<(T, usize)>, ProtocolError> {
+    decode::<StackArguments<'a>, _>(input, limits, |arguments, consumed| {
+        (execute(arguments.as_slice()), consumed)
+    })
+}
+
+// Both APIs share one validator. The owned API returns its vector directly.
+#[inline(always)]
+fn decode<'a, S: ArgumentStorage<'a>, T>(
+    input: &'a [u8],
+    limits: Limits,
+    finish: impl FnOnce(S, usize) -> T,
+) -> Result<Option<T>, ProtocolError> {
     let Some((count, mut offset)) = length(
         input,
         0,
@@ -73,7 +99,7 @@ pub fn parse_request(input: &[u8], limits: Limits) -> Result<Option<Request<'_>>
     if count == 0 {
         return Err(ProtocolError::EmptyCommand);
     }
-    let mut arguments = Vec::with_capacity(count.min(16));
+    let mut arguments = S::new(count);
     for _ in 0..count {
         if offset >= limits.max_frame_bytes {
             return Err(ProtocolError::FrameTooLarge);
@@ -107,13 +133,63 @@ pub fn parse_request(input: &[u8], limits: Limits) -> Result<Option<Request<'_>>
         arguments.push(&input[start..end]);
         offset = next;
     }
-    Ok(Some(Request {
-        arguments,
-        consumed: offset,
-    }))
+    Ok(Some(finish(arguments, offset)))
 }
 
-fn incomplete(input: &[u8], limits: Limits) -> Result<Option<Request<'_>>, ProtocolError> {
+trait ArgumentStorage<'a>: Sized {
+    fn new(count: usize) -> Self;
+    fn push(&mut self, value: &'a [u8]);
+}
+impl<'a> ArgumentStorage<'a> for Vec<&'a [u8]> {
+    #[inline]
+    fn new(count: usize) -> Self {
+        Vec::with_capacity(count.min(16))
+    }
+    #[inline]
+    fn push(&mut self, value: &'a [u8]) {
+        Vec::push(self, value);
+    }
+}
+enum StackArguments<'a> {
+    Inline { values: [&'a [u8]; 8], len: usize },
+    Overflow(Vec<&'a [u8]>),
+}
+impl<'a> ArgumentStorage<'a> for StackArguments<'a> {
+    #[inline]
+    fn new(count: usize) -> Self {
+        if count <= 8 {
+            Self::Inline {
+                values: [&[]; 8],
+                len: 0,
+            }
+        }
+        // Never allocate an untrusted advertised argument count eagerly.
+        else {
+            Self::Overflow(Vec::with_capacity(count.min(16)))
+        }
+    }
+    #[inline]
+    fn push(&mut self, value: &'a [u8]) {
+        match self {
+            Self::Inline { values, len } => {
+                values[*len] = value;
+                *len += 1;
+            }
+            Self::Overflow(values) => values.push(value),
+        }
+    }
+}
+impl<'a> StackArguments<'a> {
+    #[inline]
+    fn as_slice(&self) -> &[&'a [u8]] {
+        match self {
+            Self::Inline { values, len } => &values[..*len],
+            Self::Overflow(values) => values,
+        }
+    }
+}
+
+fn incomplete<T>(input: &[u8], limits: Limits) -> Result<Option<T>, ProtocolError> {
     if input.len() >= limits.max_frame_bytes {
         Err(ProtocolError::FrameTooLarge)
     } else {
@@ -166,7 +242,7 @@ fn length(
 }
 
 pub fn encode_request(arguments: &[&[u8]], output: &mut Vec<u8>) {
-    write!(output, "*{}\r\n", arguments.len()).expect("writing to a Vec cannot fail");
+    encode_length(b'*', arguments.len(), output);
     for argument in arguments {
         encode_bulk(Some(argument), output);
     }
@@ -175,12 +251,32 @@ pub fn encode_request(arguments: &[&[u8]], output: &mut Vec<u8>) {
 pub fn encode_bulk(value: Option<&[u8]>, output: &mut Vec<u8>) {
     match value {
         Some(value) => {
-            write!(output, "${}\r\n", value.len()).expect("writing to a Vec cannot fail");
+            encode_length(b'$', value.len(), output);
             output.extend_from_slice(value);
             output.extend_from_slice(b"\r\n");
         }
         None => output.extend_from_slice(b"$-1\r\n"),
     }
+}
+
+// At most three decimal digits per byte of usize, plus prefix and CRLF.
+// Build the entire header on the stack and append it in one bounded copy.
+fn encode_length(prefix: u8, mut value: usize, output: &mut Vec<u8>) {
+    let mut header = [0u8; 3 * std::mem::size_of::<usize>() + 3];
+    let end = header.len();
+    header[end - 2..].copy_from_slice(b"\r\n");
+    let mut start = end - 2;
+    loop {
+        start -= 1;
+        header[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    start -= 1;
+    header[start] = prefix;
+    output.extend_from_slice(&header[start..]);
 }
 
 #[cfg(test)]
@@ -273,6 +369,97 @@ mod tests {
             parse_request(b"*1\r\n$4\r\n", limits),
             Err(ProtocolError::FrameTooLarge)
         );
+    }
+
+    #[test]
+    fn dispatch_handles_inline_and_heap_boundaries_without_changing_owned_requests() {
+        for count in [1, 7, 8, 9, 16, 17, 1024] {
+            let args: Vec<&[u8]> = (0..count).map(|_| b"\0\xff\r\n".as_slice()).collect();
+            let mut bytes = Vec::new();
+            encode_request(&args, &mut bytes);
+            let size = bytes.len();
+            let mut calls = 0;
+            for split in [0, 1, size / 2, size - 1] {
+                assert_eq!(
+                    dispatch_request(&bytes[..split], Limits::default(), |_| {
+                        calls += 1;
+                    }),
+                    Ok(None)
+                );
+            }
+            assert_eq!(calls, 0);
+            bytes.extend_from_slice(b"*1\r\n$4\r\nPING\r\n");
+            assert_eq!(
+                dispatch_request(&bytes, Limits::default(), |actual| {
+                    calls += 1;
+                    assert_eq!(actual, args);
+                }),
+                Ok(Some(((), size)))
+            );
+            assert_eq!(calls, 1);
+            let parsed = parse_request(&bytes, Limits::default()).unwrap().unwrap();
+            assert_eq!(parsed.arguments, args);
+            assert_eq!(parsed.consumed, size);
+        }
+    }
+
+    #[test]
+    fn dispatch_never_executes_a_partial_or_malformed_late_argument() {
+        for count in [3, 8, 9, 17] {
+            let args: Vec<&[u8]> = (0..count).map(|_| b"binary\0\xff".as_slice()).collect();
+            let mut bytes = Vec::new();
+            encode_request(&args, &mut bytes);
+            for split in 0..bytes.len() {
+                assert_eq!(
+                    dispatch_request(&bytes[..split], Limits::default(), |_| panic!(
+                        "partial execution"
+                    )),
+                    Ok(None)
+                );
+            }
+            *bytes.last_mut().unwrap() = b'x';
+            assert_eq!(
+                dispatch_request(&bytes, Limits::default(), |_| panic!("malformed execution")),
+                Err(ProtocolError::InvalidTerminator)
+            );
+        }
+        let unlimited = Limits {
+            max_arguments: usize::MAX,
+            ..Limits::default()
+        };
+        assert_eq!(
+            dispatch_request(
+                format!("*{}\r\n", usize::MAX).as_bytes(),
+                unlimited,
+                |_| panic!("advertised count")
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn specialized_length_headers_match_formatting_at_all_digit_boundaries() {
+        let mut values = vec![0, 1, 9, 10, 11, 63, 64, 99, 100, 255, 1024, usize::MAX];
+        let mut power = 1usize;
+        while let Some(next) = power.checked_mul(10) {
+            values.extend([next - 1, next, next + 1]);
+            power = next;
+        }
+        let mut seed = 0x4589_32ab_usize;
+        for _ in 0..1000 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            values.push(seed);
+        }
+        for value in values {
+            for prefix in *b"$*" {
+                let mut out = b"already-buffered:".to_vec();
+                encode_length(prefix, value, &mut out);
+                assert_eq!(
+                    out,
+                    format!("already-buffered:{}{value}\r\n", char::from(prefix)).as_bytes()
+                );
+            }
+        }
     }
 
     #[test]
