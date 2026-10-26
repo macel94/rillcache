@@ -296,11 +296,12 @@ impl Store {
             return;
         }
         for (x, y) in matches {
-            if let Some(last) = ranges.last_mut() {
-                if last.0 + last.2 == x && last.1 + last.2 == y {
-                    last.2 += 1;
-                    continue;
-                }
+            if let Some(last) = ranges.last_mut()
+                && last.0 + last.2 == x
+                && last.1 + last.2 == y
+            {
+                last.2 += 1;
+                continue;
             }
             ranges.push((x, y, 1));
         }
