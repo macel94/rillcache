@@ -2,6 +2,12 @@ name: Hot-path before-after study
 
 on:
   workflow_dispatch:
+    inputs:
+      profile_single_cpu_set:
+        description: 'Capture one-CPU default-mode SET profile and uninstrumented control on this ref'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -15,6 +21,174 @@ env:
   BASELINE_SOURCE: 6cea8cc2370c14401f8b7736db99a930de1bc02f
 
 jobs:
+  profile-single-cpu-set:
+    if: inputs.profile_single_cpu_set
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Record exact source, compiler, kernel and runner capacity
+        run: |
+          mkdir -p target/remote-profile
+          {
+            printf 'source_sha=%s\n' "$GITHUB_SHA"
+            git status --short
+            rustc -vV
+            uname -a
+            lscpu
+            printf '\nAllowed affinity:\n'
+            grep '^Cpus_allowed_list:' /proc/self/status
+          } > target/remote-profile/environment.txt
+      - name: Install perf tooling when the runner image lacks it
+        run: |
+          if ! command -v perf >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends linux-tools-common linux-tools-generic
+          fi
+          perf --version | tee target/remote-profile/perf-version.txt
+          sudo sysctl kernel.perf_event_paranoid | tee target/remote-profile/perf-policy.txt
+      - name: Build ordinary and symbolized release binaries, retain exact hashes
+        run: |
+          cargo build --locked --offline --release --bins
+          mkdir -p target/remote-profile/control-bin
+          cp target/release/rillcache target/remote-profile/control-bin/rillcache
+          cp target/release/rillcache-bench target/remote-profile/control-bin/rillcache-bench
+          CARGO_TARGET_DIR=target/profile-symbols RUSTFLAGS='-C debuginfo=2' cargo build --locked --offline --release --bins
+          sha256sum target/remote-profile/control-bin/* target/profile-symbols/release/rillcache target/profile-symbols/release/rillcache-bench | tee target/remote-profile/binary-sha256.txt
+          printf '\nOrdinary control: default release flags.\nSymbolized profile: same release profile plus -C debuginfo=2; profiler-distorted elapsed time is not a speed result.\n' >> target/remote-profile/environment.txt
+      - name: Run uninstrumented SET control and separately sample source-level stacks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          allowed=$(awk '/Cpus_allowed_list:/ {print $2}' /proc/self/status)
+          mapfile -t cpus < <(python3 - "$allowed" <<'PY'
+          import sys
+          values = []
+          for part in sys.argv[1].split(','):
+              if '-' in part:
+                  first, last = map(int, part.split('-', 1))
+                  values.extend(range(first, last + 1))
+              else:
+                  values.append(int(part))
+          if len(values) < 2:
+              raise SystemExit('need one server CPU and at least one separate client CPU')
+          print(values[0])
+          print(','.join(map(str, values[1:])))
+          PY
+          )
+          server_cpu=${cpus[0]}
+          client_cpus=${cpus[1]}
+          printf 'server_cpu=%s\nclient_cpus=%s\n' "$server_cpu" "$client_cpus" | tee -a target/remote-profile/environment.txt
+          port=16391
+          server_pid=''
+          recorder_pid=''
+          cleanup() {
+            if [[ -n "$recorder_pid" ]]; then
+              kill -INT "$recorder_pid" 2>/dev/null || true
+              wait "$recorder_pid" 2>/dev/null || true
+            fi
+            if [[ -n "$server_pid" ]]; then
+              kill "$server_pid" 2>/dev/null || true
+              wait "$server_pid" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT INT TERM
+          taskset -c "$server_cpu" target/remote-profile/control-bin/rillcache --bind "127.0.0.1:$port" > target/remote-profile/control-server.log 2>&1 &
+          server_pid=$!
+          for attempt in $(seq 1 100); do
+            if ! kill -0 "$server_pid" 2>/dev/null; then cat target/remote-profile/control-server.log; exit 1; fi
+            if taskset -c "$client_cpus" target/remote-profile/control-bin/rillcache-bench --addr "127.0.0.1:$port" --requests 1 --clients 1 --pipeline 1 --keyspace 1 --warmup 0 --runs 1 --workload ping >/dev/null 2>&1; then break; fi
+            sleep 0.1
+          done
+          kill -0 "$server_pid"
+          taskset -pc "$server_pid" | tee target/remote-profile/server-affinity.txt
+          taskset -c "$client_cpus" bash -c 'taskset -pc "$$"' | tee target/remote-profile/client-affinity.txt
+          taskset -c "$client_cpus" target/remote-profile/control-bin/rillcache-bench \
+            --addr "127.0.0.1:$port" --label ordinary-release-control --server-pid "$server_pid" \
+            --profile-idle-ms 1000 --requests 100000 --clients 8 --pipeline 1 \
+            --keyspace 1024 --value-size 64 --warmup 1000 --runs 3 --workload set \
+            > target/remote-profile/control-set.json 2> target/remote-profile/control-set.log
+          kill "$server_pid"
+          wait "$server_pid"
+          server_pid=''
+          taskset -c "$server_cpu" target/profile-symbols/release/rillcache --bind "127.0.0.1:$port" > target/remote-profile/profile-server.log 2>&1 &
+          server_pid=$!
+          for attempt in $(seq 1 100); do
+            if ! kill -0 "$server_pid" 2>/dev/null; then cat target/remote-profile/profile-server.log; exit 1; fi
+            if taskset -c "$client_cpus" target/remote-profile/control-bin/rillcache-bench --addr "127.0.0.1:$port" --requests 1 --clients 1 --pipeline 1 --keyspace 1 --warmup 0 --runs 1 --workload ping >/dev/null 2>&1; then break; fi
+            sleep 0.1
+          done
+          kill -0 "$server_pid"
+          sudo perf record --call-graph dwarf -F 199 -p "$server_pid" \
+            -o target/remote-profile/set.perf.data -- sleep 60 \
+            > target/remote-profile/perf-record.log 2>&1 &
+          recorder_pid=$!
+          sleep 2
+          if ! kill -0 "$recorder_pid" 2>/dev/null; then cat target/remote-profile/perf-record.log; exit 1; fi
+          taskset -c "$client_cpus" target/remote-profile/control-bin/rillcache-bench \
+            --addr "127.0.0.1:$port" --label symbolized-profile-only --server-pid "$server_pid" \
+            --profile-idle-ms 1000 --requests 100000 --clients 8 --pipeline 1 \
+            --keyspace 1024 --value-size 64 --warmup 1000 --runs 3 --workload set \
+            > target/remote-profile/profile-set.json 2> target/remote-profile/profile-set.log
+          kill -INT "$recorder_pid"
+          wait "$recorder_pid"
+          recorder_pid=''
+          sudo perf report --stdio --sort comm,dso,symbol --percent-limit 0.5 \
+            -i target/remote-profile/set.perf.data \
+            > target/remote-profile/perf-report.txt
+          sudo perf script -i target/remote-profile/set.perf.data \
+            > target/remote-profile/perf-samples.txt
+          sha256sum target/remote-profile/set.perf.data target/remote-profile/control-set.json target/remote-profile/profile-set.json \
+            | tee target/remote-profile/evidence-sha256.txt
+      - name: Validate both cohorts and summarize the uninstrumented control and sampled stacks
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('target/remote-profile')
+          docs = {}
+          for name in ('control-set', 'profile-set'):
+              doc = json.loads((root / f'{name}.json').read_text())
+              rows = doc.get('results')
+              assert isinstance(rows, list) and len(rows) == 3, (name, rows)
+              for expected_run, row in enumerate(rows, 1):
+                  assert row['workload'] == 'set' and row['run'] == expected_run
+                  assert (row['requests'], row['clients'], row['pipeline'], row['keyspace'], row['value_size'], row['warmup_per_client']) == (100000, 8, 1, 1024, 64, 1000)
+                  profile = row.get('server_profile')
+                  assert profile and profile['source'] == 'linux-procfs'
+              docs[name] = rows
+          data = root / 'set.perf.data'
+          report = (root / 'perf-report.txt').read_text()
+          assert data.is_file() and data.stat().st_size > 0
+          assert report.strip() and 'Samples:' in report, report[:1000]
+          control = docs['control-set']
+          rates = [row['ops_per_second'] for row in control]
+          p99 = [row['batch_p99_us'] for row in control]
+          cpu = [row['server_profile']['cpu_percent_one_logical_cpu'] for row in control]
+          summary = [
+              '# One-CPU SET profile evidence', '',
+              f"Source: `{(root / 'environment.txt').read_text().splitlines()[0]}`",
+              'Control: ordinary release binary; three 100,000-request SET overwrite runs; no perf sampler attached.',
+              f'Control throughput cmd/s: {rates}; batch p99 µs: {p99}; process CPU % of one CPU: {cpu}.',
+              'The symbolized/perf run is attribution-only; its elapsed/throughput is not a speed result.', '',
+              '## Sampled profile', '',
+              'See `perf-report.txt`, raw `set.perf.data`, and `perf-samples.txt`; use source identity and binary hashes before interpreting symbols.',
+          ]
+          (root / 'summary.md').write_text('\n'.join(summary) + '\n')
+          print('Validated both 3-run JSON cohorts and nonempty sampled profile.')
+          PY
+      - name: Preserve raw profiles, uninstrumented control and failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: remote-set-profile-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/remote-profile/
+          if-no-files-found: warn
+          retention-days: 30
+
   compare:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
