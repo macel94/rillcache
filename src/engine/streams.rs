@@ -271,9 +271,17 @@ impl Store {
                     pending: Default::default(),
                 },
             );
-            let prev = data.entries.get(a[2]).map(|e| e.payload_len).unwrap_or(0);
-            let total =
-                data.payload_bytes - prev + a[2].len() + stream.payload_bytes().unwrap_or(0);
+            let previous = data.entries.get(a[2]).map(|e| e.payload_len);
+            let Some(total) = data.reserve(
+                a[2],
+                stream.payload_bytes().unwrap_or(0),
+                previous,
+                self.max_payload_bytes,
+                now,
+            ) else {
+                out.extend_from_slice(b"-OOM configured payload limit exceeded\\r\\n");
+                return;
+            };
             data.put_stream(a[2], stream, existing_expiry, total);
             simple(b"OK", out);
         } else if a[1].eq_ignore_ascii_case(b"SETID") {
@@ -425,10 +433,28 @@ impl Store {
             return;
         }
         let full = a.get(3).is_some_and(|x| x.eq_ignore_ascii_case(b"FULL"));
-        if a.len() > 3 && !full {
+        let mut count = 10usize;
+        if (a.len() != 3 && !full) || (full && a.len() != 4 && a.len() != 6) {
             out.extend_from_slice(b"-ERR syntax error\r\n");
             return;
         }
+        if a.len() == 6 {
+            if !a[4].eq_ignore_ascii_case(b"COUNT") {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+            let raw = std::str::from_utf8(a[5])
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok());
+            let Some(raw) = raw else {
+                out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                return;
+            };
+            if raw >= 0 {
+                count = usize::try_from(raw).unwrap_or(usize::MAX);
+            }
+        }
+        let limit = if count == 0 { usize::MAX } else { count };
         let Ok(mut data) = self.data.write() else {
             internal_error(out);
             return;
@@ -450,21 +476,37 @@ impl Store {
             encode_bulk(Some(b"length"), out);
             integer(s.entries.len() as i64, out);
             encode_bulk(Some(b"entries"), out);
-            array(s.entries.len(), out);
-            for (id, e) in &s.entries {
+            array(s.entries.len().min(limit), out);
+            for (id, e) in s.entries.iter().take(limit) {
                 reply_entry(*id, e, out)
             }
             encode_bulk(Some(b"groups"), out);
             array(s.groups.len(), out);
             for (name, g) in &s.groups {
-                array(6, out);
+                array(16, out);
                 encode_bulk(Some(b"name"), out);
                 encode_bulk(Some(name), out);
                 encode_bulk(Some(b"last-delivered-id"), out);
                 encode_bulk(Some(&id_text(g.last_delivered)), out);
+                encode_bulk(Some(b"entries-read"), out);
+                encode_bulk(None, out);
+                encode_bulk(Some(b"lag"), out);
+                integer(
+                    s.entries
+                        .range((
+                            std::ops::Bound::Excluded(g.last_delivered),
+                            std::ops::Bound::Unbounded,
+                        ))
+                        .count() as i64,
+                    out,
+                );
+                encode_bulk(Some(b"pel-count"), out);
+                integer(g.pending.len() as i64, out);
+                encode_bulk(Some(b"nacked-count"), out);
+                integer(g.pending.len() as i64, out);
                 encode_bulk(Some(b"pending"), out);
-                array(g.pending.len(), out);
-                for (pid, p) in &g.pending {
+                array(g.pending.len().min(limit), out);
+                for (pid, p) in g.pending.iter().take(limit) {
                     array(4, out);
                     encode_bulk(Some(&id_text(*pid)), out);
                     encode_bulk(Some(&p.consumer), out);
@@ -474,12 +516,18 @@ impl Store {
                 encode_bulk(Some(b"consumers"), out);
                 array(g.consumers.len(), out);
                 for (c, consumer) in &g.consumers {
-                    array(3, out);
+                    array(10, out);
                     encode_bulk(Some(b"name"), out);
                     encode_bulk(Some(c), out);
+                    encode_bulk(Some(b"seen-time"), out);
+                    integer(consumer.seen_at, out);
+                    encode_bulk(Some(b"active-time"), out);
+                    integer(consumer.seen_at, out);
+                    encode_bulk(Some(b"pel-count"), out);
+                    integer(consumer.pending.len() as i64, out);
                     encode_bulk(Some(b"pending"), out);
-                    array(consumer.pending.len(), out);
-                    for (pid, p) in &consumer.pending {
+                    array(consumer.pending.len().min(limit), out);
+                    for (pid, p) in consumer.pending.iter().take(limit) {
                         array(3, out);
                         encode_bulk(Some(&id_text(*pid)), out);
                         integer(p.delivered_at, out);
@@ -488,13 +536,25 @@ impl Store {
                 }
             }
         } else {
-            array(6, out);
+            array(10, out);
             encode_bulk(Some(b"length"), out);
             integer(s.entries.len() as i64, out);
             encode_bulk(Some(b"last-generated-id"), out);
             encode_bulk(Some(&id_text(s.last_generated)), out);
             encode_bulk(Some(b"groups"), out);
             integer(s.groups.len() as i64, out);
+            encode_bulk(Some(b"first-entry"), out);
+            if let Some((id, entry)) = s.entries.first_key_value() {
+                reply_entry(*id, entry, out);
+            } else {
+                out.extend_from_slice(b"$-1\r\n");
+            }
+            encode_bulk(Some(b"last-entry"), out);
+            if let Some((id, entry)) = s.entries.last_key_value() {
+                reply_entry(*id, entry, out);
+            } else {
+                out.extend_from_slice(b"$-1\r\n");
+            }
         }
     }
 }
