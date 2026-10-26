@@ -40,20 +40,21 @@ const CANONICAL: &[&[u8]] = &[
     b"zset-max-listpack-value",
 ];
 
+const ALIASES: &[(&[u8], &[u8])] = &[
+    (b"list-max-ziplist-size", b"list-max-listpack-size"),
+    (b"hash-max-ziplist-entries", b"hash-max-listpack-entries"),
+    (b"hash-max-ziplist-value", b"hash-max-listpack-value"),
+    (b"zset-max-ziplist-entries", b"zset-max-listpack-entries"),
+    (b"zset-max-ziplist-value", b"zset-max-listpack-value"),
+];
+
 fn canonical_name(name: &[u8]) -> Option<&'static [u8]> {
-    let aliases: &[(&[u8], &[u8])] = &[
-        (b"list-max-ziplist-size", b"list-max-listpack-size"),
-        (b"hash-max-ziplist-entries", b"hash-max-listpack-entries"),
-        (b"hash-max-ziplist-value", b"hash-max-listpack-value"),
-        (b"zset-max-ziplist-entries", b"zset-max-listpack-entries"),
-        (b"zset-max-ziplist-value", b"zset-max-listpack-value"),
-    ];
     CANONICAL
         .iter()
         .copied()
         .find(|canonical| name.eq_ignore_ascii_case(canonical))
         .or_else(|| {
-            aliases
+            ALIASES
                 .iter()
                 .find(|(alias, _)| name.eq_ignore_ascii_case(alias))
                 .map(|(_, canonical)| *canonical)
@@ -152,12 +153,20 @@ impl Store {
                 .iter()
                 .any(|byte| matches!(*byte, b'*' | b'?' | b'['))
             {
-                if let Some(value) = config.value(pattern) {
+                if let Some(value) = config.value(pattern)
+                    && !matches
+                        .iter()
+                        .any(|(existing, _)| existing.eq_ignore_ascii_case(pattern))
+                {
                     matches.push((pattern, value));
                 }
                 continue;
             }
-            for name in CANONICAL {
+            for name in CANONICAL
+                .iter()
+                .copied()
+                .chain(ALIASES.iter().map(|(alias, _)| *alias))
+            {
                 if glob_match(&folded_pattern, name)
                     && !matches
                         .iter()
@@ -285,6 +294,28 @@ mod tests {
         );
         assert_eq!(call(&[b"ZCARD", b"z"]), b":2\r\n");
         assert_eq!(call(&[b"LLEN", b"l"]), b":2\r\n");
+    }
+
+    #[test]
+    fn config_get_matches_legacy_aliases_and_deduplicates_patterns() {
+        let store = Store::new(100);
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"CONFIG",
+                    b"GET",
+                    b"list-max-ziplist-size",
+                    b"list-max-ziplist-size"
+                ]
+            ),
+            b"*2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
+            b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
+        );
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*26\r\n"));
     }
 
     #[test]

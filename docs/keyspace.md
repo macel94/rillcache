@@ -3,7 +3,7 @@
 ## Acceptance criteria (EARS)
 
 - When `TYPE key` is received, the server shall return the actual string/list/set/
-  hash/zset type for a live key and `none` for a missing or expired key.
+  hash/zset/stream type for a live key and `none` for a missing or expired key.
 - When `RENAME source destination` is received, the server shall atomically move a
   live source over the destination, retaining the source expiry. A missing source
   shall return `ERR no such key` without changing another key.
@@ -30,11 +30,11 @@
 
 ## Actual semantics and limits
 
-Strings, lists, sets, hashes and sorted sets share one key namespace. TYPE, rename, TOUCH, DBSIZE, COPY, KEYS and RANDOMKEY run under the store's
+Strings, lists, sets, hashes, sorted sets and streams share one key namespace. TYPE, rename, TOUCH, DBSIZE, COPY, KEYS and RANDOMKEY run under the store's
 exclusive lock so expiration visibility and mutation are consistent with other
 commands. See [typed collection limits](collections.md) for supported command
 subsets. COPY supports only DB 0 in this single-database server; it clones typed
-collection contents and TTL, and destination replacement plus payload admission
+collection contents, stream entries/groups and TTL, and destination replacement plus payload admission
 are atomic. RENAME replacement and payload admission are atomic; source TTL is
 transferred to the destination. A rename to itself returns `+OK` for RENAME and
 integer 0 for RENAMENX when the source exists. Missing-source errors use

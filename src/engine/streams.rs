@@ -472,7 +472,7 @@ impl Store {
             return;
         };
         if full {
-            array(4, out);
+            array(6, out);
             encode_bulk(Some(b"length"), out);
             integer(s.entries.len() as i64, out);
             encode_bulk(Some(b"entries"), out);

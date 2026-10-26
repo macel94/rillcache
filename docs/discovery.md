@@ -1,7 +1,7 @@
 # Command and server discovery (incremental scope)
 
 Rillcache implements a bounded RESP2 subset of Redis discovery. These commands
-are explicitly registered by the coordinator; this module deliberately does not
+are explicitly registered alongside their implementations; this module does not
 claim complete Redis command metadata or advertise commands that are not present
 in this worktree's Store dispatcher.
 
@@ -52,7 +52,7 @@ from the protocol encoder's standard bounded RESP framing.
 
 The current command list is intentionally limited to implemented Store command
 families and COMMAND/INFO/CONFIG. CONFIG metadata covers the supported collection
-encoding-threshold GET/SET forms; other server CONFIG settings are not advertised.
+encoding-threshold GET/SET forms and RESETSTAT; other runtime settings are unsupported.
 It is updated alongside MGET/MSET/MSETNX,
 APPEND/STRLEN/GETRANGE/SETRANGE, keyspace commands, and the typed collection
 primitives. HELLO/CLIENT remains connection-local. The HELLO/CLIENT worker owns

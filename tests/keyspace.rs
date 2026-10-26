@@ -134,6 +134,12 @@ fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
         command(&mut stream, &[b"XLEN", b"stream-copy"], b":1\r\n");
         command(
             &mut stream,
+            &[b"XINFO", b"STREAM", b"stream-copy", b"FULL"],
+            b"*6\r\n$6\r\nlength\r\n:1\r\n$7\r\nentries\r\n*1\r\n*2\r\n$3\r\n1-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n$6\r\ngroups\r\n*0\r\n",
+        );
+        command(&mut stream, &[b"PING"], b"+PONG\r\n");
+        command(
+            &mut stream,
             &[b"MGET", b"set", b"hash", b"zset", b"stream-copy"],
             b"*4\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n",
         );

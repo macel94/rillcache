@@ -160,17 +160,14 @@ impl Store {
             output.extend_from_slice(b":0\r\n");
             return;
         }
-        let destination_bytes = data
-            .entries
-            .get(destination)
-            .map_or(0, |entry| destination.len() + entry.payload_len());
-        let Some(payload) = data
-            .payload_bytes
-            .checked_sub(destination_bytes)
-            .and_then(|value| value.checked_add(destination.len()))
-            .and_then(|value| value.checked_add(source_payload))
-            .filter(|value| *value <= self.max_payload_bytes)
-        else {
+        let previous = data.entries.get(destination).map(Entry::payload_len);
+        let Some(payload) = data.reserve(
+            destination,
+            source_payload,
+            previous,
+            self.max_payload_bytes,
+            now,
+        ) else {
             output.extend_from_slice(options::OOM);
             return;
         };
@@ -634,6 +631,25 @@ mod tests {
         assert_eq!(atomic.data.read().unwrap().payload_bytes, before);
         assert_eq!(call(&atomic, &[b"GET", b"dst"]), b"$1\r\nx\r\n");
         assert_eq!(call(&atomic, &[b"TYPE", b"s"]), b"+list\r\n");
+    }
+
+    #[test]
+    fn copy_reclaims_unrelated_expired_payload_before_reporting_oom() {
+        let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+        let store = Store::with_clock(12, clock.clone());
+        assert_eq!(call(&store, &[b"RPUSH", b"s", b"1234"]), b":1\r\n");
+        assert_eq!(
+            call(&store, &[b"SET", b"x", b"123456", b"PX", b"1"]),
+            b"+OK\r\n"
+        );
+        clock.0.store(1002, Ordering::SeqCst);
+        assert_eq!(call(&store, &[b"COPY", b"s", b"d"]), b":1\r\n");
+        assert_eq!(
+            call(&store, &[b"LRANGE", b"d", b"0", b"-1"]),
+            b"*1\r\n$4\r\n1234\r\n"
+        );
+        assert_eq!(store.data.read().unwrap().payload_bytes, 10);
+        assert!(store.data.read().unwrap().expirations.is_empty());
     }
 
     #[test]

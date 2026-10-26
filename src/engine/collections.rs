@@ -481,7 +481,11 @@ impl Store {
             }
         };
         let first = normalize(start);
-        let last = normalize(stop);
+        let last = if stop < 0 {
+            len + stop as i128
+        } else {
+            stop as i128
+        };
         if first >= len || first > last {
             out.extend_from_slice(b"*0\r\n");
             return;
@@ -676,7 +680,11 @@ impl Store {
             }
         };
         let first = normalize(start);
-        let last = normalize(stop);
+        let last = if stop < 0 {
+            len + stop as i128
+        } else {
+            stop as i128
+        };
         if first >= len || first > last {
             out.extend_from_slice(b"*0\r\n");
             return;
@@ -852,6 +860,24 @@ mod tests {
         assert_eq!(run(&store, &[b"TYPE", b"s"]), b"+set\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"h"]), b"+hash\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"z"]), b"+zset\r\n");
+    }
+
+    #[test]
+    fn ranges_with_stops_before_the_first_element_are_empty() {
+        let store = Store::new(100);
+        run(&store, &[b"RPUSH", b"l", b"one", b"two"]);
+        run(&store, &[b"ZADD", b"z", b"1", b"one", b"2", b"two"]);
+        for command in [b"LRANGE".as_slice(), b"ZRANGE"] {
+            let key = if command == b"LRANGE" { b"l" } else { b"z" };
+            for stop in [b"-3".as_slice(), b"-9223372036854775808"] {
+                assert_eq!(run(&store, &[command, key, b"0", stop]), b"*0\r\n");
+                assert_eq!(run(&store, &[command, key, b"-100", stop]), b"*0\r\n");
+            }
+            assert_eq!(
+                run(&store, &[command, key, b"-100", b"-2"]),
+                b"*1\r\n$3\r\none\r\n"
+            );
+        }
     }
 
     #[test]
