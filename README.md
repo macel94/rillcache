@@ -146,6 +146,15 @@ RSS and matched-thread context switches without changing the request timer. See
 [benchmark methodology](docs/benchmarks.md) and the [profile-guided hot-path
 study](docs/hot-paths.md), including an optional frozen-client before/after workflow.
 
+## Original upstream evidence
+
+[Original Tcl compatibility and native performance workflows](docs/upstream-ci.md)
+run on `ubuntu-latest`: PR/manual Redis and Valkey Tcl controls followed by the
+unchanged candidate selection, plus a separate manual-only, same-runner comparison
+using pinned upstream `redis-benchmark`. Prerequisite blockers, exclusions,
+unreached tests and invalid measurements remain visible failures—not passes or
+full compatibility claims. Expensive execution stays in GitHub Actions.
+
 ## GitHub feedback and delivery
 
 **`main` is PR-only, including generated reports and documentation.** The active
