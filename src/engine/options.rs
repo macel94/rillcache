@@ -3,11 +3,15 @@ pub(super) const NOT_INTEGER: &[u8] = b"-ERR value is not an integer or out of r
 pub(super) const OOM: &[u8] = b"-OOM configured payload limit exceeded\r\n";
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum Condition {
+pub(super) enum Condition<'a> {
     #[default]
     Always,
     Missing,
     Present,
+    ValueEqual(&'a [u8]),
+    ValueNotEqual(&'a [u8]),
+    DigestEqual(&'a [u8]),
+    DigestNotEqual(&'a [u8]),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ExpiryKind {
@@ -33,7 +37,7 @@ impl ExpiryKind {
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct SetOptions<'a> {
-    pub condition: Condition,
+    pub condition: Condition<'a>,
     pub get: bool,
     pub keep: bool,
     pub persist: bool,
@@ -59,6 +63,33 @@ impl<'a> SetOptions<'a> {
                     return Err(SYNTAX);
                 }
                 options.condition = next;
+            } else if !getex
+                && [b"IFEQ".as_slice(), b"IFNE", b"IFDEQ", b"IFDNE"]
+                    .iter()
+                    .any(|token| option.eq_ignore_ascii_case(token))
+            {
+                let value = *arguments.get(index + 1).ok_or(SYNTAX)?;
+                let next = if option.eq_ignore_ascii_case(b"IFEQ") {
+                    Condition::ValueEqual(value)
+                } else if option.eq_ignore_ascii_case(b"IFNE") {
+                    Condition::ValueNotEqual(value)
+                } else if option.eq_ignore_ascii_case(b"IFDEQ") {
+                    Condition::DigestEqual(value)
+                } else {
+                    Condition::DigestNotEqual(value)
+                };
+                let same_kind = matches!(
+                    (options.condition, next),
+                    (Condition::ValueEqual(_), Condition::ValueEqual(_))
+                        | (Condition::ValueNotEqual(_), Condition::ValueNotEqual(_))
+                        | (Condition::DigestEqual(_), Condition::DigestEqual(_))
+                        | (Condition::DigestNotEqual(_), Condition::DigestNotEqual(_))
+                );
+                if options.condition != Condition::Always && !same_kind {
+                    return Err(SYNTAX);
+                }
+                options.condition = next;
+                index += 1;
             } else if !getex && option.eq_ignore_ascii_case(b"KEEPTTL") && options.expiry.is_none()
             {
                 options.keep = true;

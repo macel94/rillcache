@@ -809,6 +809,12 @@ mod tests {
             for args in [
                 &[b"GET".as_slice(), key][..],
                 &[b"GETDEL".as_slice(), key][..],
+                &[b"DIGEST".as_slice(), key][..],
+                &[b"DELIFEQ".as_slice(), key, b"value"][..],
+                &[b"SET".as_slice(), key, b"v", b"IFEQ", b"value"][..],
+                &[b"SET".as_slice(), key, b"v", b"IFNE", b"value"][..],
+                &[b"SET".as_slice(), key, b"v", b"IFDEQ", b"0000000000000000"][..],
+                &[b"SET".as_slice(), key, b"v", b"IFDNE", b"0000000000000000"][..],
                 &[b"GETEX".as_slice(), key, b"PERSIST"][..],
                 &[b"SET".as_slice(), key, b"replacement", b"GET"][..],
                 &[b"APPEND".as_slice(), key, b"suffix"][..],
@@ -824,6 +830,10 @@ mod tests {
             ] {
                 assert!(call(&store, args).starts_with(b"-WRONGTYPE"), "{args:?}");
             }
+            assert_eq!(
+                call(&store, &[b"DELEX", key, b"IFEQ", b"value"]),
+                b"-ERR Key should be of string type if conditions are specified\r\n"
+            );
             assert_eq!(call(&store, &[b"PEXPIRE", key, b"10"]), b":1\r\n");
         }
         assert_eq!(
@@ -851,6 +861,58 @@ mod tests {
         assert_eq!(call(&store, &[b"FLUSHALL", b"ASYNC"]), b"+OK\r\n");
         assert_eq!(store.data.read().unwrap().payload_bytes, 0);
         assert_eq!(call(&store, &[b"CONFIG", b"RESETSTAT"]), b"+OK\r\n");
+    }
+
+    #[test]
+    fn msetex_replaces_collections_with_exact_ttl_accounting_and_atomic_oom() {
+        let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+        let store = Store::with_clock(16, clock);
+        assert_eq!(call(&store, &[b"RPUSH", b"a", b"1234"]), b":1\r\n");
+        assert_eq!(call(&store, &[b"HSET", b"b", b"f", b"123"]), b":1\r\n");
+        assert_eq!(call(&store, &[b"PEXPIRE", b"a", b"50"]), b":1\r\n");
+        assert_eq!(call(&store, &[b"PEXPIRE", b"b", b"100"]), b":1\r\n");
+        assert_eq!(
+            call(&store, &[b"MSETEX", b"1", b"a", b"new", b"NX"]),
+            b":0\r\n"
+        );
+        assert!(
+            call(
+                &store,
+                &[
+                    b"MSETEX",
+                    b"2",
+                    b"a",
+                    b"x",
+                    b"b",
+                    b"1234567890123456",
+                    b"XX"
+                ]
+            )
+            .starts_with(b"-OOM")
+        );
+        assert_eq!(store.data.read().unwrap().payload_bytes, 10);
+        assert_eq!(call(&store, &[b"TYPE", b"a"]), b"+list\r\n");
+        assert_eq!(call(&store, &[b"TYPE", b"b"]), b"+hash\r\n");
+        assert_eq!(call(&store, &[b"PTTL", b"a"]), b":50\r\n");
+        assert_eq!(
+            call(
+                &store,
+                &[
+                    b"MSETEX", b"2", b"a", b"one", b"b", b"two", b"XX", b"KEEPTTL"
+                ]
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(store.data.read().unwrap().payload_bytes, 8);
+        assert_eq!(
+            call(&store, &[b"MGET", b"a", b"b"]),
+            b"*2\r\n$3\r\none\r\n$3\r\ntwo\r\n"
+        );
+        assert_eq!(call(&store, &[b"PTTL", b"a"]), b":50\r\n");
+        assert_eq!(call(&store, &[b"PTTL", b"b"]), b":100\r\n");
+        assert_eq!(call(&store, &[b"SADD", b"s", b"item"]), b":1\r\n");
+        assert_eq!(call(&store, &[b"DELEX", b"s"]), b":1\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 8);
     }
 
     #[test]

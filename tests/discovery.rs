@@ -109,9 +109,13 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":78\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":82\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*78\r\n*6\r\n$6\r\nappend\r\n"));
+        assert!(all_info.starts_with(b"*82\r\n*6\r\n$6\r\nappend\r\n"));
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"INFO", b"MSETEX", b"DIGEST", b"DELIFEQ"]),
+            b"*3\r\n*6\r\n$6\r\nmsetex\r\n:-4\r\n*2\r\n+write\r\n+denyoom\r\n:2\r\n:-1\r\n:2\r\n*6\r\n$6\r\ndigest\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*6\r\n$7\r\ndelifeq\r\n:3\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:1\r\n:1\r\n"
+        );
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"gEt", b"does-not-exist", b"DEL"]),
             b"*3\r\n*6\r\n$3\r\nget\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*-1\r\n*6\r\n$3\r\ndel\r\n:-2\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:-1\r\n:1\r\n"
@@ -125,6 +129,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"decr",
             b"decrby",
             b"del",
+            b"delex",
+            b"delifeq",
+            b"digest",
             b"echo",
             b"exists",
             b"expire",
@@ -156,6 +163,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"memory",
             b"mget",
             b"mset",
+            b"msetex",
             b"msetnx",
             b"persist",
             b"pexpire",

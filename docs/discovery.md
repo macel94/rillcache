@@ -50,12 +50,12 @@ from the protocol encoder's standard bounded RESP framing.
 
 ## Compatibility limits / coordinator integration
 
-The current command list is intentionally limited to implemented Store command
-families and COMMAND/INFO/CONFIG. CONFIG metadata covers the supported collection
-encoding-threshold GET/SET forms and RESETSTAT; other runtime settings are unsupported.
-It is updated alongside MGET/MSET/MSETNX,
-APPEND/STRLEN/GETRANGE/SETRANGE, keyspace commands, and the typed collection
-primitives. HELLO/CLIENT remains connection-local. The HELLO/CLIENT worker owns
+The registered command list includes implemented Store commands, including typed
+collections, keyspace operations, MGET/MSET/MSETNX/MSETEX and conditional string
+commands (DIGEST/DELEX/DELIFEQ). CONFIG metadata covers collection encoding-threshold
+GET/SET forms and RESETSTAT; other runtime settings are unsupported. Every
+advertised name is wired to this worktree's Store dispatcher; unimplemented Redis
+commands remain unadvertised. The HELLO/CLIENT worker owns
 connection-local state; this module does not implement or advertise it. Detailed
 key specifications, ACL categories, subcommand records, filters and Redis
 extended metadata are not supported. No network-facing production-readiness or
