@@ -10,9 +10,9 @@
 use super::Store;
 use super::data::{Collection, Data};
 use crate::protocol::{Limits, dispatch_request, encode_request};
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(1);
@@ -38,6 +38,7 @@ impl FsyncPolicy {
 
 pub(super) struct Journal {
     file: File,
+    path: PathBuf,
     policy: FsyncPolicy,
     limits: Limits,
     dirty: bool,
@@ -69,6 +70,7 @@ impl Journal {
             .open(path)?;
         Ok(Self {
             file,
+            path: path.to_path_buf(),
             policy,
             limits,
             dirty: false,
@@ -191,6 +193,56 @@ impl Journal {
     pub(super) fn limits(&self) -> Limits {
         self.limits
     }
+
+    /// Replace the log with a compact full-state snapshot using an fsynced
+    /// same-directory temporary file. Called under the store's exclusive
+    /// transaction gate, so no concurrent append can be lost.
+    fn rewrite(&mut self, records: &[u8]) -> io::Result<u64> {
+        let directory = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let temporary = directory.join(format!(
+            ".{}.rewrite-{}",
+            self.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("appendonly.aof"),
+            std::process::id()
+        ));
+        let result = (|| -> io::Result<u64> {
+            #[cfg(unix)]
+            let mut file = {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&temporary)?
+            };
+            #[cfg(not(unix))]
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&temporary)?;
+            file.write_all(records)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, &self.path)?;
+            if let Ok(directory) = fs::File::open(directory) {
+                let _ = directory.sync_all();
+            }
+            let replacement = OpenOptions::new().read(true).write(true).open(&self.path)?;
+            self.file = replacement;
+            self.dirty = false;
+            self.failed = false;
+            self.last_sync = Instant::now();
+            Ok(records.len() as u64)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
 }
 
 impl Drop for Journal {
@@ -272,6 +324,38 @@ impl Store {
                 format_args!("-ERR append-only write failed: {error}\r\n"),
             );
         }
+    }
+
+    /// Rewrite the journal as a complete state snapshot. The caller must already
+    /// hold the exclusive transaction gate (the journal-enabled execute path).
+    pub(super) fn rewrite_journal(&self) -> Result<u64, ()> {
+        let Some(journal) = self.journal.as_ref() else {
+            return Err(());
+        };
+        let records = {
+            let Ok(mut data) = self.data.write() else {
+                return Err(());
+            };
+            let now = self.clock.now_ms().max(0);
+            let budget = self
+                .journal_limits
+                .max_frame_bytes
+                .saturating_sub(4096)
+                .clamp(1024, CHUNK_BUDGET);
+            let mut keys: Vec<Vec<u8>> = data.entries.keys().cloned().collect();
+            keys.sort_unstable();
+            let mut records = Vec::new();
+            encode_request(&[b"FLUSHALL"], &mut records);
+            for key in &keys {
+                encode_key(&data, key, now, budget, &mut records);
+            }
+            data.journal_reset();
+            records
+        };
+        let Ok(mut journal) = journal.lock() else {
+            return Err(());
+        };
+        journal.rewrite(&records).map_err(|_| ())
     }
 
     pub fn journal_sync(&self) -> io::Result<()> {

@@ -45,8 +45,8 @@ translated into the final state of the keys it changed:
 This is a Redis-compatible command subset, not a byte-format claim. A real Redis
 AOF containing commands this server does not implement fails startup visibly
 rather than being silently skipped. Our log has no embedded checksums; corruption
-is detected by RESP parsing and command failure. There is no rewrite, so the file
-grows with every write and old records remain as history.
+is detected by RESP parsing and command failure. Without an explicit rewrite the
+file grows with every write and old records remain as history.
 
 No file is created when `--appendonly no`. ACL users are separate and live in the
 ACL file; data persistence never writes passwords.
@@ -93,6 +93,26 @@ writes fail. The in-memory mutation may already be applied; a restart replays on
 what reached the file. Disk-full, quota and permission errors are visible rather
 than silently converted into success.
 
+## Compaction with BGREWRITEAOF
+
+`BGREWRITEAOF` replaces the log with a compact snapshot of the current keyspace:
+`FLUSHALL` followed by every live key's rebuild records. The implementation is
+**synchronous** despite the Redis-compatible name: it holds the exclusive
+transaction gate while encoding the snapshot, writing a mode-0600 temporary file
+in the journal directory, fsyncing it, atomically renaming it over the journal and
+reopening it. Command service pauses for the duration. There is no fork, copy-on-
+write page sharing, incremental rewrite, automatic size trigger or background
+progress reporting.
+
+A successful `+OK` means the old log has been atomically replaced with a complete
+snapshot that includes every mutation committed before the rewrite. A crash during
+the temporary write leaves the previous log intact; a failure returns an error and
+the journal retains its prior contents/position unless the rename already
+completed. Concurrent appends cannot race the replacement because the same gate
+serializes commands. Rewriting a disabled journal returns a visible error. Operators
+must schedule rewrites during acceptable pauses and size the file between runs;
+there is no automatic rewrite policy.
+
 ## Recovery
 
 At startup the journal is replayed into a fresh, authenticated store before the
@@ -122,8 +142,10 @@ volatile across restart; do not use this subset as a durable work queue.
 
 ## Deliberate gaps
 
-- No RDB import/export, AOF rewrite/compaction, manifest/multi-part AOF, checksums,
-  encryption at rest or replication of the log.
+- No RDB import/export, background/incremental AOF rewrite, automatic rewrite
+  thresholds, manifest/multi-part AOF, checksums, encryption at rest or replication
+  of the log. `BGREWRITEAOF` is a blocking full-state compaction, not Redis's
+  fork-based background rewrite.
 - No graceful signal-driven drain; see [container delivery](containers.md).
 - No multi-process file locking, shared-filesystem guarantees or crash-consistency
   testing across kernel/filesystem failure modes.
@@ -139,6 +161,7 @@ recovery is implemented and tested.
 
 Unit tests cover strings, binary data, lists, sets, hashes, sorted sets, streams,
 groups, absolute TTL restoration, rejected non-mutating commands, transactions,
-concurrent writers, flush records, partial-tail truncation and mid-file corruption.
-Wire tests restart real servers in all worker modes, verify data and TTLs survive,
-recover a truncated tail, persist `FLUSHALL`, and reject corrupt logs at bind time.
+concurrent writers, flush records, partial-tail truncation, mid-file corruption and
+rewrite compaction. Wire tests restart real servers in all worker modes, verify data
+and TTLs survive, compact a live log with `BGREWRITEAOF`, recover a truncated tail,
+persist `FLUSHALL`, and reject corrupt logs at bind time.

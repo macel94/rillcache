@@ -208,6 +208,33 @@ fn a_partial_tail_is_recovered_and_corruption_is_visible() {
 }
 
 #[test]
+fn bgrewriteaof_compacts_a_live_log_and_restart_keeps_the_state() {
+    let dir = temp_dir("rewrite");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        for index in 0..100 {
+            let value = format!("value-{index}");
+            send(&mut stream, &[b"SET", b"k", value.as_bytes()], b"+OK\r\n");
+        }
+        let file = dir.join("test.aof");
+        let before = std::fs::metadata(&file).unwrap().len();
+        send(&mut stream, &[b"BGREWRITEAOF"], b"+OK\r\n");
+        let after = std::fs::metadata(&file).unwrap().len();
+        assert!(after < before);
+        server.shutdown().unwrap();
+    }
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"GET", b"k"], b"$8\r\nvalue-99\r\n");
+        send(&mut stream, &[b"DBSIZE"], b":1\r\n");
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn journal_is_off_by_default_and_validation_is_explicit() {
     let dir = temp_dir("default-off");
     {

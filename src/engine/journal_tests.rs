@@ -168,6 +168,37 @@ fn transaction_batch_and_concurrent_writers_replay_to_the_final_state() {
 }
 
 #[test]
+fn rewrite_compacts_history_and_still_replays_the_final_state() {
+    let path = aof_path("rewrite");
+    {
+        let store = open(&path, FsyncPolicy::Always);
+        for index in 0..200 {
+            let value = format!("value-{index}");
+            assert_eq!(run(&store, &[b"SET", b"key", value.as_bytes()]), b"+OK\r\n");
+        }
+        assert_eq!(run(&store, &[b"RPUSH", b"list", b"a", b"b"]), b":2\r\n");
+        let before = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(run(&store, &[b"BGREWRITEAOF"]), b"+OK\r\n");
+        let after = std::fs::metadata(&path).unwrap().len();
+        assert!(after < before, "rewrite must compact {before} -> {after}");
+        assert_eq!(run(&store, &[b"GET", b"key"]), b"$9\r\nvalue-199\r\n");
+    }
+    let store = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&store, &[b"GET", b"key"]), b"$9\r\nvalue-199\r\n");
+    assert_eq!(
+        run(&store, &[b"LRANGE", b"list", b"0", b"-1"]),
+        b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+    );
+    assert_eq!(run(&store, &[b"DBSIZE"]), b":2\r\n");
+    let _ = std::fs::remove_file(&path);
+
+    let path = aof_path("rewrite-disabled");
+    let store = Store::new(1024);
+    assert!(run(&store, &[b"BGREWRITEAOF"]).starts_with(b"-ERR append-only"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn a_partial_tail_is_truncated_but_mid_file_corruption_fails() {
     let path = aof_path("truncated");
     {

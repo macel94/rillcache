@@ -27,6 +27,7 @@ const COMMANDS: &[Command] = &[
         0,
         0,
     ),
+    cmd("bgrewriteaof", 1, &["admin", "dangerous", "slow"], 0, 0, 0),
     cmd(
         "client",
         -2,
