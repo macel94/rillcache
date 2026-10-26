@@ -12,7 +12,8 @@ const MAX_MGET_REPLY_BYTES: usize = 2 * 1024 * 1024;
 impl Store {
     fn msetex(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
         use super::options::{Condition, SetOptions, parse_integer};
-        if arguments.len() < 2 {
+        // Native command dispatch enforces MSETEX's minimum arity (4 arguments).
+        if arguments.len() < 4 {
             arity("msetex", output);
             return;
         }
@@ -55,7 +56,7 @@ impl Store {
         }
         // MSETEX accepts one NX/XX condition and one expiry choice, but not GET.
         let mut final_values = BTreeMap::new();
-        for pair in arguments[2..pair_end].chunks_exact(2) {
+        for pair in arguments[2..pair_end].as_chunks::<2>().0 {
             final_values.insert(pair[0], pair[1]);
         }
         let Ok(mut data) = self.data.write() else {
@@ -483,7 +484,7 @@ mod tests {
         );
         assert_eq!(
             run(&store, &[b"MSETEX", b"1", b"only-key"]),
-            b"-ERR wrong number of key-value pairs\r\n"
+            b"-ERR wrong number of arguments for 'msetex' command\r\n"
         );
         assert_eq!(
             run(
