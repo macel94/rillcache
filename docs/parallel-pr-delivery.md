@@ -36,31 +36,45 @@ workflow definition from the default branch; the updater validates repository,
 branch and PR metadata before mutation.
 
 The reconciliation is bounded to at most 1,000 open PRs in a pass. Eligible
-candidates are open, non-draft PRs targeting this repository's `main`, with a
-same-repository head and an existing explicit protected auto-merge request. A
-fork, draft, closed PR, non-main target, missing opt-in, malformed identity or
-ambiguous duplicate branch/head is reported and never updated. The updater does
-not add auto-merge requests or alter reviews, labels, comments, branch
-protection, merge strategy, required-check configuration, or main.
+candidates are every open PR targeting this repository's `main` with a
+same-repository head and a well-formed base/head identity. Draft state and a
+missing auto-merge request are deliberately **not** eligibility gates: the user
+asked for every open PR branch to stay current. A fork, closed PR, non-main
+target, malformed identity or ambiguous duplicate branch/head is reported and
+never updated. The updater does not promote a draft, add or revoke auto-merge,
+or alter reviews, labels, comments, branch protection, merge strategy,
+required-check configuration, or main.
 
-For a stale eligible branch it freezes current main and head SHAs, re-reads both
-before mutation, and calls GitHub's PR branch-update API with
-`expected_head_sha`. It never pushes or force-pushes. It observes the asynchronous
-update for a bounded interval and accepts a candidate only after observing the
-new head and confirming it contains the frozen base. A conflict, timeout,
-identity race or API error is surfaced in the run summary and per-PR artifact;
-no attempt is made to resolve conflicts or overwrite a worker's newer head.
+Staleness is measured against **current main**, not the PR's last-synced base
+snapshot: GitHub reports `pr.base.sha` as the base at the PR's last sync, which
+stays behind after main advances, so comparing it with current main would wrongly
+mark every stale PR as a base race and never update anything. The updater instead
+compares current `main` with the head and treats `behind`/`diverged` as stale.
+For a stale branch it freezes current main and head SHAs, re-reads both before
+mutation, and calls GitHub's PR branch-update API with `expected_head_sha`. It
+never pushes or force-pushes. It observes the asynchronous update for a bounded
+interval and accepts a candidate only after observing the new head and confirming
+it contains the frozen main. A conflict, timeout, identity race or API error is
+surfaced in the run summary and per-PR artifact; no attempt is made to resolve
+conflicts or overwrite a worker's newer head. Draft PRs get their branch
+refreshed but defer the expensive required checks until they are ready to merge.
 
 For the exact candidate, the updater discovers runs by workflow path, event,
 head/base association and SHA. It accepts only the required named check from the
 GitHub Actions app and matching check suite. If a required run is already active,
 it waits; if the latest exact candidate run failed, it reports the failure and
-does not dispatch a retry. If no matching run is observable, it explicitly
-dispatches only `ci.yml` and `pr-quality.yml` on the validated branch (the latter
-with that PR's number). Those existing workflows retain read-only permissions
-and their own head/base validation. This is necessary because GitHub suppresses
-most events caused by `GITHUB_TOKEN`; token-created PR synchronization runs may
-be approval-held, while `workflow_dispatch` is an explicit allowed trigger.
+does not dispatch a retry. Failed evidence is matched by source head so a later
+main advance cannot hide a failure and cause an automatic re-dispatch. If no
+matching run is observable, it first verifies that the branch's
+`.github/workflows/ci.yml` and `.github/workflows/pr-quality.yml` blobs still
+match protected `main` (a branch that rewrote a required workflow is reported as
+`untrusted_workflow` and never dispatched, because `workflow_dispatch` would
+otherwise run that rewritten workflow with the updater's write token). Only then
+does it explicitly dispatch `ci.yml` and `pr-quality.yml` on the validated branch
+(the latter with that PR's number). Those existing workflows retain read-only
+permissions and their own head/base validation. This is necessary because GitHub
+suppresses most events caused by `GITHUB_TOKEN`; token-created PR synchronization
+runs may be approval-held, while `workflow_dispatch` is an explicit allowed trigger.
 
 The privileged job has only the contents, pull-request and Actions permissions
 needed for the GitHub branch-update and workflow-dispatch APIs. One repository-
