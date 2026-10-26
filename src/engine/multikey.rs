@@ -155,6 +155,16 @@ impl Store {
             };
             let now = self.now(&data);
             data.reap(now, usize::MAX);
+            if arguments[1..].iter().any(|key| {
+                data.entries
+                    .get(*key)
+                    .is_some_and(|entry| entry.stream.is_some())
+            }) {
+                output.extend_from_slice(
+                    b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                );
+                return true;
+            }
             let count = arguments.len() - 1;
             let mut reply_bytes = 3 + decimal_digits(count);
             for key in &arguments[1..] {
@@ -230,7 +240,7 @@ impl Store {
             if let Some(entry) = data.entries.get(*key) {
                 let Some(without_old) = key
                     .len()
-                    .checked_add(entry.value.len())
+                    .checked_add(entry.payload_len)
                     .and_then(|old_bytes| payload.checked_sub(old_bytes))
                 else {
                     internal_error(output);

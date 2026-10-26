@@ -15,9 +15,11 @@ struct Command {
     key_step: i64,
 }
 
-// Only commands dispatched by the base Store implementation are listed here.
+// Every registered command is wired to this worktree's Store or server dispatcher.
 const COMMANDS: &[Command] = &[
     cmd("command", -1, &["loading", "stale"], 0, 0, 0),
+    cmd("config", -2, &["admin", "noscript"], 0, 0, 0),
+    cmd("copy", -3, &["write", "denyoom"], 1, 1, 1),
     cmd("decr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("decrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("del", -2, &["write", "fast"], 1, -1, 1),
@@ -29,6 +31,9 @@ const COMMANDS: &[Command] = &[
     cmd("expire", -3, &["write", "fast"], 1, 1, 1),
     cmd("expireat", -3, &["write", "fast"], 1, 1, 1),
     cmd("expiretime", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("flushall", -1, &["write", "slow"], 0, 0, 0),
+    cmd("flushdb", -1, &["write", "slow"], 0, 0, 0),
+    cmd("function", -2, &["write", "admin"], 0, 0, 0),
     cmd("get", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("getdel", 2, &["write", "fast"], 1, 1, 1),
     cmd("getex", -2, &["write", "fast"], 1, 1, 1),
@@ -36,6 +41,7 @@ const COMMANDS: &[Command] = &[
     cmd("incr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("incrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
+    cmd("memory", -2, &["readonly", "slow"], 0, 0, 0),
     cmd("msetex", -4, &["write", "denyoom"], 2, -1, 2),
     cmd("persist", 2, &["write", "fast"], 1, 1, 1),
     cmd("pexpire", -3, &["write", "fast"], 1, 1, 1),
@@ -45,10 +51,17 @@ const COMMANDS: &[Command] = &[
     cmd("psetex", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("pttl", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("quit", -1, &["fast"], 0, 0, 0),
+    cmd("script", -2, &["admin"], 0, 0, 0),
     cmd("set", -3, &["write", "denyoom"], 1, 1, 1),
     cmd("setex", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("setnx", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("xadd", -5, &["write", "denyoom"], 1, 1, 1),
+    cmd("xdel", -3, &["write"], 1, 1, 1),
+    cmd("xgroup", -2, &["write"], 2, 2, 1),
+    cmd("xinfo", -2, &["readonly"], 2, 2, 1),
+    cmd("xlen", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("xreadgroup", -7, &["write"], 0, 0, 0),
 ];
 
 const fn cmd(
@@ -126,8 +139,9 @@ impl Store {
             if matches!(section.as_slice(), b"server" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Server\r\nrillcache_version:{}\r\nrillcache_mode:standalone\r",
-                    env!("CARGO_PKG_VERSION")
+                    "# Server\r\nrillcache_version:{}\r\nrillcache_mode:standalone\rarch_bits:{}\rmem_allocator:system\r",
+                    env!("CARGO_PKG_VERSION"),
+                    usize::BITS
                 );
             }
             if matches!(section.as_slice(), b"memory" | b"default" | b"all") {
