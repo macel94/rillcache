@@ -84,6 +84,8 @@ const COMMANDS: &[Command] = &[
     cmd("getex", -2, &["write", "fast"], 1, 1, 1),
     cmd("getrange", 4, &["readonly"], 1, 1, 1),
     cmd("getset", 3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("hdel", -3, &["write", "fast"], 1, 1, 1),
+    cmd("hexists", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("hget", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("hgetall", 2, &["readonly"], 1, 1, 1),
     cmd(
@@ -94,19 +96,32 @@ const COMMANDS: &[Command] = &[
         0,
         0,
     ),
+    cmd("hincrby", 4, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("hincrbyfloat", 4, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("hkeys", 2, &["readonly"], 1, 1, 1),
     cmd("hlen", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("hmget", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("hscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("hset", -4, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("hsetnx", 4, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("hstrlen", 3, &["readonly", "fast"], 1, 1, 1),
+    cmd("hvals", 2, &["readonly"], 1, 1, 1),
     cmd("incr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("incrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("incrbyfloat", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
     cmd("keys", 2, &["readonly"], 0, 0, 0),
     cmd("lcs", -3, &["readonly"], 1, 2, 1),
+    cmd("lindex", 3, &["readonly"], 1, 1, 1),
+    cmd("linsert", 5, &["write", "denyoom"], 1, 1, 1),
     cmd("llen", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("lpop", -2, &["write", "fast"], 1, 1, 1),
     cmd("lpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("lpushx", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("lrange", 4, &["readonly"], 1, 1, 1),
+    cmd("lrem", 4, &["write"], 1, 1, 1),
+    cmd("lset", 4, &["write", "denyoom"], 1, 1, 1),
+    cmd("ltrim", 4, &["write"], 1, 1, 1),
     cmd("memory", -2, &["readonly", "slow"], 0, 0, 0),
     cmd("mget", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("mset", -3, &["write", "denyoom"], 1, -1, 2),
@@ -173,18 +188,29 @@ const COMMANDS: &[Command] = &[
     ),
     cmd("rpop", -2, &["write", "fast"], 1, 1, 1),
     cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("rpushx", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("sadd", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("scan", -2, &["readonly", "slow"], 0, 0, 0),
     cmd("scard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("script", -2, &["admin"], 0, 0, 0),
+    cmd("sdiff", -2, &["readonly"], 1, -1, 1),
+    cmd("sdiffstore", -3, &["write", "denyoom"], 1, -1, 1),
     cmd("select", 2, &["loading", "stale", "fast"], 0, 0, 0),
     cmd("set", -3, &["write", "denyoom"], 1, 1, 1),
     cmd("setbit", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("setex", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("setnx", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("setrange", 4, &["write", "denyoom"], 1, 1, 1),
+    cmd("sinter", -2, &["readonly"], 1, -1, 1),
+    cmd("sintercard", -3, &["readonly"], 2, -1, 1),
+    cmd("sinterstore", -3, &["write", "denyoom"], 1, -1, 1),
     cmd("sismember", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("smembers", 2, &["readonly"], 1, 1, 1),
+    cmd("smismember", -3, &["readonly", "fast"], 1, 1, 1),
+    cmd("smove", 4, &["write", "fast"], 1, 2, 1),
+    cmd("spop", -2, &["write", "fast"], 1, 1, 1),
+    cmd("srandmember", -2, &["readonly"], 1, 1, 1),
+    cmd("srem", -3, &["write", "fast"], 1, 1, 1),
     cmd("sscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("strlen", 2, &["readonly", "fast"], 1, 1, 1),
     cmd(
@@ -196,6 +222,8 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("substr", 4, &["readonly"], 1, 1, 1),
+    cmd("sunion", -2, &["readonly"], 1, -1, 1),
+    cmd("sunionstore", -3, &["write", "denyoom"], 1, -1, 1),
     cmd("touch", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("type", 2, &["readonly", "fast"], 1, 1, 1),
@@ -231,7 +259,19 @@ const COMMANDS: &[Command] = &[
     cmd("xreadgroup", -7, &["write"], 0, 0, 0),
     cmd("zadd", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("zcard", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("zcount", 4, &["readonly", "fast"], 1, 1, 1),
+    cmd("zincrby", 4, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("zpopmax", -2, &["write", "fast"], 1, 1, 1),
+    cmd("zpopmin", -2, &["write", "fast"], 1, 1, 1),
     cmd("zrange", -4, &["readonly"], 1, 1, 1),
+    cmd("zrangebyscore", -4, &["readonly"], 1, 1, 1),
+    cmd("zrank", -3, &["readonly", "fast"], 1, 1, 1),
+    cmd("zrem", -3, &["write", "fast"], 1, 1, 1),
+    cmd("zremrangebyrank", 4, &["write"], 1, 1, 1),
+    cmd("zremrangebyscore", 4, &["write"], 1, 1, 1),
+    cmd("zrevrange", -4, &["readonly"], 1, 1, 1),
+    cmd("zrevrangebyscore", -4, &["readonly"], 1, 1, 1),
+    cmd("zrevrank", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("zscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("zscore", 3, &["readonly", "fast"], 1, 1, 1),
 ];
@@ -261,6 +301,20 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
     else {
         return Vec::new();
     };
+    // SINTERCARD has a counted key list followed by optional LIMIT arguments.
+    // Its static `last_key` would otherwise include the LIMIT tokens as keys.
+    if name.eq_ignore_ascii_case(b"SINTERCARD") {
+        let Some(count) = args
+            .get(1)
+            .and_then(|raw| std::str::from_utf8(raw).ok())
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|count| *count > 0)
+        else {
+            return Vec::new();
+        };
+        let end = 2usize.saturating_add(count).min(args.len());
+        return args[2..end].to_vec();
+    }
     if command.first_key <= 0 {
         return Vec::new();
     }
@@ -342,10 +396,16 @@ fn command_group(name: &str) -> Option<&'static str> {
             "string"
         }
         "getbit" | "setbit" => "bitmap",
-        "blpop" | "brpop" | "llen" | "lpop" | "lpush" | "lrange" | "rpop" | "rpush" => "list",
-        "sadd" | "scard" | "sismember" | "smembers" | "sscan" => "set",
-        "hget" | "hgetall" | "hlen" | "hscan" | "hset" => "hash",
-        "zadd" | "zcard" | "zrange" | "zscan" | "zscore" => "zset",
+        "blpop" | "brpop" | "lindex" | "linsert" | "llen" | "lpop" | "lpush" | "lpushx"
+        | "lrange" | "lrem" | "lset" | "ltrim" | "rpop" | "rpush" | "rpushx" => "list",
+        "sadd" | "scard" | "sdiff" | "sdiffstore" | "sinter" | "sintercard" | "sinterstore"
+        | "sismember" | "smembers" | "smismember" | "smove" | "spop" | "srandmember" | "srem"
+        | "sscan" | "sunion" | "sunionstore" => "set",
+        "hdel" | "hexists" | "hget" | "hgetall" | "hincrby" | "hincrbyfloat" | "hkeys" | "hlen"
+        | "hmget" | "hscan" | "hset" | "hsetnx" | "hstrlen" | "hvals" => "hash",
+        "zadd" | "zcard" | "zcount" | "zincrby" | "zpopmax" | "zpopmin" | "zrange"
+        | "zrangebyscore" | "zrank" | "zrem" | "zremrangebyrank" | "zremrangebyscore"
+        | "zrevrange" | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" => "zset",
         "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xreadgroup" => "stream",
         "auth" | "client" | "hello" | "quit" | "reset" | "select" => "connection",
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
@@ -560,6 +620,38 @@ fn write_array_len(length: usize, output: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collection_mutation_commands_have_real_acl_categories() {
+        for (name, category) in [
+            ("hincrby", "hash"),
+            ("hsetnx", "hash"),
+            ("linsert", "list"),
+            ("ltrim", "list"),
+            ("sintercard", "set"),
+            ("smove", "set"),
+            ("zrangebyscore", "zset"),
+            ("zpopmin", "zset"),
+        ] {
+            assert_eq!(command_group(name), Some(category));
+        }
+    }
+
+    #[test]
+    fn counted_key_lists_exclude_options_from_acl_key_enforcement() {
+        assert_eq!(
+            key_arguments(
+                b"SINTERCARD",
+                &[b"SINTERCARD", b"2", b"a", b"b", b"LIMIT", b"1"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"SINTERCARD", &[b"SINTERCARD", b"1", b"a"]),
+            vec![b"a".as_slice()]
+        );
+        assert!(key_arguments(b"SINTERCARD", &[b"SINTERCARD", b"x", b"a"]).is_empty());
+    }
 
     #[test]
     fn unknown_dispatch_is_false_and_leaves_output_untouched() {

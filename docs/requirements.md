@@ -64,6 +64,7 @@ reason to couple all future commands into a single large story.
 | S34 | As an operator, I can inspect honest connection, command, expiration and pub/sub counters and reset them, without fabricated Redis fields. | XS | R134–R136; counter scope, reset, rejection, expiry and all-mode wire tests |
 | S35 | As a queue user, I can wait for an element to arrive on one of several lists instead of polling, without blocking a worker lane or holding the store lock. | S | R137–R140; push wakeup, timeout, order, journal, idle and all-mode wire tests |
 | S36 | As a cache operator, I can choose a bounded eviction policy so that writes keep succeeding within a payload budget instead of always returning OOM. | S | R141–R144; policy, volatile, TTL/LRU, journal, stats and all-mode wire tests |
+| S37 | As a cache user, I can mutate, count, remove and range over hashes, lists, sets and sorted sets so that typed collections are usable beyond creation and basic reads. | S | R145–R148; binary/count/order/TTL/OOM/WRONGTYPE, multi-key set atomicity and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -238,7 +239,6 @@ reason to couple all future commands into a single large story.
   restart. Documentation shall retain missing RDB/AOF-rewrite, compaction,
   checksums, encryption, multi-process ownership, backup drills, signal drain,
   stream-pending durability and disk-fault/soak guarantees.
-
 ### Cursor iteration (S30)
 
 - **R121 (event-driven):** When `SCAN cursor [MATCH pattern] [COUNT n] [TYPE type]`
@@ -283,7 +283,6 @@ reason to couple all future commands into a single large story.
   framing, subscriber-mode errors/PING/QUIT, ACL channel denial, disconnect cleanup
   and joined shutdown. Documentation shall retain missing sharding, keyspace
   notifications, persistence, replication, ordering and durability guarantees.
-
 ### Journal compaction (S32)
 
 - **R129 (event-driven):** When `BGREWRITEAOF` is received on an enabled journal,
@@ -311,7 +310,6 @@ reason to couple all future commands into a single large story.
   normal arity error without changing state. Tests shall cover queued transactions,
   watches, pub/sub cleanup, RESP3-to-RESP2 conversion, deauthentication and
   reauthentication, subscriber-mode reset and all execution modes.
-
 ### Process statistics (S34)
 
 - **R134 (event-driven):** When `INFO stats` is requested, the server shall return
@@ -354,7 +352,6 @@ reason to couple all future commands into a single large story.
   Documentation shall retain the absence of a condition-variable/push design,
   strict latency SLOs, `BRPOPLPUSH`/`BLMOVE`, fairness under many blocked clients
   and cluster/replication blocking semantics.
-
 ### Payload budget eviction (S36)
 
 - **R141 (event-driven):** When a write's final payload exceeds the configured
@@ -377,6 +374,32 @@ reason to couple all future commands into a single large story.
   protection, TTL/LRU selection, journal replay and stats. Documentation shall
   retain the payload-not-RSS, mutation-LRU, O(N) scan, no-LFU/background
   eviction/notification and replication gaps.
+
+### Typed collection mutations (S37)
+
+- **R145 (event-driven):** When hash mutation commands run, the server shall
+  preserve binary field/value bytes and TTL; `HSETNX`/`HDEL`/`HEXISTS` shall use
+  field presence, `HMGET` shall preserve argument order and nulls, `HKEYS`/`HVALS`
+  shall return deterministic byte order, and `HINCRBY`/`HINCRBYFLOAT` shall reject
+  malformed stored values, integer overflow or non-finite results without changing
+  the hash. Removing the final field shall remove the key.
+- **R146 (event-driven):** When list mutation commands run, the server shall
+  preserve left/right order and negative indexes, insert relative to the first
+  matching pivot, remove from the requested end, trim inclusively, and reject
+  missing keys or out-of-range `LSET` indexes as documented. Empty results shall
+  delete the key, and successful mutations shall preserve TTL.
+- **R147 (event-driven):** When set mutation or algebra commands run, the server
+  shall treat members as binary values, suppress duplicates, count removals once,
+  and make `SMOVE` and the `SINTERSTORE`/`SUNIONSTORE`/`SDIFFSTORE` replacements
+  atomic. Sources and existing destinations shall be unchanged on wrong type,
+  invalid options or admission failure; an empty store result shall delete the
+  destination and clear its TTL.
+- **R148 (event-driven):** When sorted-set mutation or range commands run, the
+  server shall preserve IEEE-754 score ordering (including `-inf`/`+inf`) with
+  binary member tie-breaking, apply `NX`/`XX`/`GT`/`LT`/`CH`/`INCR`, exclusive
+  score bounds, rank/score removal and bounded pops, and reject invalid or NaN
+  scores without mutating state. Successful single-key mutations shall preserve
+  TTL and delete the key when its last member is removed.
 
 ### Development and delivery
 
@@ -715,10 +738,12 @@ fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction;
 payload-budget eviction policies (`noeviction`, allkeys/volatile random/LRU and
 volatile TTL); Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
-(LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE/BLPOP/BRPOP;
-SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD;
-SCAN/HSCAN/SSCAN/ZSCAN bounded cursor iteration with MATCH/COUNT/TYPE/NOVALUES;
-PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE and PUBSUB introspection.
+(LEN/IDX/WITHMATCHLEN/MINMATCHLEN); lists, sets, hashes and sorted sets with
+creation, mutation, removal, bounded random selection, set algebra/store
+commands, score/rank ranges, pops and bounded blocking `BLPOP`/`BRPOP` documented
+in [typed collections](collections.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor
+iteration with MATCH/COUNT/TYPE/NOVALUES; PUBLISH/SUBSCRIBE/PSUBSCRIBE/
+UNSUBSCRIBE/PUNSUBSCRIBE and PUBSUB introspection.
 See [string semantics](strings.md), [string ranges](string-ranges.md),
 [bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md),
 [typed collections](collections.md), [transactions](transactions.md),

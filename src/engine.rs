@@ -10,6 +10,7 @@ use crate::protocol::{Limits, encode_bulk};
 mod administration;
 mod auth;
 mod blocking;
+mod collection_commands;
 mod collection_config;
 mod collections;
 mod commands;
@@ -361,6 +362,7 @@ impl Store {
         } else if !self.execute_keyspace(arguments, output)
             && !self.execute_string_ranges(arguments, output)
             && !self.execute_string_algorithms(arguments, output)
+            && !self.execute_collection_commands(arguments, output)
             && !self.execute_collections(arguments, output)
         {
             output.extend_from_slice(b"-ERR unknown command\r\n");
