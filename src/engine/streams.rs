@@ -279,7 +279,7 @@ impl Store {
                 self.max_payload_bytes,
                 now,
             ) else {
-                out.extend_from_slice(b"-OOM configured payload limit exceeded\\r\\n");
+                out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
                 return;
             };
             data.put_stream(a[2], stream, existing_expiry, total);
@@ -619,6 +619,20 @@ mod tests {
         assert_eq!(store.data.read().unwrap().payload_bytes, 9);
         assert_eq!(run(&store, &[b"XLEN", b"moved"]), b":2\r\n");
     }
+    #[test]
+    fn mkstream_admission_failure_is_atomic_and_well_framed() {
+        let store = Store::new(0);
+        assert_eq!(
+            run(
+                &store,
+                &[b"XGROUP", b"CREATE", b"s", b"g", b"$", b"MKSTREAM"],
+            ),
+            b"-OOM configured payload limit exceeded\r\n"
+        );
+        assert_eq!(run(&store, &[b"DBSIZE"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"TYPE", b"s"]), b"+none\r\n");
+    }
+
     #[test]
     fn xdel_and_noack_change_real_stream_state_without_creating_pending_entries() {
         let store = Store::new(1000);
