@@ -92,10 +92,10 @@ fn hash_short(input: &[u8]) -> u64 {
     match len {
         0 => avalanche64(read64(&SECRET, 56) ^ read64(&SECRET, 64)),
         1..=3 => {
-            let combined = u32::from(input[len - 1])
-                | ((len as u32) << 8)
-                | (u32::from(input[0]) << 16)
-                | (u32::from(input[len >> 1]) << 24);
+            let combined = u32::from(input[0])
+                | (u32::from(input[len >> 1]) << 8)
+                | (u32::from(input[len - 1]) << 16)
+                | ((len as u32) << 24);
             let bitflip = (read32(&SECRET, 0) ^ read32(&SECRET, 4)) as u64;
             avalanche64(u64::from(combined) ^ bitflip)
         }

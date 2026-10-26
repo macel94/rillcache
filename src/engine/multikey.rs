@@ -32,7 +32,7 @@ impl Store {
             return;
         };
         if arguments.len() < pair_end {
-            output.extend_from_slice(b"-ERR wrong number of key-value pairs\r\n");
+            output.extend_from_slice(b"-ERR syntax error\r\n");
             return;
         }
         let options = match SetOptions::parse(&arguments[pair_end..], false) {
@@ -467,7 +467,7 @@ mod tests {
         );
         assert_eq!(run(&store, &[b"PTTL", b"a"]), b":50\r\n");
         assert_eq!(run(&store, &[b"GET", b"a"]), b"$4\r\nlast\r\n");
-        assert_eq!(run(&store, &[b"GET", b"b"]), b"$1\r\ny\r\n");
+        assert_eq!(run(&store, &[b"GET", b"b"]), b"$3\r\ntwo\r\n");
         assert_eq!(
             run(
                 &store,
@@ -485,6 +485,10 @@ mod tests {
         assert_eq!(
             run(&store, &[b"MSETEX", b"1", b"only-key"]),
             b"-ERR wrong number of arguments for 'msetex' command\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"MSETEX", b"2", b"only-key", b"value"]),
+            b"-ERR syntax error\r\n"
         );
         assert_eq!(
             run(
