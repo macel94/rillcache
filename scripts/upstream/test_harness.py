@@ -45,6 +45,16 @@ class ScopeTests(unittest.TestCase):
         for suite in common.SCOPE["compatibility"]["suites"]:
             self.assertIn(f"path: {suite}}}", text)
         self.assertGreaterEqual(perf.CONFIG["repetitions"], 5)
+        request_limits = common.SCOPE["compatibility"]["request_limits"]
+        self.assertEqual(8 * 1024 * 1024, request_limits["candidate_max_bulk_bytes"])
+        self.assertEqual(16 * 1024 * 1024, request_limits["candidate_max_frame_bytes"])
+        self.assertEqual(request_limits["candidate_max_bulk_bytes"], request_limits["native_proto_max_bulk_len"])
+        self.assertEqual(request_limits["candidate_max_frame_bytes"], request_limits["native_query_buffer_limit"])
+        self.assertEqual(2 * 1024 * 1024, request_limits["mget_reply_bytes"])
+        launcher = (common.ROOT / "scripts/upstream/common.py").read_text()
+        self.assertIn('"--max-bulk-bytes", "8388608", "--max-frame-bytes", "16777216"', launcher)
+        self.assertIn('"--proto-max-bulk-len", "8388608"', launcher)
+        self.assertIn('"--client-query-buffer-limit", "16777216"', launcher)
         self.assertEqual(0, perf.CONFIG["keyspace"] % 128)
         for pipeline in perf.CONFIG["pipelines"]:
             self.assertEqual(0, perf.CONFIG["requests"] % pipeline)
