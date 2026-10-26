@@ -12,4 +12,8 @@ services:
     mem_limit: 256m
     cpus: 1.0
     stop_grace_period: 5s
-    # No volume: this release is in-memory only. Mounting /data would NOT persist it.
+    # In-memory by default. For append-only restart recovery, uncomment:
+    # command: ["--appendonly", "yes", "--dir", "/data"]
+    # volumes: [rillcache-data:/data]
+    # and declare `volumes: { rillcache-data: {} }` at the file root.
+    # There is no AOF rewrite/compaction, backup or replication.

@@ -56,6 +56,7 @@ reason to couple all future commands into a single large story.
 | S26 | As a client, I can queue commands and execute them as one isolated batch, with optimistic invalidation when a watched key changes, so multi-step updates are not interleaved or lost to a race. | S | R105–R108; queue/abort/atomicity, expiry, RESP2/RESP3 and all-mode wire tests |
 | S27 | As an operator, I can require a secret before any data or administrative command so that a reachable cache is not open to every client on the network. | S | R109–R112; SHA-256 vectors, constant-time comparison, NOAUTH/HELLO atomicity, rotation/redaction and all-mode wire tests |
 | S28 | As an operator, I can define multiple users with independent credentials, command categories and key patterns so that a shared cache is not all-or-nothing access. | S | R113–R116; ACL-file round-trip, atomic rules, live denial, protected default and all-mode wire tests |
+| S29 | As an operator, I can enable an fsynced command journal so that supported data survives an ordinary restart within a documented loss window. | S | R117–R120; type/TTL replay, truncation/corruption, transaction/concurrency and all-mode restart tests |
 
 ## EARS acceptance requirements
 
@@ -205,6 +206,31 @@ reason to couple all future commands into a single large story.
   Documentation shall retain the missing selectors, audit/log/dry-run/gen-pass,
   channel enforcement, rate limiting, native TLS, key-spec-blind commands and
   process-level tenant-isolation boundaries.
+
+### Append-only persistence (S29)
+
+- **R117 (event-driven):** When `--appendonly yes` is supplied, the server shall
+  open/create the configured journal with mode 0600, replay it into a fresh store
+  before accepting clients, truncate only an incomplete final command, and fail
+  startup visibly for malformed mid-file data, unsupported/failed commands or
+  configured limit violations. Defaults shall remain persistence-off.
+- **R118 (event-driven):** When a supported command mutates keys, the journal shall
+  append a replay-safe `DEL` plus final-state rebuild and absolute `PEXPIREAT`
+  records for each changed key in a deterministic order; non-mutating/rejected
+  commands shall append nothing, and a `MULTI` batch shall be captured once after
+  the whole batch. Content/timestamp overflow shall force `FLUSHALL` plus a full
+  snapshot rather than a missed key.
+- **R119 (state-driven):** While configured, `always` shall fsync before replying,
+  `everysec` shall bound expected loss to the maintenance interval, and `no` shall
+  only write without an explicit sync. Append/sync failure shall replace the reply
+  with a clear error and latch the journal; orderly shutdown shall sync and flush.
+  The format shall be RESP commands, not an RDB or byte-compatible multipart-AOF claim.
+- **R120 (ubiquitous):** Persistence tests shall run offline in all execution modes
+  and cover strings/binary values, all supported collections, streams/groups, TTLs,
+  transactions, concurrent writers, flushes, partial tails, mid-file corruption and
+  restart. Documentation shall retain missing RDB/AOF-rewrite, compaction,
+  checksums, encryption, multi-process ownership, backup drills, signal drain,
+  stream-pending durability and disk-fault/soak guarantees.
 
 ### Development and delivery
 
@@ -538,14 +564,15 @@ PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
 INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX;
 MULTI/EXEC/DISCARD/WATCH/UNWATCH with a bounded queue, atomic batch execution
 and optimistic key invalidation; multi-user ACL users/rules, key patterns and
-atomic ACL-file save/load; Redis DIGEST/DELEX
+atomic ACL-file save/load; opt-in RESP-command append-only persistence with
+fsync policies and restart recovery; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
 (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE;
 SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD.
 See [string semantics](strings.md), [string ranges](string-ranges.md),
 [bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md),
-[typed collections](collections.md), [transactions](transactions.md) and
-[security](security.md) for grammar,
+[typed collections](collections.md), [transactions](transactions.md),
+[security](security.md) and [persistence](persistence.md) for grammar,
 clocks, rounding, integer limits, resource bounds, queue isolation and atomic
 error behavior. Conditions are atomic and
 case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
@@ -571,7 +598,9 @@ redis-cli/library handshake interoperability is not yet verified.
 
 Deliberately not supported: empty/null request arrays, other RESP3 types and
 pushes, commands beyond the documented collection/stream subsets, nonzero SELECT
-indices, native TLS, persistence, replication, clustering, scripts and pub/sub.
+indices, native TLS, RDB/AOF-rewrite compatibility, replication, clustering,
+scripts and pub/sub. Cluster mode, multi-database, and arbitrary Redis AOF/RDB
+files are not accepted.
 Single-password and multi-user ACL-file authentication are supported with
 `AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors, audit
 logging, dry-run, generated passwords and channel enforcement remain absent. See
@@ -602,8 +631,9 @@ Not implemented or implied by the completed increments:
    language clients; add command discovery and multiple databases only as separate
    compatible increments.
 2. ACL selectors and channel enforcement (with pub/sub), brute-force controls, an
-   audit path and a safe transport-security deployment boundary; then durability
-   with crash/recovery and Redis-format interoperability tests.
+   audit path and a safe transport-security deployment boundary; then AOF
+   rewrite/compaction, RDB interoperability, backup/restore drills and disk-fault
+   recovery beyond the current append-only restart path.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and
    clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe

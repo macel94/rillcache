@@ -1,6 +1,8 @@
-# Single volatile instance, not replication/HA. Authentication is opt-in: add a
-# read-only --requirepass-file or --aclfile secret mount before exposing this
-# beyond a trusted private network. Native TLS remains absent.
+# Single instance, not replication/HA. Authentication is opt-in: add a read-only
+# --requirepass-file or --aclfile secret mount before exposing this beyond a
+# trusted private network. Append-only persistence needs an operator-supplied
+# writable volume and --appendonly/--dir; no PVC is included here. Native TLS,
+# AOF rewrite/compaction and replication remain absent.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

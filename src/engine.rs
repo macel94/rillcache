@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::protocol::encode_bulk;
+use crate::protocol::{Limits, encode_bulk};
 mod administration;
 mod auth;
 mod collection_config;
@@ -14,6 +14,7 @@ mod collections;
 mod commands;
 mod data;
 mod discovery;
+mod journal;
 mod keyspace;
 mod multikey;
 mod options;
@@ -26,6 +27,7 @@ mod xxh3;
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 use collection_config::CollectionConfig;
 use data::Data;
+pub use journal::FsyncPolicy;
 use options::{Condition, ExpiryKind, SetOptions};
 pub use transaction::{TransactionOutcome, WatchState};
 
@@ -60,6 +62,8 @@ pub struct Store {
     auth: RwLock<Auth>,
     auth_required: AtomicBool,
     acl_restricted: AtomicBool,
+    journal: Option<std::sync::Mutex<journal::Journal>>,
+    journal_limits: Limits,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -72,6 +76,22 @@ impl Store {
     pub fn with_auth(max_payload_bytes: usize, auth: Auth) -> Self {
         Self::with_clock_and_auth(max_payload_bytes, Arc::new(SystemClock), auth)
     }
+    /// Server construction with an append-only journal. The file is replayed
+    /// into a fresh store before the journal is attached for new writes.
+    pub fn with_auth_and_journal(
+        max_payload_bytes: usize,
+        auth: Auth,
+        path: &std::path::Path,
+        policy: FsyncPolicy,
+        limits: Limits,
+    ) -> std::io::Result<Self> {
+        let mut store = Self::with_auth(max_payload_bytes, auth);
+        let mut journal = journal::Journal::open(path, policy, limits)?;
+        journal.replay(&store)?;
+        store.attach_journal(journal);
+        Ok(store)
+    }
+
     pub fn with_clock_and_auth(
         max_payload_bytes: usize,
         clock: Arc<dyn Clock>,
@@ -86,6 +106,8 @@ impl Store {
             auth_required: AtomicBool::new(auth.required()),
             acl_restricted: AtomicBool::new(auth.restricted()),
             auth: RwLock::new(auth),
+            journal: None,
+            journal_limits: Limits::default(),
         }
     }
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
@@ -104,7 +126,20 @@ impl Store {
     }
 
     /// Append exactly one reply. No store lock is held during socket I/O.
+    /// With an append-only journal attached, commands take the exclusive
+    /// transaction gate so mutation, capture and append keep one global order.
     pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        if self.journal.is_some() {
+            let Ok(_gate) = self.transaction_gate.write() else {
+                internal_error(output);
+                return Action::Continue;
+            };
+            let marks = self.journal_marks();
+            let start = output.len();
+            let action = self.execute_locked(arguments, output);
+            self.commit_journal(marks, output, start);
+            return action;
+        }
         let Ok(_gate) = self.transaction_gate.read() else {
             internal_error(output);
             return Action::Continue;

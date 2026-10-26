@@ -207,6 +207,7 @@ impl Entry {
 /// silently forgetting a mutation. The bound keeps memory independent of the
 /// number of historical keys.
 pub(super) const MAX_TRACKED_VERSIONS: usize = 65_536;
+const MAX_JOURNAL_EVENTS: usize = 65_536;
 
 #[derive(Default)]
 pub(super) struct Data {
@@ -216,9 +217,14 @@ pub(super) struct Data {
     pub(super) versions: HashMap<Vec<u8>, u64>,
     version_seq: u64,
     epoch: u64,
+    flush_seq: u64,
+    journal_events: VecDeque<(u64, Vec<u8>)>,
+    journal_overflow: bool,
 }
 impl Data {
-    /// Record a mutation visible to `WATCH`/`EXEC` conflict checks.
+    /// Record a mutation visible to `WATCH`/`EXEC` conflict checks and to the
+    /// optional append-only journal. The event log is bounded; overflow forces a
+    /// full-state journal snapshot instead of allowing a missed key.
     pub fn touch(&mut self, key: &[u8]) {
         self.version_seq = self.version_seq.wrapping_add(1);
         if self.versions.len() >= MAX_TRACKED_VERSIONS && !self.versions.contains_key(key) {
@@ -226,6 +232,38 @@ impl Data {
             self.epoch = self.epoch.wrapping_add(1);
         }
         self.versions.insert(key.to_vec(), self.version_seq);
+        if self.journal_events.len() >= MAX_JOURNAL_EVENTS {
+            self.journal_events.clear();
+            self.journal_overflow = true;
+        }
+        self.journal_events
+            .push_back((self.version_seq, key.to_vec()));
+    }
+
+    pub(super) fn journal_seq(&self) -> u64 {
+        self.version_seq
+    }
+
+    pub(super) fn flush_seq(&self) -> u64 {
+        self.flush_seq
+    }
+
+    /// Keys mutated after `seq`, plus whether the bounded log overflowed and a
+    /// full-state snapshot is required. Clears events that can no longer matter.
+    pub(super) fn changes_since(&mut self, seq: u64) -> (Vec<Vec<u8>>, bool) {
+        if self.journal_overflow {
+            self.journal_overflow = false;
+            self.journal_events.clear();
+            return (self.entries.keys().cloned().collect(), true);
+        }
+        let mut keys = BTreeSet::new();
+        for (sequence, key) in &self.journal_events {
+            if *sequence > seq {
+                keys.insert(key.clone());
+            }
+        }
+        self.journal_events.retain(|(sequence, _)| *sequence > seq);
+        (keys.into_iter().collect(), false)
     }
 
     pub fn version(&self, key: &[u8]) -> Option<u64> {
@@ -243,6 +281,9 @@ impl Data {
         self.payload_bytes = 0;
         self.versions.clear();
         self.epoch = self.epoch.wrapping_add(1);
+        self.flush_seq = self.flush_seq.wrapping_add(1);
+        self.journal_events.clear();
+        self.journal_overflow = false;
     }
 
     pub fn remove(&mut self, key: &[u8]) -> Option<Entry> {

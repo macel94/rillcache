@@ -223,10 +223,9 @@ pub(super) fn serve(
     config: Config,
     stopping: Arc<AtomicBool>,
     policy: SchedulingPolicy,
-    auth: Auth,
+    store: Arc<Store>,
 ) -> io::Result<()> {
     let count = config.worker_threads.expect("fixed worker configuration");
-    let store = Arc::new(Store::with_auth(config.max_data_bytes, auth));
     let admitted = Arc::new(AtomicUsize::new(0));
     let mut lanes: Vec<Lane> = Vec::new();
     let result = (|| {
@@ -248,6 +247,7 @@ pub(super) fn serve(
                     let mut polling = PollWindow::new(maintenance);
                     while !stop.load(Ordering::Acquire) {
                         if reaper && maintenance.elapsed() >= Duration::from_millis(100) {
+                            let _ = store.journal_sync();
                             store.purge_expired(128);
                             maintenance = Instant::now();
                         }

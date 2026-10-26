@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::engine::{Action, Auth, Store};
+use crate::engine::{Action, Auth, FsyncPolicy, Store};
 use crate::protocol::{Limits, dispatch_request};
 use crate::session::Session;
 use std::path::PathBuf;
@@ -124,6 +124,14 @@ pub struct Config {
     pub requirepass: Option<Vec<u8>>,
     /// Optional Redis-style ACL file. Mutually exclusive with `requirepass`.
     pub aclfile: Option<PathBuf>,
+    /// Enable the append-only command journal.
+    pub appendonly: bool,
+    /// Journal basename inside `dir`; no path separators.
+    pub appendfilename: String,
+    /// Journal fsync policy.
+    pub appendfsync: FsyncPolicy,
+    /// Directory containing the journal.
+    pub dir: PathBuf,
 }
 
 impl std::fmt::Debug for Config {
@@ -141,6 +149,10 @@ impl std::fmt::Debug for Config {
                 &self.requirepass.as_ref().map(|_| "<redacted>"),
             )
             .field("aclfile", &self.aclfile)
+            .field("appendonly", &self.appendonly)
+            .field("appendfilename", &self.appendfilename)
+            .field("appendfsync", &self.appendfsync)
+            .field("dir", &self.dir)
             .finish()
     }
 }
@@ -156,6 +168,10 @@ impl Default for Config {
             idle_timeout: Duration::from_secs(30),
             requirepass: None,
             aclfile: None,
+            appendonly: false,
+            appendfilename: "appendonly.aof".into(),
+            appendfsync: FsyncPolicy::EverySec,
+            dir: PathBuf::from("."),
         }
     }
 }
@@ -178,10 +194,15 @@ impl Config {
                 .as_ref()
                 .is_some_and(|password| password.is_empty() || password.len() > 1024)
             || (self.requirepass.is_some() && self.aclfile.is_some())
+            || self.appendfilename.is_empty()
+            || self.appendfilename == "."
+            || self.appendfilename == ".."
+            || self.appendfilename.contains(['/', '\\'])
+            || self.dir.as_os_str().is_empty()
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, and requirepass and aclfile are mutually exclusive",
+                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         Ok(())
@@ -192,7 +213,7 @@ pub struct Server {
     listener: TcpListener,
     config: Config,
     policy: SchedulingPolicy,
-    auth: Auth,
+    store: Store,
 }
 
 impl Config {
@@ -210,10 +231,27 @@ impl Config {
     }
 }
 
+impl Config {
+    fn journal_path(&self) -> PathBuf {
+        self.dir.join(&self.appendfilename)
+    }
+}
+
 impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
         config.validate()?;
         let auth = config.load_auth()?;
+        let store = if config.appendonly {
+            Store::with_auth_and_journal(
+                config.max_data_bytes,
+                auth,
+                &config.journal_path(),
+                config.appendfsync,
+                config.limits,
+            )?
+        } else {
+            Store::with_auth(config.max_data_bytes, auth)
+        };
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
         let capacity = thread::available_parallelism().ok().map(usize::from);
@@ -222,7 +260,7 @@ impl Server {
             listener,
             config,
             policy,
-            auth,
+            store,
         })
     }
 
@@ -255,9 +293,15 @@ impl Server {
 
     fn serve(self, stopping: Arc<AtomicBool>) -> io::Result<()> {
         if self.config.worker_threads.is_some() {
-            return pool::serve(self.listener, self.config, stopping, self.policy, self.auth);
+            return pool::serve(
+                self.listener,
+                self.config,
+                stopping,
+                self.policy,
+                Arc::new(self.store),
+            );
         }
-        let store = Arc::new(Store::with_auth(self.config.max_data_bytes, self.auth));
+        let store = Arc::new(self.store);
         let admitted = Arc::new(AtomicUsize::new(0));
         let sharing = (self.policy.client_handoff_idle_us > 0).then(|| {
             Arc::new(handoff::Sharing::new(
@@ -271,6 +315,7 @@ impl Server {
         let result = (|| {
             while !stopping.load(Ordering::Acquire) {
                 if maintenance.elapsed() >= Duration::from_millis(100) {
+                    let _ = store.journal_sync();
                     store.purge_expired(128);
                     maintenance = Instant::now();
                 }

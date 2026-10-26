@@ -1,10 +1,10 @@
 # Thin Docker and Kubernetes delivery
 
-**Experimental, volatile cache—not production Redis compatibility.** Optional
-single-password or multi-user ACL-file authentication exists, but there is no
-native TLS, persistence, replication or graceful signal-driven shutdown. Use
-authentication plus a private/trusted network. Publishing an image does not deploy
-a service.
+**Experimental cache—not production Redis compatibility.** Optional single-password
+or multi-user ACL-file authentication and an opt-in append-only journal exist,
+but there is no native TLS, RDB format, AOF rewrite, replication or graceful
+signal-driven shutdown. Use authentication plus a private/trusted network.
+Publishing an image does not deploy a service.
 
 ## Run it
 
@@ -41,6 +41,23 @@ ACL files require an enabled `default` user and use Redis-style `user ...` lines
 `ACL SAVE` needs a writable directory, so a read-only ACL mount supports loading
 and runtime `ACL SETUSER` but not persisting changes; use a dedicated writable
 volume if runtime ACL edits must survive a restart.
+
+Append-only persistence is off by default. To enable it, give the container a
+writable data directory and a sync policy:
+
+```sh
+docker run --rm --init -p 127.0.0.1:6379:6379 \
+  -v rillcache-data:/data \
+  ghcr.io/macel94/rillcache:latest --appendonly yes --dir /data
+```
+
+`--appendfsync always` acknowledges only after fsync; `everysec` (default) can
+lose roughly a second; `no` only writes without an explicit sync. The root
+filesystem can stay read-only because only `/data` needs to be writable. There is
+no AOF rewrite, so the single journal file grows and must be sized/rotated by the
+operator. Restart recovery ignores only an incomplete tail and fails visibly on
+mid-file corruption. Stream consumer pending state is not restored. See
+[persistence](persistence.md).
 Rotate through authenticated `CONFIG SET requirepass` or by restarting with a new
 secret. TLS is still absent, so terminate TLS before traffic crosses an untrusted
 network and treat the inner connection as plaintext. See [security](security.md).
@@ -75,7 +92,7 @@ benchmark compilation settings. No panic/overflow-check weakening is applied.
 quiet on success (exit 0), and returns nonzero for rejection, bad/truncated replies
 or timeout. Socket waits share one one-second deadline; this is not a hard
 real-time scheduling guarantee. It checks request service, not persistence or
-replication. An overloaded/full client limit can make it fail; leave probe headroom.
+replication, and does not probe the journal. An overloaded/full client limit can make it fail; leave probe headroom.
 Changing the bind/port requires updating probe addresses and port mappings too.
 
 ## Kubernetes
@@ -111,21 +128,25 @@ kubectl patch deployment rillcache --type=json -p='[
 For multi-user ACLs, create the secret from an ACL file and use
 `--aclfile /run/secrets/users.acl` instead. This keeps the root filesystem
 read-only and credentials out of the image and process arguments. It does not add
-TLS, brute-force controls, audit logging or persistence.
+TLS, brute-force controls, audit logging or durable backup guarantees.
 
 Use one replica and `Recreate`: independent replicas do not share data, and a
-Service over several would randomly route keys to unrelated caches. Upgrades and
-restarts lose all data. There is no PVC because mounting a directory does not
-create persistence. Prefer a digest-pinned image for repeatable deployments:
+Service over several would randomly route keys to unrelated caches. With
+`--appendonly yes --dir /data`, an operator-supplied PersistentVolume can preserve
+the journal across container restarts, but the example manifest intentionally has
+no PVC and this subset has no replication, rewrite, backup or failover. Prefer a
+digest-pinned image for repeatable deployments:
 use the `ghcr.io/macel94/rillcache@sha256:...` reference printed by the workflow
 in place of `:latest`. `latest` is a convenience main-build tag, not a stable release.
 
 **Termination:** the current safe-std server has no portable signal-handler API.
 Docker's `--init` / Compose `init: true` forwards termination to the application as
-a normal child; this ends the process but is not a graceful drain. As Kubernetes
+a normal child; this ends the process but is not a graceful drain. With
+`--appendfsync always`, acknowledged records are already synced; with `everysec`
+or `no`, termination can lose the unsynced tail. As Kubernetes
 PID 1 the default SIGTERM may be ignored; the example allows five seconds before
 forced termination. In-flight replies may be lost. This distribution increment
-does not close the graceful-shutdown/durability production gates.
+does not close the graceful-shutdown or full durability production gates.
 
 ## Publication and verification
 

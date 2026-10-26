@@ -97,6 +97,8 @@ impl Store {
             super::internal_error(output);
             return TransactionOutcome::InternalError;
         };
+        let marks = self.journal_marks();
+        let start = output.len();
         let Ok(data) = self.data.read() else {
             super::internal_error(output);
             return TransactionOutcome::InternalError;
@@ -104,6 +106,7 @@ impl Store {
         let changed = watches.changed(&data, self.clock.now_ms().max(0));
         drop(data);
         if changed {
+            output.truncate(start);
             output.extend_from_slice(b"*-1\r\n");
             return TransactionOutcome::Aborted;
         }
@@ -116,6 +119,7 @@ impl Store {
                 break;
             }
         }
+        self.commit_journal(marks, output, start);
         TransactionOutcome::Completed(action)
     }
 }
