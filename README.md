@@ -59,6 +59,11 @@ strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
 not implemented. Memory usage is an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
 [multi-key string limits](docs/multikey-strings.md).
+
+Bounded `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` queue supported data
+commands and execute them under one store-wide gate, with expiry-aware optimistic
+invalidation, RESP2/RESP3 replies and a documented fail-closed version bound. See
+[transactions](docs/transactions.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
 bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
@@ -68,8 +73,8 @@ plus the accept/control thread; idle clients do not occupy an entire worker.
 
 This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata, and
-`SELECT 0`; authentication/ACL, TLS, durable persistence, richer data types,
-transactions, replication, clustering, and real client-library interoperability
+`SELECT 0`; authentication/ACL, TLS, durable persistence, scripts/functions, pub/sub,
+replication, clustering, and real client-library interoperability
 remain production blockers. RESP3 replies are limited to the current command
 subset's strings, integers, errors, arrays and nulls. Multi-key string operations
 are atomic under the store lock; MGET replies are capped at 2 MiB to bound

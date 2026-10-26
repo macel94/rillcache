@@ -9,9 +9,7 @@ impl Store {
             if args.len() > 2 || args.get(1).is_some_and(|arg| !flush_mode(arg)) {
                 out.extend_from_slice(b"-ERR syntax error\r\n");
             } else if let Ok(mut data) = self.data.write() {
-                data.entries.clear();
-                data.expirations.clear();
-                data.payload_bytes = 0;
+                data.flush();
                 out.extend_from_slice(b"+OK\r\n");
             } else {
                 internal_error(out);
