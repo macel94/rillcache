@@ -2,10 +2,12 @@
 
 ## Status and user preference
 
-This document records the user's requested delivery behavior and the recommended
-solution to stale parallel PRs. **The branch-update queue described below is a
-design, not installed automation.** Auto-merge is enabled at repository level,
-but each eligible PR must also have its own auto-merge request.
+This document records the user's requested delivery behavior and the current
+standalone implementation for stale parallel PRs. `scripts/pr-delivery.py` is a
+standard-library-only, read-only-by-default controller with offline mocked tests.
+It is runnable on a trusted host; it is **not installed as a GitHub workflow,
+service, or continuously running controller**. Repository auto-merge is enabled,
+but each eligible PR must also have its own explicit auto-merge request.
 
 Development stays independent: one task, tmux/pi agent, worktree, branch and PR.
 The parent must not collect patches, create a shared integration/audit branch,
@@ -168,10 +170,101 @@ that migration; this documentation does not create an organization or transfer
 anything. GitHub documents organization creation through account settings, and
 names the administrative role Owner, not a separate "primary owner" role.
 
-## Recommended current-repository solution: serialized auto-update lane
+## Implemented standalone controller and operation
 
-Implement a small trusted-default-branch delivery workflow. It updates only the
-next eligible stale PR; it never combines multiple PRs or edits their features.
+**INVEST story (S):** As the repository owner, I can run an optional trusted-host
+controller to refresh one explicitly opted-in stale same-repository main PR,
+verify fresh exact-candidate required checks and wait for protected auto-merge, so
+parallel workers do not manually update/merge each other's branches. It is
+independent of Rust/Cargo and service deployment, negotiates normal GitHub APIs,
+is bounded to one serialized lane, and is testable offline with mocked API state.
+
+EARS acceptance: **When** invoked without `--apply`, it shall perform read-only
+inspection and create no local state. **When** explicitly enqueued, it shall opt
+in only the named eligible PR. **When** applying a stale candidate, it shall
+freeze base/head identities and send `expected_head_sha`; **if** identities or
+consent race, it shall pause without overwriting the branch. **When** exact
+GitHub Actions tests and the strict 20-case Valkey gate pass, it shall retain the
+candidate and wait for protected squash auto-merge; **if** a check fails, ties,
+is invalid, or review is unavailable, it shall preserve an actionable pause and
+never automatically rerun that tuple. **While** one local controller holds the
+lease, another writer shall fail closed.
+
+The standalone controller implements a serialized local lane without changing
+CI/policy workflows. It uses `gh`'s existing authentication and only invokes
+read-only GitHub queries plus the ordinary PR branch-update API, workflow dispatch
+API, and (only with explicit `--enqueue`) `gh pr merge --auto --squash`.
+
+```sh
+# Read-only inventory (default; creates no state files and performs no writes)
+python3 scripts/pr-delivery.py
+
+# Explicit one-transition controller pass (holds a local exclusive lease)
+python3 scripts/pr-delivery.py --apply --once
+
+# Persistent operator-managed polling; each API call and interval is bounded
+python3 scripts/pr-delivery.py --apply --watch --interval 60
+
+# Explicitly opt in exactly one reviewed, non-draft same-repository main PR
+python3 scripts/pr-delivery.py --apply --pr 42 --enqueue
+
+# Offline mocked suite; no GitHub calls or timing workloads
+python3 scripts/test_pr_delivery.py
+```
+
+The default durable state directory is `~/.local/state/rillcache-pr-delivery`;
+state and lease files are mode 0600 in a mode-0700 directory. `--state-dir` may
+relocate it but is rejected if it is inside the worktree. The controller does not
+write logs or credentials; capture stdout/stderr only in an operator-owned file
+outside the repository with restrictive permissions and configure host log
+rotation/retention. State retains candidate identities and failure reasons; do
+not delete failed evidence to re-enable a tuple. One `flock` lease prevents two
+local writers. Run it under a trusted-host supervisor/tmux session if continuous
+operation is desired; restarting the process resumes from local state. No durable
+service/supervisor is installed by this PR.
+
+Each pass validates `gh repo view` against `macel94/rillcache`, selects only
+open, non-draft, same-repository PRs targeting `main` with an explicit existing
+auto-merge request, and pauses when requested reviews or changes-requested
+reviews are outstanding. `--enqueue` is a narrow opt-in for exactly one `--pr`;
+there is no blanket auto-approval. The controller freezes the current base/head,
+checks ancestry, uses the PR update API's `expected_head_sha`, and recovers an
+accepted asynchronous update by rereading identities. It never pushes a branch
+or main. It adopts an exact matching active PR-triggered Actions run where
+available; otherwise it records dispatch intent before dispatching the two
+read-only workflows. It checks workflow path, event, candidate/base identity,
+run ID, check suite, exact SHA and GitHub Actions app before accepting the two
+required context conclusions. Failures are retained by `(PR, base SHA, head SHA)`;
+failed/paused tuples are not re-run. A passed candidate holds the serial lane
+until the ordinary protected squash auto-merge is observed. GitHub protections,
+configured required reviews and auto-merge remain authoritative.
+
+Use of the local `gh` OAuth credentials means the normal PR synchronize event is
+expected; matching active CI is reused rather than redundantly dispatched. The
+fallback `workflow_dispatch` path is used only when no exact matching active PR
+run is observable. If operating this control through `GITHUB_TOKEN`, token event
+suppression/approval behavior must be revalidated; do not assume synchronize
+workflows will run. Explicit dispatches must retain the repository workflows'
+head/base validation. The controller never checks out or executes PR source with
+write credentials; dispatched CI has the existing read-only workflow permissions.
+
+This is implemented code, not a permanent GitHub-hosted delivery lane. The
+controller observes at most one transition per `--once`; `--watch` polls at a
+validated 10–3600 second interval. Each `gh` call is bounded. An asynchronous
+branch update is observed for at most 15 minutes, a dispatched run must appear
+within 3 minutes, and a running workflow is observed for at most one hour. Expired
+or uncertain operations pause without retry. Conflicts, base/head races, revoked
+consent, missing/invalid check evidence and failed/tied gates pause the affected identity with an actionable reason. The owner must inspect
+failed benchmark evidence and make a genuine source fix/investigation; a conflict
+returns to the owning worker for semantic resolution. No merge/retry is attempted
+by the tool. Other failed tuples are skipped so independent PRs can proceed.
+
+## Delivery lane design and boundaries
+
+A future trusted-host service or GitHub-hosted lane may replace the operator-managed
+watch process, but must preserve the same independent PR ownership, checks and
+permissions. The local tool updates only the next eligible stale PR; it never
+combines multiple PRs or edits their features.
 
 1. Reconcile open, non-draft, same-repository PRs targeting main with an explicit
    auto-merge request. Exclude revoked requests, unresolved reviews/design holds,
@@ -242,9 +335,10 @@ failed gates and safe permission/checkout boundaries. Verify live rules and exac
 head checks before calling it operational. Preserve required checks and owner
 review; this documentation does not install a workflow or change GitHub settings.
 
-Until installed, workers still enable their own auto-merge and own their branch
-updates/conflict fixes. Do not claim that auto-merge alone drains a stale queue or
-that an interactive worker remaining alive is a durable repository service.
+Until an operator starts the standalone tool (or separately reviews/deploys
+service automation), workers still own semantic conflict fixes and genuine source
+changes. Auto-merge alone does not drain stale branches, and a tmux session is not
+a durable repository service. Do not claim permanent automation is installed.
 
 ## Sources
 

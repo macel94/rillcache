@@ -33,15 +33,17 @@ auto-merge (or a normal merged state), not merely a PR URL. Genuine external or
 permission blockers must be reported honestly without bypassing safety or actual
 code-owner review. Explicitly requested documentation is a valid separate task.
 
-Remembered stale-PR solution: a delivery-only serialized auto-update lane refreshes
-one eligible PR against current main, obtains fresh exact-candidate tests and all
-20 Valkey wins, then leaves merging to protected auto-merge before advancing.
-Conflicts belong to the original worker; failed candidates pause with evidence.
-Native merge queues are preferred when supported, but the present personal-account
-repository is not eligible. The fallback is a design, not installed automation.
-Read project-root `AGENTS.md` and `docs/parallel-pr-delivery.md` before rollout;
-GitHub-token updates need reliable explicit CI dispatch, identity validation,
-idempotency and an independently reviewed automation PR, not weaker protection.
+Remembered stale-PR solution: `scripts/pr-delivery.py` implements an optional
+standard-library serialized updater with durable private local state and mocked
+offline tests. It refreshes one opted-in stale PR at a time, validates fresh exact-
+candidate required checks, and waits for ordinary protected squash auto-merge
+before advancing. Conflicts belong to the original worker; failed candidates pause
+with evidence. This is usable standalone tooling, not an installed GitHub workflow
+or continuously supervised service. Native merge queues are preferred when
+supported, but the present personal-account repository is not eligible. Read
+project-root `AGENTS.md` and `docs/parallel-pr-delivery.md` for operator usage,
+OAuth/GITHUB_TOKEN event boundaries, identity checks and failure handling; do not
+weaken protection or claim runtime deployment without installing/supervising it.
 The user permits a free organization if genuinely best for this queue solution,
 with macel94 as organization Owner and retaining primary control. No paid plan,
 unnecessary transfer or loss of existing access/protection/delivery is authorized.

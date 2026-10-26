@@ -92,5 +92,7 @@
   wins. Conflicts return to the owning worker; failures pause without retries
   until green, historical-pass reuse or speculative conflict resolution.
 - Read `docs/parallel-pr-delivery.md` for the supported fallback, token/dispatch
-  constraints, idempotency and failure behavior. The lane is a documented design,
-  not deployed automation; implementation needs its own reviewed automation PR.
+  constraints, idempotency and failure behavior. `scripts/pr-delivery.py` is an
+  implemented, optional standard-library controller with offline mocked tests;
+  it is not an installed GitHub workflow/service. Start it on a trusted host
+  explicitly, and preserve the documented local-state and protection boundaries.
