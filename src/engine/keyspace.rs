@@ -634,6 +634,46 @@ mod tests {
     }
 
     #[test]
+    fn copy_clones_set_hash_and_sorted_set_contents_independently() {
+        let store = Store::new(1024);
+        assert_eq!(call(&store, &[b"SADD", b"set", b"one"]), b":1\r\n");
+        assert_eq!(call(&store, &[b"COPY", b"set", b"set-copy"]), b":1\r\n");
+        assert_eq!(call(&store, &[b"SADD", b"set", b"two"]), b":1\r\n");
+        assert_eq!(
+            call(&store, &[b"SMEMBERS", b"set-copy"]),
+            b"*1\r\n$3\r\none\r\n"
+        );
+
+        assert_eq!(
+            call(&store, &[b"HSET", b"hash", b"field", b"before"]),
+            b":1\r\n"
+        );
+        assert_eq!(call(&store, &[b"COPY", b"hash", b"hash-copy"]), b":1\r\n");
+        assert_eq!(
+            call(&store, &[b"HSET", b"hash", b"field", b"after"]),
+            b":0\r\n"
+        );
+        assert_eq!(
+            call(&store, &[b"HGET", b"hash-copy", b"field"]),
+            b"$6\r\nbefore\r\n"
+        );
+
+        assert_eq!(
+            call(&store, &[b"ZADD", b"zset", b"1", b"member"]),
+            b":1\r\n"
+        );
+        assert_eq!(call(&store, &[b"COPY", b"zset", b"zset-copy"]), b":1\r\n");
+        assert_eq!(
+            call(&store, &[b"ZADD", b"zset", b"2", b"member"]),
+            b":0\r\n"
+        );
+        assert_eq!(
+            call(&store, &[b"ZSCORE", b"zset-copy", b"member"]),
+            b"$1\r\n1\r\n"
+        );
+    }
+
+    #[test]
     fn keys_globs_are_binary_safe_and_pathological_inputs_are_bounded() {
         let store = Store::new(128_000);
         for key in [b"alpha".as_slice(), b"alps", b"a?", b"a*", b"a\\"] {
