@@ -1,0 +1,49 @@
+name: Upstream generator performance
+
+# Intentionally separate from PR compatibility and the existing required gate.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-performance-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_BUILD_JOBS: '2'
+  SOURCE_HEAD_SHA: ${{ github.sha }}
+
+jobs:
+  compare:
+    name: Same-runner Redis Valkey Rillcache comparison
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lightweight harness tests
+        run: python3 -m unittest discover -s scripts/upstream -p 'test_*.py' -v
+      - name: Native build, Tcl and resource-accounting prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config tcl curl ca-certificates time util-linux
+      - uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: target/upstream-downloads
+          key: upstream-source-v1-${{ hashFiles('ci/upstream/pins.json') }}
+      - name: Build exact Cargo release target and both pinned native core servers
+        run: python3 scripts/upstream/prepare.py
+      - name: Sequential matched load, warmup and six rotating-order repetitions
+        run: python3 scripts/upstream/performance.py
+      - name: Preserve raw measurements, failures, build logs and environment metadata
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/upstream/evidence/
+          retention-days: 30
+          if-no-files-found: warn
