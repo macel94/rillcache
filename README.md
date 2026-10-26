@@ -56,7 +56,7 @@ TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
 strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
 `INFO` (including process-local connection/command/expiration/pub-sub statistics), and logical `MEMORY USAGE`. `CONFIG SET` supports collection thresholds
-and `requirepass`; script/function execution is not implemented. Memory usage is
+`requirepass` and `maxmemory-policy`; script/function execution is not implemented. Memory usage is
 an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
 [multi-key string limits](docs/multikey-strings.md).
@@ -66,6 +66,10 @@ removal, bounded random selection, set algebra/store commands, score ranges and
 rank/range inspection. Collection writes preserve expiry metadata where Redis
 does, delete empty keys, and stage the complete value before payload admission.
 See [typed collections](docs/collections.md).
+
+`CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL` expose bounded per-connection
+metadata and administrative connection controls; `INFO clients` reports the
+registry size. See [client sessions](docs/client-sessions.md).
 
 Bounded `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` queue supported data
 commands and execute them under one store-wide gate, with expiry-aware optimistic
@@ -98,8 +102,9 @@ Access control starts with a single operator password for the `default` user
 multi-user ACL file (`--aclfile`) with hashed passwords, ordered
 command/category rules, declared-key patterns and atomic `ACL SAVE`/`LOAD`.
 `NOAUTH`/`NOPERM` are checked before store access and apply to live connections.
-ACL selectors, audit logging, brute-force controls, native TLS and channel
-enforcement remain separate security gates; see [security](docs/security.md).
+ACL selectors, audit logging, brute-force controls and native TLS remain separate
+security gates; channel patterns are enforced for pub/sub. See
+[security](docs/security.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
 bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
@@ -109,8 +114,9 @@ plus the accept/control thread; idle clients do not occupy an entire worker.
 
 This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata,
-`SELECT 0` and disconnect-equivalent `RESET`; single-password and multi-user ACL authentication/authorization;
-ACL selectors/audit controls, native TLS, brute-force protection, RDB/AOF-rewrite
+`SELECT 0`, disconnect-equivalent `RESET`, `CLIENT LIST`/`KILL` and honest client
+statistics; single-password and multi-user ACL authentication are implemented.
+ACL selectors/audit controls, native TLS, brute-force protection, RDB/background-AOF
 interoperability, backup/restore drills, scripts/functions, sharded pub/sub,
 keyspace notifications, replication, clustering, and real client-library
 interoperability remain production blockers. RESP3 replies are limited to the current command
@@ -139,7 +145,7 @@ Append options normally, e.g. `--threads 4`, `--requirepass-file
 /run/secrets/rillcache`, `--aclfile /run/secrets/users.acl` or
 `--appendonly yes --dir /data` with a writable volume.
 **Experimental: optional password/ACL-file authentication and opt-in append-only
-persistence; no native TLS, RDB format, compaction or replication.** Keep
+persistence; no native TLS, RDB format, background compaction or replication.** Keep
 authentication and network isolation in place for anything beyond loopback. See [container delivery](docs/containers.md)
 for resource bounds, Kubernetes networking, digest pinning, shutdown limitations
 and GitHub's one-time public-package visibility setting.

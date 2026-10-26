@@ -224,10 +224,12 @@ impl Session {
         if command.eq_ignore_ascii_case(b"HELLO") {
             self.hello(store, &arguments[1..], output);
             self.refresh_pubsub_protocol(store);
+            self.sync_client_metadata(store);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"CLIENT") {
-            self.client(&arguments[1..], output);
+            self.client(store, &arguments[1..], output);
+            self.sync_client_metadata(store);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"SELECT") {
@@ -236,6 +238,7 @@ impl Session {
         }
         if command.eq_ignore_ascii_case(b"AUTH") {
             self.auth(store, &arguments[1..], output);
+            self.sync_client_metadata(store);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"ACL") {
@@ -882,7 +885,19 @@ impl Session {
         }
     }
 
-    fn client(&mut self, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    fn sync_client_metadata(&self, store: &Store) {
+        let user = store.whoami(self.authenticated_user.as_deref());
+        store.update_client_metadata(
+            self.id,
+            self.name.as_deref(),
+            self.library_name.as_deref(),
+            self.library_version.as_deref(),
+            self.protocol == Protocol::Resp3,
+            user.as_deref(),
+        );
+    }
+
+    fn client(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let Some((subcommand, rest)) = arguments.split_first() else {
             output.extend_from_slice(b"-ERR wrong number of arguments for 'client' command\r\n");
             return;
@@ -917,15 +932,192 @@ impl Session {
                 *target = Some(rest[1].to_vec());
                 output.extend_from_slice(b"+OK\r\n");
             }
+        } else if subcommand.eq_ignore_ascii_case(b"LIST") {
+            self.client_list(store, rest, output);
+        } else if subcommand.eq_ignore_ascii_case(b"KILL") {
+            self.client_kill(store, rest, output);
         } else if subcommand.eq_ignore_ascii_case(b"INFO") && rest.is_empty() {
             let mut info = format!("id={} db=0", self.id).into_bytes();
             append_info(&mut info, b"name", self.name.as_deref());
             append_info(&mut info, b"lib-name", self.library_name.as_deref());
             append_info(&mut info, b"lib-ver", self.library_version.as_deref());
+            if let Some(snapshot) = store.client_snapshot(self.id) {
+                append_info(&mut info, b"addr", Some(snapshot.addr.as_bytes()));
+                append_info(
+                    &mut info,
+                    b"resp",
+                    Some(if snapshot.resp3 { b"3" } else { b"2" }),
+                );
+                append_info(&mut info, b"user", Some(&snapshot.user));
+            }
             encode_bulk(Some(&info), output);
         } else {
             output
                 .extend_from_slice(b"-ERR unsupported CLIENT subcommand or invalid arguments\r\n");
+        }
+    }
+
+    fn client_list(&self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        let mut type_filter = None;
+        let mut ids: Option<Vec<u64>> = None;
+        let mut index = 0;
+        while index < arguments.len() {
+            if arguments[index].eq_ignore_ascii_case(b"TYPE") {
+                let Some(value) = arguments.get(index + 1) else {
+                    output.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                };
+                if value.eq_ignore_ascii_case(b"normal") {
+                    type_filter = Some(false);
+                } else if value.eq_ignore_ascii_case(b"pubsub") {
+                    type_filter = Some(true);
+                } else {
+                    output.extend_from_slice(b"-ERR unknown client type\r\n");
+                    return;
+                }
+                index += 2;
+            } else if arguments[index].eq_ignore_ascii_case(b"ID") {
+                let mut parsed = Vec::new();
+                for raw in &arguments[index + 1..] {
+                    let Some(id) = parse_client_id(raw) else {
+                        output.extend_from_slice(b"-ERR invalid client ID\r\n");
+                        return;
+                    };
+                    parsed.push(id);
+                }
+                ids = Some(parsed);
+                index = arguments.len();
+            } else {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        let snapshots = store.client_snapshots(type_filter);
+        let mut text = String::new();
+        for snapshot in snapshots {
+            if ids.as_ref().is_some_and(|ids| !ids.contains(&snapshot.id)) {
+                continue;
+            }
+            let name = snapshot
+                .name
+                .as_deref()
+                .map(String::from_utf8_lossy)
+                .unwrap_or_default();
+            let lib_name = snapshot
+                .library_name
+                .as_deref()
+                .map(String::from_utf8_lossy)
+                .unwrap_or_default();
+            let lib_version = snapshot
+                .library_version
+                .as_deref()
+                .map(String::from_utf8_lossy)
+                .unwrap_or_default();
+            let user = String::from_utf8_lossy(&snapshot.user);
+            let flags = if snapshot.sub + snapshot.psub > 0 {
+                "P"
+            } else {
+                "N"
+            };
+            use std::fmt::Write as _;
+            let _ = writeln!(
+                text,
+                "id={} addr={} name={} age={} flags={} db=0 sub={} psub={} resp={} user={} lib-name={} lib-ver={}",
+                snapshot.id,
+                snapshot.addr,
+                name,
+                snapshot.age_seconds,
+                flags,
+                snapshot.sub,
+                snapshot.psub,
+                if snapshot.resp3 { 3 } else { 2 },
+                user,
+                lib_name,
+                lib_version
+            );
+        }
+        encode_bulk(Some(text.as_bytes()), output);
+    }
+
+    fn client_kill(&self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.is_empty() {
+            arity("client|kill", output);
+            return;
+        }
+        let legacy = arguments.len() == 1;
+        let mut addr_filter: Option<Vec<u8>> = None;
+        let mut id_filter = None;
+        let mut type_filter = None;
+        let mut user_filter: Option<Vec<u8>> = None;
+        if legacy {
+            addr_filter = Some(arguments[0].to_vec());
+        } else {
+            let mut index = 0;
+            while index < arguments.len() {
+                let Some(value) = arguments.get(index + 1) else {
+                    output.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                };
+                if arguments[index].eq_ignore_ascii_case(b"ID") {
+                    let Some(id) = parse_client_id(value) else {
+                        output.extend_from_slice(b"-ERR invalid client ID\r\n");
+                        return;
+                    };
+                    id_filter = Some(id);
+                } else if arguments[index].eq_ignore_ascii_case(b"ADDR") {
+                    addr_filter = Some(value.to_vec());
+                } else if arguments[index].eq_ignore_ascii_case(b"TYPE") {
+                    if value.eq_ignore_ascii_case(b"normal") {
+                        type_filter = Some(false);
+                    } else if value.eq_ignore_ascii_case(b"pubsub") {
+                        type_filter = Some(true);
+                    } else {
+                        output.extend_from_slice(b"-ERR unknown client type\r\n");
+                        return;
+                    }
+                } else if arguments[index].eq_ignore_ascii_case(b"USER") {
+                    user_filter = Some(value.to_vec());
+                } else if arguments[index].eq_ignore_ascii_case(b"SKIPME") {
+                    if !value.eq_ignore_ascii_case(b"yes") {
+                        output
+                            .extend_from_slice(b"-ERR CLIENT KILL SKIPME no is not supported\r\n");
+                        return;
+                    }
+                } else {
+                    output.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
+                index += 2;
+            }
+        }
+        let mut ids = Vec::new();
+        for snapshot in store.client_snapshots(type_filter) {
+            if id_filter.is_some_and(|id| snapshot.id != id) {
+                continue;
+            }
+            if addr_filter
+                .as_deref()
+                .is_some_and(|addr| snapshot.addr.as_bytes() != addr)
+            {
+                continue;
+            }
+            if user_filter
+                .as_deref()
+                .is_some_and(|user| snapshot.user.as_slice() != user)
+            {
+                continue;
+            }
+            ids.push(snapshot.id);
+        }
+        let killed = store.client_kill_ids(&ids, self.id);
+        if legacy {
+            if killed == 0 {
+                output.extend_from_slice(b"-ERR No such client\r\n");
+            } else {
+                output.extend_from_slice(b"+OK\r\n");
+            }
+        } else {
+            let _ = write!(output, ":{killed}\r\n");
         }
     }
 
@@ -946,6 +1138,7 @@ impl Session {
         }
         self.protocol = Protocol::Resp2;
         self.authenticated_user = None;
+        self.sync_client_metadata(store);
         output.extend_from_slice(b"+RESET\r\n");
         Action::Continue
     }
@@ -1028,6 +1221,13 @@ fn acl_error(error: AclError, output: &mut Vec<u8>) {
         }
         AclError::Io(_) => output.extend_from_slice(b"-ERR ACL file I/O error\r\n"),
     }
+}
+
+fn parse_client_id(raw: &[u8]) -> Option<u64> {
+    if raw.is_empty() || !raw.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(raw).ok()?.parse().ok()
 }
 
 fn command_name(command: &[u8]) -> String {

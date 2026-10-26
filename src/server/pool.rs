@@ -308,7 +308,9 @@ pub(super) fn serve(
                                     index += 1;
                                 }
                                 _ => {
-                                    store.pubsub_remove_client(clients[index].session.id());
+                                    let id = clients[index].session.id();
+                                    store.pubsub_remove_client(id);
+                                    store.unregister_client(id);
                                     clients.swap_remove(index);
                                 }
                             }
@@ -345,7 +347,7 @@ pub(super) fn serve(
                 }
                 return Err(io::Error::other("I/O worker exited unexpectedly"));
             }
-            let (mut stream, _) = match listener.accept() {
+            let (mut stream, peer) = match listener.accept() {
                 Ok(connection) => connection,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(1));
@@ -364,9 +366,11 @@ pub(super) fn serve(
                 continue;
             }
             stream.set_nonblocking(true)?;
+            let control = stream.try_clone()?;
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
             session.set_pubsub_sender(sender);
+            store.register_client(session.id(), peer, control);
             let client = Client {
                 stream,
                 session,

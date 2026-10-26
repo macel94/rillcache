@@ -90,8 +90,10 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
   Channel patterns gate PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE, but
   sharded pub/sub and keyspace notifications do not exist. `PUBSUB` introspection
   is category-governed rather than channel-pattern-filtered, so it can reveal channel
-  names to a user allowed to run `@pubsub`. Key patterns apply only to commands with
-  declared key positions:
+  names to a user allowed to run `@pubsub`. `CLIENT LIST`/`KILL` reveal connection
+  addresses/names/users and terminate sessions; grant the CLIENT command only to
+  trusted administrators. Key patterns apply only to commands with declared key
+  positions:
   `KEYS`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB/FLUSHALL`, `XREADGROUP` and similar
   commands are not a per-key sandbox. Do not grant them to tenants who must not
   see or clear the whole keyspace.

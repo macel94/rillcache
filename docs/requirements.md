@@ -64,6 +64,7 @@ reason to couple all future commands into a single large story.
 | S34 | As an operator, I can inspect honest connection, command, expiration and pub/sub counters and reset them, without fabricated Redis fields. | XS | R134–R136; counter scope, reset, rejection, expiry and all-mode wire tests |
 | S35 | As a queue user, I can wait for an element to arrive on one of several lists instead of polling, without blocking a worker lane or holding the store lock. | S | R137–R140; push wakeup, timeout, order, journal, idle and all-mode wire tests |
 | S36 | As a cache operator, I can choose a bounded eviction policy so that writes keep succeeding within a payload budget instead of always returning OOM. | S | R141–R144; policy, volatile, TTL/LRU, journal, stats and all-mode wire tests |
+| S37 | As an operator, I can list live connections with honest metadata and kill selected clients by ID/address/type/user so that stuck or abusive sessions can be managed. | XS | R145–R148; list metadata/filters, kill variants, self-protection and all-mode wire tests |
 | S37 | As a cache user, I can mutate, count, remove and range over hashes, lists, sets and sorted sets so that typed collections are usable beyond creation and basic reads. | S | R145–R148; binary/count/order/TTL/OOM/WRONGTYPE, multi-key set atomicity and all-mode wire tests |
 
 ## EARS acceptance requirements
@@ -400,6 +401,27 @@ reason to couple all future commands into a single large story.
   score bounds, rank/score removal and bounded pops, and reject invalid or NaN
   scores without mutating state. Successful single-key mutations shall preserve
   TTL and delete the key when its last member is removed.
+
+### Client registry and administrative kill (S37)
+
+- **R145 (event-driven):** When a connection is accepted, the server shall register
+  its ID, peer address, creation time and control handle; it shall update name,
+  library, protocol and authenticated user after CLIENT/HELLO/AUTH/RESET and remove
+  the record on close. The registry shall be bounded by `max_clients` and process-local.
+- **R146 (event-driven):** When `CLIENT LIST [TYPE normal|pubsub] [ID id ...]` is
+  received, the server shall return newline-delimited records for matching
+  connections with ID, address, name, age, N/P flags, db, live channel/pattern
+  counts, RESP mode, user and library metadata, omitting fields it does not measure.
+- **R147 (event-driven):** When `CLIENT KILL` receives intersecting `ID`, `ADDR`,
+  `TYPE normal|pubsub`, `USER` and `SKIPME yes` filters, the server shall shut down
+  matching non-caller sockets and return the count; the legacy address form shall
+  return `+OK`/`No such client`. The caller shall always be skipped, and `SKIPME no`
+  shall return an explicit unsupported error.
+- **R148 (ubiquitous):** `INFO clients` shall report the current registry size with
+  no fabricated cluster/blocked counts. All-mode tests shall cover metadata,
+  RESP3/pubsub visibility, ID/TYPE filters, self protection, ID/address/legacy kills,
+  socket closure, registry removal and permission gating. Documentation shall retain
+  the missing fd/idle/command/buffer/memory/network fields and cross-process view.
 
 ### Development and delivery
 

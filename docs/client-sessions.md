@@ -18,13 +18,31 @@ clear the name. `CLIENT INFO` exposes the retained ID, database zero, and set
 metadata; it is intentionally a small subset of Redis's connection statistics.
 
 Supported connection commands are `CLIENT ID`, `CLIENT SETNAME`, `CLIENT
-GETNAME`, `CLIENT SETINFO LIB-NAME|LIB-VER`, `CLIENT INFO`, `SELECT 0` and
-`RESET`.
+GETNAME`, `CLIENT SETINFO LIB-NAME|LIB-VER`, `CLIENT INFO`, `CLIENT LIST`,
+`CLIENT KILL`, `SELECT 0` and `RESET`.
 Other database indices are rejected and never alias database zero. `AUTH` and
 `HELLO ... AUTH ...` authenticate either the `default` user or an ACL user when
 credentials are configured. `ACL WHOAMI`, `ACL GETUSER` and the other supported
 ACL subcommands expose and enforce the current policy. See
 [security](security.md) for the actual boundary and remaining gaps.
+
+`CLIENT LIST [TYPE normal|pubsub] [ID id ...]` returns one newline-delimited
+key=value record per registered connection with `id`, `addr`, `name`, `age`,
+`flags` (N/P), `db=0`, live `sub`/`psub` counts, negotiated `resp`, `user`,
+`lib-name` and `lib-ver`. It intentionally omits fields this server does not
+measure (fd, idle, command, buffers, memory, redirection, network totals) rather
+than inventing values. `CLIENT KILL` uses filters intersecting with each other:
+`ID <id>`, `ADDR <ip:port>`, `TYPE normal|pubsub` and `USER <name>`, with
+`SKIPME yes` only (default); `SKIPME no` returns an explicit unsupported error.
+The legacy single-address form returns `+OK`/`No such client`, while filtered
+forms return the killed count. The calling connection is always skipped, and a
+killed socket is shut down immediately. `INFO clients` reports
+`connected_clients` and `cluster_connections:0`.
+
+`CLIENT LIST`/`KILL` expose addresses, names, users and live connections; they
+require the normal `CLIENT` command permission and are only appropriate for trusted
+administrators. The registry is process-local, bounded by `max_clients`, and does
+not survive restart.
 
 `RESET` implements a disconnect-equivalent server-side reset: it discards an
 active `MULTI`, clears `WATCH`, unsubscribes channel/pattern subscriptions, returns
