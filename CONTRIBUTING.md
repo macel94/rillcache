@@ -4,6 +4,17 @@ Start with the [README](README.md), [requirements](docs/requirements.md) and
 [benchmark methodology](docs/benchmarks.md). All project code must be AI-generated;
 human product direction, review and test-based validation remain required.
 
+## PR-only main and required quality gates
+
+Never commit on or push directly to `main`, including documentation and generated
+reports. Work on a branch and open a PR. Merge only after **Tests and offline CI**
+and **Valkey performance gate** pass on an up-to-date head: all 20 scoped median
+throughputs must strictly exceed Valkey. Ties, slower cases and invalid/incomplete
+evidence block merging. No administrator/bot bypass, fastest-sample selection or
+threshold relaxation. CI/policy files additionally require code-owner review;
+ordinary implementation PRs have no blanket approving-review quota. See the
+[enforced policy, exact benchmark scope and automation](docs/pr-quality-gate.md).
+
 ## Small, verifiable changes
 
 1. Write an independently useful, negotiable, valuable, estimable, small and
@@ -16,8 +27,10 @@ human product direction, review and test-based validation remain required.
 4. Run `make test` during iteration, then `make ci` before requesting review.
    `make fmt` applies formatting. All Cargo checks/builds use the pinned toolchain,
    lockfile and offline mode. Zero external dependencies applies to every target.
-5. Capture the relevant `make bench`/`make compare` evidence. Do not introduce
-   shared-runner timing assertions or trade away safety for benchmark numbers.
+5. Capture the relevant `make bench`/`make compare` evidence. The separate mandatory
+   PR gate applies a scoped shared-runner throughput threshold, not a stable-hardware
+   SLO or universal win. Preserve uncertainty, CPU/tails and losses; never trade
+   away safety or change the acceptance threshold to obtain a passing result.
 6. Update compatibility limits and mark only behavior actually verified by tests.
 
 ## Safety is not negotiable
@@ -45,8 +58,9 @@ GHCR using only its workflow token. Only its trusted publisher gets `packages: w
 fresh unprivileged jobs must prove anonymous pull/run. Docker/Kubernetes examples
 and the one-time GitHub public-visibility setting are in [container delivery](docs/containers.md).
 `make container` / `make container-smoke` are optional: container tooling and network
-access remain outside the offline fast path. Heavier reference builds/comparisons
-run manually/weekly.
+access remain outside the offline fast path. Full Redis/Valkey/Copilot comparisons
+run manually/weekly; a separate native Valkey comparison is mandatory on every PR,
+including docs/report-only changes.
 
 When updating Rust or GitHub Actions, verify official upstream releases and update
 pins deliberately. Actions are pinned by commit SHA. Normal CI, benchmarking and
@@ -54,8 +68,10 @@ inference jobs use read-only repository permissions and do not persist checkout
 credentials. The inference job additionally grants `copilot-requests: write` to
 its short-lived workflow token; no personal secret is required.
 Only the separate default-branch benchmark-report publication job has contents
-write permission and persisted credentials; it stages generated report paths only
-and never runs inference. Fork PRs never receive a privileged
+write permission and persisted credentials; it stages generated report paths only,
+pushes an automation branch and opens a PR, never pushes main or runs inference.
+Its narrowly scoped pull-request/action permissions create that PR and dispatch
+the two read-only required checks on its head; no new stored token is needed. Fork PRs never receive a privileged
 `pull_request_target` execution path. See [automatic reporting](docs/benchmark-reports.md).
 Do not commit credentials, benchmark build sources, generated target output or
 private environment files.

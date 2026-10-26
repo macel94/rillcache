@@ -1,0 +1,148 @@
+name: PR Valkey quality gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Open main PR whose current head is this dispatch ref
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-valkey-${{ github.event.pull_request.number || inputs.pull_request }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Valkey performance gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate the exact open PR and freeze its base and head identities
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          number = os.environ['PR_NUMBER']
+          assert re.fullmatch(r'[1-9][0-9]*', number), 'invalid PR number'
+          repo = os.environ['GITHUB_REPOSITORY']
+          pr = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/pulls/{number}']))
+          assert pr['state'] == 'open' and pr['base']['ref'] == 'main', 'not an open main PR'
+          assert pr['base']['repo']['full_name'] == repo, 'wrong base repository'
+          if os.environ['GITHUB_EVENT_NAME'] == 'pull_request':
+              event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())['pull_request']
+              assert event['head']['sha'] == pr['head']['sha'], 'superseded PR head'
+              assert event['base']['sha'] == pr['base']['sha'], 'base advanced; update the PR'
+              assert os.environ['GITHUB_REF'] == f'refs/pull/{number}/merge', 'not the tested merge ref'
+          else:
+              assert pr['head']['repo']['full_name'] == repo, 'dispatch requires an in-repository branch'
+              assert pr['head']['sha'] == os.environ['GITHUB_SHA'], 'dispatch is not the current PR head'
+              assert os.environ['GITHUB_REF'] == 'refs/heads/' + pr['head']['ref'], 'wrong dispatch branch'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              for key, value in [('base', pr['base']['sha']), ('head', pr['head']['sha'])]:
+                  assert re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source identity'
+                  out.write(f'{key}={value}\n')
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.context.outputs.base }}
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the checked source to contain the exact current base
+        env:
+          BASE_SOURCE: ${{ steps.context.outputs.base }}
+        run: git -C candidate merge-base --is-ancestor "$BASE_SOURCE" HEAD
+      - name: Select the protected base harness, with one explicit installation bootstrap
+        id: harness
+        env:
+          BASE_SOURCE: ${{ steps.context.outputs.base }}
+        run: |
+          harness="$GITHUB_WORKSPACE/base/scripts/pr-performance-gate.py"
+          if [[ ! -f "$harness" ]]; then
+            # Only the installing PR against this exact pre-policy commit may bootstrap.
+            [[ "$BASE_SOURCE" == 19f61b011cd6bc637f49d587ce3ccb8a093216ee ]]
+            harness="$GITHUB_WORKSPACE/candidate/scripts/pr-performance-gate.py"
+          fi
+          echo "path=$harness" >> "$GITHUB_OUTPUT"
+          python3 "$harness" --self-test
+          python3 "$GITHUB_WORKSPACE/candidate/scripts/pr-performance-gate.py" --self-test
+          python3 "$GITHUB_WORKSPACE/candidate/scripts/test-pr-policy.py"
+      - name: Check candidate behavior in every execution mode before timing
+        working-directory: candidate
+        run: make check
+      - name: Build the frozen base client and checksum-pinned Valkey once
+        id: tools
+        working-directory: base
+        run: |
+          mkdir -p "$RUNNER_TEMP/valkey-gate-tools"
+          rustc -vV > "$RUNNER_TEMP/valkey-gate-tools/compiler.txt"
+          toolchain=$(rustup show active-toolchain | awk '{print $1}')
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          cargo build --locked --offline --release --bin rillcache-bench
+          cp target/release/rillcache-bench "$RUNNER_TEMP/valkey-gate-tools/client"
+          version=$(awk '$1 == "VALKEY_VERSION" {print $3}' benchmarks/targets.mk)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          make "$PWD/target/competitors/valkey-$version/src/valkey-server"
+          cp "target/competitors/valkey-$version/src/valkey-server" "$RUNNER_TEMP/valkey-gate-tools/valkey"
+          cp benchmarks/targets.mk "$RUNNER_TEMP/valkey-gate-tools/reference-pins.mk"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build the candidate normally with the same pinned compiler
+        working-directory: candidate
+        env:
+          TOOLCHAIN: ${{ steps.tools.outputs.toolchain }}
+        run: |
+          cargo "+$TOOLCHAIN" build --locked --offline --release --bin rillcache
+          cp target/release/rillcache "$RUNNER_TEMP/valkey-gate-tools/candidate"
+      - name: Measure all twenty conditions with alternating owned server processes
+        env:
+          HARNESS: ${{ steps.harness.outputs.path }}
+          BASE_SOURCE: ${{ steps.context.outputs.base }}
+          HEAD_SOURCE: ${{ steps.context.outputs.head }}
+          VALKEY_VERSION: ${{ steps.tools.outputs.version }}
+        run: |
+          mkdir -p evidence
+          { uname -a; lscpu; cat "$RUNNER_TEMP/valkey-gate-tools/compiler.txt"; } > evidence/environment.txt
+          cp "$RUNNER_TEMP/valkey-gate-tools/reference-pins.mk" evidence/reference-pins.mk
+          python3 "$HARNESS" \
+            --candidate "$RUNNER_TEMP/valkey-gate-tools/candidate" \
+            --valkey "$RUNNER_TEMP/valkey-gate-tools/valkey" \
+            --client "$RUNNER_TEMP/valkey-gate-tools/client" \
+            --base-source "$BASE_SOURCE" --candidate-source "$GITHUB_SHA" --head-source "$HEAD_SOURCE" \
+            --valkey-version "$VALKEY_VERSION" --out evidence/gate
+      - name: Require strictly faster median throughput in every condition
+        env:
+          HARNESS: ${{ steps.harness.outputs.path }}
+        run: python3 "$HARNESS" --check evidence/gate
+      - name: Show all wins, losses, spreads, CPU and whole-batch tails
+        if: always()
+        run: |
+          if [[ -f evidence/gate/summary.md ]]; then
+            tee -a "$GITHUB_STEP_SUMMARY" < evidence/gate/summary.md
+          else
+            printf 'Valkey gate failed before a complete valid cohort was available. No performance pass.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Preserve raw measurements even when the required gate fails
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-valkey-${{ github.event.pull_request.number || inputs.pull_request }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 30

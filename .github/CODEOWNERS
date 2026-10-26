@@ -1,0 +1,15 @@
+# Gate/policy changes require owner review. Ordinary implementation PRs still
+# require the test and performance checks, without a blanket approval quota.
+/.github/CODEOWNERS @macel94
+/.github/main-ruleset.json @macel94
+/.github/workflows/ @macel94
+/scripts/pr-performance-gate.py @macel94
+/scripts/compare-builds.py @macel94
+/scripts/publish-report-pr.sh @macel94
+/scripts/test-pr-policy.py @macel94
+/src/bin/rillcache-bench.rs @macel94
+/src/bin/support/profile.rs @macel94
+/benchmarks/targets.mk @macel94
+/Makefile @macel94
+/Cargo.toml @macel94
+/rust-toolchain.toml @macel94

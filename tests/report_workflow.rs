@@ -42,7 +42,14 @@ fn report_workflow_keeps_inference_separate_from_repository_write_access() {
     assert!(publish.contains(
         "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
     ));
-    assert!(publish.contains("git add -- benchmarks/README.md benchmarks/reports"));
+    assert!(publish.contains("pull-requests: write"));
+    assert!(publish.contains("actions: write"));
+    assert!(publish.contains("bash scripts/publish-report-pr.sh"));
+    let publication = include_str!("../scripts/publish-report-pr.sh");
+    assert!(publication.contains("git add -- benchmarks/README.md benchmarks/reports"));
+    assert!(publication.contains("gh pr create"));
+    assert!(publication.contains("HEAD:refs/heads/$branch"));
+    assert!(!publication.contains("HEAD:$DEFAULT_BRANCH"));
     assert!(publish.contains("artifact-ids: ${{ needs.review.outputs.artifact-id }}"));
     assert!(!publish.contains("COPILOT_GITHUB_TOKEN"));
     assert!(!publish.contains("copilot-requests:"));
