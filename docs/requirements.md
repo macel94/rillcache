@@ -453,9 +453,10 @@ reason to couple all future commands into a single large story.
 
 ## Compatibility boundary (v0.1)
 
-Supported: RESP2 nonempty arrays of non-null bulk strings, case-insensitive ASCII
-command names, binary keys/values, multiple connections and ordered pipelines;
-`PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
+Supported: RESP2 nonempty arrays of non-null bulk strings and Redis-style inline
+commands with whitespace, quotes and escapes, case-insensitive ASCII command names,
+binary keys/values (including escaped inline `\xHH` bytes), multiple connections
+and ordered mixed-protocol pipelines; `PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
 `EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
 INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX; APPEND/STRLEN/GETRANGE/SETRANGE. See
@@ -474,18 +475,21 @@ converted by frame boundaries, preserving binary payloads. See
 [client sessions](client-sessions.md) for limits and response details. Real
 redis-cli/library handshake interoperability is not yet verified.
 
-Deliberately not supported: inline/telnet commands, empty/null request arrays,
-other RESP3 types and pushes, digest/value-match SET conditions, other data
-types, nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication,
+Deliberately not supported: empty/null request arrays, other RESP3 types and
+pushes, digest/value-match SET conditions, other data types, nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication,
 clustering, transactions, pub/sub and streams. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-
 option errors omit arbitrary input bytes rather than reflecting them into RESP
-error frames. Limits are deliberately smaller than Redis defaults.
+error frames. Conservative defaults remain smaller than Redis limits.
 
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload and a 2 MiB
-maximum MGET RESP reply. Over-limit replies return `ERR MGET reply limit exceeded`
+maximum MGET RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
+request bounds up to 512 MiB (bulk must fit within frame); larger requests remain
+finite and grow buffers only as bytes arrive. Compatibility-only upstream runs
+match native and candidate at 8 MiB bulk and 16 MiB frame; MGET remains capped at
+2 MiB. Over-limit replies return `ERR MGET reply limit exceeded`
 without a partial array. Payload accounting excludes map capacity, allocator and
 connection/thread buffers.
 The CLI uses loopback by default. Do not expose it to untrusted clients.

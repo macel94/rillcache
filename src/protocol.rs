@@ -1,4 +1,4 @@
-//! Bounded, binary-safe RESP2 command parsing. No payload is interpreted as UTF-8.
+//! Bounded, binary-safe RESP2 and Redis inline request dispatch. No payload is interpreted as UTF-8.
 
 use std::fmt;
 
@@ -35,6 +35,7 @@ pub enum ProtocolError {
     TooManyArguments,
     BulkTooLarge,
     FrameTooLarge,
+    InvalidInlineCommand,
 }
 
 impl fmt::Display for ProtocolError {
@@ -48,16 +49,18 @@ impl fmt::Display for ProtocolError {
             Self::TooManyArguments => "too many arguments",
             Self::BulkTooLarge => "bulk string limit exceeded",
             Self::FrameTooLarge => "request frame limit exceeded",
+            Self::InvalidInlineCommand => "invalid inline command",
         })
     }
 }
 
 impl std::error::Error for ProtocolError {}
 
-/// Parse one command, borrowing its arguments from `input`.
+/// Parse one RESP array command, borrowing its arguments from `input`.
 ///
 /// `Ok(None)` means more bytes are needed. `consumed` excludes subsequent
 /// pipelined commands. Advertised lengths are checked before allocating payloads.
+/// Inline lines are handled by [`dispatch_request`], because unescaping may own bytes.
 pub fn parse_request(input: &[u8], limits: Limits) -> Result<Option<Request<'_>>, ProtocolError> {
     decode::<Vec<&[u8]>, _>(input, limits, |arguments, consumed| Request {
         arguments,
@@ -66,17 +69,148 @@ pub fn parse_request(input: &[u8], limits: Limits) -> Result<Option<Request<'_>>
 }
 
 /// Invoke `execute` exactly once for a complete valid command, never for a
-/// partial/error frame. Common commands borrow up to eight stack-held argument
-/// references; larger commands use a bounded-growing vector. Payloads are borrowed.
-/// The callback cannot retain a reference to the temporary argument container.
+/// partial/error frame. RESP commands borrow up to eight stack-held argument
+/// references; larger RESP commands use a bounded-growing vector. Inline command
+/// tokens are owned only while the callback runs. The callback cannot retain a
+/// reference to the temporary argument container.
 pub fn dispatch_request<'a, T>(
     input: &'a [u8],
     limits: Limits,
-    execute: impl FnOnce(&[&'a [u8]]) -> T,
+    execute: impl FnOnce(&[&[u8]]) -> T,
 ) -> Result<Option<(T, usize)>, ProtocolError> {
+    if input.first().is_some_and(|&byte| byte != b'*') {
+        let Some((owned, consumed)) = parse_inline(input, limits)? else {
+            return Ok(None);
+        };
+        let arguments: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
+        return Ok(Some((execute(&arguments), consumed)));
+    }
     decode::<StackArguments<'a>, _>(input, limits, |arguments, consumed| {
         (execute(arguments.as_slice()), consumed)
     })
+}
+
+/// Parse a single inline command line using Redis's quote and escape rules.
+/// The returned arguments own decoded escape bytes; raw RESP remains borrowed.
+fn parse_inline(
+    input: &[u8],
+    limits: Limits,
+) -> Result<Option<(Vec<Vec<u8>>, usize)>, ProtocolError> {
+    let Some(newline) = input.iter().position(|&byte| byte == b'\n') else {
+        return if input.len() >= limits.max_frame_bytes {
+            Err(ProtocolError::FrameTooLarge)
+        } else {
+            Ok(None)
+        };
+    };
+    let consumed = newline + 1;
+    if consumed > limits.max_frame_bytes {
+        return Err(ProtocolError::FrameTooLarge);
+    }
+    let end = if newline > 0 && input[newline - 1] == b'\r' {
+        newline - 1
+    } else {
+        newline
+    };
+    let line = &input[..end];
+    let mut arguments = Vec::new();
+    let mut index = 0;
+    while index < line.len() {
+        while index < line.len() && line[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index == line.len() {
+            break;
+        }
+        if arguments.len() == limits.max_arguments {
+            return Err(ProtocolError::TooManyArguments);
+        }
+        let mut token = Vec::new();
+        let quote = match line[index] {
+            b'"' => Some(b'"'),
+            b'\'' => Some(b'\''),
+            _ => None,
+        };
+        if let Some(quote) = quote {
+            index += 1;
+            let mut closed = false;
+            while index < line.len() {
+                let byte = line[index];
+                if byte == quote {
+                    index += 1;
+                    closed = true;
+                    if index < line.len() && !line[index].is_ascii_whitespace() {
+                        return Err(ProtocolError::InvalidInlineCommand);
+                    }
+                    break;
+                }
+                if byte == b'\\' && index + 1 < line.len() {
+                    let next = line[index + 1];
+                    if quote == b'"'
+                        && next == b'x'
+                        && index + 3 < line.len()
+                        && hex(line[index + 2]).is_some()
+                        && hex(line[index + 3]).is_some()
+                    {
+                        token.push(
+                            (hex(line[index + 2]).unwrap() << 4) | hex(line[index + 3]).unwrap(),
+                        );
+                        if token.len() > limits.max_bulk_bytes {
+                            return Err(ProtocolError::BulkTooLarge);
+                        }
+                        index += 4;
+                        continue;
+                    }
+                    if quote == b'"' || next == b'\'' {
+                        token.push(if quote == b'"' {
+                            match next {
+                                b'n' => b'\n',
+                                b'r' => b'\r',
+                                b't' => b'\t',
+                                b'b' => 8,
+                                b'a' => 7,
+                                other => other,
+                            }
+                        } else {
+                            next
+                        });
+                        if token.len() > limits.max_bulk_bytes {
+                            return Err(ProtocolError::BulkTooLarge);
+                        }
+                        index += 2;
+                        continue;
+                    }
+                }
+                token.push(byte);
+                index += 1;
+                if token.len() > limits.max_bulk_bytes {
+                    return Err(ProtocolError::BulkTooLarge);
+                }
+            }
+            if !closed {
+                return Err(ProtocolError::InvalidInlineCommand);
+            }
+        } else {
+            while index < line.len() && !line[index].is_ascii_whitespace() {
+                token.push(line[index]);
+                index += 1;
+                if token.len() > limits.max_bulk_bytes {
+                    return Err(ProtocolError::BulkTooLarge);
+                }
+            }
+        }
+        arguments.push(token);
+    }
+    Ok(Some((arguments, consumed)))
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 // Both APIs share one validator. The owned API returns its vector directly.
@@ -282,6 +416,101 @@ fn encode_length(prefix: u8, mut value: usize, output: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_commands_decode_redis_quotes_escapes_and_binary_bytes() {
+        let mut wire = br#"  SET key "space\n\x00\xff" 'it\'s' raw"#.to_vec();
+        wire.extend_from_slice(b"\r\n");
+        let mut calls = 0;
+        let parsed = dispatch_request(&wire, Limits::default(), |arguments| {
+            calls += 1;
+            assert_eq!(
+                arguments,
+                [b"SET".as_slice(), b"key", b"space\n\0\xff", b"it's", b"raw"]
+            );
+        })
+        .unwrap();
+        assert_eq!(parsed, Some(((), wire.len())));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn inline_fragmentation_pipeline_boundaries_and_blank_lines() {
+        let wire = b"\r\nPING\n*1\r\n$4\r\nPING\r\n";
+        let mut offset = 0;
+        let mut requests = Vec::new();
+        loop {
+            match dispatch_request(&wire[offset..], Limits::default(), |args| {
+                args.iter().map(|arg| arg.to_vec()).collect::<Vec<_>>()
+            })
+            .unwrap()
+            {
+                Some((args, consumed)) => {
+                    requests.push(args);
+                    offset += consumed;
+                    if offset == wire.len() {
+                        break;
+                    }
+                }
+                None => panic!("complete pipelined command was incomplete"),
+            }
+        }
+        assert_eq!(
+            requests,
+            [vec![], vec![b"PING".to_vec()], vec![b"PING".to_vec()]]
+        );
+        let fragmented = b"SET key value\r\n";
+        for split in 0..fragmented.len() {
+            assert_eq!(
+                dispatch_request(&fragmented[..split], Limits::default(), |_| panic!(
+                    "fragment executed"
+                ))
+                .unwrap(),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_or_oversized_inline_input_is_rejected_within_limits() {
+        for line in [
+            b"SET \"open\r\n".as_slice(),
+            b"SET \"closed\"suffix\r\n",
+            b"SET 'open\r\n",
+        ] {
+            assert_eq!(
+                dispatch_request(line, Limits::default(), |_| panic!(
+                    "invalid inline executed"
+                )),
+                Err(ProtocolError::InvalidInlineCommand)
+            );
+        }
+        let limits = Limits {
+            max_frame_bytes: 8,
+            max_bulk_bytes: 3,
+            max_arguments: 2,
+        };
+        assert_eq!(
+            dispatch_request(b"PINGPING", limits, |_| panic!("oversize executed")),
+            Err(ProtocolError::FrameTooLarge)
+        );
+        let line_limits = Limits {
+            max_frame_bytes: 64,
+            ..limits
+        };
+        assert_eq!(
+            dispatch_request(b"SET key value\n", line_limits, |_| panic!(
+                "oversize token executed"
+            )),
+            Err(ProtocolError::BulkTooLarge)
+        );
+        assert_eq!(
+            dispatch_request(b"A B C\n", line_limits, |_| panic!(
+                "too many args executed"
+            )),
+            Err(ProtocolError::TooManyArguments)
+        );
+    }
 
     #[test]
     fn every_fragment_of_a_binary_command_is_incomplete_until_the_end() {
