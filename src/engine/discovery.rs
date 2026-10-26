@@ -161,6 +161,14 @@ const COMMANDS: &[Command] = &[
     cmd("randomkey", 1, &["readonly"], 0, 0, 0),
     cmd("rename", 3, &["write"], 1, 2, 1),
     cmd("renamenx", 3, &["write", "fast"], 1, 2, 1),
+    cmd(
+        "reset",
+        1,
+        &["noscript", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
     cmd("rpop", -2, &["write", "fast"], 1, 1, 1),
     cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("sadd", -3, &["write", "denyoom", "fast"], 1, 1, 1),
@@ -337,7 +345,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         "hget" | "hgetall" | "hlen" | "hscan" | "hset" => "hash",
         "zadd" | "zcard" | "zrange" | "zscan" | "zscore" => "zset",
         "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xreadgroup" => "stream",
-        "auth" | "client" | "hello" | "quit" | "select" => "connection",
+        "auth" | "client" | "hello" | "quit" | "reset" | "select" => "connection",
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "subscribe" | "unsubscribe" => {
             "pubsub"

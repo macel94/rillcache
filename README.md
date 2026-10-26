@@ -96,8 +96,8 @@ It is already multithreaded by default (one managed worker per client). Optional
 plus the accept/control thread; idle clients do not occupy an entire worker.
 
 This is **not yet** a drop-in Redis replacement or a production service. It
-supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata, and
-`SELECT 0`; single-password and multi-user ACL authentication/authorization;
+supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata,
+`SELECT 0` and disconnect-equivalent `RESET`; single-password and multi-user ACL authentication/authorization;
 ACL selectors/audit controls, native TLS, brute-force protection, RDB/AOF-rewrite
 interoperability, backup/restore drills, scripts/functions, sharded pub/sub,
 keyspace notifications, replication, clustering, and real client-library

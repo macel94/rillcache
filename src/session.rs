@@ -76,6 +76,9 @@ impl Session {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
+        if command.eq_ignore_ascii_case(b"RESET") {
+            return self.reset(store, arguments, output);
+        }
         if !is_auth_exempt(command) {
             let authentication_required = store.authentication_required();
             if authentication_required && self.authenticated_user.is_none() {
@@ -839,6 +842,26 @@ impl Session {
         }
     }
 
+    /// Disconnect-equivalent server-side context reset (Redis RESET).
+    fn reset(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        if arguments.len() != 1 {
+            arity("reset", output);
+            return Action::Continue;
+        }
+        self.multi = None;
+        self.watched = WatchState::default();
+        for channel in std::mem::take(&mut self.pubsub_channels) {
+            store.pubsub_unsubscribe(false, &channel, self.id);
+        }
+        for pattern in std::mem::take(&mut self.pubsub_patterns) {
+            store.pubsub_unsubscribe(true, &pattern, self.id);
+        }
+        self.protocol = Protocol::Resp2;
+        self.authenticated_user = None;
+        output.extend_from_slice(b"+RESET\r\n");
+        Action::Continue
+    }
+
     fn set_name(&mut self, name: &[u8]) {
         self.name = (!name.is_empty()).then(|| name.to_vec());
     }
@@ -852,7 +875,7 @@ fn arity(command: &str, output: &mut Vec<u8>) {
 }
 
 fn is_auth_exempt(command: &[u8]) -> bool {
-    [b"AUTH".as_slice(), b"HELLO", b"QUIT"]
+    [b"AUTH".as_slice(), b"HELLO", b"QUIT", b"RESET"]
         .iter()
         .any(|name| command.eq_ignore_ascii_case(name))
 }
@@ -881,6 +904,7 @@ fn allows_subscriber_command(command: &[u8]) -> bool {
         b"PSUBSCRIBE",
         b"PUNSUBSCRIBE",
         b"QUIT",
+        b"RESET",
         b"SUBSCRIBE",
         b"UNSUBSCRIBE",
     ]
@@ -1965,6 +1989,59 @@ x\r\n"
             b"*3\r\n$10\r\npsubscribe\r\n$9\r\nallowed:*\r\n:1\r\n"
         );
         store.pubsub_remove_client(alice.id());
+    }
+
+    #[test]
+    fn reset_discards_transactions_watches_subscriptions_and_resp3() {
+        let store = Store::new(1024);
+        let mut session = Session::new();
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(4);
+        session.set_pubsub_sender(sender);
+        assert!(call(&mut session, &store, &[b"HELLO", b"3"]).starts_with(b"%5\r\n"));
+        assert_eq!(call(&mut session, &store, &[b"WATCH", b"k"]), b"+OK\r\n");
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"k", b"v"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"RESET"]), b"+RESET\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"EXEC"]),
+            b"-ERR EXEC without MULTI\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"GET", b"missing"]),
+            b"$-1\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"PING"]), b"+PONG\r\n");
+
+        assert!(!call(&mut session, &store, &[b"SUBSCRIBE", b"ch"]).is_empty());
+        assert!(session.is_subscribed());
+        assert_eq!(call(&mut session, &store, &[b"RESET"]), b"+RESET\r\n");
+        assert!(!session.is_subscribed());
+        assert_eq!(
+            call(&mut session, &store, &[b"GET", b"missing"]),
+            b"$-1\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"RESET", b"extra"]),
+            b"-ERR wrong number of arguments for 'reset' command\r\n"
+        );
+    }
+
+    #[test]
+    fn reset_deauthenticates_an_authenticated_connection() {
+        let store = Store::with_auth(1024, crate::engine::Auth::from_password(Some(b"pw")));
+        let mut session = Session::new();
+        assert_eq!(call(&mut session, &store, &[b"AUTH", b"pw"]), b"+OK\r\n");
+        assert_eq!(call(&mut session, &store, &[b"PING"]), b"+PONG\r\n");
+        assert_eq!(call(&mut session, &store, &[b"RESET"]), b"+RESET\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"PING"]),
+            b"-NOAUTH Authentication required.\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"AUTH", b"pw"]), b"+OK\r\n");
+        assert_eq!(call(&mut session, &store, &[b"PING"]), b"+PONG\r\n");
     }
 
     #[test]

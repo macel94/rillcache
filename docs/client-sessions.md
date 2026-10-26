@@ -18,12 +18,21 @@ clear the name. `CLIENT INFO` exposes the retained ID, database zero, and set
 metadata; it is intentionally a small subset of Redis's connection statistics.
 
 Supported connection commands are `CLIENT ID`, `CLIENT SETNAME`, `CLIENT
-GETNAME`, `CLIENT SETINFO LIB-NAME|LIB-VER`, `CLIENT INFO`, and `SELECT 0`.
+GETNAME`, `CLIENT SETINFO LIB-NAME|LIB-VER`, `CLIENT INFO`, `SELECT 0` and
+`RESET`.
 Other database indices are rejected and never alias database zero. `AUTH` and
 `HELLO ... AUTH ...` authenticate either the `default` user or an ACL user when
 credentials are configured. `ACL WHOAMI`, `ACL GETUSER` and the other supported
 ACL subcommands expose and enforce the current policy. See
 [security](security.md) for the actual boundary and remaining gaps.
+
+`RESET` implements a disconnect-equivalent server-side reset: it discards an
+active `MULTI`, clears `WATCH`, unsubscribes channel/pattern subscriptions, returns
+the protocol to RESP2, selects database zero (the only database), and clears the
+authenticated user so a password-protected deployment requires `AUTH` again. The
+client name and library metadata are retained; there is no `MONITOR`, tracking,
+`NO-EVICT`/`NO-TOUCH` or multiple-database state to clear. `RESET` is allowed
+without authentication and from RESP2 subscriber mode, and replies `+RESET`.
 
 RESP3 conversion is per reply and framing-aware. Current data commands produce
 simple strings, errors, integers, and bulk strings; RESP2 null bulk replies
