@@ -1,191 +1,49 @@
-name: Comparative benchmarks
+name: Upstream generator performance
 
+# Intentionally separate from PR compatibility and the existing required gate.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '21 6 * * 1'
 
 permissions:
   contents: read
 
 concurrency:
-  group: benchmarks-${{ github.ref }}
-  cancel-in-progress: true
+  group: upstream-performance-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: '1'
-  PROFILE: '1'
-  REQUIRE_THREAD_MODES: '1'
+  CARGO_TERM_COLOR: never
+  CARGO_BUILD_JOBS: '2'
+  SOURCE_HEAD_SHA: ${{ github.sha }}
 
 jobs:
   compare:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    outputs:
-      artifact-id: ${{ steps.evidence.outputs.artifact-id }}
-      benchmark-attempt: ${{ steps.identity.outputs.attempt }}
+    name: Same-runner Redis Valkey Rillcache comparison
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - name: Preserve benchmark attempt identity across review-only reruns
-        id: identity
-        run: echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the repository-pinned minimal Rust toolchain
-        run: rustup show active-toolchain
-      - name: Verify behavior before measuring it
-        run: make check
-      - name: Benchmark fixed one-worker and four-worker execution with eight clients
-        run: make bench-threads BENCH_ARGS='--requests 10000 --clients 8 --pipeline 16 --keyspace 1024 --value-size 64 --warmup 100 --runs 3'
-      - name: Build reference servers once and record their identities
+      - name: Lightweight harness tests
+        run: python3 -m unittest discover -s scripts/upstream -p 'test_*.py' -v
+      - name: Native build, Tcl and resource-accounting prerequisites
         run: |
-          make competitors
-          mkdir -p target/benchmarks
-          sha256sum target/competitors/*/src/*-server > target/benchmarks/reference-binaries.sha256
-      - name: Default-threading comparisons with rotated server order
-        run: |
-          make compare BENCH_ARGS='--requests 100000 --clients 8 --pipeline 1 --keyspace 1024 --value-size 64 --warmup 1000 --runs 3'
-          sha256sum --check target/benchmarks/reference-binaries.sha256
-          mv target/benchmarks/comparison target/benchmarks/pipeline-1
-          make compare BENCH_ORDER='valkey redis rillcache' BENCH_ARGS='--requests 1000000 --clients 8 --pipeline 16 --keyspace 1024 --value-size 64 --warmup 1000 --runs 3'
-          sha256sum --check target/benchmarks/reference-binaries.sha256
-          mv target/benchmarks/comparison target/benchmarks/pipeline-16
-      - name: Equal single-core server budgets, clients on separate CPUs
-        run: |
-          allowed=$(awk '/Cpus_allowed_list:/ {print $2}' /proc/self/status)
-          IFS=',' read -r -a ranges <<< "$allowed"
-          cpus=()
-          for range in "${ranges[@]}"; do
-            if [[ $range == *-* ]]; then
-              for ((cpu=${range%-*}; cpu<=${range#*-}; cpu++)); do cpus+=("$cpu"); done
-            else
-              cpus+=("$range")
-            fi
-          done
-          if (( ${#cpus[@]} < 2 )); then echo 'Need separate server/client CPUs' >&2; exit 1; fi
-          server=${cpus[0]}
-          clients=$(IFS=','; echo "${cpus[*]:1}")
-          make compare SERVER_CPUS="$server" CLIENT_CPUS="$clients" BENCH_ORDER='redis valkey rillcache' BENCH_ARGS='--requests 100000 --clients 8 --pipeline 1 --keyspace 1024 --value-size 64 --warmup 1000 --runs 3'
-          sha256sum --check target/benchmarks/reference-binaries.sha256
-          mv target/benchmarks/comparison target/benchmarks/single-core-pipeline-1
-          make compare SERVER_CPUS="$server" CLIENT_CPUS="$clients" BENCH_ORDER='valkey rillcache redis' BENCH_ARGS='--requests 1000000 --clients 8 --pipeline 16 --keyspace 1024 --value-size 64 --warmup 1000 --runs 3'
-          sha256sum --check target/benchmarks/reference-binaries.sha256
-          mv target/benchmarks/comparison target/benchmarks/single-core-pipeline-16
-      - name: Preserve raw evidence, exact versions and environment
-        id: evidence
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config tcl curl ca-certificates time util-linux
+      - uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: target/upstream-downloads
+          key: upstream-source-v1-${{ hashFiles('ci/upstream/pins.json') }}
+      - name: Build exact Cargo release target and both pinned native core servers
+        run: python3 scripts/upstream/prepare.py
+      - name: Sequential matched load, warmup and six rotating-order repetitions
+        run: python3 scripts/upstream/performance.py
+      - name: Preserve raw measurements, failures, build logs and environment metadata
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: comparisons-${{ github.sha }}-${{ github.run_attempt }}
-          path: target/benchmarks/
+          name: upstream-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/upstream/evidence/
+          retention-days: 30
           if-no-files-found: warn
-          retention-days: 30
-
-  review:
-    needs: compare
-    if: always() && !cancelled()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      copilot-requests: write # Short-lived inference billing permission, not repository write access.
-    outputs:
-      artifact-id: ${{ steps.report.outputs.artifact-id }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install the repository-pinned minimal Rust toolchain
-        run: rustup show active-toolchain
-      - name: Read this benchmark attempt's evidence, never another run's files
-        if: needs.compare.outputs.artifact-id != ''
-        continue-on-error: true
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ needs.compare.outputs.artifact-id }}
-          path: target/comparison-evidence
-          merge-multiple: true
-      - name: Validate measurements and generate deterministic tables
-        id: prepare
-        env:
-          REPOSITORY: ${{ github.repository }}
-          SOURCE_SHA: ${{ github.sha }}
-          BENCHMARK_ATTEMPT: ${{ needs.compare.outputs.benchmark-attempt || github.run_attempt }}
-          BENCHMARK_STATUS: ${{ needs.compare.result }}
-        run: |
-          cargo run --locked --offline --release --bin rillcache-review -- generate \
-            --input target/comparison-evidence --out target/report \
-            --repo "$REPOSITORY" --sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" \
-            --run-number "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" \
-            --benchmark-attempt "$BENCHMARK_ATTEMPT" --date "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-            --status "$BENCHMARK_STATUS"
-          echo "complete=$(<target/report/complete.txt)" >> "$GITHUB_OUTPUT"
-      - name: Install checksum-pinned Copilot only when review can run
-        if: steps.prepare.outputs.complete == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        continue-on-error: true
-        run: |
-          mkdir -p "$RUNNER_TEMP/copilot"
-          curl --proto '=https' --tlsv1.2 --fail --location --show-error --retry 2 --connect-timeout 10 --max-time 120 \
-            https://github.com/github/copilot-cli/releases/download/v1.0.103/copilot-linux-x64.tar.gz \
-            -o "$RUNNER_TEMP/copilot/archive.tar.gz"
-          printf '%s  %s\n' 9aeb4430e9ac9523546db07b227c7aba179a4710a55f9ac29ad143b0f9e1b325 "$RUNNER_TEMP/copilot/archive.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/copilot/archive.tar.gz" -C "$RUNNER_TEMP/copilot"
-      - name: Review with Copilot and record the actual model used
-        env:
-          GITHUB_TOKEN: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.token || '' }}
-        run: ./target/release/rillcache-review review --out target/report --copilot "$RUNNER_TEMP/copilot/copilot"
-      - name: Require a genuine AI assessment for successful default-branch comparisons
-        if: steps.prepare.outputs.complete == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        run: ./target/release/rillcache-review require-ai --out target/report
-      - name: Reject an allegedly successful run with invalid or incomplete evidence
-        if: needs.compare.result == 'success' && steps.prepare.outputs.complete != 'true'
-        run: |
-          echo '::error::Benchmark evidence is incomplete or invalid; see the published diagnostic report.'
-          exit 1
-      - name: Preserve only public Markdown and manifest, never private Copilot state
-        id: report
-        if: always() && steps.prepare.outcome == 'success'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: benchmark-report-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            target/report/report.md
-            target/report/manifest.json
-          if-no-files-found: error
-          retention-days: 30
-
-  publish:
-    needs: [compare, review]
-    if: >-
-      always() && !cancelled() && needs.review.outputs.artifact-id != '' &&
-      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: write
-      pull-requests: write
-      actions: write # Dispatch the required read-only checks on the report PR head.
-    concurrency:
-      group: benchmark-report-publication
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: true # Only this job can push, and it never runs inference.
-      - name: Read the exact reviewed report
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ needs.review.outputs.artifact-id }}
-          path: target/incoming-report
-          merge-multiple: true
-      - name: Install the repository-pinned minimal Rust toolchain
-        run: rustup show active-toolchain
-      - name: Propose current performance and immutable history through the protected PR path
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cargo build --locked --offline --release --bin rillcache-review
-          bash scripts/publish-report-pr.sh
