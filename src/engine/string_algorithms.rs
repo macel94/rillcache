@@ -1,5 +1,5 @@
 use super::options::{NOT_INTEGER, OOM, parse_integer};
-use super::{Store, arity, integer, internal_error};
+use super::{Store, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 use std::io::Write;
 
@@ -58,6 +58,14 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
+        if data
+            .entries
+            .get(args[1])
+            .is_some_and(|entry| !entry.is_string())
+        {
+            wrong_type(out);
+            return;
+        }
         let byte = (offset / 8) as usize;
         let bit = 7 - (offset % 8) as u8;
         let value = data
@@ -93,7 +101,11 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let entry = data.entries.get(args[1]);
-        let previous = entry.map(|e| e.value.len());
+        if entry.is_some_and(|entry| !entry.is_string()) {
+            wrong_type(out);
+            return;
+        }
+        let previous = entry.map(|e| e.payload_len);
         let expires = entry.and_then(|e| e.expires);
         let old = entry.and_then(|e| e.value.get(byte)).copied().unwrap_or(0);
         let shift = 7 - (offset % 8) as u8;
@@ -138,6 +150,10 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let entry = data.entries.get(args[1]);
+        if entry.is_some_and(|entry| !entry.is_string()) {
+            wrong_type(out);
+            return;
+        }
         let current = match entry {
             Some(entry) => match std::str::from_utf8(&entry.value)
                 .ok()
@@ -161,7 +177,7 @@ impl Store {
         } else {
             value.to_string()
         };
-        let previous = entry.map(|e| e.value.len());
+        let previous = entry.map(|e| e.payload_len);
         let expires = entry.and_then(|e| e.expires);
         let Some(payload) = data.reserve(
             args[1],
@@ -216,6 +232,14 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         data.expire_key(args[2], now);
+        if [args[1], args[2]].iter().any(|key| {
+            data.entries
+                .get(*key)
+                .is_some_and(|entry| !entry.is_string())
+        }) {
+            wrong_type(out);
+            return;
+        }
         let a = data
             .entries
             .get(args[1])

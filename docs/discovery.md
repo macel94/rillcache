@@ -1,7 +1,7 @@
 # Command and server discovery (incremental scope)
 
 Rillcache implements a bounded RESP2 subset of Redis discovery. These commands
-are explicitly registered by the coordinator; this module deliberately does not
+are explicitly registered alongside their implementations; this module does not
 claim complete Redis command metadata or advertise commands that are not present
 in this worktree's Store dispatcher.
 
@@ -50,10 +50,12 @@ from the protocol encoder's standard bounded RESP framing.
 
 ## Compatibility limits / coordinator integration
 
-The registered command list includes the base Store commands plus MSETEX and
-conditional string commands (DIGEST/DELEX/DELIFEQ). Every advertised name is
-wired to this worktree's Store dispatcher; unimplemented Redis commands remain
-unadvertised. The HELLO/CLIENT worker owns
+The registered command list includes implemented Store commands, including typed
+collections, keyspace operations, MGET/MSET/MSETNX/MSETEX and conditional string
+commands (DIGEST/DELEX/DELIFEQ). CONFIG metadata covers collection encoding-threshold
+GET/SET forms and RESETSTAT; other runtime settings are unsupported. Every
+advertised name is wired to this worktree's Store dispatcher; unimplemented Redis
+commands remain unadvertised. The HELLO/CLIENT worker owns
 connection-local state; this module does not implement or advertise it. Detailed
 key specifications, ACL categories, subcommand records, filters and Redis
 extended metadata are not supported. No network-facing production-readiness or
