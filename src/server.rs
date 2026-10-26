@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::engine::{Action, Store};
+use crate::engine::{Action, Auth, Store};
 use crate::protocol::{Limits, dispatch_request};
 use crate::session::Session;
 
@@ -108,7 +108,7 @@ impl Drop for Permit {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub max_clients: usize,
@@ -118,6 +118,27 @@ pub struct Config {
     pub max_data_bytes: usize,
     pub limits: Limits,
     pub idle_timeout: Duration,
+    /// Default-user password. `None` or empty disables authentication.
+    /// Never include this value in Debug output or logs.
+    pub requirepass: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Config")
+            .field("bind_addr", &self.bind_addr)
+            .field("max_clients", &self.max_clients)
+            .field("worker_threads", &self.worker_threads)
+            .field("max_data_bytes", &self.max_data_bytes)
+            .field("limits", &self.limits)
+            .field("idle_timeout", &self.idle_timeout)
+            .field(
+                "requirepass",
+                &self.requirepass.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl Default for Config {
@@ -129,6 +150,7 @@ impl Default for Config {
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
+            requirepass: None,
         }
     }
 }
@@ -146,10 +168,14 @@ impl Config {
             || self.limits.max_bulk_bytes > self.limits.max_frame_bytes
             || self.limits.max_frame_bytes > 512 * 1024 * 1024
             || self.idle_timeout.is_zero()
+            || self
+                .requirepass
+                .as_ref()
+                .is_some_and(|password| password.is_empty() || password.len() > 1024)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; frame limit must be at most 512 MiB and bulk limit must fit within frame limit",
+                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, and requirepass must be 1..=1024 bytes",
             ));
         }
         Ok(())
@@ -160,6 +186,16 @@ pub struct Server {
     listener: TcpListener,
     config: Config,
     policy: SchedulingPolicy,
+}
+
+impl Config {
+    /// One store per server with the immutable bind-time credential.
+    fn store(&self) -> Store {
+        Store::with_auth(
+            self.max_data_bytes,
+            Auth::from_password(self.requirepass.as_deref()),
+        )
+    }
 }
 
 impl Server {
@@ -207,7 +243,7 @@ impl Server {
         if self.config.worker_threads.is_some() {
             return pool::serve(self.listener, self.config, stopping, self.policy);
         }
-        let store = Arc::new(Store::new(self.config.max_data_bytes));
+        let store = Arc::new(self.config.store());
         let admitted = Arc::new(AtomicUsize::new(0));
         let sharing = (self.policy.client_handoff_idle_us > 0).then(|| {
             Arc::new(handoff::Sharing::new(
@@ -579,6 +615,14 @@ mod tests {
                     max_frame_bytes: 2 * 1024 * 1024,
                     ..Limits::default()
                 },
+                ..Config::default()
+            },
+            Config {
+                requirepass: Some(Vec::new()),
+                ..Config::default()
+            },
+            Config {
+                requirepass: Some(vec![b'x'; 1025]),
                 ..Config::default()
             },
         ] {

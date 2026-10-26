@@ -149,6 +149,26 @@ impl Store {
         let mut matches: Vec<(&[u8], String)> = Vec::new();
         for pattern in &args[2..] {
             let folded_pattern: Vec<u8> = pattern.iter().map(u8::to_ascii_lowercase).collect();
+            let wants_password = if pattern
+                .iter()
+                .any(|byte| matches!(*byte, b'*' | b'?' | b'['))
+            {
+                glob_match(&folded_pattern, b"requirepass")
+            } else {
+                pattern.eq_ignore_ascii_case(b"requirepass")
+            };
+            if wants_password {
+                // Never return the secret. The empty value means unset; any
+                // configured password is reported as a visible redaction.
+                matches.push((
+                    b"requirepass",
+                    if self.requirepass_configured() {
+                        "<redacted>".to_string()
+                    } else {
+                        String::new()
+                    },
+                ));
+            }
             if !pattern
                 .iter()
                 .any(|byte| matches!(*byte, b'*' | b'?' | b'['))
@@ -194,13 +214,26 @@ impl Store {
             return;
         };
         let mut candidate = *config;
+        let mut password: Option<Option<Vec<u8>>> = None;
         for pair in args[2..].as_chunks::<2>().0 {
-            if candidate.set(pair[0], pair[1]).is_err() {
+            if pair[0].eq_ignore_ascii_case(b"requirepass") {
+                if pair[1].len() > 1024 {
+                    out.extend_from_slice(b"-ERR requirepass must be at most 1024 bytes\r\n");
+                    return;
+                }
+                password = Some((!pair[1].is_empty()).then(|| pair[1].to_vec()));
+            } else if candidate.set(pair[0], pair[1]).is_err() {
                 out.extend_from_slice(b"-ERR CONFIG SET option is unsupported or invalid\r\n");
                 return;
             }
         }
         *config = candidate;
+        if let Some(password) = password
+            && !self.set_requirepass(password.as_deref())
+        {
+            super::internal_error(out);
+            return;
+        }
         out.extend_from_slice(b"+OK\r\n");
     }
 }
@@ -315,7 +348,7 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*26\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*28\r\n"));
     }
 
     #[test]

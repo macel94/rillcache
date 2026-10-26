@@ -19,6 +19,14 @@ struct Command {
 const COMMANDS: &[Command] = &[
     cmd("append", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd(
+        "auth",
+        -2,
+        &["noscript", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
+    cmd(
         "client",
         -2,
         &["admin", "noscript", "loading", "stale"],

@@ -55,8 +55,9 @@ Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
 strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
-`INFO`, and logical `MEMORY USAGE`. CONFIG SET and script/function execution are
-not implemented. Memory usage is an entry-size estimate, not allocator/RSS data.
+`INFO`, and logical `MEMORY USAGE`. `CONFIG SET` supports collection thresholds
+and `requirepass`; script/function execution is not implemented. Memory usage is
+an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
 [multi-key string limits](docs/multikey-strings.md).
 
@@ -64,6 +65,13 @@ Bounded `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` queue supported data
 commands and execute them under one store-wide gate, with expiry-aware optimistic
 invalidation, RESP2/RESP3 replies and a documented fail-closed version bound. See
 [transactions](docs/transactions.md).
+
+A single operator password can protect the `default` user before any data or
+administrative command: `--requirepass-file`/`--requirepass`, `AUTH`, atomic
+`HELLO ... AUTH`, runtime `CONFIG SET requirepass` rotation and a redacted
+`CONFIG GET`. Digests are compared in constant time and `NOAUTH` is checked before
+store access. Multi-user ACLs, brute-force controls, an audit log and native TLS
+remain separate security gates; see [security](docs/security.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
 bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
@@ -73,7 +81,8 @@ plus the accept/control thread; idle clients do not occupy an entire worker.
 
 This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata, and
-`SELECT 0`; authentication/ACL, TLS, durable persistence, scripts/functions, pub/sub,
+`SELECT 0`; single-password authentication; multi-user ACL/authorization, native
+TLS, brute-force/audit controls, durable persistence, scripts/functions, pub/sub,
 replication, clustering, and real client-library interoperability
 remain production blockers. RESP3 replies are limited to the current command
 subset's strings, integers, errors, arrays and nulls. Multi-key string operations
@@ -81,6 +90,7 @@ are atomic under the store lock; MGET replies are capped at 2 MiB to bound
 duplicate-key amplification. It binds to loopback by default. See
 [client sessions](docs/client-sessions.md),
 [multi-key string limits](docs/multikey-strings.md),
+[security boundaries](docs/security.md),
 [INVEST stories and EARS requirements](docs/requirements.md), and the
 [production-readiness plan](docs/production-readiness.md) for exact compatibility
 boundaries; a verified subset is not a drop-in claim.
@@ -95,8 +105,10 @@ docker run --rm --init -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest
 
 The thin multi-architecture image runs non-root, binds container port 6379 without
 extra arguments, and has a built-in PING health check—no shell or redis-cli inside.
-Append options normally, e.g. `--threads 4`. **In-memory/experimental: no AUTH, TLS
-or persistence.** Keep it private. See [container delivery](docs/containers.md)
+Append options normally, e.g. `--threads 4` or `--requirepass-file
+/run/secrets/rillcache`. **In-memory/experimental: optional single-password AUTH;
+no ACL users, TLS or persistence.** Keep authentication and network isolation in
+place for anything beyond loopback. See [container delivery](docs/containers.md)
 for resource bounds, Kubernetes networking, digest pinning, shutdown limitations
 and GitHub's one-time public-package visibility setting.
 
@@ -180,7 +192,8 @@ cancels superseded runs, and publishes benchmark evidence. Successful main build
 also provide a Linux binary archive and SHA-256 checksum as Actions artifacts for
 immediate testing. [Container delivery](.github/workflows/container.yml) separately
 tests and publishes thin amd64/arm64 images to GHCR using the workflow token.
-There is no automatic public deployment of this experimental, unauthenticated server.
+There is no automatic public deployment of this experimental server. Authentication
+is opt-in; the packaged container is unauthenticated unless a password is supplied.
 
 [Comparative benchmarks](.github/workflows/benchmarks.yml) run manually or weekly
 with genuine Copilot review and open report PRs instead of pushing main. The

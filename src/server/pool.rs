@@ -225,7 +225,7 @@ pub(super) fn serve(
     policy: SchedulingPolicy,
 ) -> io::Result<()> {
     let count = config.worker_threads.expect("fixed worker configuration");
-    let store = Arc::new(Store::new(config.max_data_bytes));
+    let store = Arc::new(config.store());
     let admitted = Arc::new(AtomicUsize::new(0));
     let mut lanes: Vec<Lane> = Vec::new();
     let result = (|| {

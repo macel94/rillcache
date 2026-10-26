@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::engine::{Action, Store, TransactionOutcome, WatchState};
+use crate::engine::{Action, AuthError, Store, TransactionOutcome, WatchState};
 use crate::protocol::encode_bulk;
 
 const MAX_NAME_BYTES: usize = 256;
@@ -32,6 +32,7 @@ pub struct Session {
     library_version: Option<Vec<u8>>,
     multi: Option<Multi>,
     watched: WatchState,
+    authenticated: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +57,7 @@ impl Session {
             library_version: None,
             multi: None,
             watched: WatchState::default(),
+            authenticated: false,
         }
     }
 
@@ -66,6 +68,10 @@ impl Session {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
+        if !is_auth_exempt(command) && !self.authenticated && store.authentication_required() {
+            output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
+            return Action::Continue;
+        }
         if command.eq_ignore_ascii_case(b"MULTI") {
             self.multi(arguments, output);
             return Action::Continue;
@@ -97,7 +103,7 @@ impl Session {
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"HELLO") {
-            self.hello(&arguments[1..], output);
+            self.hello(store, &arguments[1..], output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"CLIENT") {
@@ -109,7 +115,7 @@ impl Session {
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"AUTH") {
-            output.extend_from_slice(b"-ERR AUTH is not supported\r\n");
+            self.auth(store, &arguments[1..], output);
             return Action::Continue;
         }
 
@@ -236,7 +242,33 @@ impl Session {
         output.extend_from_slice(b"+QUEUED\r\n");
     }
 
-    fn hello(&mut self, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    fn auth(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        let (username, password) = match arguments {
+            [password] => (None, *password),
+            [username, password] => (Some(*username), *password),
+            _ => {
+                arity("auth", output);
+                return;
+            }
+        };
+        match store.authenticate(username, password) {
+            Ok(()) => {
+                self.authenticated = true;
+                output.extend_from_slice(b"+OK\r\n");
+            }
+            Err(AuthError::NoPassword) => output.extend_from_slice(
+                b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
+            ),
+            Err(AuthError::WrongPassword) => output.extend_from_slice(
+                b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
+            ),
+            Err(AuthError::Internal) => {
+                output.extend_from_slice(b"-ERR internal authentication error\r\n")
+            }
+        }
+    }
+
+    fn hello(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let (requested, options) = match arguments.split_first() {
             None => (self.protocol, &[][..]),
             Some((&version, rest)) => {
@@ -256,13 +288,20 @@ impl Session {
             return;
         }
 
-        // Parse and validate every option before changing either protocol or metadata.
+        // Parse and validate every option before changing either protocol,
+        // metadata or authentication state.
         let mut name = None;
+        let mut credentials = None;
         let mut index = 0;
         while index < options.len() {
             if options[index].eq_ignore_ascii_case(b"AUTH") {
-                output.extend_from_slice(b"-ERR AUTH is not supported\r\n");
-                return;
+                if credentials.is_some() || index + 2 >= options.len() {
+                    output.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
+                credentials = Some((options[index + 1], options[index + 2]));
+                index += 3;
+                continue;
             }
             if options[index].eq_ignore_ascii_case(b"SETNAME") {
                 if name.is_some()
@@ -278,6 +317,27 @@ impl Session {
             }
             output.extend_from_slice(b"-ERR syntax error\r\n");
             return;
+        }
+        if let Some((username, password)) = credentials {
+            match store.authenticate(Some(username), password) {
+                Ok(()) => self.authenticated = true,
+                Err(AuthError::NoPassword) => {
+                    output.extend_from_slice(
+                        b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
+                    );
+                    return;
+                }
+                Err(AuthError::WrongPassword) => {
+                    output.extend_from_slice(
+                        b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
+                    );
+                    return;
+                }
+                Err(AuthError::Internal) => {
+                    output.extend_from_slice(b"-ERR internal authentication error\r\n");
+                    return;
+                }
+            }
         }
         self.protocol = requested;
         if let Some(name) = name {
@@ -379,6 +439,12 @@ fn arity(command: &str, output: &mut Vec<u8>) {
         output,
         "-ERR wrong number of arguments for '{command}' command\r\n"
     );
+}
+
+fn is_auth_exempt(command: &[u8]) -> bool {
+    [b"AUTH".as_slice(), b"HELLO", b"QUIT"]
+        .iter()
+        .any(|name| command.eq_ignore_ascii_case(name))
 }
 
 fn is_session_command(command: &[u8]) -> bool {
@@ -533,7 +599,7 @@ mod tests {
                 &store,
                 &[b"HELLO", b"2", b"AUTH", b"default", b"pw"]
             ),
-            b"-ERR AUTH is not supported\r\n"
+            b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n"
         );
         assert_eq!(call(&mut session, &store, &[b"GET", b"missing"]), b"_\r\n");
     }
@@ -846,6 +912,235 @@ x\r\n"
             b"$3\r\nabc\r\n"
         );
         assert_eq!(call(&mut session, &store, &[b"GET", b"b"]), b"$2\r\nok\r\n");
+    }
+
+    #[test]
+    fn password_auth_blocks_data_access_until_valid_and_quit_is_allowed() {
+        let store = Store::with_auth(1024, crate::engine::Auth::from_password(Some(b"pw")));
+        let mut session = Session::new();
+        for command in [
+            &[b"GET".as_slice(), b"k"][..],
+            &[b"PING".as_slice()][..],
+            &[b"MULTI".as_slice()][..],
+            &[b"CONFIG".as_slice(), b"GET", b"*"][..],
+        ] {
+            assert_eq!(
+                call(&mut session, &store, command),
+                b"-NOAUTH Authentication required.\r\n"
+            );
+        }
+        assert_eq!(
+            call(&mut session, &store, &[b"AUTH", b"wrong"]),
+            b"-WRONGPASS invalid username-password pair or user is disabled.\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"AUTH", b"default", b"pw"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"k", b"v"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"GET", b"k"]), b"$1\r\nv\r\n");
+        // A failed re-authentication must not silently deauthenticate a live
+        // administrative connection.
+        assert_eq!(
+            call(&mut session, &store, &[b"AUTH", b"nope"]),
+            b"-WRONGPASS invalid username-password pair or user is disabled.\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"PING"]), b"+PONG\r\n");
+
+        let mut visitor = Session::new();
+        let mut output = Vec::new();
+        assert_eq!(
+            visitor.execute(&store, &[b"QUIT"], &mut output),
+            Action::Close
+        );
+        assert_eq!(output, b"+OK\r\n");
+    }
+
+    #[test]
+    fn auth_arity_usernames_and_no_password_errors_are_explicit() {
+        let open = Store::new(1024);
+        let mut session = Session::new();
+        assert_eq!(
+            call(&mut session, &open, &[b"AUTH", b"anything"]),
+            b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n"
+        );
+        assert_eq!(call(&mut session, &open, &[b"PING"]), b"+PONG\r\n");
+
+        let store = Store::with_auth(1024, crate::engine::Auth::from_password(Some(b"pw")));
+        let mut session = Session::new();
+        assert_eq!(
+            call(&mut session, &store, &[b"AUTH", b"other", b"pw"]),
+            b"-WRONGPASS invalid username-password pair or user is disabled.\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"AUTH", b"a", b"b", b"c"]),
+            b"-ERR wrong number of arguments for 'auth' command\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut session,
+                &store,
+                &[b"HELLO", b"3", b"AUTH", b"default", b"bad"]
+            ),
+            b"-WRONGPASS invalid username-password pair or user is disabled.\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"GET", b"k"]),
+            b"-NOAUTH Authentication required.\r\n"
+        );
+        assert!(
+            call(
+                &mut session,
+                &store,
+                &[b"HELLO", b"3", b"AUTH", b"default", b"pw"]
+            )
+            .starts_with(b"%5\r\n")
+        );
+        assert_eq!(call(&mut session, &store, &[b"GET", b"k"]), b"_\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"HELLO", b"2", b"AUTH", b"default"]),
+            b"-ERR syntax error\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut session,
+                &store,
+                &[b"HELLO", b"AUTH", b"default", b"pw"]
+            ),
+            b"-NOPROTO unsupported protocol version\r\n"
+        );
+    }
+
+    #[test]
+    fn hello_auth_is_atomic_with_protocol_and_name_negotiation() {
+        let store = Store::with_auth(1024, crate::engine::Auth::from_password(Some(b"pw")));
+        let mut session = Session::new();
+        let mut output = Vec::new();
+        assert_eq!(
+            session.execute(
+                &store,
+                &[
+                    b"HELLO", b"3", b"AUTH", b"default", b"bad", b"SETNAME", b"name"
+                ],
+                &mut output
+            ),
+            Action::Continue
+        );
+        assert_eq!(
+            output,
+            b"-WRONGPASS invalid username-password pair or user is disabled.\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"GET", b"k"]),
+            b"-NOAUTH Authentication required.\r\n"
+        );
+
+        let mut output = Vec::new();
+        assert_eq!(
+            session.execute(
+                &store,
+                &[
+                    b"HELLO", b"3", b"AUTH", b"default", b"pw", b"SETNAME", b"client"
+                ],
+                &mut output
+            ),
+            Action::Continue
+        );
+        assert!(output.starts_with(b"%5\r\n"));
+        assert_eq!(
+            call(&mut session, &store, &[b"CLIENT", b"GETNAME"]),
+            b"$6\r\nclient\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"HELLO", b"2", b"AUTH", b"default"]),
+            b"-ERR syntax error\r\n"
+        );
+    }
+
+    #[test]
+    fn config_requirepass_rotates_disables_and_never_echoes_the_secret() {
+        let store = Store::new(1024);
+        let mut admin = Session::new();
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[b"CONFIG", b"SET", b"requirepass", b"first"]
+            ),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(&mut admin, &store, &[b"GET", b"k"]),
+            b"-NOAUTH Authentication required.\r\n"
+        );
+        assert_eq!(call(&mut admin, &store, &[b"AUTH", b"first"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut admin, &store, &[b"CONFIG", b"GET", b"requirepass"]),
+            b"*2\r\n$11\r\nrequirepass\r\n$10\r\n<redacted>\r\n"
+        );
+        assert!(
+            !call(&mut admin, &store, &[b"CONFIG", b"GET", b"*"])
+                .windows(5)
+                .any(|window| window == b"first")
+        );
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[b"CONFIG", b"SET", b"requirepass", b"second"]
+            ),
+            b"+OK\r\n"
+        );
+        let mut other = Session::new();
+        assert_eq!(
+            call(&mut other, &store, &[b"AUTH", b"first"]),
+            b"-WRONGPASS invalid username-password pair or user is disabled.\r\n"
+        );
+        assert_eq!(call(&mut other, &store, &[b"AUTH", b"second"]), b"+OK\r\n");
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[b"CONFIG", b"SET", b"requirepass", b"too-long"]
+            ),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[
+                    b"CONFIG",
+                    b"SET",
+                    b"maxmemory",
+                    b"0",
+                    b"requirepass",
+                    b"third"
+                ]
+            ),
+            b"-ERR CONFIG SET option is unsupported or invalid\r\n"
+        );
+        assert_eq!(
+            call(&mut admin, &store, &[b"AUTH", b"third"]),
+            b"-WRONGPASS invalid username-password pair or user is disabled.\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[b"CONFIG", b"SET", b"requirepass", b""]
+            ),
+            b"+OK\r\n"
+        );
+        let mut fresh = Session::new();
+        assert_eq!(call(&mut fresh, &store, &[b"PING"]), b"+PONG\r\n");
+        assert_eq!(
+            call(&mut fresh, &store, &[b"CONFIG", b"GET", b"requirepass"]),
+            b"*2\r\n$11\r\nrequirepass\r\n$0\r\n\r\n"
+        );
     }
 
     #[test]

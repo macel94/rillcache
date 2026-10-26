@@ -1,8 +1,9 @@
 # Thin Docker and Kubernetes delivery
 
-**Experimental, volatile cache—not production Redis compatibility.** There is no
-AUTH/ACL, native TLS, persistence, replication or graceful signal-driven shutdown.
-Use only a private/trusted network. Publishing an image does not deploy a service.
+**Experimental, volatile cache—not production Redis compatibility.** Optional
+single-password AUTH exists, but there is no multi-user ACL, native TLS,
+persistence, replication or graceful signal-driven shutdown. Use authentication
+plus a private/trusted network. Publishing an image does not deploy a service.
 
 ## Run it
 
@@ -15,16 +16,25 @@ docker run --rm --init -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest
 The image already runs `/rillcache --bind 0.0.0.0:6379`; the binary's standalone
 and library defaults remain loopback-only. The host port above is loopback-only.
 `EXPOSE` alone does not publish a host port. Do not use an unrestricted host
-`-p 6379:6379` on an untrusted network: this release has no authentication.
-A Docker-network client can instead connect to the container name on port 6379.
+`-p 6379:6379` on an untrusted network. Authentication is disabled unless you
+supply a password; prefer a read-only secret file over a process argument:
 
 Options append naturally without losing the container bind default:
 
 ```sh
 docker run --rm --init -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest --threads 4
 docker run --rm ghcr.io/macel94/rillcache:latest --help
+docker run --rm --init -p 127.0.0.1:6379:6379 \
+  -v /secure/rillcache-password:/run/secrets/rillcache:ro \
+  ghcr.io/macel94/rillcache:latest --requirepass-file /run/secrets/rillcache
 docker compose up -d
 ```
+
+`--requirepass` also works but is visible in process listings and shell history.
+The file must be nonempty and at most 1024 bytes; one trailing newline is stripped.
+Rotate through authenticated `CONFIG SET requirepass` or by restarting with a new
+secret. TLS is still absent, so terminate TLS before traffic crosses an untrusted
+network and treat the inner connection as plaintext. See [security](security.md).
 
 [`compose.yaml`](../compose.yaml) adds a read-only root filesystem, dropped Linux
 capabilities, no-new-privileges, a 256-PID limit, 1 CPU and 256 MiB memory limit.
@@ -72,9 +82,25 @@ non-root/read-only Pod, startup and PING readiness probes, resource bounds, no
 service-account token, a private ClusterIP Service and an ingress NetworkPolicy.
 Client Pods **in the same namespace** must have `rillcache-client: "true"` to be
 allowed through that policy. NetworkPolicy enforcement requires a capable CNI;
-without it, other cluster workloads may reach this unauthenticated service.
+without it, other cluster workloads may reach a service that is unauthenticated
+unless you configure a password.
 There is intentionally no PING liveness restart that could erase the cache merely
 because its client slots are full. Kubernetes still restarts an exited process.
+
+To require a password, create a secret and mount it read-only, then append the
+file option without replacing the image entrypoint:
+
+```sh
+kubectl create secret generic rillcache-auth --from-literal=requirepass="$(openssl rand -hex 32)"
+kubectl patch deployment rillcache --type=json -p='[
+  {"op":"add","path":"/spec/template/spec/volumes","value":[{"name":"auth","secret":{"secretName":"rillcache-auth","defaultMode":256}}]},
+  {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts","value":[{"name":"auth","mountPath":"/run/secrets/rillcache","readOnly":true,"subPath":"requirepass"}]},
+  {"op":"add","path":"/spec/template/spec/containers/0/args","value":["--requirepass-file","/run/secrets/rillcache"]}
+]'
+```
+
+This keeps the root filesystem read-only and the plaintext out of the image and
+process arguments. It does not add TLS, ACL users, rate limiting or persistence.
 
 Use one replica and `Recreate`: independent replicas do not share data, and a
 Service over several would randomly route keys to unrelated caches. Upgrades and

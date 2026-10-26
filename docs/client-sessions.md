@@ -20,8 +20,9 @@ metadata; it is intentionally a small subset of Redis's connection statistics.
 Supported connection commands are `CLIENT ID`, `CLIENT SETNAME`, `CLIENT
 GETNAME`, `CLIENT SETINFO LIB-NAME|LIB-VER`, `CLIENT INFO`, and `SELECT 0`.
 Other database indices are rejected and never alias database zero. `AUTH` and
-`HELLO ... AUTH ...` are explicitly rejected: the server has no authentication,
-ACL, or authorization implementation. No security boundary is implied.
+`HELLO ... AUTH ...` authenticate the single `default` user when a password is
+configured; they do not implement multi-user ACLs or authorization. See
+[security](security.md) for the actual boundary and remaining gaps.
 
 RESP3 conversion is per reply and framing-aware. Current data commands produce
 simple strings, errors, integers, and bulk strings; RESP2 null bulk replies
