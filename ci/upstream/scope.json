@@ -14,7 +14,7 @@
       "redis": ["PING", "FLUSHALL", "FUNCTION FLUSH", "SCRIPT FLUSH", "CONFIG RESETSTAT", "CONFIG GET *"],
       "valkey": ["PING", "FLUSHALL", "FUNCTION FLUSH"]
     },
-    "known_candidate_blocker": "Rillcache currently lacks FLUSHALL/FUNCTION/CONFIG. Unchanged start_server external setup can stop before any assertions. This is a failing prerequisite-blocked result, never a compatibility pass. No protocol proxy or test patch supplies missing commands.",
+    "known_candidate_blocker": "The single-keyspace administrative bootstrap is implemented, but unsupported commands or CONFIG settings can still stop a file after some tests. Run artifacts distinguish named test failures from file/setup errors and report actually executed tests. No prerequisite success implies full coverage, and no protocol proxy or test patch supplies missing behavior.",
     "option_limits": {
       "--singledb": "SELECT and multidatabase assertions tagged singledb:skip are automatically excluded in BOTH control and candidate.",
       "--ignore-encoding": "Object encodings and some memory-layout assertions are not portable; upstream assert_encoding is disabled in BOTH runs.",
