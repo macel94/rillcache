@@ -174,7 +174,16 @@ impl Store {
         };
         let mut deleted = 0;
         for key in ids {
-            deleted += usize::from(stream.entries.remove(&key).is_some());
+            if stream.entries.remove(&key).is_some() {
+                deleted += 1;
+                for group in stream.groups.values_mut() {
+                    if let Some(pending) = group.pending.remove(&key) {
+                        if let Some(consumer) = group.consumers.get_mut(&pending.consumer) {
+                            consumer.pending.remove(&key);
+                        }
+                    }
+                }
+            }
         }
         let bytes = stream.payload_bytes().unwrap_or(0);
         let old_len = entry.payload_len;
@@ -310,7 +319,7 @@ impl Store {
         }
     }
     fn xreadgroup(&self, a: &[&[u8]], out: &mut Vec<u8>) {
-        if a.len() < 8 || !a[1].eq_ignore_ascii_case(b"GROUP") {
+        if a.len() < 7 || !a[1].eq_ignore_ascii_case(b"GROUP") {
             out.extend_from_slice(b"-ERR syntax error\r\n");
             return;
         }
@@ -573,5 +582,37 @@ mod tests {
         assert_eq!(run(&store, &[b"XLEN", b"s"]), b":1\r\n");
         let info = run(&store, &[b"XINFO", b"STREAM", b"s", b"FULL"]);
         assert!(!info.windows(5).any(|w| w == b"1-0"));
+    }
+    #[test]
+    fn xdel_removes_pending_references_from_groups_and_consumers() {
+        let store = Store::new(1000);
+        run(&store, &[b"XADD", b"s", b"1", b"f", b"v"]);
+        run(&store, &[b"XGROUP", b"CREATE", b"s", b"g", b"0"]);
+        run(
+            &store,
+            &[b"XREADGROUP", b"GROUP", b"g", b"c", b"STREAMS", b"s", b">"],
+        );
+        let data = store.data.read().unwrap();
+        let group = &data.entries[b"s".as_slice()]
+            .stream
+            .as_ref()
+            .unwrap()
+            .groups[b"g".as_slice()];
+        assert_eq!(group.pending.len(), 1);
+        assert_eq!(group.consumers[b"c".as_slice()].pending.len(), 1);
+        drop(data);
+        let before = run(&store, &[b"XINFO", b"STREAM", b"s", b"FULL"]);
+        assert!(before.windows(3).any(|w| w == b"c"));
+        assert_eq!(run(&store, &[b"XDEL", b"s", b"1-0"]), b":1\r\n");
+        let after = run(&store, &[b"XINFO", b"STREAM", b"s", b"FULL"]);
+        assert!(!after.windows(5).any(|w| w == b"1-0"));
+        let data = store.data.read().unwrap();
+        let group = &data.entries[b"s".as_slice()]
+            .stream
+            .as_ref()
+            .unwrap()
+            .groups[b"g".as_slice()];
+        assert!(group.pending.is_empty());
+        assert!(group.consumers[b"c".as_slice()].pending.is_empty());
     }
 }

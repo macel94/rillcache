@@ -502,8 +502,8 @@ Not implemented or implied by the completed increments:
    compatible increments.
 2. Authentication/ACL and a safe transport-security deployment boundary; durability
    with crash/recovery and Redis-format interoperability tests.
-3. Richer data types, transactions, scripts, pub/sub, streams, replication and
-   clustering: follow the [production-readiness plan](production-readiness.md).
+3. Richer data types, transactions, scripts, pub/sub, expanded streams, replication
+   and clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe
    release, failover and fencing semantics are not implemented.
 4. Extend the [measured client-I/O gains](../benchmarks/studies/client-handoffs/README.md)
@@ -514,7 +514,7 @@ Not implemented or implied by the completed increments:
    backpressure, shutdown and multi-key atomicity gates. Unsafe project code and
    external Rust dependencies remain forbidden.
 5. Controlled-hardware performance budgets and repeated current-release comparisons;
-   later, richer types, pub/sub and streams driven by product judgment.
+   later, richer types, pub/sub and additional stream capabilities driven by product judgment.
 
 Definition of done for each future story: EARS acceptance cases and limits agreed,
 unit and wire tests added, dependency/safety policy intact, `make ci` passing,
