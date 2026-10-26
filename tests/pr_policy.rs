@@ -47,6 +47,51 @@ fn every_main_pr_requires_distinct_tests_and_real_valkey_measurements() {
 }
 
 #[test]
+fn hosted_pr_updater_never_runs_its_writer_on_untrusted_pr_code() {
+    let workflow = include_str!("../.github/workflows/pr-branch-updater.yml");
+    for required in [
+        "workflow_run:",
+        "workflow_dispatch:",
+        "schedule:",
+        "if: github.event_name == 'pull_request'",
+        "if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
+        "ref: main",
+        "persist-credentials: false",
+        "queue: max",
+        "cancel-in-progress: false",
+        "contents: write",
+        "pull-requests: write",
+        "actions: write",
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "missing updater boundary: {required}"
+        );
+    }
+    for forbidden in ["pull_request_target:", "secrets.", "git push", "--force"] {
+        assert!(
+            !workflow.contains(forbidden),
+            "unsafe updater workflow content: {forbidden}"
+        );
+    }
+    let helper = include_str!("../scripts/update-pr-branches.py");
+    for required in [
+        "expected_head_sha",
+        "ci.yml",
+        "pr-quality.yml",
+        "workflow_dispatch",
+    ] {
+        assert!(
+            helper.contains(required),
+            "missing updater behavior: {required}"
+        );
+    }
+    assert!(!helper.contains("gh pr merge"));
+}
+
+#[test]
 fn generated_reports_use_prs_without_an_exception_for_main_or_policy_files() {
     let script = include_str!("../scripts/publish-report-pr.sh");
     assert!(script.contains("git switch --create \"$branch\""));

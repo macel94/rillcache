@@ -8,6 +8,7 @@ use crate::protocol::encode_bulk;
 mod commands;
 mod data;
 mod discovery;
+mod keyspace;
 mod options;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
@@ -230,7 +231,7 @@ impl Store {
         .find(|(token, _)| command.eq_ignore_ascii_case(token))
         {
             self.increment(arguments, name, output);
-        } else {
+        } else if !self.execute_keyspace(arguments, output) {
             output.extend_from_slice(b"-ERR unknown command\r\n");
         }
         Action::Continue
