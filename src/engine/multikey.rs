@@ -163,7 +163,7 @@ impl Store {
                 let value_len = data
                     .entries
                     .get(*key)
-                    .filter(|entry| entry.stream.is_none())
+                    .filter(|entry| entry.is_string())
                     .map(|entry| entry.value.len());
                 let element_bytes = match value_len {
                     Some(length) => 5usize
@@ -188,7 +188,7 @@ impl Store {
                 encode_bulk(
                     data.entries
                         .get(*key)
-                        .filter(|entry| entry.stream.is_none())
+                        .filter(|entry| entry.is_string())
                         .map(|entry| entry.value.as_slice()),
                     output,
                 );
@@ -239,7 +239,7 @@ impl Store {
             if let Some(entry) = data.entries.get(*key) {
                 let Some(without_old) = key
                     .len()
-                    .checked_add(entry.payload_len)
+                    .checked_add(entry.payload_len())
                     .and_then(|old_bytes| payload.checked_sub(old_bytes))
                 else {
                     internal_error(output);

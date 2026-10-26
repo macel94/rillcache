@@ -1,5 +1,6 @@
+use super::data::Entry;
 use super::options::{NOT_INTEGER, OOM, parse_integer};
-use super::{Store, arity, integer, internal_error};
+use super::{Store, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 
 const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
@@ -61,15 +62,13 @@ impl Store {
         if data
             .entries
             .get(key)
-            .is_some_and(|entry| entry.stream.is_some())
+            .is_some_and(|entry| !entry.is_string())
         {
-            output.extend_from_slice(
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            );
+            wrong_type(output);
             return;
         }
         let entry = data.entries.get(key);
-        let previous = entry.map(|entry| entry.payload_len);
+        let previous = entry.map(Entry::payload_len);
         let expires = entry.and_then(|entry| entry.expires);
         let Some(length) = previous
             .unwrap_or(0)
@@ -103,20 +102,15 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        if data
-            .entries
-            .get(key)
-            .is_some_and(|entry| entry.stream.is_some())
-        {
-            output.extend_from_slice(
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            );
+        let Some(entry) = data.entries.get(key) else {
+            integer(0, output);
+            return;
+        };
+        if !entry.is_string() {
+            wrong_type(output);
             return;
         }
-        integer(
-            data.entries.get(key).map_or(0, |entry| entry.value.len()) as i64,
-            output,
-        );
+        integer(entry.value.len() as i64, output);
     }
 
     fn getrange(&self, key: &[u8], start: &[u8], end: &[u8], output: &mut Vec<u8>) {
@@ -133,11 +127,9 @@ impl Store {
         if data
             .entries
             .get(key)
-            .is_some_and(|entry| entry.stream.is_some())
+            .is_some_and(|entry| !entry.is_string())
         {
-            output.extend_from_slice(
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            );
+            wrong_type(output);
             return;
         }
         let value = data
@@ -185,16 +177,14 @@ impl Store {
         if data
             .entries
             .get(key)
-            .is_some_and(|entry| entry.stream.is_some())
+            .is_some_and(|entry| !entry.is_string())
         {
-            output.extend_from_slice(
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            );
+            wrong_type(output);
             return;
         }
         let entry = data.entries.get(key);
-        let old_len = entry.map_or(0, |entry| entry.value.len());
-        let previous = entry.map(|entry| entry.payload_len);
+        let previous = entry.map(Entry::payload_len);
+        let old_len = previous.unwrap_or(0);
         let expires = entry.and_then(|entry| entry.expires);
         if replacement.is_empty() {
             integer(old_len as i64, output);

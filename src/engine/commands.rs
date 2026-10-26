@@ -1,3 +1,4 @@
+use super::data::Entry;
 use super::*;
 use options::{Condition, ExpireFlags, NOT_INTEGER, OOM, SetOptions, parse_integer};
 
@@ -25,7 +26,7 @@ impl Store {
             integer(1, output);
             return;
         }
-        if entry.stream.is_some() {
+        if !entry.is_string() {
             output.extend_from_slice(if delifeq {
                 b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
             } else {
@@ -74,7 +75,7 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(key, now);
         if let Some(entry) = data.entries.get(key) {
-            if entry.stream.is_some() {
+            if !entry.is_string() {
                 output.extend_from_slice(
                     b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
                 );
@@ -101,10 +102,8 @@ impl Store {
         };
         let now = self.now(&data);
         let entry = data.entries.get(key);
-        if entry.is_some_and(|entry| entry.alive(now) && entry.stream.is_some()) {
-            output.extend_from_slice(
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            );
+        if entry.is_some_and(|entry| entry.alive(now) && !entry.is_string()) {
+            wrong_type(output);
             return;
         }
         if entry.is_none_or(|entry| entry.alive(now)) {
@@ -122,11 +121,9 @@ impl Store {
         if data
             .entries
             .get(key)
-            .is_some_and(|entry| entry.stream.is_some())
+            .is_some_and(|entry| !entry.is_string())
         {
-            output.extend_from_slice(
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            );
+            wrong_type(output);
             return;
         }
         encode_bulk(
@@ -205,7 +202,7 @@ impl Store {
                     | Condition::DigestEqual(_)
                     | Condition::DigestNotEqual(_)
             ))
-            && existing.is_some_and(|entry| entry.stream.is_some())
+            && existing.is_some_and(|entry| !entry.is_string())
         {
             output.extend_from_slice(
                 b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
@@ -274,7 +271,7 @@ impl Store {
             data.remove(key);
             return;
         }
-        let previous = existing.map(|entry| entry.payload_len);
+        let previous = existing.map(Entry::payload_len);
         let Some(payload) = data.reserve(key, value.len(), previous, self.max_payload_bytes, now)
         else {
             output.extend_from_slice(OOM);
@@ -303,11 +300,9 @@ impl Store {
         if data
             .entries
             .get(key)
-            .is_some_and(|entry| entry.stream.is_some())
+            .is_some_and(|entry| !entry.is_string())
         {
-            output.extend_from_slice(
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            );
+            wrong_type(output);
             return;
         }
         encode_bulk(
@@ -333,10 +328,8 @@ impl Store {
             encode_bulk(None, output);
             return;
         };
-        if entry.stream.is_some() {
-            output.extend_from_slice(
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            );
+        if !entry.is_string() {
+            wrong_type(output);
             return;
         }
         // Like Redis, a missing GETEX key returns null without parsing its TTL value.
@@ -493,13 +486,11 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(arguments[1], now);
         let entry = data.entries.get(arguments[1]);
+        if entry.is_some_and(|entry| !entry.is_string()) {
+            wrong_type(output);
+            return;
+        }
         let value = match entry {
-            Some(entry) if entry.stream.is_some() => {
-                output.extend_from_slice(
-                    b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-                );
-                return;
-            }
             Some(entry) => match parse_integer(&entry.value) {
                 Some(value) => value,
                 None => {
@@ -515,7 +506,7 @@ impl Store {
         };
         let expires = entry.and_then(|entry| entry.expires);
         let encoded = value.to_string();
-        let previous = entry.map(|entry| entry.payload_len);
+        let previous = entry.map(Entry::payload_len);
         let Some(payload) = data.reserve(
             arguments[1],
             encoded.len(),

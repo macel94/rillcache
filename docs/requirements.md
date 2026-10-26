@@ -462,15 +462,22 @@ EX/PX/EXAT/PXAT and IFEQ (plus Redis IFNE/IFDEQ/IFDNE); `GET`, `DEL`, `EXISTS`,
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
 INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
-(LEN/IDX/WITHMATCHLEN/MINMATCHLEN). See [string semantics](strings.md),
-[string ranges](string-ranges.md), [bitmap/LCS/float limits](string-algorithms.md) and
-[multi-key string limits](multikey-strings.md) for grammar, clocks, rounding,
-integer limits, resource bounds and atomic error behavior. Conditions are atomic
-and case-insensitive. Option tokens must match completely; NULs/prefixes are
-rejected.
+(LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE;
+SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD.
+See [string semantics](strings.md), [string ranges](string-ranges.md),
+[bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md)
+and [typed collections](collections.md) for grammar, clocks, rounding, integer
+limits, resource bounds and atomic error behavior. Conditions are atomic and
+case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
 A bounded stream subset supports XADD, XDEL, XLEN, XGROUP CREATE/SETID,
 XREADGROUP GROUP with COUNT/NOACK for new entries on one stream, XINFO STREAM
-(with FULL), and same-database COPY. See [stream limits](streams.md).
+(with FULL). See [stream limits](streams.md). All types share expiry, payload
+accounting, TYPE, RENAME and deep same-database COPY; byte-oriented KEYS and
+RANDOMKEY inspect that same keyspace. See [keyspace limits](keyspace.md).
+CONFIG GET/SET collection thresholds select actual collection representations;
+other runtime settings remain unsupported. FLUSHDB/FLUSHALL clear all types,
+CONFIG RESETSTAT retains its empty-statistics behavior, and MEMORY USAGE reports
+a deterministic logical estimate, not allocator/RSS measurements.
 
 The default wire mode is RESP2. `HELLO` can inspect the current mode or
 negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
@@ -482,10 +489,10 @@ converted by frame boundaries, preserving binary payloads. See
 [client sessions](client-sessions.md) for limits and response details. Real
 redis-cli/library handshake interoperability is not yet verified.
 
-Deliberately not supported: telnet commands, empty/null request arrays, other
-RESP3 types and pushes, data types beyond strings and the bounded streams subset,
-nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication, clustering,
-transactions, scripts and pub/sub. Unsupported SET options return
+Deliberately not supported: empty/null request arrays, other RESP3 types and
+pushes, commands beyond the documented collection/stream subsets, nonzero SELECT
+indices, AUTH/ACL/TLS, persistence, replication, clustering, transactions, scripts
+and pub/sub. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-
 option errors omit arbitrary input bytes rather than reflecting them into RESP

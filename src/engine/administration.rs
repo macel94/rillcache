@@ -71,10 +71,7 @@ impl Store {
         if let Some(entry) = data.entries.get(args[2]) {
             // Deterministic logical estimate, not allocator/RSS data.
             let header = if usize::BITS == 64 { 16usize } else { 12usize };
-            let value_bytes = match &entry.stream {
-                Some(stream) => stream.payload_bytes(),
-                None => Some(entry.value.len()),
-            };
+            let value_bytes = Some(entry.payload_len());
             if let Some(size) = value_bytes.and_then(|value_bytes| {
                 header
                     .checked_add(args[2].len())
@@ -178,7 +175,14 @@ mod tests {
     #[test]
     fn config_and_memory_responses_are_honest_and_memory_accounts_expiry() {
         let store = Store::new(100);
-        assert_eq!(run(&store, &[b"CONFIG", b"GET", b"*"]), b"*0\r\n");
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"unsupported-setting"]),
+            b"*0\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"set-max-intset-entries"]),
+            b"*2\r\n$22\r\nset-max-intset-entries\r\n$3\r\n512\r\n"
+        );
         assert!(run(&store, &[b"CONFIG", b"SET", b"maxmemory", b"0"]).starts_with(b"-ERR"));
         assert_eq!(run(&store, &[b"CONFIG", b"RESETSTAT"]), b"+OK\r\n");
         let info = run(&store, &[b"INFO", b"server"]);
