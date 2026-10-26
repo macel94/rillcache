@@ -18,6 +18,7 @@ pub(super) fn pair(input: Vec<u8>) -> (Client, TcpStream) {
     (
         Client {
             stream,
+            session: Session::new(),
             input,
             output: Vec::new(),
             sent: 0,
@@ -162,6 +163,47 @@ fn leased_clients_share_existing_execute_once_and_command_quanta() {
 }
 
 #[test]
+fn protocol_and_metadata_survive_a_complete_lease_round_trip() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);
+    sharing.max_epoch = Duration::ZERO;
+    let (sender, receiver) = mpsc::channel();
+    *sharing.leader.lock().unwrap() = Some(sender);
+    let request = b"*2\r\n$5\r\nHELLO\r\n$1\r\n3\r\n*3\r\n$6\r\nCLIENT\r\n$7\r\nSETNAME\r\n$8\r\nborrowed\r\n";
+    let (client, mut peer) = pair(request.to_vec());
+    let (loan, home) = loan(client, &stop);
+    let store = Store::new(1024);
+    sharing.run(
+        loan,
+        Leadership {
+            sharing: &sharing,
+            receiver,
+        },
+        &store,
+    );
+    let mut client = home.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+    let mut wire = Vec::new();
+    let mut chunk = [0; 128];
+    while !wire.ends_with(b"+OK\r\n") {
+        let count = peer.read(&mut chunk).unwrap();
+        assert_ne!(count, 0, "handoff closed before replies were flushed");
+        wire.extend_from_slice(&chunk[..count]);
+        assert!(wire.len() <= 128);
+    }
+    assert!(wire.starts_with(b"%5\r\n"));
+    let mut reply = Vec::new();
+    client
+        .session
+        .execute(&store, &[b"GET", b"missing"], &mut reply);
+    assert_eq!(reply, b"_\r\n");
+    reply.clear();
+    client
+        .session
+        .execute(&store, &[b"CLIENT", b"GETNAME"], &mut reply);
+    assert_eq!(reply, b"$8\r\nborrowed\r\n");
+}
+
+#[test]
 fn returned_partial_reply_is_not_resent_and_blocking_mode_is_restored() {
     let stop = Arc::new(AtomicBool::new(false));
     let sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);
@@ -178,7 +220,13 @@ fn returned_partial_reply_is_not_resent_and_blocking_mode_is_restored() {
             let mut output = Vec::new();
             assert!(
                 !sharing
-                    .exchange(&mut original, &mut input, &mut output, &Store::new(100))
+                    .exchange(
+                        &mut original,
+                        &mut input,
+                        &mut output,
+                        &mut Session::new(),
+                        &Store::new(100),
+                    )
                     .unwrap()
             );
             assert_eq!(input, b"partial");

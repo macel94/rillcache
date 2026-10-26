@@ -58,14 +58,15 @@ It is already multithreaded by default (one managed worker per client). Optional
 `--threads 1` or `--threads N` selects exactly 1..64 shared I/O/execution workers
 plus the accept/control thread; idle clients do not occupy an entire worker.
 
-This is **not yet** a drop-in Redis replacement or a production service.
-RESP3/client negotiation, authentication/ACL, TLS, durable persistence, richer
-data types, transactions, replication and clustering remain production blockers. It binds
-to loopback by default. See [INVEST stories and EARS requirements](docs/requirements.md)
-for acceptance criteria and exact compatibility boundaries. The
-[production-readiness plan](docs/production-readiness.md) tracks every remaining
-blocker; the goal is production compatibility, not silently redefining a subset
-as a drop-in replacement.
+This is **not yet** a drop-in Redis replacement or a production service. It
+supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata, and
+`SELECT 0`; authentication/ACL, TLS, durable persistence, richer data types,
+transactions, replication, clustering, and real client-library interoperability
+remain production blockers. RESP3 replies are limited to the current command
+subset's strings, integers, errors, arrays and nulls. It binds to loopback by
+default. See [client sessions](docs/client-sessions.md), [INVEST stories and EARS
+requirements](docs/requirements.md), and the [production-readiness plan](docs/production-readiness.md)
+for exact compatibility boundaries; a verified subset is not a drop-in claim.
 
 ## Run with Docker or Kubernetes
 
