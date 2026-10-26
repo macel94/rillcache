@@ -33,6 +33,23 @@ ordinary implementation PRs have no blanket approving-review quota. See the
    away safety or change the acceptance threshold to obtain a passing result.
 6. Update compatibility limits and mark only behavior actually verified by tests.
 
+## Autonomous agent completion
+
+For requested parallel work, each agent independently owns a bounded INVEST
+story, EARS acceptance tests, its worktree/branch, complete integration and its
+own ready-for-review PR. Derive and implement routine design decisions without
+asking the user to approve proposals. Do not substitute plan-only PRs or stubs
+for requested behavior; documentation-only work is appropriate when requested.
+
+Create the finished PR ready for review and enable protected squash auto-merge
+while GitHub checks run. Draft/WIP status requires an explicit user request;
+pending CI or an invented manual-review checkpoint is not a draft reason.
+Verify the actual ready/auto-merge state, not just successful PR creation. Actual
+required checks and configured reviews remain mandatory; report genuine blockers
+without claiming completion or bypassing them. See the [delivery contract,
+draft root cause, INVEST/EARS examples and stale-PR solution](docs/parallel-pr-delivery.md)
+and the auto-loaded [project instructions](AGENTS.md).
+
 ## Safety is not negotiable
 
 `unsafe_code = "forbid"` applies package-wide, and each crate root also contains
