@@ -698,7 +698,7 @@ impl Store {
     }
 }
 
-fn encode_list(list: std::collections::VecDeque<Vec<u8>>, setting: i64) -> Collection {
+pub(super) fn encode_list(list: std::collections::VecDeque<Vec<u8>>, setting: i64) -> Collection {
     let total_bytes: usize = list.iter().map(Vec::len).sum();
     let compact = if setting > 0 {
         list.len() <= setting as usize

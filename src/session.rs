@@ -7,8 +7,12 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
+use std::time::{Duration, Instant};
 
-use crate::engine::{Access, AclError, Action, AuthError, Store, TransactionOutcome, WatchState};
+use crate::engine::{
+    Access, AclError, Action, AuthError, PopOutcome, Store, TransactionOutcome, WatchState,
+    blocking_reply,
+};
 use crate::protocol::encode_bulk;
 
 const MAX_NAME_BYTES: usize = 256;
@@ -38,6 +42,14 @@ pub struct Session {
     pubsub_sender: Option<SyncSender<Vec<u8>>>,
     pubsub_channels: BTreeSet<Vec<u8>>,
     pubsub_patterns: BTreeSet<Vec<u8>>,
+    blocked: Option<Blocked>,
+}
+
+#[derive(Debug)]
+struct Blocked {
+    keys: Vec<Vec<u8>>,
+    left: bool,
+    deadline: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +78,7 @@ impl Session {
             pubsub_sender: None,
             pubsub_channels: BTreeSet::new(),
             pubsub_patterns: BTreeSet::new(),
+            blocked: None,
         }
     }
 
@@ -167,6 +180,7 @@ impl Session {
             self.watched = WatchState::default();
             self.pubsub_channels.clear();
             self.pubsub_patterns.clear();
+            self.blocked = None;
         } else if self.multi.is_some() {
             self.queue(arguments, output);
             return Action::Continue;
@@ -185,6 +199,11 @@ impl Session {
         }
         if command.eq_ignore_ascii_case(b"PUNSUBSCRIBE") {
             self.unsubscribe(store, &arguments[1..], true, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"BLPOP") || command.eq_ignore_ascii_case(b"BRPOP") {
+            let left = command.eq_ignore_ascii_case(b"BLPOP");
+            self.blocking(store, &arguments[1..], left, output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"PUBLISH") {
@@ -673,6 +692,73 @@ impl Session {
         }
     }
 
+    fn blocking(&mut self, store: &Store, arguments: &[&[u8]], left: bool, output: &mut Vec<u8>) {
+        let name = if left { "blpop" } else { "brpop" };
+        if arguments.len() < 2 {
+            arity(name, output);
+            return;
+        }
+        let (timeout, keys) = arguments.split_last().expect("nonempty");
+        let Some(timeout) = std::str::from_utf8(timeout)
+            .ok()
+            .and_then(|text| text.parse::<f64>().ok())
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        else {
+            output.extend_from_slice(b"-ERR timeout is not a float or out of range\r\n");
+            return;
+        };
+        let keys: Vec<Vec<u8>> = keys.iter().map(|key| key.to_vec()).collect();
+        match store.blocking_pop(&keys.iter().map(Vec::as_slice).collect::<Vec<_>>(), left) {
+            PopOutcome::Empty => {}
+            outcome => {
+                blocking_reply(outcome, output);
+                return;
+            }
+        }
+        let deadline = if timeout == 0.0 {
+            None
+        } else {
+            let Some(duration) = Duration::try_from_secs_f64(timeout).ok() else {
+                output.extend_from_slice(b"-ERR timeout is out of range\r\n");
+                return;
+            };
+            Instant::now().checked_add(duration)
+        };
+        self.blocked = Some(Blocked {
+            keys,
+            left,
+            deadline,
+        });
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        self.blocked.is_some()
+    }
+
+    /// Poll a blocked pop. Returns one complete reply when it succeeded, failed or
+    /// timed out, or `None` while the connection must remain blocked.
+    pub fn poll_blocked(&mut self, store: &Store) -> Option<Vec<u8>> {
+        let blocked = self.blocked.as_ref()?;
+        let keys: Vec<&[u8]> = blocked.keys.iter().map(Vec::as_slice).collect();
+        let left = blocked.left;
+        let outcome = store.blocking_pop(&keys, left);
+        let expired = blocked
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        match outcome {
+            PopOutcome::Empty if !expired => None,
+            outcome => {
+                self.blocked = None;
+                let mut reply = Vec::new();
+                blocking_reply(outcome, &mut reply);
+                if self.protocol == Protocol::Resp3 {
+                    reply = convert_resp2_reply(&reply);
+                }
+                Some(reply)
+            }
+        }
+    }
+
     fn subscriber_ping(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
         if arguments.len() > 1 {
             arity("ping", output);
@@ -851,6 +937,7 @@ impl Session {
         }
         self.multi = None;
         self.watched = WatchState::default();
+        self.blocked = None;
         for channel in std::mem::take(&mut self.pubsub_channels) {
             store.pubsub_unsubscribe(false, &channel, self.id);
         }
@@ -885,6 +972,8 @@ fn is_session_command(command: &[u8]) -> bool {
     [
         b"ACL".as_slice(),
         b"AUTH",
+        b"BLPOP",
+        b"BRPOP",
         b"CLIENT",
         b"HELLO",
         b"PSUBSCRIBE",
