@@ -4,6 +4,17 @@ Supported commands use the same bounded binary-safe RESP2 transport in every
 execution mode. Names/options are ASCII case-insensitive. Values/keys are bytes,
 not UTF-8. Full Redis compatibility is still a [production-readiness goal](production-readiness.md).
 
+## Binary string length, append and ranges
+
+`APPEND key value` appends binary bytes (creating a missing key) and returns the
+resulting byte length. `STRLEN key` returns zero for a missing key. `GETRANGE key
+start end` uses inclusive signed 64-bit indices and negative endpoints relative to
+the string length. `SETRANGE key offset value` overwrites from a nonnegative
+offset, zero-fills gaps, creates a missing key for nonempty values, and preserves
+an existing TTL; an empty replacement does not create a missing key. See [string
+range acceptance and limits](string-ranges.md), including its 512 MiB per-string
+ceiling and configured payload-budget behavior.
+
 ## SET and related commands
 
 - `SET key value [NX | XX] [GET] [KEEPTTL | EX seconds | PX milliseconds | EXAT unix-seconds | PXAT unix-milliseconds]`
