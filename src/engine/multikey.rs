@@ -23,19 +23,16 @@ impl Store {
             output.extend_from_slice(b"-ERR invalid numkeys value or out of range\r\n");
             return;
         };
-        let Some(pair_end) = usize::try_from(count)
-            .ok()
-            .and_then(|n| n.checked_mul(2))
-            .and_then(|n| n.checked_add(2))
-        else {
-            output.extend_from_slice(b"-ERR invalid numkeys value or out of range\r\n");
-            return;
-        };
-        if arguments.len() < pair_end {
-            // Redis's specific error differs from Valkey's generic syntax error.
-            output.extend_from_slice(b"-ERR wrong number of key-value pairs\r\n");
+        // Valkey reports the generic syntax error for an argument list shorter than
+        // `2 + 2*numkeys`, including the overflow-protection counts. Only a genuinely
+        // invalid numkeys value gets the specific numkeys error.
+        let pair_end = (count as u64) * 2 + 2;
+        if (arguments.len() as u64) < pair_end {
+            output.extend_from_slice(super::options::SYNTAX);
             return;
         }
+        // The comparison above guarantees the conversion is lossless.
+        let pair_end = pair_end as usize;
         let options = match SetOptions::parse(&arguments[pair_end..], false) {
             Ok(options) => options,
             Err(error) => {
@@ -486,7 +483,7 @@ mod tests {
         );
         assert_eq!(
             run(&store, &[b"MSETEX", b"2", b"only-key", b"value"]),
-            b"-ERR wrong number of key-value pairs\r\n"
+            b"-ERR syntax error\r\n"
         );
         assert_eq!(
             run(
@@ -514,6 +511,114 @@ mod tests {
         clock.0.store(101, Ordering::SeqCst);
         assert_eq!(run(&store, &[b"GET", b"expired"]), b"$-1\r\n");
         assert_eq!(store.data.read().unwrap().payload_bytes, 9);
+    }
+
+    #[test]
+    fn msetex_illegal_arguments_match_valkey_error_dialect() {
+        // Mirrors Valkey 9.1.2 tests/unit/type/string.tcl
+        // "MSETEX with illegal arguments".
+        let (store, _) = clock_store(64);
+        let arity_errors: &[&[&[u8]]] = &[&[b"MSETEX"], &[b"MSETEX", b"key", b"value"]];
+        for args in arity_errors {
+            assert_eq!(
+                run(&store, args),
+                b"-ERR wrong number of arguments for 'msetex' command\r\n"
+            );
+        }
+        for count in [b"0".as_slice(), b"-1", b"1.5", b"numkeys"] {
+            assert_eq!(
+                run(&store, &[b"MSETEX", count, b"key1{t}", b"value"]),
+                b"-ERR invalid numkeys value or out of range\r\n"
+            );
+        }
+        let short_pair_block: &[&[&[u8]]] = &[
+            &[b"MSETEX", b"2", b"key1{t}", b"value"],
+            &[b"MSETEX", b"2", b"key1{t}", b"value", b"key{2}"],
+            &[b"MSETEX", b"1", b"key1{t}", b"value", b"key{2}"],
+            &[b"MSETEX", b"1", b"key1{t}", b"value", b"key{2}", b"value"],
+            &[b"MSETEX", b"2147483646", b"key1{t}", b"value"],
+            &[b"MSETEX", b"2147483647", b"key1{t}", b"value"],
+            &[b"MSETEX", b"1073741822", b"key1{t}", b"value"],
+            &[b"MSETEX", b"1073741823", b"key1{t}", b"value"],
+        ];
+        for args in short_pair_block {
+            assert_eq!(run(&store, args), b"-ERR syntax error\r\n");
+        }
+        assert_eq!(
+            run(&store, &[b"MSETEX", b"2147483648", b"key1{t}", b"value"]),
+            b"-ERR invalid numkeys value or out of range\r\n"
+        );
+        let conflicting_tail: &[&[&[u8]]] = &[
+            &[b"MSETEX", b"1", b"key1{t}", b"value", b"nx", b"xx"],
+            &[b"MSETEX", b"1", b"key1{t}", b"value", b"xx", b"nx"],
+            &[
+                b"MSETEX", b"1", b"key1{t}", b"value", b"ex", b"1", b"px", b"1",
+            ],
+            &[
+                b"MSETEX", b"1", b"key1{t}", b"value", b"ex", b"1", b"exat", b"1",
+            ],
+            &[
+                b"MSETEX", b"1", b"key1{t}", b"value", b"px", b"1", b"ex", b"1",
+            ],
+            &[
+                b"MSETEX", b"1", b"key1{t}", b"value", b"px", b"1", b"exat", b"1",
+            ],
+            &[
+                b"MSETEX", b"1", b"key1{t}", b"value", b"ex", b"1", b"keepttl",
+            ],
+            &[
+                b"MSETEX", b"1", b"key1{t}", b"value", b"keepttl", b"pxat", b"1",
+            ],
+            &[
+                b"MSETEX",
+                b"1",
+                b"key1{t}",
+                b"value",
+                b"ex",
+                b"1",
+                b"wrong_option",
+            ],
+            &[
+                b"MSETEX",
+                b"1",
+                b"key1{t}",
+                b"value",
+                b"ex",
+                b"1",
+                b"wrong_option",
+                b"1",
+            ],
+        ];
+        for args in conflicting_tail {
+            assert_eq!(run(&store, args), b"-ERR syntax error\r\n");
+        }
+        for flag in [b"EX".as_slice(), b"PX", b"EXAT", b"PXAT"] {
+            assert_eq!(
+                run(&store, &[b"MSETEX", b"1", b"key1{t}", b"value", flag]),
+                b"-ERR syntax error\r\n"
+            );
+            for deadline in [b"0".as_slice(), b"-1"] {
+                assert_eq!(
+                    run(
+                        &store,
+                        &[b"MSETEX", b"1", b"key1{t}", b"value", flag, deadline]
+                    ),
+                    b"-ERR invalid expire time in 'msetex' command\r\n"
+                );
+            }
+            for value in [b"1.5".as_slice(), b"foo"] {
+                assert_eq!(
+                    run(
+                        &store,
+                        &[b"MSETEX", b"1", b"key1{t}", b"value", flag, value]
+                    ),
+                    b"-ERR value is not an integer or out of range\r\n"
+                );
+            }
+        }
+        // Every rejected form above must leave the keyspace untouched.
+        assert_eq!(run(&store, &[b"GET", b"key1{t}"]), b"$-1\r\n");
+        assert_eq!(run(&store, &[b"DBSIZE"]), b":0\r\n");
     }
 
     #[test]

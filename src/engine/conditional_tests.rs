@@ -247,7 +247,7 @@ fn msetex_strict_counts_expiry_and_option_errors_preserve_the_whole_batch() {
     for count in [b"2".as_slice(), b"1073741823", b"2147483647"] {
         assert_eq!(
             run(&store, &[b"MSETEX", count, b"k", b"new"]),
-            b"-ERR wrong number of key-value pairs\r\n"
+            b"-ERR syntax error\r\n"
         );
     }
     for invalid in [
