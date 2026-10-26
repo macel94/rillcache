@@ -16,6 +16,8 @@ impl Store {
             ("touch", 3)
         } else if command.eq_ignore_ascii_case(b"DBSIZE") {
             ("dbsize", 4)
+        } else if command.eq_ignore_ascii_case(b"COPY") {
+            ("copy", 5)
         } else {
             return false;
         };
@@ -34,6 +36,7 @@ impl Store {
                     self.rename(arguments[1], arguments[2], mode == 2, output);
                 }
             }
+            5 => self.copy(arguments, output),
             3 => {
                 if arguments.len() < 2 {
                     arity(name, output);
@@ -59,8 +62,12 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        if data.entries.contains_key(key) {
-            output.extend_from_slice(b"+string\r\n");
+        if let Some(entry) = data.entries.get(key) {
+            output.extend_from_slice(if entry.stream.is_some() {
+                b"+stream\r\n"
+            } else {
+                b"+string\r\n"
+            });
         } else {
             output.extend_from_slice(b"+none\r\n");
         }
@@ -93,6 +100,77 @@ impl Store {
         integer(data.entries.len() as i64, output);
     }
 
+    fn copy(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() < 3 {
+            arity("copy", output);
+            return;
+        }
+        let mut replace = false;
+        let mut i = 3;
+        while i < arguments.len() {
+            if arguments[i].eq_ignore_ascii_case(b"REPLACE") && !replace {
+                replace = true;
+                i += 1;
+            } else if arguments[i].eq_ignore_ascii_case(b"DB")
+                && i + 1 < arguments.len()
+                && arguments[i + 1] == b"0"
+            {
+                i += 2;
+            } else {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(output);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(arguments[1], now);
+        data.expire_key(arguments[2], now);
+        let Some(source) = data.entries.get(arguments[1]) else {
+            integer(0, output);
+            return;
+        };
+        if arguments[1] == arguments[2] {
+            integer(0, output);
+            return;
+        }
+        if data.entries.contains_key(arguments[2]) && !replace {
+            integer(0, output);
+            return;
+        }
+        let source_bytes = arguments[2].len().checked_add(source.payload_len);
+        let destination_bytes = data
+            .entries
+            .get(arguments[2])
+            .and_then(|e| arguments[2].len().checked_add(e.payload_len))
+            .unwrap_or(0);
+        let Some(total) = source_bytes
+            .and_then(|n| {
+                data.payload_bytes
+                    .checked_sub(destination_bytes)
+                    .and_then(|base| base.checked_add(n))
+            })
+            .filter(|n| *n <= self.max_payload_bytes)
+        else {
+            output.extend_from_slice(options::OOM);
+            return;
+        };
+        let value = source.value.clone();
+        let stream = source.stream.clone();
+        let expires = source.expires;
+        if replace {
+            data.remove(arguments[2]);
+        }
+        if let Some(stream) = stream {
+            data.put_stream(arguments[2], stream, expires, total);
+        } else {
+            data.put(arguments[2], &value, expires, total);
+        }
+        integer(1, output);
+    }
+
     fn rename(
         &self,
         source: &[u8],
@@ -123,6 +201,10 @@ impl Store {
             output.extend_from_slice(b"-ERR no such key\r\n");
             return;
         };
+        let cloned_value = entry.value.clone();
+        let cloned_stream = entry.stream.clone();
+        let cloned_expiry = entry.expires;
+        let cloned_payload_len = entry.payload_len;
         if only_if_absent && data.entries.contains_key(destination) {
             integer(0, output);
             return;
@@ -130,26 +212,31 @@ impl Store {
 
         // Compute the final exact payload before removing either key. This makes
         // an over-budget longer destination an atomic failure.
-        let source_bytes = source.len().checked_add(entry.value.len());
+        let source_bytes = source.len().checked_add(entry.payload_len);
         let destination_bytes = data
             .entries
             .get(destination)
-            .and_then(|old| destination.len().checked_add(old.value.len()))
+            .and_then(|old| destination.len().checked_add(old.payload_len))
             .unwrap_or(0);
         let Some(payload) = source_bytes
             .and_then(|bytes| data.payload_bytes.checked_sub(bytes))
             .and_then(|remaining| remaining.checked_sub(destination_bytes))
             .and_then(|remaining| remaining.checked_add(destination.len()))
-            .and_then(|remaining| remaining.checked_add(entry.value.len()))
+            .and_then(|remaining| remaining.checked_add(entry.payload_len))
             .filter(|bytes| *bytes <= self.max_payload_bytes)
         else {
             output.extend_from_slice(options::OOM);
             return;
         };
 
-        let entry = data.remove(source).expect("source checked while locked");
+        data.remove(source).expect("source checked while locked");
         data.remove(destination);
-        data.put(destination, &entry.value, entry.expires, payload);
+        if let Some(stream) = cloned_stream {
+            data.put_stream(destination, stream, cloned_expiry, payload);
+        } else {
+            debug_assert_eq!(cloned_payload_len, cloned_value.len());
+            data.put(destination, &cloned_value, cloned_expiry, payload);
+        }
         if only_if_absent {
             integer(1, output);
         } else {

@@ -71,7 +71,10 @@ Valkey. Matrix fail-fast is disabled. An original native control runs **first**
 against that upstream's external TCP server; the identical file, options and
 filter selection then run against a fresh Rillcache instance. The endpoints
 are loopback TCP, not linked libraries. Native results are saved before candidate
-execution and remain available even if the candidate crashes or setup fails.
+execution and remain available even if the candidate crashes or setup fails. The
+selected original keyspace suite's raw inline SET/GET/PING socket requests are
+served natively by both endpoints; Rillcache handles inline and RESP requests on
+the same connection without changing the original Tcl/support sources.
 A failed native control invalidates attribution, but candidate diagnostics still
 run; it is not silently retried or treated as candidate conformance evidence.
 
@@ -153,9 +156,14 @@ allowed CPUs is an infrastructure failure. Candidate uses `--threads 1`, native
 references `--io-threads 1`. Native background threads/candidate control threads
 still exist, so this is an equal CPU-affinity budget, not identical architecture.
 All disable persistence, TLS/auth, eviction and clustering; loopback bind,
-maxclients and 256 MiB configured data/memory limits are fixed. Candidate's
-payload budget is **not** native RSS/maxmemory accounting equivalence; the bounded
-small dataset must stay below both. Server CONFIG/debug changes made by Tcl
+maxclients and 256 MiB configured data/memory limits are fixed. Compatibility
+runs configure the candidate with `--max-bulk-bytes 8388608 --max-frame-bytes
+16777216` and Redis/Valkey with `--proto-max-bulk-len 8388608
+--client-query-buffer-limit 16777216`. The exact argv and
+bounds are retained in each endpoint's `server.json`; these matched finite limits
+support selected multi-megabyte original string cases. MGET remains separately
+capped at a 2 MiB RESP reply. Candidate's payload budget is **not** native RSS/
+maxmemory accounting equivalence; the bounded small dataset must stay below both. Server CONFIG/debug changes made by Tcl
 suites never leak into performance's fresh instances.
 
 Reports include median/min/max throughput and coefficient of variation; medians

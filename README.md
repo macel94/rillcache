@@ -48,7 +48,8 @@ This is a collaboration between a human and AI:
 
 ## Implemented so far
 
-Bounded RESP2 TCP server, binary-safe `PING`, `ECHO`, `SET` with atomic `NX`/`XX`,
+Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
+`ECHO`, `SET` with atomic `NX`/`XX`,
 `GET`, `KEEPTTL`, `EX`/`PX`/`EXAT`/`PXAT` options; `GET`, `MGET`, `MSET`, `MSETNX`,
 `DEL`, `EXISTS`, `QUIT`;
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
@@ -58,8 +59,9 @@ strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
 not implemented. Memory usage is an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
 [multi-key string limits](docs/multikey-strings.md).
-Ordered pipelines and fragmented
-requests; concurrent clients, payload/connection limits and inactivity timeouts.
+Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
+payload/connection/request limits and inactivity timeouts. Conservative request
+bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
 It is already multithreaded by default (one managed worker per client). Optional
 `--threads 1` or `--threads N` selects exactly 1..64 shared I/O/execution workers
 plus the accept/control thread; idle clients do not occupy an entire worker.

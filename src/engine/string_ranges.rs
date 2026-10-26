@@ -58,8 +58,18 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.stream.is_some())
+        {
+            output.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        }
         let entry = data.entries.get(key);
-        let previous = entry.map(|entry| entry.value.len());
+        let previous = entry.map(|entry| entry.payload_len);
         let expires = entry.and_then(|entry| entry.expires);
         let Some(length) = previous
             .unwrap_or(0)
@@ -93,6 +103,16 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.stream.is_some())
+        {
+            output.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        }
         integer(
             data.entries.get(key).map_or(0, |entry| entry.value.len()) as i64,
             output,
@@ -110,6 +130,16 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.stream.is_some())
+        {
+            output.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        }
         let value = data
             .entries
             .get(key)
@@ -148,9 +178,19 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.stream.is_some())
+        {
+            output.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        }
         let entry = data.entries.get(key);
-        let previous = entry.map(|entry| entry.value.len());
-        let old_len = previous.unwrap_or(0);
+        let old_len = entry.map_or(0, |entry| entry.value.len());
+        let previous = entry.map(|entry| entry.payload_len);
         let expires = entry.and_then(|entry| entry.expires);
         if replacement.is_empty() {
             integer(old_len as i64, output);
