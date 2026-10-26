@@ -13,6 +13,7 @@ mod keyspace;
 mod multikey;
 mod options;
 mod streams;
+mod string_algorithms;
 mod string_ranges;
 mod xxh3;
 use data::Data;
@@ -252,6 +253,7 @@ impl Store {
             self.increment(arguments, name, output);
         } else if !self.execute_keyspace(arguments, output)
             && !self.execute_string_ranges(arguments, output)
+            && !self.execute_string_algorithms(arguments, output)
         {
             output.extend_from_slice(b"-ERR unknown command\r\n");
         }
