@@ -622,6 +622,15 @@ mod tests {
         );
         clock.0.store(6001, Ordering::SeqCst);
         assert_eq!(call(&store, &[b"TYPE", b"dst"]), b"+none\r\n");
+
+        let atomic = Store::new(20);
+        assert_eq!(call(&atomic, &[b"RPUSH", b"s", b"123456789"]), b":1\r\n");
+        assert_eq!(call(&atomic, &[b"SET", b"dst", b"x"]), b"+OK\r\n");
+        let before = atomic.data.read().unwrap().payload_bytes;
+        assert!(call(&atomic, &[b"COPY", b"s", b"dst", b"REPLACE"]).starts_with(b"-OOM"));
+        assert_eq!(atomic.data.read().unwrap().payload_bytes, before);
+        assert_eq!(call(&atomic, &[b"GET", b"dst"]), b"$1\r\nx\r\n");
+        assert_eq!(call(&atomic, &[b"TYPE", b"s"]), b"+list\r\n");
     }
 
     #[test]
@@ -655,6 +664,10 @@ mod tests {
             false,
             &mut Vec::new(),
         );
+        let mut expected = b"*1\r\n$50000\r\n".to_vec();
+        expected.extend_from_slice(&long_key);
+        expected.extend_from_slice(b"\r\n");
+        assert_eq!(call(&store, &[b"KEYS", &long_key]), expected);
         let pattern = b"*?".repeat(50_000);
         assert_eq!(call(&store, &[b"KEYS", &pattern]), b"*0\r\n");
         assert!(!glob_match(
