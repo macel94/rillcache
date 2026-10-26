@@ -33,18 +33,18 @@ auto-merge (or a normal merged state), not merely a PR URL. Genuine external or
 permission blockers must be reported honestly without bypassing safety or actual
 code-owner review. Explicitly requested documentation is a valid separate task.
 
-Remembered stale-PR solution: `scripts/pr-delivery.py` implements an optional
-standard-library serialized updater with durable private local state and mocked
-offline tests. It refreshes one opted-in stale PR at a time, validates fresh exact-
-candidate required checks, and waits for ordinary protected squash auto-merge
-before advancing. Conflicts belong to the original worker; failed candidates pause
-with evidence. This is usable standalone tooling, not an installed GitHub workflow
-or continuously supervised service. Native merge queues are preferred when
-supported, but the present personal-account repository is not eligible. Read
-project-root `AGENTS.md` and `docs/parallel-pr-delivery.md` for operator usage,
-OAuth/GITHUB_TOKEN event boundaries, identity checks and failure handling; do not
-weaken protection or claim runtime deployment without installing/supervising it.
-The user permits a free organization if genuinely best for this queue solution,
-with macel94 as organization Owner and retaining primary control. No paid plan,
-unnecessary transfer or loss of existing access/protection/delivery is authorized.
-Creating an empty organization alone does not enable a queue for a personal repo.
+Remembered stale-PR solution: prefer the trusted-main GitHub Actions workflow
+`.github/workflows/pr-branch-updater.yml` and its standard-library helper
+`scripts/update-pr-branches.py`. It reconciles all eligible explicitly opted-in
+same-repository main PRs, uses guarded expected-head updates, explicitly dispatches
+the two existing read-only required workflows when needed, validates exact
+workflow/check identities, and retains per-PR outcomes. It never checks out PR
+code with write access, merges, changes consent, bypasses protection, or retries
+a failed candidate. The workflow is active only after its protected PR merges to
+`main`; never claim deployment before then. Read `AGENTS.md` and
+`docs/parallel-pr-delivery.md` for current eligibility, token/event, permission,
+recovery and failure boundaries. Native merge queues are preferred when supported,
+but the present personal-account repository is not eligible. The user permits a
+free organization only if genuinely best for a future queue migration, with
+macel94 retaining Owner control. No paid plan, unnecessary transfer or loss of
+existing access/protection/delivery is authorized.

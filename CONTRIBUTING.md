@@ -84,10 +84,14 @@ pins deliberately. Actions are pinned by commit SHA. Normal CI, benchmarking and
 inference jobs use read-only repository permissions and do not persist checkout
 credentials. The inference job additionally grants `copilot-requests: write` to
 its short-lived workflow token; no personal secret is required.
-Only the separate default-branch benchmark-report publication job has contents
-write permission and persisted credentials; it stages generated report paths only,
-pushes an automation branch and opens a PR, never pushes main or runs inference.
-Its narrowly scoped pull-request/action permissions create that PR and dispatch
+The default-branch benchmark-report publisher and the trusted-main PR branch
+updater are the only jobs with repository write permissions. The publisher stages
+generated report paths only, pushes an automation branch and opens a PR, never
+pushes main or runs inference. The updater uses contents/pull-request/action
+permissions only to update opted-in same-repository PR branches and explicitly
+dispatch the existing read-only required checks; it never checks out PR code or
+merges a PR. The publisher's narrowly scoped pull-request/action permissions create
+that PR and dispatch
 the two read-only required checks on its head; no new stored token is needed. Fork PRs never receive a privileged
 `pull_request_target` execution path. See [automatic reporting](docs/benchmark-reports.md).
 Do not commit credentials, benchmark build sources, generated target output or
