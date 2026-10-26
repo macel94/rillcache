@@ -184,6 +184,7 @@ impl Store {
         let old_len = entry.payload_len;
         entry.payload_len = bytes;
         data.payload_bytes = data.payload_bytes - old_len + bytes;
+        data.touch(a[1]);
         integer(deleted as i64, out);
     }
     fn xlen(&self, a: &[&[u8]], out: &mut Vec<u8>) {
@@ -316,6 +317,7 @@ impl Store {
                 return;
             };
             g.last_delivered = next.unwrap_or(s.last_generated);
+            data.touch(a[2]);
             simple(b"OK", out);
         } else {
             out.extend_from_slice(b"-ERR unsupported XGROUP subcommand\r\n")
@@ -408,6 +410,7 @@ impl Store {
                 con.pending.insert(*id, p);
             }
         }
+        data.touch(key);
         array(1, out);
         array(2, out);
         encode_bulk(Some(key), out);

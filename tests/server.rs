@@ -72,6 +72,42 @@ fn resp2_commands_are_binary_safe_and_shared_between_connections() {
 }
 
 #[test]
+fn transactions_queue_execute_watch_and_preserve_wire_order() {
+    let server = start(Config::default());
+    let mut first = connect(&server);
+    let mut second = connect(&server);
+    send(&mut first, &[b"MULTI"], b"+OK\r\n");
+    send(&mut first, &[b"SET", b"tx\0key", b"v\xff"], b"+QUEUED\r\n");
+    send(&mut first, &[b"GET", b"tx\0key"], b"+QUEUED\r\n");
+    send(&mut first, &[b"EXEC"], b"*2\r\n+OK\r\n$2\r\nv\xff\r\n");
+    send(&mut first, &[b"WATCH", b"tx\0key"], b"+OK\r\n");
+    send(&mut second, &[b"SET", b"tx\0key", b"other"], b"+OK\r\n");
+    send(&mut first, &[b"MULTI"], b"+OK\r\n");
+    send(&mut first, &[b"SET", b"tx\0key", b"queued"], b"+QUEUED\r\n");
+    send(&mut first, &[b"EXEC"], b"*-1\r\n");
+    send(&mut first, &[b"GET", b"tx\0key"], b"$5\r\nother\r\n");
+    send(&mut first, &[b"UNWATCH"], b"+OK\r\n");
+    send(&mut first, &[b"MULTI"], b"+OK\r\n");
+    send(&mut first, &[b"SET", b"tx\0key", b"final"], b"+QUEUED\r\n");
+    send(&mut first, &[b"EXEC"], b"*1\r\n+OK\r\n");
+    send(&mut first, &[b"GET", b"tx\0key"], b"$5\r\nfinal\r\n");
+    send(&mut first, &[b"MULTI"], b"+OK\r\n");
+    send(
+        &mut first,
+        &[b"SET", b"tx\0key"],
+        b"-ERR wrong number of arguments for 'set' command\r\n",
+    );
+    send(
+        &mut first,
+        &[b"EXEC"],
+        b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+    );
+    send(&mut first, &[b"GET", b"tx\0key"], b"$5\r\nfinal\r\n");
+    send(&mut second, &[b"PING"], b"+PONG\r\n");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn fragmented_commands_and_large_pipelines_preserve_order() {
     let server = start(Config::default());
     let mut stream = connect(&server);

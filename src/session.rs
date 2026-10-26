@@ -6,12 +6,20 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::engine::{Action, Store};
+use crate::engine::{Action, Store, TransactionOutcome, WatchState};
 use crate::protocol::encode_bulk;
 
 const MAX_NAME_BYTES: usize = 256;
 const MAX_LIBRARY_FIELD_BYTES: usize = 128;
+const MAX_QUEUED_COMMANDS: usize = 10_000;
 static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Commands queued by MULTI, plus whether a queue-time error forces EXECABORT.
+#[derive(Debug)]
+struct Multi {
+    queue: Vec<Vec<Vec<u8>>>,
+    dirty: bool,
+}
 
 /// State belonging to one socket. Move this together with any borrowed client
 /// lease; it contains no socket handles and is never shared across clients.
@@ -22,6 +30,8 @@ pub struct Session {
     name: Option<Vec<u8>>,
     library_name: Option<Vec<u8>>,
     library_version: Option<Vec<u8>>,
+    multi: Option<Multi>,
+    watched: WatchState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +54,8 @@ impl Session {
             name: None,
             library_name: None,
             library_version: None,
+            multi: None,
+            watched: WatchState::default(),
         }
     }
 
@@ -54,6 +66,36 @@ impl Session {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
+        if command.eq_ignore_ascii_case(b"MULTI") {
+            self.multi(arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"EXEC") {
+            let start = output.len();
+            let action = self.exec(store, arguments, output);
+            self.convert_reply(start, output);
+            return action;
+        }
+        if command.eq_ignore_ascii_case(b"DISCARD") {
+            self.discard(arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"WATCH") {
+            self.watch(store, arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"UNWATCH") {
+            self.unwatch(arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"QUIT") {
+            // QUIT executes immediately even inside MULTI, as in Redis.
+            self.multi = None;
+            self.watched = WatchState::default();
+        } else if self.multi.is_some() {
+            self.queue(arguments, output);
+            return Action::Continue;
+        }
         if command.eq_ignore_ascii_case(b"HELLO") {
             self.hello(&arguments[1..], output);
             return Action::Continue;
@@ -73,12 +115,125 @@ impl Session {
 
         let start = output.len();
         let action = store.execute(arguments, output);
+        self.convert_reply(start, output);
+        action
+    }
+
+    fn convert_reply(&self, start: usize, output: &mut Vec<u8>) {
         if self.protocol == Protocol::Resp3 {
             let converted = convert_resp2_reply(&output[start..]);
             output.truncate(start);
             output.extend_from_slice(&converted);
         }
-        action
+    }
+
+    fn multi(&mut self, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() != 1 {
+            arity("multi", output);
+        } else if self.multi.is_some() {
+            output.extend_from_slice(b"-ERR MULTI calls can not be nested\r\n");
+        } else {
+            self.multi = Some(Multi {
+                queue: Vec::new(),
+                dirty: false,
+            });
+            output.extend_from_slice(b"+OK\r\n");
+        }
+    }
+
+    fn exec(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        if arguments.len() != 1 {
+            arity("exec", output);
+            return Action::Continue;
+        }
+        let Some(multi) = self.multi.take() else {
+            output.extend_from_slice(b"-ERR EXEC without MULTI\r\n");
+            return Action::Continue;
+        };
+        let watched = std::mem::take(&mut self.watched);
+        if multi.dirty {
+            output.extend_from_slice(
+                b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+            );
+            return Action::Continue;
+        }
+        match store.execute_transaction(&multi.queue, &watched, output) {
+            TransactionOutcome::Completed(action) => action,
+            TransactionOutcome::Aborted | TransactionOutcome::InternalError => Action::Continue,
+        }
+    }
+
+    fn discard(&mut self, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() != 1 {
+            arity("discard", output);
+        } else if self.multi.take().is_none() {
+            output.extend_from_slice(b"-ERR DISCARD without MULTI\r\n");
+        } else {
+            self.watched = WatchState::default();
+            output.extend_from_slice(b"+OK\r\n");
+        }
+    }
+
+    fn watch(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() < 2 {
+            arity("watch", output);
+        } else if self.multi.is_some() {
+            output.extend_from_slice(b"-ERR WATCH inside MULTI is not allowed\r\n");
+        } else {
+            match store.watch_snapshot(&arguments[1..]) {
+                Some(state) => {
+                    self.watched.merge(state);
+                    output.extend_from_slice(b"+OK\r\n");
+                }
+                None => output.extend_from_slice(b"-ERR internal store error\r\n"),
+            }
+        }
+    }
+
+    fn unwatch(&mut self, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() != 1 {
+            arity("unwatch", output);
+        } else {
+            self.watched = WatchState::default();
+            output.extend_from_slice(b"+OK\r\n");
+        }
+    }
+
+    /// Queue one command, validating support and table arity before EXEC.
+    fn queue(&mut self, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        let Some(multi) = self.multi.as_mut() else {
+            return;
+        };
+        let command = arguments[0];
+        if is_session_command(command) {
+            multi.dirty = true;
+            output.extend_from_slice(b"-ERR session commands are not supported inside MULTI\r\n");
+            return;
+        }
+        let Some(arity_value) = Store::command_arity(command) else {
+            multi.dirty = true;
+            output.extend_from_slice(b"-ERR unknown command\r\n");
+            return;
+        };
+        let count = arguments.len() as i64;
+        if (arity_value > 0 && count != arity_value) || (arity_value < 0 && count < -arity_value) {
+            multi.dirty = true;
+            let name = String::from_utf8_lossy(command).to_ascii_lowercase();
+            let _ = write!(
+                output,
+                "-ERR wrong number of arguments for '{name}' command\r\n"
+            );
+            return;
+        }
+        if multi.queue.len() >= MAX_QUEUED_COMMANDS {
+            multi.dirty = true;
+            output.extend_from_slice(b"-ERR transaction queue limit exceeded\r\n");
+            return;
+        }
+        multi
+            .queue
+            .push(arguments.iter().map(|argument| argument.to_vec()).collect());
+        output.extend_from_slice(b"+QUEUED\r\n");
     }
 
     fn hello(&mut self, arguments: &[&[u8]], output: &mut Vec<u8>) {
@@ -217,6 +372,19 @@ impl Session {
     fn set_name(&mut self, name: &[u8]) {
         self.name = (!name.is_empty()).then(|| name.to_vec());
     }
+}
+
+fn arity(command: &str, output: &mut Vec<u8>) {
+    let _ = write!(
+        output,
+        "-ERR wrong number of arguments for '{command}' command\r\n"
+    );
+}
+
+fn is_session_command(command: &[u8]) -> bool {
+    [b"AUTH".as_slice(), b"CLIENT", b"HELLO", b"SELECT"]
+        .iter()
+        .any(|name| command.eq_ignore_ascii_case(name))
 }
 
 fn valid_metadata(bytes: &[u8], maximum: usize) -> bool {
@@ -500,6 +668,212 @@ x\r\n"
         assert_eq!(
             call(&mut first, &store, &[b"SELECT", b"1"]),
             b"-ERR DB index is out of range\r\n"
+        );
+    }
+
+    #[test]
+    fn multi_queues_then_executes_one_ordered_array_and_clears_state() {
+        let store = Store::new(1024);
+        let mut session = Session::new();
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"a", b"1"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"INCR", b"a"]), b"+QUEUED\r\n");
+        assert_eq!(call(&mut session, &store, &[b"GET", b"a"]), b"+QUEUED\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"EXEC"]),
+            b"*3\r\n+OK\r\n:2\r\n$1\r\n2\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"GET", b"a"]), b"$1\r\n2\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"EXEC"]),
+            b"-ERR EXEC without MULTI\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"DISCARD"]),
+            b"-ERR DISCARD without MULTI\r\n"
+        );
+    }
+
+    #[test]
+    fn discard_drops_the_queue_and_watches_without_executing() {
+        let store = Store::new(1024);
+        let mut session = Session::new();
+        let mut other = Session::new();
+        assert_eq!(call(&mut session, &store, &[b"WATCH", b"k"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut other, &store, &[b"SET", b"k", b"other"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"k", b"queued"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"DISCARD"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"EXEC"]),
+            b"-ERR EXEC without MULTI\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"GET", b"k"]),
+            b"$5\r\nother\r\n"
+        );
+    }
+
+    #[test]
+    fn queue_time_arity_and_unknown_errors_discard_the_whole_transaction() {
+        for bad in [
+            &[b"SET".as_slice(), b"k"][..],
+            &[b"NO-SUCH".as_slice(), b"k"][..],
+            &[b"SELECT".as_slice(), b"0"][..],
+        ] {
+            let store = Store::new(1024);
+            let mut session = Session::new();
+            assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+            let error = call(&mut session, &store, bad);
+            assert!(error.starts_with(b"-ERR"), "{error:?}");
+            assert_eq!(
+                call(&mut session, &store, &[b"SET", b"k", b"v"]),
+                b"+QUEUED\r\n"
+            );
+            assert_eq!(
+                call(&mut session, &store, &[b"EXEC"]),
+                b"-EXECABORT Transaction discarded because of previous errors.\r\n"
+            );
+            assert_eq!(call(&mut session, &store, &[b"GET", b"k"]), b"$-1\r\n");
+        }
+    }
+
+    #[test]
+    fn watch_aborts_on_another_client_and_unwatch_releases_it() {
+        let store = Store::new(1024);
+        let mut session = Session::new();
+        let mut other = Session::new();
+        assert_eq!(call(&mut session, &store, &[b"WATCH", b"k"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut other, &store, &[b"SET", b"k", b"other"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"k", b"queued"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"EXEC"]), b"*-1\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"GET", b"k"]),
+            b"$5\r\nother\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"UNWATCH"]), b"+OK\r\n");
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"k", b"after"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"EXEC"]), b"*1\r\n+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"GET", b"k"]),
+            b"$5\r\nafter\r\n"
+        );
+    }
+
+    #[test]
+    fn watched_expiry_aborts_exec_without_sleeping() {
+        struct TestClock(std::sync::atomic::AtomicI64);
+        impl crate::engine::Clock for TestClock {
+            fn now_ms(&self) -> i64 {
+                self.0.load(std::sync::atomic::Ordering::SeqCst)
+            }
+        }
+        let clock = std::sync::Arc::new(TestClock(std::sync::atomic::AtomicI64::new(1000)));
+        let store = Store::with_clock(1024, clock.clone());
+        let mut session = Session::new();
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"k", b"v", b"PX", b"100"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"WATCH", b"k"]), b"+OK\r\n");
+        clock.0.store(1101, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(call(&mut session, &store, &[b"GET", b"k"]), b"+QUEUED\r\n");
+        assert_eq!(call(&mut session, &store, &[b"EXEC"]), b"*-1\r\n");
+        assert_eq!(call(&mut session, &store, &[b"GET", b"k"]), b"$-1\r\n");
+    }
+
+    #[test]
+    fn nested_multi_watch_and_empty_exec_follow_redis_control_flow() {
+        let store = Store::new(1024);
+        let mut session = Session::new();
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"MULTI"]),
+            b"-ERR MULTI calls can not be nested\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"WATCH", b"k"]),
+            b"-ERR WATCH inside MULTI is not allowed\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"EXEC"]), b"*0\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"WATCH"]),
+            b"-ERR wrong number of arguments for 'watch' command\r\n"
+        );
+    }
+
+    #[test]
+    fn runtime_errors_are_reported_inside_exec_without_rolling_back() {
+        let store = Store::new(1024);
+        let mut session = Session::new();
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"a", b"abc"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"INCR", b"a"]), b"+QUEUED\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"b", b"ok"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"EXEC"]),
+            b"*3\r\n+OK\r\n-ERR value is not an integer or out of range\r\n+OK\r\n"
+        );
+        assert_eq!(
+            call(&mut session, &store, &[b"GET", b"a"]),
+            b"$3\r\nabc\r\n"
+        );
+        assert_eq!(call(&mut session, &store, &[b"GET", b"b"]), b"$2\r\nok\r\n");
+    }
+
+    #[test]
+    fn resp3_exec_abort_is_a_null_value_and_quit_discards_the_queue() {
+        let store = Store::new(1024);
+        let mut session = Session::new();
+        let mut other = Session::new();
+        assert!(call(&mut session, &store, &[b"HELLO", b"3"]).starts_with(b"%5\r\n"));
+        assert_eq!(call(&mut session, &store, &[b"WATCH", b"k"]), b"+OK\r\n");
+        assert_eq!(call(&mut other, &store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(call(&mut session, &store, &[b"GET", b"k"]), b"+QUEUED\r\n");
+        assert_eq!(call(&mut session, &store, &[b"EXEC"]), b"_\r\n");
+
+        assert_eq!(call(&mut session, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"SET", b"discarded", b"v"]),
+            b"+QUEUED\r\n"
+        );
+        let mut output = Vec::new();
+        assert_eq!(
+            session.execute(&store, &[b"QUIT"], &mut output),
+            Action::Close
+        );
+        assert_eq!(output, b"+OK\r\n");
+        assert_eq!(
+            call(&mut session, &store, &[b"GET", b"discarded"]),
+            b"_\r\n"
         );
     }
 }

@@ -109,9 +109,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":82\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":90\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*82\r\n*6\r\n$6\r\nappend\r\n"));
+        assert!(all_info.starts_with(b"*90\r\n*6\r\n$6\r\nappend\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"MSETEX", b"DIGEST", b"DELIFEQ"]),
             b"*3\r\n*6\r\n$6\r\nmsetex\r\n:-4\r\n*2\r\n+write\r\n+denyoom\r\n:2\r\n:-1\r\n:2\r\n*6\r\n$6\r\ndigest\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*6\r\n$7\r\ndelifeq\r\n:3\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:1\r\n:1\r\n"
@@ -122,6 +122,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
         );
         let expected_names: &[&[u8]] = &[
             b"append",
+            b"client",
             b"command",
             b"config",
             b"copy",
@@ -132,7 +133,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"delex",
             b"delifeq",
             b"digest",
+            b"discard",
             b"echo",
+            b"exec",
             b"exists",
             b"expire",
             b"expireat",
@@ -148,6 +151,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"getset",
             b"hget",
             b"hgetall",
+            b"hello",
             b"hlen",
             b"hset",
             b"incr",
@@ -165,6 +169,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"mset",
             b"msetex",
             b"msetnx",
+            b"multi",
             b"persist",
             b"pexpire",
             b"pexpireat",
@@ -181,6 +186,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"sadd",
             b"scard",
             b"script",
+            b"select",
             b"set",
             b"setbit",
             b"setex",
@@ -193,6 +199,8 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"touch",
             b"ttl",
             b"type",
+            b"unwatch",
+            b"watch",
             b"xadd",
             b"xdel",
             b"xgroup",

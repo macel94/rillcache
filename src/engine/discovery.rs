@@ -18,6 +18,14 @@ struct Command {
 // Every registered command is wired to this worktree's Store or server dispatcher.
 const COMMANDS: &[Command] = &[
     cmd("append", 3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd(
+        "client",
+        -2,
+        &["admin", "noscript", "loading", "stale"],
+        0,
+        0,
+        0,
+    ),
     cmd("command", -1, &["loading", "stale"], 0, 0, 0),
     cmd("config", -2, &["admin", "noscript"], 0, 0, 0),
     cmd("copy", -3, &["write", "denyoom"], 1, 2, 1),
@@ -28,7 +36,29 @@ const COMMANDS: &[Command] = &[
     cmd("delex", -2, &["write", "fast"], 1, 1, 1),
     cmd("delifeq", 3, &["write", "fast"], 1, 1, 1),
     cmd("digest", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd(
+        "discard",
+        1,
+        &["noscript", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
     cmd("echo", 2, &["fast"], 0, 0, 0),
+    cmd(
+        "exec",
+        1,
+        &[
+            "noscript",
+            "loading",
+            "stale",
+            "skip_monitor",
+            "skip_slowlog",
+        ],
+        0,
+        0,
+        0,
+    ),
     cmd("exists", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("expire", -3, &["write", "fast"], 1, 1, 1),
     cmd("expireat", -3, &["write", "fast"], 1, 1, 1),
@@ -44,6 +74,14 @@ const COMMANDS: &[Command] = &[
     cmd("getset", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("hget", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("hgetall", 2, &["readonly"], 1, 1, 1),
+    cmd(
+        "hello",
+        -1,
+        &["noscript", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
     cmd("hlen", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("hset", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("incr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
@@ -61,6 +99,14 @@ const COMMANDS: &[Command] = &[
     cmd("mset", -3, &["write", "denyoom"], 1, -1, 2),
     cmd("msetex", -4, &["write", "denyoom"], 2, -1, 2),
     cmd("msetnx", -3, &["write", "denyoom"], 1, -1, 2),
+    cmd(
+        "multi",
+        1,
+        &["noscript", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
     cmd("persist", 2, &["write", "fast"], 1, 1, 1),
     cmd("pexpire", -3, &["write", "fast"], 1, 1, 1),
     cmd("pexpireat", -3, &["write", "fast"], 1, 1, 1),
@@ -77,6 +123,7 @@ const COMMANDS: &[Command] = &[
     cmd("sadd", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("scard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("script", -2, &["admin"], 0, 0, 0),
+    cmd("select", 2, &["loading", "stale", "fast"], 0, 0, 0),
     cmd("set", -3, &["write", "denyoom"], 1, 1, 1),
     cmd("setbit", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("setex", 4, &["write", "denyoom"], 1, 1, 1),
@@ -89,6 +136,22 @@ const COMMANDS: &[Command] = &[
     cmd("touch", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("type", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd(
+        "unwatch",
+        1,
+        &["noscript", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
+    cmd(
+        "watch",
+        -2,
+        &["noscript", "loading", "stale", "fast"],
+        1,
+        -1,
+        1,
+    ),
     cmd("xadd", -5, &["write", "denyoom"], 1, 1, 1),
     cmd("xdel", -3, &["write"], 1, 1, 1),
     cmd("xgroup", -2, &["write"], 2, 2, 1),
@@ -100,6 +163,14 @@ const COMMANDS: &[Command] = &[
     cmd("zrange", -4, &["readonly"], 1, 1, 1),
     cmd("zscore", 3, &["readonly", "fast"], 1, 1, 1),
 ];
+
+/// Arity from the published command table; `None` means unsupported.
+pub(super) fn command_arity(name: &[u8]) -> Option<i64> {
+    COMMANDS
+        .iter()
+        .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
+        .map(|command| command.arity)
+}
 
 const fn cmd(
     name: &'static str,

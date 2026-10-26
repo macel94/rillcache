@@ -53,6 +53,7 @@ reason to couple all future commands into a single large story.
 | S23 | As the repository owner, I get PR-only main with mandatory tests and a reproducible Valkey-throughput merge gate, without direct/admin/bot bypasses. | S | R95–R97; active ruleset, frozen-client gate, failure/corruption/cleanup tests and live PR checks |
 | S24 | As a benchmark reader, I still get generated reports without exempting automation from the PR-only quality policy. | XS | R98–R100; branch-only report PRs, exact-head check dispatch, mocked publication tests |
 | S25 | As a cache user, I can atomically read or set multiple strings so that batch operations preserve ordering, expiry and payload admission. | S | R101–R104; duplicate/binary/expiry/admission tests, bounded MGET reply, all-mode wire/reference tests |
+| S26 | As a client, I can queue commands and execute them as one isolated batch, with optimistic invalidation when a watched key changes, so multi-step updates are not interleaved or lost to a race. | S | R105–R108; queue/abort/atomicity, expiry, RESP2/RESP3 and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -130,6 +131,27 @@ reason to couple all future commands into a single large story.
   the server shall return one bounded error response without emitting a partial
   array; it shall not modify any live stored value. Its reply-size check includes
   RESP framing and duplicate results.
+
+### Transactions and optimistic locking (S26)
+
+- **R105 (event-driven):** When `MULTI` is received outside an active transaction,
+  the server shall start queueing connection state and reply `+OK`; a queued
+  supported command with valid public arity shall reply `+QUEUED`, and nested
+  `MULTI`, `EXEC`/`DISCARD` without `MULTI`, and `WATCH` inside `MULTI` shall
+  return documented errors without executing or partially clearing a queue.
+- **R106 (event-driven):** When `EXEC` runs after a dirty queue, the server shall
+  return `EXECABORT` and execute nothing; otherwise it shall append one RESP array
+  containing each queued command's reply in order, with runtime errors as array
+  elements and no rollback of already completed commands.
+- **R107 (state-driven):** While `EXEC` executes, ordinary commands and background
+  reclamation shall not observe or mutate the keyspace between queued commands;
+  the queue shall be bounded, owned by the connection, preserve binary arguments,
+  survive worker handoffs and be discarded by `DISCARD`/`QUIT`/close.
+- **R108 (unwanted behavior):** If a watched key is written, deleted, expires,
+  changes TTL, or is cleared after `WATCH`, then `EXEC` shall return a null array
+  (RESP2 `*-1`, RESP3 `_`) without changing data; bounded version eviction and
+  flushes shall fail closed rather than miss a conflict. `UNWATCH` shall clear all
+  watches.
 
 ### Development and delivery
 
@@ -460,14 +482,17 @@ and ordered mixed-protocol pipelines; `PING`, `ECHO`, `SET` with NX/XX/GET/KEEPT
 EX/PX/EXAT/PXAT and IFEQ (plus Redis IFNE/IFDEQ/IFDNE); `GET`, `DEL`, `EXISTS`,
 `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
-INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX; Redis DIGEST/DELEX
+INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX;
+MULTI/EXEC/DISCARD/WATCH/UNWATCH with a bounded queue, atomic batch execution
+and optimistic key invalidation; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
 (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE;
 SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD.
 See [string semantics](strings.md), [string ranges](string-ranges.md),
-[bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md)
-and [typed collections](collections.md) for grammar, clocks, rounding, integer
-limits, resource bounds and atomic error behavior. Conditions are atomic and
+[bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md),
+[typed collections](collections.md) and [transactions](transactions.md) for grammar,
+clocks, rounding, integer limits, resource bounds, queue isolation and atomic
+error behavior. Conditions are atomic and
 case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
 A bounded stream subset supports XADD, XDEL, XLEN, XGROUP CREATE/SETID,
 XREADGROUP GROUP with COUNT/NOACK for new entries on one stream, XINFO STREAM
@@ -491,8 +516,8 @@ redis-cli/library handshake interoperability is not yet verified.
 
 Deliberately not supported: empty/null request arrays, other RESP3 types and
 pushes, commands beyond the documented collection/stream subsets, nonzero SELECT
-indices, AUTH/ACL/TLS, persistence, replication, clustering, transactions, scripts
-and pub/sub. Unsupported SET options return
+indices, AUTH/ACL/TLS, persistence, replication, clustering, scripts and pub/sub.
+Connection-local commands are rejected rather than queued inside MULTI. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-
 option errors omit arbitrary input bytes rather than reflecting them into RESP
@@ -518,8 +543,8 @@ Not implemented or implied by the completed increments:
    compatible increments.
 2. Authentication/ACL and a safe transport-security deployment boundary; durability
    with crash/recovery and Redis-format interoperability tests.
-3. Richer data types, transactions, scripts, pub/sub, expanded streams, replication
-   and clustering: follow the [production-readiness plan](production-readiness.md).
+3. Richer data types, scripts, pub/sub, expanded streams, replication and
+   clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe
    release, failover and fencing semantics are not implemented.
 4. Extend the [measured client-I/O gains](../benchmarks/studies/client-handoffs/README.md)
