@@ -91,6 +91,9 @@
   Preserve strict up-to-date checks and all 20 Valkey
   wins. Conflicts return to the owning worker; failures pause without retries
   until green, historical-pass reuse or speculative conflict resolution.
-- Read `docs/parallel-pr-delivery.md` for the supported fallback, token/dispatch
-  constraints, idempotency and failure behavior. The lane is a documented design,
-  not deployed automation; implementation needs its own reviewed automation PR.
+- Read `docs/parallel-pr-delivery.md` for hosted PR branch reconciliation,
+  token/dispatch constraints, exact check identity and failure behavior. The
+  trusted-main `.github/workflows/pr-branch-updater.yml` updates only eligible
+  explicitly opted-in same-repository PRs, preserves protected gates and never
+  merges or executes PR code with write access. It is deployed only after its
+  protected PR merges to `main`; do not describe an unmerged workflow as active.
