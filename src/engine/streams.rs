@@ -70,7 +70,9 @@ impl Store {
             None
         };
         let fields = a[3..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|p| (p[0].to_vec(), p[1].to_vec()))
             .collect::<Vec<_>>();
         let now = SystemTime::now()
