@@ -15,7 +15,7 @@ struct Command {
     key_step: i64,
 }
 
-// Only commands dispatched by the base Store implementation are listed here.
+// Every registered command is wired to this worktree's Store or server dispatcher.
 const COMMANDS: &[Command] = &[
     cmd("append", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("command", -1, &["loading", "stale"], 0, 0, 0),
@@ -24,6 +24,9 @@ const COMMANDS: &[Command] = &[
     cmd("decr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("decrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("del", -2, &["write", "fast"], 1, -1, 1),
+    cmd("delex", -2, &["write", "fast"], 1, 1, 1),
+    cmd("delifeq", 3, &["write", "fast"], 1, 1, 1),
+    cmd("digest", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("echo", 2, &["fast"], 0, 0, 0),
     cmd("exists", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("expire", -3, &["write", "fast"], 1, 1, 1),
@@ -44,6 +47,7 @@ const COMMANDS: &[Command] = &[
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
     cmd("lcs", -3, &["readonly"], 1, 2, 1),
     cmd("memory", -2, &["readonly", "slow"], 0, 0, 0),
+    cmd("msetex", -4, &["write", "denyoom"], 2, -1, 2),
     cmd("persist", 2, &["write", "fast"], 1, 1, 1),
     cmd("pexpire", -3, &["write", "fast"], 1, 1, 1),
     cmd("pexpireat", -3, &["write", "fast"], 1, 1, 1),
