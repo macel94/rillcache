@@ -397,7 +397,7 @@ pub(super) fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
                     continue;
                 }
                 b'[' => {
-                    if let Some((matched, after)) = glob_class(pattern, p, text[s])
+                    if let Some((matched, after)) = glob_class(pattern, p, text[s], &mut steps)
                         && matched
                     {
                         p = after;
@@ -431,27 +431,28 @@ pub(super) fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
     }
 }
 
-fn glob_class(pattern: &[u8], start: usize, byte: u8) -> Option<(bool, usize)> {
+fn glob_class(pattern: &[u8], start: usize, byte: u8, steps: &mut usize) -> Option<(bool, usize)> {
     let mut index = start + 1;
     let negate = index < pattern.len() && pattern[index] == b'^';
     if negate {
         index += 1;
     }
     let mut matched = false;
-    let mut closed = false;
     while index < pattern.len() {
+        *steps += 1;
+        if *steps > MAX_GLOB_STEPS {
+            return None;
+        }
         if pattern[index] == b']' {
             index += 1;
-            closed = true;
             break;
         }
-        let first = if pattern[index] == b'\\' && index + 1 < pattern.len() {
-            index += 1;
-            pattern[index]
-        } else {
-            pattern[index]
-        };
-        if index + 2 < pattern.len() && pattern[index + 1] == b'-' {
+        if pattern[index] == b'\\' && index + 1 < pattern.len() {
+            // Escaped class members are literals, not the start of a range.
+            matched |= pattern[index + 1] == byte;
+            index += 2;
+        } else if index + 2 < pattern.len() && pattern[index + 1] == b'-' {
+            let first = pattern[index];
             let last = pattern[index + 2];
             let (low, high) = if first <= last {
                 (first, last)
@@ -461,11 +462,12 @@ fn glob_class(pattern: &[u8], start: usize, byte: u8) -> Option<(bool, usize)> {
             matched |= (low..=high).contains(&byte);
             index += 3;
         } else {
-            matched |= first == byte;
+            matched |= pattern[index] == byte;
             index += 1;
         }
     }
-    closed.then_some((matched != negate, index))
+    // Redis permits unterminated classes: the available members still match.
+    Some((matched != negate, index))
 }
 
 #[cfg(test)]
@@ -733,6 +735,29 @@ mod tests {
             b"a*a*a*a*a*a*a*a*a*b",
             b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
+    }
+
+    #[test]
+    fn glob_character_classes_follow_escaping_and_share_the_work_budget() {
+        for (pattern, text, expected) in [
+            (b"[a".as_slice(), b"a".as_slice(), true),
+            (b"[a", b"b", false),
+            (b"[^a", b"b", true),
+            (b"[\\a-z]", b"b", false),
+            (b"[\\a-z]", b"-", true),
+            (b"[z-a]", b"b", true),
+            (b"[\\]]", b"]", true),
+            (b"[\x80-\xff]", b"\xfe", true),
+            (b"a?", b"a\0", true),
+        ] {
+            assert_eq!(glob_match(pattern, text), expected, "{pattern:?} {text:?}");
+        }
+        let mut pattern = b"*[".to_vec();
+        pattern.extend(std::iter::repeat_n(b'a', 10_000));
+        pattern.push(b']');
+        assert!(!glob_match(&pattern, &vec![b'b'; 10_000]));
+        let mut budget = MAX_GLOB_STEPS;
+        assert!(glob_class(b"[a]", 0, b'a', &mut budget).is_none());
     }
 
     #[test]
