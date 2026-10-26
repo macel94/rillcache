@@ -18,13 +18,20 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 def events(text):
     text = ANSI.sub("", text)
-    observed = {key: [] for key in ("ok", "err", "skip", "ignore", "exception")}
+    observed = {key: [] for key in ("ok", "err", "harness_error", "skip", "ignore", "exception")}
     for match in re.finditer(r"^\[(ok|err|skip|ignore|exception)\]: (.*)$", text, re.M):
         kind, name = match.groups()
         if kind == "ok":
             name = re.sub(r" \(\d+ ms\)$", "", name)
         elif kind == "err":
-            name = re.split(r" in tests/", name, maxsplit=1)[0]
+            # Only upstream `test` adds this name/file prefix. --durable also
+            # emits bare err packets for errors outside test bodies; those are
+            # harness/file errors, not executed/failed assertions.
+            named = re.match(r"^(.+?) in tests/[^\s]+\.tcl(?:\s|$)", name)
+            if named is None:
+                observed["harness_error"].append(name)
+                continue
+            name = named[1]
         observed[kind].append(name)
     observed["unit_completed"] = bool(re.search(r"^\[\d+/\d+ done\]:", text, re.M))
     return observed
@@ -39,13 +46,22 @@ def classify(result):
         return "server_exit"
     if attempted == 0:
         return "prerequisite_blocked" if result.get("missing_prerequisites") else "zero_tests_or_harness_error"
+    if counts.get("harness_error") or counts["exception"] or not counts["unit_completed"]:
+        return "test_and_harness_failures" if counts["err"] else "harness_error_or_unreached_tests"
     if counts["err"]:
-        return "test_failures"  # Includes assertion failures AND command exceptions under --durable.
-    if counts["exception"] or not counts["unit_completed"]:
-        return "harness_error_or_unreached_tests"
+        return "test_failures"  # Named tests: assertions OR in-test command exceptions under --durable.
     if result["exit_code"] != 0 or result.get("missing_prerequisites"):
         return "prerequisite_or_harness_error"
     return "passed_selected_scope"
+
+
+def test_counts(observed):
+    passed = len(observed.get("ok", []))
+    failed = len(observed.get("err", []))
+    return {"tests_executed": passed + failed, "tests_passed": passed,
+            "named_test_failures": failed, "harness_errors": len(observed.get("harness_error", [])),
+            "exceptions": len(observed.get("exception", [])), "skip_events": len(observed.get("skip", [])),
+            "group_ignore_events": len(observed.get("ignore", []))}
 
 
 def inventory(tree, selected):
@@ -90,6 +106,7 @@ def run(reference, suite, name, directory):
         text += "\n" + (directory / "tcl/stderr.log").read_text(errors="replace")
         result.update({"events": events(text), "server_alive": proc.poll() is None,
                        "prerequisites": probes, "missing_prerequisites": [p for p in probes if p["status"] != "available"]})
+        result["counts"] = test_counts(result["events"])
         result["status"] = classify(result)
     save(directory / "result.json", result)
     return result
@@ -143,13 +160,13 @@ def main():
     finally:
         save(directory / "result.json", result)
         text = f"## Tcl compatibility: {args.reference} / {args.suite}\n\n**{result['status']}**\n\n"
-        text += "| Endpoint | Status | Exit | Passed | Test failures¹ | Auto skip events | Group ignore events | Exceptions |\n|---|---|---:|---:|---:|---:|---:|---:|\n"
+        text += "| Endpoint | Status | Exit | Passed | Named test failures¹ | Auto skip events | Group ignore events | Harness/file errors | Exceptions |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n"
         for role in ("native", "candidate"):
             item = result[role]
             data = item.get("events", {})
-            text += f"| {role} | {item['status']} | {item.get('exit_code', 'n/a')} | " + " | ".join(str(len(data.get(k, []))) for k in ("ok", "err", "skip", "ignore", "exception")) + " |\n"
+            text += f"| {role} | {item['status']} | {item.get('exit_code', 'n/a')} | " + " | ".join(str(len(data.get(k, []))) for k in ("ok", "err", "skip", "ignore", "harness_error", "exception")) + " |\n"
         text += f"\nNative-observed tests not reached by candidate: **{len(result.get('unreached_native_observed_tests', []))}** (names in JSON).\n\n"
-        text += "¹ Upstream test failures include assertions and command exceptions. Harness/setup exceptions and zero-test results are never passes. "
+        text += "¹ Named test failures include assertions and in-test command exceptions. Bare upstream err packets outside test bodies are separate harness/file errors and do not count as executed tests. Harness/setup errors, exceptions and zero-test results are never passes. "
         text += "Skip/ignore events are not an exact skipped-assertion count; conditional un-emitted tests remain unknown. "
         text += "Single DB; encoding/digest checks disabled; DEBUG/replication/slow tags excluded identically. "
         text += "See scope, complete unit inventory, revisions, prerequisites and raw native/candidate logs in artifacts.\n\n"

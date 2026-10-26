@@ -124,6 +124,40 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(1, len(data["ignore"]))
         self.assertFalse(data["unit_completed"])
 
+    def test_bare_durable_err_is_not_an_executed_assertion(self):
+        item = self.item('[err]: ERR unsupported CONFIG parameter\n[1/1 done]: unit/keyspace\n', exit_code=1)
+        self.assertEqual([], item['events']['err'])
+        self.assertEqual(['ERR unsupported CONFIG parameter'], item['events']['harness_error'])
+        self.assertEqual(0, compat.test_counts(item['events'])['tests_executed'])
+        self.assertEqual('zero_tests_or_harness_error', compat.classify(item))
+
+    def test_prior_passes_do_not_hide_a_file_error_even_with_zero_child_exit(self):
+        item = self.item('[ok]: First real test (3 ms)\n[err]: outside test body\n[1/1 done]: unit/keyspace\n')
+        self.assertEqual('harness_error_or_unreached_tests', compat.classify(item))
+        counts = compat.test_counts(item['events'])
+        self.assertEqual(1, counts['tests_executed'])
+        self.assertEqual(1, counts['tests_passed'])
+        self.assertEqual(0, counts['named_test_failures'])
+        self.assertEqual(1, counts['harness_errors'])
+
+    def test_named_failures_and_file_errors_remain_distinct(self):
+        item = self.item('[err]: Original assertion in tests/unit/keyspace.tcl\n[err]: file setup failed\n[1/1 done]: unit/keyspace\n', exit_code=1)
+        self.assertEqual('test_and_harness_failures', compat.classify(item))
+        counts = compat.test_counts(item['events'])
+        self.assertEqual(1, counts['tests_executed'])
+        self.assertEqual(1, counts['named_test_failures'])
+        self.assertEqual(1, counts['harness_errors'])
+
+    def test_missing_prerequisite_err_stays_blocked_with_zero_tests(self):
+        item = self.item('[err]: FLUSHALL failed outside test\n', exit_code=1, missing_prerequisites=['FLUSHALL'])
+        self.assertEqual('prerequisite_blocked', compat.classify(item))
+        self.assertEqual(0, compat.test_counts(item['events'])['tests_executed'])
+
+    def test_err_test_prefix_requires_a_complete_original_tcl_filename(self):
+        item = self.item('[err]: text in tests/not-a-tcl-file\n[err]: Named case in tests/unit/type/string.tcl\n')
+        self.assertEqual(['Named case'], item['events']['err'])
+        self.assertEqual(['text in tests/not-a-tcl-file'], item['events']['harness_error'])
+
     def test_inventory_lists_unselected_modules_and_protocol(self):
         with tempfile.TemporaryDirectory() as tmp:
             tree = Path(tmp)
