@@ -462,13 +462,24 @@ INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX. See [string semantics](strings.md) fo
 grammar, clocks, rounding, integer limits and atomic error behavior. Conditions are atomic and
 case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
 
-Deliberately not supported: inline/telnet commands, empty/null command arrays,
-RESP3/HELLO, digest/value-match SET conditions, other data types, SELECT,
-AUTH/ACL/TLS, persistence, replication, clustering, transactions, pub/sub and
-streams. Unsupported SET options return `ERR syntax error` and do not write.
-Redis normally ignores empty request arrays; this strict initial subset rejects
-them. Unknown-command and unsupported-expire-option errors omit arbitrary input bytes
-rather than reflecting them into RESP error frames. Limits are deliberately smaller than Redis defaults.
+The default wire mode is RESP2. `HELLO` can inspect the current mode or
+negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
+`CLIENT` metadata across worker handoffs. Supported session commands are `CLIENT
+ID`, `SETNAME`, `GETNAME`, `SETINFO LIB-NAME|LIB-VER`, `INFO`, and `SELECT 0`.
+The RESP3 reply subset covers the current commands' simple strings, errors,
+integers, bulk strings/arrays, and nulls; null bulk and null array frames are
+converted by frame boundaries, preserving binary payloads. See
+[client sessions](client-sessions.md) for limits and response details. Real
+redis-cli/library handshake interoperability is not yet verified.
+
+Deliberately not supported: inline/telnet commands, empty/null request arrays,
+other RESP3 types and pushes, digest/value-match SET conditions, other data
+types, nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication,
+clustering, transactions, pub/sub and streams. Unsupported SET options return
+`ERR syntax error` and do not write. Redis normally ignores empty request arrays;
+this strict initial subset rejects them. Unknown-command and unsupported-expire-
+option errors omit arbitrary input bytes rather than reflecting them into RESP
+error frames. Limits are deliberately smaller than Redis defaults.
 
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload and a 2 MiB
@@ -481,7 +492,9 @@ The CLI uses loopback by default. Do not expose it to untrusted clients.
 
 Not implemented or implied by the completed increments:
 
-1. RESP3/HELLO and common client handshake metadata, with real client compatibility tests.
+1. Validate HELLO/CLIENT session negotiation against real pinned redis-cli and
+   language clients; add command discovery and multiple databases only as separate
+   compatible increments.
 2. Authentication/ACL and a safe transport-security deployment boundary; durability
    with crash/recovery and Redis-format interoperability tests.
 3. Richer data types, transactions, scripts, pub/sub, streams, replication and

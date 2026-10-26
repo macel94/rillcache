@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::engine::{Action, Store};
 use crate::protocol::{Limits, dispatch_request};
+use crate::session::Session;
 
 mod handoff;
 mod pool;
@@ -261,6 +262,7 @@ impl Server {
                         // Disconnects, idle timeouts and malformed input affect only this client.
                         let _ = serve_client(
                             &mut stream,
+                            Session::new(),
                             &store,
                             limits,
                             policy,
@@ -338,6 +340,7 @@ impl Drop for ServerHandle {
 
 fn serve_client(
     stream: &mut TcpStream,
+    mut session: Session,
     store: &Store,
     limits: Limits,
     policy: SchedulingPolicy,
@@ -352,7 +355,7 @@ fn serve_client(
         let mut commands = 0;
         loop {
             let (action, used) = match dispatch_request(&input[consumed..], limits, |args| {
-                store.execute(args, &mut output)
+                session.execute(store, args, &mut output)
             }) {
                 Ok(Some(result)) => result,
                 Ok(None) => break,
@@ -387,7 +390,7 @@ fn serve_client(
             if let Some(sharing) =
                 sharing.filter(|sharing| permit.has_peers() && sharing.should_lend())
             {
-                if sharing.exchange(stream, &mut input, &mut output, store)? {
+                if sharing.exchange(stream, &mut input, &mut output, &mut session, store)? {
                     return Ok(());
                 }
                 // A lease may return ready/partial input. Parse before reading again.

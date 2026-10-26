@@ -6,6 +6,7 @@ import io
 import json
 import os
 import urllib.error
+import urllib.parse
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,6 +41,8 @@ class FakeAPI:
         self.update_result = "update"
         self.update_error = None
         self.dispatch_error = None
+        # (workflow, ref) -> blob sha override; default means branch matches main.
+        self.workflow_blobs = {}
 
     def pages(self, path):
         output = []
@@ -71,6 +74,12 @@ class FakeAPI:
         if path.startswith(f"repos/{mod.REPO}/pulls/"):
             number = int(path.rsplit("/", 1)[1])
             return self.prs[number]
+        if "/contents/.github/workflows/" in path:
+            tail = path.split("/contents/", 1)[1]
+            file, _, query = tail.partition("?")
+            ref = urllib.parse.unquote(query.split("ref=", 1)[1]) if "ref=" in query else "main"
+            workflow = file.rsplit("/", 1)[1]
+            return {"sha": self.workflow_blobs.get((workflow, ref), "blob-" + workflow)}
         if path == f"repos/{mod.REPO}/git/ref/heads/main":
             return {"object": {"sha": self.main}}
         if "/compare/" in path:
@@ -95,12 +104,17 @@ class UpdaterTests(unittest.TestCase):
         self.api = FakeAPI()
         self.updater = mod.Updater(self.api, sleep=lambda _: None, update_wait=0)
 
-    def test_eligible_identity_requires_open_same_repo_nondraft_opted_in_main_pr(self):
+    def test_eligibility_covers_every_open_same_repo_main_pr(self):
+        # The user asked for every open PR branch to stay current: draft state
+        # and auto-merge are not eligibility gates.
         cases = [
-            (pull(), True), (pull(draft=True), False), (pull(fork=True), False),
-            (pull(opted=False), False),
+            (pull(), True),
+            (pull(draft=True), True),
+            (pull(opted=False), True),
+            (pull(fork=True), False),
             ({**pull(), "state": "closed"}, False),
             ({**pull(), "base": {**pull()["base"], "ref": "release"}}, False),
+            ({**pull(), "head": {**pull()["head"], "sha": "not-a-sha"}}, False),
         ]
         for candidate, expected in cases:
             with self.subTest(candidate=candidate):
@@ -150,17 +164,62 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(dispatched[0][2], {"ref": "feature/1"})
         self.assertEqual(dispatched[1][2], {"ref": "feature/1", "inputs": {"pull_request": "1"}})
 
-    def test_revoked_opt_in_after_async_update_stops_required_dispatch(self):
+    def test_pr_that_stops_being_eligible_during_update_stops_required_dispatch(self):
         original = self.api.call
-        def revoke(path, **kwargs):
+        def close(path, **kwargs):
             result = original(path, **kwargs)
             if path.endswith("/update-branch"):
-                self.api.prs[1]["auto_merge"] = None
+                self.api.prs[1]["state"] = "closed"
             return result
-        self.api.call = revoke
+        self.api.call = close
         outcome = self.updater.process(pull())
         self.assertEqual(outcome["status"], "consent_revoked")
         self.assertFalse(any(call[0] == "POST" for call in self.api.calls))
+
+    def test_staleness_uses_current_main_not_the_pr_base_snapshot(self):
+        # Regression: GitHub reports base.sha as the PR's last-synced base
+        # snapshot (A) while main has advanced to D. The head does not contain
+        # main, so it must be refreshed instead of reported as base_race.
+        self.api.main = D
+        p = pull(base=A, head=B)
+        self.api.prs[1] = p
+        outcome = self.updater.process(p)
+        self.assertEqual(outcome["status"], "checks_dispatched")
+        self.assertEqual(outcome["base"], D)
+        puts = [c for c in self.api.calls if c[0] == "PUT"]
+        self.assertEqual(len(puts), 1)
+        self.assertEqual(puts[0][2], {"expected_head_sha": B})
+
+    def test_draft_branches_are_refreshed_without_running_required_checks(self):
+        p = pull(draft=True)
+        self.api.prs[1] = p
+        outcome = self.updater.process(p)
+        self.assertEqual(outcome["status"], "draft_updated")
+        self.assertTrue(any(c[0] == "PUT" for c in self.api.calls))
+        self.assertFalse(any(c[0] == "POST" for c in self.api.calls))
+
+    def test_changed_required_workflow_on_branch_blocks_privileged_dispatch(self):
+        p = pull(base=A, head=C)
+        self.api.prs[1] = p
+        self.api.current.add((A, C))
+        self.api.workflow_blobs[("ci.yml", "feature/1")] = "attacker-controlled"
+        outcome = self.updater.process(p)
+        self.assertEqual(outcome["status"], "untrusted_workflow")
+        self.assertFalse(any(c[0] == "POST" for c in self.api.calls))
+
+    def test_failed_evidence_survives_a_main_advance_for_the_same_head(self):
+        p = pull(base=A, head=B)
+        self.api.prs[1] = p
+        self.api.workflows["ci.yml"] = [{
+            "id": 9, "path": ".github/workflows/ci.yml@refs/pull/1/merge",
+            "event": "pull_request", "status": "completed", "conclusion": "failure",
+            "created_at": "2026-10-26T00:00:00Z",
+            "pull_requests": [{"number": 1, "head": {"sha": B}, "base": {"sha": A}}],
+        }]
+        self.api.main = D
+        result = self.updater.process(pull(base=A, head=B))
+        self.assertEqual(result["status"], "failed_gate")
+        self.assertFalse(any(c[0] == "PUT" for c in self.api.calls))
 
     def test_main_head_race_conflict_and_pending_update_are_visible(self):
         self.api.update_error = mod.ApiError(422, "conflict")
@@ -245,13 +304,16 @@ class UpdaterTests(unittest.TestCase):
         })
         self.assertEqual(self.updater.process(p)["status"], "checks_dispatched")
 
-    def test_every_pr_is_reconciled_without_mutating_ineligible_prs(self):
+    def test_every_open_same_repo_main_pr_is_reconciled(self):
         self.api = FakeAPI([pull(2, head=B), pull(1, head=B, opted=False), pull(3, head=B, draft=True)])
         self.updater = mod.Updater(self.api, sleep=lambda _: None, update_wait=0)
         outcomes = self.updater.reconcile()
         self.assertEqual([x["number"] for x in outcomes], [1, 2, 3])
-        self.assertEqual([x["status"] for x in outcomes], ["skipped", "checks_dispatched", "skipped"])
-        self.assertEqual(sum(c[0] == "PUT" for c in self.api.calls), 1)
+        self.assertEqual(
+            [x["status"] for x in outcomes],
+            ["checks_dispatched", "checks_dispatched", "draft_updated"],
+        )
+        self.assertEqual(sum(c[0] == "PUT" for c in self.api.calls), 3)
 
     def test_workflow_failure_is_not_retried_and_new_source_head_is_a_new_identity(self):
         p = pull(base=A, head=C)
