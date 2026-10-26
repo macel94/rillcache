@@ -6,6 +6,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, Sender};
 use std::time::Instant;
 
+use crate::session::Session;
+
 const QUANTUM: usize = 64;
 const OUTPUT_CHUNK: usize = 64 * 1024;
 
@@ -43,6 +45,7 @@ impl PollWindow {
 
 pub(super) struct Client {
     pub(super) stream: TcpStream,
+    pub(super) session: Session,
     pub(super) input: Vec<u8>,
     pub(super) output: Vec<u8>,
     pub(super) sent: usize,
@@ -155,7 +158,7 @@ impl Client {
         let mut need_input = false;
         for _ in 0..QUANTUM {
             match dispatch_request(&self.input[consumed..], config.limits, |args| {
-                store.execute(args, &mut self.output)
+                self.session.execute(store, args, &mut self.output)
             }) {
                 Ok(Some((action, used))) => {
                     consumed += used;
@@ -311,6 +314,7 @@ pub(super) fn serve(
             stream.set_nonblocking(true)?;
             let client = Client {
                 stream,
+                session: Session::new(),
                 input: Vec::with_capacity(8192.min(config.limits.max_frame_bytes)),
                 output: Vec::with_capacity(8192),
                 sent: 0,
@@ -416,6 +420,7 @@ mod tests {
         (
             Client {
                 stream,
+                session: Session::new(),
                 input,
                 output: Vec::new(),
                 sent: 0,
@@ -503,6 +508,7 @@ mod tests {
         stream.set_nonblocking(true).unwrap();
         let mut client = Client {
             stream,
+            session: Session::new(),
             input: b"*1\r\n$4\r\nPING\r\n".to_vec(),
             output: Vec::new(),
             sent: 0,

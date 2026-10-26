@@ -3,6 +3,7 @@
 
 use super::pool::Client;
 use super::*;
+use crate::session::Session;
 use std::sync::{
     Mutex,
     mpsc::{self, Receiver, Sender},
@@ -132,6 +133,7 @@ impl Sharing {
         stream: &mut TcpStream,
         input: &mut Vec<u8>,
         output: &mut Vec<u8>,
+        session: &mut Session,
         store: &Store,
     ) -> io::Result<bool> {
         debug_assert!(output.is_empty());
@@ -143,6 +145,7 @@ impl Sharing {
         socket.set_nonblocking(true)?;
         let client = Client {
             stream: socket,
+            session: std::mem::take(session),
             input: std::mem::take(input),
             output: std::mem::take(output),
             sent: 0,
@@ -193,6 +196,7 @@ impl Sharing {
         if client.sent > 0 {
             client.output.drain(..client.sent);
         }
+        *session = std::mem::take(&mut client.session);
         *input = std::mem::take(&mut client.input);
         *output = std::mem::take(&mut client.output);
         let closing = client.closing;
