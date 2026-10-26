@@ -131,16 +131,21 @@ class Updater:
         return self.api.pages(f"repos/{REPO}/pulls?state=open&base={MAIN}")
 
     def eligible(self, pr: dict) -> tuple[bool, str]:
+        """Every open same-repository PR targeting main is kept current.
+
+        Draft state and auto-merge are deliberately not eligibility gates: the
+        user asked for every open PR branch to stay up to date with main. This
+        workflow only refreshes branches; it never promotes a draft, enables or
+        revokes auto-merge, approves, or merges. Required-check reconciliation
+        still applies only to non-draft PRs, which are the only ones that can
+        merge.
+        """
         if pr.get("state") != "open":
             return False, "closed"
         if pr.get("base", {}).get("ref") != MAIN or pr.get("base", {}).get("repo", {}).get("full_name") != REPO:
             return False, "not targeting this repository's main"
         if pr.get("head", {}).get("repo", {}).get("full_name") != REPO:
             return False, "fork head is not eligible"
-        if pr.get("draft"):
-            return False, "draft PR is not eligible"
-        if not pr.get("auto_merge"):
-            return False, "explicit protected auto-merge request is absent"
         if not valid_sha(pr.get("base", {}).get("sha")) or not valid_sha(pr.get("head", {}).get("sha")):
             return False, "invalid base/head identity"
         if not isinstance(pr.get("head", {}).get("ref"), str) or not pr["head"]["ref"]:
@@ -194,6 +199,52 @@ class Updater:
         matched = [r for r in runs if self.run_matches(r, pr, head, base, workflow)]
         return sorted(matched, key=lambda r: (iso_time(r.get("created_at")), int(r.get("id", 0) or 0)))
 
+    @staticmethod
+    def run_mentions_head(run: dict, pr: dict, workflow: str, head: str) -> bool:
+        """Match any real run for this exact source head, regardless of base.
+
+        Failed evidence for a source head must survive later main advances, so
+        the pre-update failure check cannot require the old base SHA.
+        """
+        if run.get("path", "").split("@", 1)[0] != f".github/workflows/{workflow}":
+            return False
+        if run.get("event") == "workflow_dispatch":
+            return run.get("head_sha") == head and run.get("head_branch") == pr["head"]["ref"]
+        if run.get("event") != "pull_request":
+            return False
+        bot_actor = run.get("actor", {}).get("login") == "github-actions[bot]"
+        if run.get("conclusion") == "action_required" or (
+                bot_actor and run.get("status") in {"queued", "waiting", "requested", "pending"}):
+            return False
+        return any(
+            item.get("number") == pr["number"] and item.get("head", {}).get("sha") == head
+            for item in run.get("pull_requests", []) if isinstance(item, dict)
+        )
+
+    def runs_for_head(self, pr: dict, workflow: str, head: str) -> list[dict]:
+        runs = self.workflow_runs(workflow, pr["head"]["ref"])
+        matched = [r for r in runs if self.run_mentions_head(r, pr, workflow, head)]
+        return sorted(matched, key=lambda r: (iso_time(r.get("created_at")), int(r.get("id", 0) or 0)))
+
+    def workflow_trusted(self, workflow: str, ref: str) -> tuple[bool, str]:
+        """Fail closed unless the branch's required workflow matches protected main.
+
+        ``workflow_dispatch`` runs the workflow definition from the dispatched
+        ref. A branch that rewrote ``ci.yml``/``pr-quality.yml`` could otherwise
+        run attacker-controlled workflow code with the updater's write token.
+        """
+        path = f".github/workflows/{workflow}"
+        try:
+            main_file = self.api.call(f"repos/{REPO}/contents/{path}?ref={MAIN}")
+            head_file = self.api.call(f"repos/{REPO}/contents/{path}?ref={api_path_branch(ref)}")
+        except ApiError as exc:
+            return False, f"cannot verify {workflow} definition: {exc}"
+        if not isinstance(main_file, dict) or not isinstance(head_file, dict):
+            return False, f"{workflow} content metadata unavailable"
+        if main_file.get("sha") != head_file.get("sha"):
+            return False, f"{workflow} differs from protected main; refusing privileged dispatch"
+        return True, "workflow definition matches protected main"
+
     def check_identity(self, run: dict, workflow: str) -> tuple[bool, str]:
         run_id = run.get("id")
         check_sha = run.get("head_sha")
@@ -236,6 +287,9 @@ class Updater:
             if not ok:
                 return "failed", detail
             return "passed", detail
+        trusted, trust_detail = self.workflow_trusted(workflow, pr["head"]["ref"])
+        if not trusted:
+            return "untrusted_workflow", trust_detail
         try:
             self.dispatch(pr, workflow)
         except ApiError as exc:
@@ -244,7 +298,12 @@ class Updater:
             return "dispatch_uncertain", str(exc)
         return "dispatched", "explicit workflow_dispatch accepted; awaiting exact run"
 
-    def update_branch(self, number: int, frozen_base: str, frozen_head: str) -> tuple[str, dict]:
+    def update_branch(self, number: int, frozen_main: str, frozen_head: str) -> tuple[str, dict]:
+        """Merge frozen main into the PR branch; ``frozen_main`` is current main.
+
+        ``pr.base.sha`` is only the PR's last-synced base snapshot, so it must
+        never be compared with current main here.
+        """
         try:
             self.api.call(f"repos/{REPO}/pulls/{number}/update-branch", method="PUT",
                           body={"expected_head_sha": frozen_head})
@@ -256,13 +315,11 @@ class Updater:
         while True:
             latest = self.pull(number)
             main = self.main_sha()
-            base = latest.get("base", {}).get("sha")
             head = latest.get("head", {}).get("sha")
-            if main != frozen_base or base != frozen_base:
-                return "identity_race", {"observed_base": base, "main": main, "observed_head": head}
+            if main != frozen_main:
+                return "identity_race", {"main": main, "observed_head": head}
             if valid_sha(head) and head != frozen_head:
-                status = self.compare(frozen_base, head)
-                if status in {"ahead", "identical"}:
+                if self.compare(frozen_main, head) in {"ahead", "identical"}:
                     return "updated", {"head": head}
             remaining = deadline - self.clock()
             if remaining <= 0:
@@ -282,42 +339,37 @@ class Updater:
             if not eligible:
                 outcome.update(status="skipped", detail=why)
                 return outcome
-            base = pr["base"]["sha"]
             head = pr["head"]["sha"]
+            # ``pr.base.sha`` is the PR's last-synced base snapshot, not current
+            # main. Staleness is whether the head already contains current main.
             main = self.main_sha()
-            if base != main:
-                outcome.update(status="base_race", base=base, main=main,
-                               detail="PR base is not the frozen current main; rescan later")
-                return outcome
-
-            stale = self.compare(base, head) not in {"ahead", "identical"}
+            stale = self.compare(main, head) not in {"ahead", "identical"}
             if stale:
                 # Failed evidence for this exact source head is a stop condition:
                 # do not update it merely to get a new merge SHA/check identity.
                 for workflow in REQUIRED:
-                    prior = self.matching_runs(pr, workflow, head, base)
+                    prior = self.runs_for_head(pr, workflow, head)
                     if prior and prior[-1].get("status") == "completed" and prior[-1].get("conclusion") != "success":
-                        outcome.update(status="failed_gate", base=base, head=head,
-                                       detail=f"{workflow} failed for this exact candidate; no automatic retry")
+                        outcome.update(status="failed_gate", base=main, head=head,
+                                       detail=f"{workflow} failed for this exact source head; no automatic retry")
                         return outcome
                     if prior and prior[-1].get("status") != "completed":
-                        outcome.update(status="waiting_existing_check", base=base, head=head,
-                                       detail=f"{workflow} is already running for this exact candidate")
+                        outcome.update(status="waiting_existing_check", base=main, head=head,
+                                       detail=f"{workflow} is already running for this exact source head")
                         return outcome
                 latest = self.pull(number)
                 still_eligible, eligibility = self.eligible(latest)
                 current_main = self.main_sha()
                 if not still_eligible:
-                    outcome.update(status="consent_revoked", base=base, head=head,
-                                   detail=f"eligibility changed before guarded update: {eligibility}")
+                    outcome.update(status="consent_revoked", base=main, head=head,
+                                   detail=f"PR stopped being eligible before guarded update: {eligibility}")
                     return outcome
-                if (latest.get("head", {}).get("sha") != head
-                        or latest.get("base", {}).get("sha") != base or current_main != base):
-                    outcome.update(status="identity_race", base=base, head=head,
-                                   detail="base/head changed before guarded update")
+                if latest.get("head", {}).get("sha") != head or current_main != main:
+                    outcome.update(status="identity_race", base=main, head=head,
+                                   detail="head/main changed before guarded update")
                     return outcome
-                state, detail = self.update_branch(number, base, head)
-                outcome.update(status=state, base=base, previous_head=head, **detail)
+                state, detail = self.update_branch(number, main, head)
+                outcome.update(status=state, base=main, previous_head=head, **detail)
                 if state != "updated":
                     return outcome
                 head = detail["head"]
@@ -325,33 +377,39 @@ class Updater:
                 still_eligible, eligibility = self.eligible(pr)
                 if not still_eligible:
                     outcome.update(status="consent_revoked", head=head,
-                                   detail=f"eligibility changed after branch update: {eligibility}")
+                                   detail=f"PR stopped being eligible after branch update: {eligibility}")
                     return outcome
-                if (pr.get("head", {}).get("sha") != head or pr.get("base", {}).get("sha") != base
-                        or self.main_sha() != base):
+                if pr.get("head", {}).get("sha") != head or self.main_sha() != main:
                     outcome.update(status="identity_race", head=head,
                                    detail="candidate identity changed immediately after update")
                     return outcome
-                if self.compare(base, head) not in {"ahead", "identical"}:
+                if self.compare(main, head) not in {"ahead", "identical"}:
                     outcome.update(status="not_current", head=head,
                                    detail="updated candidate does not contain frozen main")
                     return outcome
 
-            outcome.update(base=base, head=head)
+            if pr.get("draft"):
+                # Draft branches are kept current, but the expensive required
+                # checks are reconciled once the PR is ready for review.
+                outcome.update(status="draft_updated" if stale else "draft_current",
+                               base=main, head=head,
+                               detail="draft branch reconciled with main; required checks run when it is ready")
+                return outcome
+
+            outcome.update(base=main, head=head)
             states = {}
             for workflow in REQUIRED:
                 pr = self.pull(number)
                 still_eligible, eligibility = self.eligible(pr)
                 if not still_eligible:
                     outcome.update(status="consent_revoked", workflows=states,
-                                   detail=f"eligibility changed before {workflow}: {eligibility}")
+                                   detail=f"PR stopped being eligible before {workflow}: {eligibility}")
                     return outcome
-                if (pr.get("head", {}).get("sha") != head or pr.get("base", {}).get("sha") != base
-                        or self.main_sha() != base):
+                if pr.get("head", {}).get("sha") != head or self.main_sha() != main:
                     outcome.update(status="identity_race", workflows=states,
                                    detail=f"candidate identity changed before {workflow}")
                     return outcome
-                state, detail = self.ensure_workflow(pr, workflow, head, base)
+                state, detail = self.ensure_workflow(pr, workflow, head, main)
                 states[workflow] = {"status": state, "detail": detail}
                 if state not in {"passed", "dispatched"}:
                     outcome.update(status="waiting" if state == "waiting" else state,
@@ -361,12 +419,11 @@ class Updater:
             still_eligible, eligibility = self.eligible(latest)
             if not still_eligible:
                 outcome.update(status="consent_revoked", workflows=states,
-                               detail=f"eligibility changed while checks were running: {eligibility}")
+                               detail=f"PR stopped being eligible while checks were running: {eligibility}")
                 return outcome
-            if (latest.get("head", {}).get("sha") != head or latest.get("base", {}).get("sha") != base
-                    or self.main_sha() != base):
+            if latest.get("head", {}).get("sha") != head or self.main_sha() != main:
                 outcome.update(status="identity_race", workflows=states,
-                               detail="base/head changed while required checks were being reconciled")
+                               detail="head/main changed while required checks were being reconciled")
                 return outcome
             if all(value["status"] == "passed" for value in states.values()):
                 outcome.update(status="checks_passed", workflows=states,
@@ -433,9 +490,9 @@ def main() -> int:
         outcomes = updater.reconcile()
         write_reports(outcomes)
         print(json.dumps(outcomes, sort_keys=True))
-        blocking = {"api_error", "failed", "failed_gate", "conflict_or_race", "identity_race",
+        blocking = {"error", "api_error", "failed", "failed_gate", "conflict_or_race", "identity_race",
                     "identity_ambiguous", "consent_revoked", "dispatch_uncertain",
-                    "update_uncertain", "not_current"}
+                    "untrusted_workflow", "update_uncertain", "not_current"}
         return 1 if any(item.get("status") in blocking for item in outcomes) else 0
     except ApiError as exc:
         print(f"PR updater failed closed: {exc}", file=sys.stderr)
