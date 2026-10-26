@@ -5,11 +5,16 @@ use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn id(raw: &[u8]) -> Option<StreamId> {
-    let separator = raw.iter().position(|byte| *byte == b'-')?;
-    Some(StreamId {
-        ms: parse_u64(&raw[..separator])?,
-        seq: parse_u64(&raw[separator + 1..])?,
-    })
+    match raw.iter().position(|byte| *byte == b'-') {
+        Some(separator) => Some(StreamId {
+            ms: parse_u64(&raw[..separator])?,
+            seq: parse_u64(&raw[separator + 1..])?,
+        }),
+        None => Some(StreamId {
+            ms: parse_u64(raw)?,
+            seq: 0,
+        }),
+    }
 }
 fn parse_u64(bytes: &[u8]) -> Option<u64> {
     if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
