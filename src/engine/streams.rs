@@ -607,13 +607,16 @@ mod tests {
         );
         assert!(read.starts_with(b"*1\r\n"));
         assert_eq!(run(&store, &[b"COPY", b"src", b"dst"]), b"+OK\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 14);
         assert_eq!(run(&store, &[b"TYPE", b"dst"]), b"+stream\r\n");
         let info = run(&store, &[b"XINFO", b"STREAM", b"dst", b"FULL"]);
         assert_eq!(info, run(&store, &[b"XINFO", b"STREAM", b"src", b"FULL"]));
         assert!(run(&store, &[b"GET", b"dst"]).starts_with(b"-WRONGTYPE"));
         assert_eq!(run(&store, &[b"DEL", b"src"]), b":1\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 7);
         assert_eq!(info, run(&store, &[b"XINFO", b"STREAM", b"dst", b"FULL"]));
         assert_eq!(run(&store, &[b"RENAME", b"dst", b"moved"]), b"+OK\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 9);
         assert_eq!(run(&store, &[b"XLEN", b"moved"]), b":2\r\n");
     }
     #[test]
@@ -662,10 +665,19 @@ mod tests {
         assert_eq!(group.consumers[b"c".as_slice()].pending.len(), 1);
         drop(data);
         let before = run(&store, &[b"XINFO", b"STREAM", b"s", b"FULL"]);
-        assert!(before.windows(3).any(|w| w == b"c"));
+        let pending_entry = b"*4\r\n$3\r\n1-0\r\n$1\r\nc\r\n";
+        assert!(
+            before
+                .windows(pending_entry.len())
+                .any(|w| w == pending_entry)
+        );
         assert_eq!(run(&store, &[b"XDEL", b"s", b"1-0"]), b":1\r\n");
         let after = run(&store, &[b"XINFO", b"STREAM", b"s", b"FULL"]);
-        assert!(!after.windows(5).any(|w| w == b"1-0"));
+        assert!(
+            !after
+                .windows(pending_entry.len())
+                .any(|w| w == pending_entry)
+        );
         let data = store.data.read().unwrap();
         let group = &data.entries[b"s".as_slice()]
             .stream

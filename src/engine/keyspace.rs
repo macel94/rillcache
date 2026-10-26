@@ -150,7 +150,6 @@ impl Store {
             .and_then(|n| {
                 data.payload_bytes
                     .checked_sub(destination_bytes)
-                    .and_then(|base| base.checked_sub(arguments[1].len()))
                     .and_then(|base| base.checked_add(n))
             })
             .filter(|n| *n <= self.max_payload_bytes)
