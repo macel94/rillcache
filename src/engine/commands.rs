@@ -1,3 +1,4 @@
+use super::data::Entry;
 use super::*;
 use options::{Condition, ExpireFlags, NOT_INTEGER, OOM, SetOptions, parse_integer};
 
