@@ -271,7 +271,7 @@ impl Store {
             .map(|(field, value)| (field.to_vec(), value.to_vec()))
             .collect();
         let mut added = 0;
-        for pair in args[2..].chunks_exact(2) {
+        for pair in args[2..].as_chunks::<2>().0 {
             added += i64::from(hash.insert(pair[0].to_vec(), pair[1].to_vec()).is_none());
         }
         if hash.len() > MAX_ELEMENTS {
@@ -354,7 +354,7 @@ impl Store {
 
     fn zset_add(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let mut members = Vec::with_capacity((args.len() - 2) / 2);
-        for pair in args[2..].chunks_exact(2) {
+        for pair in args[2..].as_chunks::<2>().0 {
             let Some(score) = parse_score(pair[0]) else {
                 out.extend_from_slice(b"-ERR value is not a valid float\r\n");
                 return;
@@ -743,6 +743,12 @@ fn parse_score(bytes: &[u8]) -> Option<f64> {
     score.is_finite().then_some(score)
 }
 
+fn parse_count(bytes: &[u8]) -> Option<i64> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let value = text.parse::<i64>().ok()?;
+    (value.to_string().as_bytes() == bytes).then_some(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,10 +878,4 @@ mod tests {
         assert_eq!(run(&store, &[b"DEL", b"m"]), b":1\r\n");
         assert_eq!(store.data.read().unwrap().payload_bytes, 0);
     }
-}
-
-fn parse_count(bytes: &[u8]) -> Option<i64> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    let value = text.parse::<i64>().ok()?;
-    (value.to_string().as_bytes() == bytes).then_some(value)
 }

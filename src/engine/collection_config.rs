@@ -185,7 +185,7 @@ impl Store {
             return;
         };
         let mut candidate = *config;
-        for pair in args[2..].chunks_exact(2) {
+        for pair in args[2..].as_chunks::<2>().0 {
             if candidate.set(pair[0], pair[1]).is_err() {
                 out.extend_from_slice(b"-ERR CONFIG SET option is unsupported or invalid\r\n");
                 return;

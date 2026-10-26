@@ -397,12 +397,12 @@ pub(super) fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
                     continue;
                 }
                 b'[' => {
-                    if let Some((matched, after)) = glob_class(pattern, p, text[s]) {
-                        if matched {
-                            p = after;
-                            s += 1;
-                            continue;
-                        }
+                    if let Some((matched, after)) = glob_class(pattern, p, text[s])
+                        && matched
+                    {
+                        p = after;
+                        s += 1;
+                        continue;
                     }
                 }
                 byte => {
@@ -419,13 +419,13 @@ pub(super) fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
                 }
             }
         }
-        if let Some(star) = retry_pattern {
-            if retry_text < text.len() {
-                retry_text += 1;
-                s = retry_text;
-                p = star;
-                continue;
-            }
+        if let Some(star) = retry_pattern
+            && retry_text < text.len()
+        {
+            retry_text += 1;
+            s = retry_text;
+            p = star;
+            continue;
         }
         return false;
     }
@@ -657,13 +657,10 @@ mod tests {
         );
         let pattern = b"*?".repeat(50_000);
         assert_eq!(call(&store, &[b"KEYS", &pattern]), b"*0\r\n");
-        assert_eq!(
-            glob_match(
-                b"a*a*a*a*a*a*a*a*a*b",
-                b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            ),
-            false
-        );
+        assert!(!glob_match(
+            b"a*a*a*a*a*a*a*a*a*b",
+            b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
     }
 
     #[test]
