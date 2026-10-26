@@ -17,10 +17,12 @@ mod options;
 mod streams;
 mod string_algorithms;
 mod string_ranges;
+mod transaction;
 mod xxh3;
 use collection_config::CollectionConfig;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
+pub use transaction::{TransactionOutcome, WatchState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -49,6 +51,7 @@ pub struct Store {
     max_payload_bytes: usize,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
+    transaction_gate: RwLock<()>,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -60,11 +63,15 @@ impl Store {
             max_payload_bytes,
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
+            transaction_gate: RwLock::new(()),
         }
     }
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
     /// Every lookup still treats logically expired entries as absent immediately.
     pub fn purge_expired(&self, limit: usize) -> usize {
+        let Ok(_gate) = self.transaction_gate.read() else {
+            return 0;
+        };
         let Ok(mut data) = self.data.try_write() else {
             return 0;
         };
@@ -76,6 +83,16 @@ impl Store {
 
     /// Append exactly one reply. No store lock is held during socket I/O.
     pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        let Ok(_gate) = self.transaction_gate.read() else {
+            internal_error(output);
+            return Action::Continue;
+        };
+        self.execute_locked(arguments, output)
+    }
+
+    /// Dispatch without the transaction gate; only `EXEC` may call this while
+    /// holding the gate's write side.
+    pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
         if self.execute_collection_config(arguments, output)
             || self.execute_admin(arguments, output)
             || self.execute_discovery(arguments, output)
@@ -266,6 +283,11 @@ impl Store {
         }
         Action::Continue
     }
+
+    /// Command-table arity used for MULTI queue-time validation and discovery.
+    pub fn command_arity(name: &[u8]) -> Option<i64> {
+        discovery::command_arity(name)
+    }
 }
 
 fn arity(command: &str, output: &mut Vec<u8>) {
@@ -296,3 +318,6 @@ mod expiry_tests;
 #[cfg(test)]
 #[path = "engine/base_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "engine/transaction_tests.rs"]
+mod transaction_tests;

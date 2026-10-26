@@ -202,15 +202,52 @@ impl Entry {
     }
 }
 
+/// Bounded per-key mutation versions for `WATCH`. A full table or `FLUSHDB`
+/// advances `epoch`, conservatively aborting every outstanding watch rather than
+/// silently forgetting a mutation. The bound keeps memory independent of the
+/// number of historical keys.
+pub(super) const MAX_TRACKED_VERSIONS: usize = 65_536;
+
 #[derive(Default)]
 pub(super) struct Data {
     pub entries: HashMap<Vec<u8>, Entry>,
     pub payload_bytes: usize,
     pub expirations: BTreeSet<(i64, Vec<u8>)>,
+    pub(super) versions: HashMap<Vec<u8>, u64>,
+    version_seq: u64,
+    epoch: u64,
 }
 impl Data {
+    /// Record a mutation visible to `WATCH`/`EXEC` conflict checks.
+    pub fn touch(&mut self, key: &[u8]) {
+        self.version_seq = self.version_seq.wrapping_add(1);
+        if self.versions.len() >= MAX_TRACKED_VERSIONS && !self.versions.contains_key(key) {
+            self.versions.clear();
+            self.epoch = self.epoch.wrapping_add(1);
+        }
+        self.versions.insert(key.to_vec(), self.version_seq);
+    }
+
+    pub fn version(&self, key: &[u8]) -> Option<u64> {
+        self.versions.get(key).copied()
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Clear every key and conservatively invalidate every outstanding watch.
+    pub fn flush(&mut self) {
+        self.entries.clear();
+        self.expirations.clear();
+        self.payload_bytes = 0;
+        self.versions.clear();
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+
     pub fn remove(&mut self, key: &[u8]) -> Option<Entry> {
         let (key, entry) = self.entries.remove_entry(key)?;
+        self.touch(&key);
         self.payload_bytes -= key.len() + entry.payload_len;
         if let Some(at) = entry.expires {
             self.expirations.remove(&(at, key));
@@ -245,6 +282,10 @@ impl Data {
     }
 
     pub fn set_expiry(&mut self, key: &[u8], expires: Option<i64>) {
+        let changed = self.entries.get(key).expect("existing entry").expires != expires;
+        if changed {
+            self.touch(key);
+        }
         let entry = self.entries.get_mut(key).expect("existing entry");
         Self::replace_expiry(&mut self.expirations, key, entry, expires);
     }
@@ -324,6 +365,7 @@ impl Data {
             }
         }
         self.payload_bytes = payload;
+        self.touch(key);
     }
 
     /// Install an already admitted owned value without copying its buffers or tree.
@@ -335,6 +377,7 @@ impl Data {
         }
         self.entries.insert(key.to_vec(), entry);
         self.payload_bytes = payload;
+        self.touch(key);
     }
 
     pub fn put_collection(
@@ -367,6 +410,7 @@ impl Data {
             }
         }
         self.payload_bytes = payload;
+        self.touch(key);
     }
 
     pub fn put_stream(&mut self, key: &[u8], stream: Stream, expires: Option<i64>, payload: usize) {
@@ -393,5 +437,6 @@ impl Data {
             }
         }
         self.payload_bytes = payload;
+        self.touch(key);
     }
 }
