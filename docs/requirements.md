@@ -453,19 +453,31 @@ reason to couple all future commands into a single large story.
 
 ## Compatibility boundary (v0.1)
 
-Supported: RESP2 nonempty arrays of non-null bulk strings, case-insensitive ASCII
-command names, binary keys/values, multiple connections and ordered pipelines;
-`PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
+Supported: RESP2 nonempty arrays of non-null bulk strings and Redis-style inline
+commands with whitespace, quotes and escapes, case-insensitive ASCII command names,
+binary keys/values (including escaped inline `\xHH` bytes), multiple connections
+and ordered mixed-protocol pipelines; `PING`, `ECHO`, `SET` with NX/XX, GET,
+KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
 `EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
-INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX; APPEND/STRLEN/GETRANGE/SETRANGE;
-LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE; SADD/SMEMBERS/SCARD/SISMEMBER;
+INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX; APPEND/STRLEN/
+GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS (LEN/IDX/WITHMATCHLEN/
+MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE; SADD/SMEMBERS/SCARD/SISMEMBER;
 HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD. See
 [string semantics](strings.md), [string ranges](string-ranges.md),
-[multi-key string limits](multikey-strings.md) and [typed collections](collections.md)
-for grammar, clocks, rounding, integer limits, resource bounds and atomic error
-behavior. Conditions are atomic
-and case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
+[bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md)
+and [typed collections](collections.md) for grammar, clocks, rounding, integer
+limits, resource bounds and atomic error behavior. Conditions are atomic and
+case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
+A bounded stream subset supports XADD, XDEL, XLEN, XGROUP CREATE/SETID,
+XREADGROUP GROUP with COUNT/NOACK for new entries on one stream, XINFO STREAM
+(with FULL). See [stream limits](streams.md). All types share expiry, payload
+accounting, TYPE, RENAME and deep same-database COPY; byte-oriented KEYS and
+RANDOMKEY inspect that same keyspace. See [keyspace limits](keyspace.md).
+CONFIG GET/SET collection thresholds select actual collection representations;
+other runtime settings remain unsupported. FLUSHDB/FLUSHALL clear all types,
+CONFIG RESETSTAT retains its empty-statistics behavior, and MEMORY USAGE reports
+a deterministic logical estimate, not allocator/RSS measurements.
 
 The default wire mode is RESP2. `HELLO` can inspect the current mode or
 negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
@@ -477,19 +489,23 @@ converted by frame boundaries, preserving binary payloads. See
 [client sessions](client-sessions.md) for limits and response details. Real
 redis-cli/library handshake interoperability is not yet verified.
 
-Deliberately not supported: inline/telnet commands, empty/null request arrays,
-other RESP3 types and pushes, digest/value-match SET conditions, unimplemented
-collection commands and compact/listpack CONFIG, COPY, KEYS and RANDOMKEY,
-nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication,
-clustering, transactions, pub/sub and streams. Unsupported SET options return
+Deliberately not supported: empty/null request arrays, other RESP3 types and
+pushes, digest/value-match SET conditions, commands beyond the documented
+collection/stream subsets, nonzero SELECT indices, AUTH/ACL/TLS, persistence,
+replication, clustering, transactions, scripts and pub/sub. Unsupported SET
+options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-
 option errors omit arbitrary input bytes rather than reflecting them into RESP
-error frames. Limits are deliberately smaller than Redis defaults.
+error frames. Conservative defaults remain smaller than Redis limits.
 
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload and a 2 MiB
-maximum MGET RESP reply. Over-limit replies return `ERR MGET reply limit exceeded`
+maximum MGET RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
+request bounds up to 512 MiB (bulk must fit within frame); larger requests remain
+finite and grow buffers only as bytes arrive. Compatibility-only upstream runs
+match native and candidate at 8 MiB bulk and 16 MiB frame; MGET remains capped at
+2 MiB. Over-limit replies return `ERR MGET reply limit exceeded`
 without a partial array. Payload accounting excludes map capacity, allocator and
 connection/thread buffers.
 The CLI uses loopback by default. Do not expose it to untrusted clients.
@@ -503,8 +519,8 @@ Not implemented or implied by the completed increments:
    compatible increments.
 2. Authentication/ACL and a safe transport-security deployment boundary; durability
    with crash/recovery and Redis-format interoperability tests.
-3. Richer data types, transactions, scripts, pub/sub, streams, replication and
-   clustering: follow the [production-readiness plan](production-readiness.md).
+3. Richer data types, transactions, scripts, pub/sub, expanded streams, replication
+   and clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe
    release, failover and fencing semantics are not implemented.
 4. Extend the [measured client-I/O gains](../benchmarks/studies/client-handoffs/README.md)
@@ -515,7 +531,7 @@ Not implemented or implied by the completed increments:
    backpressure, shutdown and multi-key atomicity gates. Unsafe project code and
    external Rust dependencies remain forbidden.
 5. Controlled-hardware performance budgets and repeated current-release comparisons;
-   later, richer types, pub/sub and streams driven by product judgment.
+   later, richer types, pub/sub and additional stream capabilities driven by product judgment.
 
 Definition of done for each future story: EARS acceptance cases and limits agreed,
 unit and wire tests added, dependency/safety policy intact, `make ci` passing,

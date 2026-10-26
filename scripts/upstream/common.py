@@ -179,16 +179,23 @@ def server(name, directory, *, port=None, affinity=None, compatibility=False):
     if name == "rillcache":
         argv += ["--bind", f"127.0.0.1:{port}", "--threads", "1", "--max-clients", "128",
                  "--max-data-bytes", "268435456", "--idle-timeout-ms", "15000"]
+        if compatibility:
+            argv += ["--max-bulk-bytes", "8388608", "--max-frame-bytes", "16777216"]
     else:
         argv += ["--bind", "127.0.0.1", "--port", str(port), "--protected-mode", "yes",
                  "--save", "", "--appendonly", "no", "--daemonize", "no", "--dir", str(directory),
                  "--maxclients", "128", "--maxmemory", "268435456", "--maxmemory-policy", "noeviction",
                  "--io-threads", "1", "--timeout", "15"]
         if compatibility:
-            argv += ["--enable-debug-command", "yes"]
+            argv += ["--enable-debug-command", "yes", "--proto-max-bulk-len", "8388608",
+                     "--client-query-buffer-limit", "16777216"]
     if affinity is not None:
         argv = ["taskset", "-c", str(affinity), *argv]
-    identity = {"argv": argv, "port": port, "persistence": "disabled", "affinity": affinity}
+    identity = {"argv": argv, "port": port, "persistence": "disabled", "affinity": affinity,
+                "compatibility_limits": ({"max_bulk_bytes": 8388608, "max_frame_bytes": 16777216,
+                                          "native_proto_max_bulk_len": 8388608,
+                                          "native_query_buffer_limit": 16777216, "mget_reply_bytes": 2097152}
+                                         if compatibility else None)}
     save(directory / "server.json", identity)
     with (directory / "server.log").open("wb") as log:
         proc = subprocess.Popen(argv, cwd=directory, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)

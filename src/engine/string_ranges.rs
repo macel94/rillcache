@@ -25,9 +25,18 @@ impl Store {
             } else {
                 self.strlen(arguments[1], output);
             }
-        } else if command.eq_ignore_ascii_case(b"GETRANGE") {
+        } else if command.eq_ignore_ascii_case(b"GETRANGE")
+            || command.eq_ignore_ascii_case(b"SUBSTR")
+        {
             if arguments.len() != 4 {
-                arity("getrange", output);
+                arity(
+                    if command.eq_ignore_ascii_case(b"SUBSTR") {
+                        "substr"
+                    } else {
+                        "getrange"
+                    },
+                    output,
+                );
             } else {
                 self.getrange(arguments[1], arguments[2], arguments[3], output);
             }
@@ -50,11 +59,15 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        let entry = data.entries.get(key);
-        if entry.is_some_and(|entry| entry.collection.is_some()) {
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| !entry.is_string())
+        {
             wrong_type(output);
             return;
         }
+        let entry = data.entries.get(key);
         let previous = entry.map(Entry::payload_len);
         let expires = entry.and_then(|entry| entry.expires);
         let Some(length) = previous
@@ -93,7 +106,7 @@ impl Store {
             integer(0, output);
             return;
         };
-        if entry.collection.is_some() {
+        if !entry.is_string() {
             wrong_type(output);
             return;
         }
@@ -114,7 +127,7 @@ impl Store {
         if data
             .entries
             .get(key)
-            .is_some_and(|entry| entry.collection.is_some())
+            .is_some_and(|entry| !entry.is_string())
         {
             wrong_type(output);
             return;
@@ -124,16 +137,17 @@ impl Store {
             .get(key)
             .map_or(&[][..], |entry| entry.value.as_slice());
         let len = value.len() as i128;
-        let normalize = |i: i64| {
-            if i < 0 {
-                (len + i as i128).max(0)
-            } else {
-                i as i128
-            }
+        let first = if start < 0 {
+            (len + start as i128).max(0)
+        } else {
+            start as i128
         };
-        let first = normalize(start);
-        let last = normalize(end);
-        if first >= len || first > last || len == 0 {
+        let last = if end < 0 {
+            len + end as i128
+        } else {
+            end as i128
+        };
+        if first >= len || first > last || last < 0 || len == 0 {
             encode_bulk(Some(&[]), output);
             return;
         }
@@ -156,11 +170,15 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        let entry = data.entries.get(key);
-        if entry.is_some_and(|entry| entry.collection.is_some()) {
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| !entry.is_string())
+        {
             wrong_type(output);
             return;
         }
+        let entry = data.entries.get(key);
         let previous = entry.map(Entry::payload_len);
         let old_len = previous.unwrap_or(0);
         let expires = entry.and_then(|entry| entry.expires);

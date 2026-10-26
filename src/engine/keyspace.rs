@@ -97,6 +97,7 @@ impl Store {
         data.expire_key(key, now);
         if let Some(entry) = data.entries.get(key) {
             let kind: &[u8] = match entry.collection.as_ref() {
+                None if entry.stream.is_some() => b"stream",
                 None => b"string",
                 Some(collection) if collection.is_list() => b"list",
                 Some(collection) if collection.is_set() => b"set",
@@ -180,6 +181,8 @@ impl Store {
         let copy = Entry {
             value: source_entry.value.clone(),
             collection: source_entry.collection.clone(),
+            stream: source_entry.stream.clone(),
+            payload_len: source_entry.payload_len,
             expires: source_entry.expires,
         };
         data.remove(destination);
@@ -741,6 +744,72 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn typed_entries_share_admin_string_guards_accounting_and_expiry() {
+        let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+        let store = Store::with_clock(10_000, clock.clone());
+        for create in [
+            &[b"RPUSH".as_slice(), b"l", b"value"][..],
+            &[b"SADD".as_slice(), b"s", b"value"][..],
+            &[b"HSET".as_slice(), b"h", b"field", b"value"][..],
+            &[b"ZADD".as_slice(), b"z", b"1", b"value"][..],
+            &[b"XADD".as_slice(), b"x", b"1", b"field", b"value"][..],
+        ] {
+            assert!(!call(&store, create).starts_with(b"-"));
+        }
+        let header = if usize::BITS == 64 { 16 } else { 12 };
+        for (key, bytes) in [(b"l", 5), (b"s", 5), (b"h", 10), (b"z", 5), (b"x", 10)] {
+            assert_eq!(
+                call(&store, &[b"MEMORY", b"USAGE", key]),
+                format!(":{}\r\n", header + 1 + bytes).as_bytes()
+            );
+            for args in [
+                &[b"GET".as_slice(), key][..],
+                &[b"GETDEL".as_slice(), key][..],
+                &[b"GETEX".as_slice(), key, b"PERSIST"][..],
+                &[b"SET".as_slice(), key, b"replacement", b"GET"][..],
+                &[b"APPEND".as_slice(), key, b"suffix"][..],
+                &[b"STRLEN".as_slice(), key][..],
+                &[b"GETRANGE".as_slice(), key, b"0", b"-1"][..],
+                &[b"SETRANGE".as_slice(), key, b"0", b"v"][..],
+                &[b"INCR".as_slice(), key][..],
+                &[b"INCRBYFLOAT".as_slice(), key, b"1"][..],
+                &[b"GETBIT".as_slice(), key, b"0"][..],
+                &[b"SETBIT".as_slice(), key, b"0", b"1"][..],
+                &[b"LCS".as_slice(), key, b"missing"][..],
+                &[b"LCS".as_slice(), b"missing", key][..],
+            ] {
+                assert!(call(&store, args).starts_with(b"-WRONGTYPE"), "{args:?}");
+            }
+            assert_eq!(call(&store, &[b"PEXPIRE", key, b"10"]), b":1\r\n");
+        }
+        assert_eq!(
+            call(&store, &[b"MGET", b"l", b"s", b"h", b"z", b"x"]),
+            b"*5\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n"
+        );
+        {
+            let data = store.data.read().unwrap();
+            assert_eq!(data.payload_bytes, 40);
+            for entry in data.entries.values() {
+                let actual = if let Some(collection) = &entry.collection {
+                    collection.payload_len()
+                } else {
+                    entry.stream.as_ref().unwrap().payload_bytes().unwrap()
+                };
+                assert_eq!(entry.payload_len(), actual);
+            }
+        }
+        clock.0.store(1011, Ordering::SeqCst);
+        assert_eq!(call(&store, &[b"DBSIZE"]), b":0\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+        assert!(store.data.read().unwrap().expirations.is_empty());
+        call(&store, &[b"RPUSH", b"l", b"value"]);
+        call(&store, &[b"XADD", b"x", b"1", b"field", b"value"]);
+        assert_eq!(call(&store, &[b"FLUSHALL", b"ASYNC"]), b"+OK\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+        assert_eq!(call(&store, &[b"CONFIG", b"RESETSTAT"]), b"+OK\r\n");
     }
 
     #[test]

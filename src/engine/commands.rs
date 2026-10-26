@@ -17,7 +17,7 @@ impl Store {
         };
         let now = self.now(&data);
         let entry = data.entries.get(key);
-        if entry.is_some_and(|entry| entry.alive(now) && entry.collection.is_some()) {
+        if entry.is_some_and(|entry| entry.alive(now) && !entry.is_string()) {
             wrong_type(output);
             return;
         }
@@ -33,6 +33,14 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| !entry.is_string())
+        {
+            wrong_type(output);
+            return;
+        }
         encode_bulk(
             data.entries.get(key).map(|entry| entry.value.as_slice()),
             output,
@@ -106,7 +114,7 @@ impl Store {
             Condition::Missing => existing.is_none(),
             Condition::Present => existing.is_some(),
         };
-        if options.get && existing.is_some_and(|entry| entry.collection.is_some()) {
+        if options.get && existing.is_some_and(|entry| !entry.is_string()) {
             wrong_type(output);
             return;
         }
@@ -170,7 +178,7 @@ impl Store {
         if data
             .entries
             .get(key)
-            .is_some_and(|entry| entry.collection.is_some())
+            .is_some_and(|entry| !entry.is_string())
         {
             wrong_type(output);
             return;
@@ -198,7 +206,7 @@ impl Store {
             encode_bulk(None, output);
             return;
         };
-        if entry.collection.is_some() {
+        if !entry.is_string() {
             wrong_type(output);
             return;
         }
@@ -356,7 +364,7 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(arguments[1], now);
         let entry = data.entries.get(arguments[1]);
-        if entry.is_some_and(|entry| entry.collection.is_some()) {
+        if entry.is_some_and(|entry| !entry.is_string()) {
             wrong_type(output);
             return;
         }

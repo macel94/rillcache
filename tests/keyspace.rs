@@ -119,6 +119,33 @@ fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
             b"*2\r\n$1\r\na\r\n$1\r\nb\r\n",
         );
 
+        command(
+            &mut stream,
+            &[b"XADD", b"stream", b"1", b"f", b"v"],
+            b"$3\r\n1-0\r\n",
+        );
+        command(&mut stream, &[b"TYPE", b"stream"], b"+stream\r\n");
+        command(
+            &mut stream,
+            &[b"COPY", b"stream", b"stream-copy"],
+            b":1\r\n",
+        );
+        command(&mut stream, &[b"XDEL", b"stream", b"1-0"], b":1\r\n");
+        command(&mut stream, &[b"XLEN", b"stream-copy"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"MGET", b"set", b"hash", b"zset", b"stream-copy"],
+            b"*4\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SETBIT", b"set", b"0", b"1"],
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        );
+        command(&mut stream, &[b"CONFIG", b"RESETSTAT"], b"+OK\r\n");
+        command(&mut stream, &[b"FLUSHALL", b"SYNC"], b"+OK\r\n");
+        command(&mut stream, &[b"DBSIZE"], b":0\r\n");
+        command(&mut stream, &[b"RANDOMKEY"], b"$-1\r\n");
         server.shutdown().unwrap();
     }
 }

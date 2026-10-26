@@ -32,7 +32,7 @@ impl Store {
                 let value_len = data
                     .entries
                     .get(*key)
-                    .and_then(|entry| entry.collection.is_none().then_some(entry.value.len()));
+                    .and_then(|entry| entry.is_string().then_some(entry.value.len()));
                 let element_bytes = match value_len {
                     Some(length) => 5usize
                         .checked_add(decimal_digits(length))
@@ -56,7 +56,7 @@ impl Store {
                 encode_bulk(
                     data.entries
                         .get(*key)
-                        .filter(|entry| entry.collection.is_none())
+                        .filter(|entry| entry.is_string())
                         .map(|entry| entry.value.as_slice()),
                     output,
                 );
