@@ -1,6 +1,6 @@
 # Single volatile instance, not replication/HA. Authentication is opt-in: add a
-# read-only --requirepass-file secret mount before exposing this beyond a trusted
-# private network. Native TLS and multi-user ACLs remain absent.
+# read-only --requirepass-file or --aclfile secret mount before exposing this
+# beyond a trusted private network. Native TLS remains absent.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

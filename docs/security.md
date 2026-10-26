@@ -1,9 +1,11 @@
 # Password authentication and transport boundaries
 
-Rillcache supports one operator-configured password for the implicit Redis
-`default` user. This is a real access-control boundary for a private deployment,
-not a complete Redis security design. It does not add users, per-command or
-per-key permissions, TLS, rate limiting, an audit log, or credential persistence.
+Rillcache supports either one operator-configured password for the implicit Redis
+`default` user or a Redis-style ACL file with multiple users, password hashes,
+command categories/commands, key patterns and channel patterns. This is a real
+access-control boundary for a private deployment, not a complete Redis security
+design. It does not add native TLS, rate limiting, an audit log, ACL selectors,
+or credential encryption at rest.
 
 ## What is implemented
 
@@ -35,28 +37,86 @@ per-key permissions, TLS, rate limiting, an audit log, or credential persistence
 - **No secret in diagnostics.** `Config`'s `Debug` representation, startup lines,
   errors and `CONFIG GET` redact the password. The password is never logged.
 
+## Multi-user ACLs
+
+`--aclfile PATH` loads a Redis-style text file instead of `--requirepass`
+(the two options are mutually exclusive). Each non-comment line is
+`user <name> <rules>`; an enabled `default` user is required or startup fails.
+Rules are applied to a fresh disabled/no-command/no-key user per line, so a full
+ACL file round-trips through `ACL SAVE`.
+
+Supported rules:
+
+- `on` / `off`
+- `>password`, `<password`, `#<64-hex sha256>`, `!<64-hex sha256>`, `nopass`,
+  `resetpass`
+- `allcommands`/`+@all`, `nocommands`/`-@all`, `+@category`, `-@category`
+- `+command`, `-command`, `+command|subcommand`, `-command|subcommand`
+- `allkeys`, `resetkeys`, `~pattern`
+- `allchannels`, `resetchannels`, `&pattern`
+- `reset`
+
+Rules are ordered: the last matching command/category/command rule decides.
+Supported categories are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
+`@list`, `@set`, `@hash`, `@zset`, `@stream`, `@bitmap`, `@connection`,
+`@transaction`, `@admin`, `@fast`, `@slow` and `@dangerous`. Category membership
+is an approximation over the published command table, not a byte-for-byte copy of
+a specific Redis release.
+
+`ACL SETUSER` is atomic: a bad rule leaves the previous user untouched.
+`ACL DELUSER`, `ACL WHOAMI`, `ACL USERS`, `ACL LIST`, `ACL GETUSER`, `ACL CAT`,
+`ACL SAVE` and `ACL LOAD` are implemented. `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
+renames it over the target and fsyncs the directory (where supported); hashes are
+saved as `#...`, never plaintext passwords. ACL files are bounded to 4 MiB,
+10,000 users, 1,024 rules per user/operation and 1,024 key/channel patterns per
+user; exceeding a bound is a visible error, not truncation.
+`ACL LOAD` parses a replacement map before publishing it. `ACL SAVE/LOAD` require
+a configured ACL file. The `default` user cannot be deleted.
+
+Authorization is evaluated before command dispatch and store access for known
+commands with declared keys. `EXEC` re-checks every queued command against the
+current ACL, so revoking or disabling a user between `MULTI` and `EXEC` cannot
+commit the queued writes. Recovery commands (`AUTH`, `HELLO`, `QUIT`) remain
+available to unauthenticated connections. Denied commands return `NOPERM`; denied
+keys return the key-specific `NOPERM`; disabled/deleted users and `NOAUTH` are
+re-evaluated on every command, so `ACL SETUSER`/`DELUSER`/`LOAD` changes apply to
+live connections immediately. `ACL WHOAMI` is available to any authenticated user.
+
 ## Deliberate limits
 
-- **One user only.** ACL users, `ACL` commands, command categories, key patterns,
-  pub/sub channel permissions and per-user passwords are not implemented. Do not
-  expose administrative credentials to tenants that need isolation.
+- **Not full Redis ACL.** Selectors, subcommand-specific categories, `ACL LOG`,
+  `ACL DRYRUN`, `ACL GENPASS`, per-user `reset` semantics beyond the implemented
+  rules, and commands not present in this server's command table are absent.
+  Channel patterns are parsed and saved but not enforced because pub/sub does not
+  exist yet. Key patterns apply only to commands with declared key positions:
+  `KEYS`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB/FLUSHALL`, `XREADGROUP` and similar
+  commands are not a per-key sandbox. Do not grant them to tenants who must not
+  see or clear the whole keyspace.
+- **Hashes are unsalted SHA-256.** This mirrors Redis ACL hash compatibility but
+  is fast to brute-force offline; use long random passwords and protect the ACL
+  file. File permissions, backups and secret distribution are operator duties.
+- **No tenant isolation at the process/network level.** All users share one
+  in-memory keyspace and one process. ACL permissions do not create separate
+  databases, memory budgets, CPU budgets or network identities.
 - **No native TLS.** Rust's standard library exposes TCP, not TLS. The project
   forbids external Rust dependencies and FFI, so native TLS has no implementation
   path without an explicit dependency-policy decision. An externally operated TLS
   terminator is a documented deployment boundary, not equivalent to Redis native
   TLS; traffic inside that perimeter is plaintext.
 - **No brute-force protection.** There is no delay, lockout, connection budget per
-  source or credential-attempt audit. Use network policy/firewalling and a strong,
-  unique password. Do not expose the port directly to untrusted clients.
+  source or credential-attempt audit for either `requirepass` or ACL users. Use
+  network policy/firewalling and strong, unique passwords. Do not expose the port
+  directly to untrusted clients.
 - **No live deauthentication.** Rotating or disabling the password affects new
   authentication decisions; a connection that already authenticated remains
   authenticated, as in Redis. Close/reconnect administrative clients when rotating.
   Existing unauthenticated connections begin receiving `NOAUTH` immediately after
   a password is set.
 - **Process arguments are visible.** `--requirepass VALUE` can appear in process
-  listings and shell history. Prefer `--requirepass-file` with a mode-`0400` secret
-  mount. The file is read only at startup; later rotation uses authenticated
-  `CONFIG SET`.
+  listings and shell history. Prefer `--requirepass-file` or `--aclfile` with a
+  mode-`0400` secret mount. Files are read at startup and by explicit `ACL LOAD`;
+  later password rotation uses authenticated `CONFIG SET`, and user changes use
+  `ACL SETUSER` plus `ACL SAVE`.
 - **No persistence.** The password is not written to disk and does not survive a
   restart unless the deployment supplies the flag/file again. The server also has
   no data persistence or replication.
@@ -68,7 +128,10 @@ per-key permissions, TLS, rate limiting, an audit log, or credential persistence
 
 1. Keep the default loopback bind for local development.
 2. Inside Docker/Kubernetes, mount a secret file read-only and append
-   `--requirepass-file /run/secrets/rillcache`; keep the root filesystem read-only.
+   `--requirepass-file /run/secrets/rillcache` or `--aclfile /run/secrets/users.acl`;
+   keep the root filesystem read-only. `ACL SAVE` needs a writable file/directory,
+   so mount a dedicated writable volume only when runtime ACL mutation+save is
+   required.
 3. Restrict ingress with a network policy or firewall. Prefer a TLS terminator for
    anything crossing an untrusted network, and document that inner hops are plaintext.
 4. Use a long random password from a secret manager, not a short human password;
@@ -79,10 +142,13 @@ per-key permissions, TLS, rate limiting, an audit log, or credential persistence
 ## Evidence
 
 Unit tests cover known SHA-256 vectors, constant-time digest equality, disabled and
-rotated credentials, exact Redis-compatible errors, `HELLO` atomicity, `NOAUTH`
-before data/admin access, unauthenticated `QUIT`, and `CONFIG` redaction/rotation.
-Wire tests run in thread-per-client, one-worker and four-worker modes, including
-pipelined rejection/authentication/order and a full runtime rotation cycle.
+rotated credentials, ordered category/command overrides, key-pattern denials,
+atomic failed `SETUSER`, ACL-file hash/rule round-trips, exact Redis-compatible
+errors, `HELLO` atomicity, `NOAUTH` before data/admin access, unauthenticated
+`QUIT`, and `CONFIG` redaction/rotation. Wire tests run in thread-per-client,
+one-worker and four-worker modes, including ACL-file startup failures, restricted
+users, `ACL SAVE/LOAD`, deletion/deactivation of live users, pipelined
+rejection/authentication/order and a full runtime rotation cycle.
 
 References: [Redis AUTH](https://redis.io/docs/latest/commands/auth/),
 [Redis security](https://redis.io/docs/latest/operate/oss_and_stack/management/security/),

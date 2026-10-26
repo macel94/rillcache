@@ -20,8 +20,9 @@ metadata; it is intentionally a small subset of Redis's connection statistics.
 Supported connection commands are `CLIENT ID`, `CLIENT SETNAME`, `CLIENT
 GETNAME`, `CLIENT SETINFO LIB-NAME|LIB-VER`, `CLIENT INFO`, and `SELECT 0`.
 Other database indices are rejected and never alias database zero. `AUTH` and
-`HELLO ... AUTH ...` authenticate the single `default` user when a password is
-configured; they do not implement multi-user ACLs or authorization. See
+`HELLO ... AUTH ...` authenticate either the `default` user or an ACL user when
+credentials are configured. `ACL WHOAMI`, `ACL GETUSER` and the other supported
+ACL subcommands expose and enforce the current policy. See
 [security](security.md) for the actual boundary and remaining gaps.
 
 RESP3 conversion is per reply and framing-aware. Current data commands produce

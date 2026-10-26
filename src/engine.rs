@@ -1,6 +1,7 @@
 //! Atomic in-memory string commands with expiration and a key/value payload budget.
 
 use std::io::Write;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,7 +23,7 @@ mod string_algorithms;
 mod string_ranges;
 mod transaction;
 mod xxh3;
-pub use auth::{Auth, AuthError};
+pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 use collection_config::CollectionConfig;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
@@ -58,6 +59,7 @@ pub struct Store {
     transaction_gate: RwLock<()>,
     auth: RwLock<Auth>,
     auth_required: AtomicBool,
+    acl_restricted: AtomicBool,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -82,6 +84,7 @@ impl Store {
             clock,
             transaction_gate: RwLock::new(()),
             auth_required: AtomicBool::new(auth.required()),
+            acl_restricted: AtomicBool::new(auth.restricted()),
             auth: RwLock::new(auth),
         }
     }
@@ -315,10 +318,103 @@ impl Store {
     }
 
     pub fn authenticate(&self, username: Option<&[u8]>, password: &[u8]) -> Result<(), AuthError> {
+        self.authenticate_user(username, password).map(|_| ())
+    }
+
+    pub fn authenticate_user(
+        &self,
+        username: Option<&[u8]>,
+        password: &[u8],
+    ) -> Result<Vec<u8>, AuthError> {
         self.auth
             .read()
             .map_err(|_| AuthError::Internal)?
-            .verify(username, password)
+            .verify_user(username, password)
+    }
+
+    /// True when any user/rule/key restriction exists, so command authorization
+    /// cannot use the lock-free open-server path.
+    pub fn acl_restricted(&self) -> bool {
+        self.acl_restricted.load(Ordering::Acquire)
+    }
+
+    pub fn authorize(&self, user: Option<&[u8]>, arguments: &[&[u8]]) -> Access {
+        self.auth
+            .read()
+            .map_or(Access::NoAuth, |auth| auth.authorize(user, arguments))
+    }
+
+    pub fn whoami(&self, user: Option<&[u8]>) -> Option<Vec<u8>> {
+        self.auth.read().ok()?.whoami(user)
+    }
+
+    pub fn acl_user_names(&self) -> Option<Vec<Vec<u8>>> {
+        self.auth.read().ok().map(|auth| auth.user_names())
+    }
+
+    pub fn acl_line(&self, name: &[u8]) -> Option<String> {
+        self.auth.read().ok()?.acl_line(name)
+    }
+
+    pub fn acl_details(&self, name: &[u8]) -> Option<UserDetails> {
+        self.auth.read().ok()?.details(name)
+    }
+
+    pub fn acl_setuser(&self, name: &[u8], rules: &[&[u8]]) -> Result<(), AclError> {
+        let mut auth = self.auth.write().map_err(|_| AclError::Syntax)?;
+        auth.setuser(name, rules)?;
+        self.refresh_auth_flags(&auth);
+        Ok(())
+    }
+
+    pub fn acl_deluser(&self, names: &[&[u8]]) -> Result<usize, AclError> {
+        let mut auth = self.auth.write().map_err(|_| AclError::Syntax)?;
+        if names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(b"default"))
+        {
+            return Err(AclError::ProtectedDefault);
+        }
+        let mut removed = 0;
+        for name in names {
+            if auth.remove_user(name) {
+                removed += 1;
+            }
+        }
+        self.refresh_auth_flags(&auth);
+        Ok(removed)
+    }
+
+    pub fn acl_save(&self) -> Result<(), AclError> {
+        let auth = self.auth.write().map_err(|_| AclError::Syntax)?;
+        let Some(path) = auth.aclfile() else {
+            return Err(AclError::NoAclFile);
+        };
+        auth.save_file(path)
+    }
+
+    pub fn acl_load(&self) -> Result<(), AclError> {
+        let mut auth = self.auth.write().map_err(|_| AclError::Syntax)?;
+        let Some(path) = auth.aclfile().map(Path::to_path_buf) else {
+            return Err(AclError::NoAclFile);
+        };
+        auth.load_file(&path)?;
+        self.refresh_auth_flags(&auth);
+        Ok(())
+    }
+
+    fn refresh_auth_flags(&self, auth: &Auth) {
+        self.auth_required.store(auth.required(), Ordering::Release);
+        self.acl_restricted
+            .store(auth.restricted(), Ordering::Release);
+    }
+
+    pub fn acl_categories() -> &'static [&'static str] {
+        discovery::CATEGORIES
+    }
+
+    pub fn acl_commands(category: &[u8]) -> Vec<&'static str> {
+        discovery::commands_in_category(category)
     }
 
     pub fn requirepass_configured(&self) -> bool {
@@ -331,7 +427,7 @@ impl Store {
             return false;
         };
         auth.set_password(password);
-        self.auth_required.store(auth.required(), Ordering::Release);
+        self.refresh_auth_flags(&auth);
         true
     }
 }

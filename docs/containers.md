@@ -1,9 +1,10 @@
 # Thin Docker and Kubernetes delivery
 
 **Experimental, volatile cache—not production Redis compatibility.** Optional
-single-password AUTH exists, but there is no multi-user ACL, native TLS,
-persistence, replication or graceful signal-driven shutdown. Use authentication
-plus a private/trusted network. Publishing an image does not deploy a service.
+single-password or multi-user ACL-file authentication exists, but there is no
+native TLS, persistence, replication or graceful signal-driven shutdown. Use
+authentication plus a private/trusted network. Publishing an image does not deploy
+a service.
 
 ## Run it
 
@@ -27,11 +28,19 @@ docker run --rm ghcr.io/macel94/rillcache:latest --help
 docker run --rm --init -p 127.0.0.1:6379:6379 \
   -v /secure/rillcache-password:/run/secrets/rillcache:ro \
   ghcr.io/macel94/rillcache:latest --requirepass-file /run/secrets/rillcache
+# Or provide a multi-user ACL file (mutually exclusive with requirepass):
+docker run --rm --init -p 127.0.0.1:6379:6379 \
+  -v /secure/users.acl:/run/secrets/users.acl:ro \
+  ghcr.io/macel94/rillcache:latest --aclfile /run/secrets/users.acl
 docker compose up -d
 ```
 
 `--requirepass` also works but is visible in process listings and shell history.
 The file must be nonempty and at most 1024 bytes; one trailing newline is stripped.
+ACL files require an enabled `default` user and use Redis-style `user ...` lines.
+`ACL SAVE` needs a writable directory, so a read-only ACL mount supports loading
+and runtime `ACL SETUSER` but not persisting changes; use a dedicated writable
+volume if runtime ACL edits must survive a restart.
 Rotate through authenticated `CONFIG SET requirepass` or by restarting with a new
 secret. TLS is still absent, so terminate TLS before traffic crosses an untrusted
 network and treat the inner connection as plaintext. See [security](security.md).
@@ -87,8 +96,8 @@ unless you configure a password.
 There is intentionally no PING liveness restart that could erase the cache merely
 because its client slots are full. Kubernetes still restarts an exited process.
 
-To require a password, create a secret and mount it read-only, then append the
-file option without replacing the image entrypoint:
+To require a password or ACL file, create a secret and mount it read-only, then
+append the file option without replacing the image entrypoint:
 
 ```sh
 kubectl create secret generic rillcache-auth --from-literal=requirepass="$(openssl rand -hex 32)"
@@ -99,8 +108,10 @@ kubectl patch deployment rillcache --type=json -p='[
 ]'
 ```
 
-This keeps the root filesystem read-only and the plaintext out of the image and
-process arguments. It does not add TLS, ACL users, rate limiting or persistence.
+For multi-user ACLs, create the secret from an ACL file and use
+`--aclfile /run/secrets/users.acl` instead. This keeps the root filesystem
+read-only and credentials out of the image and process arguments. It does not add
+TLS, brute-force controls, audit logging or persistence.
 
 Use one replica and `Recreate`: independent replicas do not share data, and a
 Service over several would randomly route keys to unrelated caches. Upgrades and

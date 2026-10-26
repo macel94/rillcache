@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::engine::{Action, AuthError, Store, TransactionOutcome, WatchState};
+use crate::engine::{Access, AclError, Action, AuthError, Store, TransactionOutcome, WatchState};
 use crate::protocol::encode_bulk;
 
 const MAX_NAME_BYTES: usize = 256;
@@ -32,7 +32,7 @@ pub struct Session {
     library_version: Option<Vec<u8>>,
     multi: Option<Multi>,
     watched: WatchState,
-    authenticated: bool,
+    authenticated_user: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +57,7 @@ impl Session {
             library_version: None,
             multi: None,
             watched: WatchState::default(),
-            authenticated: false,
+            authenticated_user: None,
         }
     }
 
@@ -68,9 +68,44 @@ impl Session {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
-        if !is_auth_exempt(command) && !self.authenticated && store.authentication_required() {
-            output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
-            return Action::Continue;
+        if !is_auth_exempt(command) {
+            let authentication_required = store.authentication_required();
+            if authentication_required && self.authenticated_user.is_none() {
+                output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
+                return Action::Continue;
+            }
+            if authentication_required
+                || store.acl_restricted()
+                || self.authenticated_user.is_some()
+            {
+                match store.authorize(self.authenticated_user.as_deref(), arguments) {
+                    Access::Allowed => {}
+                    Access::NoAuth => {
+                        output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
+                        return Action::Continue;
+                    }
+                    Access::DeniedCommand => {
+                        let name = command_name(command);
+                        let _ = write!(
+                            output,
+                            "-NOPERM this user has no permissions to run the '{name}' command\r\n"
+                        );
+                        if let Some(multi) = self.multi.as_mut() {
+                            multi.dirty = true;
+                        }
+                        return Action::Continue;
+                    }
+                    Access::DeniedKey => {
+                        output.extend_from_slice(
+                            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+                        );
+                        if let Some(multi) = self.multi.as_mut() {
+                            multi.dirty = true;
+                        }
+                        return Action::Continue;
+                    }
+                }
+            }
         }
         if command.eq_ignore_ascii_case(b"MULTI") {
             self.multi(arguments, output);
@@ -118,6 +153,10 @@ impl Session {
             self.auth(store, &arguments[1..], output);
             return Action::Continue;
         }
+        if command.eq_ignore_ascii_case(b"ACL") {
+            self.acl(store, &arguments[1..], output);
+            return Action::Continue;
+        }
 
         let start = output.len();
         let action = store.execute(arguments, output);
@@ -162,6 +201,32 @@ impl Session {
                 b"-EXECABORT Transaction discarded because of previous errors.\r\n",
             );
             return Action::Continue;
+        }
+        // Re-check every queued command: ACL edits between queueing and EXEC
+        // must not let a revoked permission commit.
+        for command in &multi.queue {
+            let arguments: Vec<&[u8]> = command.iter().map(Vec::as_slice).collect();
+            match store.authorize(self.authenticated_user.as_deref(), &arguments) {
+                Access::Allowed => {}
+                Access::NoAuth => {
+                    output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
+                    return Action::Continue;
+                }
+                Access::DeniedCommand => {
+                    let name = command_name(arguments[0]);
+                    let _ = write!(
+                        output,
+                        "-NOPERM this user has no permissions to run the '{name}' command\r\n"
+                    );
+                    return Action::Continue;
+                }
+                Access::DeniedKey => {
+                    output.extend_from_slice(
+                        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+                    );
+                    return Action::Continue;
+                }
+            }
         }
         match store.execute_transaction(&multi.queue, &watched, output) {
             TransactionOutcome::Completed(action) => action,
@@ -251,9 +316,9 @@ impl Session {
                 return;
             }
         };
-        match store.authenticate(username, password) {
-            Ok(()) => {
-                self.authenticated = true;
+        match store.authenticate_user(username, password) {
+            Ok(name) => {
+                self.authenticated_user = Some(name);
                 output.extend_from_slice(b"+OK\r\n");
             }
             Err(AuthError::NoPassword) => output.extend_from_slice(
@@ -265,6 +330,134 @@ impl Session {
             Err(AuthError::Internal) => {
                 output.extend_from_slice(b"-ERR internal authentication error\r\n")
             }
+        }
+    }
+
+    fn acl(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        let Some(subcommand) = arguments.first() else {
+            arity("acl", output);
+            return;
+        };
+        if subcommand.eq_ignore_ascii_case(b"WHOAMI") {
+            if arguments.len() != 1 {
+                arity("acl|whoami", output);
+            } else if let Some(name) = store.whoami(self.authenticated_user.as_deref()) {
+                encode_bulk(Some(&name), output);
+            } else {
+                output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"USERS") {
+            if arguments.len() != 1 {
+                arity("acl|users", output);
+            } else if let Some(names) = store.acl_user_names() {
+                write!(output, "*{}\r\n", names.len()).expect("Vec write");
+                for name in names {
+                    encode_bulk(Some(&name), output);
+                }
+            } else {
+                output.extend_from_slice(b"-ERR internal authentication error\r\n");
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"LIST") {
+            if arguments.len() != 1 {
+                arity("acl|list", output);
+            } else if let Some(names) = store.acl_user_names() {
+                let lines: Vec<String> = names
+                    .iter()
+                    .filter_map(|name| store.acl_line(name))
+                    .collect();
+                write!(output, "*{}\r\n", lines.len()).expect("Vec write");
+                for line in lines {
+                    encode_bulk(Some(line.as_bytes()), output);
+                }
+            } else {
+                output.extend_from_slice(b"-ERR internal authentication error\r\n");
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"CAT") {
+            if arguments.len() > 2 {
+                arity("acl|cat", output);
+            } else if arguments.len() == 1 {
+                write!(output, "*{}\r\n", Store::acl_categories().len()).expect("Vec write");
+                for category in Store::acl_categories() {
+                    encode_bulk(Some(category.as_bytes()), output);
+                }
+            } else if !Store::acl_categories()
+                .iter()
+                .any(|category| arguments[1].eq_ignore_ascii_case(category.as_bytes()))
+            {
+                output.extend_from_slice(b"-ERR Unknown category name in ACL\r\n");
+            } else {
+                let commands = Store::acl_commands(arguments[1]);
+                write!(output, "*{}\r\n", commands.len()).expect("Vec write");
+                for command in commands {
+                    encode_bulk(Some(command.as_bytes()), output);
+                }
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"GETUSER") {
+            if arguments.len() != 2 {
+                arity("acl|getuser", output);
+            } else if let Some(details) = store.acl_details(arguments[1]) {
+                write!(output, "*12\r\n").expect("Vec write");
+                encode_bulk(Some(b"flags"), output);
+                write!(output, "*{}\r\n", details.flags.len()).expect("Vec write");
+                for flag in details.flags {
+                    encode_bulk(Some(flag.as_bytes()), output);
+                }
+                encode_bulk(Some(b"passwords"), output);
+                write!(output, "*{}\r\n", details.passwords.len()).expect("Vec write");
+                for password in details.passwords {
+                    encode_bulk(Some(password.as_bytes()), output);
+                }
+                encode_bulk(Some(b"commands"), output);
+                encode_bulk(Some(details.commands.as_bytes()), output);
+                encode_bulk(Some(b"keys"), output);
+                encode_bulk(Some(details.keys.as_bytes()), output);
+                encode_bulk(Some(b"channels"), output);
+                encode_bulk(Some(details.channels.as_bytes()), output);
+                encode_bulk(Some(b"selectors"), output);
+                output.extend_from_slice(b"*0\r\n");
+            } else {
+                output.extend_from_slice(b"$-1\r\n");
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"SETUSER") {
+            if arguments.len() < 2 {
+                arity("acl|setuser", output);
+            } else {
+                match store.acl_setuser(arguments[1], &arguments[2..]) {
+                    Ok(()) => output.extend_from_slice(b"+OK\r\n"),
+                    Err(error) => acl_error(error, output),
+                }
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"DELUSER") {
+            if arguments.len() < 2 {
+                arity("acl|deluser", output);
+            } else {
+                match store.acl_deluser(&arguments[1..]) {
+                    Ok(removed) => {
+                        let _ = write!(output, ":{removed}\r\n");
+                    }
+                    Err(error) => acl_error(error, output),
+                }
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"SAVE") {
+            if arguments.len() != 1 {
+                arity("acl|save", output);
+            } else {
+                match store.acl_save() {
+                    Ok(()) => output.extend_from_slice(b"+OK\r\n"),
+                    Err(error) => acl_error(error, output),
+                }
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"LOAD") {
+            if arguments.len() != 1 {
+                arity("acl|load", output);
+            } else {
+                match store.acl_load() {
+                    Ok(()) => output.extend_from_slice(b"+OK\r\n"),
+                    Err(error) => acl_error(error, output),
+                }
+            }
+        } else {
+            output.extend_from_slice(b"-ERR unsupported ACL subcommand or invalid arguments\r\n");
         }
     }
 
@@ -319,8 +512,8 @@ impl Session {
             return;
         }
         if let Some((username, password)) = credentials {
-            match store.authenticate(Some(username), password) {
-                Ok(()) => self.authenticated = true,
+            match store.authenticate_user(Some(username), password) {
+                Ok(name) => self.authenticated_user = Some(name),
                 Err(AuthError::NoPassword) => {
                     output.extend_from_slice(
                         b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
@@ -448,9 +641,49 @@ fn is_auth_exempt(command: &[u8]) -> bool {
 }
 
 fn is_session_command(command: &[u8]) -> bool {
-    [b"AUTH".as_slice(), b"CLIENT", b"HELLO", b"SELECT"]
+    [b"ACL".as_slice(), b"AUTH", b"CLIENT", b"HELLO", b"SELECT"]
         .iter()
         .any(|name| command.eq_ignore_ascii_case(name))
+}
+
+fn acl_error(error: AclError, output: &mut Vec<u8>) {
+    match error {
+        AclError::InvalidName => output.extend_from_slice(b"-ERR Invalid ACL user name\r\n"),
+        AclError::InvalidPassword => {
+            output.extend_from_slice(b"-ERR Invalid password or password hash\r\n")
+        }
+        AclError::UnknownCommand | AclError::UnknownCategory => {
+            output.extend_from_slice(b"-ERR Unknown command or category name in ACL\r\n")
+        }
+        AclError::ProtectedDefault => {
+            output.extend_from_slice(b"-ERR The 'default' user cannot be removed\r\n")
+        }
+        AclError::NoAclFile => {
+            output.extend_from_slice(b"-ERR This instance has no ACL file configured\r\n")
+        }
+        AclError::MissingDefault => {
+            output.extend_from_slice(b"-ERR ACL file must define an enabled default user\r\n")
+        }
+        AclError::Syntax | AclError::UnknownRule => {
+            output.extend_from_slice(b"-ERR Error in ACL SETUSER modifier\r\n")
+        }
+        AclError::TooLarge => {
+            output.extend_from_slice(b"-ERR ACL file or rule set exceeds configured bounds\r\n")
+        }
+        AclError::Io(_) => output.extend_from_slice(b"-ERR ACL file I/O error\r\n"),
+    }
+}
+
+fn command_name(command: &[u8]) -> String {
+    std::str::from_utf8(command)
+        .ok()
+        .filter(|name| {
+            name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        })
+        .map_or_else(|| "unknown".to_string(), str::to_ascii_lowercase)
 }
 
 fn valid_metadata(bytes: &[u8], maximum: usize) -> bool {
@@ -1141,6 +1374,199 @@ x\r\n"
             call(&mut fresh, &store, &[b"CONFIG", b"GET", b"requirepass"]),
             b"*2\r\n$11\r\nrequirepass\r\n$0\r\n\r\n"
         );
+    }
+
+    #[test]
+    fn acl_users_restrict_commands_keys_and_whoami() {
+        let store = Store::new(1024);
+        let mut admin = Session::new();
+        assert_eq!(
+            call(&mut admin, &store, &[b"ACL", b"WHOAMI"]),
+            b"$7\r\ndefault\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[
+                    b"ACL",
+                    b"SETUSER",
+                    b"alice",
+                    b"on",
+                    b">pw",
+                    b"resetkeys",
+                    b"~app:*",
+                    b"resetchannels",
+                    b"&events:*",
+                    b"-@all",
+                    b"+@read",
+                    b"+@write"
+                ]
+            ),
+            b"+OK\r\n"
+        );
+        assert!(call(&mut admin, &store, &[b"ACL", b"USERS"]).starts_with(b"*2\r\n"));
+        assert!(
+            call(&mut admin, &store, &[b"ACL", b"LIST"])
+                .windows(9)
+                .any(|window| window == b"user alic")
+        );
+        assert!(
+            call(&mut admin, &store, &[b"ACL", b"CAT", b"read"])
+                .windows(3)
+                .any(|window| window == b"get")
+        );
+        let details = call(&mut admin, &store, &[b"ACL", b"GETUSER", b"alice"]);
+        assert!(details.starts_with(b"*12\r\n"));
+        assert!(details.windows(7).any(|window| window == b"flags\r\n"));
+        assert!(details.windows(6).any(|window| window == b"~app:*"));
+        assert_eq!(
+            call(&mut admin, &store, &[b"ACL", b"GETUSER", b"missing"]),
+            b"$-1\r\n"
+        );
+
+        let mut alice = Session::new();
+        assert_eq!(
+            call(&mut alice, &store, &[b"AUTH", b"alice", b"pw"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"ACL", b"WHOAMI"]),
+            b"$5\r\nalice\r\n"
+        );
+        assert_eq!(call(&mut alice, &store, &[b"GET", b"app:k"]), b"$-1\r\n");
+        assert_eq!(
+            call(&mut alice, &store, &[b"SET", b"app:k", b"v"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"GET", b"app:k"]),
+            b"$1\r\nv\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"GET", b"other"]),
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"PING"]),
+            b"-NOPERM this user has no permissions to run the 'ping' command\r\n"
+        );
+        assert_eq!(call(&mut alice, &store, &[b"DEL", b"app:k"]), b":1\r\n");
+
+        assert_eq!(
+            call(&mut admin, &store, &[b"ACL", b"DELUSER", b"default"]),
+            b"-ERR The 'default' user cannot be removed\r\n"
+        );
+        assert_eq!(
+            call(&mut admin, &store, &[b"ACL", b"DELUSER", b"alice"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"GET", b"app:k"]),
+            b"-NOAUTH Authentication required.\r\n"
+        );
+        assert_eq!(
+            call(&mut admin, &store, &[b"ACL", b"SAVE"]),
+            b"-ERR This instance has no ACL file configured\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[b"ACL", b"SETUSER", b"bob", b"on", b"+nope"]
+            ),
+            b"-ERR Unknown command or category name in ACL\r\n"
+        );
+        assert_eq!(
+            call(&mut admin, &store, &[b"ACL", b"GETUSER", b"bob"]),
+            b"$-1\r\n"
+        );
+    }
+
+    #[test]
+    fn denied_acl_command_marks_an_active_transaction_dirty() {
+        let store = Store::new(1024);
+        let mut admin = Session::new();
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[
+                    b"ACL",
+                    b"SETUSER",
+                    b"reader",
+                    b"on",
+                    b">pw",
+                    b"allkeys",
+                    b"-@all",
+                    b"+@read",
+                    b"+@transaction"
+                ]
+            ),
+            b"+OK\r\n"
+        );
+        let mut reader = Session::new();
+        assert_eq!(
+            call(&mut reader, &store, &[b"AUTH", b"reader", b"pw"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(call(&mut reader, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(call(&mut reader, &store, &[b"GET", b"k"]), b"+QUEUED\r\n");
+        assert_eq!(
+            call(&mut reader, &store, &[b"SET", b"k", b"v"]),
+            b"-NOPERM this user has no permissions to run the 'set' command\r\n"
+        );
+        assert_eq!(
+            call(&mut reader, &store, &[b"EXEC"]),
+            b"-EXECABORT Transaction discarded because of previous errors.\r\n"
+        );
+        assert_eq!(call(&mut reader, &store, &[b"GET", b"k"]), b"$-1\r\n");
+    }
+
+    #[test]
+    fn exec_rechecks_acls_so_revocation_cannot_commit_queued_writes() {
+        let store = Store::new(1024);
+        let mut admin = Session::new();
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[
+                    b"ACL",
+                    b"SETUSER",
+                    b"alice",
+                    b"on",
+                    b">pw",
+                    b"allkeys",
+                    b"allchannels",
+                    b"+@all"
+                ]
+            ),
+            b"+OK\r\n"
+        );
+        let mut alice = Session::new();
+        assert_eq!(
+            call(&mut alice, &store, &[b"AUTH", b"alice", b"pw"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(call(&mut alice, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut alice, &store, &[b"SET", b"k", b"v"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[b"ACL", b"SETUSER", b"alice", b"-@write"]
+            ),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"EXEC"]),
+            b"-NOPERM this user has no permissions to run the 'set' command\r\n"
+        );
+        assert_eq!(call(&mut admin, &store, &[b"GET", b"k"]), b"$-1\r\n");
     }
 
     #[test]

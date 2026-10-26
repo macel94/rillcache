@@ -223,9 +223,10 @@ pub(super) fn serve(
     config: Config,
     stopping: Arc<AtomicBool>,
     policy: SchedulingPolicy,
+    auth: Auth,
 ) -> io::Result<()> {
     let count = config.worker_threads.expect("fixed worker configuration");
-    let store = Arc::new(config.store());
+    let store = Arc::new(Store::with_auth(config.max_data_bytes, auth));
     let admitted = Arc::new(AtomicUsize::new(0));
     let mut lanes: Vec<Lane> = Vec::new();
     let result = (|| {

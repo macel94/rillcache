@@ -66,12 +66,14 @@ commands and execute them under one store-wide gate, with expiry-aware optimisti
 invalidation, RESP2/RESP3 replies and a documented fail-closed version bound. See
 [transactions](docs/transactions.md).
 
-A single operator password can protect the `default` user before any data or
-administrative command: `--requirepass-file`/`--requirepass`, `AUTH`, atomic
-`HELLO ... AUTH`, runtime `CONFIG SET requirepass` rotation and a redacted
-`CONFIG GET`. Digests are compared in constant time and `NOAUTH` is checked before
-store access. Multi-user ACLs, brute-force controls, an audit log and native TLS
-remain separate security gates; see [security](docs/security.md).
+Access control starts with a single operator password for the `default` user
+(`--requirepass-file`/`--requirepass`, `AUTH`, atomic `HELLO ... AUTH`, runtime
+`CONFIG SET requirepass` rotation and a redacted `CONFIG GET`) or a Redis-style
+multi-user ACL file (`--aclfile`) with hashed passwords, ordered
+command/category rules, declared-key patterns and atomic `ACL SAVE`/`LOAD`.
+`NOAUTH`/`NOPERM` are checked before store access and apply to live connections.
+ACL selectors, audit logging, brute-force controls, native TLS and channel
+enforcement remain separate security gates; see [security](docs/security.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
 bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
@@ -81,10 +83,10 @@ plus the accept/control thread; idle clients do not occupy an entire worker.
 
 This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata, and
-`SELECT 0`; single-password authentication; multi-user ACL/authorization, native
-TLS, brute-force/audit controls, durable persistence, scripts/functions, pub/sub,
-replication, clustering, and real client-library interoperability
-remain production blockers. RESP3 replies are limited to the current command
+`SELECT 0`; single-password and multi-user ACL authentication/authorization;
+ACL selectors/audit controls, native TLS, brute-force protection, durable
+persistence, scripts/functions, pub/sub, replication, clustering, and real
+client-library interoperability remain production blockers. RESP3 replies are limited to the current command
 subset's strings, integers, errors, arrays and nulls. Multi-key string operations
 are atomic under the store lock; MGET replies are capped at 2 MiB to bound
 duplicate-key amplification. It binds to loopback by default. See
@@ -105,10 +107,11 @@ docker run --rm --init -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest
 
 The thin multi-architecture image runs non-root, binds container port 6379 without
 extra arguments, and has a built-in PING health check—no shell or redis-cli inside.
-Append options normally, e.g. `--threads 4` or `--requirepass-file
-/run/secrets/rillcache`. **In-memory/experimental: optional single-password AUTH;
-no ACL users, TLS or persistence.** Keep authentication and network isolation in
-place for anything beyond loopback. See [container delivery](docs/containers.md)
+Append options normally, e.g. `--threads 4`, `--requirepass-file
+/run/secrets/rillcache` or `--aclfile /run/secrets/users.acl`.
+**In-memory/experimental: optional password or ACL-file authentication; no native
+TLS or persistence.** Keep authentication and network isolation in place for
+anything beyond loopback. See [container delivery](docs/containers.md)
 for resource bounds, Kubernetes networking, digest pinning, shutdown limitations
 and GitHub's one-time public-package visibility setting.
 

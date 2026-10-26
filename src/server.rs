@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crate::engine::{Action, Auth, Store};
 use crate::protocol::{Limits, dispatch_request};
 use crate::session::Session;
+use std::path::PathBuf;
 
 mod handoff;
 mod pool;
@@ -121,6 +122,8 @@ pub struct Config {
     /// Default-user password. `None` or empty disables authentication.
     /// Never include this value in Debug output or logs.
     pub requirepass: Option<Vec<u8>>,
+    /// Optional Redis-style ACL file. Mutually exclusive with `requirepass`.
+    pub aclfile: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Config {
@@ -137,6 +140,7 @@ impl std::fmt::Debug for Config {
                 "requirepass",
                 &self.requirepass.as_ref().map(|_| "<redacted>"),
             )
+            .field("aclfile", &self.aclfile)
             .finish()
     }
 }
@@ -151,6 +155,7 @@ impl Default for Config {
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
             requirepass: None,
+            aclfile: None,
         }
     }
 }
@@ -172,10 +177,11 @@ impl Config {
                 .requirepass
                 .as_ref()
                 .is_some_and(|password| password.is_empty() || password.len() > 1024)
+            || (self.requirepass.is_some() && self.aclfile.is_some())
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, and requirepass must be 1..=1024 bytes",
+                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, and requirepass and aclfile are mutually exclusive",
             ));
         }
         Ok(())
@@ -186,21 +192,28 @@ pub struct Server {
     listener: TcpListener,
     config: Config,
     policy: SchedulingPolicy,
+    auth: Auth,
 }
 
 impl Config {
-    /// One store per server with the immutable bind-time credential.
-    fn store(&self) -> Store {
-        Store::with_auth(
-            self.max_data_bytes,
-            Auth::from_password(self.requirepass.as_deref()),
-        )
+    /// Load the immutable bind-time ACL before accepting clients.
+    fn load_auth(&self) -> io::Result<Auth> {
+        match &self.aclfile {
+            Some(path) => Auth::from_acl_file(path).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("cannot load ACL file {}: {error:?}", path.display()),
+                )
+            }),
+            None => Ok(Auth::from_password(self.requirepass.as_deref())),
+        }
     }
 }
 
 impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
         config.validate()?;
+        let auth = config.load_auth()?;
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
         let capacity = thread::available_parallelism().ok().map(usize::from);
@@ -209,6 +222,7 @@ impl Server {
             listener,
             config,
             policy,
+            auth,
         })
     }
 
@@ -241,9 +255,9 @@ impl Server {
 
     fn serve(self, stopping: Arc<AtomicBool>) -> io::Result<()> {
         if self.config.worker_threads.is_some() {
-            return pool::serve(self.listener, self.config, stopping, self.policy);
+            return pool::serve(self.listener, self.config, stopping, self.policy, self.auth);
         }
-        let store = Arc::new(self.config.store());
+        let store = Arc::new(Store::with_auth(self.config.max_data_bytes, self.auth));
         let admitted = Arc::new(AtomicUsize::new(0));
         let sharing = (self.policy.client_handoff_idle_us > 0).then(|| {
             Arc::new(handoff::Sharing::new(

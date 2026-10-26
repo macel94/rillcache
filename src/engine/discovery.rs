@@ -17,6 +17,7 @@ struct Command {
 
 // Every registered command is wired to this worktree's Store or server dispatcher.
 const COMMANDS: &[Command] = &[
+    cmd("acl", -2, &["admin", "dangerous", "slow"], 0, 0, 0),
     cmd("append", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd(
         "auth",
@@ -178,6 +179,128 @@ pub(super) fn command_arity(name: &[u8]) -> Option<i64> {
         .iter()
         .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
         .map(|command| command.arity)
+}
+
+pub(super) fn canonical_name(name: &[u8]) -> Option<&'static str> {
+    COMMANDS
+        .iter()
+        .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
+        .map(|command| command.name)
+}
+
+/// Declared key arguments for ACL key-pattern enforcement. Commands with no
+/// static key spec (`KEYS`, `DBSIZE`, `FLUSH*`, `XREADGROUP`) return no keys;
+/// this matches Redis's key-spec behavior and is documented as not a sandbox.
+pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u8]> {
+    let Some(command) = COMMANDS
+        .iter()
+        .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
+    else {
+        return Vec::new();
+    };
+    if command.first_key <= 0 {
+        return Vec::new();
+    }
+    let last = if command.last_key < 0 {
+        args.len() as i64 + command.last_key
+    } else {
+        command.last_key
+    };
+    let step = command.key_step.max(1);
+    let mut keys = Vec::new();
+    let mut index = command.first_key;
+    while index <= last && index < args.len() as i64 {
+        keys.push(args[index as usize]);
+        index += step;
+    }
+    keys
+}
+
+pub(super) const CATEGORIES: &[&str] = &[
+    "admin",
+    "all",
+    "bitmap",
+    "connection",
+    "dangerous",
+    "fast",
+    "hash",
+    "keyspace",
+    "list",
+    "read",
+    "set",
+    "slow",
+    "stream",
+    "string",
+    "transaction",
+    "write",
+    "zset",
+];
+
+/// Redis-style ACL category approximation over the published command table.
+/// `@slow` covers commands without the `fast` flag; script/module categories do
+/// not exist because neither capability does.
+pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) -> bool {
+    let Some(command) = COMMANDS
+        .iter()
+        .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
+    else {
+        return false;
+    };
+    let has = |flag: &str| command.flags.contains(&flag);
+    let name = command.name;
+    let group = command_group(name);
+    match category {
+        b"all" => true,
+        b"read" => has("readonly"),
+        b"write" => has("write"),
+        b"admin" => has("admin"),
+        b"fast" => has("fast"),
+        b"slow" => !has("fast"),
+        b"dangerous" => matches!(
+            name,
+            "acl" | "config" | "flushall" | "flushdb" | "function" | "keys" | "script"
+        ),
+        b"connection" => group == Some("connection"),
+        b"transaction" => group == Some("transaction"),
+        b"keyspace" | b"string" | b"list" | b"set" | b"hash" | b"zset" | b"stream" | b"bitmap" => {
+            group == Some(std::str::from_utf8(category).unwrap_or(""))
+        }
+        _ => false,
+    }
+}
+
+fn command_group(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "append" | "decr" | "decrby" | "digest" | "get" | "getdel" | "getex" | "getrange"
+        | "getset" | "incr" | "incrby" | "incrbyfloat" | "lcs" | "mget" | "mset" | "msetex"
+        | "msetnx" | "psetex" | "set" | "setex" | "setnx" | "setrange" | "strlen" | "substr" => {
+            "string"
+        }
+        "getbit" | "setbit" => "bitmap",
+        "llen" | "lpop" | "lpush" | "lrange" | "rpop" | "rpush" => "list",
+        "sadd" | "scard" | "sismember" | "smembers" => "set",
+        "hget" | "hgetall" | "hlen" | "hset" => "hash",
+        "zadd" | "zcard" | "zrange" | "zscore" => "zset",
+        "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xreadgroup" => "stream",
+        "auth" | "client" | "hello" | "quit" | "select" => "connection",
+        "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
+        "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
+        | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
+        | "pexpiretime" | "pttl" | "randomkey" | "rename" | "renamenx" | "touch" | "ttl"
+        | "type" => "keyspace",
+        _ => return None,
+    })
+}
+
+pub(super) fn commands_in_category(category: &[u8]) -> Vec<&'static str> {
+    COMMANDS
+        .iter()
+        .filter(|command| {
+            let name = command.name.as_bytes();
+            category_matches(name, &[name], category)
+        })
+        .map(|command| command.name)
+        .collect()
 }
 
 const fn cmd(
