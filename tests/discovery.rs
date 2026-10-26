@@ -109,9 +109,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":54\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":82\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*54\r\n*6\r\n$6\r\nappend\r\n"));
+        assert!(all_info.starts_with(b"*82\r\n*6\r\n$6\r\nappend\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"MSETEX", b"DIGEST", b"DELIFEQ"]),
             b"*3\r\n*6\r\n$6\r\nmsetex\r\n:-4\r\n*2\r\n+write\r\n+denyoom\r\n:2\r\n:-1\r\n:2\r\n*6\r\n$6\r\ndigest\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*6\r\n$7\r\ndelifeq\r\n:3\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:1\r\n:1\r\n"
@@ -120,8 +120,98 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             request(&mut client, &[b"COMMAND", b"INFO", b"gEt", b"does-not-exist", b"DEL"]),
             b"*3\r\n*6\r\n$3\r\nget\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*-1\r\n*6\r\n$3\r\ndel\r\n:-2\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:-1\r\n:1\r\n"
         );
-        assert_eq!(request(&mut client, &[b"COMMAND", b"LIST"]),
-            b"*54\r\n$6\r\nappend\r\n$7\r\ncommand\r\n$6\r\nconfig\r\n$4\r\ncopy\r\n$4\r\ndecr\r\n$6\r\ndecrby\r\n$3\r\ndel\r\n$5\r\ndelex\r\n$7\r\ndelifeq\r\n$6\r\ndigest\r\n$4\r\necho\r\n$6\r\nexists\r\n$6\r\nexpire\r\n$8\r\nexpireat\r\n$10\r\nexpiretime\r\n$8\r\nflushall\r\n$7\r\nflushdb\r\n$8\r\nfunction\r\n$3\r\nget\r\n$6\r\ngetbit\r\n$6\r\ngetdel\r\n$5\r\ngetex\r\n$8\r\ngetrange\r\n$6\r\ngetset\r\n$4\r\nincr\r\n$6\r\nincrby\r\n$11\r\nincrbyfloat\r\n$4\r\ninfo\r\n$3\r\nlcs\r\n$6\r\nmemory\r\n$6\r\nmsetex\r\n$7\r\npersist\r\n$7\r\npexpire\r\n$9\r\npexpireat\r\n$11\r\npexpiretime\r\n$4\r\nping\r\n$6\r\npsetex\r\n$4\r\npttl\r\n$4\r\nquit\r\n$6\r\nscript\r\n$3\r\nset\r\n$6\r\nsetbit\r\n$5\r\nsetex\r\n$5\r\nsetnx\r\n$8\r\nsetrange\r\n$6\r\nstrlen\r\n$6\r\nsubstr\r\n$3\r\nttl\r\n$4\r\nxadd\r\n$4\r\nxdel\r\n$6\r\nxgroup\r\n$5\r\nxinfo\r\n$4\r\nxlen\r\n$10\r\nxreadgroup\r\n");
+        let expected_names: &[&[u8]] = &[
+            b"append",
+            b"command",
+            b"config",
+            b"copy",
+            b"dbsize",
+            b"decr",
+            b"decrby",
+            b"del",
+            b"delex",
+            b"delifeq",
+            b"digest",
+            b"echo",
+            b"exists",
+            b"expire",
+            b"expireat",
+            b"expiretime",
+            b"flushall",
+            b"flushdb",
+            b"function",
+            b"get",
+            b"getbit",
+            b"getdel",
+            b"getex",
+            b"getrange",
+            b"getset",
+            b"hget",
+            b"hgetall",
+            b"hlen",
+            b"hset",
+            b"incr",
+            b"incrby",
+            b"incrbyfloat",
+            b"info",
+            b"keys",
+            b"lcs",
+            b"llen",
+            b"lpop",
+            b"lpush",
+            b"lrange",
+            b"memory",
+            b"mget",
+            b"mset",
+            b"msetex",
+            b"msetnx",
+            b"persist",
+            b"pexpire",
+            b"pexpireat",
+            b"pexpiretime",
+            b"ping",
+            b"psetex",
+            b"pttl",
+            b"quit",
+            b"randomkey",
+            b"rename",
+            b"renamenx",
+            b"rpop",
+            b"rpush",
+            b"sadd",
+            b"scard",
+            b"script",
+            b"set",
+            b"setbit",
+            b"setex",
+            b"setnx",
+            b"setrange",
+            b"sismember",
+            b"smembers",
+            b"strlen",
+            b"substr",
+            b"touch",
+            b"ttl",
+            b"type",
+            b"xadd",
+            b"xdel",
+            b"xgroup",
+            b"xinfo",
+            b"xlen",
+            b"xreadgroup",
+            b"zadd",
+            b"zcard",
+            b"zrange",
+            b"zscore",
+        ];
+        let mut expected_list = Vec::new();
+        write!(&mut expected_list, "*{}\r\n", expected_names.len()).unwrap();
+        for name in expected_names {
+            write!(&mut expected_list, "${}\r\n", name.len()).unwrap();
+            expected_list.extend_from_slice(name);
+            expected_list.extend_from_slice(b"\r\n");
+        }
+        assert_eq!(request(&mut client, &[b"COMMAND", b"LIST"]), expected_list);
         let info = request(&mut client, &[b"INFO"]);
         let text = std::str::from_utf8(&info).unwrap();
         assert_eq!(info.first(), Some(&b'$'));

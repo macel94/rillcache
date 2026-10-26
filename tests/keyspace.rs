@@ -38,6 +38,27 @@ fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
             .unwrap();
 
         command(&mut stream, &[b"TYPE", b"absent"], b"+none\r\n");
+        command(&mut stream, &[b"RANDOMKEY"], b"$-1\r\n");
+        command(
+            &mut stream,
+            &[b"CONFIG", b"GET", b"list-max-listpack-size"],
+            b"*2\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"hash-max-ziplist-entries", b"0"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"GET", b"hash-max-listpack-entries"],
+            b"*2\r\n$25\r\nhash-max-listpack-entries\r\n$1\r\n0\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"hash-max-listpack-entries", b"512"],
+            b"+OK\r\n",
+        );
         command(&mut stream, &[b"SET", b"a\0\xff", b"v\0"], b"+OK\r\n");
         command(&mut stream, &[b"TYPE", b"a\0\xff"], b"+string\r\n");
         command(
@@ -47,11 +68,90 @@ fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
         );
         command(&mut stream, &[b"RENAME", b"a\0\xff", b"b\xff"], b"+OK\r\n");
         command(&mut stream, &[b"GET", b"b\xff"], b"$2\r\nv\0\r\n");
+        command(&mut stream, &[b"COPY", b"b\xff", b"binary-copy"], b":1\r\n");
+        command(&mut stream, &[b"SET", b"b\xff", b"changed"], b"+OK\r\n");
+        command(&mut stream, &[b"GET", b"binary-copy"], b"$2\r\nv\0\r\n");
+        command(&mut stream, &[b"SET", b"glob:a", b"1"], b"+OK\r\n");
+        command(&mut stream, &[b"SET", b"glob:b", b"2"], b"+OK\r\n");
+        command(
+            &mut stream,
+            &[b"KEYS", b"glob:?"],
+            b"*2\r\n$6\r\nglob:a\r\n$6\r\nglob:b\r\n",
+        );
         command(&mut stream, &[b"RENAMENX", b"b\xff", b"c"], b":1\r\n");
         command(&mut stream, &[b"SET", b"b\xff", b"occupied"], b"+OK\r\n");
         command(&mut stream, &[b"RENAMENX", b"c", b"b\xff"], b":0\r\n");
-        command(&mut stream, &[b"DBSIZE"], b":2\r\n");
+        command(&mut stream, &[b"DBSIZE"], b":5\r\n");
 
+        command(&mut stream, &[b"LPUSH", b"list", b"one", b"two"], b":2\r\n");
+        command(&mut stream, &[b"TYPE", b"list"], b"+list\r\n");
+        command(&mut stream, &[b"COPY", b"list", b"list-copy"], b":1\r\n");
+        command(&mut stream, &[b"LPOP", b"list-copy"], b"$3\r\ntwo\r\n");
+        command(&mut stream, &[b"LLEN", b"list"], b":2\r\n");
+        command(
+            &mut stream,
+            &[b"LRANGE", b"list", b"0", b"-1"],
+            b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n",
+        );
+        command(&mut stream, &[b"RPOP", b"list"], b"$3\r\none\r\n");
+        command(&mut stream, &[b"DEL", b"list"], b":1\r\n");
+
+        command(&mut stream, &[b"SADD", b"set", b"b", b"a", b"b"], b":2\r\n");
+        command(&mut stream, &[b"SISMEMBER", b"set", b"a"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"HSET", b"hash", b"field", b"value"],
+            b":1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"HGET", b"hash", b"field"],
+            b"$5\r\nvalue\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZADD", b"zset", b"2", b"b", b"1", b"a"],
+            b":2\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZRANGE", b"zset", b"0", b"-1"],
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n",
+        );
+
+        command(
+            &mut stream,
+            &[b"XADD", b"stream", b"1", b"f", b"v"],
+            b"$3\r\n1-0\r\n",
+        );
+        command(&mut stream, &[b"TYPE", b"stream"], b"+stream\r\n");
+        command(
+            &mut stream,
+            &[b"COPY", b"stream", b"stream-copy"],
+            b":1\r\n",
+        );
+        command(&mut stream, &[b"XDEL", b"stream", b"1-0"], b":1\r\n");
+        command(&mut stream, &[b"XLEN", b"stream-copy"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"XINFO", b"STREAM", b"stream-copy", b"FULL"],
+            b"*6\r\n$6\r\nlength\r\n:1\r\n$7\r\nentries\r\n*1\r\n*2\r\n$3\r\n1-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n$6\r\ngroups\r\n*0\r\n",
+        );
+        command(&mut stream, &[b"PING"], b"+PONG\r\n");
+        command(
+            &mut stream,
+            &[b"MGET", b"set", b"hash", b"zset", b"stream-copy"],
+            b"*4\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SETBIT", b"set", b"0", b"1"],
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        );
+        command(&mut stream, &[b"CONFIG", b"RESETSTAT"], b"+OK\r\n");
+        command(&mut stream, &[b"FLUSHALL", b"SYNC"], b"+OK\r\n");
+        command(&mut stream, &[b"DBSIZE"], b":0\r\n");
+        command(&mut stream, &[b"RANDOMKEY"], b"$-1\r\n");
         server.shutdown().unwrap();
     }
 }
