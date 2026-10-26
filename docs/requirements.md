@@ -57,6 +57,7 @@ reason to couple all future commands into a single large story.
 | S27 | As an operator, I can require a secret before any data or administrative command so that a reachable cache is not open to every client on the network. | S | R109–R112; SHA-256 vectors, constant-time comparison, NOAUTH/HELLO atomicity, rotation/redaction and all-mode wire tests |
 | S28 | As an operator, I can define multiple users with independent credentials, command categories and key patterns so that a shared cache is not all-or-nothing access. | S | R113–R116; ACL-file round-trip, atomic rules, live denial, protected default and all-mode wire tests |
 | S29 | As an operator, I can enable an fsynced command journal so that supported data survives an ordinary restart within a documented loss window. | S | R117–R120; type/TTL replay, truncation/corruption, transaction/concurrency and all-mode restart tests |
+| S30 | As a client, I can iterate large keyspaces and collections in bounded pages instead of blocking the server with KEYS, with filtering by pattern and type. | XS | R121–R124; paging, filter, type, NOVALUES, binary and invalid cursor tests in all modes |
 
 ## EARS acceptance requirements
 
@@ -231,6 +232,27 @@ reason to couple all future commands into a single large story.
   restart. Documentation shall retain missing RDB/AOF-rewrite, compaction,
   checksums, encryption, multi-process ownership, backup drills, signal drain,
   stream-pending durability and disk-fault/soak guarantees.
+
+### Cursor iteration (S30)
+
+- **R121 (event-driven):** When `SCAN cursor [MATCH pattern] [COUNT n] [TYPE type]`
+  is received, the server shall reap expired keys, take a sorted live-key
+  snapshot, return at most the requested examined positions of matching keys and
+  a decimal continuation cursor, using `0` only when the snapshot is exhausted.
+  Matching and type filtering shall not prevent cursor progress or termination.
+- **R122 (event-driven):** When `HSCAN`/`SSCAN`/`ZSCAN key cursor [MATCH] [COUNT]
+  [NOVALUES]` is received on a matching collection, the server shall iterate a
+  deterministic sorted snapshot and return fields/values, members or member/score
+  pairs; missing keys shall return cursor `0` and an empty array.
+- **R123 (unwanted behavior):** If the cursor is not a nonnegative canonical
+  decimal, `COUNT` is not positive, an option is incomplete/unsupported, or the
+  key has the wrong type, then the server shall return one bounded error without
+  mutating state. `NOVALUES` shall be accepted only for HSCAN, and `TYPE` only for
+  SCAN.
+- **R124 (state-driven):** While cursors are used, the server shall retain no
+  per-cursor state, bound each page's examined positions and returned data, and
+  document that mutation during iteration may skip or duplicate elements even
+  though a stable keyspace is fully traversed.
 
 ### Development and delivery
 
@@ -568,7 +590,8 @@ atomic ACL-file save/load; opt-in RESP-command append-only persistence with
 fsync policies and restart recovery; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
 (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE;
-SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD.
+SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD;
+SCAN/HSCAN/SSCAN/ZSCAN bounded cursor iteration with MATCH/COUNT/TYPE/NOVALUES.
 See [string semantics](strings.md), [string ranges](string-ranges.md),
 [bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md),
 [typed collections](collections.md), [transactions](transactions.md),

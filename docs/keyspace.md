@@ -30,6 +30,16 @@
   wildcard work.
 - When `RANDOMKEY` is received, the server shall return a live key or a null bulk
   reply for an empty database; it shall not consistently select the first key.
+- When `SCAN cursor [MATCH pattern] [COUNT n] [TYPE type]` is received, the server
+  shall return a bounded page of live keys and a decimal continuation cursor
+  (`0` at completion), filtering with glob matching and the actual live key type.
+- When `HSCAN`/`SSCAN`/`ZSCAN key cursor [MATCH pattern] [COUNT n] [NOVALUES]` is
+  received, the server shall iterate fields/members in deterministic order,
+  return field/value, member or member/score pairs, and use the wrong-type error
+  for a mismatched key.
+- If a cursor is not a nonnegative decimal, `COUNT` is not positive, an option is
+  incomplete, or an unsupported option is supplied, then the server shall return
+  one bounded error without mutation.
 - If any command has invalid arity, then it shall return the standard command
   arity error without mutation. Key bytes are binary-safe.
 
@@ -62,6 +72,20 @@ one in-memory database only; only SELECT 0 is supported. No last-access metadata
 or eviction policy is implemented, so TOUCH reports existence accurately without
 updating access metadata.
 
+SCAN and the collection scans take a sorted snapshot under the exclusive store
+lock, reap expired keys first, and use the decimal cursor as an index into that
+snapshot. `COUNT` is a bounded work hint (default 10, capped at 10,000), not a
+result-count guarantee: filtering can return fewer items, and the next cursor
+advances by examined positions so a scan always terminates. Cursors are stateless
+and may be used by any connection, but they refer to an index rather than stable
+identity. On a stable keyspace every element is returned exactly once; concurrent
+deletion/insertion can cause skips or duplicates, matching SCAN's traversal-hint
+contract rather than a snapshot guarantee. `TYPE` accepts `string`, `list`, `set`,
+`hash`, `zset` or `stream`; an unknown type simply matches nothing. `NOVALUES` is
+available only on HSCAN. Collection cursors iterate fields/members sorted by raw
+bytes (ZSCAN by member, returning the current score). SCAN does not replace KEYS
+for exact snapshots, and there is no SCAN guarantee across server restart.
+
 ## Evidence
 
 `tests/keyspace.rs` exercises binary keys, duplicates, replacement, typed COPY,
@@ -71,12 +95,19 @@ injected-clock expiry, accounting, OOM atomicity, self-renames, missing/occupied
 keys, long/pathological glob inputs and untouched output for unknown commands.
 Additional tests verify retained string/nested-stream capacities across ownership
 transfer, exact-fit admission, NX/OOM rejection, expiry-index replacement and
-independent COPY mutation. Official Redis command references:
+independent COPY mutation. `tests/scan.rs` pages the keyspace, hash, set and
+zset scans in every execution mode, checks MATCH/TYPE/NOVALUES, missing and
+wrong-type keys, binary-safe values and invalid cursor/option errors. Official
+Redis command references:
 [TYPE](https://redis.io/docs/latest/commands/type/),
 [RENAME](https://redis.io/docs/latest/commands/rename/),
 [RENAMENX](https://redis.io/docs/latest/commands/renamenx/),
 [TOUCH](https://redis.io/docs/latest/commands/touch/),
 [DBSIZE](https://redis.io/docs/latest/commands/dbsize/),
 [COPY](https://redis.io/docs/latest/commands/copy/),
-[KEYS](https://redis.io/docs/latest/commands/keys/), and
-[RANDOMKEY](https://redis.io/docs/latest/commands/randomkey/).
+[KEYS](https://redis.io/docs/latest/commands/keys/),
+[RANDOMKEY](https://redis.io/docs/latest/commands/randomkey/),
+[SCAN](https://redis.io/docs/latest/commands/scan/),
+[HSCAN](https://redis.io/docs/latest/commands/hscan/),
+[SSCAN](https://redis.io/docs/latest/commands/sscan/) and
+[ZSCAN](https://redis.io/docs/latest/commands/zscan/).

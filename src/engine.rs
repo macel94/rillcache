@@ -18,6 +18,7 @@ mod journal;
 mod keyspace;
 mod multikey;
 mod options;
+mod scan;
 mod sha256;
 mod streams;
 mod string_algorithms;
@@ -152,6 +153,7 @@ impl Store {
     pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
         if self.execute_collection_config(arguments, output)
             || self.execute_admin(arguments, output)
+            || self.execute_scan(arguments, output)
             || self.execute_discovery(arguments, output)
             || self.execute_multikey(arguments, output)
             || self.execute_streams(arguments, output)
