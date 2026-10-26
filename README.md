@@ -71,6 +71,12 @@ bounded, at-most-once messages to live connections, with RESP3 push frames and A
 channel patterns. There is no sharded pub/sub, keyspace notification, persistence
 or replication of messages. See [pub/sub](docs/pubsub.md).
 
+Optional payload-budget eviction (`--maxmemory-policy noeviction|allkeys-random|
+allkeys-lru|volatile-random|volatile-lru|volatile-ttl`, runtime `CONFIG SET`) keeps
+writes succeeding by evicting eligible non-target keys; the budget is still
+key/value bytes, not RSS, and a volatile policy never removes persistent keys. See
+[eviction](docs/eviction.md).
+
 Opt-in append-only persistence (`--appendonly yes --dir /data`) writes a
 RESP-command journal of changed-key final states with absolute TTLs, supports
 `always`/`everysec`/`no` fsync policies, replays before listening, truncates only

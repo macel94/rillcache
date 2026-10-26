@@ -13,9 +13,12 @@ per-command table or replication statistics.
 | `total_commands_processed` | Client command dispatches admitted to `Session::execute`; includes session/pub-sub/admin commands and `INFO` itself |
 | `rejected_connections` | Accepted sockets closed with `ERR max number of clients reached` |
 | `expired_keys` | Live keys removed by lazy expiration or the bounded maintenance reaper |
-| `evicted_keys` | Always `0`; no eviction policy is implemented |
+| `evicted_keys` | Keys removed by an enabled payload-budget eviction policy |
 | `pubsub_channels` | Distinct channels with at least one live subscription |
 | `pubsub_patterns` | Total pattern subscriptions (not distinct patterns) |
+
+`INFO memory` also reports the live `maxmemory_policy`. `evicted_keys` resets with
+`CONFIG RESETSTAT`; the policy itself does not.
 
 `INFO server`, `memory` and `keyspace` remain available. Memory fields are the
 logical key/value payload and expiry counts, not allocator or RSS measurements;
@@ -31,8 +34,8 @@ counts `MULTI`, each queued command and `EXEC` as separate dispatches. A rejecte
 command still counts as processed; it does not increment data-specific counters.
 Health-check PING probes are ordinary connections and commands.
 
-`CONFIG RESETSTAT` zeroes the connection, command, rejected, expired and pub/sub
-counters. It does not delete data, clear subscriptions, reset the keyspace or reset
+`CONFIG RESETSTAT` zeroes the connection, command, rejected, expired, evicted and
+pub/sub counters. It does not delete data, clear subscriptions, reset the keyspace or reset
 payload accounting. Because the reset command itself is counted before dispatch,
 the next `INFO` typically reports `total_commands_processed:1` (the `INFO` command).
 
@@ -43,6 +46,7 @@ keys that merely crossed their deadline and were not yet reaped/lazily removed.
 
 ## Deliberate gaps
 
+- No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.
 - No `INFO commandstats`, `latencystats`, `slowlog`, `clients` section,
   `CLIENT LIST`, CPU/RSS accounting, network-byte counters or per-database stats.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,

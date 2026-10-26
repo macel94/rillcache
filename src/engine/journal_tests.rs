@@ -226,6 +226,37 @@ fn blocking_pop_is_journaled_and_survives_restart() {
 }
 
 #[test]
+fn eviction_is_journaled_and_replays_to_the_same_survivors() {
+    let path = aof_path("eviction");
+    {
+        let store = Store::with_auth_and_journal(
+            11,
+            Auth::default(),
+            &path,
+            FsyncPolicy::Always,
+            Limits::default(),
+        )
+        .unwrap();
+        store.set_eviction_policy(crate::engine::EvictionPolicy::AllKeysRandom);
+        assert_eq!(run(&store, &[b"SET", b"a", b"1234"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"SET", b"b", b"1234"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"SET", b"c", b"v"]), b"+OK\r\n");
+        assert_eq!(store.stats().evicted_keys, 1);
+    }
+    let store = Store::with_auth_and_journal(
+        11,
+        Auth::default(),
+        &path,
+        FsyncPolicy::Always,
+        Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(run(&store, &[b"DBSIZE"]), b":2\r\n");
+    assert_eq!(run(&store, &[b"GET", b"c"]), b"$1\r\nv\r\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn a_partial_tail_is_truncated_but_mid_file_corruption_fails() {
     let path = aof_path("truncated");
     {

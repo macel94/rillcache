@@ -1,3 +1,4 @@
+use super::eviction::EvictionPolicy;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,13 +180,24 @@ impl Stream {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) struct Entry {
     pub value: Vec<u8>,
     pub collection: Option<Collection>,
     pub stream: Option<Stream>,
     pub payload_len: usize,
     pub expires: Option<i64>,
+    pub last_access: u64,
+}
+
+impl PartialEq for Entry {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+            && self.collection == other.collection
+            && self.stream == other.stream
+            && self.payload_len == other.payload_len
+            && self.expires == other.expires
+    }
 }
 impl Entry {
     pub fn is_string(&self) -> bool {
@@ -221,6 +233,10 @@ pub(super) struct Data {
     journal_events: VecDeque<(u64, Vec<u8>)>,
     journal_overflow: bool,
     pub(in crate::engine) expired_keys: u64,
+    pub(in crate::engine) evicted_keys: u64,
+    pub(in crate::engine) eviction: EvictionPolicy,
+    eviction_seq: u64,
+    access_seq: u64,
 }
 impl Data {
     /// Record a mutation visible to `WATCH`/`EXEC` conflict checks and to the
@@ -382,14 +398,115 @@ impl Data {
         }
         // A logically expired key must not cause a false OOM for a new write.
         self.reap(now, usize::MAX);
-        size(self)
+        if let Some(bytes) = size(self) {
+            return Some(bytes);
+        }
+        if self.eviction == EvictionPolicy::NoEviction {
+            return None;
+        }
+        let own = if previous.is_none() { key.len() } else { 0 }.checked_add(bytes)?;
+        if own > maximum {
+            return None;
+        }
+        let current = self
+            .payload_bytes
+            .checked_sub(previous.unwrap_or(0))?
+            .checked_add(if previous.is_none() { key.len() } else { 0 })?
+            .checked_add(bytes)?;
+        if current.saturating_sub(self.evictable_bytes(key)) > maximum {
+            return None;
+        }
+        loop {
+            if let Some(bytes) = size(self) {
+                return Some(bytes);
+            }
+            if !self.evict_one(key) {
+                return None;
+            }
+        }
     }
 
-    pub fn put(&mut self, key: &[u8], value: &[u8], expires: Option<i64>, payload: usize) {
+    fn evictable_bytes(&self, target: &[u8]) -> usize {
+        self.entries
+            .iter()
+            .filter(|(key, entry)| {
+                key.as_slice() != target && (!self.eviction.volatile() || entry.expires.is_some())
+            })
+            .map(|(key, entry)| key.len().saturating_add(entry.payload_len))
+            .fold(0usize, usize::saturating_add)
+    }
+
+    /// Choose and remove one bounded candidate. Returns false when no eligible
+    /// key exists, so a volatile policy can still fail without deleting persistent
+    /// data. LRU is approximate mutation recency, not read recency.
+    fn evict_one(&mut self, target: &[u8]) -> bool {
+        let volatile = self.eviction.volatile();
+        let random = matches!(
+            self.eviction,
+            EvictionPolicy::AllKeysRandom | EvictionPolicy::VolatileRandom
+        );
+        let count = self
+            .entries
+            .keys()
+            .filter(|key| {
+                key.as_slice() != target && (!volatile || self.entries[*key].expires.is_some())
+            })
+            .count();
+        if count == 0 {
+            return false;
+        }
+        let chosen = if random {
+            self.eviction_seq = self.eviction_seq.wrapping_add(1);
+            let target_index = self.eviction_seq as usize % count;
+            self.entries
+                .keys()
+                .filter(|key| {
+                    key.as_slice() != target && (!volatile || self.entries[*key].expires.is_some())
+                })
+                .nth(target_index)
+                .cloned()
+        } else {
+            let mut best: Option<(&[u8], i128)> = None;
+            for (key, entry) in &self.entries {
+                if key.as_slice() == target || (volatile && entry.expires.is_none()) {
+                    continue;
+                }
+                let rank = match self.eviction {
+                    EvictionPolicy::VolatileTtl => entry.expires.unwrap_or(i64::MAX) as i128,
+                    _ => entry.last_access as i128,
+                };
+                if best.is_none_or(|(_, current)| rank < current) {
+                    best = Some((key.as_slice(), rank));
+                }
+            }
+            best.map(|(key, _)| key.to_vec())
+        };
+        let Some(chosen) = chosen else {
+            return false;
+        };
+        if self.remove(&chosen).is_some() {
+            self.evicted_keys = self.evicted_keys.saturating_add(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn put(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+        expires: Option<i64>,
+        payload: usize,
+        _now: i64,
+    ) {
+        self.access_seq = self.access_seq.wrapping_add(1);
+        let access = self.access_seq;
         if let Some(entry) = self.entries.get_mut(key) {
             entry.collection = None;
             entry.stream = None;
             entry.payload_len = value.len();
+            entry.last_access = access;
             // Reuse admitted overwrites, but release disproportionate old capacity
             // on shrink (and all capacity for an empty replacement).
             if entry.value.capacity() > value.len().saturating_mul(2) {
@@ -407,6 +524,7 @@ impl Data {
                     stream: None,
                     payload_len: value.len(),
                     expires,
+                    last_access: access,
                 },
             );
             if let Some(at) = expires {
@@ -419,8 +537,10 @@ impl Data {
 
     /// Install an already admitted owned value without copying its buffers or tree.
     /// `payload` is the final total, including replacement of any destination.
-    pub fn put_owned(&mut self, key: &[u8], entry: Entry, payload: usize) {
+    pub fn put_owned(&mut self, key: &[u8], mut entry: Entry, payload: usize, _now: i64) {
         self.remove(key);
+        self.access_seq = self.access_seq.wrapping_add(1);
+        entry.last_access = self.access_seq;
         if let Some(at) = entry.expires {
             self.expirations.insert((at, key.to_vec()));
         }
@@ -435,9 +555,13 @@ impl Data {
         collection: Collection,
         expires: Option<i64>,
         payload: usize,
+        _now: i64,
     ) {
+        self.access_seq = self.access_seq.wrapping_add(1);
+        let access = self.access_seq;
         let collection_bytes = collection.payload_len();
         if let Some(entry) = self.entries.get_mut(key) {
+            entry.last_access = access;
             entry.value.clear();
             entry.collection = Some(collection);
             entry.stream = None;
@@ -452,6 +576,7 @@ impl Data {
                     stream: None,
                     payload_len: collection_bytes,
                     expires,
+                    last_access: access,
                 },
             );
             if let Some(at) = expires {
@@ -462,9 +587,19 @@ impl Data {
         self.touch(key);
     }
 
-    pub fn put_stream(&mut self, key: &[u8], stream: Stream, expires: Option<i64>, payload: usize) {
+    pub fn put_stream(
+        &mut self,
+        key: &[u8],
+        stream: Stream,
+        expires: Option<i64>,
+        payload: usize,
+        _now: i64,
+    ) {
+        self.access_seq = self.access_seq.wrapping_add(1);
+        let access = self.access_seq;
         let stream_bytes = stream.payload_bytes().expect("admitted stream payload");
         if let Some(entry) = self.entries.get_mut(key) {
+            entry.last_access = access;
             entry.value.clear();
             entry.collection = None;
             entry.stream = Some(stream);
@@ -479,6 +614,7 @@ impl Data {
                     stream: Some(stream),
                     payload_len: stream_bytes,
                     expires,
+                    last_access: access,
                 },
             );
             if let Some(at) = expires {

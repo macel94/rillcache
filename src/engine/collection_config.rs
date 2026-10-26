@@ -149,14 +149,25 @@ impl Store {
         let mut matches: Vec<(&[u8], String)> = Vec::new();
         for pattern in &args[2..] {
             let folded_pattern: Vec<u8> = pattern.iter().map(u8::to_ascii_lowercase).collect();
-            let wants_password = if pattern
+            let wildcard = pattern
                 .iter()
-                .any(|byte| matches!(*byte, b'*' | b'?' | b'['))
-            {
+                .any(|byte| matches!(*byte, b'*' | b'?' | b'['));
+            let wants_password = if wildcard {
                 glob_match(&folded_pattern, b"requirepass")
             } else {
                 pattern.eq_ignore_ascii_case(b"requirepass")
             };
+            let wants_policy = if wildcard {
+                glob_match(&folded_pattern, b"maxmemory-policy")
+            } else {
+                pattern.eq_ignore_ascii_case(b"maxmemory-policy")
+            };
+            if wants_policy {
+                matches.push((
+                    b"maxmemory-policy",
+                    self.eviction_policy().name().to_string(),
+                ));
+            }
             if wants_password {
                 // Never return the secret. The empty value means unset; any
                 // configured password is reported as a visible redaction.
@@ -215,8 +226,18 @@ impl Store {
         };
         let mut candidate = *config;
         let mut password: Option<Option<Vec<u8>>> = None;
+        let mut policy = None;
         for pair in args[2..].as_chunks::<2>().0 {
-            if pair[0].eq_ignore_ascii_case(b"requirepass") {
+            if pair[0].eq_ignore_ascii_case(b"maxmemory-policy") {
+                let Some(parsed) = std::str::from_utf8(pair[1])
+                    .ok()
+                    .and_then(super::EvictionPolicy::parse)
+                else {
+                    out.extend_from_slice(b"-ERR invalid maxmemory-policy\r\n");
+                    return;
+                };
+                policy = Some(parsed);
+            } else if pair[0].eq_ignore_ascii_case(b"requirepass") {
                 if pair[1].len() > 1024 {
                     out.extend_from_slice(b"-ERR requirepass must be at most 1024 bytes\r\n");
                     return;
@@ -230,6 +251,12 @@ impl Store {
         *config = candidate;
         if let Some(password) = password
             && !self.set_requirepass(password.as_deref())
+        {
+            super::internal_error(out);
+            return;
+        }
+        if let Some(policy) = policy
+            && !self.set_eviction_policy(policy)
         {
             super::internal_error(out);
             return;
@@ -348,7 +375,7 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*28\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*30\r\n"));
     }
 
     #[test]

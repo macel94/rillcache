@@ -287,7 +287,7 @@ impl Store {
         } else {
             output.extend_from_slice(b"+OK\r\n");
         }
-        data.put(key, value, expires, payload);
+        data.put(key, value, expires, payload, now);
     }
 
     pub(super) fn getdel(&self, key: &[u8], output: &mut Vec<u8>) {
@@ -517,7 +517,7 @@ impl Store {
             output.extend_from_slice(OOM);
             return;
         };
-        data.put(arguments[1], encoded.as_bytes(), expires, payload);
+        data.put(arguments[1], encoded.as_bytes(), expires, payload, now);
         integer(value, output);
     }
 }

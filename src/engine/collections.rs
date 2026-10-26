@@ -206,7 +206,7 @@ impl Store {
             out.extend_from_slice(OOM);
             return;
         };
-        data.put_collection(key, encoded, expires, payload);
+        data.put_collection(key, encoded, expires, payload, now);
         integer(added as i64, out);
     }
 
@@ -304,7 +304,7 @@ impl Store {
             out.extend_from_slice(OOM);
             return;
         };
-        data.put_collection(key, encoded, expires, payload);
+        data.put_collection(key, encoded, expires, payload, now);
         integer(added, out);
     }
 
@@ -410,7 +410,7 @@ impl Store {
             out.extend_from_slice(OOM);
             return;
         };
-        data.put_collection(key, encoded, expires, payload);
+        data.put_collection(key, encoded, expires, payload, now);
         integer(added, out);
     }
 
@@ -550,7 +550,7 @@ impl Store {
             return;
         };
         let len = encoded.list_items().expect("list encoding").len();
-        data.put_collection(key, encoded, expires, payload);
+        data.put_collection(key, encoded, expires, payload, now);
         integer(len as i64, out);
     }
 
@@ -619,7 +619,7 @@ impl Store {
             let bytes = list.iter().map(Vec::len).sum::<usize>();
             let payload = data.payload_bytes - previous + bytes;
             let encoded = encode_list(list, config.list_max_listpack_size);
-            data.put_collection(key, encoded, expires, payload);
+            data.put_collection(key, encoded, expires, payload, now);
         }
     }
 

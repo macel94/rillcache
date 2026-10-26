@@ -126,7 +126,7 @@ impl Store {
         }
         next.resize(new_len, 0);
         next[byte] = (next[byte] & !(1 << shift)) | ((value as u8) << shift);
-        data.put(args[1], &next, expires, payload);
+        data.put(args[1], &next, expires, payload, now);
         integer(i64::from(old_bit), out);
     }
 
@@ -189,7 +189,7 @@ impl Store {
             out.extend_from_slice(OOM);
             return;
         };
-        data.put(args[1], formatted.as_bytes(), expires, payload);
+        data.put(args[1], formatted.as_bytes(), expires, payload, now);
         encode_bulk(Some(formatted.as_bytes()), out);
     }
 

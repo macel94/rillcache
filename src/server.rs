@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::engine::{Action, Auth, FsyncPolicy, Store};
+use crate::engine::{Action, Auth, EvictionPolicy, FsyncPolicy, Store};
 use crate::protocol::{Limits, dispatch_request};
 use crate::session::Session;
 use std::path::PathBuf;
@@ -133,6 +133,8 @@ pub struct Config {
     pub appendfsync: FsyncPolicy,
     /// Directory containing the journal.
     pub dir: PathBuf,
+    /// Policy used when payload admission would otherwise fail.
+    pub maxmemory_policy: EvictionPolicy,
 }
 
 impl std::fmt::Debug for Config {
@@ -154,6 +156,7 @@ impl std::fmt::Debug for Config {
             .field("appendfilename", &self.appendfilename)
             .field("appendfsync", &self.appendfsync)
             .field("dir", &self.dir)
+            .field("maxmemory_policy", &self.maxmemory_policy)
             .finish()
     }
 }
@@ -173,6 +176,7 @@ impl Default for Config {
             appendfilename: "appendonly.aof".into(),
             appendfsync: FsyncPolicy::EverySec,
             dir: PathBuf::from("."),
+            maxmemory_policy: EvictionPolicy::NoEviction,
         }
     }
 }
@@ -253,6 +257,7 @@ impl Server {
         } else {
             Store::with_auth(config.max_data_bytes, auth)
         };
+        store.set_eviction_policy(config.maxmemory_policy);
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
         let capacity = thread::available_parallelism().ok().map(usize::from);

@@ -128,7 +128,7 @@ impl Store {
             if ttl.is_some_and(|deadline| deadline < now) {
                 data.remove(key);
             } else {
-                data.put(key, value, ttl, payload);
+                data.put(key, value, ttl, payload, now);
             }
         }
         output.extend_from_slice(b":1\r\n");
@@ -261,7 +261,7 @@ impl Store {
         }
 
         for (key, value) in final_values {
-            data.put(key, value, None, payload);
+            data.put(key, value, None, payload, now);
         }
         if nx {
             output.extend_from_slice(b":1\r\n");
