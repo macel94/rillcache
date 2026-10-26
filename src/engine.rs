@@ -6,6 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::protocol::encode_bulk;
 mod administration;
+mod collection_config;
+mod collections;
 mod commands;
 mod data;
 mod discovery;
@@ -16,6 +18,7 @@ mod streams;
 mod string_algorithms;
 mod string_ranges;
 mod xxh3;
+use collection_config::CollectionConfig;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
 
@@ -44,6 +47,7 @@ impl Clock for SystemClock {
 pub struct Store {
     data: RwLock<Data>,
     max_payload_bytes: usize,
+    collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
 }
 impl Store {
@@ -54,6 +58,7 @@ impl Store {
         Self {
             data: RwLock::new(Data::default()),
             max_payload_bytes,
+            collection_config: RwLock::new(CollectionConfig::default()),
             clock,
         }
     }
@@ -71,7 +76,8 @@ impl Store {
 
     /// Append exactly one reply. No store lock is held during socket I/O.
     pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        if self.execute_admin(arguments, output)
+        if self.execute_collection_config(arguments, output)
+            || self.execute_admin(arguments, output)
             || self.execute_discovery(arguments, output)
             || self.execute_multikey(arguments, output)
             || self.execute_streams(arguments, output)
@@ -254,6 +260,7 @@ impl Store {
         } else if !self.execute_keyspace(arguments, output)
             && !self.execute_string_ranges(arguments, output)
             && !self.execute_string_algorithms(arguments, output)
+            && !self.execute_collections(arguments, output)
         {
             output.extend_from_slice(b"-ERR unknown command\r\n");
         }
@@ -273,6 +280,11 @@ fn integer(value: i64, output: &mut Vec<u8>) {
 }
 fn internal_error(output: &mut Vec<u8>) {
     output.extend_from_slice(b"-ERR internal store error\r\n");
+}
+fn wrong_type(output: &mut Vec<u8>) {
+    output.extend_from_slice(
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
 }
 
 #[cfg(test)]
