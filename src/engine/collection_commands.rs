@@ -1,0 +1,2626 @@
+//! Additional bounded collection mutation and inspection commands.
+//!
+//! The core commands in `collections.rs` create and read values. This module
+//! completes the common mutation surface without introducing a second storage
+//! representation: every change stages the entire typed value, checks the
+//! configured payload budget, and publishes it atomically under the store lock.
+
+use super::collection_config::CollectionConfig;
+use super::data::{Collection, Data, Entry};
+use super::options::{NOT_INTEGER, OOM, parse_integer};
+use super::{Store, arity, integer, internal_error, wrong_type};
+use crate::protocol::encode_bulk;
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const MAX_ELEMENTS: usize = 1_000_000;
+static RANDOM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+impl Store {
+    /// Returns false without touching output for commands owned by another module.
+    pub(super) fn execute_collection_commands(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
+        let Some(command) = args.first() else {
+            return false;
+        };
+        if command.eq_ignore_ascii_case(b"HSETNX") {
+            self.hash_setnx(args, out);
+        } else if command.eq_ignore_ascii_case(b"HDEL") {
+            if args.len() < 3 {
+                arity("hdel", out);
+            } else {
+                self.hash_del(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HEXISTS") {
+            if args.len() != 3 {
+                arity("hexists", out);
+            } else {
+                self.hash_exists(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HINCRBY") {
+            if args.len() != 4 {
+                arity("hincrby", out);
+            } else {
+                self.hash_incr(args, false, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HINCRBYFLOAT") {
+            if args.len() != 4 {
+                arity("hincrbyfloat", out);
+            } else {
+                self.hash_incr(args, true, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HMGET") {
+            if args.len() < 3 {
+                arity("hmget", out);
+            } else {
+                self.hash_mget(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HKEYS") || command.eq_ignore_ascii_case(b"HVALS") {
+            if args.len() != 2 {
+                arity(
+                    if command.eq_ignore_ascii_case(b"HKEYS") {
+                        "hkeys"
+                    } else {
+                        "hvals"
+                    },
+                    out,
+                );
+            } else {
+                self.hash_keys_values(args, command.eq_ignore_ascii_case(b"HKEYS"), out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HSTRLEN") {
+            if args.len() != 3 {
+                arity("hstrlen", out);
+            } else {
+                self.hash_strlen(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"LINDEX") {
+            if args.len() != 3 {
+                arity("lindex", out);
+            } else {
+                self.list_index(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"LINSERT") {
+            if args.len() != 5 {
+                arity("linsert", out);
+            } else {
+                self.list_insert(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"LREM") {
+            if args.len() != 4 {
+                arity("lrem", out);
+            } else {
+                self.list_remove(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"LSET") {
+            if args.len() != 4 {
+                arity("lset", out);
+            } else {
+                self.list_set(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"LTRIM") {
+            if args.len() != 4 {
+                arity("ltrim", out);
+            } else {
+                self.list_trim(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"LPUSHX") || command.eq_ignore_ascii_case(b"RPUSHX")
+        {
+            if args.len() < 3 {
+                arity(
+                    if command.eq_ignore_ascii_case(b"LPUSHX") {
+                        "lpushx"
+                    } else {
+                        "rpushx"
+                    },
+                    out,
+                );
+            } else {
+                self.list_push_existing(args, command.eq_ignore_ascii_case(b"LPUSHX"), out);
+            }
+        } else if command.eq_ignore_ascii_case(b"SREM") {
+            if args.len() < 3 {
+                arity("srem", out);
+            } else {
+                self.set_remove(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"SMISMEMBER") {
+            if args.len() < 3 {
+                arity("smismember", out);
+            } else {
+                self.set_mismember(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"SMOVE") {
+            if args.len() != 4 {
+                arity("smove", out);
+            } else {
+                self.set_move(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"SINTER")
+            || command.eq_ignore_ascii_case(b"SUNION")
+            || command.eq_ignore_ascii_case(b"SDIFF")
+        {
+            let name = if command.eq_ignore_ascii_case(b"SINTER") {
+                "sinter"
+            } else if command.eq_ignore_ascii_case(b"SUNION") {
+                "sunion"
+            } else {
+                "sdiff"
+            };
+            if args.len() < 2 {
+                arity(name, out);
+            } else {
+                self.set_algebra(args, name, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"SINTERCARD") {
+            if args.len() < 3 {
+                arity("sintercard", out);
+            } else {
+                self.set_intercard(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"SINTERSTORE")
+            || command.eq_ignore_ascii_case(b"SUNIONSTORE")
+            || command.eq_ignore_ascii_case(b"SDIFFSTORE")
+        {
+            let name = if command.eq_ignore_ascii_case(b"SINTERSTORE") {
+                "sinterstore"
+            } else if command.eq_ignore_ascii_case(b"SUNIONSTORE") {
+                "sunionstore"
+            } else {
+                "sdiffstore"
+            };
+            if args.len() < 3 {
+                arity(name, out);
+            } else {
+                self.set_store(args, name, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"SPOP") {
+            if !(args.len() == 2 || args.len() == 3) {
+                arity("spop", out);
+            } else {
+                self.set_pop(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"SRANDMEMBER") {
+            if !(args.len() == 2 || args.len() == 3) {
+                arity("srandmember", out);
+            } else {
+                self.set_random_member(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZADD") {
+            if args.len() < 4 {
+                arity("zadd", out);
+            } else {
+                self.zset_add_extra(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZREM") {
+            if args.len() < 3 {
+                arity("zrem", out);
+            } else {
+                self.zset_remove(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZINCRBY") {
+            if args.len() != 4 {
+                arity("zincrby", out);
+            } else {
+                self.zset_incr(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZRANK")
+            || command.eq_ignore_ascii_case(b"ZREVRANK")
+        {
+            if !(args.len() == 3 || args.len() == 4) {
+                arity(
+                    if command.eq_ignore_ascii_case(b"ZRANK") {
+                        "zrank"
+                    } else {
+                        "zrevrank"
+                    },
+                    out,
+                );
+            } else {
+                self.zset_rank(args, command.eq_ignore_ascii_case(b"ZREVRANK"), out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZREVRANGE") {
+            if !(args.len() == 4 || args.len() == 5) {
+                arity("zrevrange", out);
+            } else {
+                self.zset_reverse_range(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZCOUNT") {
+            if args.len() != 4 {
+                arity("zcount", out);
+            } else {
+                self.zset_count(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZRANGEBYSCORE")
+            || command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE")
+        {
+            self.zset_range_by_score(args, command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE"), out);
+        } else if command.eq_ignore_ascii_case(b"ZREMRANGEBYRANK")
+            || command.eq_ignore_ascii_case(b"ZREMRANGEBYSCORE")
+        {
+            if args.len() != 4 {
+                arity(
+                    if command.eq_ignore_ascii_case(b"ZREMRANGEBYRANK") {
+                        "zremrangebyrank"
+                    } else {
+                        "zremrangebyscore"
+                    },
+                    out,
+                );
+            } else {
+                self.zset_remove_range(
+                    args,
+                    command.eq_ignore_ascii_case(b"ZREMRANGEBYSCORE"),
+                    out,
+                );
+            }
+        } else if command.eq_ignore_ascii_case(b"ZPOPMIN")
+            || command.eq_ignore_ascii_case(b"ZPOPMAX")
+        {
+            if !(args.len() == 2 || args.len() == 3) {
+                arity(
+                    if command.eq_ignore_ascii_case(b"ZPOPMIN") {
+                        "zpopmin"
+                    } else {
+                        "zpopmax"
+                    },
+                    out,
+                );
+            } else {
+                self.zset_pop(args, command.eq_ignore_ascii_case(b"ZPOPMAX"), out);
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+}
+
+fn normalize_score(score: f64) -> f64 {
+    if score == 0.0 { 0.0 } else { score }
+}
+
+fn score_bytes(score: f64) -> Vec<u8> {
+    normalize_score(score).to_string().into_bytes()
+}
+
+fn parse_score(bytes: &[u8]) -> Option<f64> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let score = text.parse::<f64>().ok()?;
+    (!score.is_nan()).then_some(score)
+}
+
+fn parse_i64(bytes: &[u8]) -> Option<i64> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let value = text.parse::<i64>().ok()?;
+    (value.to_string().as_bytes() == bytes).then_some(value)
+}
+
+fn parse_score_bound(bytes: &[u8]) -> Option<(f64, bool)> {
+    let (body, inclusive) = match bytes.first() {
+        Some(b'(') => (&bytes[1..], false),
+        _ => (bytes, true),
+    };
+    if body.eq_ignore_ascii_case(b"-inf") {
+        return Some((f64::NEG_INFINITY, inclusive));
+    }
+    if body.eq_ignore_ascii_case(b"+inf") || body.eq_ignore_ascii_case(b"inf") {
+        return Some((f64::INFINITY, inclusive));
+    }
+    Some((parse_score(body)?, inclusive))
+}
+
+fn in_score_range(score: f64, min: (f64, bool), max: (f64, bool)) -> bool {
+    (min.1 && score >= min.0 || !min.1 && score > min.0)
+        && (max.1 && score <= max.0 || !max.1 && score < max.0)
+}
+
+fn random_index(length: usize) -> usize {
+    if length <= 1 {
+        return 0;
+    }
+    let sequence = RANDOM_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let mut random = nanos ^ sequence.wrapping_mul(0x9e3779b97f4a7c15);
+    random = (random ^ (random >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    random = (random ^ (random >> 27)).wrapping_mul(0x94d049bb133111eb);
+    random ^= random >> 31;
+    random as usize % length
+}
+
+fn encode_set(set: BTreeSet<Vec<u8>>, config: &CollectionConfig) -> Collection {
+    let compact_ints: Option<BTreeSet<i64>> =
+        set.iter().map(|member| parse_integer(member)).collect();
+    if let Some(values) =
+        compact_ints.filter(|values| values.len() <= config.set_max_intset_entries)
+    {
+        Collection::SetInt(values)
+    } else if set.len() <= config.set_max_listpack_entries
+        && set
+            .iter()
+            .all(|member| member.len() <= config.set_max_listpack_value)
+    {
+        Collection::SetPack(set.into_iter().collect())
+    } else {
+        Collection::Set(set)
+    }
+}
+
+fn encode_hash(hash: HashMap<Vec<u8>, Vec<u8>>, config: &CollectionConfig) -> Collection {
+    let compact = hash.len() <= config.hash_max_listpack_entries
+        && hash.iter().all(|(field, value)| {
+            field.len() <= config.hash_max_listpack_value
+                && value.len() <= config.hash_max_listpack_value
+        });
+    if compact {
+        let mut entries: Vec<_> = hash.into_iter().collect();
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        Collection::HashPack(entries)
+    } else {
+        Collection::Hash(hash)
+    }
+}
+
+fn encode_zset(zset: HashMap<Vec<u8>, f64>, config: &CollectionConfig) -> Collection {
+    let compact = zset.len() <= config.zset_max_listpack_entries
+        && zset
+            .keys()
+            .all(|member| member.len() <= config.zset_max_listpack_value);
+    if compact {
+        let mut entries: Vec<_> = zset.into_iter().collect();
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        Collection::ZSetPack(entries)
+    } else {
+        Collection::ZSet(zset)
+    }
+}
+
+fn encode_list(list: VecDeque<Vec<u8>>, setting: i64) -> Collection {
+    let total_bytes: usize = list.iter().map(Vec::len).sum();
+    let compact = if setting > 0 {
+        list.len() <= setting as usize
+    } else {
+        total_bytes <= listpack_byte_limit(setting)
+    };
+    if compact {
+        return Collection::ListPack(list);
+    }
+    let by_count = setting > 0;
+    let limit = if by_count {
+        setting as usize
+    } else {
+        listpack_byte_limit(setting)
+    };
+    let mut nodes = VecDeque::new();
+    let mut node = VecDeque::new();
+    let mut node_bytes = 0usize;
+    for value in list {
+        let full = !node.is_empty()
+            && if by_count {
+                node.len() >= limit
+            } else {
+                node_bytes.saturating_add(value.len()) > limit
+            };
+        if full {
+            nodes.push_back(std::mem::take(&mut node));
+            node_bytes = 0;
+        }
+        node_bytes = node_bytes.saturating_add(value.len());
+        node.push_back(value);
+    }
+    if !node.is_empty() {
+        nodes.push_back(node);
+    }
+    Collection::ListQuick(nodes)
+}
+
+fn listpack_byte_limit(setting: i64) -> usize {
+    if setting >= 0 {
+        return setting as usize;
+    }
+    let level = setting.unsigned_abs().saturating_sub(1).min(4);
+    4096usize << level
+}
+
+fn normalize_index(index: i64, len: usize) -> Option<usize> {
+    let len = len as i128;
+    let index = if index < 0 {
+        len + index as i128
+    } else {
+        index as i128
+    };
+    (0..len).contains(&index).then_some(index as usize)
+}
+
+fn ordered_zset(items: Vec<(&[u8], f64)>, reverse: bool) -> Vec<(Vec<u8>, f64)> {
+    let mut ordered: Vec<(Vec<u8>, f64)> = items
+        .into_iter()
+        .map(|(member, score)| (member.to_vec(), score))
+        .collect();
+    ordered.sort_unstable_by(|(member_a, score_a), (member_b, score_b)| {
+        score_a
+            .total_cmp(score_b)
+            .then_with(|| member_a.cmp(member_b))
+    });
+    if reverse {
+        ordered.reverse();
+    }
+    ordered
+}
+
+impl Store {
+    fn hash_setnx(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        if args.len() != 4 {
+            arity("hsetnx", out);
+            return;
+        }
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let current = data.entries.get(key);
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_hash))
+        {
+            wrong_type(out);
+            return;
+        }
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = current
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::hash_items))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(field, value)| (field.to_vec(), value.to_vec()))
+            .collect();
+        if hash.contains_key(args[2]) {
+            integer(0, out);
+            return;
+        }
+        hash.insert(args[2].to_vec(), args[3].to_vec());
+        if hash.len() > MAX_ELEMENTS {
+            out.extend_from_slice(OOM);
+            return;
+        }
+        let expires = current.and_then(|entry| entry.expires);
+        let bytes = hash
+            .iter()
+            .map(|(field, value)| field.len() + value.len())
+            .sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_hash(hash, &config);
+        let previous = current.map(Entry::payload_len);
+        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(1, out);
+    }
+
+    fn hash_del(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let Some(entry) = data.entries.get(key) else {
+            integer(0, out);
+            return;
+        };
+        if !entry.collection.as_ref().is_some_and(Collection::is_hash) {
+            wrong_type(out);
+            return;
+        }
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = entry
+            .collection
+            .as_ref()
+            .and_then(Collection::hash_items)
+            .expect("hash type checked")
+            .into_iter()
+            .map(|(field, value)| (field.to_vec(), value.to_vec()))
+            .collect();
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let mut removed = 0i64;
+        for field in &args[2..] {
+            if hash.remove(*field).is_some() {
+                removed += 1;
+            }
+        }
+        if removed == 0 {
+            integer(0, out);
+            return;
+        }
+        if hash.is_empty() {
+            data.remove(key);
+            integer(removed, out);
+            return;
+        }
+        let bytes = hash
+            .iter()
+            .map(|(field, value)| field.len() + value.len())
+            .sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_hash(hash, &config);
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(removed, out);
+    }
+
+    fn hash_exists(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let exists = match data.entries.get(args[1]) {
+            None => false,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => entry
+                .collection
+                .as_ref()
+                .and_then(|collection| collection.hash_get(args[2]))
+                .is_some(),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        integer(i64::from(exists), out);
+    }
+
+    fn hash_incr(&self, args: &[&[u8]], float: bool, out: &mut Vec<u8>) {
+        let key = args[1];
+        let field = args[2];
+        if float {
+            let Some(text) = std::str::from_utf8(args[3]).ok() else {
+                out.extend_from_slice(b"-ERR value is not a valid float\r\n");
+                return;
+            };
+            let Ok(amount) = text.parse::<f64>() else {
+                out.extend_from_slice(b"-ERR value is not a valid float\r\n");
+                return;
+            };
+            if amount.is_nan() {
+                out.extend_from_slice(b"-ERR value is not a valid float\r\n");
+                return;
+            }
+            if !amount.is_finite() {
+                out.extend_from_slice(b"-ERR value is NaN or Infinity\r\n");
+                return;
+            }
+            self.hash_incr_float(key, field, amount, out);
+        } else {
+            let Some(amount) = parse_integer(args[3]) else {
+                out.extend_from_slice(NOT_INTEGER);
+                return;
+            };
+            self.hash_incr_integer(key, field, amount, out);
+        }
+    }
+
+    fn hash_incr_integer(&self, key: &[u8], field: &[u8], amount: i64, out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let current = data.entries.get(key);
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_hash))
+        {
+            wrong_type(out);
+            return;
+        }
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = current
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::hash_items))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(field, value)| (field.to_vec(), value.to_vec()))
+            .collect();
+        let value = match hash.get(field) {
+            Some(value) => match parse_integer(value) {
+                Some(value) => value,
+                None => {
+                    out.extend_from_slice(b"-ERR hash value is not an integer\r\n");
+                    return;
+                }
+            },
+            None => 0,
+        };
+        let Some(value) = value.checked_add(amount) else {
+            out.extend_from_slice(b"-ERR increment or decrement would overflow\r\n");
+            return;
+        };
+        hash.insert(field.to_vec(), value.to_string().into_bytes());
+        let expires = current.and_then(|entry| entry.expires);
+        let previous = current.map(Entry::payload_len);
+        let bytes = hash
+            .iter()
+            .map(|(field, value)| field.len() + value.len())
+            .sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_hash(hash, &config);
+        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(value, out);
+    }
+
+    fn hash_incr_float(&self, key: &[u8], field: &[u8], amount: f64, out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let current = data.entries.get(key);
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_hash))
+        {
+            wrong_type(out);
+            return;
+        }
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = current
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::hash_items))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(field, value)| (field.to_vec(), value.to_vec()))
+            .collect();
+        let value = match hash.get(field) {
+            Some(value) => match std::str::from_utf8(value)
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+            {
+                Some(value) if value.is_finite() => value,
+                _ => {
+                    out.extend_from_slice(b"-ERR hash value is not a float\r\n");
+                    return;
+                }
+            },
+            None => 0.0,
+        };
+        let Some(value) = Some(value + amount).filter(|value| value.is_finite()) else {
+            out.extend_from_slice(b"-ERR increment would produce NaN or Infinity\r\n");
+            return;
+        };
+        let value = if value == 0.0 { 0.0 } else { value };
+        hash.insert(field.to_vec(), value.to_string().into_bytes());
+        let expires = current.and_then(|entry| entry.expires);
+        let previous = current.map(Entry::payload_len);
+        let bytes = hash
+            .iter()
+            .map(|(field, value)| field.len() + value.len())
+            .sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_hash(hash, &config);
+        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        encode_bulk(Some(value.to_string().as_bytes()), out);
+    }
+
+    fn hash_mget(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let collection = match data.entries.get(args[1]) {
+            None => None,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => {
+                entry.collection.as_ref()
+            }
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        write!(out, "*{}\r\n", args.len() - 2).expect("Vec write");
+        for field in &args[2..] {
+            encode_bulk(
+                collection.and_then(|collection| collection.hash_get(field)),
+                out,
+            );
+        }
+    }
+
+    fn hash_keys_values(&self, args: &[&[u8]], fields: bool, out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let mut items = match data.entries.get(args[1]) {
+            None => {
+                out.extend_from_slice(b"*0\r\n");
+                return;
+            }
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => entry
+                .collection
+                .as_ref()
+                .and_then(Collection::hash_items)
+                .expect("hash type checked"),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        items.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        write!(out, "*{}\r\n", items.len()).expect("Vec write");
+        for (field, value) in items {
+            encode_bulk(Some(if fields { field } else { value }), out);
+        }
+    }
+
+    fn hash_strlen(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let length = match data.entries.get(args[1]) {
+            None => 0,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => entry
+                .collection
+                .as_ref()
+                .and_then(|collection| collection.hash_get(args[2]))
+                .map_or(0, |value| value.len()),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        integer(length as i64, out);
+    }
+}
+
+impl Store {
+    fn list_index(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let list = match data.entries.get(args[1]) {
+            None => {
+                encode_bulk(None, out);
+                return;
+            }
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_list) => entry
+                .collection
+                .as_ref()
+                .and_then(Collection::list_items)
+                .expect("list type checked"),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let Some(index) = parse_i64(args[2]) else {
+            out.extend_from_slice(NOT_INTEGER);
+            return;
+        };
+        let value = normalize_index(index, list.len()).map(|index| list[index]);
+        encode_bulk(value, out);
+    }
+
+    fn list_insert(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let before = if args[2].eq_ignore_ascii_case(b"BEFORE") {
+            true
+        } else if args[2].eq_ignore_ascii_case(b"AFTER") {
+            false
+        } else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let Some(entry) = data.entries.get(key) else {
+            integer(0, out);
+            return;
+        };
+        let Some(mut list) = entry.collection.as_ref().and_then(Collection::list_values) else {
+            wrong_type(out);
+            return;
+        };
+        let Some(position) = list.iter().position(|value| value.as_slice() == args[3]) else {
+            integer(-1, out);
+            return;
+        };
+        let position = if before { position } else { position + 1 };
+        if list.len() >= MAX_ELEMENTS {
+            out.extend_from_slice(OOM);
+            return;
+        }
+        list.insert(position, args[4].to_vec());
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let bytes = list.iter().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_list(list, config.list_max_listpack_size);
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        let length = encoded.list_items().expect("list encoding").len();
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(length as i64, out);
+    }
+
+    fn list_remove(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(count) = parse_i64(args[2]) else {
+            out.extend_from_slice(NOT_INTEGER);
+            return;
+        };
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let Some(entry) = data.entries.get(key) else {
+            integer(0, out);
+            return;
+        };
+        let Some(list) = entry.collection.as_ref().and_then(Collection::list_values) else {
+            wrong_type(out);
+            return;
+        };
+        let limit = if count == 0 {
+            usize::MAX
+        } else {
+            usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX)
+        };
+        let mut removed = 0usize;
+        let mut result = VecDeque::with_capacity(list.len());
+        if count >= 0 {
+            for value in list {
+                if removed < limit && value.as_slice() == args[3] {
+                    removed += 1;
+                } else {
+                    result.push_back(value);
+                }
+            }
+        } else {
+            for value in list.into_iter().rev() {
+                if removed < limit && value.as_slice() == args[3] {
+                    removed += 1;
+                } else {
+                    result.push_front(value);
+                }
+            }
+        }
+        if removed == 0 {
+            integer(0, out);
+            return;
+        }
+        if result.is_empty() {
+            data.remove(key);
+            integer(removed as i64, out);
+            return;
+        }
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let bytes = result.iter().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_list(result, config.list_max_listpack_size);
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(removed as i64, out);
+    }
+
+    fn list_set(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let Some(entry) = data.entries.get(key) else {
+            out.extend_from_slice(b"-ERR no such key\r\n");
+            return;
+        };
+        let Some(mut list) = entry.collection.as_ref().and_then(Collection::list_values) else {
+            wrong_type(out);
+            return;
+        };
+        let Some(index) = parse_i64(args[2]) else {
+            out.extend_from_slice(NOT_INTEGER);
+            return;
+        };
+        let Some(position) = normalize_index(index, list.len()) else {
+            out.extend_from_slice(b"-ERR index out of range\r\n");
+            return;
+        };
+        list[position] = args[3].to_vec();
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let bytes = list.iter().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_list(list, config.list_max_listpack_size);
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        out.extend_from_slice(b"+OK\r\n");
+    }
+
+    fn list_trim(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let (Some(start), Some(stop)) = (parse_i64(args[2]), parse_i64(args[3])) else {
+            out.extend_from_slice(NOT_INTEGER);
+            return;
+        };
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let Some(entry) = data.entries.get(key) else {
+            out.extend_from_slice(b"+OK\r\n");
+            return;
+        };
+        let Some(list) = entry.collection.as_ref().and_then(Collection::list_values) else {
+            wrong_type(out);
+            return;
+        };
+        let len = list.len() as i128;
+        let first = if start < 0 {
+            (len + start as i128).max(0)
+        } else {
+            start as i128
+        };
+        let last = if stop < 0 {
+            len + stop as i128
+        } else {
+            stop as i128
+        };
+        if first >= len || first > last {
+            data.remove(key);
+            out.extend_from_slice(b"+OK\r\n");
+            return;
+        }
+        let begin = first as usize;
+        let end = (last.min(len - 1) as usize) + 1;
+        let result: VecDeque<Vec<u8>> = list.into_iter().skip(begin).take(end - begin).collect();
+        if result.is_empty() {
+            data.remove(key);
+            out.extend_from_slice(b"+OK\r\n");
+            return;
+        }
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let bytes = result.iter().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_list(result, config.list_max_listpack_size);
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        out.extend_from_slice(b"+OK\r\n");
+    }
+
+    fn list_push_existing(&self, args: &[&[u8]], left: bool, out: &mut Vec<u8>) {
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let Some(entry) = data.entries.get(key) else {
+            integer(0, out);
+            return;
+        };
+        let Some(mut list) = entry.collection.as_ref().and_then(Collection::list_values) else {
+            wrong_type(out);
+            return;
+        };
+        if list
+            .len()
+            .checked_add(args.len() - 2)
+            .is_none_or(|length| length > MAX_ELEMENTS)
+        {
+            out.extend_from_slice(OOM);
+            return;
+        }
+        for value in &args[2..] {
+            if left {
+                list.push_front(value.to_vec());
+            } else {
+                list.push_back(value.to_vec());
+            }
+        }
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let bytes = list.iter().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_list(list, config.list_max_listpack_size);
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        let length = encoded.list_items().expect("list encoding").len();
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(length as i64, out);
+    }
+}
+
+fn owned_set(data: &mut Data, key: &[u8], now: i64) -> Result<Option<BTreeSet<Vec<u8>>>, ()> {
+    data.expire_key(key, now);
+    match data.entries.get(key) {
+        None => Ok(None),
+        Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_set) => Ok(Some(
+            entry
+                .collection
+                .as_ref()
+                .and_then(Collection::set_items)
+                .expect("set type checked")
+                .into_iter()
+                .collect(),
+        )),
+        Some(_) => Err(()),
+    }
+}
+
+impl Store {
+    fn set_remove(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let set = match owned_set(&mut data, key, now) {
+            Ok(Some(set)) => set,
+            Ok(None) => {
+                integer(0, out);
+                return;
+            }
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let entry = data.entries.get(key).expect("set exists");
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let mut set = set;
+        let mut removed = 0i64;
+        for member in &args[2..] {
+            if set.remove(*member) {
+                removed += 1;
+            }
+        }
+        if removed == 0 {
+            integer(0, out);
+            return;
+        }
+        if set.is_empty() {
+            data.remove(key);
+            integer(removed, out);
+            return;
+        }
+        let bytes = set.iter().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_set(set, &config);
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(removed, out);
+    }
+
+    fn set_mismember(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let members = match data.entries.get(args[1]) {
+            None => None,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_set) => Some(
+                entry
+                    .collection
+                    .as_ref()
+                    .and_then(Collection::set_items)
+                    .expect("set type checked"),
+            ),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        write!(out, "*{}\r\n", args.len() - 2).expect("Vec write");
+        for member in &args[2..] {
+            let exists = members
+                .as_ref()
+                .is_some_and(|members| members.iter().any(|item| item.as_slice() == *member));
+            integer(i64::from(exists), out);
+        }
+    }
+
+    fn set_move(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let (source, destination, member) = (args[1], args[2], args[3]);
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut source_set = match owned_set(&mut data, source, now) {
+            Ok(Some(set)) => set,
+            Ok(None) => {
+                integer(0, out);
+                return;
+            }
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        if !source_set.contains(member) {
+            integer(0, out);
+            return;
+        }
+        if source == destination {
+            integer(1, out);
+            return;
+        }
+        let mut destination_set = match owned_set(&mut data, destination, now) {
+            Ok(Some(set)) => set,
+            Ok(None) => BTreeSet::new(),
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let source_entry = data.entries.get(source).expect("source checked");
+        let source_expires = source_entry.expires;
+        let source_previous = source_entry.payload_len();
+        let destination_expires = data
+            .entries
+            .get(destination)
+            .and_then(|entry| entry.expires);
+        let destination_previous = data.entries.get(destination).map(Entry::payload_len);
+        source_set.remove(member);
+        destination_set.insert(member.to_vec());
+        let source_bytes = source_set.iter().map(Vec::len).sum::<usize>();
+        let destination_bytes = destination_set.iter().map(Vec::len).sum::<usize>();
+        let mut total = data.payload_bytes;
+        for (key, previous) in [
+            (source, Some(source_previous)),
+            (destination, destination_previous),
+        ] {
+            if let Some(previous) = previous {
+                let Some(next) = total.checked_sub(key.len() + previous) else {
+                    out.extend_from_slice(OOM);
+                    return;
+                };
+                total = next;
+            }
+        }
+        if !source_set.is_empty() {
+            let Some(next) = total.checked_add(source.len() + source_bytes) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            total = next;
+        }
+        if !destination_set.is_empty() {
+            let Some(next) = total.checked_add(destination.len() + destination_bytes) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            total = next;
+        }
+        if total > self.max_payload_bytes {
+            out.extend_from_slice(OOM);
+            return;
+        }
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        if source_set.is_empty() {
+            data.remove(source);
+        } else {
+            let encoded = encode_set(source_set, &config);
+            data.put_collection(source, encoded, source_expires, total, now);
+        }
+        if destination_set.is_empty() {
+            data.remove(destination);
+        } else {
+            let encoded = encode_set(destination_set, &config);
+            data.put_collection(destination, encoded, destination_expires, total, now);
+        }
+        integer(1, out);
+    }
+
+    fn set_algebra(&self, args: &[&[u8]], operation: &str, out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut sets = Vec::with_capacity(args.len() - 1);
+        for key in &args[1..] {
+            match owned_set(&mut data, key, now) {
+                Ok(set) => sets.push(set.unwrap_or_default()),
+                Err(()) => {
+                    wrong_type(out);
+                    return;
+                }
+            }
+        }
+        let mut result = sets.first().cloned().unwrap_or_default();
+        for set in &sets[1..] {
+            match operation {
+                "sinter" => result.retain(|member| set.contains(member)),
+                "sunion" => result.extend(set.iter().cloned()),
+                "sdiff" => result.retain(|member| !set.contains(member)),
+                _ => unreachable!(),
+            }
+        }
+        write!(out, "*{}\r\n", result.len()).expect("Vec write");
+        for member in result {
+            encode_bulk(Some(&member), out);
+        }
+    }
+
+    fn set_intercard(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(count) =
+            parse_i64(args[1]).filter(|count| *count > 0 && *count <= i32::MAX as i64)
+        else {
+            out.extend_from_slice(b"-ERR numkeys should be greater than 0\r\n");
+            return;
+        };
+        let count = count as usize;
+        if args.len() < 2 + count {
+            out.extend_from_slice(b"-ERR Number of keys can't be greater than number of args\r\n");
+            return;
+        }
+        let mut limit = 0usize;
+        let mut index = 2 + count;
+        while index < args.len() {
+            if args[index].eq_ignore_ascii_case(b"LIMIT") && index + 1 < args.len() {
+                let Some(value) = parse_i64(args[index + 1]).filter(|value| *value >= 0) else {
+                    out.extend_from_slice(b"-ERR LIMIT can't be negative\r\n");
+                    return;
+                };
+                limit = usize::try_from(value).unwrap_or(usize::MAX);
+                index += 2;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut sets = Vec::with_capacity(count);
+        for key in &args[2..2 + count] {
+            match owned_set(&mut data, key, now) {
+                Ok(set) => sets.push(set.unwrap_or_default()),
+                Err(()) => {
+                    wrong_type(out);
+                    return;
+                }
+            }
+        }
+        let mut result = sets.first().cloned().unwrap_or_default();
+        for set in &sets[1..] {
+            result.retain(|member| set.contains(member));
+            if result.is_empty() {
+                break;
+            }
+        }
+        let cardinality = if limit == 0 {
+            result.len()
+        } else {
+            result.len().min(limit)
+        };
+        integer(cardinality as i64, out);
+    }
+
+    fn set_store(&self, args: &[&[u8]], operation: &str, out: &mut Vec<u8>) {
+        let destination = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut sets = Vec::with_capacity(args.len() - 2);
+        for key in &args[2..] {
+            match owned_set(&mut data, key, now) {
+                Ok(set) => sets.push(set.unwrap_or_default()),
+                Err(()) => {
+                    wrong_type(out);
+                    return;
+                }
+            }
+        }
+        let mut result = sets.first().cloned().unwrap_or_default();
+        for set in &sets[1..] {
+            match operation {
+                "sinterstore" => result.retain(|member| set.contains(member)),
+                "sunionstore" => result.extend(set.iter().cloned()),
+                "sdiffstore" => result.retain(|member| !set.contains(member)),
+                _ => unreachable!(),
+            }
+        }
+        let destination_previous = data.entries.get(destination).map(Entry::payload_len);
+        let Some(mut total) = data.payload_bytes.checked_sub(
+            destination_previous
+                .map(|previous| destination.len() + previous)
+                .unwrap_or(0),
+        ) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        if !result.is_empty() {
+            let bytes = result.iter().map(Vec::len).sum::<usize>();
+            let Some(next) = total.checked_add(destination.len() + bytes) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            total = next;
+        }
+        if total > self.max_payload_bytes {
+            out.extend_from_slice(OOM);
+            return;
+        }
+        if result.is_empty() {
+            data.remove(destination);
+            integer(0, out);
+            return;
+        }
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let length = result.len();
+        let encoded = encode_set(result, &config);
+        data.put_collection(destination, encoded, None, total, now);
+        integer(length as i64, out);
+    }
+
+    fn set_pop(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let count = if args.len() == 3 {
+            match parse_i64(args[2]) {
+                Some(value) if value >= 0 => Some(usize::try_from(value).unwrap_or(usize::MAX)),
+                Some(_) => {
+                    out.extend_from_slice(b"-ERR value is out of range, must be positive\r\n");
+                    return;
+                }
+                None => {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let set = match owned_set(&mut data, key, now) {
+            Ok(Some(set)) => set,
+            Ok(None) => {
+                if count.is_some() {
+                    out.extend_from_slice(b"*0\r\n");
+                } else {
+                    encode_bulk(None, out);
+                }
+                return;
+            }
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let entry = data.entries.get(key).expect("set exists");
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let mut set = set;
+        let number = count.unwrap_or(1).min(set.len());
+        if number == 0 {
+            out.extend_from_slice(b"*0\r\n");
+            return;
+        }
+        let mut members = Vec::with_capacity(number);
+        for _ in 0..number {
+            let index = random_index(set.len());
+            let member = set
+                .iter()
+                .nth(index)
+                .expect("index below set length")
+                .clone();
+            set.remove(&member);
+            members.push(member);
+        }
+        if count.is_some() {
+            write!(out, "*{}\r\n", members.len()).expect("Vec write");
+            for member in &members {
+                encode_bulk(Some(member), out);
+            }
+        } else {
+            encode_bulk(members.first().map(Vec::as_slice), out);
+        }
+        if set.is_empty() {
+            data.remove(key);
+        } else {
+            let bytes = set.iter().map(Vec::len).sum::<usize>();
+            let payload = data.payload_bytes - previous + bytes;
+            let Ok(config) = self.collection_config.read() else {
+                internal_error(out);
+                return;
+            };
+            let encoded = encode_set(set, &config);
+            data.put_collection(key, encoded, expires, payload, now);
+        }
+    }
+
+    fn set_random_member(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let count = if args.len() == 3 {
+            match parse_i64(args[2]) {
+                Some(value) => Some(value),
+                None => {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let set = match owned_set(&mut data, args[1], now) {
+            Ok(Some(set)) => set,
+            Ok(None) => {
+                if count.is_some() {
+                    out.extend_from_slice(b"*0\r\n");
+                } else {
+                    encode_bulk(None, out);
+                }
+                return;
+            }
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let members: Vec<Vec<u8>> = set.into_iter().collect();
+        let Some(count) = count else {
+            let index = random_index(members.len());
+            encode_bulk(members.get(index).map(Vec::as_slice), out);
+            return;
+        };
+        if count == 0 || members.is_empty() {
+            out.extend_from_slice(b"*0\r\n");
+            return;
+        }
+        let limit = usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX);
+        if count > 0 {
+            let mut pool = members;
+            let take = limit.min(pool.len());
+            for index in 0..take {
+                let swap = index + random_index(pool.len() - index);
+                pool.swap(index, swap);
+            }
+            write!(out, "*{}\r\n", take).expect("Vec write");
+            for member in pool.iter().take(take) {
+                encode_bulk(Some(member), out);
+            }
+        } else {
+            let take = limit.min(MAX_ELEMENTS);
+            write!(out, "*{take}\r\n").expect("Vec write");
+            for _ in 0..take {
+                let index = random_index(members.len());
+                encode_bulk(members.get(index).map(Vec::as_slice), out);
+            }
+        }
+    }
+}
+
+fn owned_zset(data: &mut Data, key: &[u8], now: i64) -> Result<Option<HashMap<Vec<u8>, f64>>, ()> {
+    data.expire_key(key, now);
+    match data.entries.get(key) {
+        None => Ok(None),
+        Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => Ok(Some(
+            entry
+                .collection
+                .as_ref()
+                .and_then(Collection::zset_items)
+                .expect("zset type checked")
+                .into_iter()
+                .map(|(member, score)| (member.to_vec(), score))
+                .collect(),
+        )),
+        Some(_) => Err(()),
+    }
+}
+
+impl Store {
+    fn zset_add_extra(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let mut nx = false;
+        let mut xx = false;
+        let mut gt = false;
+        let mut lt = false;
+        let mut ch = false;
+        let mut incr = false;
+        let mut index = 2;
+        while index < args.len() {
+            let token = args[index];
+            if token.eq_ignore_ascii_case(b"NX") {
+                nx = true;
+            } else if token.eq_ignore_ascii_case(b"XX") {
+                xx = true;
+            } else if token.eq_ignore_ascii_case(b"GT") {
+                gt = true;
+            } else if token.eq_ignore_ascii_case(b"LT") {
+                lt = true;
+            } else if token.eq_ignore_ascii_case(b"CH") {
+                ch = true;
+            } else if token.eq_ignore_ascii_case(b"INCR") {
+                incr = true;
+            } else {
+                break;
+            }
+            index += 1;
+        }
+        if nx && xx {
+            out.extend_from_slice(
+                b"-ERR XX and NX options at the same time are not compatible\r\n",
+            );
+            return;
+        }
+        if gt && lt {
+            out.extend_from_slice(
+                b"-ERR GT, LT, and/or NX options at the same time are not compatible\r\n",
+            );
+            return;
+        }
+        if nx && (gt || lt) {
+            out.extend_from_slice(
+                b"-ERR GT, LT, and/or NX options at the same time are not compatible\r\n",
+            );
+            return;
+        }
+        let rest = &args[index..];
+        if rest.is_empty() || !rest.len().is_multiple_of(2) {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+        if incr && rest.len() != 2 {
+            out.extend_from_slice(b"-ERR INCR option supports a single increment-element pair\r\n");
+            return;
+        }
+        let mut pairs = Vec::with_capacity(rest.len() / 2);
+        for pair in rest.as_chunks::<2>().0 {
+            let Some(score) = parse_score(pair[0]) else {
+                out.extend_from_slice(b"-ERR value is not a valid float\r\n");
+                return;
+            };
+            pairs.push((normalize_score(score), pair[1]));
+        }
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let current = data.entries.get(key);
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_zset))
+        {
+            wrong_type(out);
+            return;
+        }
+        let mut zset: HashMap<Vec<u8>, f64> = current
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::zset_items))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(member, score)| (member.to_vec(), score))
+            .collect();
+        let mut added = 0i64;
+        let mut changed = 0i64;
+        let mut increment_reply = None;
+        for (amount, member) in pairs {
+            let existing = zset.get(member).copied();
+            let score = if incr {
+                let Some(score) =
+                    Some(existing.unwrap_or(0.0) + amount).filter(|score| !score.is_nan())
+                else {
+                    out.extend_from_slice(b"-ERR resulting score is not a number (NaN)\r\n");
+                    return;
+                };
+                normalize_score(score)
+            } else {
+                amount
+            };
+            let blocked = (nx && existing.is_some())
+                || (xx && existing.is_none())
+                || existing.is_some_and(|old| (gt && score <= old) || (lt && score >= old));
+            if blocked {
+                continue;
+            }
+            if existing.is_none() {
+                added += 1;
+            }
+            if existing != Some(score) {
+                changed += 1;
+            }
+            zset.insert(member.to_vec(), score);
+            if incr {
+                increment_reply = Some(score);
+            }
+        }
+        if incr && increment_reply.is_none() {
+            encode_bulk(None, out);
+            return;
+        }
+        if changed == 0 {
+            if let Some(score) = increment_reply {
+                encode_bulk(Some(&score_bytes(score)), out);
+            } else {
+                integer(if ch { 0 } else { added }, out);
+            }
+            return;
+        }
+        if zset.len() > MAX_ELEMENTS {
+            out.extend_from_slice(OOM);
+            return;
+        }
+        let expires = current.and_then(|entry| entry.expires);
+        let previous = current.map(Entry::payload_len);
+        let bytes = zset.keys().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_zset(zset, &config);
+        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        if let Some(score) = increment_reply {
+            encode_bulk(Some(&score_bytes(score)), out);
+        } else {
+            integer(if ch { changed } else { added }, out);
+        }
+    }
+
+    fn zset_remove(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut zset = match owned_zset(&mut data, key, now) {
+            Ok(Some(zset)) => zset,
+            Ok(None) => {
+                integer(0, out);
+                return;
+            }
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let entry = data.entries.get(key).expect("zset exists");
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let mut removed = 0i64;
+        for member in &args[2..] {
+            if zset.remove(*member).is_some() {
+                removed += 1;
+            }
+        }
+        if removed == 0 {
+            integer(0, out);
+            return;
+        }
+        if zset.is_empty() {
+            data.remove(key);
+            integer(removed, out);
+            return;
+        }
+        let bytes = zset.keys().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_zset(zset, &config);
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(removed, out);
+    }
+
+    fn zset_incr(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(increment) = parse_score(args[2]) else {
+            out.extend_from_slice(b"-ERR value is not a valid float\r\n");
+            return;
+        };
+        let key = args[1];
+        let member = args[3];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut zset = match owned_zset(&mut data, key, now) {
+            Ok(Some(zset)) => zset,
+            Ok(None) => HashMap::new(),
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let existing = zset.get(member).copied().unwrap_or(0.0);
+        let Some(score) = Some(existing + increment).filter(|score| !score.is_nan()) else {
+            out.extend_from_slice(b"-ERR resulting score is not a number (NaN)\r\n");
+            return;
+        };
+        let score = normalize_score(score);
+        let existing_entry = data.entries.get(key);
+        let expires = existing_entry.and_then(|entry| entry.expires);
+        let previous = existing_entry.map(Entry::payload_len);
+        zset.insert(member.to_vec(), score);
+        let bytes = zset.keys().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_zset(zset, &config);
+        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        encode_bulk(Some(&score_bytes(score)), out);
+    }
+
+    fn zset_rank(&self, args: &[&[u8]], reverse: bool, out: &mut Vec<u8>) {
+        let with_score = args.len() == 4;
+        if with_score && !args[3].eq_ignore_ascii_case(b"WITHSCORE") {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let ordered = match data.entries.get(args[1]) {
+            None => {
+                if with_score {
+                    out.extend_from_slice(b"*-1\r\n");
+                } else {
+                    encode_bulk(None, out);
+                }
+                return;
+            }
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => {
+                ordered_zset(
+                    entry
+                        .collection
+                        .as_ref()
+                        .and_then(Collection::zset_items)
+                        .expect("zset type checked"),
+                    reverse,
+                )
+            }
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let Some(rank) = ordered
+            .iter()
+            .position(|(member, _)| member.as_slice() == args[2])
+        else {
+            if with_score {
+                out.extend_from_slice(b"*-1\r\n");
+            } else {
+                encode_bulk(None, out);
+            }
+            return;
+        };
+        if with_score {
+            write!(out, "*2\r\n:{rank}\r\n").expect("Vec write");
+            encode_bulk(Some(&score_bytes(ordered[rank].1)), out);
+        } else {
+            integer(rank as i64, out);
+        }
+    }
+
+    fn zset_reverse_range(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let (Some(start), Some(stop)) = (parse_i64(args[2]), parse_i64(args[3])) else {
+            out.extend_from_slice(NOT_INTEGER);
+            return;
+        };
+        let with_scores = args.len() == 5;
+        if with_scores && !args[4].eq_ignore_ascii_case(b"WITHSCORES") {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let ordered = match data.entries.get(args[1]) {
+            None => {
+                out.extend_from_slice(b"*0\r\n");
+                return;
+            }
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => {
+                ordered_zset(
+                    entry
+                        .collection
+                        .as_ref()
+                        .and_then(Collection::zset_items)
+                        .expect("zset type checked"),
+                    true,
+                )
+            }
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let len = ordered.len() as i128;
+        let first = if start < 0 {
+            (len + start as i128).max(0)
+        } else {
+            start as i128
+        };
+        let last = if stop < 0 {
+            len + stop as i128
+        } else {
+            stop as i128
+        };
+        if first >= len || first > last {
+            out.extend_from_slice(b"*0\r\n");
+            return;
+        }
+        let begin = first as usize;
+        let end = (last.min(len - 1) as usize) + 1;
+        write!(
+            out,
+            "*{}\r\n",
+            (end - begin) * if with_scores { 2 } else { 1 }
+        )
+        .expect("Vec write");
+        for (member, score) in &ordered[begin..end] {
+            encode_bulk(Some(member), out);
+            if with_scores {
+                encode_bulk(Some(&score_bytes(*score)), out);
+            }
+        }
+    }
+
+    fn zset_count(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let (Some(min), Some(max)) = (parse_score_bound(args[2]), parse_score_bound(args[3]))
+        else {
+            out.extend_from_slice(b"-ERR min or max is not a float\r\n");
+            return;
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let count = match data.entries.get(args[1]) {
+            None => 0,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => entry
+                .collection
+                .as_ref()
+                .and_then(Collection::zset_items)
+                .expect("zset type checked")
+                .into_iter()
+                .filter(|(_, score)| in_score_range(*score, min, max))
+                .count(),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        integer(count as i64, out);
+    }
+
+    fn zset_range_by_score(&self, args: &[&[u8]], reverse: bool, out: &mut Vec<u8>) {
+        let name = if reverse {
+            "zrevrangebyscore"
+        } else {
+            "zrangebyscore"
+        };
+        if args.len() < 4 {
+            arity(name, out);
+            return;
+        }
+        let (min_arg, max_arg) = if reverse {
+            (args[3], args[2])
+        } else {
+            (args[2], args[3])
+        };
+        let (Some(min), Some(max)) = (parse_score_bound(min_arg), parse_score_bound(max_arg))
+        else {
+            out.extend_from_slice(b"-ERR min or max is not a float\r\n");
+            return;
+        };
+        let mut with_scores = false;
+        let mut limit = None;
+        let mut index = 4;
+        while index < args.len() {
+            if args[index].eq_ignore_ascii_case(b"WITHSCORES") {
+                if with_scores {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
+                with_scores = true;
+                index += 1;
+            } else if args[index].eq_ignore_ascii_case(b"LIMIT") && index + 2 < args.len() {
+                let (Some(offset), Some(count)) =
+                    (parse_i64(args[index + 1]), parse_i64(args[index + 2]))
+                else {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                };
+                limit = Some((offset, count));
+                index += 3;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let ordered = match data.entries.get(args[1]) {
+            None => {
+                out.extend_from_slice(b"*0\r\n");
+                return;
+            }
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => {
+                let mut ordered = ordered_zset(
+                    entry
+                        .collection
+                        .as_ref()
+                        .and_then(Collection::zset_items)
+                        .expect("zset type checked"),
+                    reverse,
+                );
+                ordered.retain(|(_, score)| in_score_range(*score, min, max));
+                ordered
+            }
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let (offset, count) = limit.unwrap_or((0, -1));
+        if offset < 0 {
+            out.extend_from_slice(b"*0\r\n");
+            return;
+        }
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        let take = if count < 0 {
+            ordered.len().saturating_sub(offset)
+        } else {
+            usize::try_from(count).unwrap_or(usize::MAX)
+        };
+        let selected = ordered.iter().skip(offset).take(take);
+        let selected: Vec<_> = selected.collect();
+        write!(
+            out,
+            "*{}\r\n",
+            selected.len() * if with_scores { 2 } else { 1 }
+        )
+        .expect("Vec write");
+        for (member, score) in selected {
+            encode_bulk(Some(member), out);
+            if with_scores {
+                encode_bulk(Some(&score_bytes(*score)), out);
+            }
+        }
+    }
+
+    fn zset_remove_range(&self, args: &[&[u8]], by_score: bool, out: &mut Vec<u8>) {
+        enum Range {
+            Score((f64, bool), (f64, bool)),
+            Rank(i64, i64),
+        }
+        let range = if by_score {
+            let (Some(min), Some(max)) = (parse_score_bound(args[2]), parse_score_bound(args[3]))
+            else {
+                out.extend_from_slice(b"-ERR min or max is not a float\r\n");
+                return;
+            };
+            Range::Score(min, max)
+        } else {
+            let (Some(start), Some(stop)) = (parse_i64(args[2]), parse_i64(args[3])) else {
+                out.extend_from_slice(NOT_INTEGER);
+                return;
+            };
+            Range::Rank(start, stop)
+        };
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut zset = match owned_zset(&mut data, key, now) {
+            Ok(Some(zset)) => zset,
+            Ok(None) => {
+                integer(0, out);
+                return;
+            }
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let entry = data.entries.get(key).expect("zset exists");
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let members: Vec<Vec<u8>> = match range {
+            Range::Score(min, max) => zset
+                .iter()
+                .filter(|(_, score)| in_score_range(**score, min, max))
+                .map(|(member, _)| member.clone())
+                .collect(),
+            Range::Rank(start, stop) => {
+                let ordered = ordered_zset(
+                    zset.iter()
+                        .map(|(member, score)| (member.as_slice(), *score))
+                        .collect(),
+                    false,
+                );
+                let len = ordered.len() as i128;
+                let first = if start < 0 {
+                    (len + start as i128).max(0)
+                } else {
+                    start as i128
+                };
+                let last = if stop < 0 {
+                    len + stop as i128
+                } else {
+                    stop as i128
+                };
+                if first >= len || first > last {
+                    integer(0, out);
+                    return;
+                }
+                ordered[first as usize..=(last.min(len - 1) as usize)]
+                    .iter()
+                    .map(|(member, _)| member.clone())
+                    .collect()
+            }
+        };
+        if members.is_empty() {
+            integer(0, out);
+            return;
+        }
+        for member in &members {
+            zset.remove(member);
+        }
+        if zset.is_empty() {
+            data.remove(key);
+            integer(members.len() as i64, out);
+            return;
+        }
+        let bytes = zset.keys().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_zset(zset, &config);
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(members.len() as i64, out);
+    }
+
+    fn zset_pop(&self, args: &[&[u8]], max: bool, out: &mut Vec<u8>) {
+        let count = if args.len() == 3 {
+            match parse_i64(args[2]) {
+                Some(value) if value >= 0 => usize::try_from(value).unwrap_or(usize::MAX),
+                Some(_) => {
+                    out.extend_from_slice(b"-ERR value is out of range, must be positive\r\n");
+                    return;
+                }
+                None => {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                }
+            }
+        } else {
+            1
+        };
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut zset = match owned_zset(&mut data, key, now) {
+            Ok(Some(zset)) => zset,
+            Ok(None) => {
+                out.extend_from_slice(b"*0\r\n");
+                return;
+            }
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let entry = data.entries.get(key).expect("zset exists");
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let ordered = ordered_zset(
+            zset.iter()
+                .map(|(member, score)| (member.as_slice(), *score))
+                .collect(),
+            max,
+        );
+        let take = count.min(ordered.len());
+        if take == 0 {
+            out.extend_from_slice(b"*0\r\n");
+            return;
+        }
+        for (member, _) in ordered.iter().take(take) {
+            zset.remove(member);
+        }
+        let encoded = if zset.is_empty() {
+            None
+        } else {
+            let Ok(config) = self.collection_config.read() else {
+                internal_error(out);
+                return;
+            };
+            Some(encode_zset(zset, &config))
+        };
+        let payload = encoded.as_ref().map(|encoded| {
+            data.payload_bytes
+                .checked_sub(previous)
+                .and_then(|value| value.checked_add(encoded.payload_len()))
+        });
+        if payload == Some(None) {
+            internal_error(out);
+            return;
+        }
+        write!(out, "*{}\r\n", take * 2).expect("Vec write");
+        for (member, score) in ordered.iter().take(take) {
+            encode_bulk(Some(member), out);
+            encode_bulk(Some(&score_bytes(*score)), out);
+        }
+        match (encoded, payload) {
+            (Some(encoded), Some(Some(payload))) => {
+                data.put_collection(key, encoded, expires, payload, now)
+            }
+            (None, _) => {
+                data.remove(key);
+            }
+            _ => unreachable!("payload checks parallel encoded value"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        store.execute(args, &mut out);
+        out
+    }
+
+    #[test]
+    fn hash_mutations_cover_existence_counters_and_removal() {
+        let store = Store::new(4096);
+        assert_eq!(run(&store, &[b"HSETNX", b"h", b"f", b"1"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"HSETNX", b"h", b"f", b"2"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"HEXISTS", b"h", b"f"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"HEXISTS", b"h", b"missing"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"HINCRBY", b"h", b"f", b"4"]), b":5\r\n");
+        assert_eq!(
+            run(&store, &[b"HINCRBYFLOAT", b"h", b"f", b"0.5"]),
+            b"$3\r\n5.5\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"HMGET", b"h", b"f", b"missing", b"f"]),
+            b"*3\r\n$3\r\n5.5\r\n$-1\r\n$3\r\n5.5\r\n"
+        );
+        assert_eq!(run(&store, &[b"HSTRLEN", b"h", b"f"]), b":3\r\n");
+        assert_eq!(run(&store, &[b"HKEYS", b"h"]), b"*1\r\n$1\r\nf\r\n");
+        assert_eq!(run(&store, &[b"HVALS", b"h"]), b"*1\r\n$3\r\n5.5\r\n");
+        assert_eq!(run(&store, &[b"PEXPIRE", b"h", b"100"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"HDEL", b"h", b"f"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"TYPE", b"h"]), b"+none\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+    }
+
+    #[test]
+    fn hash_integer_and_float_failures_are_atomic() {
+        let store = Store::new(128);
+        assert_eq!(run(&store, &[b"HSET", b"h", b"n", b"not"]), b":1\r\n");
+        assert_eq!(
+            run(&store, &[b"HINCRBY", b"h", b"n", b"1"]),
+            b"-ERR hash value is not an integer\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"HINCRBYFLOAT", b"h", b"n", b"1"]),
+            b"-ERR hash value is not a float\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"HSET", b"h", b"i", b"9223372036854775807"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"HINCRBY", b"h", b"i", b"1"]),
+            b"-ERR increment or decrement would overflow\r\n"
+        );
+        assert_eq!(run(&store, &[b"HGET", b"h", b"n"]), b"$3\r\nnot\r\n");
+        assert_eq!(
+            run(&store, &[b"HINCRBYFLOAT", b"h", b"f", b"inf"]),
+            b"-ERR value is NaN or Infinity\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"HINCRBYFLOAT", b"h", b"f", b"nan"]),
+            b"-ERR value is not a valid float\r\n"
+        );
+    }
+
+    #[test]
+    fn list_mutations_preserve_order_and_ttl() {
+        let store = Store::new(4096);
+        assert_eq!(
+            run(&store, &[b"RPUSH", b"l", b"a", b"b", b"a", b"c"]),
+            b":4\r\n"
+        );
+        assert_eq!(run(&store, &[b"PEXPIRE", b"l", b"1000"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"LINDEX", b"l", b"-1"]), b"$1\r\nc\r\n");
+        assert_eq!(run(&store, &[b"LINDEX", b"l", b"9"]), b"$-1\r\n");
+        assert_eq!(
+            run(&store, &[b"LINSERT", b"l", b"BEFORE", b"b", b"x"]),
+            b":5\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"LINSERT", b"l", b"AFTER", b"missing", b"x"]),
+            b":-1\r\n"
+        );
+        assert_eq!(run(&store, &[b"LSET", b"l", b"0", b"z"]), b"+OK\r\n");
+        assert_eq!(
+            run(&store, &[b"LSET", b"l", b"99", b"z"]),
+            b"-ERR index out of range\r\n"
+        );
+        assert_eq!(run(&store, &[b"LREM", b"l", b"1", b"a"]), b":1\r\n");
+        assert_eq!(
+            run(&store, &[b"LRANGE", b"l", b"0", b"-1"]),
+            b"*4\r\n$1\r\nz\r\n$1\r\nx\r\n$1\r\nb\r\n$1\r\nc\r\n"
+        );
+        assert_eq!(run(&store, &[b"LTRIM", b"l", b"1", b"2"]), b"+OK\r\n");
+        assert_eq!(
+            run(&store, &[b"LRANGE", b"l", b"0", b"-1"]),
+            b"*2\r\n$1\r\nx\r\n$1\r\nb\r\n"
+        );
+        let ttl = run(&store, &[b"PTTL", b"l"]);
+        assert!(!ttl.starts_with(b":-2"));
+        assert_eq!(run(&store, &[b"LPUSHX", b"missing", b"x"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"RPUSHX", b"l", b"tail"]), b":3\r\n");
+    }
+
+    #[test]
+    fn list_empty_results_and_bad_indexes_do_not_corrupt_state() {
+        let store = Store::new(1024);
+        assert_eq!(
+            run(&store, &[b"LTRIM", b"missing", b"0", b"-1"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"LSET", b"missing", b"0", b"x"]),
+            b"-ERR no such key\r\n"
+        );
+        assert_eq!(run(&store, &[b"LREM", b"missing", b"0", b"x"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"RPUSH", b"l", b"a"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"LTRIM", b"l", b"1", b"5"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"EXISTS", b"l"]), b":0\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+    }
+
+    #[test]
+    fn set_mutations_algebra_and_cardinality_work() {
+        let store = Store::new(4096);
+        assert_eq!(run(&store, &[b"SADD", b"a", b"1", b"2", b"3"]), b":3\r\n");
+        assert_eq!(run(&store, &[b"SADD", b"b", b"2", b"3", b"4"]), b":3\r\n");
+        assert_eq!(
+            run(&store, &[b"SMISMEMBER", b"a", b"1", b"9"]),
+            b"*2\r\n:1\r\n:0\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"SINTER", b"a", b"b"]),
+            b"*2\r\n$1\r\n2\r\n$1\r\n3\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"SUNION", b"a", b"b"]),
+            b"*4\r\n$1\r\n1\r\n$1\r\n2\r\n$1\r\n3\r\n$1\r\n4\r\n"
+        );
+        assert_eq!(run(&store, &[b"SDIFF", b"a", b"b"]), b"*1\r\n$1\r\n1\r\n");
+        assert_eq!(
+            run(&store, &[b"SINTERCARD", b"2", b"a", b"b", b"LIMIT", b"1"]),
+            b":1\r\n"
+        );
+        assert_eq!(run(&store, &[b"SMOVE", b"a", b"b", b"1"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"SMOVE", b"a", b"b", b"1"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"SREM", b"a", b"2"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"SINTERSTORE", b"i", b"a", b"b"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"SCARD", b"i"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"SUNIONSTORE", b"u", b"a", b"b"]), b":4\r\n");
+        assert_eq!(run(&store, &[b"SCARD", b"u"]), b":4\r\n");
+        assert_eq!(run(&store, &[b"SDIFFSTORE", b"d", b"u", b"b"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"EXISTS", b"d"]), b":0\r\n");
+    }
+
+    #[test]
+    fn set_pop_and_random_member_are_bounded_and_remove_empties() {
+        let store = Store::new(4096);
+        assert_eq!(run(&store, &[b"SPOP", b"missing"]), b"$-1\r\n");
+        assert_eq!(run(&store, &[b"SPOP", b"missing", b"2"]), b"*0\r\n");
+        assert_eq!(run(&store, &[b"SADD", b"s", b"a", b"b"]), b":2\r\n");
+        let random = run(&store, &[b"SRANDMEMBER", b"s"]);
+        assert!(random == b"$1\r\na\r\n" || random == b"$1\r\nb\r\n");
+        let many = run(&store, &[b"SRANDMEMBER", b"s", b"-3"]);
+        assert!(many.starts_with(b"*3\r\n"));
+        assert!(run(&store, &[b"SPOP", b"s", b"1"]).starts_with(b"*1\r\n"));
+        assert!(run(&store, &[b"SPOP", b"s", b"1"]).starts_with(b"*1\r\n"));
+        assert_eq!(run(&store, &[b"EXISTS", b"s"]), b":0\r\n");
+    }
+
+    #[test]
+    fn sorted_set_mutations_options_ranges_and_pops_work() {
+        let store = Store::new(8192);
+        assert_eq!(
+            run(&store, &[b"ZADD", b"z", b"1", b"a", b"2", b"b"]),
+            b":2\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZADD", b"z", b"NX", b"3", b"a"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"ZADD", b"z", b"XX", b"CH", b"3", b"a"]),
+            b":1\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZADD", b"z", b"GT", b"2", b"a"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"ZADD", b"z", b"GT", b"4", b"a"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"ZINCRBY", b"z", b"0.5", b"c"]),
+            b"$3\r\n0.5\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZRANK", b"z", b"c"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"ZREVRANK", b"z", b"a"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"ZRANK", b"z", b"a", b"WITHSCORE"]),
+            b"*2\r\n:2\r\n$1\r\n4\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZCOUNT", b"z", b"(0.5", b"+inf"]), b":2\r\n");
+        assert_eq!(
+            run(
+                &store,
+                &[b"ZRANGEBYSCORE", b"z", b"-inf", b"+inf", b"WITHSCORES"]
+            ),
+            b"*6\r\n$1\r\nc\r\n$3\r\n0.5\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\na\r\n$1\r\n4\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"ZREVRANGEBYSCORE",
+                    b"z",
+                    b"+inf",
+                    b"-inf",
+                    b"LIMIT",
+                    b"1",
+                    b"1"
+                ]
+            ),
+            b"*1\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZREVRANGE", b"z", b"0", b"-1"]),
+            b"*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZREM", b"z", b"b"]), b":1\r\n");
+        assert_eq!(
+            run(&store, &[b"ZREMRANGEBYSCORE", b"z", b"-inf", b"(1"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZREMRANGEBYRANK", b"z", b"0", b"0"]),
+            b":1\r\n"
+        );
+        assert_eq!(run(&store, &[b"EXISTS", b"z"]), b":0\r\n");
+    }
+
+    #[test]
+    fn sorted_set_accepts_infinite_scores_but_rejects_nan() {
+        let store = Store::new(4096);
+        assert_eq!(
+            run(&store, &[b"ZADD", b"z", b"inf", b"high", b"-inf", b"low"]),
+            b":2\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"high"]), b"$3\r\ninf\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"low"]), b"$4\r\n-inf\r\n");
+        assert_eq!(
+            run(&store, &[b"ZINCRBY", b"z", b"-inf", b"high"]),
+            b"-ERR resulting score is not a number (NaN)\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZADD", b"z", b"nan", b"bad"]),
+            b"-ERR value is not a valid float\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZADD", b"z", b"-0", b"zero"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"zero"]), b"$1\r\n0\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"high"]), b"$3\r\ninf\r\n");
+    }
+
+    #[test]
+    fn sorted_set_zpop_and_zadd_incr_follow_reply_shapes() {
+        let store = Store::new(4096);
+        assert_eq!(run(&store, &[b"ZPOPMIN", b"missing"]), b"*0\r\n");
+        assert_eq!(
+            run(&store, &[b"ZADD", b"z", b"1", b"a", b"2", b"b"]),
+            b":2\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZADD", b"z", b"INCR", b"2", b"a"]),
+            b"$1\r\n3\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZADD", b"z", b"NX", b"INCR", b"9", b"a"]),
+            b"$-1\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZPOPMIN", b"z", b"1"]),
+            b"*2\r\n$1\r\nb\r\n$1\r\n2\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZPOPMAX", b"z"]),
+            b"*2\r\n$1\r\na\r\n$1\r\n3\r\n"
+        );
+        assert_eq!(run(&store, &[b"EXISTS", b"z"]), b":0\r\n");
+    }
+
+    #[test]
+    fn wrong_types_and_oom_are_atomic_for_new_mutations() {
+        let store = Store::new(16);
+        assert_eq!(run(&store, &[b"SET", b"s", b"x"]), b"+OK\r\n");
+        for command in [
+            &[b"HDEL".as_slice(), b"s", b"f"][..],
+            &[b"HEXISTS".as_slice(), b"s", b"f"][..],
+            &[b"HINCRBY".as_slice(), b"s", b"f", b"1"][..],
+            &[b"HMGET".as_slice(), b"s", b"f"][..],
+            &[b"LINDEX".as_slice(), b"s", b"0"][..],
+            &[b"LREM".as_slice(), b"s", b"0", b"v"][..],
+            &[b"LSET".as_slice(), b"s", b"0", b"v"][..],
+            &[b"LTRIM".as_slice(), b"s", b"0", b"1"][..],
+            &[b"SREM".as_slice(), b"s", b"v"][..],
+            &[b"SMISMEMBER".as_slice(), b"s", b"v"][..],
+            &[b"SINTER".as_slice(), b"s"][..],
+            &[b"ZREM".as_slice(), b"s", b"v"][..],
+            &[b"ZCOUNT".as_slice(), b"s", b"-inf", b"+inf"][..],
+        ] {
+            assert!(
+                run(&store, command).starts_with(b"-WRONGTYPE"),
+                "{command:?}"
+            );
+        }
+        assert_eq!(run(&store, &[b"GET", b"s"]), b"$1\r\nx\r\n");
+        let store = Store::new(18);
+        assert_eq!(run(&store, &[b"SET", b"s", b"x"]), b"+OK\r\n");
+        assert_eq!(
+            run(&store, &[b"HSET", b"h", b"f", b"99999999999999"]),
+            b":1\r\n"
+        );
+        let before = store.data.read().unwrap().payload_bytes;
+        assert!(run(&store, &[b"HINCRBY", b"h", b"f", b"1"]).starts_with(b"-OOM"));
+        assert_eq!(store.data.read().unwrap().payload_bytes, before);
+        assert_eq!(
+            run(&store, &[b"HGET", b"h", b"f"]),
+            b"$14\r\n99999999999999\r\n"
+        );
+    }
+}

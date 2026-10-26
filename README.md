@@ -61,6 +61,12 @@ an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
 [multi-key string limits](docs/multikey-strings.md).
 
+Binary-safe lists, sets, hashes and sorted sets support creation, mutation,
+removal, bounded random selection, set algebra/store commands, score ranges and
+rank/range inspection. Collection writes preserve expiry metadata where Redis
+does, delete empty keys, and stage the complete value before payload admission.
+See [typed collections](docs/collections.md).
+
 Bounded `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` queue supported data
 commands and execute them under one store-wide gate, with expiry-aware optimistic
 invalidation, RESP2/RESP3 replies and a documented fail-closed version bound. See
