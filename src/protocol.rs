@@ -495,6 +495,7 @@ mod tests {
         );
         let line_limits = Limits {
             max_frame_bytes: 64,
+            max_arguments: 4,
             ..limits
         };
         assert_eq!(
@@ -503,8 +504,12 @@ mod tests {
             )),
             Err(ProtocolError::BulkTooLarge)
         );
+        let argument_limits = Limits {
+            max_arguments: 2,
+            ..line_limits
+        };
         assert_eq!(
-            dispatch_request(b"A B C\n", line_limits, |_| panic!(
+            dispatch_request(b"A B C\n", argument_limits, |_| panic!(
                 "too many args executed"
             )),
             Err(ProtocolError::TooManyArguments)
