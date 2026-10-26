@@ -66,6 +66,13 @@ commands and execute them under one store-wide gate, with expiry-aware optimisti
 invalidation, RESP2/RESP3 replies and a documented fail-closed version bound. See
 [transactions](docs/transactions.md).
 
+Opt-in append-only persistence (`--appendonly yes --dir /data`) writes a
+RESP-command journal of changed-key final states with absolute TTLs, supports
+`always`/`everysec`/`no` fsync policies, replays before listening, truncates only
+an incomplete tail, fails startup on mid-file corruption and syncs joined shutdown.
+There is no RDB format, AOF rewrite/compaction, stream-pending recovery or backup
+drill yet. See [persistence](docs/persistence.md).
+
 Access control starts with a single operator password for the `default` user
 (`--requirepass-file`/`--requirepass`, `AUTH`, atomic `HELLO ... AUTH`, runtime
 `CONFIG SET requirepass` rotation and a redacted `CONFIG GET`) or a Redis-style
@@ -84,9 +91,9 @@ plus the accept/control thread; idle clients do not occupy an entire worker.
 This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata, and
 `SELECT 0`; single-password and multi-user ACL authentication/authorization;
-ACL selectors/audit controls, native TLS, brute-force protection, durable
-persistence, scripts/functions, pub/sub, replication, clustering, and real
-client-library interoperability remain production blockers. RESP3 replies are limited to the current command
+ACL selectors/audit controls, native TLS, brute-force protection, RDB/AOF-rewrite
+interoperability, backup/restore drills, scripts/functions, pub/sub, replication,
+clustering, and real client-library interoperability remain production blockers. RESP3 replies are limited to the current command
 subset's strings, integers, errors, arrays and nulls. Multi-key string operations
 are atomic under the store lock; MGET replies are capped at 2 MiB to bound
 duplicate-key amplification. It binds to loopback by default. See
@@ -108,10 +115,11 @@ docker run --rm --init -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest
 The thin multi-architecture image runs non-root, binds container port 6379 without
 extra arguments, and has a built-in PING health check—no shell or redis-cli inside.
 Append options normally, e.g. `--threads 4`, `--requirepass-file
-/run/secrets/rillcache` or `--aclfile /run/secrets/users.acl`.
-**In-memory/experimental: optional password or ACL-file authentication; no native
-TLS or persistence.** Keep authentication and network isolation in place for
-anything beyond loopback. See [container delivery](docs/containers.md)
+/run/secrets/rillcache`, `--aclfile /run/secrets/users.acl` or
+`--appendonly yes --dir /data` with a writable volume.
+**Experimental: optional password/ACL-file authentication and opt-in append-only
+persistence; no native TLS, RDB format, compaction or replication.** Keep
+authentication and network isolation in place for anything beyond loopback. See [container delivery](docs/containers.md)
 for resource bounds, Kubernetes networking, digest pinning, shutdown limitations
 and GitHub's one-time public-package visibility setting.
 
