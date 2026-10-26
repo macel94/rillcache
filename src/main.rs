@@ -8,7 +8,7 @@ use rillcache::{Config, Server};
 
 mod healthcheck;
 
-const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                  Show this help\n  --version               Show version\n\nExperimental: no authentication, TLS, persistence or eviction. Keep on loopback.";
+const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: optional single-password AUTH; no ACL users, TLS, persistence or\neviction. The standalone binary binds to loopback by default.";
 
 enum Options {
     Run(Config),
@@ -38,7 +38,8 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                 return Ok(Options::Healthcheck(address));
             }
             "--bind" | "--max-clients" | "--threads" | "--max-data-bytes" | "--max-bulk-bytes"
-            | "--max-frame-bytes" | "--idle-timeout-ms" => {
+            | "--max-frame-bytes" | "--idle-timeout-ms" | "--requirepass"
+            | "--requirepass-file" => {
                 let value = arguments
                     .next()
                     .ok_or_else(|| format!("missing value for {option}"))?;
@@ -72,6 +73,12 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                                 .ok_or("--idle-timeout-ms requires a positive integer")?,
                         )
                     }
+                    "--requirepass" => {
+                        config.requirepass = (!value.is_empty()).then(|| value.into_bytes());
+                    }
+                    "--requirepass-file" => {
+                        config.requirepass = Some(read_password_file(&value)?);
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -79,6 +86,26 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
         }
     }
     Ok(Options::Run(config))
+}
+
+/// Read a secret file, stripping at most one trailing line ending. An empty or
+/// oversized file is an error rather than silently disabling authentication.
+fn read_password_file(path: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = std::fs::read(path)
+        .map_err(|error| format!("--requirepass-file could not read {path}: {error}"))?;
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    if bytes.is_empty() {
+        return Err("--requirepass-file must contain a nonempty password".into());
+    }
+    if bytes.len() > 1024 {
+        return Err("--requirepass-file must not exceed 1024 bytes".into());
+    }
+    Ok(bytes)
 }
 
 fn finite_limit(option: &str, value: &str) -> Result<usize, String> {
@@ -152,6 +179,46 @@ mod tests {
         };
         assert!(container.bind_addr.ip().is_unspecified());
         assert_eq!(container.worker_threads, Some(4));
+        let Options::Run(authenticated) =
+            options(["--requirepass", "s3cret", "--requirepass", ""].map(str::to_owned)).unwrap()
+        else {
+            panic!("expected authentication config");
+        };
+        assert_eq!(authenticated.requirepass, None);
+        let Options::Run(authenticated) =
+            options(["--requirepass", "s3cret"].map(str::to_owned)).unwrap()
+        else {
+            panic!("expected authentication config");
+        };
+        assert_eq!(
+            authenticated.requirepass.as_deref(),
+            Some(b"s3cret".as_slice())
+        );
+        assert!(!format!("{authenticated:?}").contains("s3cret"));
+        let path = std::env::temp_dir().join(format!(
+            "rillcache-password-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, b"from-file\r\n").unwrap();
+        let Options::Run(authenticated) =
+            options(["--requirepass-file", path.to_str().unwrap()].map(str::to_owned)).unwrap()
+        else {
+            panic!("expected file authentication config");
+        };
+        assert_eq!(
+            authenticated.requirepass.as_deref(),
+            Some(b"from-file".as_slice())
+        );
+        std::fs::write(&path, b"\n").unwrap();
+        assert!(
+            options(["--requirepass-file", path.to_str().unwrap()].map(str::to_owned)).is_err()
+        );
+        std::fs::write(&path, vec![b'x'; 1025]).unwrap();
+        assert!(
+            options(["--requirepass-file", path.to_str().unwrap()].map(str::to_owned)).is_err()
+        );
+        std::fs::remove_file(&path).unwrap();
         let Options::Run(overridden) =
             options(["--bind", "0.0.0.0:6379", "--bind", "127.0.0.1:26379"].map(str::to_owned))
                 .unwrap()
@@ -188,6 +255,12 @@ mod tests {
             vec!["--healthcheck", "localhost:6379"],
             vec!["--healthcheck", "127.0.0.1:0"],
             vec!["--healthcheck", "127.0.0.1:6379", "--unknown"],
+            vec!["--requirepass"],
+            vec!["--requirepass-file"],
+            vec![
+                "--requirepass-file",
+                "/definitely/missing/rillcache-password",
+            ],
         ] {
             assert!(options(arguments.into_iter().map(str::to_owned)).is_err());
         }

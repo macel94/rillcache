@@ -211,9 +211,9 @@ fn invalid_handshakes_auth_and_quit_are_ordered_and_atomic() {
         &mut stream,
         &[b"HELLO", b"3", b"AUTH", b"default", b"secret"],
     );
-    expect(&mut stream, b"-ERR AUTH is not supported\r\n");
+    expect(&mut stream, b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n");
     send(&mut stream, &[b"AUTH", b"secret"]);
-    expect(&mut stream, b"-ERR AUTH is not supported\r\n");
+    expect(&mut stream, b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n");
     send(&mut stream, &[b"HELLO", b"99"]);
     expect(&mut stream, b"-NOPROTO unsupported protocol version\r\n");
     send(&mut stream, &[b"HELLO", b"3"]);

@@ -1,20 +1,20 @@
 # Security and operational prerequisites — plan only
 
-**Status: DESIGN ONLY. Nothing in this document is implemented, approved as a security design, or a production-readiness claim.** The current server has no AUTH/ACL, TLS, persistence, eviction, config reload, signal-driven graceful shutdown, or production observability contract. Keep the standalone/library loopback default and the documented private-network/container restrictions unchanged. Do not expose this unauthenticated server to untrusted networks.
+**Status: MIXED — SEC-1's single-password baseline is implemented (S27); the remaining stories are design only.** The server now has optional `default`-user password authentication with `NOAUTH` rejection, `AUTH`/`HELLO AUTH` and authenticated `CONFIG SET requirepass`, but still no multi-user ACL, native TLS, persistence, eviction, config reload, signal-driven graceful shutdown or production observability contract. Nothing here is an approved security design or a production-readiness claim. Keep the standalone/library loopback default and the documented private-network/container restrictions unchanged; use a password and a TLS terminator before exposing this beyond a trusted network. See [security](../security.md).
 
 This plan decomposes the security and operations prerequisites into small stories. Names below are proposed ownership boundaries for future implementation PRs, not files changed by this plan. Preserve safe Rust, zero external Rust dependencies, binary safety, bounded I/O, atomic errors and joined shutdown. Security changes require human security review; do not treat passing compatibility tests as a security sign-off.
 
 ## Current implementation facts and boundaries
 
 - `src/server.rs` owns `Config`, TCP accept, client admission, per-client workers and managed `ServerHandle::shutdown`/`Drop`; these paths join managed workers. `src/server/pool.rs` owns fixed-worker connections. A socket is TCP, not encrypted.
-- `src/main.rs` exposes bind/client/worker/payload/idle-timeout options. Bind defaults to `127.0.0.1`; container entrypoint explicitly binds `0.0.0.0`. No secrets/config-file loader or reload exists.
-- `src/engine.rs` executes commands directly against the shared store; no client session/auth state or command/key permission check exists. `src/protocol.rs` parses bounded RESP2 frames.
+- `src/main.rs` exposes bind/client/worker/payload/idle-timeout and `--requirepass`/`--requirepass-file` options. Bind defaults to `127.0.0.1`; container entrypoint explicitly binds `0.0.0.0`. There is a startup secret file/argument loader but no general config-file reload; runtime credential rotation uses authenticated `CONFIG SET requirepass`.
+- `src/engine.rs` executes commands against the shared store and owns the single password digest; `src/session.rs` holds the per-connection authenticated bit and rejects commands before dispatch. There is still no command/key/channel permission check. `src/protocol.rs` parses bounded RESP2 frames.
 - Library-managed shutdown is available, but `Server::run` has no portable signal-handling path. `docs/containers.md` already states that process termination is not graceful draining and in-flight replies can be lost.
 - `max_data_bytes` accounts key/value payload only, not allocator/map capacity, expiry index, thread stacks, connection buffers, kernel socket buffers or process RSS. Existing profiling reports Linux RSS samples but does not enforce a memory limit or eviction policy.
 
 ## Proposed INVEST stories and EARS acceptance
 
-### SEC-1 — Authentication state and rejection boundary (S, blocked on session API)
+### SEC-1 — Authentication state and rejection boundary (implemented baseline, S27)
 
 **Value:** a configured client can authenticate before issuing data commands. **Scope:** a fixed, explicitly configured user set for the initially supported command subset; do not promise full Redis ACL parity by naming a minimal allowlist “ACL”. AUTH semantics must be agreed against the pinned Redis/Valkey references before implementation. Keep unauthenticated mode as an explicit local-development choice only; no silently enabled empty/default password and no default network exposure.
 

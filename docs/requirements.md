@@ -54,6 +54,7 @@ reason to couple all future commands into a single large story.
 | S24 | As a benchmark reader, I still get generated reports without exempting automation from the PR-only quality policy. | XS | R98–R100; branch-only report PRs, exact-head check dispatch, mocked publication tests |
 | S25 | As a cache user, I can atomically read or set multiple strings so that batch operations preserve ordering, expiry and payload admission. | S | R101–R104; duplicate/binary/expiry/admission tests, bounded MGET reply, all-mode wire/reference tests |
 | S26 | As a client, I can queue commands and execute them as one isolated batch, with optimistic invalidation when a watched key changes, so multi-step updates are not interleaved or lost to a race. | S | R105–R108; queue/abort/atomicity, expiry, RESP2/RESP3 and all-mode wire tests |
+| S27 | As an operator, I can require a secret before any data or administrative command so that a reachable cache is not open to every client on the network. | S | R109–R112; SHA-256 vectors, constant-time comparison, NOAUTH/HELLO atomicity, rotation/redaction and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -152,6 +153,31 @@ reason to couple all future commands into a single large story.
   (RESP2 `*-1`, RESP3 `_`) without changing data; bounded version eviction and
   flushes shall fail closed rather than miss a conflict. `UNWATCH` shall clear all
   watches.
+
+### Password authentication (S27)
+
+- **R109 (state-driven):** While a default-user password is configured, a
+  connection shall remain unauthenticated until a valid `AUTH`/`HELLO AUTH`, and
+  shall receive `NOAUTH Authentication required.` before data, transaction,
+  discovery or administrative work for every other command; only `AUTH`, `HELLO`
+  and `QUIT` may execute. With no password configured, data commands shall remain
+  available and `AUTH` shall return Redis's explicit no-password error.
+- **R110 (event-driven):** When `AUTH [username] password` or
+  `HELLO <2|3> AUTH username password [SETNAME name]` is received, the server shall
+  accept only the `default` user and a constant-time SHA-256 match, returning
+  `+OK`/HELLO information on success or a generic `WRONGPASS` error on failure.
+  A failed HELLO shall leave protocol, metadata and authentication state unchanged.
+- **R111 (event-driven):** When authenticated `CONFIG SET requirepass <value>` is
+  received, the server shall atomically set a new digest or disable authentication
+  for an empty value, leaving thresholds and credential unchanged if any pair is
+  invalid; `CONFIG GET requirepass` shall report unset/redacted state without
+  exposing the secret. Startup flag/file parsing shall fail closed on empty or
+  oversized files and never log the password.
+- **R112 (ubiquitous):** Authentication tests shall run offline in all execution
+  modes, cover pipelined rejection/order, runtime rotation, `QUIT`, RESP2/RESP3
+  HELLO, secret redaction and disabled/rotated credentials. Documentation shall
+  retain the missing multi-user ACL, brute-force, audit, native-TLS, durability and
+  live-deauthentication boundaries; a single password is not full Redis security.
 
 ### Development and delivery
 
@@ -516,7 +542,9 @@ redis-cli/library handshake interoperability is not yet verified.
 
 Deliberately not supported: empty/null request arrays, other RESP3 types and
 pushes, commands beyond the documented collection/stream subsets, nonzero SELECT
-indices, AUTH/ACL/TLS, persistence, replication, clustering, scripts and pub/sub.
+indices, multi-user ACL/permissions, native TLS, persistence, replication,
+clustering, scripts and pub/sub. A single `default`-user password is supported
+with `AUTH`, `HELLO ... AUTH` and `CONFIG SET requirepass`; see [security](security.md).
 Connection-local commands are rejected rather than queued inside MULTI. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-
@@ -524,6 +552,7 @@ option errors omit arbitrary input bytes rather than reflecting them into RESP
 error frames. Conservative defaults remain smaller than Redis limits.
 
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
+1..=1024-byte password (via flag or file; no ACL users),
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload and a 2 MiB
 maximum MGET RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
 request bounds up to 512 MiB (bulk must fit within frame); larger requests remain
@@ -541,8 +570,9 @@ Not implemented or implied by the completed increments:
 1. Validate HELLO/CLIENT session negotiation against real pinned redis-cli and
    language clients; add command discovery and multiple databases only as separate
    compatible increments.
-2. Authentication/ACL and a safe transport-security deployment boundary; durability
-   with crash/recovery and Redis-format interoperability tests.
+2. Multi-user ACL command/key/channel permissions, brute-force controls, an audit
+   path and a safe transport-security deployment boundary; then durability with
+   crash/recovery and Redis-format interoperability tests.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and
    clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe

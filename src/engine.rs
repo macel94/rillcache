@@ -1,11 +1,13 @@
 //! Atomic in-memory string commands with expiration and a key/value payload budget.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::protocol::encode_bulk;
 mod administration;
+mod auth;
 mod collection_config;
 mod collections;
 mod commands;
@@ -14,11 +16,13 @@ mod discovery;
 mod keyspace;
 mod multikey;
 mod options;
+mod sha256;
 mod streams;
 mod string_algorithms;
 mod string_ranges;
 mod transaction;
 mod xxh3;
+pub use auth::{Auth, AuthError};
 use collection_config::CollectionConfig;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
@@ -52,18 +56,33 @@ pub struct Store {
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
     transaction_gate: RwLock<()>,
+    auth: RwLock<Auth>,
+    auth_required: AtomicBool,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
         Self::with_clock(max_payload_bytes, Arc::new(SystemClock))
     }
     pub fn with_clock(max_payload_bytes: usize, clock: Arc<dyn Clock>) -> Self {
+        Self::with_clock_and_auth(max_payload_bytes, clock, Auth::default())
+    }
+    /// Server construction with the configured default-user credential.
+    pub fn with_auth(max_payload_bytes: usize, auth: Auth) -> Self {
+        Self::with_clock_and_auth(max_payload_bytes, Arc::new(SystemClock), auth)
+    }
+    pub fn with_clock_and_auth(
+        max_payload_bytes: usize,
+        clock: Arc<dyn Clock>,
+        auth: Auth,
+    ) -> Self {
         Self {
             data: RwLock::new(Data::default()),
             max_payload_bytes,
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
             transaction_gate: RwLock::new(()),
+            auth_required: AtomicBool::new(auth.required()),
+            auth: RwLock::new(auth),
         }
     }
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
@@ -287,6 +306,33 @@ impl Store {
     /// Command-table arity used for MULTI queue-time validation and discovery.
     pub fn command_arity(name: &[u8]) -> Option<i64> {
         discovery::command_arity(name)
+    }
+
+    /// Whether this store requires authentication for data/admin commands.
+    /// The atomic fast path keeps the common benchmark path lock-free.
+    pub fn authentication_required(&self) -> bool {
+        self.auth_required.load(Ordering::Acquire)
+    }
+
+    pub fn authenticate(&self, username: Option<&[u8]>, password: &[u8]) -> Result<(), AuthError> {
+        self.auth
+            .read()
+            .map_err(|_| AuthError::Internal)?
+            .verify(username, password)
+    }
+
+    pub fn requirepass_configured(&self) -> bool {
+        self.auth_required.load(Ordering::Acquire)
+    }
+
+    /// Atomically replace the default credential; only CONFIG SET uses this.
+    pub fn set_requirepass(&self, password: Option<&[u8]>) -> bool {
+        let Ok(mut auth) = self.auth.write() else {
+            return false;
+        };
+        auth.set_password(password);
+        self.auth_required.store(auth.required(), Ordering::Release);
+        true
     }
 }
 
