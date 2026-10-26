@@ -481,6 +481,7 @@ x\r\n"
         assert!(parse_resp_value(&array, &mut 0, &mut converted));
         assert_eq!(converted, b"_\r\n");
 
+        assert_eq!(convert_resp2_reply(b"*-1\r\n"), b"_\r\n");
         let nested = b"*2\r\n*-1\r\n$-1\r\n";
         let mut converted = Vec::new();
         assert!(parse_resp_value(nested, &mut 0, &mut converted));
