@@ -109,15 +109,15 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":35\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":41\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*35\r\n*6\r\n$7\r\ncommand\r\n"));
+        assert!(all_info.starts_with(b"*41\r\n*6\r\n$7\r\ncommand\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"gEt", b"does-not-exist", b"DEL"]),
             b"*3\r\n*6\r\n$3\r\nget\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*-1\r\n*6\r\n$3\r\ndel\r\n:-2\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:-1\r\n:1\r\n"
         );
         assert_eq!(request(&mut client, &[b"COMMAND", b"LIST"]),
-            b"*35\r\n$7\r\ncommand\r\n$4\r\ncopy\r\n$4\r\ndecr\r\n$6\r\ndecrby\r\n$3\r\ndel\r\n$4\r\necho\r\n$6\r\nexists\r\n$6\r\nexpire\r\n$8\r\nexpireat\r\n$10\r\nexpiretime\r\n$3\r\nget\r\n$6\r\ngetdel\r\n$5\r\ngetex\r\n$6\r\ngetset\r\n$4\r\nincr\r\n$6\r\nincrby\r\n$4\r\ninfo\r\n$7\r\npersist\r\n$7\r\npexpire\r\n$9\r\npexpireat\r\n$11\r\npexpiretime\r\n$4\r\nping\r\n$6\r\npsetex\r\n$4\r\npttl\r\n$4\r\nquit\r\n$3\r\nset\r\n$5\r\nsetex\r\n$5\r\nsetnx\r\n$3\r\nttl\r\n$4\r\nxadd\r\n$4\r\nxdel\r\n$6\r\nxgroup\r\n$5\r\nxinfo\r\n$4\r\nxlen\r\n$10\r\nxreadgroup\r\n");
+            b"*41\r\n$7\r\ncommand\r\n$6\r\nconfig\r\n$4\r\ncopy\r\n$4\r\ndecr\r\n$6\r\ndecrby\r\n$3\r\ndel\r\n$4\r\necho\r\n$6\r\nexists\r\n$6\r\nexpire\r\n$8\r\nexpireat\r\n$10\r\nexpiretime\r\n$8\r\nflushall\r\n$7\r\nflushdb\r\n$8\r\nfunction\r\n$3\r\nget\r\n$6\r\ngetdel\r\n$5\r\ngetex\r\n$6\r\ngetset\r\n$4\r\nincr\r\n$6\r\nincrby\r\n$4\r\ninfo\r\n$6\r\nmemory\r\n$7\r\npersist\r\n$7\r\npexpire\r\n$9\r\npexpireat\r\n$11\r\npexpiretime\r\n$4\r\nping\r\n$6\r\npsetex\r\n$4\r\npttl\r\n$4\r\nquit\r\n$6\r\nscript\r\n$3\r\nset\r\n$5\r\nsetex\r\n$5\r\nsetnx\r\n$3\r\nttl\r\n$4\r\nxadd\r\n$4\r\nxdel\r\n$6\r\nxgroup\r\n$5\r\nxinfo\r\n$4\r\nxlen\r\n$10\r\nxreadgroup\r\n");
         let info = request(&mut client, &[b"INFO"]);
         let text = std::str::from_utf8(&info).unwrap();
         assert_eq!(info.first(), Some(&b'$'));
