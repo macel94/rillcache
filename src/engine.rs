@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::protocol::encode_bulk;
 mod commands;
 mod data;
+mod keyspace;
 mod multikey;
 mod options;
 use data::Data;
@@ -230,7 +231,7 @@ impl Store {
         .find(|(token, _)| command.eq_ignore_ascii_case(token))
         {
             self.increment(arguments, name, output);
-        } else {
+        } else if !self.execute_keyspace(arguments, output) {
             output.extend_from_slice(b"-ERR unknown command\r\n");
         }
         Action::Continue
