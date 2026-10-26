@@ -61,8 +61,9 @@ ERR Can't execute '<cmd>': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT 
 ```
 
 In RESP3, normal commands remain available and message/confirmation frames use
-push type. There is no `RESET` command yet, so a RESP2 subscriber must unsubscribe
-or reconnect to leave subscriber mode. Connection-local commands are not queued
+push type. `RESET` is allowed from RESP2 subscriber mode and unsubscribes
+everything while returning the connection to RESP2; otherwise unsubscribe or
+reconnect to leave subscriber mode. Connection-local commands are not queued
 inside `MULTI`; pub/sub commands are rejected there.
 
 ## ACL channels
@@ -77,7 +78,7 @@ tenant that must not learn other channel names.
 ## Limits
 
 - No sharded pub/sub, cluster bus, keyspace notifications, `CLIENT` tracking or
-  RESP2 `RESET`.
+  tracking/notification integration.
 - No persistence, replication, ordering across publishers, delivery accounting,
   dead-letter handling or exactly-once semantics.
 - Pattern matching uses the server's bounded Redis-style glob matcher; pathological

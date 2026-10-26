@@ -78,5 +78,5 @@ fn substr_alias_and_algorithm_discovery_dispatch() {
         call(&store, &[b"SUBSTR", b"k", b"-4", b"-1"]),
         b"$4\r\nbcde\r\n"
     );
-    assert_eq!(call(&store, &[b"COMMAND", b"COUNT"]), b":103\r\n");
+    assert_eq!(call(&store, &[b"COMMAND", b"COUNT"]), b":104\r\n");
 }

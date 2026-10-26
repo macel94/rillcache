@@ -60,6 +60,7 @@ reason to couple all future commands into a single large story.
 | S30 | As a client, I can iterate large keyspaces and collections in bounded pages instead of blocking the server with KEYS, with filtering by pattern and type. | XS | R121–R124; paging, filter, type, NOVALUES, binary and invalid cursor tests in all modes |
 | S31 | As a client, I can publish and receive channel or pattern messages on live connections so that independent clients can coordinate without polling the keyspace. | S | R125–R128; confirmations, delivery, subscriber mode, RESP3 push, ACL channels and all-mode wire tests |
 | S32 | As an operator, I can compact an append-only journal without losing acknowledged state so that restart time and disk use do not grow forever. | XS | R129–R131; compacting replay, live-rewrite, disabled-journal and all-mode restart tests |
+| S33 | As a pool/client, I can reset a reused connection's server-side state without reconnecting so that stale transactions, subscriptions or protocol state cannot leak. | XS | R132–R133; reset/auth/pubsub/RESP2 and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -295,6 +296,18 @@ reason to couple all future commands into a single large story.
   compaction. Tests shall cover a compacted live log, replay after rewrite, disabled
   journals, failure atomicity and all execution modes. Documentation shall not call
   this background, incremental or automatically scheduled.
+
+### Connection reset (S33)
+
+- **R132 (event-driven):** When a valid `RESET` is received, the server shall
+  discard the active transaction, clear watches, remove all channel/pattern
+  subscriptions, return to RESP2, select database zero, clear the authenticated
+  user and reply `+RESET`; it shall be available without prior authentication and
+  from RESP2 subscriber mode. Client name/library metadata shall be retained.
+- **R133 (unwanted behavior):** If `RESET` has extra arguments, it shall return the
+  normal arity error without changing state. Tests shall cover queued transactions,
+  watches, pub/sub cleanup, RESP3-to-RESP2 conversion, deauthentication and
+  reauthentication, subscriber-mode reset and all execution modes.
 
 ### Development and delivery
 
@@ -656,7 +669,8 @@ a deterministic logical estimate, not allocator/RSS measurements.
 The default wire mode is RESP2. `HELLO` can inspect the current mode or
 negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
 `CLIENT` metadata across worker handoffs. Supported session commands are `CLIENT
-ID`, `SETNAME`, `GETNAME`, `SETINFO LIB-NAME|LIB-VER`, `INFO`, and `SELECT 0`.
+ID`, `SETNAME`, `GETNAME`, `SETINFO LIB-NAME|LIB-VER`, `INFO`, `SELECT 0` and
+`RESET`.
 The RESP3 reply subset covers the current commands' simple strings, errors,
 integers, bulk strings/arrays, and nulls; null bulk and null array frames are
 converted by frame boundaries, preserving binary payloads. See
