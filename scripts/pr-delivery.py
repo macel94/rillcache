@@ -35,10 +35,12 @@ class Gh:
     def __init__(self, timeout: int = 20):
         self.timeout = timeout
 
-    def call(self, args: list[str], *, data: dict | None = None, timeout: int | None = None) -> Any:
+    def call(self, args: list[str], *, data: dict | None = None, method: str | None = None, timeout: int | None = None) -> Any:
         cmd = ["gh", "api", "--hostname", "github.com"]
         if data is not None:
-            cmd += ["--method", "POST", "--input", "-"]
+            cmd += ["--method", method or "POST", "--input", "-"]
+        elif method:
+            cmd += ["--method", method]
         cmd += args
         try:
             p = subprocess.run(cmd, input=json.dumps(data) if data is not None else None,
@@ -58,7 +60,10 @@ class Gh:
         return self.call([path])
 
     def post(self, path: str, data: dict) -> Any:
-        return self.call([path], data=data)
+        return self.call([path], data=data, method="POST")
+
+    def put(self, path: str, data: dict) -> Any:
+        return self.call([path], data=data, method="PUT")
 
 
 @dataclass
@@ -397,7 +402,7 @@ class Controller:
                         notices.append(f"PR #{n} paused: head/base raced before update")
                         continue
                     try:
-                        self.api.post(f"repos/{OWNER}/pulls/{n}/update-branch", {"expected_head_sha": head})
+                        self.api.put(f"repos/{OWNER}/pulls/{n}/update-branch", {"expected_head_sha": head})
                     except DeliveryError:
                         observed = self.pull(n)
                         update.update(status="paused", reason="update rejected: conflict or head race",

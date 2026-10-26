@@ -30,6 +30,7 @@ class FakeApi:
         self.pr = pull()
         self.main = A
         self.posts = []
+        self.verbs = []
         self.compare = "behind"
         self.review_data = []
         self.run_data = {"ci.yml": [], "pr-quality.yml": []}
@@ -62,9 +63,13 @@ class FakeApi:
         raise AssertionError(path)
 
     def post(self, path, data):
+        self.verbs.append("POST")
         self.posts.append((path, data))
-        if path.endswith("/update-branch"):
-            return None
+        return None
+
+    def put(self, path, data):
+        self.verbs.append("PUT")
+        self.posts.append((path, data))
         return None
 
 
@@ -120,6 +125,7 @@ class ControllerTests(unittest.TestCase):
         updates = [p for p in self.api.posts if p[0].endswith("update-branch")]
         self.assertEqual(len(updates), 1)
         self.assertEqual(updates[0][1], {"expected_head_sha": B})
+        self.assertEqual(self.api.verbs, ["PUT"])
         state = self.local.load()
         update = next(iter(state["attempts"].values()))
         self.assertEqual(update["status"], "updated_pending")
@@ -312,6 +318,10 @@ class ControllerTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertIn("--input", args)
         self.assertEqual(run.call_args.kwargs["input"], json.dumps({"expected_head_sha": A}))
+        with self.assertRaises(mod.DeliveryError):
+            api.put("repos/x/y/pulls/1/update-branch", {"expected_head_sha": A})
+        args = run.call_args.args[0]
+        self.assertEqual(args[args.index("--method") + 1], "PUT")
 
 
 if __name__ == "__main__":
