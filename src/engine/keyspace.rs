@@ -176,7 +176,7 @@ impl Store {
             .get(source)
             .expect("source remains present under lock");
         let copy = source_entry.clone();
-        data.put_owned(destination, copy, payload);
+        data.put_owned(destination, copy, payload, now);
         output.extend_from_slice(b":1\r\n");
     }
 
@@ -313,7 +313,7 @@ impl Store {
         // Transfer ownership only after every rejection/admission check.
         // This preserves string buffers and collection/stream trees without cloning.
         let entry = data.remove(source).expect("source checked while locked");
-        data.put_owned(destination, entry, payload);
+        data.put_owned(destination, entry, payload, now);
         if only_if_absent {
             integer(1, output);
         } else {

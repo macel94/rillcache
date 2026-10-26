@@ -71,7 +71,7 @@ impl Store {
                     let bytes = list.iter().map(Vec::len).sum::<usize>();
                     let payload = data.payload_bytes - previous + bytes;
                     let encoded = encode_list(list, config.list_max_listpack_size);
-                    data.put_collection(key, encoded, expires, payload);
+                    data.put_collection(key, encoded, expires, payload, now);
                 }
                 result = PopOutcome::Value {
                     key: key.to_vec(),

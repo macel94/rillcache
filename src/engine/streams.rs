@@ -138,7 +138,13 @@ impl Store {
             out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
             return;
         };
-        data.put_stream(a[1], stream, existing_expiry, payload);
+        data.put_stream(
+            a[1],
+            stream,
+            existing_expiry,
+            payload,
+            now.min(i64::MAX as u64) as i64,
+        );
         encode_bulk(Some(&id_text(next)), out);
     }
     fn xdel(&self, a: &[&[u8]], out: &mut Vec<u8>) {
@@ -278,7 +284,7 @@ impl Store {
                 out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
                 return;
             };
-            data.put_stream(a[2], stream, existing_expiry, total);
+            data.put_stream(a[2], stream, existing_expiry, total, now);
             simple(b"OK", out);
         } else if a[1].eq_ignore_ascii_case(b"SETID") {
             if a.len() != 5 {

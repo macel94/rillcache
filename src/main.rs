@@ -8,7 +8,7 @@ use rillcache::{Config, Server};
 
 mod healthcheck;
 
-const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --dir PATH               Directory for the journal (default .)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH and an append-only journal; no native TLS,\nRDB format, eviction or replication. The standalone binary binds to loopback by\ndefault.";
+const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH and an append-only journal; no native TLS,\nRDB format, eviction or replication. The standalone binary binds to loopback by\ndefault.";
 
 enum Options {
     Run(Config),
@@ -40,7 +40,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             "--bind" | "--max-clients" | "--threads" | "--max-data-bytes" | "--max-bulk-bytes"
             | "--max-frame-bytes" | "--idle-timeout-ms" | "--requirepass"
             | "--requirepass-file" | "--aclfile" | "--appendonly" | "--appendfilename"
-            | "--appendfsync" | "--dir" => {
+            | "--appendfsync" | "--dir" | "--maxmemory-policy" => {
                 let value = arguments
                     .next()
                     .ok_or_else(|| format!("missing value for {option}"))?;
@@ -108,6 +108,10 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                             return Err("--dir requires a nonempty path".into());
                         }
                         config.dir = std::path::PathBuf::from(value);
+                    }
+                    "--maxmemory-policy" => {
+                        config.maxmemory_policy = rillcache::engine::EvictionPolicy::parse(&value)
+                            .ok_or("--maxmemory-policy requires a supported policy name")?;
                     }
                     _ => unreachable!(),
                 }
@@ -269,6 +273,15 @@ mod tests {
         assert_eq!(journal.appendfilename, "test.aof");
         assert_eq!(journal.appendfsync, rillcache::engine::FsyncPolicy::Always);
         assert_eq!(journal.dir, std::path::Path::new("/data"));
+        let Options::Run(eviction) =
+            options(["--maxmemory-policy", "allkeys-lru"].map(str::to_owned)).unwrap()
+        else {
+            panic!("expected eviction config");
+        };
+        assert_eq!(
+            eviction.maxmemory_policy,
+            rillcache::engine::EvictionPolicy::AllKeysLru
+        );
         let Options::Run(acl) =
             options(["--aclfile", "/etc/rillcache/users.acl"].map(str::to_owned)).unwrap()
         else {

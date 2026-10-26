@@ -454,8 +454,10 @@ impl Store {
             if matches!(section.as_slice(), b"memory" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r",
-                    data.payload_bytes, self.max_payload_bytes
+                    "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nmaxmemory_policy:{}\r",
+                    data.payload_bytes,
+                    self.max_payload_bytes,
+                    self.eviction_policy().name()
                 );
             }
             if matches!(section.as_slice(), b"keyspace" | b"default" | b"all") {
@@ -468,11 +470,12 @@ impl Store {
                 let stats = self.stats();
                 let _ = writeln!(
                     text,
-                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nevicted_keys:0\r\npubsub_channels:{}\r\npubsub_patterns:{}\r",
+                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r",
                     stats.total_connections_received,
                     stats.total_commands_processed,
                     stats.rejected_connections,
                     stats.expired_keys,
+                    stats.evicted_keys,
                     stats.pubsub_channels,
                     stats.pubsub_patterns
                 );

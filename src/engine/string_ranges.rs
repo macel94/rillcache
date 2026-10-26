@@ -91,7 +91,7 @@ impl Store {
             value.extend_from_slice(&entry.value);
         }
         value.extend_from_slice(suffix);
-        data.put(key, &value, expires, payload);
+        data.put(key, &value, expires, payload, now);
         integer(length as i64, output);
     }
 
@@ -212,7 +212,7 @@ impl Store {
         }
         value.resize(length, 0);
         value[offset..end].copy_from_slice(replacement);
-        data.put(key, &value, expires, payload);
+        data.put(key, &value, expires, payload, now);
         integer(length as i64, output);
     }
 }

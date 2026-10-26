@@ -63,6 +63,7 @@ reason to couple all future commands into a single large story.
 | S33 | As a pool/client, I can reset a reused connection's server-side state without reconnecting so that stale transactions, subscriptions or protocol state cannot leak. | XS | R132–R133; reset/auth/pubsub/RESP2 and all-mode wire tests |
 | S34 | As an operator, I can inspect honest connection, command, expiration and pub/sub counters and reset them, without fabricated Redis fields. | XS | R134–R136; counter scope, reset, rejection, expiry and all-mode wire tests |
 | S35 | As a queue user, I can wait for an element to arrive on one of several lists instead of polling, without blocking a worker lane or holding the store lock. | S | R137–R140; push wakeup, timeout, order, journal, idle and all-mode wire tests |
+| S36 | As a cache operator, I can choose a bounded eviction policy so that writes keep succeeding within a payload budget instead of always returning OOM. | S | R141–R144; policy, volatile, TTL/LRU, journal, stats and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -353,6 +354,29 @@ reason to couple all future commands into a single large story.
   Documentation shall retain the absence of a condition-variable/push design,
   strict latency SLOs, `BRPOPLPUSH`/`BLMOVE`, fairness under many blocked clients
   and cluster/replication blocking semantics.
+
+### Payload budget eviction (S36)
+
+- **R141 (event-driven):** When a write's final payload exceeds the configured
+  budget, the server shall first reap logically expired keys, then apply the
+  selected policy. `noeviction` shall preserve the existing atomic OOM behavior;
+  other policies shall evict eligible non-target keys until admission succeeds.
+- **R142 (unwanted behavior):** If the selected policy cannot evict enough keys
+  (for example `volatile-*` with no TTL keys), then the server shall return OOM
+  without deleting any key. It shall never evict the key being written, and an
+  admitted write shall apply its complete final payload atomically.
+- **R143 (state-driven):** While `allkeys-random`/`volatile-random` run, candidate
+  choice shall be bounded and rotating; `*-lru` shall use documented mutation
+  recency rather than claiming read LRU; `volatile-ttl` shall choose the nearest
+  deadline. Evictions shall update expiry/accounting/WATCH versions and be captured
+  by an enabled append-only journal as normal key deletions.
+- **R144 (event-driven):** `CONFIG GET/SET maxmemory-policy` and
+  `--maxmemory-policy` shall expose the policies; `INFO memory` shall report the
+  live policy and `INFO stats` the evicted count, reset by `CONFIG RESETSTAT`.
+  All-mode tests shall cover noeviction, allkeys/volatile behavior, persistent-key
+  protection, TTL/LRU selection, journal replay and stats. Documentation shall
+  retain the payload-not-RSS, mutation-LRU, O(N) scan, no-LFU/background
+  eviction/notification and replication gaps.
 
 ### Development and delivery
 
@@ -687,7 +711,9 @@ INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX;
 MULTI/EXEC/DISCARD/WATCH/UNWATCH with a bounded queue, atomic batch execution
 and optimistic key invalidation; multi-user ACL users/rules, key patterns and
 atomic ACL-file save/load; opt-in RESP-command append-only persistence with
-fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction; Redis DIGEST/DELEX
+fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction;
+payload-budget eviction policies (`noeviction`, allkeys/volatile random/LRU and
+volatile TTL); Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
 (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE/BLPOP/BRPOP;
 SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD;
