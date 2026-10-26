@@ -2,6 +2,91 @@ use super::*;
 use options::{Condition, ExpireFlags, NOT_INTEGER, OOM, SetOptions, parse_integer};
 
 impl Store {
+    pub(super) fn delex(&self, arguments: &[&[u8]], delifeq: bool, output: &mut Vec<u8>) {
+        let name = if delifeq { "delifeq" } else { "delex" };
+        if (delifeq && arguments.len() != 3)
+            || (!delifeq && arguments.len() != 2 && arguments.len() != 4)
+        {
+            arity(name, output);
+            return;
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(output);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(arguments[1], now);
+        let Some(entry) = data.entries.get(arguments[1]) else {
+            integer(0, output);
+            return;
+        };
+        if arguments.len() == 2 {
+            data.remove(arguments[1]);
+            integer(1, output);
+            return;
+        }
+        if entry.stream.is_some() {
+            output.extend_from_slice(if delifeq {
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+            } else {
+                b"-ERR Key should be of string type if conditions are specified\r\n"
+            });
+            return;
+        }
+        let token = if delifeq {
+            b"IFEQ".as_slice()
+        } else {
+            arguments[2]
+        };
+        let expected = if delifeq { arguments[2] } else { arguments[3] };
+        let matched = if token.eq_ignore_ascii_case(b"IFEQ") {
+            entry.value.as_slice() == expected
+        } else if token.eq_ignore_ascii_case(b"IFNE") {
+            entry.value.as_slice() != expected
+        } else if token.eq_ignore_ascii_case(b"IFDEQ") || token.eq_ignore_ascii_case(b"IFDNE") {
+            if expected.len() != 16 {
+                output.extend_from_slice(b"-ERR must be exactly 16 hexadecimal characters\r\n");
+                return;
+            }
+            let digest = format!("{:016x}", super::xxh3::xxh3_64(&entry.value));
+            let equal = digest.eq_ignore_ascii_case(std::str::from_utf8(expected).unwrap_or(""));
+            if token.eq_ignore_ascii_case(b"IFDEQ") {
+                equal
+            } else {
+                !equal
+            }
+        } else {
+            output
+                .extend_from_slice(b"-ERR Invalid condition. Use IFEQ, IFNE, IFDEQ, or IFDNE\r\n");
+            return;
+        };
+        if matched {
+            data.remove(arguments[1]);
+        }
+        integer(i64::from(matched), output);
+    }
+
+    pub(super) fn digest(&self, key: &[u8], output: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(output);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        if let Some(entry) = data.entries.get(key) {
+            if entry.stream.is_some() {
+                output.extend_from_slice(
+                    b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                );
+                return;
+            }
+            let hash = super::xxh3::xxh3_64(&entry.value);
+            write!(output, "$16\r\n{hash:016x}\r\n").expect("Vec write");
+        } else {
+            output.extend_from_slice(b"$-1\r\n");
+        }
+    }
+
     pub(super) fn now(&self, data: &Data) -> i64 {
         if data.expirations.is_empty() {
             0
@@ -112,7 +197,16 @@ impl Store {
         };
         data.expire_key(key, now);
         let existing = data.entries.get(key);
-        if options.get && existing.is_some_and(|entry| entry.stream.is_some()) {
+        if (options.get
+            || matches!(
+                options.condition,
+                Condition::ValueEqual(_)
+                    | Condition::ValueNotEqual(_)
+                    | Condition::DigestEqual(_)
+                    | Condition::DigestNotEqual(_)
+            ))
+            && existing.is_some_and(|entry| entry.stream.is_some())
+        {
             output.extend_from_slice(
                 b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
             );
@@ -122,6 +216,32 @@ impl Store {
             Condition::Always => true,
             Condition::Missing => existing.is_none(),
             Condition::Present => existing.is_some(),
+            Condition::ValueEqual(expected) => {
+                existing.is_some_and(|entry| entry.value.as_slice() == expected)
+            }
+            Condition::ValueNotEqual(expected) => {
+                existing.is_none_or(|entry| entry.value.as_slice() != expected)
+            }
+            Condition::DigestEqual(expected) | Condition::DigestNotEqual(expected) => {
+                if let Some(entry) = existing {
+                    if expected.len() != 16 {
+                        output.extend_from_slice(
+                            b"-ERR must be exactly 16 hexadecimal characters\r\n",
+                        );
+                        return;
+                    }
+                    let digest = format!("{:016x}", super::xxh3::xxh3_64(&entry.value));
+                    let equal =
+                        digest.eq_ignore_ascii_case(std::str::from_utf8(expected).unwrap_or(""));
+                    if matches!(options.condition, Condition::DigestEqual(_)) {
+                        equal
+                    } else {
+                        !equal
+                    }
+                } else {
+                    matches!(options.condition, Condition::DigestNotEqual(_))
+                }
+            }
         };
         if !allowed {
             if numeric_reply {

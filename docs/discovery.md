@@ -50,10 +50,10 @@ from the protocol encoder's standard bounded RESP framing.
 
 ## Compatibility limits / coordinator integration
 
-The current command list is intentionally limited to the base Store command
-families and COMMAND/INFO. It must be updated when the separately delivered
-MGET/MSET/MSETNX, APPEND/STRLEN/GETRANGE/SETRANGE, TYPE/RENAME/RENAMENX/TOUCH/
-DBSIZE, and HELLO/CLIENT features are merged. The HELLO/CLIENT worker owns
+The registered command list includes the base Store commands plus MSETEX and
+conditional string commands (DIGEST/DELEX/DELIFEQ). Every advertised name is
+wired to this worktree's Store dispatcher; unimplemented Redis commands remain
+unadvertised. The HELLO/CLIENT worker owns
 connection-local state; this module does not implement or advertise it. Detailed
 key specifications, ACL categories, subcommand records, filters and Redis
 extended metadata are not supported. No network-facing production-readiness or
