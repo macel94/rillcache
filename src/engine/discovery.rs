@@ -18,6 +18,7 @@ struct Command {
 // Only commands dispatched by the base Store implementation are listed here.
 const COMMANDS: &[Command] = &[
     cmd("command", -1, &["loading", "stale"], 0, 0, 0),
+    cmd("copy", -3, &["write", "denyoom"], 1, 2, 1),
     cmd("decr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("decrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("del", -2, &["write", "fast"], 1, -1, 1),
@@ -37,6 +38,7 @@ const COMMANDS: &[Command] = &[
     cmd("incr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("incrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
+    cmd("keys", 2, &["readonly"], 1, 1, 1),
     cmd("llen", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("lpop", -2, &["write", "fast"], 1, 1, 1),
     cmd("lpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
@@ -49,6 +51,7 @@ const COMMANDS: &[Command] = &[
     cmd("psetex", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("pttl", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("quit", -1, &["fast"], 0, 0, 0),
+    cmd("randomkey", 1, &["readonly"], 0, 0, 0),
     cmd("rpop", -2, &["write", "fast"], 1, 1, 1),
     cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("sadd", -3, &["write", "denyoom", "fast"], 1, 1, 1),

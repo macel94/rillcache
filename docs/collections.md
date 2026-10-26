@@ -22,9 +22,10 @@ SMEMBERS and HGETALL use deterministic byte ordering for stable replies; Redis
 leaves these iteration orders unspecified. ZRANGE sorts by ascending score then
 binary member. Supported sorted-set scores are finite UTF-8 floating-point
 numbers; ZADD options, reverse/lex/score ranges, rank/range removals and other
-collection commands are not implemented. Compact/listpack CONFIG thresholds,
-COPY, KEYS and RANDOMKEY are separate unfinished compatibility work. This is
-not full Redis compatibility.
+collection commands are not implemented. Deep COPY preserves the type, independent contents and key TTL of supported
+collections. KEYS and RANDOMKEY operate over this same keyspace; glob evaluation
+is byte-oriented and bounded against pathological patterns. Compact/listpack
+CONFIG thresholds are not yet implemented. This is not full Redis compatibility.
 
 Unit tests cover binary data, ordering, duplicate members/fields, score updates,
 invalid score handling, WRONGTYPE, OOM atomicity, TTL preservation, keyspace

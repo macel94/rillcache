@@ -38,6 +38,7 @@ fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
             .unwrap();
 
         command(&mut stream, &[b"TYPE", b"absent"], b"+none\r\n");
+        command(&mut stream, &[b"RANDOMKEY"], b"$-1\r\n");
         command(&mut stream, &[b"SET", b"a\0\xff", b"v\0"], b"+OK\r\n");
         command(&mut stream, &[b"TYPE", b"a\0\xff"], b"+string\r\n");
         command(
@@ -47,13 +48,26 @@ fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
         );
         command(&mut stream, &[b"RENAME", b"a\0\xff", b"b\xff"], b"+OK\r\n");
         command(&mut stream, &[b"GET", b"b\xff"], b"$2\r\nv\0\r\n");
+        command(&mut stream, &[b"COPY", b"b\xff", b"binary-copy"], b":1\r\n");
+        command(&mut stream, &[b"SET", b"b\xff", b"changed"], b"+OK\r\n");
+        command(&mut stream, &[b"GET", b"binary-copy"], b"$2\r\nv\0\r\n");
+        command(&mut stream, &[b"SET", b"glob:a", b"1"], b"+OK\r\n");
+        command(&mut stream, &[b"SET", b"glob:b", b"2"], b"+OK\r\n");
+        command(
+            &mut stream,
+            &[b"KEYS", b"glob:?"],
+            b"*2\r\n$6\r\nglob:a\r\n$6\r\nglob:b\r\n",
+        );
         command(&mut stream, &[b"RENAMENX", b"b\xff", b"c"], b":1\r\n");
         command(&mut stream, &[b"SET", b"b\xff", b"occupied"], b"+OK\r\n");
         command(&mut stream, &[b"RENAMENX", b"c", b"b\xff"], b":0\r\n");
-        command(&mut stream, &[b"DBSIZE"], b":2\r\n");
+        command(&mut stream, &[b"DBSIZE"], b":5\r\n");
 
         command(&mut stream, &[b"LPUSH", b"list", b"one", b"two"], b":2\r\n");
         command(&mut stream, &[b"TYPE", b"list"], b"+list\r\n");
+        command(&mut stream, &[b"COPY", b"list", b"list-copy"], b":1\r\n");
+        command(&mut stream, &[b"LPOP", b"list-copy"], b"$3\r\ntwo\r\n");
+        command(&mut stream, &[b"LLEN", b"list"], b":2\r\n");
         command(
             &mut stream,
             &[b"LRANGE", b"list", b"0", b"-1"],
