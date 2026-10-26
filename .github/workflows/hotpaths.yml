@@ -112,7 +112,7 @@ jobs:
             --keyspace 1024 --value-size 64 --warmup 1000 --runs 3 --workload set \
             > target/remote-profile/control-set.json 2> target/remote-profile/control-set.log
           kill "$server_pid"
-          wait "$server_pid"
+          wait "$server_pid" || [[ $? -eq 143 ]]
           server_pid=''
           taskset -c "$server_cpu" target/profile-symbols/release/rillcache --bind "127.0.0.1:$port" > target/remote-profile/profile-server.log 2>&1 &
           server_pid=$!
@@ -123,7 +123,7 @@ jobs:
           done
           kill -0 "$server_pid"
           sudo perf record --call-graph dwarf -F 199 -p "$server_pid" \
-            -o target/remote-profile/set.perf.data -- sleep 60 \
+            -o target/remote-profile/set.perf.data -- sleep 15 \
             > target/remote-profile/perf-record.log 2>&1 &
           recorder_pid=$!
           sleep 2
@@ -133,7 +133,6 @@ jobs:
             --profile-idle-ms 1000 --requests 100000 --clients 8 --pipeline 1 \
             --keyspace 1024 --value-size 64 --warmup 1000 --runs 3 --workload set \
             > target/remote-profile/profile-set.json 2> target/remote-profile/profile-set.log
-          kill -INT "$recorder_pid"
           wait "$recorder_pid"
           recorder_pid=''
           sudo perf report --stdio --sort comm,dso,symbol --percent-limit 0.5 \
