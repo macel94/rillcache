@@ -149,9 +149,10 @@ mod tests {
         let info = run(&store, &[b"INFO", b"server"]);
         let bits = format!("arch_bits:{}\r", usize::BITS);
         assert!(info.windows(bits.len()).any(|part| part == bits.as_bytes()));
-        assert!(info
-            .windows(b"mem_allocator:system\r".len())
-            .any(|part| part == b"mem_allocator:system\r"));
+        assert!(
+            info.windows(b"mem_allocator:system\r".len())
+                .any(|part| part == b"mem_allocator:system\r")
+        );
         assert_eq!(run(&store, &[b"MEMORY", b"USAGE", b"missing"]), b"$-1\r\n");
         run(&store, &[b"SET", b"key", b"value"]);
         assert_eq!(
