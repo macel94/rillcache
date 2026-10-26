@@ -71,10 +71,15 @@ impl Store {
         if let Some(entry) = data.entries.get(args[2]) {
             // Deterministic logical estimate, not allocator/RSS data.
             let header = if usize::BITS == 64 { 16usize } else { 12usize };
-            if let Some(size) = header
-                .checked_add(args[2].len())
-                .and_then(|n| n.checked_add(entry.value.len()))
-            {
+            let value_bytes = match &entry.stream {
+                Some(stream) => stream.payload_bytes(),
+                None => Some(entry.value.len()),
+            };
+            if let Some(size) = value_bytes.and_then(|value_bytes| {
+                header
+                    .checked_add(args[2].len())
+                    .and_then(|n| n.checked_add(value_bytes))
+            }) {
                 let _ = write!(out, ":{size}\r\n");
             } else {
                 out.extend_from_slice(b"-ERR memory size overflow\r\n");

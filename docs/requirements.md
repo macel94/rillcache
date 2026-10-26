@@ -463,6 +463,9 @@ INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX; APPEND/STRLEN/GETRANGE/SETRANGE. See
 [multi-key string limits](multikey-strings.md) for grammar, clocks, rounding,
 integer limits, resource bounds and atomic error behavior. Conditions are atomic
 and case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
+A bounded stream subset supports XADD, XDEL, XLEN, XGROUP CREATE/SETID,
+XREADGROUP GROUP with COUNT/NOACK for new entries on one stream, XINFO STREAM
+(with FULL), and same-database COPY. See [stream limits](streams.md).
 
 The default wire mode is RESP2. `HELLO` can inspect the current mode or
 negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
@@ -475,9 +478,9 @@ converted by frame boundaries, preserving binary payloads. See
 redis-cli/library handshake interoperability is not yet verified.
 
 Deliberately not supported: inline/telnet commands, empty/null request arrays,
-other RESP3 types and pushes, digest/value-match SET conditions, other data
-types, nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication,
-clustering, transactions, pub/sub and streams. Unsupported SET options return
+other RESP3 types and pushes, digest/value-match SET conditions, data types beyond
+strings and the bounded streams subset, nonzero SELECT indices, AUTH/ACL/TLS,
+persistence, replication, clustering, transactions, scripts and pub/sub. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-
 option errors omit arbitrary input bytes rather than reflecting them into RESP
@@ -499,8 +502,8 @@ Not implemented or implied by the completed increments:
    compatible increments.
 2. Authentication/ACL and a safe transport-security deployment boundary; durability
    with crash/recovery and Redis-format interoperability tests.
-3. Richer data types, transactions, scripts, pub/sub, streams, replication and
-   clustering: follow the [production-readiness plan](production-readiness.md).
+3. Richer data types, transactions, scripts, pub/sub, expanded streams, replication
+   and clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe
    release, failover and fencing semantics are not implemented.
 4. Extend the [measured client-I/O gains](../benchmarks/studies/client-handoffs/README.md)
@@ -511,7 +514,7 @@ Not implemented or implied by the completed increments:
    backpressure, shutdown and multi-key atomicity gates. Unsafe project code and
    external Rust dependencies remain forbidden.
 5. Controlled-hardware performance budgets and repeated current-release comparisons;
-   later, richer types, pub/sub and streams driven by product judgment.
+   later, richer types, pub/sub and additional stream capabilities driven by product judgment.
 
 Definition of done for each future story: EARS acceptance cases and limits agreed,
 unit and wire tests added, dependency/safety policy intact, `make ci` passing,
