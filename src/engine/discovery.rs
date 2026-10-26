@@ -17,6 +17,7 @@ struct Command {
 
 // Only commands dispatched by the base Store implementation are listed here.
 const COMMANDS: &[Command] = &[
+    cmd("append", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("command", -1, &["loading", "stale"], 0, 0, 0),
     cmd("decr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("decrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
@@ -27,12 +28,16 @@ const COMMANDS: &[Command] = &[
     cmd("expireat", -3, &["write", "fast"], 1, 1, 1),
     cmd("expiretime", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("get", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("getbit", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("getdel", 2, &["write", "fast"], 1, 1, 1),
     cmd("getex", -2, &["write", "fast"], 1, 1, 1),
+    cmd("getrange", 4, &["readonly"], 1, 1, 1),
     cmd("getset", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("incr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("incrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("incrbyfloat", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
+    cmd("lcs", -3, &["readonly"], 1, 2, 1),
     cmd("persist", 2, &["write", "fast"], 1, 1, 1),
     cmd("pexpire", -3, &["write", "fast"], 1, 1, 1),
     cmd("pexpireat", -3, &["write", "fast"], 1, 1, 1),
@@ -42,8 +47,12 @@ const COMMANDS: &[Command] = &[
     cmd("pttl", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("quit", -1, &["fast"], 0, 0, 0),
     cmd("set", -3, &["write", "denyoom"], 1, 1, 1),
+    cmd("setbit", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("setex", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("setnx", 3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("setrange", 4, &["write", "denyoom"], 1, 1, 1),
+    cmd("strlen", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("substr", 4, &["readonly"], 1, 1, 1),
     cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
 ];
 

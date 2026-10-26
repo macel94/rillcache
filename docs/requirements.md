@@ -458,8 +458,10 @@ command names, binary keys/values, multiple connections and ordered pipelines;
 `PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
 `EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
-INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX; APPEND/STRLEN/GETRANGE/SETRANGE. See
-[string semantics](strings.md), [string ranges](string-ranges.md) and
+INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX; APPEND/STRLEN/
+GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS (LEN/IDX/WITHMATCHLEN/
+MINMATCHLEN). See [string semantics](strings.md), [string ranges](string-ranges.md),
+[bitmap/LCS/float limits](string-algorithms.md) and
 [multi-key string limits](multikey-strings.md) for grammar, clocks, rounding,
 integer limits, resource bounds and atomic error behavior. Conditions are atomic
 and case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.

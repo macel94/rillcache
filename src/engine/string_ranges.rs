@@ -24,9 +24,18 @@ impl Store {
             } else {
                 self.strlen(arguments[1], output);
             }
-        } else if command.eq_ignore_ascii_case(b"GETRANGE") {
+        } else if command.eq_ignore_ascii_case(b"GETRANGE")
+            || command.eq_ignore_ascii_case(b"SUBSTR")
+        {
             if arguments.len() != 4 {
-                arity("getrange", output);
+                arity(
+                    if command.eq_ignore_ascii_case(b"SUBSTR") {
+                        "substr"
+                    } else {
+                        "getrange"
+                    },
+                    output,
+                );
             } else {
                 self.getrange(arguments[1], arguments[2], arguments[3], output);
             }
