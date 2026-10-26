@@ -158,7 +158,11 @@ impl Client {
         let mut need_input = false;
         for _ in 0..QUANTUM {
             match dispatch_request(&self.input[consumed..], config.limits, |args| {
-                self.session.execute(store, args, &mut self.output)
+                if args.is_empty() {
+                    Action::Continue // Redis ignores an empty inline line.
+                } else {
+                    self.session.execute(store, args, &mut self.output)
+                }
             }) {
                 Ok(Some((action, used))) => {
                     consumed += used;
