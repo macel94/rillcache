@@ -111,7 +111,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
         let mut client = connect(&server);
         assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":37\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*37\r\n*6\r\n$7\r\ncommand\r\n"));
+        assert!(all_info.starts_with(b"*37\r\n*6\r\n$6\r\nappend\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"gEt", b"does-not-exist", b"DEL"]),
             b"*3\r\n*6\r\n$3\r\nget\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*-1\r\n*6\r\n$3\r\ndel\r\n:-2\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:-1\r\n:1\r\n"
