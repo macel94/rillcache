@@ -45,6 +45,19 @@ impl Store {
             self.memory(args, out);
             return true;
         }
+        if command.eq_ignore_ascii_case(b"BGREWRITEAOF") {
+            if args.len() != 1 {
+                arity("bgrewriteaof", out);
+            } else {
+                match self.rewrite_journal() {
+                    Ok(_) => out.extend_from_slice(b"+OK\r\n"),
+                    Err(()) => out.extend_from_slice(
+                        b"-ERR append-only journal is not enabled or cannot be rewritten\r\n",
+                    ),
+                }
+            }
+            return true;
+        }
         false
     }
 

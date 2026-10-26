@@ -75,8 +75,10 @@ Opt-in append-only persistence (`--appendonly yes --dir /data`) writes a
 RESP-command journal of changed-key final states with absolute TTLs, supports
 `always`/`everysec`/`no` fsync policies, replays before listening, truncates only
 an incomplete tail, fails startup on mid-file corruption and syncs joined shutdown.
-There is no RDB format, AOF rewrite/compaction, stream-pending recovery or backup
-drill yet. See [persistence](docs/persistence.md).
+`BGREWRITEAOF` performs a synchronous, full-state compacting rewrite (it briefly
+holds the exclusive gate). There is no RDB format, background/incremental rewrite,
+automatic compaction, stream-pending recovery or backup drill yet. See
+[persistence](docs/persistence.md).
 
 Access control starts with a single operator password for the `default` user
 (`--requirepass-file`/`--requirepass`, `AUTH`, atomic `HELLO ... AUTH`, runtime

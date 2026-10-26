@@ -53,9 +53,9 @@ docker run --rm --init -p 127.0.0.1:6379:6379 \
 
 `--appendfsync always` acknowledges only after fsync; `everysec` (default) can
 lose roughly a second; `no` only writes without an explicit sync. The root
-filesystem can stay read-only because only `/data` needs to be writable. There is
-no AOF rewrite, so the single journal file grows and must be sized/rotated by the
-operator. Restart recovery ignores only an incomplete tail and fails visibly on
+filesystem can stay read-only because only `/data` needs to be writable. There is no
+background or automatic rewrite; `BGREWRITEAOF` performs a synchronous full-state
+compaction that briefly pauses command service. Restart recovery ignores only an incomplete tail and fails visibly on
 mid-file corruption. Stream consumer pending state is not restored. See
 [persistence](persistence.md).
 Rotate through authenticated `CONFIG SET requirepass` or by restarting with a new

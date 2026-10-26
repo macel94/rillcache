@@ -250,6 +250,11 @@ impl Data {
 
     /// Keys mutated after `seq`, plus whether the bounded log overflowed and a
     /// full-state snapshot is required. Clears events that can no longer matter.
+    pub(super) fn journal_reset(&mut self) {
+        self.journal_events.clear();
+        self.journal_overflow = false;
+    }
+
     pub(super) fn changes_since(&mut self, seq: u64) -> (Vec<Vec<u8>>, bool) {
         if self.journal_overflow {
             self.journal_overflow = false;

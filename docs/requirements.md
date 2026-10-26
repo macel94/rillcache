@@ -59,6 +59,7 @@ reason to couple all future commands into a single large story.
 | S29 | As an operator, I can enable an fsynced command journal so that supported data survives an ordinary restart within a documented loss window. | S | R117–R120; type/TTL replay, truncation/corruption, transaction/concurrency and all-mode restart tests |
 | S30 | As a client, I can iterate large keyspaces and collections in bounded pages instead of blocking the server with KEYS, with filtering by pattern and type. | XS | R121–R124; paging, filter, type, NOVALUES, binary and invalid cursor tests in all modes |
 | S31 | As a client, I can publish and receive channel or pattern messages on live connections so that independent clients can coordinate without polling the keyspace. | S | R125–R128; confirmations, delivery, subscriber mode, RESP3 push, ACL channels and all-mode wire tests |
+| S32 | As an operator, I can compact an append-only journal without losing acknowledged state so that restart time and disk use do not grow forever. | XS | R129–R131; compacting replay, live-rewrite, disabled-journal and all-mode restart tests |
 
 ## EARS acceptance requirements
 
@@ -278,6 +279,22 @@ reason to couple all future commands into a single large story.
   framing, subscriber-mode errors/PING/QUIT, ACL channel denial, disconnect cleanup
   and joined shutdown. Documentation shall retain missing sharding, keyspace
   notifications, persistence, replication, ordering and durability guarantees.
+
+### Journal compaction (S32)
+
+- **R129 (event-driven):** When `BGREWRITEAOF` is received on an enabled journal,
+  the server shall encode a complete current-state snapshot (`FLUSHALL` plus every
+  live key with absolute TTLs), write a mode-0600 temporary file in the journal
+  directory, fsync it, atomically rename it over the journal and reopen it.
+- **R130 (state-driven):** While the rewrite runs, the server shall hold the
+  exclusive transaction gate so no mutation can be lost or appended to the replaced
+  file; command service may pause for the synchronous rewrite. A failed write/sync/
+  rename shall retain the previous journal and return a visible error.
+- **R131 (unwanted behavior):** If the journal is disabled or the rewrite cannot be
+  completed, then the command shall return a bounded error without claiming
+  compaction. Tests shall cover a compacted live log, replay after rewrite, disabled
+  journals, failure atomicity and all execution modes. Documentation shall not call
+  this background, incremental or automatically scheduled.
 
 ### Development and delivery
 
@@ -612,7 +629,7 @@ INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX;
 MULTI/EXEC/DISCARD/WATCH/UNWATCH with a bounded queue, atomic batch execution
 and optimistic key invalidation; multi-user ACL users/rules, key patterns and
 atomic ACL-file save/load; opt-in RESP-command append-only persistence with
-fsync policies and restart recovery; Redis DIGEST/DELEX
+fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
 (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE;
 SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD;
