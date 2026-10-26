@@ -115,16 +115,17 @@ impl Store {
             .get(key)
             .map_or(&[][..], |entry| entry.value.as_slice());
         let len = value.len() as i128;
-        let normalize = |i: i64| {
-            if i < 0 {
-                (len + i as i128).max(0)
-            } else {
-                i as i128
-            }
+        let first = if start < 0 {
+            (len + start as i128).max(0)
+        } else {
+            start as i128
         };
-        let first = normalize(start);
-        let last = normalize(end);
-        if first >= len || first > last || len == 0 {
+        let last = if end < 0 {
+            len + end as i128
+        } else {
+            end as i128
+        };
+        if first >= len || first > last || last < 0 || len == 0 {
             encode_bulk(Some(&[]), output);
             return;
         }
