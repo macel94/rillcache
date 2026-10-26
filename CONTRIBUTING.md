@@ -33,6 +33,23 @@ ordinary implementation PRs have no blanket approving-review quota. See the
    away safety or change the acceptance threshold to obtain a passing result.
 6. Update compatibility limits and mark only behavior actually verified by tests.
 
+## Autonomous agent completion
+
+For requested parallel work, each agent independently owns a bounded INVEST
+story, EARS acceptance tests, its worktree/branch, complete integration and its
+own ready-for-review PR. Derive and implement routine design decisions without
+asking the user to approve proposals. Do not substitute plan-only PRs or stubs
+for requested behavior; documentation-only work is appropriate when requested.
+
+Create the finished PR ready for review and enable protected squash auto-merge
+while GitHub checks run. Draft/WIP status requires an explicit user request;
+pending CI or an invented manual-review checkpoint is not a draft reason.
+Verify the actual ready/auto-merge state, not just successful PR creation. Actual
+required checks and configured reviews remain mandatory; report genuine blockers
+without claiming completion or bypassing them. See the [delivery contract,
+draft root cause, INVEST/EARS examples and stale-PR solution](docs/parallel-pr-delivery.md)
+and the auto-loaded [project instructions](AGENTS.md).
+
 ## Safety is not negotiable
 
 `unsafe_code = "forbid"` applies package-wide, and each crate root also contains
@@ -67,10 +84,14 @@ pins deliberately. Actions are pinned by commit SHA. Normal CI, benchmarking and
 inference jobs use read-only repository permissions and do not persist checkout
 credentials. The inference job additionally grants `copilot-requests: write` to
 its short-lived workflow token; no personal secret is required.
-Only the separate default-branch benchmark-report publication job has contents
-write permission and persisted credentials; it stages generated report paths only,
-pushes an automation branch and opens a PR, never pushes main or runs inference.
-Its narrowly scoped pull-request/action permissions create that PR and dispatch
+The default-branch benchmark-report publisher and the trusted-main PR branch
+updater are the only jobs with repository write permissions. The publisher stages
+generated report paths only, pushes an automation branch and opens a PR, never
+pushes main or runs inference. The updater uses contents/pull-request/action
+permissions only to update opted-in same-repository PR branches and explicitly
+dispatch the existing read-only required checks; it never checks out PR code or
+merges a PR. The publisher's narrowly scoped pull-request/action permissions create
+that PR and dispatch
 the two read-only required checks on its head; no new stored token is needed. Fork PRs never receive a privileged
 `pull_request_target` execution path. See [automatic reporting](docs/benchmark-reports.md).
 Do not commit credentials, benchmark build sources, generated target output or
