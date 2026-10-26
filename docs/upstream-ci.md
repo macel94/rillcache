@@ -107,21 +107,30 @@ Portable scope limits are applied **identically**:
   names seen in control but not passed/failed/individually skipped on candidate;
   unobserved dynamic tests are explicitly unknown. Full original logs remain.
 
-### Current expected blocker — not a pass
+### Prerequisites and file-level blockers — never test passes
 
-Unchanged external setup itself requires `FLUSHALL`, `FUNCTION FLUSH` and, for
-Redis, `SCRIPT FLUSH` and CONFIG operations before test assertions. Rillcache
-currently lacks this administrative surface. Diagnostic prerequisite probes
-record unsupported commands, **then still invoke the original harness**. A
-candidate may therefore be `prerequisite_blocked` with **zero assertions run**.
-That is a failed compatibility job, not a skipped test, server assertion, green
-supported subset, or reason to alter upstream Tcl or emulate missing commands.
+Unchanged external setup requires `FLUSHALL`, `FUNCTION FLUSH` and, for Redis,
+`SCRIPT FLUSH` and CONFIG operations before test assertions. Rillcache now
+implements the single-keyspace flush/bootstrap surface, empty-registry flushes
+and logical metadata; this does not imply scripting execution or every CONFIG
+setting is supported. Diagnostic prerequisite probes record actual support,
+**then still invoke the original harness**. A candidate may still encounter an
+unsupported setting or operation during a file, outside a named test body.
+Missing prerequisites with **zero assertions run** remain `prerequisite_blocked`.
+That is a failing job, never a skipped test, green supported subset, or reason
+to alter upstream Tcl or emulate missing behavior.
 
 `--durable` lets upstream continue after many assertion/command errors. It does
 not guarantee continuation after setup or file-level exceptions. The report
-separates upstream test failure events (assertions **or** command exceptions),
-harness/setup exceptions, explicit skip/ignore events, timeouts, server exits,
-zero-test failures and native-observed unreached names. Any nonzero original exit,
+separates named upstream test failures (assertions **or** in-test command
+exceptions) from bare `err` packets outside a test body and coordinator exceptions.
+Only the unchanged upstream `test` procedure supplies the name/file prefix used
+to count a failed test. Bare setup/file errors never increment `tests_executed`
+or the failed-assertion count. JSON records explicit executed/passed/named-failure,
+harness-error, exception and skip/ignore-event counts. Mixed failures remain
+`test_and_harness_failures`; preceding passes or a zero child exit cannot hide a
+file-level failure. Explicit skip/ignore events, timeouts, server exits, zero-test
+failures and native-observed unreached names remain visible. Any nonzero original exit,
 missing prerequisite, incomplete unit or zero executed tests cannot pass.
 Wrapper exit 1 means candidate failure; exit 2 means invalid native control or
 infrastructure. Raw child exit codes are independently retained in command JSON.
