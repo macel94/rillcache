@@ -65,14 +65,18 @@ a specific Redis release.
 
 `ACL SETUSER` is atomic: a bad rule leaves the previous user untouched.
 `ACL DELUSER`, `ACL WHOAMI`, `ACL USERS`, `ACL LIST`, `ACL GETUSER`, `ACL CAT`,
-`ACL SAVE` and `ACL LOAD` are implemented. `ACL SAVE` writes a temporary file in
-the same directory, fsyncs it, renames it over the target and fsyncs the directory
-(where supported); hashes are saved as `#...`, never plaintext passwords.
+`ACL SAVE` and `ACL LOAD` are implemented. `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
+renames it over the target and fsyncs the directory (where supported); hashes are
+saved as `#...`, never plaintext passwords. ACL files are bounded to 4 MiB,
+10,000 users, 1,024 rules per user/operation and 1,024 key/channel patterns per
+user; exceeding a bound is a visible error, not truncation.
 `ACL LOAD` parses a replacement map before publishing it. `ACL SAVE/LOAD` require
 a configured ACL file. The `default` user cannot be deleted.
 
 Authorization is evaluated before command dispatch and store access for known
-commands with declared keys. Recovery commands (`AUTH`, `HELLO`, `QUIT`) remain
+commands with declared keys. `EXEC` re-checks every queued command against the
+current ACL, so revoking or disabling a user between `MULTI` and `EXEC` cannot
+commit the queued writes. Recovery commands (`AUTH`, `HELLO`, `QUIT`) remain
 available to unauthenticated connections. Denied commands return `NOPERM`; denied
 keys return the key-specific `NOPERM`; disabled/deleted users and `NOAUTH` are
 re-evaluated on every command, so `ACL SETUSER`/`DELUSER`/`LOAD` changes apply to

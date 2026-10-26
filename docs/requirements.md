@@ -191,12 +191,14 @@ reason to couple all future commands into a single large story.
   before dispatch/store access and deny with `NOPERM`; disabled/deleted users shall
   fail with `NOAUTH` on the next command. `AUTH`, `HELLO`, `QUIT` and `ACL WHOAMI`
   shall retain their documented exceptions. Denied commands shall not mutate data
-  and shall mark an active transaction dirty.
+  and shall mark an active transaction dirty; `EXEC` shall re-check every queued
+  command so later revocation cannot commit it.
 - **R115 (event-driven):** When `ACL SETUSER`, `DELUSER`, `WHOAMI`, `USERS`, `LIST`,
   `GETUSER`, `CAT`, `SAVE` or `LOAD` is received with valid permission, the server
   shall apply Redis-shaped user rules atomically, protect `default` from deletion,
-  expose hashes instead of plaintext, and save/load a complete ACL file through an
-  fsynced temporary-file rename. Invalid modifiers shall not partially change a user.
+  expose hashes instead of plaintext, and save/load a complete ACL file through a
+  mode-0600, fsynced temporary-file rename within documented file/user/rule/pattern
+  bounds. Invalid modifiers shall not partially change a user.
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.

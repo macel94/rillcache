@@ -202,6 +202,32 @@ impl Session {
             );
             return Action::Continue;
         }
+        // Re-check every queued command: ACL edits between queueing and EXEC
+        // must not let a revoked permission commit.
+        for command in &multi.queue {
+            let arguments: Vec<&[u8]> = command.iter().map(Vec::as_slice).collect();
+            match store.authorize(self.authenticated_user.as_deref(), &arguments) {
+                Access::Allowed => {}
+                Access::NoAuth => {
+                    output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
+                    return Action::Continue;
+                }
+                Access::DeniedCommand => {
+                    let name = command_name(arguments[0]);
+                    let _ = write!(
+                        output,
+                        "-NOPERM this user has no permissions to run the '{name}' command\r\n"
+                    );
+                    return Action::Continue;
+                }
+                Access::DeniedKey => {
+                    output.extend_from_slice(
+                        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+                    );
+                    return Action::Continue;
+                }
+            }
+        }
         match store.execute_transaction(&multi.queue, &watched, output) {
             TransactionOutcome::Completed(action) => action,
             TransactionOutcome::Aborted | TransactionOutcome::InternalError => Action::Continue,
@@ -635,6 +661,9 @@ fn acl_error(error: AclError, output: &mut Vec<u8>) {
         }
         AclError::Syntax | AclError::UnknownRule => {
             output.extend_from_slice(b"-ERR Error in ACL SETUSER modifier\r\n")
+        }
+        AclError::TooLarge => {
+            output.extend_from_slice(b"-ERR ACL file or rule set exceeds configured bounds\r\n")
         }
         AclError::Io(_) => output.extend_from_slice(b"-ERR ACL file I/O error\r\n"),
     }
@@ -1487,6 +1516,52 @@ x\r\n"
             b"-EXECABORT Transaction discarded because of previous errors.\r\n"
         );
         assert_eq!(call(&mut reader, &store, &[b"GET", b"k"]), b"$-1\r\n");
+    }
+
+    #[test]
+    fn exec_rechecks_acls_so_revocation_cannot_commit_queued_writes() {
+        let store = Store::new(1024);
+        let mut admin = Session::new();
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[
+                    b"ACL",
+                    b"SETUSER",
+                    b"alice",
+                    b"on",
+                    b">pw",
+                    b"allkeys",
+                    b"allchannels",
+                    b"+@all"
+                ]
+            ),
+            b"+OK\r\n"
+        );
+        let mut alice = Session::new();
+        assert_eq!(
+            call(&mut alice, &store, &[b"AUTH", b"alice", b"pw"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(call(&mut alice, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut alice, &store, &[b"SET", b"k", b"v"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[b"ACL", b"SETUSER", b"alice", b"-@write"]
+            ),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"EXEC"]),
+            b"-NOPERM this user has no permissions to run the 'set' command\r\n"
+        );
+        assert_eq!(call(&mut admin, &store, &[b"GET", b"k"]), b"$-1\r\n");
     }
 
     #[test]

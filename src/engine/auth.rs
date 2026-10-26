@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 
 const MAX_PASSWORD_BYTES: usize = 1024;
 const MAX_RULE_BYTES: usize = 4096;
+const MAX_ACL_FILE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_USERS: usize = 10_000;
+const MAX_RULES: usize = 1024;
+const MAX_PATTERNS: usize = 1024;
+const MAX_PATTERN_BYTES: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Rule {
@@ -219,6 +224,7 @@ pub enum AclError {
     ProtectedDefault,
     NoAclFile,
     MissingDefault,
+    TooLarge,
     Io(String),
 }
 
@@ -457,11 +463,17 @@ impl Auth {
         if !valid_name(name) {
             return Err(AclError::InvalidName);
         }
+        if rules.len() > MAX_RULES {
+            return Err(AclError::TooLarge);
+        }
         let mut users = self.users.clone();
+        if !users.contains_key(name) && users.len() >= MAX_USERS {
+            return Err(AclError::TooLarge);
+        }
         let user = users.entry(name.to_vec()).or_default();
         for rule in rules {
-            if rule.len() > MAX_RULE_BYTES {
-                return Err(AclError::UnknownRule);
+            if rule.len() > MAX_RULE_BYTES || user.rules.len() >= MAX_RULES {
+                return Err(AclError::TooLarge);
             }
             apply_rule(user, rule)?;
         }
@@ -471,8 +483,13 @@ impl Auth {
 
     /// Load a complete ACL file into a replacement map before publishing it.
     pub fn load_file(&mut self, path: &Path) -> Result<(), AclError> {
-        let text = fs::read_to_string(path).map_err(|error| AclError::Io(error.to_string()))?;
-        let mut users = BTreeMap::new();
+        let metadata = fs::metadata(path).map_err(|error| AclError::Io(error.to_string()))?;
+        if metadata.len() > MAX_ACL_FILE_BYTES {
+            return Err(AclError::TooLarge);
+        }
+        let bytes = fs::read(path).map_err(|error| AclError::Io(error.to_string()))?;
+        let text = String::from_utf8(bytes).map_err(|_| AclError::Syntax)?;
+        let mut users: BTreeMap<Vec<u8>, User> = BTreeMap::new();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -489,10 +506,13 @@ impl Auth {
             if !valid_name(name) {
                 return Err(AclError::InvalidName);
             }
+            if !users.contains_key(name) && users.len() >= MAX_USERS {
+                return Err(AclError::TooLarge);
+            }
             let user = users.entry(name.to_vec()).or_default();
             for token in tokens {
-                if token.len() > MAX_RULE_BYTES {
-                    return Err(AclError::UnknownRule);
+                if token.len() > MAX_RULE_BYTES || user.rules.len() >= MAX_RULES {
+                    return Err(AclError::TooLarge);
                 }
                 apply_rule(user, token.as_bytes()).map_err(|error| match error {
                     AclError::Syntax => AclError::Syntax,
@@ -527,6 +547,17 @@ impl Auth {
             std::process::id()
         ));
         let result = (|| -> io::Result<()> {
+            #[cfg(unix)]
+            let mut file = {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&temporary)?
+            };
+            #[cfg(not(unix))]
             let mut file = fs::File::create(&temporary)?;
             file.write_all(body.as_bytes())?;
             file.sync_all()?;
@@ -601,8 +632,14 @@ fn apply_rule(user: &mut User, rule: &[u8]) -> Result<(), AclError> {
         if password.is_empty() || password.len() > MAX_PASSWORD_BYTES {
             return Err(AclError::InvalidPassword);
         }
+        if user.passwords.len() >= MAX_RULES {
+            return Err(AclError::TooLarge);
+        }
         user.nopass = false;
-        user.passwords.push(sha256::digest(password));
+        let digest = sha256::digest(password);
+        if !user.passwords.contains(&digest) {
+            user.passwords.push(digest);
+        }
     } else if let Some(password) = rule.strip_prefix(b"<") {
         if password.is_empty() {
             return Err(AclError::InvalidPassword);
@@ -643,10 +680,16 @@ fn apply_rule(user: &mut User, rule: &[u8]) -> Result<(), AclError> {
         let (name, subcommand) = split_command(command)?;
         user.rules.push(Rule::Command(name, subcommand, false));
     } else if let Some(pattern) = rule.strip_prefix(b"~") {
+        if pattern.len() > MAX_PATTERN_BYTES || user.keys.len() >= MAX_PATTERNS {
+            return Err(AclError::TooLarge);
+        }
         if !user.keys.iter().any(|existing| existing == pattern) {
             user.keys.push(pattern.to_vec());
         }
     } else if let Some(pattern) = rule.strip_prefix(b"&") {
+        if pattern.len() > MAX_PATTERN_BYTES || user.channels.len() >= MAX_PATTERNS {
+            return Err(AclError::TooLarge);
+        }
         if !user.channels.iter().any(|existing| existing == pattern) {
             user.channels.push(pattern.to_vec());
         }
