@@ -380,6 +380,11 @@ impl Session {
                 for category in Store::acl_categories() {
                     encode_bulk(Some(category.as_bytes()), output);
                 }
+            } else if !Store::acl_categories()
+                .iter()
+                .any(|category| arguments[1].eq_ignore_ascii_case(category.as_bytes()))
+            {
+                output.extend_from_slice(b"-ERR Unknown category name in ACL\r\n");
             } else {
                 let commands = Store::acl_commands(arguments[1]);
                 write!(output, "*{}\r\n", commands.len()).expect("Vec write");

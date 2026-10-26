@@ -488,6 +488,9 @@ impl Auth {
             return Err(AclError::TooLarge);
         }
         let bytes = fs::read(path).map_err(|error| AclError::Io(error.to_string()))?;
+        if bytes.len() as u64 > MAX_ACL_FILE_BYTES {
+            return Err(AclError::TooLarge);
+        }
         let text = String::from_utf8(bytes).map_err(|_| AclError::Syntax)?;
         let mut users: BTreeMap<Vec<u8>, User> = BTreeMap::new();
         for line in text.lines() {

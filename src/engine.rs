@@ -386,7 +386,7 @@ impl Store {
     }
 
     pub fn acl_save(&self) -> Result<(), AclError> {
-        let auth = self.auth.read().map_err(|_| AclError::Syntax)?;
+        let auth = self.auth.write().map_err(|_| AclError::Syntax)?;
         let Some(path) = auth.aclfile() else {
             return Err(AclError::NoAclFile);
         };
