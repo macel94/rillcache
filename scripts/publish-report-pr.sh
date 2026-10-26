@@ -7,6 +7,8 @@ set -euo pipefail
 [[ "$DEFAULT_BRANCH" == main ]]
 branch="automation/benchmark-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 owner="${GITHUB_REPOSITORY%%/*}"
+created=0
+helper="$(dirname -- "${BASH_SOURCE[0]}")/report-pr-delivery.py"
 existing=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
   -f state=open -f "head=$owner:$branch" -f "base=$DEFAULT_BRANCH" --jq '.[0].number // empty')
 if [[ -n "$existing" ]]; then
@@ -33,10 +35,30 @@ else
     --title "docs: publish benchmark report $GITHUB_RUN_ID" --body-file "$body"
   number=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
     -f state=open -f "head=$owner:$branch" -f "base=$DEFAULT_BRANCH" --jq '.[0].number')
+  created=1
 fi
 [[ "$number" =~ ^[1-9][0-9]*$ ]]
-# GITHUB_TOKEN PR events can require workflow approval. Dispatch read-only checks
-# on this exact PR head so required contexts attach to the head, not main.
-gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
-gh workflow run pr-quality.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f "pull_request=$number"
-printf 'Benchmark report PR: https://github.com/%s/pull/%s\n' "$GITHUB_REPOSITORY" "$number" | tee -a "$GITHUB_STEP_SUMMARY"
+# GITHUB_TOKEN PR events can be approval-held. Inspect exact-head run history
+# first: real failed evidence is a stop, and existing running/successful checks
+# must not be dispatched again. Dispatch definitions must match protected main.
+inspection=$(python3 "$helper" inspect --number "$number" --branch "$branch")
+read -r head ci_needed gate_needed tcl_needed <<< "$inspection"
+[[ "$head" =~ ^[0-9a-f]{40}$ && "$ci_needed$gate_needed$tcl_needed" =~ ^[01]{3}$ ]]
+if [[ "$ci_needed" == 1 ]]; then
+  gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
+fi
+if [[ "$gate_needed" == 1 ]]; then
+  gh workflow run pr-quality.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f "pull_request=$number"
+fi
+if [[ "$tcl_needed" == 1 ]]; then
+  gh workflow run upstream-compatibility.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
+fi
+# Enable only our newly-created ready PR. A retry must not silently override a
+# user's subsequently disabled auto-merge request on an existing PR.
+verification=()
+if [[ "$created" == 1 ]]; then
+  gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --auto --squash --match-head-commit "$head"
+  verification=(--require-enabled)
+fi
+merge_state=$(python3 "$helper" verify-auto --number "$number" --branch "$branch" --head "$head" "${verification[@]}")
+printf 'Benchmark report PR: https://github.com/%s/pull/%s\n%s\n' "$GITHUB_REPOSITORY" "$number" "$merge_state" | tee -a "$GITHUB_STEP_SUMMARY"

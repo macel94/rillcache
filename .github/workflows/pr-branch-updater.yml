@@ -19,7 +19,7 @@ permissions:
 jobs:
   read-only-self-tests:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
@@ -27,12 +27,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Run offline mocked updater and workflow policy tests
-        run: python3 -m unittest scripts.test_pr_branch_updater -v
+      - name: Run offline mocked updater and report-delivery policy tests
+        run: |
+          python3 -m unittest scripts.test_pr_branch_updater -v
+          python3 scripts/test-pr-policy.py
 
   reconcile:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write

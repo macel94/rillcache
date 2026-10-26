@@ -79,7 +79,7 @@ class FakeAPI:
             file, _, query = tail.partition("?")
             ref = urllib.parse.unquote(query.split("ref=", 1)[1]) if "ref=" in query else "main"
             workflow = file.rsplit("/", 1)[1]
-            return {"sha": self.workflow_blobs.get((workflow, ref), "blob-" + workflow)}
+            return {"sha": self.workflow_blobs.get((workflow, ref), "e" * 40)}
         if path == f"repos/{mod.REPO}/git/ref/heads/main":
             return {"object": {"sha": self.main}}
         if "/compare/" in path:
@@ -207,11 +207,19 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "untrusted_workflow")
         self.assertFalse(any(c[0] == "POST" for c in self.api.calls))
 
+    def test_missing_workflow_blob_identities_fail_closed_even_if_both_are_missing(self):
+        self.api.workflow_blobs[("ci.yml", "main")] = None
+        self.api.workflow_blobs[("ci.yml", "feature/1")] = None
+        trusted, _ = self.updater.workflow_trusted("ci.yml", "feature/1")
+        self.assertFalse(trusted)
+        self.assertFalse(any(call[0] == "POST" for call in self.api.calls))
+
     def test_failed_evidence_survives_a_main_advance_for_the_same_head(self):
         p = pull(base=A, head=B)
         self.api.prs[1] = p
         self.api.workflows["ci.yml"] = [{
             "id": 9, "path": ".github/workflows/ci.yml@refs/pull/1/merge",
+            "head_sha": B, "head_branch": "feature/1",
             "event": "pull_request", "status": "completed", "conclusion": "failure",
             "created_at": "2026-10-26T00:00:00Z",
             "pull_requests": [{"number": 1, "head": {"sha": B}, "base": {"sha": A}}],
@@ -245,6 +253,7 @@ class UpdaterTests(unittest.TestCase):
         p = pull()
         self.api.workflows["ci.yml"] = [{
             "id": 1, "path": ".github/workflows/ci.yml@refs/pull/1/merge", "event": "pull_request",
+            "head_sha": B, "head_branch": "feature/1",
             "status": "completed", "conclusion": "failure", "created_at": "2026-10-26T00:00:00Z",
             "pull_requests": [{"number": 1, "head": {"sha": B}, "base": {"sha": A}}],
         }]
@@ -284,7 +293,7 @@ class UpdaterTests(unittest.TestCase):
         for workflow in mod.REQUIRED:
             self.api.workflows[workflow].append({
                 "id": 70, "path": f".github/workflows/{workflow}@refs/pull/1/merge",
-                "event": "pull_request", "head_sha": D, "status": "completed",
+                "event": "pull_request", "head_sha": C, "head_branch": "feature/1", "status": "completed",
                 "conclusion": "action_required", "actor": {"login": "github-actions[bot]"},
                 "pull_requests": [{"number": 1, "head": {"sha": C}, "base": {"sha": A}}],
             })
@@ -292,6 +301,87 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(result["status"], "checks_dispatched")
         dispatches = [call for call in self.api.calls if call[0] == "POST"]
         self.assertEqual(len(dispatches), 2)
+
+    def source_run(self, head=C, associated=C, *, run_id=1, status="completed", conclusion="success"):
+        return {"id": run_id, "path": ".github/workflows/ci.yml@refs/pull/1/merge",
+                "event": "pull_request", "head_sha": head, "head_branch": "feature/1",
+                "status": status, "conclusion": conclusion, "check_suite_id": run_id,
+                "created_at": f"2026-10-26T00:00:{run_id:02d}Z",
+                "pull_requests": [{"number": 1, "head": {"sha": associated}, "base": {"sha": D}}]}
+
+    def successful_check(self, head=C, suite=2):
+        return {"name": mod.REQUIRED["ci.yml"], "head_sha": head,
+                "check_suite": {"id": suite}, "app": {"slug": "github-actions", "id": mod.ACTIONS_APP_ID},
+                "conclusion": "success"}
+
+    def test_mutable_pr_association_cannot_relabel_old_success_or_failure(self):
+        # Observed live: an old run retains head_sha=B, while its associated
+        # PR's head/base objects are updated to the PR's newest C/D identities.
+        for conclusion in ("success", "failure"):
+            with self.subTest(conclusion=conclusion):
+                p = pull(base=D, head=C)
+                api = FakeAPI([p])
+                api.main = D
+                api.current.add((D, C))
+                old = self.source_run(head=B, associated=C, conclusion=conclusion)
+                api.workflows["ci.yml"] = [old]
+                api.checks[B] = [self.successful_check(head=B, suite=1)]
+                updater = mod.Updater(api, sleep=lambda _: None, update_wait=0)
+                result = updater.process(p)
+                self.assertEqual(result["status"], "checks_dispatched")
+                self.assertEqual(result["workflows"]["ci.yml"]["status"], "dispatched")
+                self.assertEqual(sum(call[0] == "POST" for call in api.calls), 2)
+                self.assertFalse(updater.run_mentions_head(old, p, "ci.yml", C))
+                self.assertTrue(updater.run_mentions_head(old, p, "ci.yml", B))
+
+    def test_actual_source_sha_is_required_when_association_appears_current(self):
+        p = pull(head=C)
+        run = self.source_run()
+        self.assertTrue(mod.Updater.run_matches(run, p, C, A, "ci.yml"))
+        for changed in ({"head_sha": B}, {"head_branch": "feature/other"}, {"head_sha": None}):
+            self.assertFalse(mod.Updater.run_matches({**run, **changed}, p, C, A, "ci.yml"))
+        self.assertTrue(mod.Updater.run_matches({**run, "pull_requests": []}, p, C, A, "ci.yml"))
+        foreign = {**run, "pull_requests": [{"number": 99}]}
+        self.assertFalse(mod.Updater.run_matches(foreign, p, C, A, "ci.yml"))
+
+    def test_earlier_exact_head_failure_is_not_hidden_by_a_later_success(self):
+        p = pull(head=C)
+        self.api.current.add((A, C))
+        self.api.prs[1] = p
+        self.api.workflows["ci.yml"] = [self.source_run(conclusion="failure"), self.source_run(run_id=2)]
+        self.api.checks[C] = [self.successful_check()]
+        state, detail = self.updater.ensure_workflow(p, "ci.yml", C, A)
+        self.assertEqual(state, "failed")
+        self.assertIn("no automatic retry", detail)
+        self.assertFalse(any(call[0] == "POST" for call in self.api.calls))
+
+    def test_earlier_failure_still_blocks_a_stale_branch_update_after_success(self):
+        p = pull(head=B)
+        self.api.prs[1] = p
+        self.api.main = D
+        self.api.workflows["ci.yml"] = [self.source_run(head=B, conclusion="failure"), self.source_run(head=B, run_id=2)]
+        result = self.updater.process(p)
+        self.assertEqual(result["status"], "failed_gate")
+        self.assertFalse(any(call[0] in {"PUT", "POST"} for call in self.api.calls))
+
+    def test_earlier_active_run_waits_even_when_a_later_run_succeeded(self):
+        p = pull(head=C)
+        self.api.prs[1] = p
+        self.api.current.add((A, C))
+        self.api.workflows["ci.yml"] = [self.source_run(status="in_progress", conclusion=None), self.source_run(run_id=2)]
+        self.api.checks[C] = [self.successful_check()]
+        state, _ = self.updater.ensure_workflow(p, "ci.yml", C, A)
+        self.assertEqual(state, "waiting")
+        self.assertFalse(any(call[0] == "POST" for call in self.api.calls))
+
+    def test_earlier_active_run_blocks_stale_refresh_after_a_later_success(self):
+        p = pull(head=B)
+        self.api.prs[1] = p
+        self.api.main = D
+        self.api.workflows["ci.yml"] = [self.source_run(head=B, status="in_progress", conclusion=None), self.source_run(head=B, run_id=2)]
+        result = self.updater.process(p)
+        self.assertEqual(result["status"], "waiting_existing_check")
+        self.assertFalse(any(call[0] in {"PUT", "POST"} for call in self.api.calls))
 
     def test_wrong_sha_path_app_or_suite_never_counts_as_success(self):
         p = pull(base=A, head=C)
