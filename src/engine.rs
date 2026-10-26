@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::protocol::encode_bulk;
 mod commands;
 mod data;
+mod discovery;
 mod keyspace;
 mod multikey;
 mod options;
@@ -65,7 +66,7 @@ impl Store {
 
     /// Append exactly one reply. No store lock is held during socket I/O.
     pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        if self.execute_multikey(arguments, output) {
+        if self.execute_discovery(arguments, output) || self.execute_multikey(arguments, output) {
             return Action::Continue;
         }
         let Some(command) = arguments.first() else {
