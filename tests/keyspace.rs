@@ -39,6 +39,26 @@ fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
 
         command(&mut stream, &[b"TYPE", b"absent"], b"+none\r\n");
         command(&mut stream, &[b"RANDOMKEY"], b"$-1\r\n");
+        command(
+            &mut stream,
+            &[b"CONFIG", b"GET", b"list-max-listpack-size"],
+            b"*2\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"hash-max-ziplist-entries", b"0"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"GET", b"hash-max-listpack-entries"],
+            b"*2\r\n$25\r\nhash-max-listpack-entries\r\n$1\r\n0\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"hash-max-listpack-entries", b"512"],
+            b"+OK\r\n",
+        );
         command(&mut stream, &[b"SET", b"a\0\xff", b"v\0"], b"+OK\r\n");
         command(&mut stream, &[b"TYPE", b"a\0\xff"], b"+string\r\n");
         command(

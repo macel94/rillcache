@@ -2,21 +2,128 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Collection {
-    List(VecDeque<Vec<u8>>),
+    ListPack(VecDeque<Vec<u8>>),
+    ListQuick(VecDeque<VecDeque<Vec<u8>>>),
     Set(BTreeSet<Vec<u8>>),
+    SetPack(Vec<Vec<u8>>),
+    SetInt(BTreeSet<i64>),
     Hash(HashMap<Vec<u8>, Vec<u8>>),
+    HashPack(Vec<(Vec<u8>, Vec<u8>)>),
     ZSet(HashMap<Vec<u8>, f64>),
+    ZSetPack(Vec<(Vec<u8>, f64)>),
 }
 impl Collection {
+    pub fn is_list(&self) -> bool {
+        matches!(self, Self::ListPack(_) | Self::ListQuick(_))
+    }
+
+    pub fn is_set(&self) -> bool {
+        matches!(self, Self::Set(_) | Self::SetPack(_) | Self::SetInt(_))
+    }
+
+    pub fn is_hash(&self) -> bool {
+        matches!(self, Self::Hash(_) | Self::HashPack(_))
+    }
+
+    pub fn is_zset(&self) -> bool {
+        matches!(self, Self::ZSet(_) | Self::ZSetPack(_))
+    }
+
+    pub fn list_items(&self) -> Option<Vec<&[u8]>> {
+        match self {
+            Self::ListPack(values) => Some(values.iter().map(Vec::as_slice).collect()),
+            Self::ListQuick(nodes) => Some(nodes.iter().flatten().map(Vec::as_slice).collect()),
+            _ => None,
+        }
+    }
+
+    pub fn list_values(&self) -> Option<VecDeque<Vec<u8>>> {
+        match self {
+            Self::ListPack(values) => Some(values.clone()),
+            Self::ListQuick(nodes) => Some(nodes.iter().flatten().cloned().collect()),
+            _ => None,
+        }
+    }
+
+    pub fn set_items(&self) -> Option<Vec<Vec<u8>>> {
+        let mut items = match self {
+            Self::Set(values) => values.iter().cloned().collect(),
+            Self::SetPack(values) => values.clone(),
+            Self::SetInt(values) => values
+                .iter()
+                .map(ToString::to_string)
+                .map(String::into_bytes)
+                .collect(),
+            _ => return None,
+        };
+        items.sort_unstable();
+        Some(items)
+    }
+
+    pub fn hash_items(&self) -> Option<Vec<(&[u8], &[u8])>> {
+        match self {
+            Self::Hash(values) => Some(
+                values
+                    .iter()
+                    .map(|(field, value)| (field.as_slice(), value.as_slice()))
+                    .collect(),
+            ),
+            Self::HashPack(values) => Some(
+                values
+                    .iter()
+                    .map(|(field, value)| (field.as_slice(), value.as_slice()))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    pub fn hash_get(&self, field: &[u8]) -> Option<&[u8]> {
+        match self {
+            Self::Hash(values) => values.get(field).map(Vec::as_slice),
+            Self::HashPack(values) => values
+                .iter()
+                .find(|(name, _)| name.as_slice() == field)
+                .map(|(_, value)| value.as_slice()),
+            _ => None,
+        }
+    }
+
+    pub fn zset_items(&self) -> Option<Vec<(&[u8], f64)>> {
+        match self {
+            Self::ZSet(values) => Some(
+                values
+                    .iter()
+                    .map(|(member, score)| (member.as_slice(), *score))
+                    .collect(),
+            ),
+            Self::ZSetPack(values) => Some(
+                values
+                    .iter()
+                    .map(|(member, score)| (member.as_slice(), *score))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
     pub fn payload_len(&self) -> usize {
         match self {
-            Self::List(values) => values.iter().map(Vec::len).sum(),
+            Self::ListPack(values) => values.iter().map(Vec::len).sum(),
+            Self::ListQuick(nodes) => nodes.iter().flatten().map(Vec::len).sum(),
             Self::Set(values) => values.iter().map(Vec::len).sum(),
+            Self::SetPack(values) => values.iter().map(Vec::len).sum(),
+            Self::SetInt(values) => values.iter().map(|value| value.to_string().len()).sum(),
             Self::Hash(values) => values
                 .iter()
                 .map(|(field, value)| field.len() + value.len())
                 .sum(),
+            Self::HashPack(values) => values
+                .iter()
+                .map(|(field, value)| field.len() + value.len())
+                .sum(),
             Self::ZSet(values) => values.keys().map(Vec::len).sum(),
+            Self::ZSetPack(values) => values.iter().map(|(member, _)| member.len()).sum(),
         }
     }
 }

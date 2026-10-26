@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::protocol::encode_bulk;
+mod collection_config;
 mod collections;
 mod commands;
 mod data;
@@ -13,6 +14,7 @@ mod keyspace;
 mod multikey;
 mod options;
 mod string_ranges;
+use collection_config::CollectionConfig;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
 
@@ -41,6 +43,7 @@ impl Clock for SystemClock {
 pub struct Store {
     data: RwLock<Data>,
     max_payload_bytes: usize,
+    collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
 }
 impl Store {
@@ -51,6 +54,7 @@ impl Store {
         Self {
             data: RwLock::new(Data::default()),
             max_payload_bytes,
+            collection_config: RwLock::new(CollectionConfig::default()),
             clock,
         }
     }
@@ -68,7 +72,10 @@ impl Store {
 
     /// Append exactly one reply. No store lock is held during socket I/O.
     pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        if self.execute_discovery(arguments, output) || self.execute_multikey(arguments, output) {
+        if self.execute_collection_config(arguments, output)
+            || self.execute_discovery(arguments, output)
+            || self.execute_multikey(arguments, output)
+        {
             return Action::Continue;
         }
         let Some(command) = arguments.first() else {

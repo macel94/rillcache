@@ -24,8 +24,14 @@ binary member. Supported sorted-set scores are finite UTF-8 floating-point
 numbers; ZADD options, reverse/lex/score ranges, rank/range removals and other
 collection commands are not implemented. Deep COPY preserves the type, independent contents and key TTL of supported
 collections. KEYS and RANDOMKEY operate over this same keyspace; glob evaluation
-is byte-oriented and bounded against pathological patterns. Compact/listpack
-CONFIG thresholds are not yet implemented. This is not full Redis compatibility.
+is byte-oriented and bounded against pathological patterns. CONFIG GET/SET exposes
+mutable listpack/intset thresholds and the legacy list/hash/zset ziplist aliases.
+These settings choose actual storage representations: packed versus chunked lists,
+integer/packed/tree sets, packed versus map-backed hashes, and packed versus
+map-backed sorted sets. A subsequent collection write re-evaluates its encoding;
+changing CONFIG does not rewrite existing values until they are mutated. The
+accounting scope excludes representation overhead. This is not full Redis
+compatibility.
 
 Unit tests cover binary data, ordering, duplicate members/fields, score updates,
 invalid score handling, WRONGTYPE, OOM atomicity, TTL preservation, keyspace

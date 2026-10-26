@@ -18,6 +18,7 @@ struct Command {
 // Only commands dispatched by the base Store implementation are listed here.
 const COMMANDS: &[Command] = &[
     cmd("command", -1, &["loading", "stale"], 0, 0, 0),
+    cmd("config", -2, &["admin", "noscript"], 0, 0, 0),
     cmd("copy", -3, &["write", "denyoom"], 1, 2, 1),
     cmd("decr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("decrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),

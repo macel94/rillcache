@@ -51,7 +51,9 @@ from the protocol encoder's standard bounded RESP framing.
 ## Compatibility limits / coordinator integration
 
 The current command list is intentionally limited to implemented Store command
-families and COMMAND/INFO. It is updated alongside MGET/MSET/MSETNX,
+families and COMMAND/INFO/CONFIG. CONFIG metadata covers the supported collection
+encoding-threshold GET/SET forms; other server CONFIG settings are not advertised.
+It is updated alongside MGET/MSET/MSETNX,
 APPEND/STRLEN/GETRANGE/SETRANGE, keyspace commands, and the typed collection
 primitives. HELLO/CLIENT remains connection-local. The HELLO/CLIENT worker owns
 connection-local state; this module does not implement or advertise it. Detailed

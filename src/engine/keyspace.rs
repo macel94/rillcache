@@ -98,10 +98,11 @@ impl Store {
         if let Some(entry) = data.entries.get(key) {
             let kind: &[u8] = match entry.collection.as_ref() {
                 None => b"string",
-                Some(Collection::List(_)) => b"list",
-                Some(Collection::Set(_)) => b"set",
-                Some(Collection::Hash(_)) => b"hash",
-                Some(Collection::ZSet(_)) => b"zset",
+                Some(collection) if collection.is_list() => b"list",
+                Some(collection) if collection.is_set() => b"set",
+                Some(collection) if collection.is_hash() => b"hash",
+                Some(collection) if collection.is_zset() => b"zset",
+                Some(_) => b"string",
             };
             output.push(b'+');
             output.extend_from_slice(kind);
@@ -329,7 +330,7 @@ impl Store {
 
 /// Byte-oriented Redis-style glob matching. Wildcards are processed iteratively
 /// with bounded backtracking; pathological recursion/CPU becomes no-match.
-fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
+pub(super) fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
     let mut star_groups = 0usize;
     let mut scan = 0usize;
     let mut in_class = false;

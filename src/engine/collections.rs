@@ -1,9 +1,10 @@
 //! Binary-safe typed collection commands. Collection values remain in the same
 //! entry as their key and expiry; mutations stage a new value before admission.
 use super::data::{Collection, Entry};
-use super::options::{NOT_INTEGER, OOM};
+use super::options::{NOT_INTEGER, OOM, parse_integer};
 use super::{Store, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
 const MAX_ELEMENTS: usize = 1_000_000;
@@ -161,18 +162,15 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(key, now);
         let current = data.entries.get(key);
-        if current
-            .is_some_and(|entry| !matches!(entry.collection.as_ref(), Some(Collection::Set(_))))
-        {
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_set)) {
             wrong_type(out);
             return;
         }
-        let mut set = current
-            .and_then(|entry| match entry.collection.as_ref() {
-                Some(Collection::Set(values)) => Some(values.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let mut set: BTreeSet<Vec<u8>> = current
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::set_items))
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let before = set.len();
         for member in &args[2..] {
             set.insert(member.to_vec());
@@ -184,12 +182,31 @@ impl Store {
         let added = set.len() - before;
         let expires = current.and_then(|entry| entry.expires);
         let bytes = set.iter().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let compact_ints: Option<BTreeSet<i64>> =
+            set.iter().map(|member| parse_integer(member)).collect();
+        let encoded = if let Some(values) =
+            compact_ints.filter(|values| values.len() <= config.set_max_intset_entries)
+        {
+            Collection::SetInt(values)
+        } else if set.len() <= config.set_max_listpack_entries
+            && set
+                .iter()
+                .all(|member| member.len() <= config.set_max_listpack_value)
+        {
+            Collection::SetPack(set.into_iter().collect())
+        } else {
+            Collection::Set(set)
+        };
         let previous = current.map(Entry::payload_len);
         let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
             out.extend_from_slice(OOM);
             return;
         };
-        data.put_collection(key, Collection::Set(set), expires, payload);
+        data.put_collection(key, encoded, expires, payload);
         integer(added as i64, out);
     }
 
@@ -200,7 +217,7 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let set = match data.entries.get(args[1]) {
+        let collection = match data.entries.get(args[1]) {
             None => {
                 if name == "smembers" {
                     out.extend_from_slice(b"*0\r\n");
@@ -209,21 +226,24 @@ impl Store {
                 }
                 return;
             }
-            Some(Entry {
-                collection: Some(Collection::Set(set)),
-                ..
-            }) => set,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_set) => {
+                entry.collection.as_ref().expect("set type checked")
+            }
             Some(_) => {
                 wrong_type(out);
                 return;
             }
         };
+        let members = collection.set_items().expect("set type checked");
         match name {
-            "scard" => integer(set.len() as i64, out),
-            "sismember" => integer(i64::from(set.contains(args[2])), out),
+            "scard" => integer(members.len() as i64, out),
+            "sismember" => integer(
+                i64::from(members.iter().any(|member| member.as_slice() == args[2])),
+                out,
+            ),
             _ => {
-                write!(out, "*{}\r\n", set.len()).expect("Vec write");
-                for member in set {
+                write!(out, "*{}\r\n", members.len()).expect("Vec write");
+                for member in &members {
                     encode_bulk(Some(member), out);
                 }
             }
@@ -239,18 +259,17 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(key, now);
         let current = data.entries.get(key);
-        if current
-            .is_some_and(|entry| !matches!(entry.collection.as_ref(), Some(Collection::Hash(_))))
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_hash))
         {
             wrong_type(out);
             return;
         }
-        let mut hash = current
-            .and_then(|entry| match entry.collection.as_ref() {
-                Some(Collection::Hash(values)) => Some(values.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = current
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::hash_items))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(field, value)| (field.to_vec(), value.to_vec()))
+            .collect();
         let mut added = 0;
         for pair in args[2..].chunks_exact(2) {
             added += i64::from(hash.insert(pair[0].to_vec(), pair[1].to_vec()).is_none());
@@ -264,12 +283,28 @@ impl Store {
             .iter()
             .map(|(field, value)| field.len() + value.len())
             .sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let compact = hash.len() <= config.hash_max_listpack_entries
+            && hash.iter().all(|(field, value)| {
+                field.len() <= config.hash_max_listpack_value
+                    && value.len() <= config.hash_max_listpack_value
+            });
+        let encoded = if compact {
+            let mut entries: Vec<_> = hash.into_iter().collect();
+            entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            Collection::HashPack(entries)
+        } else {
+            Collection::Hash(hash)
+        };
         let previous = current.map(Entry::payload_len);
         let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
             out.extend_from_slice(OOM);
             return;
         };
-        data.put_collection(key, Collection::Hash(hash), expires, payload);
+        data.put_collection(key, encoded, expires, payload);
         integer(added, out);
     }
 
@@ -280,7 +315,7 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let hash = match data.entries.get(args[1]) {
+        let collection = match data.entries.get(args[1]) {
             None => {
                 if name == "hget" {
                     encode_bulk(None, out);
@@ -291,22 +326,24 @@ impl Store {
                 }
                 return;
             }
-            Some(Entry {
-                collection: Some(Collection::Hash(hash)),
-                ..
-            }) => hash,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => {
+                entry.collection.as_ref().expect("hash type checked")
+            }
             Some(_) => {
                 wrong_type(out);
                 return;
             }
         };
         match name {
-            "hget" => encode_bulk(hash.get(args[2]).map(Vec::as_slice), out),
-            "hlen" => integer(hash.len() as i64, out),
+            "hget" => encode_bulk(collection.hash_get(args[2]), out),
+            "hlen" => integer(
+                collection.hash_items().expect("hash type checked").len() as i64,
+                out,
+            ),
             _ => {
-                write!(out, "*{}\r\n", hash.len() * 2).expect("Vec write");
-                let mut fields: Vec<_> = hash.iter().collect();
+                let mut fields = collection.hash_items().expect("hash type checked");
                 fields.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                write!(out, "*{}\r\n", fields.len() * 2).expect("Vec write");
                 for (field, value) in fields {
                     encode_bulk(Some(field), out);
                     encode_bulk(Some(value), out);
@@ -332,18 +369,17 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(key, now);
         let current = data.entries.get(key);
-        if current
-            .is_some_and(|entry| !matches!(entry.collection.as_ref(), Some(Collection::ZSet(_))))
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_zset))
         {
             wrong_type(out);
             return;
         }
-        let mut zset = current
-            .and_then(|entry| match entry.collection.as_ref() {
-                Some(Collection::ZSet(values)) => Some(values.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let mut zset: HashMap<Vec<u8>, f64> = current
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::zset_items))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(member, score)| (member.to_vec(), score))
+            .collect();
         let mut added = 0;
         for (score, member) in members {
             added += i64::from(zset.insert(member.to_vec(), score).is_none());
@@ -354,12 +390,27 @@ impl Store {
         }
         let expires = current.and_then(|entry| entry.expires);
         let bytes = zset.keys().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let compact = zset.len() <= config.zset_max_listpack_entries
+            && zset
+                .keys()
+                .all(|member| member.len() <= config.zset_max_listpack_value);
+        let encoded = if compact {
+            let mut entries: Vec<_> = zset.into_iter().collect();
+            entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            Collection::ZSetPack(entries)
+        } else {
+            Collection::ZSet(zset)
+        };
         let previous = current.map(Entry::payload_len);
         let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
             out.extend_from_slice(OOM);
             return;
         };
-        data.put_collection(key, Collection::ZSet(zset), expires, payload);
+        data.put_collection(key, encoded, expires, payload);
         integer(added, out);
     }
 
@@ -383,7 +434,7 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let zset = match data.entries.get(args[1]) {
+        let collection = match data.entries.get(args[1]) {
             None => {
                 if name == "zscore" {
                     encode_bulk(None, out);
@@ -394,30 +445,28 @@ impl Store {
                 }
                 return;
             }
-            Some(Entry {
-                collection: Some(Collection::ZSet(zset)),
-                ..
-            }) => zset,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => {
+                entry.collection.as_ref().expect("zset type checked")
+            }
             Some(_) => {
                 wrong_type(out);
                 return;
             }
         };
+        let members = collection.zset_items().expect("zset type checked");
         if name == "zcard" {
-            integer(zset.len() as i64, out);
+            integer(members.len() as i64, out);
             return;
         }
         if name == "zscore" {
-            encode_bulk(
-                zset.get(args[2])
-                    .map(|score| score.to_string())
-                    .as_deref()
-                    .map(str::as_bytes),
-                out,
-            );
+            let score = members
+                .iter()
+                .find(|(member, _)| *member == args[2])
+                .map(|(_, score)| score.to_string());
+            encode_bulk(score.as_deref().map(str::as_bytes), out);
             return;
         }
-        let mut ordered: Vec<_> = zset.iter().collect();
+        let mut ordered = members;
         ordered.sort_unstable_by(|(member_a, score_a), (member_b, score_b)| {
             score_a
                 .total_cmp(score_b)
@@ -461,15 +510,13 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(key, now);
         let current = data.entries.get(key);
-        if current.is_some_and(|e| !matches!(e.collection.as_ref(), Some(Collection::List(_)))) {
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_list))
+        {
             wrong_type(out);
             return;
         }
         let mut list = current
-            .and_then(|e| match &e.collection {
-                Some(Collection::List(v)) => Some(v.clone()),
-                _ => None,
-            })
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::list_values))
             .unwrap_or_default();
         if list
             .len()
@@ -488,13 +535,18 @@ impl Store {
         }
         let expires = current.and_then(|e| e.expires);
         let bytes = list.iter().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_list(list, config.list_max_listpack_size);
         let previous = current.map(Entry::payload_len);
         let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
             out.extend_from_slice(OOM);
             return;
         };
-        let len = list.len();
-        data.put_collection(key, Collection::List(list), expires, payload);
+        let len = encoded.list_items().expect("list encoding").len();
+        data.put_collection(key, encoded, expires, payload);
         integer(len as i64, out);
     }
 
@@ -529,13 +581,16 @@ impl Store {
             }
             return;
         };
-        let Some(Collection::List(original)) = entry.collection.as_ref() else {
+        let Some(mut list) = entry.collection.as_ref().and_then(Collection::list_values) else {
             wrong_type(out);
             return;
         };
-        let mut list = original.clone();
         let expires = entry.expires;
         let previous = entry.payload_len();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
         let number = count.unwrap_or(1).min(list.len());
         let values: Vec<Vec<u8>> = (0..number)
             .filter_map(|_| {
@@ -559,7 +614,8 @@ impl Store {
         } else {
             let bytes = list.iter().map(Vec::len).sum::<usize>();
             let payload = data.payload_bytes - previous + bytes;
-            data.put_collection(key, Collection::List(list), expires, payload);
+            let encoded = encode_list(list, config.list_max_listpack_size);
+            data.put_collection(key, encoded, expires, payload);
         }
     }
 
@@ -572,10 +628,15 @@ impl Store {
         data.expire_key(key, now);
         match data.entries.get(key) {
             None => integer(0, out),
-            Some(Entry {
-                collection: Some(Collection::List(list)),
-                ..
-            }) => integer(list.len() as i64, out),
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_list) => integer(
+                entry
+                    .collection
+                    .as_ref()
+                    .and_then(Collection::list_items)
+                    .expect("list type checked")
+                    .len() as i64,
+                out,
+            ),
             Some(_) => wrong_type(out),
         }
     }
@@ -596,10 +657,11 @@ impl Store {
                 out.extend_from_slice(b"*0\r\n");
                 return;
             }
-            Some(Entry {
-                collection: Some(Collection::List(list)),
-                ..
-            }) => list,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_list) => entry
+                .collection
+                .as_ref()
+                .and_then(Collection::list_items)
+                .expect("list type checked"),
             Some(_) => {
                 wrong_type(out);
                 return;
@@ -626,6 +688,53 @@ impl Store {
             encode_bulk(Some(value), out);
         }
     }
+}
+
+fn encode_list(list: std::collections::VecDeque<Vec<u8>>, setting: i64) -> Collection {
+    let total_bytes: usize = list.iter().map(Vec::len).sum();
+    let compact = if setting > 0 {
+        list.len() <= setting as usize
+    } else {
+        total_bytes <= listpack_byte_limit(setting)
+    };
+    if compact {
+        return Collection::ListPack(list);
+    }
+    let by_count = setting > 0;
+    let limit = if by_count {
+        setting as usize
+    } else {
+        listpack_byte_limit(setting)
+    };
+    let mut nodes = std::collections::VecDeque::new();
+    let mut node = std::collections::VecDeque::new();
+    let mut node_bytes = 0usize;
+    for value in list {
+        let full = !node.is_empty()
+            && if by_count {
+                node.len() >= limit
+            } else {
+                node_bytes.saturating_add(value.len()) > limit
+            };
+        if full {
+            nodes.push_back(std::mem::take(&mut node));
+            node_bytes = 0;
+        }
+        node_bytes = node_bytes.saturating_add(value.len());
+        node.push_back(value);
+    }
+    if !node.is_empty() {
+        nodes.push_back(node);
+    }
+    Collection::ListQuick(nodes)
+}
+
+fn listpack_byte_limit(setting: i64) -> usize {
+    if setting >= 0 {
+        return setting as usize;
+    }
+    let level = setting.unsigned_abs().saturating_sub(1).min(4);
+    4096usize << level
 }
 
 fn parse_score(bytes: &[u8]) -> Option<f64> {
