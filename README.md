@@ -55,7 +55,7 @@ Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
 strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
-`INFO`, and logical `MEMORY USAGE`. `CONFIG SET` supports collection thresholds
+`INFO` (including process-local connection/command/expiration/pub-sub statistics), and logical `MEMORY USAGE`. `CONFIG SET` supports collection thresholds
 and `requirepass`; script/function execution is not implemented. Memory usage is
 an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
@@ -109,7 +109,8 @@ duplicate-key amplification. It binds to loopback by default. See
 [multi-key string limits](docs/multikey-strings.md),
 [security boundaries](docs/security.md),
 [INVEST stories and EARS requirements](docs/requirements.md), and the
-[production-readiness plan](docs/production-readiness.md) for exact compatibility
+[production-readiness plan](docs/production-readiness.md) and
+[observability counters](docs/observability.md) for exact compatibility
 boundaries; a verified subset is not a drop-in claim.
 
 ## Run with Docker or Kubernetes

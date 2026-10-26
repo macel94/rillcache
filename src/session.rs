@@ -76,6 +76,7 @@ impl Session {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
+        store.record_command();
         if command.eq_ignore_ascii_case(b"RESET") {
             return self.reset(store, arguments, output);
         }

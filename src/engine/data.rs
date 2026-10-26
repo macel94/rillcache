@@ -220,6 +220,7 @@ pub(super) struct Data {
     flush_seq: u64,
     journal_events: VecDeque<(u64, Vec<u8>)>,
     journal_overflow: bool,
+    pub(in crate::engine) expired_keys: u64,
 }
 impl Data {
     /// Record a mutation visible to `WATCH`/`EXEC` conflict checks and to the
@@ -308,6 +309,7 @@ impl Data {
         }
         if self.entries.get(key).is_some_and(|entry| !entry.alive(now)) {
             self.remove(key);
+            self.expired_keys = self.expired_keys.saturating_add(1);
         }
     }
 
@@ -322,6 +324,7 @@ impl Data {
             }
             let (_, key) = self.expirations.pop_first().expect("checked expiry entry");
             self.remove(&key);
+            self.expired_keys = self.expired_keys.saturating_add(1);
             count += 1;
         }
         count
