@@ -606,7 +606,7 @@ mod tests {
             ],
         );
         assert!(read.starts_with(b"*1\r\n"));
-        assert_eq!(run(&store, &[b"COPY", b"src", b"dst"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"COPY", b"src", b"dst"]), b":1\r\n");
         assert_eq!(store.data.read().unwrap().payload_bytes, 14);
         assert_eq!(run(&store, &[b"TYPE", b"dst"]), b"+stream\r\n");
         let info = run(&store, &[b"XINFO", b"STREAM", b"dst", b"FULL"]);

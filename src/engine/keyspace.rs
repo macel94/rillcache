@@ -168,7 +168,7 @@ impl Store {
         } else {
             data.put(arguments[2], &value, expires, total);
         }
-        output.extend_from_slice(b"+OK\r\n");
+        integer(1, output);
     }
 
     fn rename(
