@@ -109,9 +109,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":92\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":96\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*92\r\n*6\r\n$3\r\nacl\r\n"));
+        assert!(all_info.starts_with(b"*96\r\n*6\r\n$3\r\nacl\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"MSETEX", b"DIGEST", b"DELIFEQ"]),
             b"*3\r\n*6\r\n$6\r\nmsetex\r\n:-4\r\n*2\r\n+write\r\n+denyoom\r\n:2\r\n:-1\r\n:2\r\n*6\r\n$6\r\ndigest\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*6\r\n$7\r\ndelifeq\r\n:3\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:1\r\n:1\r\n"
@@ -155,6 +155,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"hgetall",
             b"hello",
             b"hlen",
+            b"hscan",
             b"hset",
             b"incr",
             b"incrby",
@@ -186,6 +187,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"rpop",
             b"rpush",
             b"sadd",
+            b"scan",
             b"scard",
             b"script",
             b"select",
@@ -196,6 +198,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"setrange",
             b"sismember",
             b"smembers",
+            b"sscan",
             b"strlen",
             b"substr",
             b"touch",
@@ -212,6 +215,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"zadd",
             b"zcard",
             b"zrange",
+            b"zscan",
             b"zscore",
         ];
         let mut expected_list = Vec::new();

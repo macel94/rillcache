@@ -92,6 +92,7 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("hlen", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("hscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("hset", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("incr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("incrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
@@ -130,6 +131,7 @@ const COMMANDS: &[Command] = &[
     cmd("rpop", -2, &["write", "fast"], 1, 1, 1),
     cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("sadd", -3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("scan", -2, &["readonly", "slow"], 0, 0, 0),
     cmd("scard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("script", -2, &["admin"], 0, 0, 0),
     cmd("select", 2, &["loading", "stale", "fast"], 0, 0, 0),
@@ -140,6 +142,7 @@ const COMMANDS: &[Command] = &[
     cmd("setrange", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("sismember", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("smembers", 2, &["readonly"], 1, 1, 1),
+    cmd("sscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("strlen", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("substr", 4, &["readonly"], 1, 1, 1),
     cmd("touch", -2, &["readonly", "fast"], 1, -1, 1),
@@ -170,6 +173,7 @@ const COMMANDS: &[Command] = &[
     cmd("zadd", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("zcard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("zrange", -4, &["readonly"], 1, 1, 1),
+    cmd("zscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("zscore", 3, &["readonly", "fast"], 1, 1, 1),
 ];
 
@@ -278,16 +282,16 @@ fn command_group(name: &str) -> Option<&'static str> {
         }
         "getbit" | "setbit" => "bitmap",
         "llen" | "lpop" | "lpush" | "lrange" | "rpop" | "rpush" => "list",
-        "sadd" | "scard" | "sismember" | "smembers" => "set",
-        "hget" | "hgetall" | "hlen" | "hset" => "hash",
-        "zadd" | "zcard" | "zrange" | "zscore" => "zset",
+        "sadd" | "scard" | "sismember" | "smembers" | "sscan" => "set",
+        "hget" | "hgetall" | "hlen" | "hscan" | "hset" => "hash",
+        "zadd" | "zcard" | "zrange" | "zscan" | "zscore" => "zset",
         "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xreadgroup" => "stream",
         "auth" | "client" | "hello" | "quit" | "select" => "connection",
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
         | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
         | "pexpiretime" | "pttl" | "randomkey" | "rename" | "renamenx" | "touch" | "ttl"
-        | "type" => "keyspace",
+        | "type" | "scan" => "keyspace",
         _ => return None,
     })
 }
