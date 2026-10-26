@@ -15,6 +15,7 @@ mod options;
 mod streams;
 mod string_algorithms;
 mod string_ranges;
+mod xxh3;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
 
@@ -116,6 +117,16 @@ impl Store {
                 return Action::Close;
             }
             arity("quit", output);
+        } else if command.eq_ignore_ascii_case(b"DELEX") {
+            self.delex(arguments, false, output);
+        } else if command.eq_ignore_ascii_case(b"DELIFEQ") {
+            self.delex(arguments, true, output);
+        } else if command.eq_ignore_ascii_case(b"DIGEST") {
+            if arguments.len() == 2 {
+                self.digest(arguments[1], output);
+            } else {
+                arity("digest", output);
+            }
         } else if command.eq_ignore_ascii_case(b"DEL") {
             if arguments.len() < 2 {
                 arity("del", output);
@@ -264,6 +275,9 @@ fn internal_error(output: &mut Vec<u8>) {
     output.extend_from_slice(b"-ERR internal store error\r\n");
 }
 
+#[cfg(test)]
+#[path = "engine/conditional_tests.rs"]
+mod conditional_tests;
 #[cfg(test)]
 #[path = "engine/expiry_tests.rs"]
 mod expiry_tests;

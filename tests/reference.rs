@@ -201,6 +201,50 @@ fn supported_subset_matches_current_reference_wire_behavior() {
         (vec![b"SETNX", key, b"v"], b":1\r\n"),
         (vec![b"SETNX", key, b"no"], b":0\r\n"),
         (vec![b"GETDEL", key], b"$1\r\nv\r\n"),
+        (
+            vec![
+                b"MSET",
+                b"rillcache:batch:a",
+                b"old",
+                b"rillcache:batch:b",
+                b"old",
+            ],
+            b"+OK\r\n",
+        ),
+        (
+            vec![
+                b"MSETEX",
+                b"2",
+                b"rillcache:batch:a",
+                b"one",
+                b"rillcache:batch:b",
+                b"two",
+                b"XX",
+                b"PXAT",
+                b"4102444800123",
+            ],
+            b":1\r\n",
+        ),
+        (
+            vec![b"MGET", b"rillcache:batch:a", b"rillcache:batch:b"],
+            b"*2\r\n$3\r\none\r\n$3\r\ntwo\r\n",
+        ),
+        (
+            vec![b"PEXPIRETIME", b"rillcache:batch:a"],
+            b":4102444800123\r\n",
+        ),
+        (
+            vec![
+                b"MSETEX",
+                b"2",
+                b"rillcache:batch:a",
+                b"x",
+                b"rillcache:missing",
+                b"y",
+                b"XX",
+            ],
+            b":0\r\n",
+        ),
         (vec![b"QUIT"], b"+OK\r\n"),
     ];
     let mut commands = Vec::new();
@@ -233,6 +277,116 @@ fn supported_subset_matches_current_reference_wire_behavior() {
                 actual, expected,
                 "reference mismatch on {address}, workers {worker_threads:?}"
             );
+        }
+        local.shutdown().unwrap();
+    }
+
+    let kind = std::env::var("RILLCACHE_REFERENCE_KIND").unwrap_or_default();
+    if kind == "redis" {
+        let mut digest_commands = Vec::new();
+        encode_request(
+            &[b"SET", b"rillcache:conformance:digest", b"v8lf0c11xh8ymlqztfd3eeq16kfn4sspw7fqmnuuq3k3t75em5wdizgcdw7uc26nnf961u2jkfzkjytls2kwlj7626sd"],
+            &mut digest_commands,
+        );
+        encode_request(
+            &[b"DIGEST", b"rillcache:conformance:digest"],
+            &mut digest_commands,
+        );
+        encode_request(
+            &[
+                b"SET",
+                b"rillcache:conformance:digest",
+                b"changed",
+                b"IFDEQ",
+                b"00006C38ADF31777",
+            ],
+            &mut digest_commands,
+        );
+        encode_request(
+            &[
+                b"SET",
+                b"rillcache:conformance:digest",
+                b"no",
+                b"IFEQ",
+                b"wrong",
+            ],
+            &mut digest_commands,
+        );
+        encode_request(
+            &[b"DELEX", b"rillcache:conformance:digest", b"IFEQ", b"wrong"],
+            &mut digest_commands,
+        );
+        encode_request(
+            &[
+                b"DELEX",
+                b"rillcache:conformance:digest",
+                b"IFEQ",
+                b"changed",
+            ],
+            &mut digest_commands,
+        );
+        encode_request(&[b"QUIT"], &mut digest_commands);
+        let expected = b"+OK\r\n$16\r\n00006c38adf31777\r\n+OK\r\n$-1\r\n:0\r\n:1\r\n+OK\r\n";
+        let local = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        for address in [local.local_addr(), reference] {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            stream.write_all(&digest_commands).unwrap();
+            let mut actual = Vec::new();
+            stream.read_to_end(&mut actual).unwrap();
+            assert_eq!(actual, expected, "DIGEST/DELEX mismatch on {address}");
+        }
+        local.shutdown().unwrap();
+    }
+
+    if kind == "valkey" {
+        let mut delifeq_commands = Vec::new();
+        encode_request(
+            &[b"SET", b"rillcache:conformance:delifeq", b"binary\0\xff"],
+            &mut delifeq_commands,
+        );
+        encode_request(
+            &[b"DELIFEQ", b"rillcache:conformance:delifeq", b"wrong"],
+            &mut delifeq_commands,
+        );
+        encode_request(
+            &[
+                b"DELIFEQ",
+                b"rillcache:conformance:delifeq",
+                b"binary\0\xff",
+            ],
+            &mut delifeq_commands,
+        );
+        encode_request(
+            &[b"GET", b"rillcache:conformance:delifeq"],
+            &mut delifeq_commands,
+        );
+        encode_request(&[b"QUIT"], &mut delifeq_commands);
+        let expected = b"+OK\r\n:0\r\n:1\r\n$-1\r\n+OK\r\n";
+        let local = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        for address in [local.local_addr(), reference] {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            stream.write_all(&delifeq_commands).unwrap();
+            let mut actual = Vec::new();
+            stream.read_to_end(&mut actual).unwrap();
+            assert_eq!(actual, expected, "DELIFEQ mismatch on {address}");
         }
         local.shutdown().unwrap();
     }

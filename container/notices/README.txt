@@ -10,5 +10,9 @@ LLVM-LICENSE.txt: LLVM libunwind/compiler-runtime license, including exceptions
 and legacy license notices:
 https://github.com/llvm/llvm-project/blob/main/libunwind/LICENSE.TXT
 
+xxHash-BSD-2-Clause.txt: BSD-2-Clause notice for the safe scalar XXH3-64
+implementation used by DIGEST/IFDEQ/IFDNE, derived from the XXHash specification
+and reference implementation: https://github.com/Cyan4973/xxHash
+
 These third-party notices do not assign a license to the Rillcache project.
 The container is an experimental in-memory server, not a security certification.
