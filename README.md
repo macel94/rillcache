@@ -53,7 +53,11 @@ Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
 `GET`, `KEEPTTL`, `EX`/`PX`/`EXAT`/`PXAT` options; `GET`, `MGET`, `MSET`, `MSETNX`,
 `DEL`, `EXISTS`, `QUIT`;
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
-`INCR`/`DECR`/`INCRBY`/`DECRBY`. See [string semantics](docs/strings.md) and
+`INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
+strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
+`INFO`, and logical `MEMORY USAGE`. CONFIG SET and script/function execution are
+not implemented. Memory usage is an entry-size estimate, not allocator/RSS data.
+See [string semantics](docs/strings.md) and
 [multi-key string limits](docs/multikey-strings.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
