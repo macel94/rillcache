@@ -24,9 +24,18 @@ impl Store {
             } else {
                 self.strlen(arguments[1], output);
             }
-        } else if command.eq_ignore_ascii_case(b"GETRANGE") {
+        } else if command.eq_ignore_ascii_case(b"GETRANGE")
+            || command.eq_ignore_ascii_case(b"SUBSTR")
+        {
             if arguments.len() != 4 {
-                arity("getrange", output);
+                arity(
+                    if command.eq_ignore_ascii_case(b"SUBSTR") {
+                        "substr"
+                    } else {
+                        "getrange"
+                    },
+                    output,
+                );
             } else {
                 self.getrange(arguments[1], arguments[2], arguments[3], output);
             }
@@ -49,8 +58,18 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.stream.is_some())
+        {
+            output.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        }
         let entry = data.entries.get(key);
-        let previous = entry.map(|entry| entry.value.len());
+        let previous = entry.map(|entry| entry.payload_len);
         let expires = entry.and_then(|entry| entry.expires);
         let Some(length) = previous
             .unwrap_or(0)
@@ -84,6 +103,16 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.stream.is_some())
+        {
+            output.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        }
         integer(
             data.entries.get(key).map_or(0, |entry| entry.value.len()) as i64,
             output,
@@ -101,20 +130,35 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.stream.is_some())
+        {
+            output.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        }
         let value = data
             .entries
             .get(key)
             .map_or(&[][..], |entry| entry.value.as_slice());
         let len = value.len() as i128;
-        let normalize = |i: i64| {
-            if i < 0 {
-                (len + i as i128).max(0)
-            } else {
-                i as i128
-            }
+        if start < 0 && end < 0 && start > end {
+            encode_bulk(Some(&[]), output);
+            return;
+        }
+        let first = if start < 0 {
+            (len + start as i128).max(0)
+        } else {
+            start as i128
         };
-        let first = normalize(start);
-        let last = normalize(end);
+        let last = if end < 0 {
+            (len + end as i128).max(0)
+        } else {
+            end as i128
+        };
         if first >= len || first > last || len == 0 {
             encode_bulk(Some(&[]), output);
             return;
@@ -138,9 +182,19 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.stream.is_some())
+        {
+            output.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        }
         let entry = data.entries.get(key);
-        let previous = entry.map(|entry| entry.value.len());
-        let old_len = previous.unwrap_or(0);
+        let old_len = entry.map_or(0, |entry| entry.value.len());
+        let previous = entry.map(|entry| entry.payload_len);
         let expires = entry.and_then(|entry| entry.expires);
         if replacement.is_empty() {
             integer(old_len as i64, output);

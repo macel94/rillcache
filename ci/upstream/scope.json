@@ -29,6 +29,14 @@
       {"glob": "integration/*", "reason": "Persistence, replication, restart/upgrade and other multi-instance integration behavior is outside this bounded initial scope."},
       {"glob": "*", "reason": "Not selected in the initial strings/integer/keyspace cohort. No coverage or support claim; complete pinned-source unit inventory is emitted per run."}
     ],
+    "request_limits": {
+      "candidate_max_bulk_bytes": 8388608,
+      "candidate_max_frame_bytes": 16777216,
+      "native_proto_max_bulk_len": 8388608,
+      "native_query_buffer_limit": 16777216,
+      "mget_reply_bytes": 2097152,
+      "purpose": "Matched finite request bounds for selected multi-megabyte original Tcl cases; MGET reply amplification remains independently bounded."
+    },
     "timeout_seconds_per_run": 600
   },
   "performance": {

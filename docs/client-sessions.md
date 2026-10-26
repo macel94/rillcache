@@ -31,8 +31,10 @@ RESP null frame—are preserved. RESP2 behavior and `Store::execute` remain
 unchanged.
 
 This is not full RESP3 or Redis compatibility. Pushes, tracking, pub/sub,
-streaming types, RESP3 booleans/maps/sets for data commands, inline requests,
-AUTH/ACL, TLS, and multiple logical databases are unsupported. The server does
+streaming types, RESP3 booleans/maps/sets for data commands, AUTH/ACL, TLS, and
+multiple logical databases are unsupported. Redis-style inline request lines are
+supported in addition to RESP arrays; see [requirements](requirements.md) for the
+bounded quoting, escape and line semantics. The server does
 not emit asynchronous push frames. Real client-library handshake/interoperability
 validation remains a separate gate; passing local wire tests is not evidence of
 production readiness.
