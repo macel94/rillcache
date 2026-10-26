@@ -456,14 +456,14 @@ reason to couple all future commands into a single large story.
 Supported: RESP2 nonempty arrays of non-null bulk strings and Redis-style inline
 commands with whitespace, quotes and escapes, case-insensitive ASCII command names,
 binary keys/values (including escaped inline `\xHH` bytes), multiple connections
-and ordered mixed-protocol pipelines; `PING`, `ECHO`, `SET` with NX/XX, GET,
-KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
-`EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
+and ordered mixed-protocol pipelines; `PING`, `ECHO`, `SET` with NX/XX/GET/KEEPTTL/
+EX/PX/EXAT/PXAT and IFEQ (plus Redis IFNE/IFDEQ/IFDNE); `GET`, `DEL`, `EXISTS`,
+`QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
-INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX; APPEND/STRLEN/
-GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS (LEN/IDX/WITHMATCHLEN/
-MINMATCHLEN). See [string semantics](strings.md), [string ranges](string-ranges.md),
-[bitmap/LCS/float limits](string-algorithms.md) and
+INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX; Redis DIGEST/DELEX
+and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
+(LEN/IDX/WITHMATCHLEN/MINMATCHLEN). See [string semantics](strings.md),
+[string ranges](string-ranges.md), [bitmap/LCS/float limits](string-algorithms.md) and
 [multi-key string limits](multikey-strings.md) for grammar, clocks, rounding,
 integer limits, resource bounds and atomic error behavior. Conditions are atomic
 and case-insensitive. Option tokens must match completely; NULs/prefixes are
@@ -482,11 +482,10 @@ converted by frame boundaries, preserving binary payloads. See
 [client sessions](client-sessions.md) for limits and response details. Real
 redis-cli/library handshake interoperability is not yet verified.
 
-Deliberately not supported: empty/null request arrays, other RESP3 types and
-pushes, digest/value-match SET conditions, data types beyond strings and the
-bounded streams subset, nonzero SELECT indices, AUTH/ACL/TLS, persistence,
-replication, clustering, transactions, scripts and pub/sub. Unsupported SET
-options return
+Deliberately not supported: telnet commands, empty/null request arrays, other
+RESP3 types and pushes, data types beyond strings and the bounded streams subset,
+nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication, clustering,
+transactions, scripts and pub/sub. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-
 option errors omit arbitrary input bytes rather than reflecting them into RESP
