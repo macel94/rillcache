@@ -9,8 +9,8 @@ with each compatibility and operational capability demonstrated by tests.
 CPU/memory/tail-latency tradeoffs, and GitHub Copilot analysis (preferring GPT-6
 Luna, with the actual model disclosed). Default-branch comparisons authenticate
 with the built-in workflow token: no personal token or repository secret to set
-up. Reports publish automatically with per-run Markdown history; no artifact
-download is needed. [Reporting details](docs/benchmark-reports.md).
+up. Reports are proposed automatically through gated PRs; merged reports retain
+per-run Markdown history without an artifact download. [Reporting details](docs/benchmark-reports.md).
 [Profile-guided before/after results](benchmarks/studies/d57cb2e/README.md) preserve
 all 60 native conditions, including gains, regressions and worker-tail tradeoffs.
 The [kernel-guided I/O follow-up](benchmarks/studies/io-scheduling/README.md)
@@ -141,6 +141,13 @@ study](docs/hot-paths.md), including an optional frozen-client before/after work
 
 ## GitHub feedback and delivery
 
+**`main` is PR-only, including generated reports and documentation.** The active
+[ruleset](https://github.com/macel94/rillcache/rules/25863639) requires passing
+**Tests and offline CI** and **Valkey performance gate** on an up-to-date PR.
+Rillcache must have strictly higher median throughput than pinned Valkey in **all
+20 tested cases**; any tie, loss or invalid/incomplete measurement blocks merge.
+No admin/bot bypass or direct main pushes. [Exact policy and scope](docs/pr-quality-gate.md).
+
 [CI](.github/workflows/ci.yml) runs the same `make ci` on PRs and main pushes,
 cancels superseded runs, and publishes benchmark evidence. Successful main builds
 also provide a Linux binary archive and SHA-256 checksum as Actions artifacts for
@@ -148,8 +155,10 @@ immediate testing. [Container delivery](.github/workflows/container.yml) separat
 tests and publishes thin amd64/arm64 images to GHCR using the workflow token.
 There is no automatic public deployment of this experimental, unauthenticated server.
 
-[Comparative benchmarks](.github/workflows/benchmarks.yml) run manually or weekly,
-separately from the fast feedback path. Timing on shared runners is evidence, not
-a flaky performance gate. The [versioned client-I/O study](benchmarks/studies/client-handoffs/README.md)
-records the current measured Valkey lead, remaining regressions and limits;
-full Redis compatibility and production readiness remain separate goals.
+[Comparative benchmarks](.github/workflows/benchmarks.yml) run manually or weekly
+with genuine Copilot review and open report PRs instead of pushing main. The
+[mandatory PR comparison](.github/workflows/pr-quality.yml) is separate from the
+fast offline path and uses a frozen base client/harness, alternating native
+processes, three repetitions and both inherited/equal-one-CPU profiles. Shared
+runner noise can block a PR; passing this scoped throughput policy is not a
+universal performance, stable-hardware, full-compatibility or production claim.

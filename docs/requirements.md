@@ -16,6 +16,8 @@ increments; it is not a claim of full Redis compatibility.
 - Compatibility is incremental, byte-oriented and demonstrated by tests.
 - Rust alone is not evidence of speed. Performance claims require comparable,
   repeated end-to-end measurements against current Redis and Valkey releases.
+- All future main commits must come from PRs satisfying the [mandatory test and
+  Valkey gate](pr-quality-gate.md), including docs/reports. No direct/admin/bot bypass.
 
 ## INVEST stories: implemented increments
 
@@ -48,6 +50,8 @@ reason to couple all future commands into a single large story.
 | S20 | As a fixed-worker client, my ready complete request can execute in the receive pass without exceeding existing work or buffer bounds. | S | R87–R88; same-pass/execute-once/quantum, fragmentation, backpressure and shutdown tests |
 | S21 | As a CPU-constrained client, I can share active I/O with other managed client threads without a context switch per request, while quiet sockets return to blocking owners. | S | R89–R93; lease/epoch/quantum/partial-reply tests and the full TCP suite on one CPU |
 | S22 | As a performance investigator, I can verify the actual handoff policy and default-mode gains against frozen source and current Valkey without changing the benchmark's mode or CPU budget. | XS | R94; captured policy, constrained CI, rotated native A/B and reference comparisons |
+| S23 | As the repository owner, I get PR-only main with mandatory tests and a reproducible Valkey-throughput merge gate, without direct/admin/bot bypasses. | S | R95–R97; active ruleset, frozen-client gate, failure/corruption/cleanup tests and live PR checks |
+| S24 | As a benchmark reader, I still get generated reports without exempting automation from the PR-only quality policy. | XS | R98–R100; branch-only report PRs, exact-head check dispatch, mocked publication tests |
 
 ## EARS acceptance requirements
 
@@ -131,7 +135,9 @@ reason to couple all future commands into a single large story.
   data before timing; setup, connection creation and warmup shall be excluded.
 - **R43 (ubiquitous):** Comparative results shall use the same client and workload
   parameters for all servers and record source/compiler/hardware and competitor
-  versions. Shared-host CI timings shall not be treated as stable performance gates.
+  versions. Shared-host CI timings shall not be presented as stable-hardware
+  guarantees. S23 explicitly applies a narrow hard PR merge threshold on shared
+  CI; noise may block a PR and does not justify relaxing that threshold.
 - **R44 (event-driven):** When unchanged reference sources are reused across
   profiles, the comparison workflow shall verify unchanged executable digests.
   Source-cache bookkeeping shall not discover the enclosing project's Git history
@@ -388,6 +394,42 @@ reason to couple all future commands into a single large story.
   available, alongside all existing modes. Frozen-client native comparisons
   shall retain baseline/default modes, CPU budgets, singleton/batched controls,
   process CPU, whole-batch tails and regressions; no all-traffic victory follows.
+
+### PR-only main and scoped Valkey merge acceptance (S23–S24)
+
+- **R95 (ubiquitous):** Every future change to main shall come through an up-to-date
+  PR with passing distinct Tests and offline CI and Valkey performance gate checks
+  from GitHub Actions. Active rules shall have no bypass actors, block deletion/
+  force pushes, require squash merges and resolve review threads. CI/policy files
+  shall require code-owner review; ordinary implementation PRs need no blanket
+  approving-review quota.
+- **R96 (event-driven):** When a PR benchmark runs, it shall use the protected base
+  harness, frozen Rust client/compiler and checksum-pinned Valkey, default server
+  modes, three alternating native repetitions, both CPU budgets and both pipeline
+  lengths across five workloads. The exact [20-condition policy](pr-quality-gate.md)
+  shall retain source/binary identity, affinities, reply validation and owned-process
+  readiness/cleanup. Only the installing PR may bootstrap against the exact pinned
+  pre-policy source; a missing future base harness shall fail closed.
+- **R97 (unwanted behavior):** If any median is tied/slower than Valkey or evidence
+  is missing, invalid, duplicated, nonfinite, mismatched, changed or incomplete,
+  then the required performance job shall fail. It shall revalidate all 120 raw
+  records and hashes, retain every row/spread/CPU/whole-batch tail and upload failures.
+  No path exemption, historical pass, fastest-sample substitution, automatic retry
+  until green or threshold relaxation shall permit merge. Passing is scoped
+  throughput acceptance on shared CI, not statistical certainty or production readiness.
+- **R98 (event-driven):** When a generated comparison report is proposed for main,
+  publication shall validate immutable identity/order, commit only generated report
+  paths on a non-main branch and open/reuse a PR, never push main or force-update it.
+- **R99 (state-driven):** While an automated report PR awaits merging, the same
+  mandatory test/Valkey checks shall apply to its exact current up-to-date head.
+  Only trusted publication may receive scoped contents/PR/action write permissions
+  to open the PR and dispatch read-only checks, without a new stored credential,
+  privileged PR execution or inference access in the benchmark process.
+- **R100 (unwanted behavior):** If publication is unchanged, retried, has invalid
+  context or check dispatch fails, then it shall respectively no-op, reuse its
+  existing PR, reject before Git/API work or fail visibly, without hidden main
+  commits, overwritten immutable history or a false publication success. Reports
+  remain readable in Actions while their PR waits for the protected merge path.
 
 ## Compatibility boundary (v0.1)
 

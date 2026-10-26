@@ -1,7 +1,9 @@
 # Automatic benchmark reports
 
 Read **[current performance](../benchmarks/README.md)** directly in the repository.
-The root README links to it. Full manual/weekly comparative runs publish:
+The root README links to it. Full manual/weekly comparative runs propose report
+PRs under the [PR-only main/test/Valkey policy](pr-quality-gate.md). After the
+required checks/reviews and protected merge, they publish:
 
 - `benchmarks/README.md`: the latest workflow run/review-attempt's performance page.
 - `benchmarks/reports/<run-id>-<review-attempt>.md`: permanent per-run Markdown.
@@ -55,7 +57,7 @@ Missing access, unavailable CLI/models, budget exhaustion, timeout or unusable
 output produces an explicit **AI unavailable** notice. A successful, validated
 default-branch comparison then **fails the review job's AI-completion gate**;
 it cannot silently pass as a successful AI review. The public report still
-uploads and publishes its independently validated numbers. Failed/incomplete
+uploads its independently validated numbers and proposes their publication PR. Failed/incomplete
 comparisons never invoke Copilot. Review-only reruns reuse the original comparison
 artifact ID and benchmark-attempt identity; competitors are not rebuilt.
 
@@ -90,8 +92,10 @@ The AI gets only the deterministic summary and fixed interpretation rules, not
 repository contents, raw process environment, credentials or tools. Its narrative
 is separately labelled and quoted; HTML and link/image syntax are escaped.
 Numbers are never parsed from AI output or replaced by it. Reviewers must still
-verify AI conclusions; throughput/tail tradeoffs and shared-runner uncertainty
-are not converted into a hard timing gate or a general performance victory.
+verify AI conclusions. AI does not decide merge eligibility: the separate,
+deterministic [PR gate](pr-quality-gate.md) enforces the owner's narrow throughput
+threshold. Shared-runner uncertainty and throughput/tail tradeoffs remain visible;
+neither an AI narrative nor a passing PR gate establishes a general victory.
 
 ## Workflow security and publication
 
@@ -103,24 +107,29 @@ are not converted into a hard timing gate or a general performance victory.
    explicit shell/write/URL denials, built-in MCP disabled and custom instructions
    disabled. Copilot private state, output and
    diagnostics are not included in uploaded public reports.
-3. **publish**: separate, default-branch-only job with `contents: write`. It never
-   runs inference or receives the inference job's token or billing permission.
-   It checks report/run identity, stages only the dashboard/history paths and pushes a bot documentation commit.
+3. **publish**: separate, default-branch-only job with `contents: write`,
+   `pull-requests: write` and `actions: write`. It never runs inference or receives
+   the inference job's token or billing permission. It checks report/run identity,
+   stages only dashboard/history paths on an automation branch, opens/reuses a PR
+   and dispatches both mandatory read-only checks on its head. It never pushes main.
 
 Publication is serialized and compares `(workflow run number, review attempt)`:
 a late rerun of an older run is archived but cannot overwrite the current page.
 A failed latest attempt links back to the last complete successful numeric report.
-Archive collisions are rejected, not overwritten. The job fetches current main
-and retries ordinary pushes after concurrent changes, **never force-pushing** or
-restoring an old source tree. Its hard reset operates only in its disposable
-Actions checkout, not a developer's workspace. Built-in-token report pushes do
-not recursively trigger new benchmark runs. Non-default branches can generate
-numeric Actions reports but receive no inference token and cannot publish to main.
+Archive collisions are rejected, not overwritten. The job creates a uniquely
+named report branch from current main and proposes a protected PR, **never
+force-pushing** or restoring an old source tree. Existing PRs are reused and
+already-published reports no-op. Stale branches must be updated/regenerated and
+rechecked, not exempted from the up-to-date requirement. GitHub-token PR events
+may require workflow approval; explicit dispatches start checks without a new
+credential and attach them to the PR head. Report PRs are not auto-merged or
+exempted from the Valkey gate. Non-default branches can generate numeric Actions
+reports but receive no inference token and cannot publish directly to main.
 
 A cancelled workflow may not reach reporting; a runner-wide outage can also
-prevent publication. These cases do not fabricate new results. If Git push is
-blocked by repository policy, the report remains readable in the Actions summary
-and publication fails visibly.
+prevent publication. These cases do not fabricate new results. If branch push, PR creation or required-check dispatch fails, the report remains
+readable in the Actions summary and publication fails visibly. The dashboard
+updates only after its report PR satisfies the same protected merge path as code.
 
 ## Local verification
 
