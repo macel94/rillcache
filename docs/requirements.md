@@ -438,9 +438,9 @@ command names, binary keys/values, multiple connections and ordered pipelines;
 `PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
 `EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
-INCR/DECR/INCRBY/DECRBY. See [string semantics](strings.md) for grammar, clocks,
-rounding, integer limits and atomic error behavior. Conditions are atomic and
-case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
+INCR/DECR/INCRBY/DECRBY; APPEND/STRLEN/GETRANGE/SETRANGE. See [string
+semantics](strings.md) and [string ranges](string-ranges.md) for grammar, clocks,
+limits and atomic errors. Conditions are atomic and case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
 
 Deliberately not supported: inline/telnet commands, empty/null command arrays,
 RESP3/HELLO, digest/value-match SET conditions, other data types, SELECT,
