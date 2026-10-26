@@ -1,4 +1,4 @@
-use super::data::{Collection, Entry};
+use super::data::Entry;
 use super::*;
 use crate::protocol::encode_bulk;
 use std::io::Write;

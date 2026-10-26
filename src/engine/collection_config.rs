@@ -124,8 +124,14 @@ impl Store {
             return false;
         }
         match args.get(1) {
-            Some(sub) if sub.eq_ignore_ascii_case(b"GET") => self.config_get(args, out),
-            Some(sub) if sub.eq_ignore_ascii_case(b"SET") => self.config_set(args, out),
+            Some(sub) if sub.eq_ignore_ascii_case(b"GET") => {
+                self.config_get(args, out);
+                true
+            }
+            Some(sub) if sub.eq_ignore_ascii_case(b"SET") => {
+                self.config_set(args, out);
+                true
+            }
             _ => false,
         }
     }
