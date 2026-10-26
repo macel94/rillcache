@@ -12,6 +12,7 @@ mod discovery;
 mod keyspace;
 mod multikey;
 mod options;
+mod streams;
 mod string_ranges;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
@@ -71,6 +72,7 @@ impl Store {
         if self.execute_admin(arguments, output)
             || self.execute_discovery(arguments, output)
             || self.execute_multikey(arguments, output)
+            || self.execute_streams(arguments, output)
         {
             return Action::Continue;
         }

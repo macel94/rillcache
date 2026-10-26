@@ -19,6 +19,7 @@ struct Command {
 const COMMANDS: &[Command] = &[
     cmd("command", -1, &["loading", "stale"], 0, 0, 0),
     cmd("config", -2, &["admin", "noscript"], 0, 0, 0),
+    cmd("copy", -3, &["write", "denyoom"], 1, 1, 1),
     cmd("decr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("decrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("del", -2, &["write", "fast"], 1, -1, 1),
@@ -51,6 +52,12 @@ const COMMANDS: &[Command] = &[
     cmd("setex", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("setnx", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("xadd", -5, &["write", "denyoom"], 1, 1, 1),
+    cmd("xdel", -3, &["write"], 1, 1, 1),
+    cmd("xgroup", -2, &["write"], 2, 2, 1),
+    cmd("xinfo", -2, &["readonly"], 2, 2, 1),
+    cmd("xlen", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("xreadgroup", -7, &["write"], 0, 0, 0),
 ];
 
 const fn cmd(
