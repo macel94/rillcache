@@ -27,6 +27,7 @@ pub(super) fn pair(input: Vec<u8>) -> (Client, TcpStream) {
             activity: Instant::now(),
             _permit: None,
             shutdown_on_drop: true,
+            pubsub: std::sync::mpsc::sync_channel(1).1,
         },
         peer,
     )

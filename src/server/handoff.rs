@@ -154,6 +154,7 @@ impl Sharing {
             activity,
             _permit: None,
             shutdown_on_drop: true,
+            pubsub: std::sync::mpsc::sync_channel(1).1,
         };
         let (home, returned) = mpsc::channel();
         let loan = Loan {

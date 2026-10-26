@@ -3,8 +3,10 @@
 //! RESP3 support is deliberately limited to the reply types emitted by the
 //! current command set: strings, integers, errors, arrays and nulls.
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::SyncSender;
 
 use crate::engine::{Access, AclError, Action, AuthError, Store, TransactionOutcome, WatchState};
 use crate::protocol::encode_bulk;
@@ -33,6 +35,9 @@ pub struct Session {
     multi: Option<Multi>,
     watched: WatchState,
     authenticated_user: Option<Vec<u8>>,
+    pubsub_sender: Option<SyncSender<Vec<u8>>>,
+    pubsub_channels: BTreeSet<Vec<u8>>,
+    pubsub_patterns: BTreeSet<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +63,9 @@ impl Session {
             multi: None,
             watched: WatchState::default(),
             authenticated_user: None,
+            pubsub_sender: None,
+            pubsub_channels: BTreeSet::new(),
+            pubsub_patterns: BTreeSet::new(),
         }
     }
 
@@ -104,8 +112,28 @@ impl Session {
                         }
                         return Action::Continue;
                     }
+                    Access::DeniedChannel => {
+                        output.extend_from_slice(
+                            b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
+                        );
+                        if let Some(multi) = self.multi.as_mut() {
+                            multi.dirty = true;
+                        }
+                        return Action::Continue;
+                    }
                 }
             }
+        }
+        if self.is_subscribed()
+            && self.protocol == Protocol::Resp2
+            && !allows_subscriber_command(command)
+        {
+            let name = command_name(command);
+            let _ = write!(
+                output,
+                "-ERR Can't execute '{name}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT are allowed in this context\r\n"
+            );
+            return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"MULTI") {
             self.multi(arguments, output);
@@ -133,12 +161,46 @@ impl Session {
             // QUIT executes immediately even inside MULTI, as in Redis.
             self.multi = None;
             self.watched = WatchState::default();
+            self.pubsub_channels.clear();
+            self.pubsub_patterns.clear();
         } else if self.multi.is_some() {
             self.queue(arguments, output);
             return Action::Continue;
         }
+        if command.eq_ignore_ascii_case(b"SUBSCRIBE") {
+            self.subscribe(store, &arguments[1..], false, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"PSUBSCRIBE") {
+            self.subscribe(store, &arguments[1..], true, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"UNSUBSCRIBE") {
+            self.unsubscribe(store, &arguments[1..], false, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"PUNSUBSCRIBE") {
+            self.unsubscribe(store, &arguments[1..], true, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"PUBLISH") {
+            self.publish(store, arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"PUBSUB") {
+            self.pubsub(store, &arguments[1..], output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"PING")
+            && self.is_subscribed()
+            && self.protocol == Protocol::Resp2
+        {
+            self.subscriber_ping(&arguments[1..], output);
+            return Action::Continue;
+        }
         if command.eq_ignore_ascii_case(b"HELLO") {
             self.hello(store, &arguments[1..], output);
+            self.refresh_pubsub_protocol(store);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"CLIENT") {
@@ -223,6 +285,12 @@ impl Session {
                 Access::DeniedKey => {
                     output.extend_from_slice(
                         b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+                    );
+                    return Action::Continue;
+                }
+                Access::DeniedChannel => {
+                    output.extend_from_slice(
+                        b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
                     );
                     return Action::Continue;
                 }
@@ -461,6 +529,155 @@ impl Session {
         }
     }
 
+    /// Attach the bounded message channel used by this connection's pub/sub hub.
+    pub fn set_pubsub_sender(&mut self, sender: SyncSender<Vec<u8>>) {
+        self.pubsub_sender = Some(sender);
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn is_subscribed(&self) -> bool {
+        !self.pubsub_channels.is_empty() || !self.pubsub_patterns.is_empty()
+    }
+
+    fn subscription_count(&self) -> usize {
+        self.pubsub_channels.len() + self.pubsub_patterns.len()
+    }
+
+    fn refresh_pubsub_protocol(&self, store: &Store) {
+        if self.is_subscribed() {
+            store.pubsub_set_resp3(self.id, self.protocol == Protocol::Resp3);
+        }
+    }
+
+    fn subscribe(&mut self, store: &Store, names: &[&[u8]], pattern: bool, output: &mut Vec<u8>) {
+        let command = if pattern { "psubscribe" } else { "subscribe" };
+        if names.is_empty() {
+            arity(command, output);
+            return;
+        }
+        let Some(sender) = self.pubsub_sender.clone() else {
+            output.extend_from_slice(b"-ERR pub/sub is unavailable on this connection\r\n");
+            return;
+        };
+        for name in names {
+            if pattern {
+                self.pubsub_patterns.insert(name.to_vec());
+            } else {
+                self.pubsub_channels.insert(name.to_vec());
+            }
+            store.pubsub_subscribe(
+                pattern,
+                name,
+                self.id,
+                sender.clone(),
+                self.protocol == Protocol::Resp3,
+            );
+            self.subscription_reply(command, Some(name), output);
+        }
+    }
+
+    fn unsubscribe(&mut self, store: &Store, names: &[&[u8]], pattern: bool, output: &mut Vec<u8>) {
+        let command = if pattern {
+            "punsubscribe"
+        } else {
+            "unsubscribe"
+        };
+        let local: Vec<Vec<u8>> = if names.is_empty() {
+            if pattern {
+                self.pubsub_patterns.iter().cloned().collect()
+            } else {
+                self.pubsub_channels.iter().cloned().collect()
+            }
+        } else {
+            names.iter().map(|name| name.to_vec()).collect()
+        };
+        if local.is_empty() {
+            self.subscription_reply(command, None, output);
+            return;
+        }
+        for name in &local {
+            if pattern {
+                self.pubsub_patterns.remove(name);
+            } else {
+                self.pubsub_channels.remove(name);
+            }
+            store.pubsub_unsubscribe(pattern, name, self.id);
+            self.subscription_reply(command, Some(name), output);
+        }
+    }
+
+    fn subscription_reply(&self, kind: &str, channel: Option<&[u8]>, output: &mut Vec<u8>) {
+        output.push(if self.protocol == Protocol::Resp3 {
+            b'>'
+        } else {
+            b'*'
+        });
+        output.extend_from_slice(b"3\r\n");
+        encode_bulk(Some(kind.as_bytes()), output);
+        encode_bulk(channel, output);
+        let _ = write!(output, ":{}", self.subscription_count());
+        output.extend_from_slice(b"\r\n");
+    }
+
+    fn publish(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() != 3 {
+            arity("publish", output);
+            return;
+        }
+        let delivered = store.publish(arguments[1], arguments[2]);
+        let _ = write!(output, ":{delivered}\r\n");
+    }
+
+    fn pubsub(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        let Some(subcommand) = arguments.first() else {
+            arity("pubsub", output);
+            return;
+        };
+        if subcommand.eq_ignore_ascii_case(b"CHANNELS") {
+            if arguments.len() > 2 {
+                arity("pubsub|channels", output);
+                return;
+            }
+            let names = store.pubsub_channels(arguments.get(1).copied());
+            let _ = write!(output, "*{}\r\n", names.len());
+            for name in names {
+                encode_bulk(Some(&name), output);
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"NUMSUB") {
+            let counts = store.pubsub_numsub(&arguments[1..]);
+            let _ = write!(output, "*{}\r\n", counts.len() * 2);
+            for (channel, count) in counts {
+                encode_bulk(Some(&channel), output);
+                let _ = write!(output, ":{count}\r\n");
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"NUMPAT") {
+            if arguments.len() != 1 {
+                arity("pubsub|numpat", output);
+            } else {
+                let _ = write!(output, ":{}", store.pubsub_numpat());
+                output.extend_from_slice(b"\r\n");
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"SHARDCHANNELS")
+            || subcommand.eq_ignore_ascii_case(b"SHARDNUMSUB")
+        {
+            output.extend_from_slice(b"-ERR sharded pub/sub is not supported\r\n");
+        } else {
+            output.extend_from_slice(b"-ERR unsupported PUBSUB subcommand\r\n");
+        }
+    }
+
+    fn subscriber_ping(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() > 1 {
+            arity("ping", output);
+            return;
+        }
+        output.extend_from_slice(b"*2\r\n$4\r\npong\r\n");
+        encode_bulk(Some(arguments.first().copied().unwrap_or(b"")), output);
+    }
+
     fn hello(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let (requested, options) = match arguments.split_first() {
             None => (self.protocol, &[][..]),
@@ -641,9 +858,34 @@ fn is_auth_exempt(command: &[u8]) -> bool {
 }
 
 fn is_session_command(command: &[u8]) -> bool {
-    [b"ACL".as_slice(), b"AUTH", b"CLIENT", b"HELLO", b"SELECT"]
-        .iter()
-        .any(|name| command.eq_ignore_ascii_case(name))
+    [
+        b"ACL".as_slice(),
+        b"AUTH",
+        b"CLIENT",
+        b"HELLO",
+        b"PSUBSCRIBE",
+        b"PUBLISH",
+        b"PUBSUB",
+        b"PUNSUBSCRIBE",
+        b"SELECT",
+        b"SUBSCRIBE",
+        b"UNSUBSCRIBE",
+    ]
+    .iter()
+    .any(|name| command.eq_ignore_ascii_case(name))
+}
+
+fn allows_subscriber_command(command: &[u8]) -> bool {
+    [
+        b"PING".as_slice(),
+        b"PSUBSCRIBE",
+        b"PUNSUBSCRIBE",
+        b"QUIT",
+        b"SUBSCRIBE",
+        b"UNSUBSCRIBE",
+    ]
+    .iter()
+    .any(|name| command.eq_ignore_ascii_case(name))
 }
 
 fn acl_error(error: AclError, output: &mut Vec<u8>) {
@@ -1567,6 +1809,162 @@ x\r\n"
             b"-NOPERM this user has no permissions to run the 'set' command\r\n"
         );
         assert_eq!(call(&mut admin, &store, &[b"GET", b"k"]), b"$-1\r\n");
+    }
+
+    #[test]
+    fn pubsub_subscribe_publish_patterns_and_unsubscribe_are_ordered() {
+        let store = Store::new(1024);
+        let mut subscriber = Session::new();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        subscriber.set_pubsub_sender(sender);
+        assert!(!subscriber.is_subscribed());
+        assert_eq!(
+            call(&mut subscriber, &store, &[b"SUBSCRIBE", b"a", b"b"]),
+            b"*3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n*3\r\n$9\r\nsubscribe\r\n$1\r\nb\r\n:2\r\n"
+        );
+        assert!(subscriber.is_subscribed());
+        assert_eq!(
+            call(&mut subscriber, &store, &[b"PSUBSCRIBE", b"news.*"]),
+            b"*3\r\n$10\r\npsubscribe\r\n$6\r\nnews.*\r\n:3\r\n"
+        );
+
+        let mut publisher = Session::new();
+        assert_eq!(
+            call(&mut publisher, &store, &[b"PUBLISH", b"a", b"hello"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            receiver.recv().unwrap(),
+            b"*3\r\n$7\r\nmessage\r\n$1\r\na\r\n$5\r\nhello\r\n"
+        );
+        assert_eq!(
+            call(&mut publisher, &store, &[b"PUBLISH", b"news.tech", b"x"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            receiver.recv().unwrap(),
+            b"*4\r\n$8\r\npmessage\r\n$6\r\nnews.*\r\n$9\r\nnews.tech\r\n$1\r\nx\r\n"
+        );
+        assert_eq!(
+            call(
+                &mut publisher,
+                &store,
+                &[b"PUBSUB", b"NUMSUB", b"a", b"missing"]
+            ),
+            b"*4\r\n$1\r\na\r\n:1\r\n$7\r\nmissing\r\n:0\r\n"
+        );
+        assert_eq!(
+            call(&mut publisher, &store, &[b"PUBSUB", b"CHANNELS"]),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            call(&mut publisher, &store, &[b"PUBSUB", b"NUMPAT"]),
+            b":1\r\n"
+        );
+
+        assert_eq!(
+            call(&mut subscriber, &store, &[b"PING", b"hi"]),
+            b"*2\r\n$4\r\npong\r\n$2\r\nhi\r\n"
+        );
+        assert_eq!(
+            call(&mut subscriber, &store, &[b"GET", b"k"]),
+            b"-ERR Can't execute 'get': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT are allowed in this context\r\n"
+        );
+        assert_eq!(
+            call(&mut subscriber, &store, &[b"UNSUBSCRIBE", b"a"]),
+            b"*3\r\n$11\r\nunsubscribe\r\n$1\r\na\r\n:2\r\n"
+        );
+        assert_eq!(
+            call(&mut publisher, &store, &[b"PUBLISH", b"a", b"gone"]),
+            b":0\r\n"
+        );
+        assert_eq!(
+            call(&mut subscriber, &store, &[b"UNSUBSCRIBE"]),
+            b"*3\r\n$11\r\nunsubscribe\r\n$1\r\nb\r\n:1\r\n"
+        );
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            call(&mut subscriber, &store, &[b"PUNSUBSCRIBE"]),
+            b"*3\r\n$12\r\npunsubscribe\r\n$6\r\nnews.*\r\n:0\r\n"
+        );
+        assert!(!subscriber.is_subscribed());
+        store.pubsub_remove_client(subscriber.id());
+    }
+
+    #[test]
+    fn pubsub_resp3_uses_push_frames_and_allows_normal_commands() {
+        let store = Store::new(1024);
+        let mut subscriber = Session::new();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(4);
+        subscriber.set_pubsub_sender(sender);
+        assert!(call(&mut subscriber, &store, &[b"HELLO", b"3"]).starts_with(b"%5\r\n"));
+        assert!(
+            call(&mut subscriber, &store, &[b"SUBSCRIBE", b"c"])
+                .starts_with(b">3\r\n$9\r\nsubscribe\r\n")
+        );
+        let mut publisher = Session::new();
+        assert_eq!(
+            call(&mut publisher, &store, &[b"PUBLISH", b"c", b"v"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            receiver.recv().unwrap(),
+            b">3\r\n$7\r\nmessage\r\n$1\r\nc\r\n$1\r\nv\r\n"
+        );
+        assert_eq!(
+            call(&mut subscriber, &store, &[b"GET", b"missing"]),
+            b"_\r\n"
+        );
+        store.pubsub_remove_client(subscriber.id());
+    }
+
+    #[test]
+    fn acl_channel_patterns_gate_publish_subscribe_and_pattern_subscribe() {
+        let store = Store::new(1024);
+        let mut admin = Session::new();
+        assert_eq!(
+            call(
+                &mut admin,
+                &store,
+                &[
+                    b"ACL",
+                    b"SETUSER",
+                    b"alice",
+                    b"on",
+                    b">pw",
+                    b"allkeys",
+                    b"allchannels",
+                    b"-@all",
+                    b"+@pubsub",
+                    b"resetchannels",
+                    b"&allowed:*"
+                ]
+            ),
+            b"+OK\r\n"
+        );
+        let mut alice = Session::new();
+        alice.set_pubsub_sender(std::sync::mpsc::sync_channel(4).0);
+        assert_eq!(
+            call(&mut alice, &store, &[b"AUTH", b"alice", b"pw"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"PUBLISH", b"allowed:news", b"v"]),
+            b":0\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"PUBLISH", b"other", b"v"]),
+            b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"SUBSCRIBE", b"other"]),
+            b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n"
+        );
+        assert_eq!(
+            call(&mut alice, &store, &[b"PSUBSCRIBE", b"allowed:*"]),
+            b"*3\r\n$10\r\npsubscribe\r\n$9\r\nallowed:*\r\n:1\r\n"
+        );
+        store.pubsub_remove_client(alice.id());
     }
 
     #[test]

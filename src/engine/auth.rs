@@ -90,6 +90,12 @@ impl User {
             .any(|pattern| super::keyspace::glob_match(pattern, key))
     }
 
+    fn allows_channel(&self, channel: &[u8]) -> bool {
+        self.channels
+            .iter()
+            .any(|pattern| super::keyspace::glob_match(pattern, channel))
+    }
+
     fn rules_string(&self) -> String {
         if self.rules.is_empty() {
             return "-@all".into();
@@ -211,6 +217,7 @@ pub enum Access {
     NoAuth,
     DeniedCommand,
     DeniedKey,
+    DeniedChannel,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -409,6 +416,22 @@ impl Auth {
         for key in discovery::key_arguments(command, arguments) {
             if !user.allows_key(key) {
                 return Access::DeniedKey;
+            }
+        }
+        let channels: &[&[u8]] = if command.eq_ignore_ascii_case(b"PUBLISH") {
+            &arguments[1..arguments.len().min(2)]
+        } else if command.eq_ignore_ascii_case(b"SUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"UNSUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"PSUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"PUNSUBSCRIBE")
+        {
+            &arguments[1..]
+        } else {
+            &[]
+        };
+        for channel in channels {
+            if !user.allows_channel(channel) {
+                return Access::DeniedChannel;
             }
         }
         Access::Allowed

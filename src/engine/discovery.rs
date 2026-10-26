@@ -123,7 +123,39 @@ const COMMANDS: &[Command] = &[
     cmd("pexpiretime", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("ping", -1, &["fast"], 0, 0, 0),
     cmd("psetex", 4, &["write", "denyoom"], 1, 1, 1),
+    cmd(
+        "psubscribe",
+        -2,
+        &["pubsub", "noscript", "loading", "stale"],
+        0,
+        0,
+        0,
+    ),
     cmd("pttl", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd(
+        "publish",
+        3,
+        &["pubsub", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
+    cmd(
+        "pubsub",
+        -2,
+        &["pubsub", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
+    cmd(
+        "punsubscribe",
+        -1,
+        &["pubsub", "noscript", "loading", "stale"],
+        0,
+        0,
+        0,
+    ),
     cmd("quit", -1, &["fast"], 0, 0, 0),
     cmd("randomkey", 1, &["readonly"], 0, 0, 0),
     cmd("rename", 3, &["write"], 1, 2, 1),
@@ -144,10 +176,26 @@ const COMMANDS: &[Command] = &[
     cmd("smembers", 2, &["readonly"], 1, 1, 1),
     cmd("sscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("strlen", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd(
+        "subscribe",
+        -2,
+        &["pubsub", "noscript", "loading", "stale"],
+        0,
+        0,
+        0,
+    ),
     cmd("substr", 4, &["readonly"], 1, 1, 1),
     cmd("touch", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("type", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd(
+        "unsubscribe",
+        -1,
+        &["pubsub", "noscript", "loading", "stale"],
+        0,
+        0,
+        0,
+    ),
     cmd(
         "unwatch",
         1,
@@ -230,6 +278,7 @@ pub(super) const CATEGORIES: &[&str] = &[
     "hash",
     "keyspace",
     "list",
+    "pubsub",
     "read",
     "set",
     "slow",
@@ -265,6 +314,7 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
             "acl" | "config" | "flushall" | "flushdb" | "function" | "keys" | "script"
         ),
         b"connection" => group == Some("connection"),
+        b"pubsub" => group == Some("pubsub"),
         b"transaction" => group == Some("transaction"),
         b"keyspace" | b"string" | b"list" | b"set" | b"hash" | b"zset" | b"stream" | b"bitmap" => {
             group == Some(std::str::from_utf8(category).unwrap_or(""))
@@ -288,6 +338,9 @@ fn command_group(name: &str) -> Option<&'static str> {
         "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xreadgroup" => "stream",
         "auth" | "client" | "hello" | "quit" | "select" => "connection",
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
+        "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "subscribe" | "unsubscribe" => {
+            "pubsub"
+        }
         "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
         | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
         | "pexpiretime" | "pttl" | "randomkey" | "rename" | "renamenx" | "touch" | "ttl"

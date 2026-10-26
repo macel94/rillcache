@@ -4,6 +4,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -348,23 +349,26 @@ impl Server {
                 let control = stream.try_clone()?;
                 let store = Arc::clone(&store);
                 let limits = self.config.limits;
+                let idle_timeout = self.config.idle_timeout;
                 let policy = self.policy;
                 let permit = Permit::acquire(&admitted);
                 let sharing = sharing.clone();
+                let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
+                let mut session = Session::new();
+                session.set_pubsub_sender(sender);
                 let thread = thread::Builder::new()
                     .name("rillcache-client".into())
                     .stack_size(256 * 1024)
                     .spawn(move || {
                         // Disconnects, idle timeouts and malformed input affect only this client.
-                        let _ = serve_client(
-                            &mut stream,
-                            Session::new(),
-                            &store,
+                        let context = ClientContext {
                             limits,
+                            idle_timeout,
                             policy,
-                            &permit,
-                            sharing.as_deref(),
-                        );
+                            permit: &permit,
+                            sharing: sharing.as_deref(),
+                        };
+                        let _ = serve_client(&mut stream, session, &store, &context, receiver);
                         let _ = stream.shutdown(Shutdown::Both);
                     })?;
                 workers.push(Worker { control, thread });
@@ -434,88 +438,148 @@ impl Drop for ServerHandle {
     }
 }
 
+struct ClientContext<'a> {
+    limits: Limits,
+    idle_timeout: Duration,
+    policy: SchedulingPolicy,
+    permit: &'a Permit,
+    sharing: Option<&'a handoff::Sharing>,
+}
+
 fn serve_client(
     stream: &mut TcpStream,
     mut session: Session,
     store: &Store,
-    limits: Limits,
-    policy: SchedulingPolicy,
-    permit: &Permit,
-    sharing: Option<&handoff::Sharing>,
+    context: &ClientContext<'_>,
+    receiver: Receiver<Vec<u8>>,
 ) -> io::Result<()> {
+    let ClientContext {
+        limits,
+        idle_timeout,
+        policy,
+        permit,
+        sharing,
+    } = context;
+    let limits = *limits;
+    let idle_timeout = *idle_timeout;
+    let policy = *policy;
+    let client_id = session.id();
     let mut input = Vec::with_capacity(8192.min(limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; 16 * 1024];
-    loop {
-        let mut consumed = 0;
-        let mut commands = 0;
+    let result = (|| {
+        let mut subscriber_timeout = false;
         loop {
-            let (action, used) = match dispatch_request(&input[consumed..], limits, |args| {
-                if args.is_empty() {
-                    Action::Continue // Redis ignores an empty inline line.
+            // Subscribers poll their bounded message queue and the socket. The short
+            // read timeout is a delivery-latency bound, not a busy-poll guarantee.
+            let subscribed = session.is_subscribed();
+            if subscribed != subscriber_timeout {
+                stream.set_read_timeout(Some(if subscribed {
+                    Duration::from_millis(10)
                 } else {
-                    session.execute(store, args, &mut output)
+                    idle_timeout
+                }))?;
+                subscriber_timeout = subscribed;
+            }
+            let mut pushed = 0;
+            while pushed < 64 {
+                match receiver.try_recv() {
+                    Ok(frame) => {
+                        stream.write_all(&frame)?;
+                        pushed += 1;
+                    }
+                    Err(_) => break,
                 }
-            }) {
-                Ok(Some(result)) => result,
-                Ok(None) => break,
-                Err(error) => {
-                    write!(output, "-ERR Protocol error: {error}\r\n")?;
+            }
+            let mut consumed = 0;
+            let mut commands = 0;
+            loop {
+                let (action, used) = match dispatch_request(&input[consumed..], limits, |args| {
+                    if args.is_empty() {
+                        Action::Continue // Redis ignores an empty inline line.
+                    } else {
+                        session.execute(store, args, &mut output)
+                    }
+                }) {
+                    Ok(Some(result)) => result,
+                    Ok(None) => break,
+                    Err(error) => {
+                        write!(output, "-ERR Protocol error: {error}\r\n")?;
+                        stream.write_all(&output)?;
+                        return Ok(());
+                    }
+                };
+                consumed += used;
+                commands += 1;
+                if output.len() >= 64 * 1024 || action == Action::Close {
                     stream.write_all(&output)?;
+                    output.clear();
+                    if action != Action::Close && policy.yield_reply(commands, permit) {
+                        thread::yield_now();
+                    }
+                    commands = 0;
+                }
+                if action == Action::Close {
                     return Ok(());
                 }
-            };
-            consumed += used;
-            commands += 1;
-            if output.len() >= 64 * 1024 || action == Action::Close {
+            }
+            if consumed == input.len() {
+                input.clear();
+            } else if consumed > 0 {
+                input.drain(..consumed);
+            }
+            if !output.is_empty() {
                 stream.write_all(&output)?;
                 output.clear();
-                if action != Action::Close && policy.yield_reply(commands, permit) {
+                if let Some(sharing) = sharing.as_ref().filter(|sharing| {
+                    !session.is_subscribed() && permit.has_peers() && sharing.should_lend()
+                }) {
+                    if sharing.exchange(stream, &mut input, &mut output, &mut session, store)? {
+                        return Ok(());
+                    }
+                    // A lease may return ready/partial input. Parse before reading again.
+                    continue;
+                } else if policy.yield_reply(commands, permit) {
                     thread::yield_now();
                 }
-                commands = 0;
             }
-            if action == Action::Close {
+            let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
+            if session.is_subscribed() != subscriber_timeout {
+                let subscribed = session.is_subscribed();
+                stream.set_read_timeout(Some(if subscribed {
+                    Duration::from_millis(10)
+                } else {
+                    idle_timeout
+                }))?;
+                subscriber_timeout = subscribed;
+            }
+            if room == 0 {
+                stream.write_all(b"-ERR Protocol error: request frame limit exceeded\r\n")?;
                 return Ok(());
             }
-        }
-        if consumed == input.len() {
-            input.clear();
-        } else if consumed > 0 {
-            input.drain(..consumed);
-        }
-        if !output.is_empty() {
-            stream.write_all(&output)?;
-            output.clear();
-            if let Some(sharing) =
-                sharing.filter(|sharing| permit.has_peers() && sharing.should_lend())
-            {
-                if sharing.exchange(stream, &mut input, &mut output, &mut session, store)? {
+            match stream.read(&mut chunk[..room]) {
+                Ok(0) => {
+                    if !input.is_empty() {
+                        stream.write_all(b"-ERR Protocol error: unexpected end of stream\r\n")?;
+                    }
                     return Ok(());
                 }
-                // A lease may return ready/partial input. Parse before reading again.
-                continue;
-            } else if policy.yield_reply(commands, permit) {
-                thread::yield_now();
-            }
-        }
-        let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
-        if room == 0 {
-            stream.write_all(b"-ERR Protocol error: request frame limit exceeded\r\n")?;
-            return Ok(());
-        }
-        match stream.read(&mut chunk[..room]) {
-            Ok(0) => {
-                if !input.is_empty() {
-                    stream.write_all(b"-ERR Protocol error: unexpected end of stream\r\n")?;
+                Ok(size) => input.extend_from_slice(&chunk[..size]),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) && session.is_subscribed() =>
+                {
+                    continue;
                 }
-                return Ok(());
+                Err(error) => return Err(error),
             }
-            Ok(size) => input.extend_from_slice(&chunk[..size]),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
         }
-    }
+    })();
+    store.pubsub_remove_client(client_id);
+    result
 }
 
 #[cfg(test)]
