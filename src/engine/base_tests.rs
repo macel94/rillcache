@@ -174,6 +174,77 @@ fn conditional_rejection_does_not_consume_payload_budget() {
 }
 
 #[test]
+fn digest_and_value_digest_conditions_match_native_xxh3() {
+    let store = Store::new(4096);
+    let redis_vector = b"v8lf0c11xh8ymlqztfd3eeq16kfn4sspw7fqmnuuq3k3t75em5wdizgcdw7uc26nnf961u2jkfzkjytls2kwlj7626sd";
+    assert_eq!(execute(&store, &[b"SET", b"foo", redis_vector]), b"+OK\r\n");
+    assert_eq!(
+        execute(&store, &[b"DIGEST", b"foo"]),
+        b"$16\r\n00006c38adf31777\r\n"
+    );
+    let digest = b"00006c38adf31777";
+    assert_eq!(
+        execute(&store, &[b"SET", b"foo", b"changed", b"IFDEQ", digest]),
+        b"+OK\r\n"
+    );
+    let current_digest = execute(&store, &[b"DIGEST", b"foo"]);
+    let current_digest = &current_digest[5..21];
+    assert_eq!(
+        execute(
+            &store,
+            &[b"SET", b"foo", b"untouched", b"IFDNE", current_digest]
+        ),
+        b"$7\r\nchanged\r\n"
+    );
+    assert_eq!(
+        execute(&store, &[b"SET", b"foo", b"next", b"IFNE", b"changed"]),
+        b"$7\r\nchanged\r\n"
+    );
+    assert_eq!(
+        execute(&store, &[b"SET", b"foo", b"next", b"IFEQ", b"changed"]),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute(&store, &[b"SET", b"missing", b"v", b"IFDEQ", b"bad"]),
+        b"$-1\r\n"
+    );
+    assert_eq!(
+        execute(&store, &[b"SET", b"missing", b"v", b"IFDNE", b"bad"]),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute(&store, &[b"SET", b"foo", b"no", b"IFDEQ", b"short"]),
+        b"-ERR must be exactly 16 hexadecimal characters\r\n"
+    );
+    assert_eq!(execute(&store, &[b"GET", b"foo"]), b"$4\r\nnext\r\n");
+    assert_eq!(execute(&store, &[b"DEL", b"foo", b"missing"]), b":2\r\n");
+    assert_eq!(execute(&store, &[b"DIGEST", b"missing"]), b"$-1\r\n");
+}
+
+#[test]
+fn delex_and_delifeq_are_atomic_value_comparisons() {
+    let store = Store::new(128);
+    assert_eq!(
+        execute(&store, &[b"DELEX", b"missing", b"IFDEQ", b"bad"]),
+        b":0\r\n"
+    );
+    assert_eq!(execute(&store, &[b"SET", b"k", b"value"]), b"+OK\r\n");
+    assert_eq!(
+        execute(&store, &[b"DELEX", b"k", b"IFEQ", b"wrong"]),
+        b":0\r\n"
+    );
+    assert_eq!(execute(&store, &[b"GET", b"k"]), b"$5\r\nvalue\r\n");
+    assert_eq!(
+        execute(&store, &[b"DELEX", b"k", b"IFNE", b"wrong"]),
+        b":1\r\n"
+    );
+    assert_eq!(execute(&store, &[b"SET", b"k", b"value"]), b"+OK\r\n");
+    assert_eq!(execute(&store, &[b"DELIFEQ", b"k", b"wrong"]), b":0\r\n");
+    assert_eq!(execute(&store, &[b"DELIFEQ", b"k", b"value"]), b":1\r\n");
+    assert_eq!(execute(&store, &[b"DELEX", b"k"]), b":0\r\n");
+}
+
+#[test]
 fn ping_echo_and_quit() {
     let store = Store::new(100);
     assert_eq!(execute(&store, &[b"PING"]), b"+PONG\r\n");

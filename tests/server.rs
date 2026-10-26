@@ -373,6 +373,101 @@ fn conditional_set_pipeline_preserves_values_and_error_order() {
 }
 
 #[test]
+fn extended_string_conditions_digest_and_msetex_work_in_all_modes() {
+    const REDIS_VECTOR: &[u8] = b"v8lf0c11xh8ymlqztfd3eeq16kfn4sspw7fqmnuuq3k3t75em5wdizgcdw7uc26nnf961u2jkfzkjytls2kwlj7626sd";
+    for worker_threads in [None, Some(1), Some(4)] {
+        let server = start(Config {
+            worker_threads,
+            ..Config::default()
+        });
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"SET", b"foo", REDIS_VECTOR], b"+OK\r\n");
+        send(
+            &mut stream,
+            &[b"DIGEST", b"foo"],
+            b"$16\r\n00006c38adf31777\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"SET", b"foo", b"updated", b"IFDEQ", b"00006C38ADF31777"],
+            b"+OK\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"SET", b"foo", b"no", b"IFEQ", b"wrong"],
+            b"$-1\r\n",
+        );
+        send(&mut stream, &[b"GET", b"foo"], b"$7\r\nupdated\r\n");
+        send(
+            &mut stream,
+            &[b"DELEX", b"foo", b"IFNE", b"updated"],
+            b":0\r\n",
+        );
+        send(&mut stream, &[b"DELIFEQ", b"foo", b"wrong"], b":0\r\n");
+        send(
+            &mut stream,
+            &[b"SET", b"delete-eq", b"binary\0\xff"],
+            b"+OK\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"DELIFEQ", b"delete-eq", b"wrong"],
+            b":0\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"DELIFEQ", b"delete-eq", b"binary\0\xff"],
+            b":1\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"DELEX", b"foo", b"IFEQ", b"updated"],
+            b":1\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"SET", b"a", b"old", b"PX", b"4102444800000"],
+            b"+OK\r\n",
+        );
+        send(&mut stream, &[b"SET", b"b", b"old"], b"+OK\r\n");
+        send(
+            &mut stream,
+            &[
+                b"MSETEX",
+                b"2",
+                b"a",
+                b"new",
+                b"b",
+                b"two",
+                b"XX",
+                b"PXAT",
+                b"4102444800123",
+            ],
+            b":1\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"MGET", b"a", b"b"],
+            b"*2\r\n$3\r\nnew\r\n$3\r\ntwo\r\n",
+        );
+        send(&mut stream, &[b"PEXPIRETIME", b"a"], b":4102444800123\r\n");
+        send(
+            &mut stream,
+            &[b"MSETEX", b"2", b"a", b"x", b"missing", b"y", b"XX"],
+            b":0\r\n",
+        );
+        send(&mut stream, &[b"GET", b"a"], b"$3\r\nnew\r\n");
+        send(
+            &mut stream,
+            &[b"SET", b"a", b"bad", b"IFDEQ", b"short"],
+            b"-ERR must be exactly 16 hexadecimal characters\r\n",
+        );
+        send(&mut stream, &[b"GET", b"a"], b"$3\r\nnew\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn concurrent_set_nx_has_exactly_one_winner() {
     const CLIENTS: usize = 16;
     let server = start(Config::default());

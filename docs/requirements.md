@@ -455,10 +455,11 @@ reason to couple all future commands into a single large story.
 
 Supported: RESP2 nonempty arrays of non-null bulk strings, case-insensitive ASCII
 command names, binary keys/values, multiple connections and ordered pipelines;
-`PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
+`PING`, `ECHO`, `SET` with NX/XX/GET/KEEPTTL/EX/PX/EXAT/PXAT (and Redis-only IFEQ/IFNE/IFDEQ/IFDNE); `GET`, `DEL`,
 `EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
-INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX; APPEND/STRLEN/GETRANGE/SETRANGE. See
+INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX/MSETEX; Redis DIGEST/DELEX and Valkey DELIFEQ;
+APPEND/STRLEN/GETRANGE/SETRANGE. See
 [string semantics](strings.md), [string ranges](string-ranges.md) and
 [multi-key string limits](multikey-strings.md) for grammar, clocks, rounding,
 integer limits, resource bounds and atomic error behavior. Conditions are atomic
@@ -475,8 +476,7 @@ converted by frame boundaries, preserving binary payloads. See
 redis-cli/library handshake interoperability is not yet verified.
 
 Deliberately not supported: inline/telnet commands, empty/null request arrays,
-other RESP3 types and pushes, digest/value-match SET conditions, other data
-types, nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication,
+other RESP3 types and pushes, other data types, nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication,
 clustering, transactions, pub/sub and streams. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-

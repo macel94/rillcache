@@ -12,6 +12,7 @@ mod keyspace;
 mod multikey;
 mod options;
 mod string_ranges;
+mod xxh3;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
 
@@ -109,6 +110,16 @@ impl Store {
                 return Action::Close;
             }
             arity("quit", output);
+        } else if command.eq_ignore_ascii_case(b"DELEX") {
+            self.delex(arguments, false, output);
+        } else if command.eq_ignore_ascii_case(b"DELIFEQ") {
+            self.delex(arguments, true, output);
+        } else if command.eq_ignore_ascii_case(b"DIGEST") {
+            if arguments.len() == 2 {
+                self.digest(arguments[1], output);
+            } else {
+                arity("digest", output);
+            }
         } else if command.eq_ignore_ascii_case(b"DEL") {
             if arguments.len() < 2 {
                 arity("del", output);

@@ -17,13 +17,17 @@ ceiling and configured payload-budget behavior.
 
 ## SET and related commands
 
-- `SET key value [NX | XX] [GET] [KEEPTTL | EX seconds | PX milliseconds | EXAT unix-seconds | PXAT unix-milliseconds]`
+- `SET key value [NX | XX | IFEQ value | IFNE value | IFDEQ digest | IFDNE digest] [GET] [KEEPTTL | EX seconds | PX milliseconds | EXAT unix-seconds | PXAT unix-milliseconds]`
 - `SETNX key value`, `SETEX key seconds value`, `PSETEX key milliseconds value`
 - `GET key`, `GETSET key value`, `GETDEL key`
 - `GETEX key [PERSIST | EX seconds | PX milliseconds | EXAT unix-seconds | PXAT unix-milliseconds]`
+- `DIGEST key`, `DELEX key [IFEQ value | IFNE value | IFDEQ digest | IFDNE digest]`, `DELIFEQ key value`
+- `MSETEX numkeys key value [key value ...] [NX | XX] [EX seconds | PX milliseconds | EXAT unix-seconds | PXAT unix-milliseconds | KEEPTTL]`
 
-NX creates only absent keys; XX overwrites only existing keys. Expired keys are
-absent. A plain successful SET returns OK and clears the old TTL. GET returns the
+NX creates only absent keys; XX overwrites only existing keys. Redis extended
+SET conditions are mutually exclusive and test the existing binary value or its
+XXH3 digest. Expired keys are absent. A plain successful SET returns OK and clears
+the old TTL. GET returns the
 previous bytes (or null), **including an existing value when NX rejects the
 write**. GETSET clears TTL. KEEPTTL retains it; counter operations also retain it.
 No admitted write or TTL update is visible partially to other workers.
@@ -43,7 +47,12 @@ key returns null without interpreting the expiry value. Valkey 9.1.2 differs on
 that invalid-TTL/missing-key edge: it returns an integer error. Rillcache follows
 Redis 8.10.2; an explicit vendor-specific reference test records the divergence
 rather than pretending both references agree. GETDEL removes value and
-TTL atomically. Newer value/digest-match SET extensions remain unsupported.
+TTL atomically. IFEQ/IFNE compare binary values atomically; IFDEQ/IFDNE compare the
+XXH3-64 digest emitted by Redis DIGEST (16 hexadecimal digits, case-insensitive).
+Redis DELEX performs an atomic optional value/digest comparison and removal;
+Valkey DELIFEQ is its value-equal deletion form. MSETEX validates its full argument block before applying
+an atomic deduplicated batch with shared expiration, NX/XX, KEEPTTL and exact payload
+admission. Past absolute batch deadlines leave the targets absent.
 
 ## Expiration
 
@@ -93,7 +102,7 @@ counters in all worker modes. Optional pinned Redis/Valkey wire conformance runs
 before native comparisons; it uses future absolute deadlines rather than
 sleep-dependent TTL assertions.
 
-Sources: [SET](https://redis.io/docs/latest/commands/set/),
+Sources: [SET](https://redis.io/docs/latest/commands/set/), [DIGEST](https://redis.io/docs/latest/commands/digest/), [DELEX](https://redis.io/docs/latest/commands/delex/), [MSETEX](https://redis.io/docs/latest/commands/msetex/),
 [EXPIRE](https://redis.io/docs/latest/commands/expire/),
 [TTL](https://redis.io/docs/latest/commands/ttl/),
 [INCR](https://redis.io/docs/latest/commands/incr/),
