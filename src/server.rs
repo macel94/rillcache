@@ -474,14 +474,14 @@ fn serve_client(
         loop {
             // Subscribers poll their bounded message queue and the socket. The short
             // read timeout is a delivery-latency bound, not a busy-poll guarantee.
-            let subscribed = session.is_subscribed();
-            if subscribed != subscriber_timeout {
-                stream.set_read_timeout(Some(if subscribed {
+            let polling = session.is_subscribed() || session.is_blocked();
+            if polling != subscriber_timeout {
+                stream.set_read_timeout(Some(if polling {
                     Duration::from_millis(10)
                 } else {
                     idle_timeout
                 }))?;
-                subscriber_timeout = subscribed;
+                subscriber_timeout = polling;
             }
             let mut pushed = 0;
             while pushed < 64 {
@@ -491,6 +491,34 @@ fn serve_client(
                         pushed += 1;
                     }
                     Err(_) => break,
+                }
+            }
+            if session.is_blocked() {
+                if let Some(reply) = session.poll_blocked(store) {
+                    output.extend_from_slice(&reply);
+                }
+                if !output.is_empty() {
+                    stream.write_all(&output)?;
+                    output.clear();
+                }
+                if session.is_blocked() {
+                    let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
+                    if room > 0 {
+                        match stream.read(&mut chunk[..room]) {
+                            Ok(0) => return Ok(()),
+                            Ok(size) => input.extend_from_slice(&chunk[..size]),
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                                ) => {}
+                            Err(error) => return Err(error),
+                        }
+                    } else {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    continue;
                 }
             }
             let mut consumed = 0;
@@ -524,6 +552,9 @@ fn serve_client(
                 if action == Action::Close {
                     return Ok(());
                 }
+                if session.is_blocked() {
+                    break;
+                }
             }
             if consumed == input.len() {
                 input.clear();
@@ -546,14 +577,14 @@ fn serve_client(
                 }
             }
             let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
-            if session.is_subscribed() != subscriber_timeout {
-                let subscribed = session.is_subscribed();
-                stream.set_read_timeout(Some(if subscribed {
+            let polling = session.is_subscribed() || session.is_blocked();
+            if polling != subscriber_timeout {
+                stream.set_read_timeout(Some(if polling {
                     Duration::from_millis(10)
                 } else {
                     idle_timeout
                 }))?;
-                subscriber_timeout = subscribed;
+                subscriber_timeout = polling;
             }
             if room == 0 {
                 stream.write_all(b"-ERR Protocol error: request frame limit exceeded\r\n")?;
@@ -572,7 +603,7 @@ fn serve_client(
                     if matches!(
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) && session.is_subscribed() =>
+                    ) && (session.is_subscribed() || session.is_blocked()) =>
                 {
                     continue;
                 }

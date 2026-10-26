@@ -1,4 +1,4 @@
-use crate::engine::{Auth, FsyncPolicy, Store};
+use crate::engine::{Auth, FsyncPolicy, PopOutcome, Store};
 use crate::protocol::Limits;
 use std::io::Write;
 
@@ -195,6 +195,33 @@ fn rewrite_compacts_history_and_still_replays_the_final_state() {
     let path = aof_path("rewrite-disabled");
     let store = Store::new(1024);
     assert!(run(&store, &[b"BGREWRITEAOF"]).starts_with(b"-ERR append-only"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn blocking_pop_is_journaled_and_survives_restart() {
+    let path = aof_path("blocking");
+    {
+        let store = open(&path, FsyncPolicy::Always);
+        assert_eq!(run(&store, &[b"RPUSH", b"queue", b"a", b"b"]), b":2\r\n");
+        assert_eq!(
+            store.blocking_pop(&[b"queue"], true),
+            PopOutcome::Value {
+                key: b"queue".to_vec(),
+                value: b"a".to_vec()
+            }
+        );
+        assert_eq!(
+            store.blocking_pop(&[b"queue"], false),
+            PopOutcome::Value {
+                key: b"queue".to_vec(),
+                value: b"b".to_vec()
+            }
+        );
+        assert_eq!(store.blocking_pop(&[b"queue"], true), PopOutcome::Empty);
+    }
+    let store = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&store, &[b"EXISTS", b"queue"]), b":0\r\n");
     let _ = std::fs::remove_file(&path);
 }
 

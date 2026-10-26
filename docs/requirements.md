@@ -62,6 +62,7 @@ reason to couple all future commands into a single large story.
 | S32 | As an operator, I can compact an append-only journal without losing acknowledged state so that restart time and disk use do not grow forever. | XS | R129–R131; compacting replay, live-rewrite, disabled-journal and all-mode restart tests |
 | S33 | As a pool/client, I can reset a reused connection's server-side state without reconnecting so that stale transactions, subscriptions or protocol state cannot leak. | XS | R132–R133; reset/auth/pubsub/RESP2 and all-mode wire tests |
 | S34 | As an operator, I can inspect honest connection, command, expiration and pub/sub counters and reset them, without fabricated Redis fields. | XS | R134–R136; counter scope, reset, rejection, expiry and all-mode wire tests |
+| S35 | As a queue user, I can wait for an element to arrive on one of several lists instead of polling, without blocking a worker lane or holding the store lock. | S | R137–R140; push wakeup, timeout, order, journal, idle and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -328,6 +329,30 @@ reason to couple all future commands into a single large story.
   snapshot including the counting of the reset/INFO commands, maximum-client
   rejection, lazy expiration and all execution modes. Documentation shall retain
   the missing hit/miss, byte, latency, slowlog, client-list, RSS and metrics gaps.
+
+### Blocking list pops (S35)
+
+- **R137 (event-driven):** When `BLPOP`/`BRPOP key [key ...] timeout` finds a live
+  nonempty list, it shall pop one left/right element in key order and reply a
+  two-element `[key, value]` array; a wrong-type key shall return WRONGTYPE and a
+  missing/empty set of keys shall return the null array at expiry.
+- **R138 (state-driven):** While waiting, the connection shall hold no store lock,
+  apply no ordinary idle disconnect, parse no further commands from its bounded
+  input, and remain joined to its worker; polling shall be bounded (about 10 ms in
+  default mode), not a push/wakeup or latency guarantee. Disconnect/shutdown shall
+  drop the blocked state.
+- **R139 (unwanted behavior):** If the timeout is negative, NaN, infinite or out of
+  range, or arity is invalid, then the command shall return a bounded error before
+  mutating or blocking. ACL key patterns shall be checked before blocking, blocked
+  pops shall use the normal journal gate and be recoverable after restart, and
+  blocking commands shall be rejected inside `MULTI` with dirty-transaction
+  semantics (documented divergence).
+- **R140 (ubiquitous):** All-mode wire tests shall cover waiting for a push,
+  multi-key/left/right order, timeout nulls, RESP3 conversion, pipelined commands
+  after unblock, idle-timeout immunity, wrong-type/float errors and shutdown.
+  Documentation shall retain the absence of a condition-variable/push design,
+  strict latency SLOs, `BRPOPLPUSH`/`BLMOVE`, fairness under many blocked clients
+  and cluster/replication blocking semantics.
 
 ### Development and delivery
 
@@ -664,7 +689,7 @@ and optimistic key invalidation; multi-user ACL users/rules, key patterns and
 atomic ACL-file save/load; opt-in RESP-command append-only persistence with
 fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
-(LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE;
+(LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE/BLPOP/BRPOP;
 SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD;
 SCAN/HSCAN/SSCAN/ZSCAN bounded cursor iteration with MATCH/COUNT/TYPE/NOVALUES;
 PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE and PUBSUB introspection.

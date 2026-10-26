@@ -1,7 +1,7 @@
 # Typed collections (incremental compatibility)
 
 The store supports binary-safe lists (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`,
-`LRANGE`), sets (`SADD`, `SMEMBERS`, `SCARD`, `SISMEMBER`), hashes (`HSET`,
+`LRANGE`, `BLPOP`, `BRPOP`), sets (`SADD`, `SMEMBERS`, `SCARD`, `SISMEMBER`), hashes (`HSET`,
 `HGET`, `HGETALL`, `HLEN`), and sorted sets (`ZADD`, `ZRANGE`, `ZSCORE`,
 `ZCARD`). Collection values live in the same key entry as strings and share the
 same expiration index, payload limit, keyspace commands and exclusive store lock.
@@ -32,6 +32,33 @@ map-backed sorted sets. A subsequent collection write re-evaluates its encoding;
 changing CONFIG does not rewrite existing values until they are mutated. The
 accounting scope excludes representation overhead. This is not full Redis
 compatibility.
+
+### Blocking list pops
+
+`BLPOP key [key ...] timeout` and `BRPOP ...` check keys in argument order and pop
+from the first live nonempty list, replying `[key, value]`; a wrong-type key returns
+WRONGTYPE. A nonempty list completes immediately. Otherwise the connection is
+marked blocked and no reply is written until data appears or the float-seconds
+timeout expires (the null array, or RESP3 null). Timeout `0` waits indefinitely;
+negative, NaN, infinite or out-of-range values return an error, as do missing keys
+or an invalid arity.
+
+A blocked connection is polled about every 10 ms by its owning worker/lane. It does
+not hold the store lock while waiting, does not apply the ordinary socket
+inactivity timeout, and does not parse further pipelined commands until it
+unblocks; those bytes remain in the bounded input buffer and execute afterwards in
+order. This is bounded active polling, not a condition-variable wakeup, push
+notification or strict latency guarantee. A disconnect or shutdown closes the
+connection and drops its blocked state. `BLPOP`/`BRPOP` take the normal
+transaction/journal gate only while attempting the pop, so an append-only journal
+records the removal and ACL key patterns are checked before blocking. Blocking
+commands are rejected inside `MULTI` rather than executing a non-blocking variant;
+this is a documented divergence from Redis's immediate-null EXEC behavior.
+
+Unit tests cover journal replay after a blocking pop. All-mode wire tests cover
+waiting for a push, multiple-key order, left/right order, timeout nulls,
+WRONGTYPE/float errors, pipelined commands after unblock, RESP3 null conversion,
+idle-timeout immunity and MULTI rejection.
 
 Unit tests cover binary data, ordering, duplicate members/fields, score updates,
 invalid score handling, WRONGTYPE, OOM atomicity, TTL preservation, keyspace

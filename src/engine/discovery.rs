@@ -28,6 +28,8 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("bgrewriteaof", 1, &["admin", "dangerous", "slow"], 0, 0, 0),
+    cmd("blpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
+    cmd("brpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
     cmd(
         "client",
         -2,
@@ -340,7 +342,7 @@ fn command_group(name: &str) -> Option<&'static str> {
             "string"
         }
         "getbit" | "setbit" => "bitmap",
-        "llen" | "lpop" | "lpush" | "lrange" | "rpop" | "rpush" => "list",
+        "blpop" | "brpop" | "llen" | "lpop" | "lpush" | "lrange" | "rpop" | "rpush" => "list",
         "sadd" | "scard" | "sismember" | "smembers" | "sscan" => "set",
         "hget" | "hgetall" | "hlen" | "hscan" | "hset" => "hash",
         "zadd" | "zcard" | "zrange" | "zscan" | "zscore" => "zset",
