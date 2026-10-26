@@ -157,17 +157,10 @@ impl Store {
             output.extend_from_slice(options::OOM);
             return;
         };
-        let value = source.value.clone();
-        let stream = source.stream.clone();
-        let expires = source.expires;
-        if replace {
-            data.remove(arguments[2]);
-        }
-        if let Some(stream) = stream {
-            data.put_stream(arguments[2], stream, expires, total);
-        } else {
-            data.put(arguments[2], &value, expires, total);
-        }
+        // COPY must duplicate state, but only after destination rejection and
+        // final payload admission. Install the clone directly (no second copy).
+        let copied = source.clone();
+        data.put_owned(arguments[2], copied, total);
         integer(1, output);
     }
 
@@ -201,10 +194,6 @@ impl Store {
             output.extend_from_slice(b"-ERR no such key\r\n");
             return;
         };
-        let cloned_value = entry.value.clone();
-        let cloned_stream = entry.stream.clone();
-        let cloned_expiry = entry.expires;
-        let cloned_payload_len = entry.payload_len;
         if only_if_absent && data.entries.contains_key(destination) {
             integer(0, output);
             return;
@@ -229,14 +218,11 @@ impl Store {
             return;
         };
 
-        data.remove(source).expect("source checked while locked");
-        data.remove(destination);
-        if let Some(stream) = cloned_stream {
-            data.put_stream(destination, stream, cloned_expiry, payload);
-        } else {
-            debug_assert_eq!(cloned_payload_len, cloned_value.len());
-            data.put(destination, &cloned_value, cloned_expiry, payload);
-        }
+        // Transfer ownership only after every rejection/admission check. In
+        // particular, never deep-clone a stream tree just to reject RENAMENX or
+        // return OOM. Moving also preserves the admitted string buffer capacity.
+        let entry = data.remove(source).expect("source checked while locked");
+        data.put_owned(destination, entry, payload);
         if only_if_absent {
             integer(1, output);
         } else {
@@ -352,6 +338,251 @@ mod tests {
         assert_eq!(call(&store, &[b"RENAMENX", b"src", b"src"]), b":0\r\n");
         assert_eq!(call(&store, &[b"RENAME", b"src", b"dst"]), b"+OK\r\n");
         assert_eq!(store.data.read().unwrap().payload_bytes, 4);
+    }
+
+    fn exec(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        assert_eq!(store.execute(args, &mut out), Action::Continue);
+        out
+    }
+
+    fn seed(store: &Store, key: &[u8], stream: bool, deadline: &[u8]) {
+        if stream {
+            assert_eq!(
+                exec(store, &[b"XADD", key, b"1", b"f", b"v\0"]),
+                b"$3\r\n1-0\r\n"
+            );
+            assert_eq!(
+                exec(store, &[b"XGROUP", b"CREATE", key, b"group", b"0"]),
+                b"+OK\r\n"
+            );
+            assert!(
+                exec(
+                    store,
+                    &[
+                        b"XREADGROUP",
+                        b"GROUP",
+                        b"group",
+                        b"consumer",
+                        b"STREAMS",
+                        key,
+                        b">"
+                    ]
+                )
+                .starts_with(b"*1\r\n")
+            );
+            assert_eq!(exec(store, &[b"PEXPIREAT", key, deadline]), b":1\r\n");
+            // Legal spare capacities act as ownership sentinels. A deep clone
+            // preserves contents but not these capacities; no allocator hook or
+            // pointer arithmetic is needed to distinguish it from a move.
+            let mut data = store.data.write().unwrap();
+            let tree = data.entries.get_mut(key).unwrap().stream.as_mut().unwrap();
+            for entry in tree.entries.values_mut() {
+                entry.fields.reserve_exact(3);
+                for (field, value) in &mut entry.fields {
+                    field.reserve_exact(1);
+                    value.reserve_exact(2);
+                }
+            }
+            for group in tree.groups.values_mut() {
+                for pending in group.pending.values_mut() {
+                    pending.consumer.reserve_exact(5);
+                }
+                for consumer in group.consumers.values_mut() {
+                    for pending in consumer.pending.values_mut() {
+                        pending.consumer.reserve_exact(7);
+                    }
+                }
+            }
+        } else {
+            // A normal shrink reuses capacity when it is at most twice len.
+            assert_eq!(exec(store, &[b"SET", key, b"123456"]), b"+OK\r\n");
+            assert_eq!(
+                exec(store, &[b"SET", key, b"v\0x", b"PXAT", deadline]),
+                b"+OK\r\n"
+            );
+        }
+    }
+
+    fn capacities(entry: &data::Entry) -> Vec<usize> {
+        let mut sizes = vec![entry.value.capacity()];
+        if let Some(tree) = &entry.stream {
+            for item in tree.entries.values() {
+                sizes.push(item.fields.capacity());
+                for (field, value) in &item.fields {
+                    sizes.extend([field.capacity(), value.capacity()]);
+                }
+            }
+            for group in tree.groups.values() {
+                for pending in group.pending.values() {
+                    sizes.push(pending.consumer.capacity());
+                }
+                for consumer in group.consumers.values() {
+                    for pending in consumer.pending.values() {
+                        sizes.push(pending.consumer.capacity());
+                    }
+                }
+            }
+        }
+        sizes
+    }
+
+    #[test]
+    fn rename_moves_owned_string_and_stream_capacities_after_admission() {
+        for typed in [false, true] {
+            for command in [b"RENAME".as_slice(), b"RENAMENX"] {
+                let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+                let store = Store::with_clock(7, clock.clone());
+                seed(&store, b"a", typed, b"1100");
+                let (before, buffers, index) = {
+                    let data = store.data.read().unwrap();
+                    let entry = &data.entries[b"a".as_slice()];
+                    (entry.clone(), capacities(entry), data.expirations.clone())
+                };
+                // Admission is exact: six-byte key + three-byte payload is OOM.
+                assert_eq!(exec(&store, &[command, b"a", b"longer"]), options::OOM);
+                // Self-key paths must not touch ownership, TTL or accounting.
+                assert_eq!(exec(&store, &[b"RENAME", b"a", b"a"]), b"+OK\r\n");
+                assert_eq!(exec(&store, &[b"RENAMENX", b"a", b"a"]), b":0\r\n");
+                {
+                    let data = store.data.read().unwrap();
+                    assert_eq!(data.entries.len(), 1);
+                    assert_eq!(data.entries[b"a".as_slice()], before);
+                    assert_eq!(capacities(&data.entries[b"a".as_slice()]), buffers);
+                    assert_eq!(data.expirations, index);
+                    assert_eq!(data.payload_bytes, 4);
+                }
+                let expected = if command == b"RENAME" {
+                    b"+OK\r\n".as_slice()
+                } else {
+                    b":1\r\n"
+                };
+                // Four-byte destination + three-byte payload exactly fits.
+                assert_eq!(exec(&store, &[command, b"a", b"long"]), expected);
+                {
+                    let data = store.data.read().unwrap();
+                    assert_eq!(data.entries.len(), 1);
+                    assert_eq!(data.entries[b"long".as_slice()], before);
+                    assert_eq!(capacities(&data.entries[b"long".as_slice()]), buffers);
+                    assert_eq!(data.payload_bytes, 7);
+                    assert_eq!(data.expirations, [(1100, b"long".to_vec())].into());
+                }
+                clock.0.store(1100, Ordering::SeqCst);
+                assert_eq!(exec(&store, &[b"PTTL", b"long"]), b":0\r\n");
+                clock.0.store(1101, Ordering::SeqCst);
+                assert_eq!(call(&store, &[b"DBSIZE"]), b":0\r\n");
+                let data = store.data.read().unwrap();
+                assert_eq!(data.payload_bytes, 0);
+                assert!(data.expirations.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn rename_nx_rejection_and_replacement_preserve_owned_state_and_expiry_index() {
+        for typed in [false, true] {
+            let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+            let store = Store::with_clock(12, clock.clone());
+            seed(&store, b"a", typed, b"1200");
+            seed(&store, b"b", !typed, b"1100");
+            let (source, buffers, destination, index) = {
+                let data = store.data.read().unwrap();
+                (
+                    data.entries[b"a".as_slice()].clone(),
+                    capacities(&data.entries[b"a".as_slice()]),
+                    data.entries[b"b".as_slice()].clone(),
+                    data.expirations.clone(),
+                )
+            };
+            assert_eq!(call(&store, &[b"RENAMENX", b"a", b"b"]), b":0\r\n");
+            {
+                let data = store.data.read().unwrap();
+                assert_eq!(data.entries[b"a".as_slice()], source);
+                assert_eq!(capacities(&data.entries[b"a".as_slice()]), buffers);
+                assert_eq!(data.entries[b"b".as_slice()], destination);
+                assert_eq!(data.payload_bytes, 8);
+                assert_eq!(data.expirations, index);
+            }
+            assert_eq!(call(&store, &[b"RENAME", b"a", b"b"]), b"+OK\r\n");
+            {
+                let data = store.data.read().unwrap();
+                assert_eq!(data.entries.len(), 1);
+                assert_eq!(data.entries[b"b".as_slice()], source);
+                assert_eq!(capacities(&data.entries[b"b".as_slice()]), buffers);
+                assert_eq!(data.payload_bytes, 4);
+                assert_eq!(data.expirations, [(1200, b"b".to_vec())].into());
+            }
+            clock.0.store(1101, Ordering::SeqCst);
+            assert_eq!(call(&store, &[b"DBSIZE"]), b":1\r\n");
+            clock.0.store(1201, Ordering::SeqCst);
+            assert_eq!(call(&store, &[b"DBSIZE"]), b":0\r\n");
+        }
+    }
+
+    #[test]
+    fn expired_destination_is_absent_but_expired_source_is_not_renamed() {
+        let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+        let store = Store::with_clock(12, clock.clone());
+        seed(&store, b"a", true, b"1200");
+        seed(&store, b"b", false, b"1100");
+        clock.0.store(1101, Ordering::SeqCst);
+        assert_eq!(call(&store, &[b"RENAMENX", b"a", b"b"]), b":1\r\n");
+        assert_eq!(exec(&store, &[b"PEXPIRETIME", b"b"]), b":1200\r\n");
+        clock.0.store(1201, Ordering::SeqCst);
+        assert_eq!(
+            call(&store, &[b"RENAME", b"b", b"a"]),
+            b"-ERR no such key\r\n"
+        );
+        let data = store.data.read().unwrap();
+        assert!(data.entries.is_empty());
+        assert!(data.expirations.is_empty());
+        assert_eq!(data.payload_bytes, 0);
+    }
+
+    #[test]
+    fn copy_admission_replace_and_expiry_keep_an_independent_value() {
+        for typed in [false, true] {
+            let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+            let store = Store::with_clock(12, clock.clone());
+            seed(&store, b"a", typed, b"1200");
+            seed(&store, b"b", !typed, b"1100");
+            let before = store.data.read().unwrap().entries.clone();
+            let index = store.data.read().unwrap().expirations.clone();
+            assert_eq!(call(&store, &[b"COPY", b"a", b"longer"]), options::OOM);
+            assert_eq!(call(&store, &[b"COPY", b"a", b"b"]), b":0\r\n");
+            {
+                let data = store.data.read().unwrap();
+                assert_eq!(data.entries, before);
+                assert_eq!(data.expirations, index);
+                assert_eq!(data.payload_bytes, 8);
+            }
+            assert_eq!(call(&store, &[b"COPY", b"a", b"b", b"REPLACE"]), b":1\r\n");
+            {
+                let data = store.data.read().unwrap();
+                assert_eq!(data.entries[b"a".as_slice()], data.entries[b"b".as_slice()]);
+                assert_eq!(data.payload_bytes, 8);
+                assert_eq!(
+                    data.expirations,
+                    [(1200, b"a".to_vec()), (1200, b"b".to_vec())].into()
+                );
+            }
+            if typed {
+                assert_eq!(exec(&store, &[b"XDEL", b"a", b"1"]), b":1\r\n");
+                assert_eq!(exec(&store, &[b"XLEN", b"b"]), b":1\r\n");
+            } else {
+                assert_eq!(exec(&store, &[b"SET", b"a", b"new"]), b"+OK\r\n");
+                assert_eq!(exec(&store, &[b"GET", b"b"]), b"$3\r\nv\0x\r\n");
+            }
+            assert_eq!(
+                store.data.read().unwrap().entries[b"b".as_slice()],
+                before[b"a".as_slice()]
+            );
+            // Expiring the destination's old deadline must not remove the copy.
+            clock.0.store(1101, Ordering::SeqCst);
+            assert_eq!(exec(&store, &[b"PEXPIRETIME", b"b"]), b":1200\r\n");
+            clock.0.store(1201, Ordering::SeqCst);
+            assert_eq!(call(&store, &[b"TYPE", b"b"]), b"+none\r\n");
+        }
     }
 
     #[test]
