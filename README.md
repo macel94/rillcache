@@ -49,9 +49,11 @@ This is a collaboration between a human and AI:
 ## Implemented so far
 
 Bounded RESP2 TCP server, binary-safe `PING`, `ECHO`, `SET` with atomic `NX`/`XX`,
-`GET`, `KEEPTTL`, `EX`/`PX`/`EXAT`/`PXAT` options; `GET`, `DEL`, `EXISTS`, `QUIT`;
+`GET`, `KEEPTTL`, `EX`/`PX`/`EXAT`/`PXAT` options; `GET`, `MGET`, `MSET`, `MSETNX`,
+`DEL`, `EXISTS`, `QUIT`;
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
-`INCR`/`DECR`/`INCRBY`/`DECRBY`. See [string semantics](docs/strings.md).
+`INCR`/`DECR`/`INCRBY`/`DECRBY`. See [string semantics](docs/strings.md) and
+[multi-key string limits](docs/multikey-strings.md).
 Ordered pipelines and fragmented
 requests; concurrent clients, payload/connection limits and inactivity timeouts.
 It is already multithreaded by default (one managed worker per client). Optional
@@ -63,10 +65,14 @@ supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata, and
 `SELECT 0`; authentication/ACL, TLS, durable persistence, richer data types,
 transactions, replication, clustering, and real client-library interoperability
 remain production blockers. RESP3 replies are limited to the current command
-subset's strings, integers, errors, arrays and nulls. It binds to loopback by
-default. See [client sessions](docs/client-sessions.md), [INVEST stories and EARS
-requirements](docs/requirements.md), and the [production-readiness plan](docs/production-readiness.md)
-for exact compatibility boundaries; a verified subset is not a drop-in claim.
+subset's strings, integers, errors, arrays and nulls. Multi-key string operations
+are atomic under the store lock; MGET replies are capped at 2 MiB to bound
+duplicate-key amplification. It binds to loopback by default. See
+[client sessions](docs/client-sessions.md),
+[multi-key string limits](docs/multikey-strings.md),
+[INVEST stories and EARS requirements](docs/requirements.md), and the
+[production-readiness plan](docs/production-readiness.md) for exact compatibility
+boundaries; a verified subset is not a drop-in claim.
 
 ## Run with Docker or Kubernetes
 

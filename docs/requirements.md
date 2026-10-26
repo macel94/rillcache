@@ -52,6 +52,7 @@ reason to couple all future commands into a single large story.
 | S22 | As a performance investigator, I can verify the actual handoff policy and default-mode gains against frozen source and current Valkey without changing the benchmark's mode or CPU budget. | XS | R94; captured policy, constrained CI, rotated native A/B and reference comparisons |
 | S23 | As the repository owner, I get PR-only main with mandatory tests and a reproducible Valkey-throughput merge gate, without direct/admin/bot bypasses. | S | R95–R97; active ruleset, frozen-client gate, failure/corruption/cleanup tests and live PR checks |
 | S24 | As a benchmark reader, I still get generated reports without exempting automation from the PR-only quality policy. | XS | R98–R100; branch-only report PRs, exact-head check dispatch, mocked publication tests |
+| S25 | As a cache user, I can atomically read or set multiple strings so that batch operations preserve ordering, expiry and payload admission. | S | R101–R104; duplicate/binary/expiry/admission tests, bounded MGET reply, all-mode wire/reference tests |
 
 ## EARS acceptance requirements
 
@@ -110,6 +111,25 @@ reason to couple all future commands into a single large story.
 - **R29 (state-driven):** While a SET condition is not satisfied, the server shall
   neither allocate stored payload nor consume its budget; admitted writes shall
   retain R22's atomic OOM behavior and budget reclamation.
+
+### Multi-key strings
+
+- **R101 (event-driven):** When `MGET key [key ...]` is received, the server shall
+  return one RESP2 array in argument order, preserving duplicate positions,
+  empty/binary values and nulls for missing/expired keys from one consistent store
+  observation.
+- **R102 (event-driven):** When valid `MSET key value [key value ...]` pairs are
+  received, the server shall atomically apply the final value for each distinct
+  key, clear TTLs on successful replacement, and return `+OK`; if aggregate final
+  payload admission fails, no live value or TTL shall be partially changed.
+- **R103 (event-driven):** When valid MSETNX pairs are received, the server shall
+  return `:0` without writes if any distinct target is live, otherwise atomically
+  apply all final values and return `:1`; duplicate absent keys count once and the
+  last value wins.
+- **R104 (unwanted behavior):** If a complete MGET RESP reply would exceed 2 MiB,
+  the server shall return one bounded error response without emitting a partial
+  array; it shall not modify any live stored value. Its reply-size check includes
+  RESP framing and duplicate results.
 
 ### Development and delivery
 
@@ -438,9 +458,11 @@ command names, binary keys/values, multiple connections and ordered pipelines;
 `PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
 `EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
-INCR/DECR/INCRBY/DECRBY; APPEND/STRLEN/GETRANGE/SETRANGE. See [string
-semantics](strings.md) and [string ranges](string-ranges.md) for grammar, clocks,
-limits and atomic errors. Conditions are atomic and case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
+INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX; APPEND/STRLEN/GETRANGE/SETRANGE. See
+[string semantics](strings.md), [string ranges](string-ranges.md) and
+[multi-key string limits](multikey-strings.md) for grammar, clocks, rounding,
+integer limits, resource bounds and atomic error behavior. Conditions are atomic
+and case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
 
 The default wire mode is RESP2. `HELLO` can inspect the current mode or
 negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
@@ -462,8 +484,10 @@ option errors omit arbitrary input bytes rather than reflecting them into RESP
 error frames. Limits are deliberately smaller than Redis defaults.
 
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
-2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload. Payload
-accounting excludes map capacity, allocator and connection/thread buffers.
+2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload and a 2 MiB
+maximum MGET RESP reply. Over-limit replies return `ERR MGET reply limit exceeded`
+without a partial array. Payload accounting excludes map capacity, allocator and
+connection/thread buffers.
 The CLI uses loopback by default. Do not expose it to untrusted clients.
 
 ## Next independently deliverable stories
@@ -475,8 +499,8 @@ Not implemented or implied by the completed increments:
    compatible increments.
 2. Authentication/ACL and a safe transport-security deployment boundary; durability
    with crash/recovery and Redis-format interoperability tests.
-3. Richer data types, multi-key strings, transactions, scripts, pub/sub, streams,
-   replication and clustering: follow the [production-readiness plan](production-readiness.md).
+3. Richer data types, transactions, scripts, pub/sub, streams, replication and
+   clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe
    release, failover and fencing semantics are not implemented.
 4. Extend the [measured client-I/O gains](../benchmarks/studies/client-handoffs/README.md)

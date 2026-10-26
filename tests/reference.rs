@@ -69,6 +69,29 @@ fn supported_subset_matches_current_reference_wire_behavior() {
     let absent = b"rillcache:conformance:missing";
     let cases: Vec<(Vec<&[u8]>, &[u8])> = vec![
         (vec![b"DEL", key, absent], b":0\r\n"),
+        (vec![b"DEL", b"multi:a", b"multi:b", b"multi:c"], b":0\r\n"),
+        (
+            vec![b"MSET", b"multi:a", b"one", b"multi:b", b""],
+            b"+OK\r\n",
+        ),
+        (
+            vec![b"MGET", b"multi:b", absent, b"multi:a", b"multi:a"],
+            b"*4\r\n$0\r\n\r\n$-1\r\n$3\r\none\r\n$3\r\none\r\n",
+        ),
+        (
+            vec![b"MSETNX", b"multi:a", b"no", b"multi:c", b"not-written"],
+            b":0\r\n",
+        ),
+        (vec![b"GET", b"multi:c"], b"$-1\r\n"),
+        (
+            vec![b"MSETNX", b"multi:c", b"first", b"multi:c", b"last"],
+            b":1\r\n",
+        ),
+        (
+            vec![b"MGET", b"multi:c", b"multi:c"],
+            b"*2\r\n$4\r\nlast\r\n$4\r\nlast\r\n",
+        ),
+        (vec![b"DEL", b"multi:a", b"multi:b", b"multi:c"], b":3\r\n"),
         (vec![b"pInG"], b"+PONG\r\n"),
         (vec![b"PING", b"\0\xff\r\n"], b"$4\r\n\0\xff\r\n\r\n"),
         (vec![b"ECHO", b""], b"$0\r\n\r\n"),
