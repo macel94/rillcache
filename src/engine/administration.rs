@@ -89,6 +89,37 @@ fn flush_mode(arg: &[u8]) -> bool {
     arg.eq_ignore_ascii_case(b"SYNC") || arg.eq_ignore_ascii_case(b"ASYNC")
 }
 
+fn config(args: &[&[u8]], out: &mut Vec<u8>) {
+    let Some(sub) = args.get(1) else {
+        arity("config", out);
+        return;
+    };
+    if sub.eq_ignore_ascii_case(b"GET") {
+        if args.len() != 3 {
+            arity("config|get", out);
+            return;
+        }
+        // No Redis CONFIG runtime settings are implemented.
+        out.extend_from_slice(b"*0\r\n");
+    } else if sub.eq_ignore_ascii_case(b"SET") {
+        if args.len() < 4 || !args.len().is_multiple_of(2) {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+        } else {
+            out.extend_from_slice(b"-ERR CONFIG SET option is unsupported\r\n");
+        }
+    } else if sub.eq_ignore_ascii_case(b"RESETSTAT") {
+        if args.len() != 2 {
+            arity("config|resetstat", out);
+        }
+        // Command/error statistics are not retained by this server, so their reset state is empty.
+        else {
+            out.extend_from_slice(b"+OK\r\n");
+        }
+    } else {
+        out.extend_from_slice(b"-ERR unsupported CONFIG subcommand\r\n");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,36 +193,5 @@ mod tests {
             run(&store, &[b"MEMORY", b"USAGE", b"key", b"SAMPLES", b"0"]),
             b"-ERR wrong number of arguments for 'memory|usage' command\r\n"
         );
-    }
-}
-
-fn config(args: &[&[u8]], out: &mut Vec<u8>) {
-    let Some(sub) = args.get(1) else {
-        arity("config", out);
-        return;
-    };
-    if sub.eq_ignore_ascii_case(b"GET") {
-        if args.len() != 3 {
-            arity("config|get", out);
-            return;
-        }
-        // No Redis CONFIG runtime settings are implemented.
-        out.extend_from_slice(b"*0\r\n");
-    } else if sub.eq_ignore_ascii_case(b"SET") {
-        if args.len() < 4 || !args.len().is_multiple_of(2) {
-            out.extend_from_slice(b"-ERR syntax error\r\n");
-        } else {
-            out.extend_from_slice(b"-ERR CONFIG SET option is unsupported\r\n");
-        }
-    } else if sub.eq_ignore_ascii_case(b"RESETSTAT") {
-        if args.len() != 2 {
-            arity("config|resetstat", out);
-        }
-        // Command/error statistics are not retained by this server, so their reset state is empty.
-        else {
-            out.extend_from_slice(b"+OK\r\n");
-        }
-    } else {
-        out.extend_from_slice(b"-ERR unsupported CONFIG subcommand\r\n");
     }
 }
