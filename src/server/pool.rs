@@ -3,7 +3,7 @@
 
 use super::*;
 use std::sync::atomic::AtomicUsize;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, sync_channel};
 use std::time::Instant;
 
 use crate::session::Session;
@@ -54,6 +54,7 @@ pub(super) struct Client {
     pub(super) activity: Instant,
     pub(super) _permit: Option<Permit>,
     pub(super) shutdown_on_drop: bool,
+    pub(super) pubsub: Receiver<Vec<u8>>,
 }
 
 impl Drop for Client {
@@ -141,6 +142,24 @@ impl Client {
         // Like blocking I/O, service already-ready input/output before declaring
         // inactivity; scheduler delay must not discard buffered commands.
         let mut progress = self.flush()?;
+        if self.session.is_subscribed() {
+            let mut pushed = 0;
+            while pushed < 64 {
+                match self.pubsub.try_recv() {
+                    Ok(frame) => {
+                        self.output.extend_from_slice(&frame);
+                        pushed += 1;
+                        if self.output.len() >= OUTPUT_CHUNK {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            if pushed > 0 {
+                progress |= self.flush()?;
+            }
+        }
         if !self.output.is_empty() {
             return Ok(self.open(progress, config.idle_timeout)); // Backpressure.
         }
@@ -264,6 +283,7 @@ pub(super) fn serve(
                                     index += 1;
                                 }
                                 _ => {
+                                    store.pubsub_remove_client(clients[index].session.id());
                                     clients.swap_remove(index);
                                 }
                             }
@@ -317,9 +337,12 @@ pub(super) fn serve(
                 continue;
             }
             stream.set_nonblocking(true)?;
+            let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
+            let mut session = Session::new();
+            session.set_pubsub_sender(sender);
             let client = Client {
                 stream,
-                session: Session::new(),
+                session,
                 input: Vec::with_capacity(8192.min(config.limits.max_frame_bytes)),
                 output: Vec::with_capacity(8192),
                 sent: 0,
@@ -328,6 +351,7 @@ pub(super) fn serve(
                 activity: Instant::now(),
                 _permit: Some(Permit::acquire(&admitted)),
                 shutdown_on_drop: true,
+                pubsub: receiver,
             };
             if lanes[next].sender.send(client).is_err() {
                 // Shutdown may race an accept already in flight. Closed receiver
@@ -434,6 +458,7 @@ mod tests {
                 activity: Instant::now(),
                 _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
                 shutdown_on_drop: true,
+                pubsub: std::sync::mpsc::sync_channel(1).1,
             },
             peer,
         )
@@ -522,6 +547,7 @@ mod tests {
             activity: Instant::now() - Duration::from_secs(2),
             _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
             shutdown_on_drop: true,
+            pubsub: std::sync::mpsc::sync_channel(1).1,
         };
         let config = Config {
             idle_timeout: Duration::from_secs(1),

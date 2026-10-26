@@ -66,6 +66,11 @@ commands and execute them under one store-wide gate, with expiry-aware optimisti
 invalidation, RESP2/RESP3 replies and a documented fail-closed version bound. See
 [transactions](docs/transactions.md).
 
+Channel and pattern pub/sub (`SUBSCRIBE`/`PSUBSCRIBE`/`PUBLISH`/`PUBSUB`) delivers
+bounded, at-most-once messages to live connections, with RESP3 push frames and ACL
+channel patterns. There is no sharded pub/sub, keyspace notification, persistence
+or replication of messages. See [pub/sub](docs/pubsub.md).
+
 Opt-in append-only persistence (`--appendonly yes --dir /data`) writes a
 RESP-command journal of changed-key final states with absolute TTLs, supports
 `always`/`everysec`/`no` fsync policies, replays before listening, truncates only
@@ -92,8 +97,9 @@ This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata, and
 `SELECT 0`; single-password and multi-user ACL authentication/authorization;
 ACL selectors/audit controls, native TLS, brute-force protection, RDB/AOF-rewrite
-interoperability, backup/restore drills, scripts/functions, pub/sub, replication,
-clustering, and real client-library interoperability remain production blockers. RESP3 replies are limited to the current command
+interoperability, backup/restore drills, scripts/functions, sharded pub/sub,
+keyspace notifications, replication, clustering, and real client-library
+interoperability remain production blockers. RESP3 replies are limited to the current command
 subset's strings, integers, errors, arrays and nulls. Multi-key string operations
 are atomic under the store lock; MGET replies are capped at 2 MiB to bound
 duplicate-key amplification. It binds to loopback by default. See

@@ -87,8 +87,11 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 - **Not full Redis ACL.** Selectors, subcommand-specific categories, `ACL LOG`,
   `ACL DRYRUN`, `ACL GENPASS`, per-user `reset` semantics beyond the implemented
   rules, and commands not present in this server's command table are absent.
-  Channel patterns are parsed and saved but not enforced because pub/sub does not
-  exist yet. Key patterns apply only to commands with declared key positions:
+  Channel patterns gate PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE, but
+  sharded pub/sub and keyspace notifications do not exist. `PUBSUB` introspection
+  is category-governed rather than channel-pattern-filtered, so it can reveal channel
+  names to a user allowed to run `@pubsub`. Key patterns apply only to commands with
+  declared key positions:
   `KEYS`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB/FLUSHALL`, `XREADGROUP` and similar
   commands are not a per-key sandbox. Do not grant them to tenants who must not
   see or clear the whole keyspace.

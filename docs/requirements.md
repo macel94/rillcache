@@ -58,6 +58,7 @@ reason to couple all future commands into a single large story.
 | S28 | As an operator, I can define multiple users with independent credentials, command categories and key patterns so that a shared cache is not all-or-nothing access. | S | R113–R116; ACL-file round-trip, atomic rules, live denial, protected default and all-mode wire tests |
 | S29 | As an operator, I can enable an fsynced command journal so that supported data survives an ordinary restart within a documented loss window. | S | R117–R120; type/TTL replay, truncation/corruption, transaction/concurrency and all-mode restart tests |
 | S30 | As a client, I can iterate large keyspaces and collections in bounded pages instead of blocking the server with KEYS, with filtering by pattern and type. | XS | R121–R124; paging, filter, type, NOVALUES, binary and invalid cursor tests in all modes |
+| S31 | As a client, I can publish and receive channel or pattern messages on live connections so that independent clients can coordinate without polling the keyspace. | S | R125–R128; confirmations, delivery, subscriber mode, RESP3 push, ACL channels and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -253,6 +254,30 @@ reason to couple all future commands into a single large story.
   per-cursor state, bound each page's examined positions and returned data, and
   document that mutation during iteration may skip or duplicate elements even
   though a stable keyspace is fully traversed.
+
+### Publish/subscribe (S31)
+
+- **R125 (event-driven):** When `SUBSCRIBE`/`PSUBSCRIBE` is received, the server
+  shall register the connection, remove duplicate registrations, and return one
+  confirmation per channel/pattern containing the current total subscription count;
+  `UNSUBSCRIBE`/`PUNSUBSCRIBE` shall remove named or all local subscriptions and
+  confirm each, including the no-subscription null-channel reply.
+- **R126 (event-driven):** When `PUBLISH channel message` is received, the server
+  shall deliver one preformatted message frame to each current channel subscriber
+  and each matching pattern subscriber, return the number delivered, and never let
+  a slow/dead subscriber block the publisher or another subscriber. Delivery is
+  bounded, at-most-once, non-persistent and not an exactly-once claim.
+- **R127 (state-driven):** While a RESP2 connection has subscriptions, only
+  subscribe/unsubscribe variants, `PING` (subscriber array form) and `QUIT` shall
+  execute; RESP3 shall retain normal commands and use push frames. `PUBSUB
+  CHANNELS/NUMSUB/NUMPAT` shall expose current state; sharded variants shall fail
+  visibly. ACL channel patterns shall gate subscribe/publish arguments with
+  `NOPERM`, while introspection remains category-governed.
+- **R128 (ubiquitous):** Pub/sub tests shall run offline in all execution modes and
+  cover binary channels/messages, patterns, counts, unsubscribe-all, RESP2/RESP3
+  framing, subscriber-mode errors/PING/QUIT, ACL channel denial, disconnect cleanup
+  and joined shutdown. Documentation shall retain missing sharding, keyspace
+  notifications, persistence, replication, ordering and durability guarantees.
 
 ### Development and delivery
 
@@ -591,11 +616,13 @@ fsync policies and restart recovery; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
 (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE;
 SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD;
-SCAN/HSCAN/SSCAN/ZSCAN bounded cursor iteration with MATCH/COUNT/TYPE/NOVALUES.
+SCAN/HSCAN/SSCAN/ZSCAN bounded cursor iteration with MATCH/COUNT/TYPE/NOVALUES;
+PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE and PUBSUB introspection.
 See [string semantics](strings.md), [string ranges](string-ranges.md),
 [bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md),
 [typed collections](collections.md), [transactions](transactions.md),
-[security](security.md) and [persistence](persistence.md) for grammar,
+[security](security.md), [persistence](persistence.md) and [pub/sub](pubsub.md)
+for grammar,
 clocks, rounding, integer limits, resource bounds, queue isolation and atomic
 error behavior. Conditions are atomic and
 case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
@@ -622,8 +649,8 @@ redis-cli/library handshake interoperability is not yet verified.
 Deliberately not supported: empty/null request arrays, other RESP3 types and
 pushes, commands beyond the documented collection/stream subsets, nonzero SELECT
 indices, native TLS, RDB/AOF-rewrite compatibility, replication, clustering,
-scripts and pub/sub. Cluster mode, multi-database, and arbitrary Redis AOF/RDB
-files are not accepted.
+sharded pub/sub, keyspace notifications and scripts. Cluster mode,
+multi-database, and arbitrary Redis AOF/RDB files are not accepted.
 Single-password and multi-user ACL-file authentication are supported with
 `AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors, audit
 logging, dry-run, generated passwords and channel enforcement remain absent. See

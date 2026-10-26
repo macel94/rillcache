@@ -18,6 +18,7 @@ mod journal;
 mod keyspace;
 mod multikey;
 mod options;
+mod pubsub;
 mod scan;
 mod sha256;
 mod streams;
@@ -65,6 +66,7 @@ pub struct Store {
     acl_restricted: AtomicBool,
     journal: Option<std::sync::Mutex<journal::Journal>>,
     journal_limits: Limits,
+    pubsub: RwLock<pubsub::PubSub>,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -109,6 +111,7 @@ impl Store {
             auth: RwLock::new(auth),
             journal: None,
             journal_limits: Limits::default(),
+            pubsub: RwLock::new(pubsub::PubSub::default()),
         }
     }
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
@@ -444,6 +447,68 @@ impl Store {
         self.auth_required.store(auth.required(), Ordering::Release);
         self.acl_restricted
             .store(auth.restricted(), Ordering::Release);
+    }
+
+    pub fn pubsub_queue_capacity() -> usize {
+        pubsub::PubSub::queue_capacity()
+    }
+
+    pub fn pubsub_subscribe(
+        &self,
+        pattern: bool,
+        name: &[u8],
+        id: u64,
+        sender: std::sync::mpsc::SyncSender<Vec<u8>>,
+        resp3: bool,
+    ) -> bool {
+        self.pubsub.write().is_ok_and(|mut pubsub| {
+            pubsub.subscribe(pattern, name, id, sender, resp3);
+            true
+        })
+    }
+
+    pub fn pubsub_unsubscribe(&self, pattern: bool, name: &[u8], id: u64) -> bool {
+        self.pubsub
+            .write()
+            .is_ok_and(|mut pubsub| pubsub.unsubscribe(pattern, name, id))
+    }
+
+    pub fn pubsub_remove_client(&self, id: u64) {
+        if let Ok(mut pubsub) = self.pubsub.write() {
+            pubsub.remove_client(id);
+        }
+    }
+
+    pub fn pubsub_set_resp3(&self, id: u64, resp3: bool) {
+        if let Ok(mut pubsub) = self.pubsub.write() {
+            pubsub.set_resp3(id, resp3);
+        }
+    }
+
+    pub fn publish(&self, channel: &[u8], message: &[u8]) -> usize {
+        self.pubsub
+            .write()
+            .map_or(0, |mut pubsub| pubsub.publish(channel, message))
+    }
+
+    pub fn pubsub_channels(&self, pattern: Option<&[u8]>) -> Vec<Vec<u8>> {
+        self.pubsub
+            .read()
+            .map_or_else(|_| Vec::new(), |pubsub| pubsub.channel_names(pattern))
+    }
+
+    pub fn pubsub_numsub(&self, channels: &[&[u8]]) -> Vec<(Vec<u8>, usize)> {
+        self.pubsub
+            .read()
+            .map_or_else(|_| Vec::new(), |pubsub| pubsub.numsub(channels))
+    }
+
+    pub fn pubsub_numpat(&self) -> usize {
+        self.pubsub.read().map_or(0, |pubsub| pubsub.numpat())
+    }
+
+    pub fn pubsub_is_empty(&self) -> bool {
+        self.pubsub.read().is_ok_and(|pubsub| pubsub.is_empty())
     }
 
     pub fn acl_categories() -> &'static [&'static str] {
