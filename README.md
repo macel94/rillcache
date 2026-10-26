@@ -49,9 +49,11 @@ This is a collaboration between a human and AI:
 ## Implemented so far
 
 Bounded RESP2 TCP server, binary-safe `PING`, `ECHO`, `SET` with atomic `NX`/`XX`,
-`GET`, `KEEPTTL`, `EX`/`PX`/`EXAT`/`PXAT` options; `GET`, `DEL`, `EXISTS`, `QUIT`;
+`GET`, `KEEPTTL`, `EX`/`PX`/`EXAT`/`PXAT` options; `GET`, `MGET`, `MSET`, `MSETNX`,
+`DEL`, `EXISTS`, `QUIT`;
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
-`INCR`/`DECR`/`INCRBY`/`DECRBY`. See [string semantics](docs/strings.md).
+`INCR`/`DECR`/`INCRBY`/`DECRBY`. See [string semantics](docs/strings.md) and
+[multi-key string limits](docs/multikey-strings.md).
 Ordered pipelines and fragmented
 requests; concurrent clients, payload/connection limits and inactivity timeouts.
 It is already multithreaded by default (one managed worker per client). Optional
@@ -60,8 +62,10 @@ plus the accept/control thread; idle clients do not occupy an entire worker.
 
 This is **not yet** a drop-in Redis replacement or a production service.
 RESP3/client negotiation, authentication/ACL, TLS, durable persistence, richer
-data types, transactions, replication and clustering remain production blockers. It binds
-to loopback by default. See [INVEST stories and EARS requirements](docs/requirements.md)
+data types, transactions, replication and clustering remain production blockers.
+Multi-key string operations are atomic under the store lock; MGET replies are capped
+at 2 MiB to bound duplicate-key amplification. It binds to loopback by default.
+See [INVEST stories and EARS requirements](docs/requirements.md)
 for acceptance criteria and exact compatibility boundaries. The
 [production-readiness plan](docs/production-readiness.md) tracks every remaining
 blocker; the goal is production compatibility, not silently redefining a subset
