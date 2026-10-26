@@ -1,0 +1,6 @@
+{
+  "original_label": "working-tree-v2",
+  "verified_application_source": "01571773e4aaca4c1765a226b1f7f1187e1fd33e",
+  "same_locally_built_server_sha256": "8896cc1fc3d5c3e733c9d6ecabc4d20d6fcee2ed4b96baa3679c2bc61dcfcf16",
+  "notes": "Application bytes match the local normal-release server after source commit; this does not equate local controls with hosted release timings."
+}

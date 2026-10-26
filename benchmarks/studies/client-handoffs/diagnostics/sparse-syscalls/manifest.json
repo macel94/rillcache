@@ -1,0 +1,21 @@
+{
+  "kind": "instrumented sparse syscall counts; no speed inference",
+  "requests": 100,
+  "connections": 3,
+  "pause_seconds": 0.002,
+  "setup_before_attach": true,
+  "files": {
+    "before": {
+      "binary_sha256": "4b229bcde4927843344f0a8e66f485d25cd9ad2d2582e5a6528ca566aa8bf652",
+      "trace_sha256": "e4936f85fc89ab363ca1655d5a6f4a4d682544ed65780e3330973a8f9cd40088"
+    },
+    "v1": {
+      "binary_sha256": "093db46ae46b009731a8e97e60238672266a424e86b558d7c126f3bf174f02a6",
+      "trace_sha256": "e51b092a5ffc900a924981b631b5910ee0d091f7544879097e1b1b5a0c2d08eb"
+    },
+    "v2": {
+      "binary_sha256": "8896cc1fc3d5c3e733c9d6ecabc4d20d6fcee2ed4b96baa3679c2bc61dcfcf16",
+      "trace_sha256": "40c9f120d83b9753f9b23f8b5e5f3dd3a521899a631324e2c5355bd465bf1f74"
+    }
+  }
+}

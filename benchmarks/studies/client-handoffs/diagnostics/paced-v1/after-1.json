@@ -1,0 +1,1 @@
+{"variant": "after", "run": 1, "requests": 1000, "observation_seconds": 3.5335975260240957, "p50_us": 702.013, "p99_us": 12927.745, "max_us": 124656.598, "user_ticks": 10, "system_ticks": 63}

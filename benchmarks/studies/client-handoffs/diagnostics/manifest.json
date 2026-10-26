@@ -1,0 +1,43 @@
+{
+  "baseline_source": "6cea8cc2370c14401f8b7736db99a930de1bc02f",
+  "v1_source": "90628470f8fa487f64666705da46008564a08ba4",
+  "v2_source": "01571773e4aaca4c1765a226b1f7f1187e1fd33e",
+  "binaries_sha256": {
+    "baseline-server": "4b229bcde4927843344f0a8e66f485d25cd9ad2d2582e5a6528ca566aa8bf652",
+    "frozen-client": "b544c4c183f39e2f9114c3630126ed51e2f9abd779acfe7117fb9e1272f7b24a",
+    "candidate-server": "093db46ae46b009731a8e97e60238672266a424e86b558d7c126f3bf174f02a6",
+    "candidate-v2-server": "8896cc1fc3d5c3e733c9d6ecabc4d20d6fcee2ed4b96baa3679c2bc61dcfcf16"
+  },
+  "files_sha256": {
+    "environment.txt": "4c9d853c0e219222d5485f7c2c1f42b6249fc6f49384266621bdc69f46e6069e",
+    "baseline-1-syscalls.txt": "99e32e2b7f95662afb70c2df55900bb3637a6aa2f1651eb5320dee28a18246f5",
+    "baseline-0-syscalls.txt": "a336fa53d9decb8edde2b1a092b2a2fc428091bd488daecbfe93b5f8f98a5594",
+    "kernel-summary.json": "b686c3b3ddfba9d2ba29fac0966dd8c49e81c989cdd4c09a68f33096274bb074",
+    "baseline-valkey-syscalls.txt": "4068899483717f4855aa3abe602041d30905598662cb83f85dece47bf68a48dc",
+    "paced-v2/source-equivalence.json": "4313aa5413ec170042599d218d56bb75b11afe90ac19b14966f4ee0bcb06d8d9",
+    "paced-v2/before-2.json": "e447bb30b8f046f7a93e8550a22fc9a2fbab707dbfde061da374d9d18817d13c",
+    "paced-v2/before-3.json": "b3cd211348bf732b5dbdec3398fb4b806b21eaab4296e241dd70daf5df0c12ef",
+    "paced-v2/after-2.json": "7264d6ffdeb47896c89b5f1f0e67114b1ab7cfa5d93f73326611b606c34026c8",
+    "paced-v2/before-1.json": "0110904a6d2ccbc6ac1d8dc6dd5359b95debb9cf178253229a2b9d0bbf88d556",
+    "paced-v2/valkey-1.json": "3fccec62a4de5d28b5a9bb2754dd0cdb09773378b614a7eaab8a65076fe1e873",
+    "paced-v2/after-3.json": "59773f1f007e832afe83c52d67a252f5e5ab11242135818eb6ad0ea4be62d6a0",
+    "paced-v2/after-1.json": "d4014c468b560dae83a81cf045cf14ffb2eded01fb1e41b96d6812ff694133fc",
+    "paced-v2/valkey-3.json": "68a2d32f5a4dc0417970a8a8b6e90d06d0f3e052f346696de45c345247de38d2",
+    "paced-v2/manifest.json": "0a18c1beb5df0bb44bc93fe4edb25a999da7a14b61d080b94c4f3a1febc4da15",
+    "paced-v2/valkey-2.json": "1ab0285ea242479b72baf0ba9f01926a7f6ed33b520a471a56d9280925beaed9",
+    "paced-v1/before-2.json": "63843237263c3ed3565da034a39803da7bc99039159c7777e00f2e4bb81cf679",
+    "paced-v1/before-3.json": "759106ef5ff36c8b1e5bce1d5c0d868ceba8706007872fee9bdab765852c8ccf",
+    "paced-v1/after-2.json": "1850cea009669992e0f0f8cd2d0cbc24d834480e32ec350f28299d380ebc4bde",
+    "paced-v1/before-1.json": "47720bb6abdf8aaa8c8bcafa57ccf1056ed9ccbcddf7e3f5f5d61c63dc3ae91f",
+    "paced-v1/valkey-1.json": "f977154f382dbdafad905c92b6c3485aba9d511386156ba090d5a6f85a257137",
+    "paced-v1/after-3.json": "d0cf3954c349171b5400a312d399d22c850eae27412191babd831177367fb580",
+    "paced-v1/after-1.json": "3e117a12aa8ee352b96b41cdd1f8333970003f5c772a24d0393156e677373ee2",
+    "paced-v1/valkey-3.json": "f283215c847c0aad8b0143b4b5bf6580937fcf349cc3856a89fe290be6db626d",
+    "paced-v1/manifest.json": "75ecb482925c4ad3a5d475685cd87e09d6a619ece3674048f4b10c1479bc3db2",
+    "paced-v1/valkey-2.json": "bbb992a57aae8520da51dc6496a568db091694ed1517507b00ca324a532ed853",
+    "sparse-syscalls/before.txt": "e4936f85fc89ab363ca1655d5a6f4a4d682544ed65780e3330973a8f9cd40088",
+    "sparse-syscalls/v1.txt": "e51b092a5ffc900a924981b631b5910ee0d091f7544879097e1b1b5a0c2d08eb",
+    "sparse-syscalls/v2.txt": "40c9f120d83b9753f9b23f8b5e5f3dd3a521899a631324e2c5355bd465bf1f74",
+    "sparse-syscalls/manifest.json": "da4d2cb8cb45776cbe3323e728e8b86664c2f9b432f41af5ee51cd1dfc06397b"
+  }
+}

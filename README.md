@@ -16,8 +16,12 @@ all 60 native conditions, including gains, regressions and worker-tail tradeoffs
 The [kernel-guided I/O follow-up](benchmarks/studies/io-scheduling/README.md)
 records receive/scheduling bottlenecks, measured fixes, large worker-tail reductions
 and remaining regressions—not an all-workload performance claim. The
-[single-CPU client I/O handoff](docs/client-io-handoffs.md) targets the remaining
-per-request scheduling cost without changing the default managed thread count.
+[single-CPU client I/O handoff study](benchmarks/studies/client-handoffs/README.md)
+now records higher throughput and lower whole-batch p99 than Valkey in all 20
+conditions of the latest five-workload CI cohort. Under an equal one-CPU budget,
+rate leads are 8.2–10.8% at pipeline 1 and 34.8–54.6% at pipeline 16. This is scoped
+evidence, not a universal performance or feature-equivalence claim; all matched
+before/after regressions, CPU costs and raw records remain visible.
 
 ## Project vision
 
@@ -146,4 +150,6 @@ There is no automatic public deployment of this experimental, unauthenticated se
 
 [Comparative benchmarks](.github/workflows/benchmarks.yml) run manually or weekly,
 separately from the fast feedback path. Timing on shared runners is evidence, not
-a flaky performance gate. No claim of beating Redis or Valkey is made yet.
+a flaky performance gate. The [versioned client-I/O study](benchmarks/studies/client-handoffs/README.md)
+records the current measured Valkey lead, remaining regressions and limits;
+full Redis compatibility and production readiness remain separate goals.

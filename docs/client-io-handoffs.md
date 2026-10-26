@@ -1,5 +1,15 @@
 # Single-CPU client I/O handoffs (S21–S22)
 
+## Verified final result
+
+The [complete study and raw evidence](../benchmarks/studies/client-handoffs/README.md)
+identify measured source `0157177`. Its latest reference CI cohort leads Valkey
+in median throughput and whole-batch p99 in all 20 five-workload conditions.
+Equal-one-CPU rate leads are 8.2–10.8% at pipeline 1 and 34.8–54.6% at pipeline 16.
+The separate matched A/B study reports both improvements and regressions; those
+runner/cohort percentages must not be blended. This does not establish all-traffic
+performance, feature equivalence or production readiness.
+
 ## Where Valkey still won
 
 The prior validated [CI reference cohort](../benchmarks/reports/40230615995-1.md)
@@ -50,8 +60,9 @@ blocking owners. V2 also returns individually quiet borrowers while others stay
 busy, avoiding an O(idle-clients) scan after a mixed burst. The coordinator keeps
 its own socket serviced rather than waiting on itself. A separate 100 ms maximum
 epoch, checked between bounded passes, prevents continuous traffic from retaining
-a closed coordinator's admission slot indefinitely. There is no new permanent worker, no changed default thread
-count, no unsafe readiness multiplexer, no flag selecting a different benchmark
+a closed coordinator's admission slot indefinitely. There is no new permanent
+worker, no changed default thread count, no unsafe readiness multiplexer, no flag
+selecting a different benchmark
 mode, and no 1 ms fixed-worker idle park on this path. An initially lone client,
 unknown/multicore capacity hint and explicit fixed modes do not enable handoffs.
 Capacity is an immutable hint, not a CPU budget, load detector or OS guarantee.
@@ -87,7 +98,7 @@ all client control handles and joins every started worker.
   one return per loan and restoration of blocking reads.
 - `make check`/`make ci` add the complete default TCP suite on one allowed Linux
   CPU when taskset is available; existing per-client/one/four-mode tests remain.
-  The benchmark records the captured `client_handoff_idle_us` and
+  The benchmark records captured `client_handoff_idle_us`,
   `client_handoff_policy_version` and `client_handoff_max_epoch_ms` rather than
   resampling CPU capacity later.
 
@@ -97,9 +108,11 @@ pipelines 1 and 16. That result identifies source `9062847` (v1), not an unmeasu
 claim for v2 or all traffic. A paced local diagnostic exposed extra sparse CPU
 cost in v1, motivating the activation guard and deterministic boundary tests.
 
-Fresh hosted A/B and current-reference results determine final acceptance; local
-screens are not a release speed claim. Keep all CPU/tail/rate regressions and
-unequal feature sets visible. Native TLS, persistence, broad compatibility and
+Both hosted A/B studies and current-reference publications were independently
+validated; local screens remain diagnostic rather than release speed claims.
+The archived reference cohort regenerates its published measurements byte-for-byte
+in an offline regression test. All CPU/tail/rate regressions and unequal feature
+sets remain visible. Native TLS, persistence, broad compatibility and
 production acceptance remain separate [readiness gates](production-readiness.md).
 
 Sources: [safe TCP cloning/options](https://doc.rust-lang.org/std/net/struct.TcpStream.html),

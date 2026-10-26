@@ -1,0 +1,86 @@
+6cea8cc2370c14401f8b7736db99a930de1bc02f
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+binary: rustc
+commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
+commit-date: 2026-10-13
+host: x86_64-unknown-linux-gnu
+release: 1.99.1
+LLVM version: 23.1.1
+Linux vmi3474918 6.12.113+deb13-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           48 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  6
+On-line CPU(s) list:                     0-5
+Vendor ID:                               AuthenticAMD
+Model name:                              AMD EPYC Processor (with IBPB)
+CPU family:                              23
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      6
+Socket(s):                               1
+Stepping:                                2
+BogoMIPS:                                5599.99
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl xtopology cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext ssbd ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 rdseed adx smap clflushopt sha_ni xsaveopt xsavec xgetbv1 arat
+Hypervisor vendor:                       KVM
+Virtualization type:                     full
+L1d cache:                               192 KiB (6 instances)
+L1i cache:                               384 KiB (6 instances)
+L2 cache:                                3 MiB (6 instances)
+L3 cache:                                8 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-5
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Mitigation; untrained return thunk; SMT disabled
+Vulnerability Spec rstack overflow:      Vulnerable: Safe RET, no microcode
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Retpolines; IBPB conditional; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+
+Allowed CPUs:
+pid 792533's current affinity list: 0-5
+
+Load:
+ 23:14:54 up 6 days, 13:03,  2 users,  load average: 2.27, 2.20, 1.94
+
+Cgroup quota:
+
+Cgroup CPU quota availability:
+cpu.max unavailable in this environment; no quota inferred
+
+Cgroup mounts:
+/sys/fs/cgroup/cpuset.cpus.isolated
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpuset.cpus.exclusive.effective
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpuset.cpus.exclusive
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpu.weight
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpu.stat
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpu.weight.nice
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpu.pressure
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpu.idle
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpu.stat.local
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpuset.cpus.partition
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpuset.cpus.effective
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpu.max.burst
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpu.max
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpuset.mems
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpuset.mems.effective
+/sys/fs/cgroup/sys-fs-fuse-connections.mount/cpuset.cpus
+/sys/fs/cgroup/sys-kernel-config.mount/cpuset.cpus.exclusive.effective
+/sys/fs/cgroup/sys-kernel-config.mount/cpuset.cpus.exclusive
+/sys/fs/cgroup/sys-kernel-config.mount/cpu.weight
+/sys/fs/cgroup/sys-kernel-config.mount/cpu.stat
+4b229bcde4927843344f0a8e66f485d25cd9ad2d2582e5a6528ca566aa8bf652  /tmp/rillcache-valkey-next/baseline-server
+b544c4c183f39e2f9114c3630126ed51e2f9abd779acfe7117fb9e1272f7b24a  /tmp/rillcache-valkey-next/frozen-client
+ecb45e85d988fd1ceb536b1e4d20ac8a1fec20333d3e0ccbfa3d3b56a27b4b11  target/competitors/valkey-9.1.2/src/valkey-server

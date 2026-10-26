@@ -1,0 +1,34 @@
+{
+  "complete": true,
+  "source": "9062847",
+  "kind": "paced PING diagnostic, not throughput benchmark",
+  "requests": 1000,
+  "pause_between_requests_seconds": 0.001,
+  "open_connections": 3,
+  "active_connections": 1,
+  "server_cpu": 0,
+  "client_cpus": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "hz": 100,
+  "hashes": {
+    "before": "4b229bcde4927843344f0a8e66f485d25cd9ad2d2582e5a6528ca566aa8bf652",
+    "after": "093db46ae46b009731a8e97e60238672266a424e86b558d7c126f3bf174f02a6",
+    "valkey": "ecb45e85d988fd1ceb536b1e4d20ac8a1fec20333d3e0ccbfa3d3b56a27b4b11"
+  },
+  "evidence_sha256": {
+    "valkey-3.json": "f283215c847c0aad8b0143b4b5bf6580937fcf349cc3856a89fe290be6db626d",
+    "after-3.json": "d0cf3954c349171b5400a312d399d22c850eae27412191babd831177367fb580",
+    "before-3.json": "759106ef5ff36c8b1e5bce1d5c0d868ceba8706007872fee9bdab765852c8ccf",
+    "before-2.json": "63843237263c3ed3565da034a39803da7bc99039159c7777e00f2e4bb81cf679",
+    "after-2.json": "1850cea009669992e0f0f8cd2d0cbc24d834480e32ec350f28299d380ebc4bde",
+    "valkey-2.json": "bbb992a57aae8520da51dc6496a568db091694ed1517507b00ca324a532ed853",
+    "valkey-1.json": "f977154f382dbdafad905c92b6c3485aba9d511386156ba090d5a6f85a257137",
+    "after-1.json": "3e117a12aa8ee352b96b41cdd1f8333970003f5c772a24d0393156e677373ee2",
+    "before-1.json": "47720bb6abdf8aaa8c8bcafa57ccf1056ed9ccbcddf7e3f5f5d61c63dc3ae91f"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "source": "01571773e4aaca4c1765a226b1f7f1187e1fd33e",
+  "run_id": 40245955560,
+  "native_records": 180,
+  "idle_samples": 12,
+  "separate_embedded_records": 30,
+  "files_sha256": {
+    "environment.txt": "d8104fc4f852aab75f92294e53179480a19566b94c4e1e2884e83e4bf32823b3",
+    "reference-binaries.sha256": "429159df0555d9ffa8e26216f8a18b167d04c5d82e9015cba5694beb64d5cbb0",
+    "single-core-pipeline-1/environment.txt": "bbd11a57c993105061a33fee9a9d6957c5d46bb2ed874b2e0b4e333c414c6caa",
+    "single-core-pipeline-1/redis.json": "09aa9ecdd1120c6defccbc12c48b59965a64a15663b479465716d118ee1339cc",
+    "single-core-pipeline-1/valkey.json": "f35530b53d81e07936152adf759bf6b4bf95d5c3937c0c688f94194aca6d6821",
+    "single-core-pipeline-1/rillcache.json": "6143cc7f3375087ea442bf2ca5489525ac89acd33525310ac41291927910465e",
+    "thread-modes/environment.txt": "f106b289a0ec8585758f9dc9529610f79244161809437ab0f18828b24a4ae3b7",
+    "thread-modes/threads-4.json": "afdceff9a84e5976a3c9ba109f50dcc092436c28d31b22a61426f24f78b5c86a",
+    "thread-modes/threads-1.json": "cf6821d52b96935863001724c46dddde1a6686ad460958df31ec580409b0f77f",
+    "single-core-pipeline-16/environment.txt": "35d23e51df38b89a04f5949fdf6eef34a3389a934149efc7b9e803af3c9af337",
+    "single-core-pipeline-16/redis.json": "d497126d4f336b102882f251e43be5889daa36fcf3c13bb61797c4c6270ff778",
+    "single-core-pipeline-16/valkey.json": "b8c57b31893a8b631a807b2a7af296b388136a30995eb63c8d79b696d4f3234c",
+    "single-core-pipeline-16/rillcache.json": "2d18496b591917cb5cc77dfc63992b3221da61a18a828f3e57552a9ad8ce9d68",
+    "pipeline-1/environment.txt": "824c86e481cf5ca739f696e77ab521dedfa2adab26ab4e9702f3c5ebfca47644",
+    "pipeline-1/redis.json": "a3bbf3901d7786ad8118d27379c7066d813ed39ba13307ec80e0d5089ba2be50",
+    "pipeline-1/valkey.json": "eed5dab0db0216a61bf17af919ce36a9e9a1d7ca452606804a20709db5ecfdc7",
+    "pipeline-1/rillcache.json": "ec2fb900f0577cb739a6bc3a1a96c6568f1308cfc7f3ea9ad476e0bfd52b36be",
+    "pipeline-16/environment.txt": "3267a7856814c92b12e7a31e7a2c7401cb71f4010bec6a83af1e4adf2cf7de22",
+    "pipeline-16/redis.json": "506000ebee599077181683ecd03d5a9036c6b0cd0f7a9c37b8b95b938a49ad68",
+    "pipeline-16/valkey.json": "619c82940c651a8e5a8e9d4930d313a3ffca9a7fdc92d511f86919bdea6c232e",
+    "pipeline-16/rillcache.json": "d3a917776070a980ab9177a3cd9000621258ef26ab986750bdac5346623c53ca"
+  },
+  "independently_revalidated": true
+}

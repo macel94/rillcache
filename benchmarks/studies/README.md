@@ -1,8 +1,17 @@
 # Profile-guided benchmark studies
 
+## Client I/O handoffs: `6cea8cc` → `0157177`
+
+[Latest measured results, design and limits](client-handoffs/README.md): the
+current five-workload reference cohort leads Valkey in all 20 measured rate and
+batch-p99 conditions, including equal-one-CPU budgets. Two separate A/B studies
+retain 720 raw records and all regressions; the permanent 180-record reference
+archive regenerates its numeric tables offline. Sparse/epoch guards preserve
+managed thread counts, bounded ownership and joined shutdown.
+
 ## Kernel-guided I/O: `7b5f08b` → `29bfb20`
 
-[Latest findings and all v1/v2 comparisons](io-scheduling/README.md): kernel
+[Earlier findings and all v1/v2 comparisons](io-scheduling/README.md): kernel
 profiling, same-pass receive/dispatch, guarded reply yields and a versioned
 cooperative run budget. Includes 720 native records, substantial worker-tail
 reductions, CPU/spreads, and every measured regression. These are separate from

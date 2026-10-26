@@ -424,9 +424,10 @@ Not implemented or implied by the completed increments:
    replication and clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe
    release, failover and fencing semantics are not implemented.
-4. Continue investigating the single-core, low-pipeline and tail-latency weakness:
-   extend S16–S18's [profile-guided work](hot-paths.md) with mixed TTL/traffic and
-   client/server saturation evidence, using PING as a no-key-map control. Evaluate
+4. Extend the [measured client-I/O gains](../benchmarks/studies/client-handoffs/README.md)
+   beyond the current cohort: investigate idle accept polling, explicit fixed-worker
+   and multicore tails, mixed TTL/traffic and client/server saturation, using PING
+   as a no-key-map control. Evaluate
    a safe readiness boundary before speculative sharding; retain idle CPU,
    backpressure, shutdown and multi-key atomicity gates. Unsafe project code and
    external Rust dependencies remain forbidden.

@@ -1,0 +1,1 @@
+{"variant": "valkey", "run": 2, "requests": 1000, "observation_seconds": 2.2146784249925986, "p50_us": 548.527, "p99_us": 5286.159, "max_us": 36366.699, "user_ticks": 9, "system_ticks": 32}

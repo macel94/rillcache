@@ -1,0 +1,674 @@
+{
+  "baseline_source": "6cea8cc2370c14401f8b7736db99a930de1bc02f",
+  "event": "cycles:k",
+  "frequency_hz": 499,
+  "callgraph": "fp",
+  "workload": "ping",
+  "requests": 20000,
+  "clients": 8,
+  "pipeline": 1,
+  "warmup_per_client": 100,
+  "keyspace": 1024,
+  "value_size": 64,
+  "profiling_not_native_timing_evidence": true,
+  "raw_addresses_not_published": true,
+  "profiles": [
+    {
+      "mode": "per-client",
+      "samples": 0,
+      "lost": 0,
+      "top_self_samples": [
+        {
+          "percent": 4.08,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nft_do_chain"
+        },
+        {
+          "percent": 3.52,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__pv_queued_spin_lock_slowpath"
+        },
+        {
+          "percent": 2.85,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "native_write_msr"
+        },
+        {
+          "percent": 2.8,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "native_read_msr"
+        },
+        {
+          "percent": 1.71,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "pick_task_fair"
+        },
+        {
+          "percent": 1.57,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "ip_finish_output2"
+        },
+        {
+          "percent": 1.46,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "fib_table_lookup"
+        },
+        {
+          "percent": 1.34,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_ack"
+        },
+        {
+          "percent": 1.31,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__dev_queue_xmit"
+        },
+        {
+          "percent": 1.28,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_rcv_established"
+        },
+        {
+          "percent": 1.27,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_ack_update_rtt"
+        },
+        {
+          "percent": 1.13,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nft_match_eval"
+        },
+        {
+          "percent": 1.12,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nf_conntrack_in"
+        },
+        {
+          "percent": 1.1,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "ktime_get"
+        },
+        {
+          "percent": 1.05,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "aa_sk_perm"
+        },
+        {
+          "percent": 1.05,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__enqueue_entity"
+        },
+        {
+          "percent": 1.02,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "update_curr"
+        },
+        {
+          "percent": 1.01,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__wake_up_common"
+        },
+        {
+          "percent": 1.01,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__schedule"
+        },
+        {
+          "percent": 0.95,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nft_counter_eval"
+        },
+        {
+          "percent": 0.9,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "memset_orig"
+        },
+        {
+          "percent": 0.89,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "update_load_avg"
+        },
+        {
+          "percent": 0.87,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "kmem_cache_alloc_node_noprof"
+        },
+        {
+          "percent": 0.81,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "available_idle_cpu"
+        },
+        {
+          "percent": 0.79,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "skb_attempt_defer_free"
+        },
+        {
+          "percent": 0.78,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "_raw_spin_lock_irqsave"
+        },
+        {
+          "percent": 0.77,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "do_syscall_64"
+        },
+        {
+          "percent": 0.75,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "try_to_wake_up"
+        },
+        {
+          "percent": 0.73,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__ip_local_out"
+        },
+        {
+          "percent": 0.72,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_v4_rcv"
+        },
+        {
+          "percent": 0.72,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "pvclock_clocksource_read_nowd"
+        }
+      ]
+    },
+    {
+      "mode": "fixed-one",
+      "samples": 0,
+      "lost": 0,
+      "top_self_samples": [
+        {
+          "percent": 6.64,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "native_write_msr"
+        },
+        {
+          "percent": 6.39,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nft_do_chain"
+        },
+        {
+          "percent": 2.11,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nf_conntrack_tcp_packet"
+        },
+        {
+          "percent": 1.75,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__pv_queued_spin_lock_slowpath"
+        },
+        {
+          "percent": 1.56,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "loopback_xmit"
+        },
+        {
+          "percent": 1.53,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "remove_entity_load_avg"
+        },
+        {
+          "percent": 1.52,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "skb_release_data"
+        },
+        {
+          "percent": 1.27,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nft_counter_eval"
+        },
+        {
+          "percent": 1.24,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "entry_SYSCALL_64"
+        },
+        {
+          "percent": 1.24,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "entry_SYSCALL_64_after_hwframe"
+        },
+        {
+          "percent": 1.18,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "_raw_spin_lock_irqsave"
+        },
+        {
+          "percent": 1.18,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__kfree_skb"
+        },
+        {
+          "percent": 1.15,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_rcv_space_adjust"
+        },
+        {
+          "percent": 1.14,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_rcv_established"
+        },
+        {
+          "percent": 1.14,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "sk_filter_trim_cap"
+        },
+        {
+          "percent": 1.13,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "psi_group_change"
+        },
+        {
+          "percent": 1.12,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "native_read_msr"
+        },
+        {
+          "percent": 1.12,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "arch_exit_to_user_mode_prepare.isra.0"
+        },
+        {
+          "percent": 1.1,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__raw_callee_save___pv_queued_spin_unlock"
+        },
+        {
+          "percent": 1.09,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "ktime_get"
+        },
+        {
+          "percent": 1.08,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nf_conntrack_in"
+        },
+        {
+          "percent": 1.07,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_recvmsg"
+        },
+        {
+          "percent": 1.05,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "kfree_skbmem"
+        },
+        {
+          "percent": 1.05,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__sys_recvfrom"
+        },
+        {
+          "percent": 1.04,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "inet_recvmsg"
+        },
+        {
+          "percent": 1.04,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__check_object_size"
+        },
+        {
+          "percent": 1.03,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_ack"
+        },
+        {
+          "percent": 1.02,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "net_rx_action"
+        },
+        {
+          "percent": 1.0,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "ttwu_queue_wakelist"
+        },
+        {
+          "percent": 0.98,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "fdget"
+        },
+        {
+          "percent": 0.98,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__skb_datagram_iter"
+        },
+        {
+          "percent": 0.92,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__mod_memcg_state"
+        },
+        {
+          "percent": 0.92,
+          "object": "[vdso]",
+          "privilege": ".",
+          "symbol": "__vdso_clock_gettime"
+        },
+        {
+          "percent": 0.86,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "security_sock_rcv_skb"
+        },
+        {
+          "percent": 0.81,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "entry_SYSCALL_64_safe_stack"
+        },
+        {
+          "percent": 0.8,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "kmem_cache_alloc_node_noprof"
+        },
+        {
+          "percent": 0.73,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "release_sock"
+        },
+        {
+          "percent": 0.71,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__rseq_handle_notify_resume"
+        }
+      ]
+    },
+    {
+      "mode": "valkey-9.1.2",
+      "samples": 0,
+      "lost": 0,
+      "top_self_samples": [
+        {
+          "percent": 7.21,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__pv_queued_spin_lock_slowpath"
+        },
+        {
+          "percent": 6.43,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nft_do_chain"
+        },
+        {
+          "percent": 4.8,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "native_write_msr"
+        },
+        {
+          "percent": 2.85,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "net_rx_action"
+        },
+        {
+          "percent": 2.25,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "rep_movs_alternative"
+        },
+        {
+          "percent": 2.0,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_ack"
+        },
+        {
+          "percent": 1.98,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nft_do_chain_ipv4"
+        },
+        {
+          "percent": 1.85,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_sendmsg_locked"
+        },
+        {
+          "percent": 1.66,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "sched_balance_update_blocked_averages"
+        },
+        {
+          "percent": 1.6,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__ip_queue_xmit"
+        },
+        {
+          "percent": 1.6,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nf_conntrack_tcp_packet"
+        },
+        {
+          "percent": 1.46,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nft_match_large_eval"
+        },
+        {
+          "percent": 1.4,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "cubictcp_cong_avoid"
+        },
+        {
+          "percent": 1.29,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "sock_poll"
+        },
+        {
+          "percent": 1.18,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__skb_datagram_iter"
+        },
+        {
+          "percent": 1.16,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__netif_receive_skb_core.constprop.0"
+        },
+        {
+          "percent": 1.11,
+          "object": "valkey-server",
+          "privilege": ".",
+          "symbol": "processInputBuffer"
+        },
+        {
+          "percent": 1.07,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "psi_group_change"
+        },
+        {
+          "percent": 1.06,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "refill_stock"
+        },
+        {
+          "percent": 1.04,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "memset_orig"
+        },
+        {
+          "percent": 1.04,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "fib_table_lookup"
+        },
+        {
+          "percent": 1.02,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "skb_page_frag_refill"
+        },
+        {
+          "percent": 1.01,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__nf_conntrack_find_get"
+        },
+        {
+          "percent": 1.0,
+          "object": "libc.so.6",
+          "privilege": ".",
+          "symbol": "__GI___libc_write"
+        },
+        {
+          "percent": 1.0,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__tcp_transmit_skb"
+        },
+        {
+          "percent": 0.98,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "_raw_spin_lock_irqsave"
+        },
+        {
+          "percent": 0.98,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nf_nat_ipv4_local_fn"
+        },
+        {
+          "percent": 0.94,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "kmem_cache_alloc_node_noprof"
+        },
+        {
+          "percent": 0.93,
+          "object": "valkey-server",
+          "privilege": ".",
+          "symbol": "createEmbeddedStringObjectWithKeyAndExpire.lto_priv.0"
+        },
+        {
+          "percent": 0.89,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "migrate_task_rq_fair"
+        },
+        {
+          "percent": 0.89,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__list_del_entry_valid_or_report"
+        },
+        {
+          "percent": 0.85,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "__inet_lookup_established"
+        },
+        {
+          "percent": 0.85,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "nft_match_eval"
+        },
+        {
+          "percent": 0.84,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "tcp_check_space"
+        },
+        {
+          "percent": 0.83,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "sk_filter_trim_cap"
+        },
+        {
+          "percent": 0.8,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "skb_free_head"
+        },
+        {
+          "percent": 0.71,
+          "object": "[kernel.kallsyms]",
+          "privilege": "k",
+          "symbol": "_raw_spin_unlock_irqrestore"
+        }
+      ]
+    }
+  ]
+}
