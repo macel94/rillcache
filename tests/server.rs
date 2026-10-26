@@ -574,7 +574,7 @@ fn conditional_strings_binary_type_and_oom_errors_keep_the_wire_usable() {
     send(
         &mut stream,
         &[b"MSETEX", b"2", b"k", b"bad"],
-        b"-ERR wrong number of key-value pairs\r\n",
+        b"-ERR syntax error\r\n",
     );
     send(&mut stream, &[b"XLEN", b"k"], b":1\r\n");
     send(

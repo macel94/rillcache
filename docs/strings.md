@@ -61,11 +61,17 @@ and DIGEST reject existing non-string values; unconditional DELEX deletes any
 supported type. Conditional DELEX uses Redis's specific type error, whereas
 DELIFEQ returns WRONGTYPE.
 
-MSETEX follows Redis's `ERR wrong number of key-value pairs` for an incomplete
-counted pair block; Valkey 9.1.2 returns `ERR syntax error` instead. Both reject
-without writes; this unavoidable vendor error-text divergence remains visible
-in the unmodified Valkey Tcl suite. GET and value/digest conditions are SET-only
-and rejected by MSETEX. Keyspace notifications/replication are not implemented.
+MSETEX follows Valkey's generic `ERR syntax error` for an argument list shorter
+than `2 + 2*numkeys`, including the overflow-protection counts, and for
+malformed or conflicting options. Only a genuinely invalid numkeys value
+(`0`, negative, non-canonical integer, or greater than `i32::MAX`) returns
+`ERR invalid numkeys value or out of range`, and fewer than four arguments
+return the command arity error. Redis 8.10.2 instead answers
+`ERR wrong number of key-value pairs` for a short counted pair block;
+Rillcache follows Valkey, so the unmodified Valkey Tcl suite observes no
+error-text divergence for these cases. Every rejected form is rejected without
+writes. GET and value/digest conditions are SET-only and rejected by MSETEX.
+Keyspace notifications/replication are not implemented.
 
 ## Expiration
 
