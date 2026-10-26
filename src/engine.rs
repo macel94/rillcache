@@ -1,6 +1,7 @@
 //! Atomic in-memory string commands with expiration and a key/value payload budget.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,6 +57,7 @@ pub struct Store {
     clock: Arc<dyn Clock>,
     transaction_gate: RwLock<()>,
     auth: RwLock<Auth>,
+    auth_required: AtomicBool,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -79,6 +81,7 @@ impl Store {
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
             transaction_gate: RwLock::new(()),
+            auth_required: AtomicBool::new(auth.required()),
             auth: RwLock::new(auth),
         }
     }
@@ -306,9 +309,9 @@ impl Store {
     }
 
     /// Whether this store requires authentication for data/admin commands.
-    /// A poisoned lock fails closed.
+    /// The atomic fast path keeps the common benchmark path lock-free.
     pub fn authentication_required(&self) -> bool {
-        self.auth.read().map_or(true, |auth| auth.required())
+        self.auth_required.load(Ordering::Acquire)
     }
 
     pub fn authenticate(&self, username: Option<&[u8]>, password: &[u8]) -> Result<(), AuthError> {
@@ -319,7 +322,7 @@ impl Store {
     }
 
     pub fn requirepass_configured(&self) -> bool {
-        self.auth.read().is_ok_and(|auth| auth.configured())
+        self.auth_required.load(Ordering::Acquire)
     }
 
     /// Atomically replace the default credential; only CONFIG SET uses this.
@@ -328,6 +331,7 @@ impl Store {
             return false;
         };
         auth.set_password(password);
+        self.auth_required.store(auth.required(), Ordering::Release);
         true
     }
 }
