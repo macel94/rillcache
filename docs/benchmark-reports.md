@@ -111,7 +111,9 @@ neither an AI narrative nor a passing PR gate establishes a general victory.
    `pull-requests: write` and `actions: write`. It never runs inference or receives
    the inference job's token or billing permission. It checks report/run identity,
    stages only dashboard/history paths on an automation branch, opens/reuses a PR
-   and dispatches both mandatory read-only checks on its head. It never pushes main.
+   and dispatches missing exact-head read-only checks, including original upstream
+   Tcl compatibility. It requests and verifies protected squash auto-merge for its
+   newly created ready PR; it never pushes main or bypasses a check/review.
 
 Publication is serialized and compares `(workflow run number, review attempt)`:
 a late rerun of an older run is archived but cannot overwrite the current page.
@@ -122,8 +124,23 @@ force-pushing** or restoring an old source tree. Existing PRs are reused and
 already-published reports no-op. Stale branches must be updated/regenerated and
 rechecked, not exempted from the up-to-date requirement. GitHub-token PR events
 may require workflow approval; explicit dispatches start checks without a new
-credential and attach them to the PR head. Report PRs are not auto-merged or
-exempted from the Valkey gate. Non-default branches can generate numeric Actions
+credential and attach them to the PR head. `scripts/report-pr-delivery.py` verifies
+same-repository/branch/head identity and current-main ancestry, searches exact-head
+run history, and refuses to retry any real failure even if a later run succeeded.
+Running/successful runs are not duplicated; approval-held events are not test
+passes. Before a missing workflow is dispatched, its definition must match
+protected main. All three workflows (CI, Valkey gate, Tcl compatibility) are
+observed; the manual-only upstream performance experiment is never dispatched by
+the publisher. A successful dispatch is not a test pass.
+
+New report PRs receive `gh pr merge --auto --squash --match-head-commit` and a
+read-back verification of the auto-merge request or a normal merged state. Required
+checks, current-head freshness and real reviews remain authoritative, with no
+report-only exemption. A publication retry never silently re-enables a disabled
+request on an existing PR; its summary explicitly preserves that merge intent.
+API failures, stale/racing identities, untrusted definitions, failed evidence and
+unverified auto-merge fail visibly instead of reporting delivery success.
+Non-default branches can generate numeric Actions
 reports but receive no inference token and cannot publish directly to main.
 
 A cancelled workflow may not reach reporting; a runner-wide outage can also

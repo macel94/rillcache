@@ -83,12 +83,15 @@ job has `contents: write`, `pull-requests: write` and `actions: write`. It:
 2. Creates `automation/benchmark-report-<run>-<attempt>` from current `main`.
 3. Commits only generated dashboard/history paths and opens a PR, or reuses an
    existing PR/no-ops an already-published report. It never pushes `main`.
-4. Explicitly dispatches the two read-only checks on that PR head. GitHub-token PR
-   events may require workflow approval; dispatch avoids a new stored credential.
-   The benchmark dispatch validates the open PR, head SHA, branch and latest base.
-5. Leaves merging to the ordinary protected PR process. No automatic bypass or
-   exemption applies to report-only PRs. Stale report branches must be updated or
-   regenerated, then rechecked; the publisher never rewrites immutable history.
+4. Observes exact-head CI, Valkey and original Tcl runs, dispatching only missing
+   read-only workflows after checking their definitions against protected main.
+   Approval-held events are not test evidence. Any real exact-head failure stops
+   publication without retries, including an earlier failure followed by success.
+5. Requests protected squash auto-merge only on its newly created ready PR, with
+   `--match-head-commit`, and verifies the request or normal merged state. Existing
+   disabled merge intent is preserved on retries. No automatic bypass or exemption
+   applies to report-only PRs; the two required checks above remain unchanged.
+   Stale report branches must be updated/rechecked; immutable history is retained.
 
 Repository Actions defaults remain read-only. GitHub's setting permitting Actions
 to create PRs is enabled. There is no new PAT, secret, privileged PR execution,
