@@ -458,10 +458,13 @@ command names, binary keys/values, multiple connections and ordered pipelines;
 `PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
 `EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
-INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX; APPEND/STRLEN/GETRANGE/SETRANGE. See
-[string semantics](strings.md), [string ranges](string-ranges.md) and
-[multi-key string limits](multikey-strings.md) for grammar, clocks, rounding,
-integer limits, resource bounds and atomic error behavior. Conditions are atomic
+INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX; APPEND/STRLEN/GETRANGE/SETRANGE;
+LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE; SADD/SMEMBERS/SCARD/SISMEMBER;
+HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD. See
+[string semantics](strings.md), [string ranges](string-ranges.md),
+[multi-key string limits](multikey-strings.md) and [typed collections](collections.md)
+for grammar, clocks, rounding, integer limits, resource bounds and atomic error
+behavior. Conditions are atomic
 and case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
 
 The default wire mode is RESP2. `HELLO` can inspect the current mode or
@@ -475,8 +478,9 @@ converted by frame boundaries, preserving binary payloads. See
 redis-cli/library handshake interoperability is not yet verified.
 
 Deliberately not supported: inline/telnet commands, empty/null request arrays,
-other RESP3 types and pushes, digest/value-match SET conditions, other data
-types, nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication,
+other RESP3 types and pushes, digest/value-match SET conditions, unimplemented
+collection commands and compact/listpack CONFIG, COPY, KEYS and RANDOMKEY,
+nonzero SELECT indices, AUTH/ACL/TLS, persistence, replication,
 clustering, transactions, pub/sub and streams. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-

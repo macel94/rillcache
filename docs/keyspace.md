@@ -2,8 +2,8 @@
 
 ## Acceptance criteria (EARS)
 
-- When `TYPE key` is received, the server shall return `string` for a live string
-  key and `none` for a missing or expired key; it shall not invent other data types.
+- When `TYPE key` is received, the server shall return the actual string/list/set/
+  hash/zset type for a live key and `none` for a missing or expired key.
 - When `RENAME source destination` is received, the server shall atomically move a
   live source over the destination, retaining the source expiry. A missing source
   shall return `ERR no such key` without changing another key.
@@ -21,9 +21,10 @@
 
 ## Actual semantics and limits
 
-The supported type is only `string`. TYPE, rename, TOUCH and DBSIZE run under the
-store's exclusive lock so expiration visibility and mutation are consistent with
-other commands. RENAME replacement and payload admission are atomic; source TTL is
+Strings, lists, sets, hashes and sorted sets share one key namespace. TYPE,
+rename, TOUCH and DBSIZE run under the store's exclusive lock so expiration
+visibility and mutation are consistent with other commands. See
+[typed collection limits](collections.md) for supported command subsets. RENAME replacement and payload admission are atomic; source TTL is
 transferred to the destination. A rename to itself returns `+OK` for RENAME and
 integer 0 for RENAMENX when the source exists. Missing-source errors use
 `-ERR no such key`.
@@ -34,9 +35,9 @@ and then counts K remaining live entries. RENAME is expected O(1) hash-map work,
 plus expiry-index and replaced-value cleanup. Large destination reclamation can
 therefore take time. The payload limit accounts for key and value bytes only,
 not allocator/map capacity, thread buffers, or process RSS. DBSIZE is one
-in-memory database only; SELECT and other data types are not implemented. No
-last-access metadata or eviction policy is implemented, so TOUCH is a no-op on
-access metadata while reporting existence accurately.
+in-memory database only; nonzero SELECT indices are not implemented. No last-access metadata or
+eviction policy is implemented, so TOUCH is a no-op on access metadata while
+reporting existence accurately.
 
 ## Evidence
 

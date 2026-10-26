@@ -1,3 +1,4 @@
+use super::data::Collection;
 use super::*;
 
 impl Store {
@@ -59,8 +60,17 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        if data.entries.contains_key(key) {
-            output.extend_from_slice(b"+string\r\n");
+        if let Some(entry) = data.entries.get(key) {
+            let kind: &[u8] = match entry.collection.as_ref() {
+                None => b"string",
+                Some(Collection::List(_)) => b"list",
+                Some(Collection::Set(_)) => b"set",
+                Some(Collection::Hash(_)) => b"hash",
+                Some(Collection::ZSet(_)) => b"zset",
+            };
+            output.push(b'+');
+            output.extend_from_slice(kind);
+            output.extend_from_slice(b"\r\n");
         } else {
             output.extend_from_slice(b"+none\r\n");
         }
@@ -130,17 +140,17 @@ impl Store {
 
         // Compute the final exact payload before removing either key. This makes
         // an over-budget longer destination an atomic failure.
-        let source_bytes = source.len().checked_add(entry.value.len());
+        let source_bytes = source.len().checked_add(entry.payload_len());
         let destination_bytes = data
             .entries
             .get(destination)
-            .and_then(|old| destination.len().checked_add(old.value.len()))
+            .and_then(|old| destination.len().checked_add(old.payload_len()))
             .unwrap_or(0);
         let Some(payload) = source_bytes
             .and_then(|bytes| data.payload_bytes.checked_sub(bytes))
             .and_then(|remaining| remaining.checked_sub(destination_bytes))
             .and_then(|remaining| remaining.checked_add(destination.len()))
-            .and_then(|remaining| remaining.checked_add(entry.value.len()))
+            .and_then(|remaining| remaining.checked_add(entry.payload_len()))
             .filter(|bytes| *bytes <= self.max_payload_bytes)
         else {
             output.extend_from_slice(options::OOM);
@@ -149,7 +159,7 @@ impl Store {
 
         let entry = data.remove(source).expect("source checked while locked");
         data.remove(destination);
-        data.put(destination, &entry.value, entry.expires, payload);
+        data.put_entry(destination, entry, payload);
         if only_if_absent {
             integer(1, output);
         } else {

@@ -52,6 +52,39 @@ fn keyspace_commands_work_over_tcp_in_all_execution_modes() {
         command(&mut stream, &[b"RENAMENX", b"c", b"b\xff"], b":0\r\n");
         command(&mut stream, &[b"DBSIZE"], b":2\r\n");
 
+        command(&mut stream, &[b"LPUSH", b"list", b"one", b"two"], b":2\r\n");
+        command(&mut stream, &[b"TYPE", b"list"], b"+list\r\n");
+        command(
+            &mut stream,
+            &[b"LRANGE", b"list", b"0", b"-1"],
+            b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n",
+        );
+        command(&mut stream, &[b"RPOP", b"list"], b"$3\r\none\r\n");
+        command(&mut stream, &[b"DEL", b"list"], b":1\r\n");
+
+        command(&mut stream, &[b"SADD", b"set", b"b", b"a", b"b"], b":2\r\n");
+        command(&mut stream, &[b"SISMEMBER", b"set", b"a"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"HSET", b"hash", b"field", b"value"],
+            b":1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"HGET", b"hash", b"field"],
+            b"$5\r\nvalue\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZADD", b"zset", b"2", b"b", b"1", b"a"],
+            b":2\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZRANGE", b"zset", b"0", b"-1"],
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n",
+        );
+
         server.shutdown().unwrap();
     }
 }

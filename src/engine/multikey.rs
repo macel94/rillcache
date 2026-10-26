@@ -29,7 +29,10 @@ impl Store {
             let count = arguments.len() - 1;
             let mut reply_bytes = 3 + decimal_digits(count);
             for key in &arguments[1..] {
-                let value_len = data.entries.get(*key).map(|entry| entry.value.len());
+                let value_len = data
+                    .entries
+                    .get(*key)
+                    .and_then(|entry| entry.collection.is_none().then_some(entry.value.len()));
                 let element_bytes = match value_len {
                     Some(length) => 5usize
                         .checked_add(decimal_digits(length))
@@ -51,7 +54,10 @@ impl Store {
             write!(output, "*{count}\r\n").expect("Vec write");
             for key in &arguments[1..] {
                 encode_bulk(
-                    data.entries.get(*key).map(|entry| entry.value.as_slice()),
+                    data.entries
+                        .get(*key)
+                        .filter(|entry| entry.collection.is_none())
+                        .map(|entry| entry.value.as_slice()),
                     output,
                 );
             }
@@ -101,7 +107,7 @@ impl Store {
             if let Some(entry) = data.entries.get(*key) {
                 let Some(without_old) = key
                     .len()
-                    .checked_add(entry.value.len())
+                    .checked_add(entry.payload_len())
                     .and_then(|old_bytes| payload.checked_sub(old_bytes))
                 else {
                     internal_error(output);

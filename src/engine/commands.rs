@@ -16,6 +16,10 @@ impl Store {
         };
         let now = self.now(&data);
         let entry = data.entries.get(key);
+        if entry.is_some_and(|entry| entry.alive(now) && entry.collection.is_some()) {
+            wrong_type(output);
+            return;
+        }
         if entry.is_none_or(|entry| entry.alive(now)) {
             encode_bulk(entry.map(|entry| entry.value.as_slice()), output);
             return;
@@ -101,6 +105,10 @@ impl Store {
             Condition::Missing => existing.is_none(),
             Condition::Present => existing.is_some(),
         };
+        if options.get && existing.is_some_and(|entry| entry.collection.is_some()) {
+            wrong_type(output);
+            return;
+        }
         if !allowed {
             if numeric_reply {
                 integer(0, output);
@@ -132,7 +140,7 @@ impl Store {
             data.remove(key);
             return;
         }
-        let previous = existing.map(|entry| entry.value.len());
+        let previous = existing.map(Entry::payload_len);
         let Some(payload) = data.reserve(key, value.len(), previous, self.max_payload_bytes, now)
         else {
             output.extend_from_slice(OOM);
@@ -158,6 +166,14 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.collection.is_some())
+        {
+            wrong_type(output);
+            return;
+        }
         encode_bulk(
             data.remove(key)
                 .as_ref()
@@ -181,6 +197,10 @@ impl Store {
             encode_bulk(None, output);
             return;
         };
+        if entry.collection.is_some() {
+            wrong_type(output);
+            return;
+        }
         // Like Redis, a missing GETEX key returns null without parsing its TTL value.
         let expires = match options.deadline(now, "getex") {
             Ok(value) => value,
@@ -335,6 +355,10 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(arguments[1], now);
         let entry = data.entries.get(arguments[1]);
+        if entry.is_some_and(|entry| entry.collection.is_some()) {
+            wrong_type(output);
+            return;
+        }
         let value = match entry {
             Some(entry) => match parse_integer(&entry.value) {
                 Some(value) => value,
@@ -351,7 +375,7 @@ impl Store {
         };
         let expires = entry.and_then(|entry| entry.expires);
         let encoded = value.to_string();
-        let previous = entry.map(|entry| entry.value.len());
+        let previous = entry.map(Entry::payload_len);
         let Some(payload) = data.reserve(
             arguments[1],
             encoded.len(),

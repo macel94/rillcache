@@ -1,10 +1,38 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Collection {
+    List(VecDeque<Vec<u8>>),
+    Set(BTreeSet<Vec<u8>>),
+    Hash(HashMap<Vec<u8>, Vec<u8>>),
+    ZSet(HashMap<Vec<u8>, f64>),
+}
+impl Collection {
+    pub fn payload_len(&self) -> usize {
+        match self {
+            Self::List(values) => values.iter().map(Vec::len).sum(),
+            Self::Set(values) => values.iter().map(Vec::len).sum(),
+            Self::Hash(values) => values
+                .iter()
+                .map(|(field, value)| field.len() + value.len())
+                .sum(),
+            Self::ZSet(values) => values.keys().map(Vec::len).sum(),
+        }
+    }
+}
 
 pub(super) struct Entry {
     pub value: Vec<u8>,
+    pub collection: Option<Collection>,
     pub expires: Option<i64>,
 }
 impl Entry {
+    pub fn payload_len(&self) -> usize {
+        self.collection
+            .as_ref()
+            .map_or(self.value.len(), Collection::payload_len)
+    }
+
     pub fn alive(&self, now: i64) -> bool {
         // Redis keyIsExpired uses now > deadline; TTL may be zero for one tick.
         self.expires.is_none_or(|deadline| now <= deadline)
@@ -19,7 +47,7 @@ pub(super) struct Data {
 impl Data {
     pub fn remove(&mut self, key: &[u8]) -> Option<Entry> {
         let (key, entry) = self.entries.remove_entry(key)?;
-        self.payload_bytes -= key.len() + entry.value.len();
+        self.payload_bytes -= key.len() + entry.payload_len();
         if let Some(at) = entry.expires {
             self.expirations.remove(&(at, key));
         }
@@ -80,10 +108,7 @@ impl Data {
         maximum: usize,
         now: i64,
     ) -> Option<usize> {
-        debug_assert_eq!(
-            self.entries.get(key).map(|entry| entry.value.len()),
-            previous
-        );
+        debug_assert_eq!(self.entries.get(key).map(Entry::payload_len), previous);
         let size = |data: &Self| {
             (data.payload_bytes - previous.unwrap_or(0))
                 .checked_add(if previous.is_none() { key.len() } else { 0 })?
@@ -101,6 +126,7 @@ impl Data {
         if let Some(entry) = self.entries.get_mut(key) {
             // Reuse admitted overwrites, but release disproportionate old capacity
             // on shrink (and all capacity for an empty replacement).
+            entry.collection = None;
             if entry.value.capacity() > value.len().saturating_mul(2) {
                 entry.value = value.to_vec();
             } else {
@@ -112,6 +138,42 @@ impl Data {
                 key.to_vec(),
                 Entry {
                     value: value.to_vec(),
+                    collection: None,
+                    expires,
+                },
+            );
+            if let Some(at) = expires {
+                self.expirations.insert((at, key.to_vec()));
+            }
+        }
+        self.payload_bytes = payload;
+    }
+
+    pub fn put_entry(&mut self, key: &[u8], entry: Entry, payload: usize) {
+        if let Some(at) = entry.expires {
+            self.expirations.insert((at, key.to_vec()));
+        }
+        self.entries.insert(key.to_vec(), entry);
+        self.payload_bytes = payload;
+    }
+
+    pub fn put_collection(
+        &mut self,
+        key: &[u8],
+        collection: Collection,
+        expires: Option<i64>,
+        payload: usize,
+    ) {
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.value = Vec::new();
+            entry.collection = Some(collection);
+            Self::replace_expiry(&mut self.expirations, key, entry, expires);
+        } else {
+            self.entries.insert(
+                key.to_vec(),
+                Entry {
+                    value: Vec::new(),
+                    collection: Some(collection),
                     expires,
                 },
             );

@@ -1,5 +1,6 @@
+use super::data::Entry;
 use super::options::{NOT_INTEGER, OOM, parse_integer};
-use super::{Store, arity, integer, internal_error};
+use super::{Store, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 
 const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
@@ -50,7 +51,11 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(key, now);
         let entry = data.entries.get(key);
-        let previous = entry.map(|entry| entry.value.len());
+        if entry.is_some_and(|entry| entry.collection.is_some()) {
+            wrong_type(output);
+            return;
+        }
+        let previous = entry.map(Entry::payload_len);
         let expires = entry.and_then(|entry| entry.expires);
         let Some(length) = previous
             .unwrap_or(0)
@@ -84,10 +89,15 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        integer(
-            data.entries.get(key).map_or(0, |entry| entry.value.len()) as i64,
-            output,
-        );
+        let Some(entry) = data.entries.get(key) else {
+            integer(0, output);
+            return;
+        };
+        if entry.collection.is_some() {
+            wrong_type(output);
+            return;
+        }
+        integer(entry.value.len() as i64, output);
     }
 
     fn getrange(&self, key: &[u8], start: &[u8], end: &[u8], output: &mut Vec<u8>) {
@@ -101,6 +111,14 @@ impl Store {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
+        if data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.collection.is_some())
+        {
+            wrong_type(output);
+            return;
+        }
         let value = data
             .entries
             .get(key)
@@ -139,7 +157,11 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(key, now);
         let entry = data.entries.get(key);
-        let previous = entry.map(|entry| entry.value.len());
+        if entry.is_some_and(|entry| entry.collection.is_some()) {
+            wrong_type(output);
+            return;
+        }
+        let previous = entry.map(Entry::payload_len);
         let old_len = previous.unwrap_or(0);
         let expires = entry.and_then(|entry| entry.expires);
         if replacement.is_empty() {

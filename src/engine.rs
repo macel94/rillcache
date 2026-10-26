@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::protocol::encode_bulk;
+mod collections;
 mod commands;
 mod data;
 mod discovery;
@@ -235,6 +236,7 @@ impl Store {
             self.increment(arguments, name, output);
         } else if !self.execute_keyspace(arguments, output)
             && !self.execute_string_ranges(arguments, output)
+            && !self.execute_collections(arguments, output)
         {
             output.extend_from_slice(b"-ERR unknown command\r\n");
         }
@@ -254,6 +256,11 @@ fn integer(value: i64, output: &mut Vec<u8>) {
 }
 fn internal_error(output: &mut Vec<u8>) {
     output.extend_from_slice(b"-ERR internal store error\r\n");
+}
+fn wrong_type(output: &mut Vec<u8>) {
+    output.extend_from_slice(
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
 }
 
 #[cfg(test)]
