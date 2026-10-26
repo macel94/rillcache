@@ -114,7 +114,11 @@ fn semantic_errors_keep_the_connection_usable_and_do_not_write() {
         &[b"GET"],
         b"-ERR wrong number of arguments for 'get' command\r\n",
     );
-    send(&mut stream, &[b"HELLO", b"3"], b"-ERR unknown command\r\n");
+    send(
+        &mut stream,
+        &[b"NO-SUCH-COMMAND"],
+        b"-ERR unknown command\r\n",
+    );
     send(
         &mut stream,
         &[b"SET", b"k", b"v", b"UNSUPPORTED", b"1"],
