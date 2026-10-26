@@ -144,11 +144,12 @@ impl Config {
             || self.limits.max_bulk_bytes == 0
             || self.limits.max_frame_bytes < 8
             || self.limits.max_bulk_bytes > self.limits.max_frame_bytes
+            || self.limits.max_frame_bytes > 512 * 1024 * 1024
             || self.idle_timeout.is_zero()
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; bulk limit must fit within frame limit",
+                "limits and timeout must be positive; frame limit must be at most 512 MiB and bulk limit must fit within frame limit",
             ));
         }
         Ok(())
@@ -355,7 +356,11 @@ fn serve_client(
         let mut commands = 0;
         loop {
             let (action, used) = match dispatch_request(&input[consumed..], limits, |args| {
-                session.execute(store, args, &mut output)
+                if args.is_empty() {
+                    Action::Continue // Redis ignores an empty inline line.
+                } else {
+                    session.execute(store, args, &mut output)
+                }
             }) {
                 Ok(Some(result)) => result,
                 Ok(None) => break,
@@ -557,6 +562,21 @@ mod tests {
             Config {
                 limits: Limits {
                     max_frame_bytes: 7,
+                    ..Limits::default()
+                },
+                ..Config::default()
+            },
+            Config {
+                limits: Limits {
+                    max_frame_bytes: 512 * 1024 * 1024 + 1,
+                    ..Limits::default()
+                },
+                ..Config::default()
+            },
+            Config {
+                limits: Limits {
+                    max_bulk_bytes: 4 * 1024 * 1024,
+                    max_frame_bytes: 2 * 1024 * 1024,
                     ..Limits::default()
                 },
                 ..Config::default()

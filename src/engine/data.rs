@@ -51,6 +51,7 @@ impl Stream {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Entry {
     pub value: Vec<u8>,
     pub stream: Option<Stream>,
@@ -176,6 +177,17 @@ impl Data {
                 self.expirations.insert((at, key.to_vec()));
             }
         }
+        self.payload_bytes = payload;
+    }
+
+    /// Install an already admitted owned value without copying its buffers or tree.
+    /// `payload` is the final total, including replacement of any destination.
+    pub fn put_owned(&mut self, key: &[u8], entry: Entry, payload: usize) {
+        self.remove(key);
+        if let Some(at) = entry.expires {
+            self.expirations.insert((at, key.to_vec()));
+        }
+        self.entries.insert(key.to_vec(), entry);
         self.payload_bytes = payload;
     }
 

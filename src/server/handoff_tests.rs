@@ -254,6 +254,20 @@ fn returned_partial_reply_is_not_resent_and_blocking_mode_is_restored() {
 }
 
 #[test]
+fn inline_and_resp_pipeline_is_ordered_while_serviced_by_a_leased_client() {
+    let (mut client, mut peer) = pair(b"PING\n*1\r\n$4\r\nPING\r\n".to_vec());
+    let config = Config::default();
+    let store = Store::new(1024);
+    assert_eq!(
+        client.poll(&store, &config, &mut [0; 128]).unwrap(),
+        Some(true)
+    );
+    let mut reply = [0; 14];
+    peer.read_exact(&mut reply).unwrap();
+    assert_eq!(&reply, b"+PONG\r\n+PONG\r\n");
+}
+
+#[test]
 fn leadership_unwind_returns_queued_ownership_without_a_stale_epoch() {
     let stop = Arc::new(AtomicBool::new(false));
     let sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);

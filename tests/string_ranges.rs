@@ -73,6 +73,18 @@ fn binary_empty_ranges_and_inclusive_signed_boundaries() {
         b"$5\r\n\0\xffabc\r\n"
     );
     assert_eq!(
+        command(&mut c, &[b"GETRANGE", b"k", b"0", b"-6"]),
+        b"$1\r\n\0\r\n"
+    );
+    assert_eq!(
+        command(&mut c, &[b"GETRANGE", b"k", b"-99", b"-99"]),
+        b"$1\r\n\0\r\n"
+    );
+    assert_eq!(
+        command(&mut c, &[b"GETRANGE", b"k", b"-99", b"-100"]),
+        b"$0\r\n\r\n"
+    );
+    assert_eq!(
         command(
             &mut c,
             &[
