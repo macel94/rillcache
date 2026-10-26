@@ -11,6 +11,7 @@ mod discovery;
 mod keyspace;
 mod multikey;
 mod options;
+mod streams;
 mod string_ranges;
 use data::Data;
 use options::{Condition, ExpiryKind, SetOptions};
@@ -67,7 +68,10 @@ impl Store {
 
     /// Append exactly one reply. No store lock is held during socket I/O.
     pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        if self.execute_discovery(arguments, output) || self.execute_multikey(arguments, output) {
+        if self.execute_discovery(arguments, output)
+            || self.execute_multikey(arguments, output)
+            || self.execute_streams(arguments, output)
+        {
             return Action::Continue;
         }
         let Some(command) = arguments.first() else {
