@@ -1,5 +1,4 @@
 use super::*;
-use std::io::Write as _;
 
 impl Store {
     pub(super) fn execute_admin(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
@@ -128,8 +127,8 @@ mod tests {
         let store = Store::new(100);
         run(&store, &[b"SET", b"k", b"v"]);
         for args in [
-            &[b"FLUSHDB".as_slice(), b"BAD"],
-            &[b"FLUSHALL", b"SYNC", b"ASYNC"],
+            &[b"FLUSHDB".as_slice(), b"BAD"][..],
+            &[b"FLUSHALL".as_slice(), b"SYNC", b"ASYNC"][..],
         ] {
             assert_eq!(run(&store, args), b"-ERR syntax error\r\n");
             assert_eq!(run(&store, &[b"GET", b"k"]), b"$1\r\nv\r\n");
@@ -179,7 +178,7 @@ fn config(args: &[&[u8]], out: &mut Vec<u8>) {
         // No Redis CONFIG runtime settings are implemented.
         out.extend_from_slice(b"*0\r\n");
     } else if sub.eq_ignore_ascii_case(b"SET") {
-        if args.len() < 4 || args.len() % 2 != 0 {
+        if args.len() < 4 || !args.len().is_multiple_of(2) {
             out.extend_from_slice(b"-ERR syntax error\r\n");
         } else {
             out.extend_from_slice(b"-ERR CONFIG SET option is unsupported\r\n");
