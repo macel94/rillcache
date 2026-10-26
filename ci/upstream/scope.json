@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "story": "As a maintainer, I can distinguish original upstream TCP conformance evidence from matched native throughput evidence without treating missing capabilities or harness failures as passes.",
+  "compatibility": {
+    "suites": ["unit/type/string", "unit/type/incr", "unit/keyspace"],
+    "options": ["--clients", "1", "--singledb", "--ignore-encoding", "--ignore-digest", "--durable", "--timeout", "120", "--dont-clean"],
+    "denied_tags": {
+      "needs:debug": "Implementation-specific DEBUG/refcount assertions are not a portable wire contract.",
+      "needs:repl": "Replication is unimplemented; this job covers one standalone TCP endpoint.",
+      "slow": "Bounded initial PR scope; large randomized/stress blocks need a separate capacity run."
+    },
+    "named_test_exclusions": [],
+    "harness_prerequisites": {
+      "redis": ["PING", "FLUSHALL", "FUNCTION FLUSH", "SCRIPT FLUSH", "CONFIG RESETSTAT", "CONFIG GET *"],
+      "valkey": ["PING", "FLUSHALL", "FUNCTION FLUSH"]
+    },
+    "known_candidate_blocker": "Rillcache currently lacks FLUSHALL/FUNCTION/CONFIG. Unchanged start_server external setup can stop before any assertions. This is a failing prerequisite-blocked result, never a compatibility pass. No protocol proxy or test patch supplies missing commands.",
+    "option_limits": {
+      "--singledb": "SELECT and multidatabase assertions tagged singledb:skip are automatically excluded in BOTH control and candidate.",
+      "--ignore-encoding": "Object encodings and some memory-layout assertions are not portable; upstream assert_encoding is disabled in BOTH runs.",
+      "--ignore-digest": "Upstream implementation DEBUG digest checks are disabled in BOTH runs; this is not full keyspace equivalence.",
+      "--durable": "Continue after assertion/command exceptions where upstream permits; setup/outside-test exceptions can still abort the unit.",
+      "external mode": "Upstream automatically skips external:skip blocks (process restarts, persistence, multiple servers). Conditions can omit tests without emitting skip events."
+    },
+    "excluded_units": [
+      {"glob": "unit/protocol", "reason": "Upstream marks its main protocol block external:skip; zero executed tests must not appear green."},
+      {"glob": "unit/moduleapi/*", "reason": "C module/API and implementation-specific tests are not applicable to the Rust TCP candidate."},
+      {"glob": "unit/cluster/*", "reason": "Cluster/multinode topology is unimplemented and outside the single-endpoint contract."},
+      {"glob": "integration/*", "reason": "Persistence, replication, restart/upgrade and other multi-instance integration behavior is outside this bounded initial scope."},
+      {"glob": "*", "reason": "Not selected in the initial strings/integer/keyspace cohort. No coverage or support claim; complete pinned-source unit inventory is emitted per run."}
+    ],
+    "timeout_seconds_per_run": 600
+  },
+  "performance": {
+    "repetitions": 6,
+    "requests": 300000,
+    "warmup_requests": 30000,
+    "clients": 16,
+    "pipelines": [1, 16],
+    "keyspace": 1024,
+    "value_bytes": 64,
+    "seed": 20261026,
+    "workloads": ["ping", "set", "get-hit", "get-miss", "incr"],
+    "process_timeout_seconds": 120,
+    "advisory_difference_percent": 5,
+    "server_workers": 1,
+    "limits": "Loopback RESP2, keepalive, 16 clients, fixed 1-worker candidate/native main execution, no auth/TLS/persistence/eviction, libc native allocators. Same runner and disjoint server/client CPU affinity. Native background threads and candidate control thread still exist. No cluster, durable, multi-type, realistic mixed-load, scaling or production-equivalence claim. 64-byte SET/GET values, uniform random 1024-key namespace; GET-miss intentionally empty. Latency is upstream generator request/pipeline latency, NOT an independently validated per-command HDR histogram."
+  }
+}
