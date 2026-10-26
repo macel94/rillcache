@@ -177,10 +177,10 @@ impl Store {
             if stream.entries.remove(&key).is_some() {
                 deleted += 1;
                 for group in stream.groups.values_mut() {
-                    if let Some(pending) = group.pending.remove(&key) {
-                        if let Some(consumer) = group.consumers.get_mut(&pending.consumer) {
-                            consumer.pending.remove(&key);
-                        }
+                    if let Some(pending) = group.pending.remove(&key)
+                        && let Some(consumer) = group.consumers.get_mut(&pending.consumer)
+                    {
+                        consumer.pending.remove(&key);
                     }
                 }
             }
