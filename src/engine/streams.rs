@@ -176,13 +176,8 @@ impl Store {
         for key in ids {
             if stream.entries.remove(&key).is_some() {
                 deleted += 1;
-                for group in stream.groups.values_mut() {
-                    if let Some(pending) = group.pending.remove(&key)
-                        && let Some(consumer) = group.consumers.get_mut(&pending.consumer)
-                    {
-                        consumer.pending.remove(&key);
-                    }
-                }
+                // Redis XDEL removes the message, not its pending-delivery
+                // references. Those IDs remain in group/consumer PEL metadata.
             }
         }
         let bytes = stream.payload_bytes().unwrap_or(0);
@@ -503,7 +498,8 @@ impl Store {
                 encode_bulk(Some(b"pel-count"), out);
                 integer(g.pending.len() as i64, out);
                 encode_bulk(Some(b"nacked-count"), out);
-                integer(g.pending.len() as i64, out);
+                // This subset has no XNACK/unowned pending entries.
+                integer(0, out);
                 encode_bulk(Some(b"pending"), out);
                 array(g.pending.len().min(limit), out);
                 for (pid, p) in g.pending.iter().take(limit) {
@@ -661,7 +657,7 @@ mod tests {
         assert!(!info.windows(5).any(|w| w == b"1-0"));
     }
     #[test]
-    fn xdel_removes_pending_references_from_groups_and_consumers() {
+    fn xdel_preserves_pending_references_in_groups_and_consumers() {
         let store = Store::new(1000);
         run(&store, &[b"XADD", b"s", b"1", b"f", b"v"]);
         run(&store, &[b"XGROUP", b"CREATE", b"s", b"g", b"0"]);
@@ -688,17 +684,18 @@ mod tests {
         assert_eq!(run(&store, &[b"XDEL", b"s", b"1-0"]), b":1\r\n");
         let after = run(&store, &[b"XINFO", b"STREAM", b"s", b"FULL"]);
         assert!(
-            !after
+            after
                 .windows(pending_entry.len())
                 .any(|w| w == pending_entry)
         );
+        assert_eq!(run(&store, &[b"XLEN", b"s"]), b":0\r\n");
         let data = store.data.read().unwrap();
         let group = &data.entries[b"s".as_slice()]
             .stream
             .as_ref()
             .unwrap()
             .groups[b"g".as_slice()];
-        assert!(group.pending.is_empty());
-        assert!(group.consumers[b"c".as_slice()].pending.is_empty());
+        assert_eq!(group.pending.len(), 1);
+        assert_eq!(group.consumers[b"c".as_slice()].pending.len(), 1);
     }
 }
