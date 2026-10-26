@@ -468,7 +468,7 @@ impl Store {
 
     fn info(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let sections: &[&[u8]] = match arguments {
-            [_] => &[b"server", b"memory", b"keyspace", b"stats"],
+            [_] => &[b"server", b"memory", b"keyspace", b"stats", b"clients"],
             [_, section] => &[*section],
             _ => {
                 output.extend_from_slice(b"-ERR wrong number of arguments for 'info' command\r\n");
@@ -495,7 +495,7 @@ impl Store {
             let section = section.to_ascii_lowercase();
             if !matches!(
                 section.as_slice(),
-                b"server" | b"memory" | b"keyspace" | b"stats" | b"default" | b"all"
+                b"server" | b"memory" | b"keyspace" | b"stats" | b"clients" | b"default" | b"all"
             ) {
                 output.extend_from_slice(b"-ERR unsupported INFO section\r\n");
                 return;
@@ -524,6 +524,13 @@ impl Store {
                 let _ = writeln!(
                     text,
                     "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys}\r"
+                );
+            }
+            if matches!(section.as_slice(), b"clients" | b"default" | b"all") {
+                let _ = writeln!(
+                    text,
+                    "# Clients\r\nconnected_clients:{}\r\ncluster_connections:0\r",
+                    self.connected_clients()
                 );
             }
             if matches!(section.as_slice(), b"stats" | b"default" | b"all") {

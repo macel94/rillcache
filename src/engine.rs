@@ -10,6 +10,7 @@ use crate::protocol::{Limits, encode_bulk};
 mod administration;
 mod auth;
 mod blocking;
+mod clients;
 mod collection_commands;
 mod collection_config;
 mod collections;
@@ -32,6 +33,7 @@ mod xxh3;
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 pub use blocking::PopOutcome;
 pub use blocking::reply_value as blocking_reply;
+pub use clients::ClientSnapshot;
 use collection_config::CollectionConfig;
 use data::Data;
 pub use eviction::EvictionPolicy;
@@ -84,6 +86,7 @@ pub struct Store {
     journal: Option<std::sync::Mutex<journal::Journal>>,
     journal_limits: Limits,
     pubsub: RwLock<pubsub::PubSub>,
+    clients: RwLock<std::collections::BTreeMap<u64, clients::ClientRecord>>,
     connections_received: std::sync::atomic::AtomicU64,
     commands_processed: std::sync::atomic::AtomicU64,
     rejected_connections: std::sync::atomic::AtomicU64,
@@ -132,6 +135,7 @@ impl Store {
             journal: None,
             journal_limits: Limits::default(),
             pubsub: RwLock::new(pubsub::PubSub::default()),
+            clients: RwLock::new(std::collections::BTreeMap::new()),
             connections_received: std::sync::atomic::AtomicU64::new(0),
             commands_processed: std::sync::atomic::AtomicU64::new(0),
             rejected_connections: std::sync::atomic::AtomicU64::new(0),

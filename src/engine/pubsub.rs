@@ -153,6 +153,20 @@ impl PubSub {
         self.patterns.values().map(Vec::len).sum()
     }
 
+    pub(super) fn counts_for(&self, id: u64) -> (usize, usize) {
+        let channels = self
+            .channels
+            .values()
+            .filter(|subscribers| subscribers.iter().any(|subscriber| subscriber.id == id))
+            .count();
+        let patterns = self
+            .patterns
+            .values()
+            .filter(|subscribers| subscribers.iter().any(|subscriber| subscriber.id == id))
+            .count();
+        (channels, patterns)
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.channels.is_empty() && self.patterns.is_empty()
     }

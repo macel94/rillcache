@@ -17,6 +17,10 @@ per-command table or replication statistics.
 | `pubsub_channels` | Distinct channels with at least one live subscription |
 | `pubsub_patterns` | Total pattern subscriptions (not distinct patterns) |
 
+`INFO clients` reports `connected_clients` (the process-local registry size) and
+`cluster_connections:0`. `CLIENT LIST` exposes per-connection address/name/user/
+RESP/subscription metadata.
+
 `INFO memory` also reports the live `maxmemory_policy`. `evicted_keys` resets with
 `CONFIG RESETSTAT`; the policy itself does not.
 
@@ -47,7 +51,9 @@ keys that merely crossed their deadline and were not yet reaped/lazily removed.
 ## Deliberate gaps
 
 - No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.
-- No `INFO commandstats`, `latencystats`, `slowlog`, `clients` section,
+- No per-client fd/idle/command/buffer/memory/network fields, blocked-client count
+  or cross-process client view. `INFO clients` intentionally omits those fields.
+- No `INFO commandstats`, `latencystats`, `slowlog`, full `clients` section,
   `CLIENT LIST`, CPU/RSS accounting, network-byte counters or per-database stats.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.

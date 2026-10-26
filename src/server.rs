@@ -333,7 +333,7 @@ impl Server {
                         index += 1;
                     }
                 }
-                let (mut stream, _) = match self.listener.accept() {
+                let (mut stream, peer) = match self.listener.accept() {
                     Ok(connection) => connection,
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(1));
@@ -363,6 +363,7 @@ impl Server {
                 let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
                 let mut session = Session::new();
                 session.set_pubsub_sender(sender);
+                store.register_client(session.id(), peer, control.try_clone()?);
                 let thread = thread::Builder::new()
                     .name("rillcache-client".into())
                     .stack_size(256 * 1024)
@@ -617,6 +618,7 @@ fn serve_client(
         }
     })();
     store.pubsub_remove_client(client_id);
+    store.unregister_client(client_id);
     result
 }
 
