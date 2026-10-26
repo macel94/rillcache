@@ -10,11 +10,142 @@ use crate::protocol::encode_bulk;
 const MAX_MGET_REPLY_BYTES: usize = 2 * 1024 * 1024;
 
 impl Store {
+    fn msetex(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        use super::options::{Condition, SetOptions, parse_integer};
+        // Native command dispatch enforces MSETEX's minimum arity (4 arguments).
+        if arguments.len() < 4 {
+            arity("msetex", output);
+            return;
+        }
+        let Some(count) =
+            parse_integer(arguments[1]).filter(|count| *count > 0 && *count <= i32::MAX as i64)
+        else {
+            output.extend_from_slice(b"-ERR invalid numkeys value or out of range\r\n");
+            return;
+        };
+        let Some(pair_end) = usize::try_from(count)
+            .ok()
+            .and_then(|n| n.checked_mul(2))
+            .and_then(|n| n.checked_add(2))
+        else {
+            output.extend_from_slice(b"-ERR invalid numkeys value or out of range\r\n");
+            return;
+        };
+        if arguments.len() < pair_end {
+            // Redis's specific error differs from Valkey's generic syntax error.
+            output.extend_from_slice(b"-ERR wrong number of key-value pairs\r\n");
+            return;
+        }
+        let options = match SetOptions::parse(&arguments[pair_end..], false) {
+            Ok(options) => options,
+            Err(error) => {
+                output.extend_from_slice(error);
+                return;
+            }
+        };
+        if options.get
+            || matches!(
+                options.condition,
+                Condition::ValueEqual(_)
+                    | Condition::ValueNotEqual(_)
+                    | Condition::DigestEqual(_)
+                    | Condition::DigestNotEqual(_)
+            )
+        {
+            output.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+        // MSETEX accepts one NX/XX condition and one expiry choice, but not GET.
+        let mut final_values = BTreeMap::new();
+        for pair in arguments[2..pair_end].as_chunks::<2>().0 {
+            final_values.insert(pair[0], pair[1]);
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(output);
+            return;
+        };
+        let now = self.clock.now_ms().max(0);
+        let expires = match options.deadline(now, "msetex") {
+            Ok(expires) => expires,
+            Err(error) => {
+                output.extend_from_slice(&error);
+                return;
+            }
+        };
+        data.reap(now, usize::MAX);
+        let conditional = match options.condition {
+            Condition::Always => true,
+            Condition::Missing => !final_values
+                .keys()
+                .any(|key| data.entries.contains_key(*key)),
+            Condition::Present => final_values
+                .keys()
+                .all(|key| data.entries.contains_key(*key)),
+            _ => false,
+        };
+        if !conditional {
+            output.extend_from_slice(b":0\r\n");
+            return;
+        }
+        if !options.keep && expires.is_some_and(|deadline| deadline < now) {
+            for key in final_values.keys() {
+                data.remove(key);
+            }
+            output.extend_from_slice(b":1\r\n");
+            return;
+        }
+        let mut payload = data.payload_bytes;
+        for key in final_values.keys() {
+            if let Some(entry) = data.entries.get(*key) {
+                let Some(without_old) = key
+                    .len()
+                    .checked_add(entry.payload_len)
+                    .and_then(|old_bytes| payload.checked_sub(old_bytes))
+                else {
+                    internal_error(output);
+                    return;
+                };
+                payload = without_old;
+            }
+        }
+        for (key, value) in &final_values {
+            let Some(next) = payload
+                .checked_add(key.len())
+                .and_then(|v| v.checked_add(value.len()))
+            else {
+                output.extend_from_slice(OOM);
+                return;
+            };
+            payload = next;
+        }
+        if payload > self.max_payload_bytes {
+            output.extend_from_slice(OOM);
+            return;
+        }
+        for (key, value) in final_values {
+            let ttl = if options.keep {
+                data.entries.get(key).and_then(|entry| entry.expires)
+            } else {
+                expires
+            };
+            if ttl.is_some_and(|deadline| deadline < now) {
+                data.remove(key);
+            } else {
+                data.put(key, value, ttl, payload);
+            }
+        }
+        output.extend_from_slice(b":1\r\n");
+    }
+
     /// Execute MGET, MSET and MSETNX. Unrecognized commands leave `output` untouched.
     pub(super) fn execute_multikey(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> bool {
         let Some(command) = arguments.first() else {
             return false;
         };
+        if command.eq_ignore_ascii_case(b"MSETEX") {
+            self.msetex(arguments, output);
+            return true;
+        }
         if command.eq_ignore_ascii_case(b"MGET") {
             if arguments.len() < 2 {
                 arity("mget", output);
@@ -26,20 +157,14 @@ impl Store {
             };
             let now = self.now(&data);
             data.reap(now, usize::MAX);
-            if arguments[1..].iter().any(|key| {
-                data.entries
-                    .get(*key)
-                    .is_some_and(|entry| entry.stream.is_some())
-            }) {
-                output.extend_from_slice(
-                    b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-                );
-                return true;
-            }
             let count = arguments.len() - 1;
             let mut reply_bytes = 3 + decimal_digits(count);
             for key in &arguments[1..] {
-                let value_len = data.entries.get(*key).map(|entry| entry.value.len());
+                let value_len = data
+                    .entries
+                    .get(*key)
+                    .filter(|entry| entry.stream.is_none())
+                    .map(|entry| entry.value.len());
                 let element_bytes = match value_len {
                     Some(length) => 5usize
                         .checked_add(decimal_digits(length))
@@ -61,7 +186,10 @@ impl Store {
             write!(output, "*{count}\r\n").expect("Vec write");
             for key in &arguments[1..] {
                 encode_bulk(
-                    data.entries.get(*key).map(|entry| entry.value.as_slice()),
+                    data.entries
+                        .get(*key)
+                        .filter(|entry| entry.stream.is_none())
+                        .map(|entry| entry.value.as_slice()),
                     output,
                 );
             }
@@ -300,6 +428,92 @@ mod tests {
             b"*3\r\n$3\r\n123\r\n$3\r\n456\r\n$-1\r\n"
         );
         assert_eq!(store.data.read().unwrap().payload_bytes, 8);
+    }
+
+    #[test]
+    fn msetex_validates_options_and_applies_ttl_condition_and_atomic_budget() {
+        let (store, clock) = clock_store(32);
+        assert_eq!(
+            run(
+                &store,
+                &[b"MSETEX", b"2", b"a", b"one", b"b", b"two", b"PX", b"50"]
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(run(&store, &[b"PTTL", b"a"]), b":50\r\n");
+        assert_eq!(
+            run(&store, &[b"MSETEX", b"2", b"a", b"x", b"a", b"last", b"NX"]),
+            b":0\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"MSETEX", b"2", b"a", b"x", b"b", b"y", b"XX", b"KEEPTTL", b"PX", b"20"
+                ]
+            ),
+            b"-ERR syntax error\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"MSETEX", b"2", b"a", b"x", b"a", b"last", b"XX", b"KEEPTTL"
+                ]
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(run(&store, &[b"PTTL", b"a"]), b":50\r\n");
+        assert_eq!(run(&store, &[b"GET", b"a"]), b"$4\r\nlast\r\n");
+        assert_eq!(run(&store, &[b"GET", b"b"]), b"$3\r\ntwo\r\n");
+        assert_eq!(
+            run(
+                &store,
+                &[b"MSETEX", b"1", b"c", b"123456789012345678901234567890"]
+            ),
+            b"-OOM configured payload limit exceeded\r\n"
+        );
+        assert_eq!(run(&store, &[b"GET", b"c"]), b"$-1\r\n");
+        assert_eq!(run(&store, &[b"GET", b"a"]), b"$4\r\nlast\r\n");
+        assert_eq!(run(&store, &[b"PTTL", b"a"]), b":50\r\n");
+        assert_eq!(
+            run(&store, &[b"MSETEX", b"0", b"a", b"v"]),
+            b"-ERR invalid numkeys value or out of range\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"MSETEX", b"1", b"only-key"]),
+            b"-ERR wrong number of arguments for 'msetex' command\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"MSETEX", b"2", b"only-key", b"value"]),
+            b"-ERR wrong number of key-value pairs\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"MSETEX",
+                    b"1",
+                    b"past",
+                    b"123456789012345678901234567890",
+                    b"PXAT",
+                    b"99",
+                ]
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(run(&store, &[b"GET", b"past"]), b"$-1\r\n");
+        assert_eq!(
+            run(
+                &store,
+                &[b"MSETEX", b"1", b"expired", b"v", b"PXAT", b"100"]
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(run(&store, &[b"GET", b"expired"]), b"$1\r\nv\r\n");
+        clock.0.store(101, Ordering::SeqCst);
+        assert_eq!(run(&store, &[b"GET", b"expired"]), b"$-1\r\n");
+        assert_eq!(store.data.read().unwrap().payload_bytes, 9);
     }
 
     #[test]
