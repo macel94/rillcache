@@ -93,6 +93,43 @@ fn fragmented_commands_and_large_pipelines_preserve_order() {
 }
 
 #[test]
+fn inline_commands_are_quoted_binary_safe_fragmented_and_pipeline_ordered() {
+    let server = start(Config::default());
+    let mut stream = connect(&server);
+    let bytes =
+        b"\r\nSET \"key with space\" \"value\\n\\x00\\xff\"\nGET \"key with space\"\r\nPING\n";
+    for fragment in bytes.chunks(3) {
+        stream.write_all(fragment).unwrap();
+    }
+    expect(&mut stream, b"+OK\r\n$8\r\nvalue\n\0\xff\r\n+PONG\r\n");
+    let mut malformed = connect(&server);
+    malformed.write_all(b"SET \"unterminated\r\n").unwrap();
+    let mut output = Vec::new();
+    malformed.read_to_end(&mut output).unwrap();
+    assert_eq!(output, b"-ERR Protocol error: invalid inline command\r\n");
+    send(&mut connect(&server), &[b"PING"], b"+PONG\r\n");
+}
+
+#[test]
+fn configured_limits_admit_four_megabyte_values_and_bound_inline_lines() {
+    let server = start(Config {
+        limits: Limits {
+            max_bulk_bytes: 8 * 1024 * 1024,
+            max_frame_bytes: 16 * 1024 * 1024,
+            ..Limits::default()
+        },
+        max_data_bytes: 8 * 1024 * 1024,
+        ..Config::default()
+    });
+    let mut stream = connect(&server);
+    let value = vec![b'x'; 4_000_000];
+    send(&mut stream, &[b"SET", b"large", &value], b"+OK\r\n");
+    let mut expected = Vec::new();
+    rillcache::protocol::encode_bulk(Some(&value), &mut expected);
+    send(&mut stream, &[b"GET", b"large"], &expected);
+}
+
+#[test]
 fn malformed_input_closes_only_the_offending_connection() {
     let server = start(Config::default());
     let mut broken = connect(&server);

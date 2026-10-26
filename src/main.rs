@@ -8,7 +8,7 @@ use rillcache::{Config, Server};
 
 mod healthcheck;
 
-const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                  Show this help\n  --version               Show version\n\nExperimental: no authentication, TLS, persistence or eviction. Keep on loopback.";
+const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                  Show this help\n  --version               Show version\n\nExperimental: no authentication, TLS, persistence or eviction. Keep on loopback.";
 
 enum Options {
     Run(Config),
@@ -37,7 +37,8 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                 }
                 return Ok(Options::Healthcheck(address));
             }
-            "--bind" | "--max-clients" | "--threads" | "--max-data-bytes" | "--idle-timeout-ms" => {
+            "--bind" | "--max-clients" | "--threads" | "--max-data-bytes" | "--max-bulk-bytes"
+            | "--max-frame-bytes" | "--idle-timeout-ms" => {
                 let value = arguments
                     .next()
                     .ok_or_else(|| format!("missing value for {option}"))?;
@@ -56,6 +57,12 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                     }
                     "--max-clients" => config.max_clients = positive(&option, &value)?,
                     "--max-data-bytes" => config.max_data_bytes = positive(&option, &value)?,
+                    "--max-bulk-bytes" => {
+                        config.limits.max_bulk_bytes = finite_limit(&option, &value)?
+                    }
+                    "--max-frame-bytes" => {
+                        config.limits.max_frame_bytes = finite_limit(&option, &value)?
+                    }
                     "--idle-timeout-ms" => {
                         config.idle_timeout = Duration::from_millis(
                             value
@@ -72,6 +79,14 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
         }
     }
     Ok(Options::Run(config))
+}
+
+fn finite_limit(option: &str, value: &str) -> Result<usize, String> {
+    positive(option, value).and_then(|n| {
+        (n <= 512 * 1024 * 1024)
+            .then_some(n)
+            .ok_or_else(|| format!("{option} must not exceed 536870912 bytes"))
+    })
 }
 
 fn positive(option: &str, value: &str) -> Result<usize, String> {
@@ -164,6 +179,10 @@ mod tests {
             vec!["--threads", "65"],
             vec!["--threads", "-1"],
             vec!["--max-data-bytes", "-1"],
+            vec!["--max-bulk-bytes", "0"],
+            vec!["--max-frame-bytes", "0"],
+            vec!["--max-frame-bytes", "536870913"],
+            vec!["--max-bulk-bytes", "536870913"],
             vec!["--idle-timeout-ms", "0"],
             vec!["--healthcheck"],
             vec!["--healthcheck", "localhost:6379"],
@@ -182,6 +201,10 @@ mod tests {
                 "4",
                 "--max-data-bytes",
                 "100",
+                "--max-bulk-bytes",
+                "8192",
+                "--max-frame-bytes",
+                "16384",
                 "--idle-timeout-ms",
                 "250",
             ]
@@ -195,6 +218,8 @@ mod tests {
         assert_eq!(config.max_clients, 4);
         assert_eq!(config.worker_threads, Some(4));
         assert_eq!(config.max_data_bytes, 100);
+        assert_eq!(config.limits.max_bulk_bytes, 8192);
+        assert_eq!(config.limits.max_frame_bytes, 16384);
         assert_eq!(config.idle_timeout, Duration::from_millis(250));
     }
 }
