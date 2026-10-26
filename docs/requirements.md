@@ -458,9 +458,11 @@ command names, binary keys/values, multiple connections and ordered pipelines;
 `PING`, `ECHO`, `SET` with NX/XX, GET, KEEPTTL, EX/PX/EXAT/PXAT; `GET`, `DEL`,
 `EXISTS`, `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
-INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX. See [string semantics](strings.md) for
-grammar, clocks, rounding, integer limits and atomic error behavior. Conditions are atomic and
-case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
+INCR/DECR/INCRBY/DECRBY; MGET/MSET/MSETNX; APPEND/STRLEN/GETRANGE/SETRANGE. See
+[string semantics](strings.md), [string ranges](string-ranges.md) and
+[multi-key string limits](multikey-strings.md) for grammar, clocks, rounding,
+integer limits, resource bounds and atomic error behavior. Conditions are atomic
+and case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
 
 The default wire mode is RESP2. `HELLO` can inspect the current mode or
 negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
