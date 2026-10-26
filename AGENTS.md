@@ -93,7 +93,13 @@
   until green, historical-pass reuse or speculative conflict resolution.
 - Read `docs/parallel-pr-delivery.md` for hosted PR branch reconciliation,
   token/dispatch constraints, exact check identity and failure behavior. The
-  trusted-main `.github/workflows/pr-branch-updater.yml` updates only eligible
-  explicitly opted-in same-repository PRs, preserves protected gates and never
-  merges or executes PR code with write access. It is deployed only after its
-  protected PR merges to `main`; do not describe an unmerged workflow as active.
+  trusted-main `.github/workflows/pr-branch-updater.yml` keeps every open
+  same-repository PR branch current with `main` (drafts included) and must not
+  treat draft state or a missing auto-merge request as a reason to skip branch
+  freshness. It never promotes a draft, enables/revokes auto-merge, approves or
+  merges, and never executes PR-authored workflow code with write access: before
+  any privileged `workflow_dispatch` it verifies the branch's required workflow
+  file still matches protected `main`, and it measures staleness against current
+  `main` (not the PR's last-synced base snapshot). Preserve protected gates and
+  failed evidence. It is deployed only after its protected PR merges to `main`;
+  do not describe an unmerged workflow as active.
