@@ -69,6 +69,29 @@ class PolicyTests(unittest.TestCase):
                      '/scripts/pr-performance-gate.py', '/scripts/compare-builds.py', '/benchmarks/targets.mk'):
             self.assertIn(path + ' @macel94', owners)
 
+    def test_hosted_updater_has_a_read_only_pr_boundary_and_trusted_main_writer(self):
+        workflow = (ROOT / '.github/workflows/pr-branch-updater.yml').read_text()
+        self.assertIn('pull_request:', workflow)
+        self.assertIn("if: github.event_name == 'pull_request'", workflow)
+        self.assertIn("if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'", workflow)
+        self.assertIn('workflow_run:', workflow)
+        self.assertIn('workflow_dispatch:', workflow)
+        self.assertIn('schedule:', workflow)
+        self.assertIn('ref: main', workflow)
+        self.assertIn('persist-credentials: false', workflow)
+        self.assertIn('queue: max', workflow)
+        self.assertIn('cancel-in-progress: false', workflow)
+        self.assertNotIn('pull_request_target:', workflow)
+        self.assertNotIn('secrets.', workflow)
+        self.assertIn('contents: write', workflow)
+        self.assertIn('pull-requests: write', workflow)
+        self.assertIn('actions: write', workflow)
+        helper = (ROOT / 'scripts/update-pr-branches.py').read_text()
+        for value in ('ci.yml', 'pr-quality.yml', 'expected_head_sha', 'workflow_dispatch', 'github-actions'):
+            self.assertIn(value, helper)
+        self.assertNotIn('gh pr merge', helper)
+        self.assertNotIn('git push', helper)
+
     def test_publisher_is_default_branch_only_and_cannot_push_main(self):
         workflow = (ROOT / '.github/workflows/benchmarks.yml').read_text().split('\n  publish:\n')[1]
         self.assertIn('github.ref == format', workflow)
