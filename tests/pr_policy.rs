@@ -99,6 +99,13 @@ fn generated_reports_use_prs_without_an_exception_for_main_or_policy_files() {
     assert!(script.contains("gh pr create"));
     assert!(script.contains("gh workflow run ci.yml"));
     assert!(script.contains("gh workflow run pr-quality.yml"));
+    assert!(script.contains("gh workflow run upstream-compatibility.yml"));
+    assert!(script.contains("--auto --squash --match-head-commit"));
+    assert!(script.contains("if [[ \"$created\" == 1 ]]"));
+    let delivery = include_str!("../scripts/report-pr-delivery.py");
+    assert!(delivery.contains("refusing a retry"));
+    assert!(delivery.contains("auto-merge was not actually enabled"));
+    assert!(delivery.contains("preserving existing merge intent"));
     assert!(!script.contains("HEAD:$DEFAULT_BRANCH"));
     assert!(!script.contains("--force"));
     let owners = include_str!("../.github/CODEOWNERS");

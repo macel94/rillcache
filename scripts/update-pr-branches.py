@@ -175,24 +175,10 @@ class Updater:
 
     @staticmethod
     def run_matches(run: dict, pr: dict, head: str, base: str, workflow: str) -> bool:
-        if run.get("path", "").split("@", 1)[0] != f".github/workflows/{workflow}":
-            return False
-        if run.get("event") == "workflow_dispatch":
-            return run.get("head_sha") == head and run.get("head_branch") == pr["head"]["ref"]
-        if run.get("event") != "pull_request":
-            return False
-        bot_actor = run.get("actor", {}).get("login") == "github-actions[bot]"
-        if run.get("conclusion") == "action_required" or (
-                bot_actor and run.get("status") in {"queued", "waiting", "requested", "pending"}):
-            # GITHUB_TOKEN-generated PR runs can be approval-held; they are not
-            # test evidence and must not suppress the explicit dispatch fallback.
-            return False
-        return any(
-            item.get("number") == pr["number"]
-            and item.get("head", {}).get("sha") == head
-            and item.get("base", {}).get("sha") == base
-            for item in run.get("pull_requests", []) if isinstance(item, dict)
-        )
+        # pull_requests[].head/base are mutable associations, not snapshots of
+        # what this run tested. Current-main ancestry is guarded by process();
+        # only the run's own source SHA/branch can establish candidate identity.
+        return Updater.run_mentions_head(run, pr, workflow, head)
 
     def matching_runs(self, pr: dict, workflow: str, head: str, base: str) -> list[dict]:
         runs = self.workflow_runs(workflow, pr["head"]["ref"])
@@ -201,24 +187,28 @@ class Updater:
 
     @staticmethod
     def run_mentions_head(run: dict, pr: dict, workflow: str, head: str) -> bool:
-        """Match any real run for this exact source head, regardless of base.
+        """Match immutable run source identity, never mutable PR head/base fields.
 
-        Failed evidence for a source head must survive later main advances, so
-        the pre-update failure check cannot require the old base SHA.
+        Exact-head failures survive a main advance. Conversely, changing the
+        associated PR cannot relabel an older run as evidence for a newer head.
         """
-        if run.get("path", "").split("@", 1)[0] != f".github/workflows/{workflow}":
+        if (run.get("path", "").split("@", 1)[0] != f".github/workflows/{workflow}"
+                or run.get("head_sha") != head
+                or run.get("head_branch") != pr["head"]["ref"]):
             return False
         if run.get("event") == "workflow_dispatch":
-            return run.get("head_sha") == head and run.get("head_branch") == pr["head"]["ref"]
+            return True
         if run.get("event") != "pull_request":
             return False
         bot_actor = run.get("actor", {}).get("login") == "github-actions[bot]"
         if run.get("conclusion") == "action_required" or (
                 bot_actor and run.get("status") in {"queued", "waiting", "requested", "pending"}):
+            # Approval-held token events have executed no tests.
             return False
-        return any(
-            item.get("number") == pr["number"] and item.get("head", {}).get("sha") == head
-            for item in run.get("pull_requests", []) if isinstance(item, dict)
+        associated = run.get("pull_requests") or []
+        return not associated or any(
+            item.get("number") == pr["number"]
+            for item in associated if isinstance(item, dict)
         )
 
     def runs_for_head(self, pr: dict, workflow: str, head: str) -> list[dict]:
@@ -241,8 +231,8 @@ class Updater:
             return False, f"cannot verify {workflow} definition: {exc}"
         if not isinstance(main_file, dict) or not isinstance(head_file, dict):
             return False, f"{workflow} content metadata unavailable"
-        if main_file.get("sha") != head_file.get("sha"):
-            return False, f"{workflow} differs from protected main; refusing privileged dispatch"
+        if not valid_sha(main_file.get("sha")) or main_file.get("sha") != head_file.get("sha"):
+            return False, f"{workflow} differs from protected main or lacks a valid blob identity; refusing privileged dispatch"
         return True, "workflow definition matches protected main"
 
     def check_identity(self, run: dict, workflow: str) -> tuple[bool, str]:
@@ -280,13 +270,17 @@ class Updater:
     def ensure_workflow(self, pr: dict, workflow: str, head: str, base: str) -> tuple[str, str]:
         runs = self.matching_runs(pr, workflow, head, base)
         if runs:
-            latest = runs[-1]
-            ok, detail = self.check_identity(latest, workflow)
-            if latest.get("status") != "completed":
-                return "waiting", detail
-            if not ok:
+            failed = next((run for run in runs if run.get("status") == "completed"
+                           and run.get("conclusion") != "success"), None)
+            if failed is not None:
+                _, detail = self.check_identity(failed, workflow)
                 return "failed", detail
-            return "passed", detail
+            active = next((run for run in runs if run.get("status") != "completed"), None)
+            if active is not None:
+                _, detail = self.check_identity(active, workflow)
+                return "waiting", detail
+            ok, detail = self.check_identity(runs[-1], workflow)
+            return ("passed" if ok else "failed"), detail
         trusted, trust_detail = self.workflow_trusted(workflow, pr["head"]["ref"])
         if not trusted:
             return "untrusted_workflow", trust_detail
@@ -349,11 +343,11 @@ class Updater:
                 # do not update it merely to get a new merge SHA/check identity.
                 for workflow in REQUIRED:
                     prior = self.runs_for_head(pr, workflow, head)
-                    if prior and prior[-1].get("status") == "completed" and prior[-1].get("conclusion") != "success":
+                    if any(run.get("status") == "completed" and run.get("conclusion") != "success" for run in prior):
                         outcome.update(status="failed_gate", base=main, head=head,
                                        detail=f"{workflow} failed for this exact source head; no automatic retry")
                         return outcome
-                    if prior and prior[-1].get("status") != "completed":
+                    if any(run.get("status") != "completed" for run in prior):
                         outcome.update(status="waiting_existing_check", base=main, head=head,
                                        detail=f"{workflow} is already running for this exact source head")
                         return outcome

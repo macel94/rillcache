@@ -60,11 +60,17 @@ conflicts or overwrite a worker's newer head. Draft PRs get their branch
 refreshed but defer the expensive required checks until they are ready to merge.
 
 For the exact candidate, the updater discovers runs by workflow path, event,
-head/base association and SHA. It accepts only the required named check from the
-GitHub Actions app and matching check suite. If a required run is already active,
-it waits; if the latest exact candidate run failed, it reports the failure and
-does not dispatch a retry. Failed evidence is matched by source head so a later
-main advance cannot hide a failure and cause an automatic re-dispatch. If no
+branch and the workflow run's own immutable `head_sha`. GitHub's nested
+`pull_requests[].head` and `.base` objects can change when the associated PR is
+updated: they are not snapshots of the source/base tested by that old run. They
+must never relabel an old success or failure as evidence for a newer head.
+Current-main ancestry is checked against the frozen actual main/head refs.
+The updater accepts only the required named check from the GitHub Actions app
+and matching check suite for the actual run SHA. If **any** exact-head run is
+active, it waits; if **any** exact-head run failed, it reports that failure even
+when a later run succeeded and never dispatches a retry. Exact source identity
+also prevents old failures from blocking a genuinely fixed new source head.
+Failed evidence survives a main advance and cannot be erased by a base refresh. If no
 matching run is observable, it first verifies that the branch's
 `.github/workflows/ci.yml` and `.github/workflows/pr-quality.yml` blobs still
 match protected `main` (a branch that rewrote a required workflow is reported as

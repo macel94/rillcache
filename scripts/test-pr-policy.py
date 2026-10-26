@@ -16,6 +16,9 @@ name=pathlib.Path(sys.argv[0]).name
 args=sys.argv[1:]
 s['calls'].append([name, args])
 code=0; output=''
+repo=os.environ.get('GITHUB_REPOSITORY','example/project')
+branch='automation/benchmark-report-123-2'
+head='a'*40; main='b'*40; blob='c'*40
 if name == 'git':
  if args[:2] == ['switch','--create']: s['branch']=args[2]
  if 'commit' in args and s['branch'] == 'main': code=99
@@ -23,9 +26,45 @@ if name == 'git':
  if args == ['diff','--cached','--quiet']: code=0 if os.environ.get('NO_CHANGE') else 1
 elif name == 'gh':
  if args[:3] == ['api','--method','GET']:
-  s['lists']+=1
-  output='42' if os.environ.get('EXISTING_PR') or s['lists'] > 1 else ''
+  endpoint=args[3]
+  if endpoint.endswith('/pulls'):
+   s['lists']+=1
+   output='42' if os.environ.get('EXISTING_PR') or s['lists'] > 1 else ''
+  elif endpoint.endswith('/pulls/42'):
+   s['head_reads']=s.get('head_reads',0)+1
+   sha='d'*40 if os.environ.get('HEAD_RACE') and s['head_reads']>1 else head
+   merged=bool(os.environ.get('IMMEDIATE_MERGE') and s.get('merge_requested'))
+   auto={'merge_method':'squash'} if s.get('merge_requested') and not os.environ.get('AUTO_UNVERIFIED') else None
+   output=json.dumps({'number':42,'state':'closed' if merged else 'open','draft':bool(os.environ.get('PR_DRAFT')),
+     'merged_at':'2026-10-26T00:00:00Z' if merged else None,'auto_merge':auto,
+     'head':{'ref':branch,'sha':sha,'repo':{'full_name':repo}},'base':{'ref':'main','sha':main,'repo':{'full_name':repo}}})
+  elif '/git/ref/heads/main' in endpoint:
+   s['main_reads']=s.get('main_reads',0)+1
+   output=json.dumps({'object':{'sha':'d'*40 if os.environ.get('MAIN_RACE') and s['main_reads']>1 else main}})
+  elif '/compare/' in endpoint: output=json.dumps({'status':'diverged' if os.environ.get('STALE') else 'ahead'})
+  elif '/actions/workflows/' in endpoint and '/runs?' in endpoint:
+   workflow=endpoint.split('/actions/workflows/',1)[1].split('/runs?',1)[0]
+   mode=os.environ.get('RUN_MODE','success' if os.environ.get('EXISTING_PR') else 'missing')
+   rows=[]
+   if mode!='missing':
+    status='in_progress' if mode=='running' else 'completed'
+    conclusion=None if mode=='running' else 'action_required' if mode=='held' else 'failure' if 'failed' in mode else 'success'
+    row={'id':100,'path':'.github/workflows/'+workflow,'head_branch':branch,'head_sha':head,
+     'event':'pull_request' if mode=='held' or mode.startswith('pr_') else 'workflow_dispatch','status':status,'conclusion':conclusion,
+     'head_repository':{'full_name':repo},'pull_requests':[] if mode.startswith('pr_') else [{'number':42}]}
+    rows=[row]
+    if mode=='failed_then_success': rows.append(dict(row,id=101,conclusion='success'))
+   output=json.dumps({'workflow_runs':rows})
+  elif '/contents/.github/workflows/' in endpoint:
+   output=json.dumps({'sha':'d'*40 if os.environ.get('UNTRUSTED_WORKFLOW') and endpoint.endswith(head) else blob})
+  else: code=95
+  if os.environ.get('API_FAIL'): code=1
+  if os.environ.get('INVALID_JSON'): output='not json'
  elif args[:2] == ['pr','create']: output='https://github.com/example/project/pull/42'
+ elif args[:2] == ['pr','merge']:
+  if os.environ.get('AUTO_FAIL'): code=1
+  else: s['merge_requested']=True
+  if '--admin' in args or '--auto' not in args or '--squash' not in args: code=96
  elif args[:2] == ['workflow','run']:
   if os.environ.get('DISPATCH_FAIL'): code=1
   if '--ref' not in args or args[args.index('--ref')+1] == 'main': code=97
@@ -124,7 +163,7 @@ class PolicyTests(unittest.TestCase):
                                     env=env, capture_output=True, text=True, timeout=10)
             return result, json.loads(state.read_text())
 
-    def test_new_report_commits_only_on_a_non_main_branch_and_dispatches_both_checks(self):
+    def test_new_report_commits_only_on_a_non_main_branch_dispatches_and_enables_verified_auto_merge(self):
         result, state = self.run_publisher()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(state['branch'], 'automation/benchmark-report-123-2')
@@ -134,9 +173,16 @@ class PolicyTests(unittest.TestCase):
         gh = [args for name, args in state['calls'] if name == 'gh']
         self.assertTrue(any(args[:2] == ['pr', 'create'] for args in gh))
         dispatches = [args for args in gh if args[:2] == ['workflow', 'run']]
-        self.assertEqual([args[2] for args in dispatches], ['ci.yml', 'pr-quality.yml'])
+        self.assertEqual([args[2] for args in dispatches], ['ci.yml', 'pr-quality.yml', 'upstream-compatibility.yml'])
         self.assertTrue(all(args[args.index('--ref') + 1] == state['branch'] for args in dispatches))
         self.assertIn('pull_request=42', dispatches[1])
+        merge = [args for args in gh if args[:2] == ['pr', 'merge']]
+        self.assertEqual(len(merge), 1)
+        self.assertIn('--auto', merge[0])
+        self.assertIn('--squash', merge[0])
+        self.assertNotIn('--admin', merge[0])
+        self.assertEqual(merge[0][merge[0].index('--match-head-commit') + 1], 'a' * 40)
+        self.assertIn('protected squash auto-merge verified', result.stdout)
 
     def test_noop_report_does_not_commit_push_or_open_a_pr(self):
         result, state = self.run_publisher(NO_CHANGE='1')
@@ -148,7 +194,9 @@ class PolicyTests(unittest.TestCase):
         result, state = self.run_publisher(EXISTING_PR='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(name == 'git' for name, _ in state['calls']))
-        self.assertEqual(sum(args[:2] == ['workflow', 'run'] for name, args in state['calls'] if name == 'gh'), 2)
+        self.assertEqual(sum(args[:2] == ['workflow', 'run'] for name, args in state['calls'] if name == 'gh'), 0)
+        self.assertFalse(any(args[:2] == ['pr', 'merge'] for name, args in state['calls'] if name == 'gh'))
+        self.assertIn('preserving existing merge intent', result.stdout)
 
     def test_invalid_environment_is_rejected_before_git_or_api_work(self):
         for value in ({'DEFAULT_BRANCH': 'other'}, {'GITHUB_RUN_ID': '1;echo bad'}, {'GITHUB_REPOSITORY': 'bad/repo;echo bad'}):
@@ -159,6 +207,45 @@ class PolicyTests(unittest.TestCase):
     def test_failed_check_dispatch_is_visible_instead_of_publication_success(self):
         result, _ = self.run_publisher(DISPATCH_FAIL='1')
         self.assertNotEqual(result.returncode, 0)
+
+    def test_existing_running_checks_are_not_duplicated(self):
+        result, state = self.run_publisher(EXISTING_PR='1', RUN_MODE='running')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(args[:2] == ['workflow', 'run'] for name, args in state['calls'] if name == 'gh'))
+
+    def test_any_exact_head_failure_is_preserved_even_after_a_later_success(self):
+        for mode in ['failed', 'failed_then_success', 'pr_failed_no_association']:
+            result, state = self.run_publisher(EXISTING_PR='1', RUN_MODE=mode)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('refusing a retry', result.stderr)
+            self.assertFalse(any(args[:2] in (['workflow', 'run'], ['pr', 'merge']) for name, args in state['calls'] if name == 'gh'))
+
+    def test_pr_runs_without_association_metadata_are_not_duplicated(self):
+        result, state = self.run_publisher(EXISTING_PR='1', RUN_MODE='pr_no_association')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(args[:2] == ['workflow', 'run'] for name, args in state['calls'] if name == 'gh'))
+
+    def test_approval_held_runs_do_not_masquerade_as_tests_or_prevent_explicit_dispatch(self):
+        result, state = self.run_publisher(RUN_MODE='held')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sum(args[:2] == ['workflow', 'run'] for name, args in state['calls'] if name == 'gh'), 3)
+
+    def test_untrusted_workflow_or_stale_or_changed_head_main_fail_before_dispatch(self):
+        for flag in ['UNTRUSTED_WORKFLOW', 'STALE', 'HEAD_RACE', 'MAIN_RACE', 'PR_DRAFT', 'API_FAIL', 'INVALID_JSON']:
+            result, state = self.run_publisher(**{flag: '1'})
+            self.assertNotEqual(result.returncode, 0, flag)
+            self.assertFalse(any(args[:2] in (['workflow', 'run'], ['pr', 'merge']) for name, args in state['calls'] if name == 'gh'), flag)
+
+    def test_failed_or_unverified_auto_merge_is_not_publication_success(self):
+        for flag in ['AUTO_FAIL', 'AUTO_UNVERIFIED']:
+            result, _ = self.run_publisher(**{flag: '1'})
+            self.assertNotEqual(result.returncode, 0, flag)
+            self.assertNotIn('protected squash auto-merge verified', result.stdout)
+
+    def test_normal_immediate_protected_merge_is_accepted(self):
+        result, _ = self.run_publisher(IMMEDIATE_MERGE='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('normally merged through the protected PR path', result.stdout)
 
 
 if __name__ == '__main__':
