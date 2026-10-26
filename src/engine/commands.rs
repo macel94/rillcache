@@ -25,6 +25,14 @@ impl Store {
             integer(1, output);
             return;
         }
+        if entry.stream.is_some() {
+            output.extend_from_slice(if delifeq {
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+            } else {
+                b"-ERR Key should be of string type if conditions are specified\r\n"
+            });
+            return;
+        }
         let token = if delifeq {
             b"IFEQ".as_slice()
         } else {
@@ -66,6 +74,12 @@ impl Store {
         let now = self.now(&data);
         data.expire_key(key, now);
         if let Some(entry) = data.entries.get(key) {
+            if entry.stream.is_some() {
+                output.extend_from_slice(
+                    b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                );
+                return;
+            }
             let hash = super::xxh3::xxh3_64(&entry.value);
             write!(output, "$16\r\n{hash:016x}\r\n").expect("Vec write");
         } else {
@@ -183,7 +197,16 @@ impl Store {
         };
         data.expire_key(key, now);
         let existing = data.entries.get(key);
-        if options.get && existing.is_some_and(|entry| entry.stream.is_some()) {
+        if (options.get
+            || matches!(
+                options.condition,
+                Condition::ValueEqual(_)
+                    | Condition::ValueNotEqual(_)
+                    | Condition::DigestEqual(_)
+                    | Condition::DigestNotEqual(_)
+            ))
+            && existing.is_some_and(|entry| entry.stream.is_some())
+        {
             output.extend_from_slice(
                 b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
             );

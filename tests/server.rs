@@ -505,6 +505,133 @@ fn extended_string_conditions_digest_and_msetex_work_in_all_modes() {
 }
 
 #[test]
+fn conditional_strings_binary_type_and_oom_errors_keep_the_wire_usable() {
+    let server = start(Config {
+        max_data_bytes: 32,
+        ..Config::default()
+    });
+    let mut stream = connect(&server);
+    send(&mut stream, &[b"SET", b"\0\xff", b""], b"+OK\r\n");
+    send(
+        &mut stream,
+        &[b"DIGEST", b"\0\xff"],
+        b"$16\r\n2d06800538d394c2\r\n",
+    );
+    send(
+        &mut stream,
+        &[
+            b"SET",
+            b"\0\xff",
+            b"\0\xff",
+            b"IFDEQ",
+            b"2D06800538D394C2",
+            b"GET",
+        ],
+        b"$0\r\n\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"DELEX", b"\0\xff", b"IFEQ", b"no"],
+        b":0\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"SET", b"\0\xff", &[b'x'; 32], b"IFEQ", b"\0\xff", b"GET"],
+        b"-OOM configured payload limit exceeded\r\n",
+    );
+    send(&mut stream, &[b"GET", b"\0\xff"], b"$2\r\n\0\xff\r\n");
+    send(&mut stream, &[b"DELIFEQ", b"\0\xff", b"\0\xff"], b":1\r\n");
+    send(
+        &mut stream,
+        &[b"XADD", b"k", b"1-0", b"f", b"v"],
+        b"$3\r\n1-0\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"DIGEST", b"k"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"SET", b"k", b"v", b"IFEQ", b""],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"DELEX", b"k", b"IFEQ", b""],
+        b"-ERR Key should be of string type if conditions are specified\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"DELIFEQ", b"k", b""],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"MGET", b"k", b"missing"],
+        b"*2\r\n$-1\r\n$-1\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"MSETEX", b"2", b"k", b"bad"],
+        b"-ERR wrong number of key-value pairs\r\n",
+    );
+    send(&mut stream, &[b"XLEN", b"k"], b":1\r\n");
+    send(
+        &mut stream,
+        &[b"MSETEX", b"1", b"k", b"new", b"XX"],
+        b":1\r\n",
+    );
+    send(&mut stream, &[b"GET", b"k"], b"$3\r\nnew\r\n");
+    send(&mut stream, &[b"DELEX", b"k"], b":1\r\n");
+    send(&mut stream, &[b"PING"], b"+PONG\r\n");
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn concurrent_value_compares_have_one_tcp_winner_in_every_mode() {
+    use std::io::{BufRead, BufReader};
+    for worker_threads in [None, Some(1), Some(4)] {
+        let server = start(Config {
+            worker_threads,
+            ..Config::default()
+        });
+        send(
+            &mut connect(&server),
+            &[b"SET", b"race", b"old"],
+            b"+OK\r\n",
+        );
+        let streams: Vec<_> = (0..8).map(|_| connect(&server)).collect();
+        let barrier = std::sync::Barrier::new(8);
+        let replies = thread::scope(|scope| {
+            let workers: Vec<_> = streams
+                .into_iter()
+                .map(|mut stream| {
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let mut command = Vec::new();
+                        encode_request(&[b"SET", b"race", b"new", b"IFEQ", b"old"], &mut command);
+                        barrier.wait();
+                        stream.write_all(&command).unwrap();
+                        let mut line = String::new();
+                        BufReader::new(stream).read_line(&mut line).unwrap();
+                        assert!(line == "+OK\r\n" || line == "$-1\r\n");
+                        line == "+OK\r\n"
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(replies.iter().filter(|&&won| won).count(), 1);
+        send(&mut connect(&server), &[b"GET", b"race"], b"$3\r\nnew\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn concurrent_set_nx_has_exactly_one_winner() {
     const CLIENTS: usize = 16;
     let server = start(Config::default());

@@ -19,6 +19,10 @@ The official [MGET](https://redis.io/docs/latest/commands/mget/), [MSET](https:/
 
 ## Limits and compatibility boundary
 
-These commands operate only on the in-memory string store. RESP2 and the configured bounded request frame/argument/bulk limits still apply. MGET additionally caps its complete encoded reply at 2 MiB to bound duplicate-key response amplification; an over-limit request receives one error and no partial array, a deliberate compatibility limit. The multi-key commands do not add transactions, persistence, eviction, authentication, or support for other data types. The configured payload budget counts unique live key and value bytes, not map/allocator/connection memory or total process RSS. Expiry uses the existing store millisecond visibility rule (a deadline remains live at `now == deadline`). No Redis/Valkey version is reported or emulated.
+These commands read or replace strings in the shared in-memory keyspace. MGET
+returns null for an existing non-string key, while MSET/MSETNX/MSETEX may replace
+other supported types and reclaim their full accounted payload. MSETEX rejects
+incomplete counted pairs with Redis's specific pair-count error; Valkey's generic
+syntax-error text differs (see [string semantics](strings.md)). RESP2 and the configured bounded request frame/argument/bulk limits still apply. MGET additionally caps its complete encoded reply at 2 MiB to bound duplicate-key response amplification; an over-limit request receives one error and no partial array, a deliberate compatibility limit. The multi-key commands do not add transactions, persistence, eviction, authentication, or support for other data types. The configured payload budget counts unique live key and value bytes, not map/allocator/connection memory or total process RSS. Expiry uses the existing store millisecond visibility rule (a deadline remains live at `now == deadline`). No Redis/Valkey version is reported or emulated.
 
 Wire/reference and deterministic module tests establish the behavior above; they do not establish full Redis compatibility or production readiness.

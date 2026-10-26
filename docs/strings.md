@@ -24,7 +24,8 @@ ceiling and configured payload-budget behavior.
 - `DIGEST key`, `DELEX key [IFEQ value | IFNE value | IFDEQ digest | IFDNE digest]`, `DELIFEQ key value`
 - `MSETEX numkeys key value [key value ...] [NX | XX] [EX seconds | PX milliseconds | EXAT unix-seconds | PXAT unix-milliseconds | KEEPTTL]`
 
-NX creates only absent keys; XX overwrites only existing keys. Redis extended
+NX creates only absent keys; XX overwrites only existing keys. Valkey also supports
+IFEQ; IFNE/IFDEQ/IFDNE and DIGEST/DELEX are Redis extensions. Redis extended
 SET conditions are mutually exclusive and test the existing binary value or its
 XXH3 digest. Expired keys are absent. A plain successful SET returns OK and clears
 the old TTL. GET returns the
@@ -52,7 +53,19 @@ XXH3-64 digest emitted by Redis DIGEST (16 hexadecimal digits, case-insensitive)
 Redis DELEX performs an atomic optional value/digest comparison and removal;
 Valkey DELIFEQ is its value-equal deletion form. MSETEX validates its full argument block before applying
 an atomic deduplicated batch with shared expiration, NX/XX, KEEPTTL and exact payload
-admission. Past absolute batch deadlines leave the targets absent.
+admission. Past absolute batch deadlines leave the targets absent. Rejected
+conditions return null without GET, or the previous value with GET. Digest
+validation follows Redis: live strings require exactly 16 bytes (nonhex bytes
+simply fail equality); absent keys bypass digest validation. String comparisons
+and DIGEST reject existing non-string values; unconditional DELEX deletes any
+supported type. Conditional DELEX uses Redis's specific type error, whereas
+DELIFEQ returns WRONGTYPE.
+
+MSETEX follows Redis's `ERR wrong number of key-value pairs` for an incomplete
+counted pair block; Valkey 9.1.2 returns `ERR syntax error` instead. Both reject
+without writes; this unavoidable vendor error-text divergence remains visible
+in the unmodified Valkey Tcl suite. GET and value/digest conditions are SET-only
+and rejected by MSETEX. Keyspace notifications/replication are not implemented.
 
 ## Expiration
 

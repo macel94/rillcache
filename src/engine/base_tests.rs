@@ -192,12 +192,22 @@ fn digest_and_value_digest_conditions_match_native_xxh3() {
     assert_eq!(
         execute(
             &store,
-            &[b"SET", b"foo", b"untouched", b"IFDNE", current_digest]
+            &[
+                b"SET",
+                b"foo",
+                b"untouched",
+                b"IFDNE",
+                current_digest,
+                b"GET"
+            ]
         ),
         b"$7\r\nchanged\r\n"
     );
     assert_eq!(
-        execute(&store, &[b"SET", b"foo", b"next", b"IFNE", b"changed"]),
+        execute(
+            &store,
+            &[b"SET", b"foo", b"next", b"IFNE", b"changed", b"GET"]
+        ),
         b"$7\r\nchanged\r\n"
     );
     assert_eq!(

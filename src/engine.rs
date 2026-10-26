@@ -276,6 +276,9 @@ fn internal_error(output: &mut Vec<u8>) {
 }
 
 #[cfg(test)]
+#[path = "engine/conditional_tests.rs"]
+mod conditional_tests;
+#[cfg(test)]
 #[path = "engine/expiry_tests.rs"]
 mod expiry_tests;
 #[cfg(test)]

@@ -457,7 +457,7 @@ Supported: RESP2 nonempty arrays of non-null bulk strings and Redis-style inline
 commands with whitespace, quotes and escapes, case-insensitive ASCII command names,
 binary keys/values (including escaped inline `\xHH` bytes), multiple connections
 and ordered mixed-protocol pipelines; `PING`, `ECHO`, `SET` with NX/XX/GET/KEEPTTL/
-EX/PX/EXAT/PXAT (and Redis-only IFEQ/IFNE/IFDEQ/IFDNE); `GET`, `DEL`, `EXISTS`,
+EX/PX/EXAT/PXAT and IFEQ (plus Redis IFNE/IFDEQ/IFDNE); `GET`, `DEL`, `EXISTS`,
 `QUIT`; SETEX/PSETEX/SETNX/GETSET/GETDEL/GETEX; TTL/PTTL/EXPIRETIME/
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
 INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX; Redis DIGEST/DELEX

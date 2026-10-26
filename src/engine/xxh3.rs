@@ -92,10 +92,10 @@ fn hash_short(input: &[u8]) -> u64 {
     match len {
         0 => avalanche64(read64(&SECRET, 56) ^ read64(&SECRET, 64)),
         1..=3 => {
-            let combined = u32::from(input[0])
-                | (u32::from(input[len >> 1]) << 8)
-                | (u32::from(input[len - 1]) << 16)
-                | ((len as u32) << 24);
+            let combined = u32::from(input[len - 1])
+                | ((len as u32) << 8)
+                | (u32::from(input[0]) << 16)
+                | (u32::from(input[len >> 1]) << 24);
             let bitflip = (read32(&SECRET, 0) ^ read32(&SECRET, 4)) as u64;
             avalanche64(u64::from(combined) ^ bitflip)
         }
@@ -210,14 +210,80 @@ mod tests {
 
     #[test]
     fn official_xxh3_64_known_vectors_cover_all_length_paths() {
-        assert_eq!(xxh3_64(b""), 0x2d06800538d394c2);
-        assert_eq!(xxh3_64(b"a"), 0xc44bdff4074eecdb);
-        assert_eq!(xxh3_64(b"abc"), 0xeb5d658bb22f286b);
-        assert_eq!(xxh3_64(b"foo"), 0xab6e5f64077e7d8a);
-        assert_eq!(xxh3_64(&[0; 17]), 0xc2915ca0df7ad4c1);
-        assert_eq!(xxh3_64(&[0; 129]), 0x37f7943eb2f51359);
-        assert_eq!(xxh3_64(&[0; 241]), 0x5c5b5d5d40c59ce3);
-        assert_eq!(xxh3_64(&[0; 1025]), 0x64ace6654784c523);
+        // Zero-seed fixtures from xxHash v0.8.3 tests/sanity_test_vectors.h,
+        // XSUM_XXH3_testdata. These hash prefixes of the upstream sanity buffer,
+        // NOT ASCII strings or all-zero buffers. Cover every algorithm boundary.
+        let vectors = [
+            (0, 0x2d06800538d394c2),
+            (1, 0xc44bdff4074eecdb),
+            (2, 0x7a9978044cb8a8bb),
+            (3, 0x54247382a8d6b94d),
+            (4, 0xe5dc74bc51848a51),
+            (5, 0xe4243f00720306bb),
+            (6, 0x27b56a84cd2d7325),
+            (7, 0x9941e0007f555e50),
+            (8, 0x24ccc9acaa9f65e4),
+            (9, 0x14d5001c15dd3f2b),
+            (10, 0x1c117f233fbc3c14),
+            (11, 0x889839b4c796ddd6),
+            (12, 0xa713daf0dfbb77e7),
+            (13, 0x2eb03c6e66ba6524),
+            (14, 0x1ac0bbda2b9fcf03),
+            (15, 0x45556d4d6e1798bc),
+            (16, 0x981b17d36c7498c9),
+            (17, 0x796f5acd3a60f862),
+            (31, 0x5d516692ca764c50),
+            (32, 0x9feaddbdbf57eed3),
+            (33, 0xabfb2d081b400a10),
+            (63, 0x83d74a75f2c2577a),
+            (64, 0x9cb48487720ec49d),
+            (65, 0xfd81aac4bebc3883),
+            (95, 0xc0dd460b48116cda),
+            (96, 0x935a769a7f94776f),
+            (97, 0xca4ca268fd3c3a6c),
+            (127, 0x2408ed71323d6096),
+            (128, 0xfcff24126754d861),
+            (129, 0x98f1b0a679a2ca29),
+            (143, 0x7a7813693f1f4edb),
+            (144, 0xc440d47e5f03fe58),
+            (159, 0x7cb32a6ecdebaf1c),
+            (160, 0x9d03a319ed4cbd2b),
+            (191, 0x759ffc8ff8fb94bd),
+            (192, 0xaf9f58e78b8d3587),
+            (223, 0x6e495316b983036e),
+            (224, 0x3f3250c7e92c871a),
+            (239, 0x16ce2b9d3b28805d),
+            (240, 0x81c3c2b67f568ccf),
+            (241, 0xc5a639ecd2030e5e),
+            (255, 0xe98f979f4ed8a197),
+            (256, 0x55de574ad89d0ac5),
+            (257, 0xb17fd5a8ae75bb0b),
+            (511, 0x8089715b163e7fc0),
+            (512, 0x617e49599013cb6b),
+            (513, 0xf7037d3b6722aeec),
+            (1023, 0x87a8f7b2f2e22496),
+            (1024, 0xdd85c9b5c1109c5c),
+            (1025, 0xd870c0fa13211c6a),
+            (2047, 0xb36ece19fca2197f),
+            (2048, 0xdd59e2c3a5f038e0),
+            (2049, 0xd3afa4329779b921),
+            (4095, 0x3044187222ab0efb),
+            (4096, 0xe91206429d1f48f9),
+        ];
+        let mut generator = 2_654_435_761u64;
+        let input: Vec<u8> = (0..4096)
+            .map(|_| {
+                let byte = (generator >> 56) as u8;
+                generator = generator.wrapping_mul(11_400_714_785_074_694_797);
+                byte
+            })
+            .collect();
+        for (length, expected) in vectors {
+            assert_eq!(xxh3_64(&input[..length]), expected, "length {length}");
+            let mut unaligned = vec![0xff];
+            unaligned.extend_from_slice(&input[..length]);
+            assert_eq!(xxh3_64(&unaligned[1..]), expected, "unaligned {length}");
+        }
         let redis_vector = b"v8lf0c11xh8ymlqztfd3eeq16kfn4sspw7fqmnuuq3k3t75em5wdizgcdw7uc26nnf961u2jkfzkjytls2kwlj7626sd";
         assert_eq!(xxh3_64(redis_vector), 0x00006c38adf31777);
     }
