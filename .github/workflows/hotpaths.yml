@@ -94,6 +94,9 @@ jobs:
               kill "$server_pid" 2>/dev/null || true
               wait "$server_pid" 2>/dev/null || true
             fi
+            if [[ -f target/remote-profile/set.perf.data ]]; then
+              sudo chown "$(id -u):$(id -g)" target/remote-profile/set.perf.data || true
+            fi
           }
           trap cleanup EXIT INT TERM
           taskset -c "$server_cpu" target/remote-profile/control-bin/rillcache --bind "127.0.0.1:$port" > target/remote-profile/control-server.log 2>&1 &
@@ -135,6 +138,7 @@ jobs:
             > target/remote-profile/profile-set.json 2> target/remote-profile/profile-set.log
           wait "$recorder_pid"
           recorder_pid=''
+          sudo chown "$(id -u):$(id -g)" target/remote-profile/set.perf.data
           sudo perf report --stdio --sort comm,dso,symbol --percent-limit 0.5 \
             -i target/remote-profile/set.perf.data \
             > target/remote-profile/perf-report.txt
