@@ -406,7 +406,7 @@ impl Store {
 
     fn info(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let sections: &[&[u8]] = match arguments {
-            [_] => &[b"server", b"memory", b"keyspace"],
+            [_] => &[b"server", b"memory", b"keyspace", b"stats"],
             [_, section] => &[*section],
             _ => {
                 output.extend_from_slice(b"-ERR wrong number of arguments for 'info' command\r\n");
@@ -433,7 +433,7 @@ impl Store {
             let section = section.to_ascii_lowercase();
             if !matches!(
                 section.as_slice(),
-                b"server" | b"memory" | b"keyspace" | b"default" | b"all"
+                b"server" | b"memory" | b"keyspace" | b"stats" | b"default" | b"all"
             ) {
                 output.extend_from_slice(b"-ERR unsupported INFO section\r\n");
                 return;
@@ -460,6 +460,19 @@ impl Store {
                 let _ = writeln!(
                     text,
                     "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys}\r"
+                );
+            }
+            if matches!(section.as_slice(), b"stats" | b"default" | b"all") {
+                let stats = self.stats();
+                let _ = writeln!(
+                    text,
+                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nevicted_keys:0\r\npubsub_channels:{}\r\npubsub_patterns:{}\r",
+                    stats.total_connections_received,
+                    stats.total_commands_processed,
+                    stats.rejected_connections,
+                    stats.expired_keys,
+                    stats.pubsub_channels,
+                    stats.pubsub_patterns
                 );
             }
         }

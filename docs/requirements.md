@@ -61,6 +61,7 @@ reason to couple all future commands into a single large story.
 | S31 | As a client, I can publish and receive channel or pattern messages on live connections so that independent clients can coordinate without polling the keyspace. | S | R125–R128; confirmations, delivery, subscriber mode, RESP3 push, ACL channels and all-mode wire tests |
 | S32 | As an operator, I can compact an append-only journal without losing acknowledged state so that restart time and disk use do not grow forever. | XS | R129–R131; compacting replay, live-rewrite, disabled-journal and all-mode restart tests |
 | S33 | As a pool/client, I can reset a reused connection's server-side state without reconnecting so that stale transactions, subscriptions or protocol state cannot leak. | XS | R132–R133; reset/auth/pubsub/RESP2 and all-mode wire tests |
+| S34 | As an operator, I can inspect honest connection, command, expiration and pub/sub counters and reset them, without fabricated Redis fields. | XS | R134–R136; counter scope, reset, rejection, expiry and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -308,6 +309,25 @@ reason to couple all future commands into a single large story.
   normal arity error without changing state. Tests shall cover queued transactions,
   watches, pub/sub cleanup, RESP3-to-RESP2 conversion, deauthentication and
   reauthentication, subscriber-mode reset and all execution modes.
+
+### Process statistics (S34)
+
+- **R134 (event-driven):** When `INFO stats` is requested, the server shall return
+  a RESP bulk string with `total_connections_received`,
+  `total_commands_processed`, `rejected_connections`, `expired_keys`,
+  `evicted_keys`, `pubsub_channels` and `pubsub_patterns` under a `# Stats`
+  section, and include that section for `INFO`/`INFO all` without inventing fields
+  it does not measure.
+- **R135 (state-driven):** While the process serves clients, connection counters
+  shall count accepted and max-client-rejected sockets, command counters shall
+  count connection dispatch (including rejected commands and `INFO`), expiration
+  counters shall count lazy/maintenance removals, and pub/sub counters shall reflect
+  live hub state. Counters are relaxed diagnostics, not a transaction ledger.
+- **R136 (event-driven):** When `CONFIG RESETSTAT` succeeds, it shall zero the
+  counters without deleting data or subscriptions; tests shall cover the reset
+  snapshot including the counting of the reset/INFO commands, maximum-client
+  rejection, lazy expiration and all execution modes. Documentation shall retain
+  the missing hit/miss, byte, latency, slowlog, client-list, RSS and metrics gaps.
 
 ### Development and delivery
 

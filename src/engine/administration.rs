@@ -17,7 +17,7 @@ impl Store {
             return true;
         }
         if command.eq_ignore_ascii_case(b"CONFIG") {
-            config(args, out);
+            config(self, args, out);
             return true;
         }
         if command.eq_ignore_ascii_case(b"SCRIPT") || command.eq_ignore_ascii_case(b"FUNCTION") {
@@ -102,7 +102,7 @@ fn flush_mode(arg: &[u8]) -> bool {
     arg.eq_ignore_ascii_case(b"SYNC") || arg.eq_ignore_ascii_case(b"ASYNC")
 }
 
-fn config(args: &[&[u8]], out: &mut Vec<u8>) {
+fn config(store: &Store, args: &[&[u8]], out: &mut Vec<u8>) {
     let Some(sub) = args.get(1) else {
         arity("config", out);
         return;
@@ -123,10 +123,10 @@ fn config(args: &[&[u8]], out: &mut Vec<u8>) {
     } else if sub.eq_ignore_ascii_case(b"RESETSTAT") {
         if args.len() != 2 {
             arity("config|resetstat", out);
-        }
-        // Command/error statistics are not retained by this server, so their reset state is empty.
-        else {
+        } else if store.reset_stats() {
             out.extend_from_slice(b"+OK\r\n");
+        } else {
+            internal_error(out);
         }
     } else {
         out.extend_from_slice(b"-ERR unsupported CONFIG subcommand\r\n");

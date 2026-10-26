@@ -55,6 +55,16 @@ impl Clock for SystemClock {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Stats {
+    pub total_connections_received: u64,
+    pub total_commands_processed: u64,
+    pub rejected_connections: u64,
+    pub expired_keys: u64,
+    pub pubsub_channels: usize,
+    pub pubsub_patterns: usize,
+}
+
 pub struct Store {
     data: RwLock<Data>,
     max_payload_bytes: usize,
@@ -67,6 +77,9 @@ pub struct Store {
     journal: Option<std::sync::Mutex<journal::Journal>>,
     journal_limits: Limits,
     pubsub: RwLock<pubsub::PubSub>,
+    connections_received: std::sync::atomic::AtomicU64,
+    commands_processed: std::sync::atomic::AtomicU64,
+    rejected_connections: std::sync::atomic::AtomicU64,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -112,6 +125,9 @@ impl Store {
             journal: None,
             journal_limits: Limits::default(),
             pubsub: RwLock::new(pubsub::PubSub::default()),
+            connections_received: std::sync::atomic::AtomicU64::new(0),
+            commands_processed: std::sync::atomic::AtomicU64::new(0),
+            rejected_connections: std::sync::atomic::AtomicU64::new(0),
         }
     }
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
@@ -447,6 +463,46 @@ impl Store {
         self.auth_required.store(auth.required(), Ordering::Release);
         self.acl_restricted
             .store(auth.restricted(), Ordering::Release);
+    }
+
+    pub fn record_connection(&self) {
+        self.connections_received.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_rejected_connection(&self) {
+        self.rejected_connections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_command(&self) {
+        self.commands_processed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn stats(&self) -> Stats {
+        let (expired_keys, pubsub_channels, pubsub_patterns) = {
+            let expired = self.data.read().map_or(0, |data| data.expired_keys);
+            let (channels, patterns) = self.pubsub.read().map_or((0, 0), |pubsub| {
+                (pubsub.channel_names(None).len(), pubsub.numpat())
+            });
+            (expired, channels, patterns)
+        };
+        Stats {
+            total_connections_received: self.connections_received.load(Ordering::Relaxed),
+            total_commands_processed: self.commands_processed.load(Ordering::Relaxed),
+            rejected_connections: self.rejected_connections.load(Ordering::Relaxed),
+            expired_keys,
+            pubsub_channels,
+            pubsub_patterns,
+        }
+    }
+
+    pub fn reset_stats(&self) -> bool {
+        self.connections_received.store(0, Ordering::Relaxed);
+        self.commands_processed.store(0, Ordering::Relaxed);
+        self.rejected_connections.store(0, Ordering::Relaxed);
+        self.data.write().is_ok_and(|mut data| {
+            data.expired_keys = 0;
+            true
+        })
     }
 
     pub fn pubsub_queue_capacity() -> usize {

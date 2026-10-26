@@ -339,9 +339,11 @@ impl Server {
                 };
                 stream.set_nonblocking(false)?;
                 stream.set_nodelay(true)?;
+                store.record_connection();
                 stream.set_read_timeout(Some(self.config.idle_timeout))?;
                 stream.set_write_timeout(Some(self.config.idle_timeout))?;
                 if workers.len() >= self.config.max_clients {
+                    store.record_rejected_connection();
                     let _ = stream.write_all(b"-ERR max number of clients reached\r\n");
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
