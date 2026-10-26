@@ -92,10 +92,9 @@ pub fn dispatch_request<'a, T>(
 
 /// Parse a single inline command line using Redis's quote and escape rules.
 /// The returned arguments own decoded escape bytes; raw RESP remains borrowed.
-fn parse_inline(
-    input: &[u8],
-    limits: Limits,
-) -> Result<Option<(Vec<Vec<u8>>, usize)>, ProtocolError> {
+type InlineRequest = (Vec<Vec<u8>>, usize);
+
+fn parse_inline(input: &[u8], limits: Limits) -> Result<Option<InlineRequest>, ProtocolError> {
     let Some(newline) = input.iter().position(|&byte| byte == b'\n') else {
         return if input.len() >= limits.max_frame_bytes {
             Err(ProtocolError::FrameTooLarge)
