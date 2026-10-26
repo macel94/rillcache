@@ -55,6 +55,7 @@ reason to couple all future commands into a single large story.
 | S25 | As a cache user, I can atomically read or set multiple strings so that batch operations preserve ordering, expiry and payload admission. | S | R101–R104; duplicate/binary/expiry/admission tests, bounded MGET reply, all-mode wire/reference tests |
 | S26 | As a client, I can queue commands and execute them as one isolated batch, with optimistic invalidation when a watched key changes, so multi-step updates are not interleaved or lost to a race. | S | R105–R108; queue/abort/atomicity, expiry, RESP2/RESP3 and all-mode wire tests |
 | S27 | As an operator, I can require a secret before any data or administrative command so that a reachable cache is not open to every client on the network. | S | R109–R112; SHA-256 vectors, constant-time comparison, NOAUTH/HELLO atomicity, rotation/redaction and all-mode wire tests |
+| S28 | As an operator, I can define multiple users with independent credentials, command categories and key patterns so that a shared cache is not all-or-nothing access. | S | R113–R116; ACL-file round-trip, atomic rules, live denial, protected default and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -176,8 +177,32 @@ reason to couple all future commands into a single large story.
 - **R112 (ubiquitous):** Authentication tests shall run offline in all execution
   modes, cover pipelined rejection/order, runtime rotation, `QUIT`, RESP2/RESP3
   HELLO, secret redaction and disabled/rotated credentials. Documentation shall
-  retain the missing multi-user ACL, brute-force, audit, native-TLS, durability and
+  retain the missing brute-force, audit, native-TLS, durability and
   live-deauthentication boundaries; a single password is not full Redis security.
+
+### Multi-user ACLs (S28)
+
+- **R113 (event-driven):** When `--aclfile` is configured, the server shall load
+  users/rules before accepting clients, require an enabled `default` user, reject
+  malformed or missing files at startup, reject combining `--aclfile` with
+  `--requirepass`, and preserve the single-password `--requirepass` mode otherwise.
+- **R114 (state-driven):** While a connection is authenticated as a user, the
+  server shall evaluate ordered command/category rules and declared key positions
+  before dispatch/store access and deny with `NOPERM`; disabled/deleted users shall
+  fail with `NOAUTH` on the next command. `AUTH`, `HELLO`, `QUIT` and `ACL WHOAMI`
+  shall retain their documented exceptions. Denied commands shall not mutate data
+  and shall mark an active transaction dirty.
+- **R115 (event-driven):** When `ACL SETUSER`, `DELUSER`, `WHOAMI`, `USERS`, `LIST`,
+  `GETUSER`, `CAT`, `SAVE` or `LOAD` is received with valid permission, the server
+  shall apply Redis-shaped user rules atomically, protect `default` from deletion,
+  expose hashes instead of plaintext, and save/load a complete ACL file through an
+  fsynced temporary-file rename. Invalid modifiers shall not partially change a user.
+- **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
+  password/category/command/key rules, live revocation, transaction dirtiness,
+  startup failures, file hash/rule round-trips and secret-free diagnostics.
+  Documentation shall retain the missing selectors, audit/log/dry-run/gen-pass,
+  channel enforcement, rate limiting, native TLS, key-spec-blind commands and
+  process-level tenant-isolation boundaries.
 
 ### Development and delivery
 
@@ -510,13 +535,15 @@ EX/PX/EXAT/PXAT and IFEQ (plus Redis IFNE/IFDEQ/IFDNE); `GET`, `DEL`, `EXISTS`,
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
 INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX;
 MULTI/EXEC/DISCARD/WATCH/UNWATCH with a bounded queue, atomic batch execution
-and optimistic key invalidation; Redis DIGEST/DELEX
+and optimistic key invalidation; multi-user ACL users/rules, key patterns and
+atomic ACL-file save/load; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
 (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); LPUSH/RPUSH/LPOP/RPOP/LLEN/LRANGE;
 SADD/SMEMBERS/SCARD/SISMEMBER; HSET/HGET/HGETALL/HLEN; ZADD/ZRANGE/ZSCORE/ZCARD.
 See [string semantics](strings.md), [string ranges](string-ranges.md),
 [bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md),
-[typed collections](collections.md) and [transactions](transactions.md) for grammar,
+[typed collections](collections.md), [transactions](transactions.md) and
+[security](security.md) for grammar,
 clocks, rounding, integer limits, resource bounds, queue isolation and atomic
 error behavior. Conditions are atomic and
 case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
@@ -542,9 +569,11 @@ redis-cli/library handshake interoperability is not yet verified.
 
 Deliberately not supported: empty/null request arrays, other RESP3 types and
 pushes, commands beyond the documented collection/stream subsets, nonzero SELECT
-indices, multi-user ACL/permissions, native TLS, persistence, replication,
-clustering, scripts and pub/sub. A single `default`-user password is supported
-with `AUTH`, `HELLO ... AUTH` and `CONFIG SET requirepass`; see [security](security.md).
+indices, native TLS, persistence, replication, clustering, scripts and pub/sub.
+Single-password and multi-user ACL-file authentication are supported with
+`AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors, audit
+logging, dry-run, generated passwords and channel enforcement remain absent. See
+[security](security.md).
 Connection-local commands are rejected rather than queued inside MULTI. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-
@@ -552,7 +581,7 @@ option errors omit arbitrary input bytes rather than reflecting them into RESP
 error frames. Conservative defaults remain smaller than Redis limits.
 
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
-1..=1024-byte password (via flag or file; no ACL users),
+1..=1024-byte password (via flag or file; ACL files add hashed users),
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload and a 2 MiB
 maximum MGET RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
 request bounds up to 512 MiB (bulk must fit within frame); larger requests remain
@@ -570,9 +599,9 @@ Not implemented or implied by the completed increments:
 1. Validate HELLO/CLIENT session negotiation against real pinned redis-cli and
    language clients; add command discovery and multiple databases only as separate
    compatible increments.
-2. Multi-user ACL command/key/channel permissions, brute-force controls, an audit
-   path and a safe transport-security deployment boundary; then durability with
-   crash/recovery and Redis-format interoperability tests.
+2. ACL selectors and channel enforcement (with pub/sub), brute-force controls, an
+   audit path and a safe transport-security deployment boundary; then durability
+   with crash/recovery and Redis-format interoperability tests.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and
    clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe

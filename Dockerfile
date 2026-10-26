@@ -13,7 +13,7 @@ RUN cargo build --locked --offline --release --bin rillcache
 FROM scratch
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="Rillcache" \
-      org.opencontainers.image.description="Experimental safe-std-only Redis-compatible in-memory server; optional password auth, no ACL users, TLS or persistence" \
+      org.opencontainers.image.description="Experimental safe-std-only Redis-compatible in-memory server; optional password/ACL-file auth, no TLS or persistence" \
       org.opencontainers.image.source="https://github.com/macel94/rillcache" \
       org.opencontainers.image.revision="${VCS_REF}"
 COPY --from=build /build/target/release/rillcache /rillcache
