@@ -8,6 +8,7 @@
 use super::Store;
 use super::collections::encode_list;
 use super::data::Collection;
+use super::notify::Category as NotifyCategory;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PopOutcome {
@@ -83,9 +84,16 @@ impl Store {
         };
         if matches!(outcome, PopOutcome::Value { .. }) {
             let mut output = Vec::new();
-            self.commit_journal(marks, &mut output, 0);
+            self.commit_journal(marks, &[], &mut output, 0);
             if output.first() == Some(&b'-') {
                 return PopOutcome::JournalError;
+            }
+            if let PopOutcome::Value { key, .. } = &outcome {
+                self.notify_event(
+                    if left { "lpop" } else { "rpop" },
+                    key,
+                    NotifyCategory::List,
+                );
             }
         }
         outcome

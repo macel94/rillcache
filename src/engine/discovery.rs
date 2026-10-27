@@ -517,10 +517,11 @@ impl Store {
             if matches!(section.as_slice(), b"memory" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nmaxmemory_policy:{}\r",
+                    "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
                     data.payload_bytes,
                     self.max_payload_bytes,
-                    self.eviction_policy().name()
+                    self.eviction_policy().name(),
+                    self.notify_flags().as_string()
                 );
             }
             if matches!(section.as_slice(), b"keyspace" | b"default" | b"all") {

@@ -168,6 +168,14 @@ impl Store {
                     self.eviction_policy().name().to_string(),
                 ));
             }
+            let wants_notify = if wildcard {
+                glob_match(&folded_pattern, b"notify-keyspace-events")
+            } else {
+                pattern.eq_ignore_ascii_case(b"notify-keyspace-events")
+            };
+            if wants_notify {
+                matches.push((b"notify-keyspace-events", self.notify_flags().as_string()));
+            }
             if wants_password {
                 // Never return the secret. The empty value means unset; any
                 // configured password is reported as a visible redaction.
@@ -227,8 +235,15 @@ impl Store {
         let mut candidate = *config;
         let mut password: Option<Option<Vec<u8>>> = None;
         let mut policy = None;
+        let mut notify = None;
         for pair in args[2..].as_chunks::<2>().0 {
-            if pair[0].eq_ignore_ascii_case(b"maxmemory-policy") {
+            if pair[0].eq_ignore_ascii_case(b"notify-keyspace-events") {
+                let Some(parsed) = super::NotifyFlags::parse(pair[1]) else {
+                    out.extend_from_slice(b"-ERR invalid notify-keyspace-events flags\r\n");
+                    return;
+                };
+                notify = Some(parsed);
+            } else if pair[0].eq_ignore_ascii_case(b"maxmemory-policy") {
                 let Some(parsed) = std::str::from_utf8(pair[1])
                     .ok()
                     .and_then(super::EvictionPolicy::parse)
@@ -260,6 +275,9 @@ impl Store {
         {
             super::internal_error(out);
             return;
+        }
+        if let Some(notify) = notify {
+            self.set_notify_flags(notify);
         }
         out.extend_from_slice(b"+OK\r\n");
     }
@@ -375,7 +393,7 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*30\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*32\r\n"));
     }
 
     #[test]

@@ -21,7 +21,7 @@ per-command table or replication statistics.
 `cluster_connections:0`. `CLIENT LIST` exposes per-connection address/name/user/
 RESP/subscription metadata.
 
-`INFO memory` also reports the live `maxmemory_policy`. `evicted_keys` resets with
+`INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`. `evicted_keys` resets with
 `CONFIG RESETSTAT`; the policy itself does not.
 
 `INFO server`, `memory` and `keyspace` remain available. Memory fields are the

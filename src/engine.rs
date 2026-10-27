@@ -22,6 +22,7 @@ mod hll;
 mod journal;
 mod keyspace;
 mod multikey;
+mod notify;
 mod options;
 mod pubsub;
 mod scan;
@@ -39,6 +40,7 @@ use collection_config::CollectionConfig;
 use data::Data;
 pub use eviction::EvictionPolicy;
 pub use journal::FsyncPolicy;
+pub use notify::{Category as NotifyCategory, NotifyFlags};
 use options::{Condition, ExpiryKind, SetOptions};
 pub use transaction::{TransactionOutcome, WatchState};
 
@@ -88,6 +90,7 @@ pub struct Store {
     journal_limits: Limits,
     pubsub: RwLock<pubsub::PubSub>,
     clients: RwLock<std::collections::BTreeMap<u64, clients::ClientRecord>>,
+    notifications: std::sync::atomic::AtomicU32,
     connections_received: std::sync::atomic::AtomicU64,
     commands_processed: std::sync::atomic::AtomicU64,
     rejected_connections: std::sync::atomic::AtomicU64,
@@ -137,6 +140,7 @@ impl Store {
             journal_limits: Limits::default(),
             pubsub: RwLock::new(pubsub::PubSub::default()),
             clients: RwLock::new(std::collections::BTreeMap::new()),
+            notifications: std::sync::atomic::AtomicU32::new(0),
             connections_received: std::sync::atomic::AtomicU64::new(0),
             commands_processed: std::sync::atomic::AtomicU64::new(0),
             rejected_connections: std::sync::atomic::AtomicU64::new(0),
@@ -161,7 +165,7 @@ impl Store {
     /// With an append-only journal attached, commands take the exclusive
     /// transaction gate so mutation, capture and append keep one global order.
     pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        if self.journal.is_some() {
+        if self.journal.is_some() || self.notifications_enabled() {
             let Ok(_gate) = self.transaction_gate.write() else {
                 internal_error(output);
                 return Action::Continue;
@@ -169,7 +173,7 @@ impl Store {
             let marks = self.journal_marks();
             let start = output.len();
             let action = self.execute_locked(arguments, output);
-            self.commit_journal(marks, output, start);
+            self.commit_journal(marks, arguments, output, start);
             return action;
         }
         let Ok(_gate) = self.transaction_gate.read() else {
@@ -535,6 +539,18 @@ impl Store {
         self.data
             .read()
             .map_or(EvictionPolicy::NoEviction, |data| data.eviction)
+    }
+
+    pub fn set_notify_flags(&self, flags: NotifyFlags) {
+        self.notifications.store(flags.bits(), Ordering::Release);
+    }
+
+    pub fn notify_flags(&self) -> NotifyFlags {
+        NotifyFlags::from_bits(self.notifications.load(Ordering::Acquire))
+    }
+
+    pub fn notifications_enabled(&self) -> bool {
+        self.notifications.load(Ordering::Acquire) != 0
     }
 
     pub fn pubsub_queue_capacity() -> usize {
