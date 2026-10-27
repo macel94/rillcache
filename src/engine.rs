@@ -46,10 +46,12 @@ pub(crate) use collection_commands::{
 };
 use collection_config::CollectionConfig;
 use data::Data;
+pub(crate) use data::StreamId;
 pub use eviction::EvictionPolicy;
 pub use journal::FsyncPolicy;
 pub use notify::{Category as NotifyCategory, NotifyFlags};
 use options::{Condition, ExpiryKind, SetOptions};
+pub(crate) use streams::{XReadOutcome, parse_xread, xread_reply};
 pub use transaction::{TransactionOutcome, WatchState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -130,13 +130,13 @@ impl Collection {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct StreamId {
+pub(crate) struct StreamId {
     pub ms: u64,
     pub seq: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct StreamEntry {
+pub(crate) struct StreamEntry {
     pub fields: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
