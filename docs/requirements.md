@@ -111,6 +111,7 @@ reason to couple all future commands into a single large story.
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
 | S82 | As an operator, I can see the configured connection limit in `INFO clients` so capacity tooling does not have to guess it. | XS | R319–R320; configured/default maxclients, INFO all and all-mode wire tests |
 | S83 | As an operator, I can kill connections by minimum age so stale or leaky clients can be reaped without knowing their IDs. | XS | R321–R322; MAXAGE matching, invalid values, caller protection and all-mode wire tests |
+| S100 | As an operator, I can see how many connections are blocked and which they are so waiters and stuck workers are diagnosable. | XS | R371–R373; blocked_clients, `b` flag, wake/timeout clearing and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 | S-CS | As an operator, I can opt into bounded per-command calls/time/error statistics without paying disabled-observer timing and metadata costs. | S | R-CS1–R-CS4; opt-in/reset/MULTI/error, lazy SLOWLOG capture and all-mode tests |
 | S84 | As an operator, I can inspect bounded per-error-code command reply counts so that repeated failures are visible without scraping client logs. | XS | R323–R325; counts/reset/INFO all/all-mode wire tests |
@@ -1589,7 +1590,7 @@ and the offline upstream harness tests.
 - **R322 (ubiquitous):** Tests shall cover old connections being killed, a young
   connection surviving, caller protection, invalid `MAXAGE` values, the
   unchanged legacy form and every worker mode. Documentation shall retain the
-  absence of fd/idle/blocked metadata and a cross-process view.
+  absence of fd/idle/buffer/memory metadata and a cross-process view.
 
 ### Client kill by local address (S89)
 
@@ -1716,8 +1717,8 @@ and the offline upstream harness tests.
 - **R358 (ubiquitous):** All-mode tests shall cover absent-type list/kill
   emptiness, `SKIPME no` targeting another client, caller self-kill and its
   cleanup, invalid filters, the unchanged legacy form and every worker mode.
-  Documentation shall retain the absence of fd/idle/blocked metadata and a
-  cross-process view.
+  Documentation shall retain the absence of fd/idle/buffer/memory metadata and
+  a cross-process view.
 
 ### Runtime payload budget (S96)
 
@@ -1898,6 +1899,20 @@ and the offline upstream harness tests.
   worker mode. Documentation shall retain that subscription commands, `PUBSUB`
   introspection and blocking pops remain rejected inside `MULTI`, and that
   delivery is process-local and at-most-once rather than durable.
+
+### Blocked-client visibility (S100)
+
+- **R371 (event-driven):** When a connection enters any supported blocking
+  command, the server shall mark it blocked in the client registry; when the
+  command completes, times out or the connection resets/disconnects, the mark
+  shall be cleared.
+- **R372 (event-driven):** `INFO clients` and `INFO all` shall report a
+  `blocked_clients` count derived from that registry state, and `CLIENT LIST`
+  shall include `b` in the flags of blocked connections alongside `N`/`P`.
+- **R373 (ubiquitous):** Tests shall cover a waiter becoming visible, wake-up
+  clearing the count, timeout/disconnect/reset clearing, `CLIENT LIST` flags and
+  every worker mode. Documentation shall retain that this is a process-local
+  registry view with no fd/idle/buffer/memory metadata or cross-process claim.
 
 ### Development and delivery
 

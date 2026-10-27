@@ -28,20 +28,21 @@ ACL subcommands expose and enforce the current policy. See
 
 `CLIENT LIST [TYPE normal|pubsub|master|replica|slave] [ID id ...]` returns one newline-delimited
 key=value record per registered connection with `id`, peer `addr`, local
-`laddr`, `name`, `age`, `flags` (N/P), `db=0`, live `sub`/`psub` counts,
-negotiated `resp`, `user`, `lib-name` and `lib-ver`. It intentionally omits fields this server does not
-measure (fd, idle, command, buffers, memory, redirection, network totals) rather
-than inventing values. `CLIENT KILL` uses filters intersecting with each other:
-`ID <id>`, `ADDR <ip:port>`, `LADDR <ip:port>`,
-`TYPE normal|pubsub|master|replica|slave`, `USER <name>` and `MAXAGE
-<milliseconds>` (matching connections at least that old), with `SKIPME yes`
-(default) or `SKIPME no`. Standalone servers have no master/replica clients, so
-those types match nothing. `SKIPME yes` always skips the caller; `SKIPME no` may
-kill the caller, in which case its socket closes and the reply can race with the
-close. The legacy single-address form returns `+OK`/`No such client`, while
-filtered forms return the killed count. A killed socket is shut down
-immediately. `INFO clients` reports
-`connected_clients`, `cluster_connections:0` and the configured `maxclients`.
+`laddr`, `name`, `age`, `flags` (N/P plus `b` while blocked), `db=0`, live
+`sub`/`psub` counts, negotiated `resp`, `user`, `lib-name` and `lib-ver`. It
+intentionally omits fields this server does not measure (fd, idle, command,
+buffers, memory, redirection, network totals) rather than inventing values.
+`CLIENT KILL` uses intersecting filters: `ID <id>`, `ADDR <ip:port>`,
+`LADDR <ip:port>`, `TYPE normal|pubsub|master|replica|slave`, `USER <name>` and
+`MAXAGE <milliseconds>` (matching connections at least that old), with
+`SKIPME yes` (default) or `SKIPME no`. Standalone servers have no master/replica
+clients, so those types match nothing. `SKIPME yes` always skips the caller;
+`SKIPME no` may kill the caller, in which case its socket closes and the reply
+can race with the close. The legacy single-address form returns `+OK`/`No such
+client`, while filtered forms return the killed count. A killed socket is shut
+down immediately. `INFO clients` reports `connected_clients`,
+`cluster_connections:0`, configured `maxclients`, and `blocked_clients` (the
+current number of connections waiting in a blocking command).
 
 `CONFIG GET maxclients` reports the live connection limit and `CONFIG SET
 maxclients <positive-integer>` changes it at runtime in both thread-per-client
