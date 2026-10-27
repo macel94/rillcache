@@ -111,6 +111,7 @@ reason to couple all future commands into a single large story.
 | S82 | As an operator, I can see the configured connection limit in `INFO clients` so capacity tooling does not have to guess it. | XS | R319–R320; configured/default maxclients, INFO all and all-mode wire tests |
 | S83 | As an operator, I can kill connections by minimum age so stale or leaky clients can be reaped without knowing their IDs. | XS | R321–R322; MAXAGE matching, invalid values, caller protection and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
+| S84 | As an operator, I can inspect bounded per-error-code command reply counts so that repeated failures are visible without scraping client logs. | XS | R323–R325; counts/reset/INFO all/all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1502,6 +1503,21 @@ and the offline upstream harness tests.
   connection surviving, caller protection, invalid `MAXAGE` values, the
   unchanged legacy form and every worker mode. Documentation shall retain the
   absence of `SKIPME no`, fd/idle/blocked metadata and a cross-process view.
+
+### Error reply statistics (S84)
+
+- **R323 (event-driven):** `INFO errorstats` and `INFO all` shall return a
+  `# Errorstats` block with one `errorstat_<CODE>:<count>` line per observed
+  command error code. The code shall be the bounded first token of the error reply
+  (maximum 32 bytes), and unknown/empty codes shall not be recorded.
+- **R324 (state-driven):** Counts shall increment once per error reply emitted for
+  a dispatched command, be process-local, and be cleared by `CONFIG RESETSTAT`
+  together with the other statistics. The table shall be bounded to 64 distinct
+  codes; protocol framing errors are not command replies and are excluded.
+- **R325 (ubiquitous):** Tests shall cover empty stats, multiple codes and counts,
+  `INFO all` inclusion, reset clearing and all worker modes. This is a bounded
+  count table, not an error log, message history, durable audit or replication
+  statistic. (feat: add bounded error reply statistics)
 
 ### Development and delivery
 
