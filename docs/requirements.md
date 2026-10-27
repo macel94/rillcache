@@ -102,6 +102,7 @@ reason to couple all future commands into a single large story.
 | S72 | As an operator, I can pause and resume client command processing so that maintenance or failover preparation can drain traffic without dropping connections. | S | R284–R287; ALL/WRITE/timeout/unpause/pipelining/MULTI/shutdown and all-mode wire tests |
 | S73 | As an operator, I can inspect bounded latency event time series so that real spikes can be diagnosed without fabricated fork, AOF or replication metrics. | S | R288–R291; latest/history/reset/doctor, threshold, bounds, unsupported subcommands and all-mode wire tests |
 | S74 | As a client or operator, I can detect unsupported cluster, module and replica features through explicit reply contracts instead of unknown commands or fake capabilities. | XS | R292–R295; CLUSTER/module/WAIT shapes, errors and all-mode wire tests |
+| S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1349,6 +1350,21 @@ and the offline upstream harness tests.
   module list/load/unknown, WAIT validation and zero, READONLY/READWRITE/ASKING,
   ACL access and all worker modes. Documentation shall retain the absence of
   cluster routing, module execution, replication and Redis-8 extension support.
+
+### Command registry filters (S77)
+
+- **R303 (event-driven):** `COMMAND LIST FILTERBY PATTERN glob` shall return only
+  registered command names matching the byte-oriented glob, preserving registry
+  (lower-case sorted) order without reflecting arbitrary input in errors.
+- **R304 (event-driven):** `COMMAND LIST FILTERBY ACLCAT category` shall accept a
+  bare or `@`-prefixed category, reuse the ACL category matcher for registered
+  names, and return an empty list for unknown categories. `FILTERBY MODULE name`
+  shall return an empty list because no modules are loadable.
+- **R305 (ubiquitous):** Missing values, unknown filters, duplicate/multiple
+  FILTERBY clauses and extra arguments shall return bounded syntax errors without
+  partial output. Tests shall cover pattern/category/module filters, `@` prefixes,
+  unknown categories, syntax failures and all worker modes. No module metadata or
+  Redis extended command docs are implied.
 
 ### Development and delivery
 
