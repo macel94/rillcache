@@ -129,6 +129,7 @@ pub struct Store {
     latency: std::sync::RwLock<latency::State>,
     auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64,
     auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64,
+    error_stats: RwLock<std::collections::BTreeMap<Vec<u8>, u64>>,
     shutdown_requested: AtomicBool,
 }
 impl Store {
@@ -194,6 +195,7 @@ impl Store {
             latency: std::sync::RwLock::new(latency::State::default()),
             auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64::new(100),
             auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64::new(64 * 1024 * 1024),
+            error_stats: RwLock::new(std::collections::BTreeMap::new()),
             shutdown_requested: AtomicBool::new(false),
         }
     }
@@ -631,7 +633,44 @@ impl Store {
         }
     }
 
+    pub(crate) fn record_error(&self, reply: &[u8]) {
+        let Some(body) = reply.strip_prefix(b"-") else {
+            return;
+        };
+        let end = body
+            .iter()
+            .position(|byte| matches!(*byte, b' ' | b'\r' | b'\n'))
+            .unwrap_or(body.len())
+            .min(32);
+        if end == 0 {
+            return;
+        }
+        let code = body[..end].to_vec();
+        if let Ok(mut stats) = self.error_stats.write() {
+            if let Some(count) = stats.get_mut(&code) {
+                *count = count.saturating_add(1);
+            } else if stats.len() < 64 {
+                stats.insert(code, 1);
+            }
+        }
+    }
+
+    pub(crate) fn error_stats(&self) -> Vec<(Vec<u8>, u64)> {
+        self.error_stats
+            .read()
+            .map(|stats| {
+                stats
+                    .iter()
+                    .map(|(code, count)| (code.clone(), *count))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn reset_stats(&self) -> bool {
+        if let Ok(mut stats) = self.error_stats.write() {
+            stats.clear();
+        }
         self.connections_received.store(0, Ordering::Relaxed);
         self.commands_processed.store(0, Ordering::Relaxed);
         self.rejected_connections.store(0, Ordering::Relaxed);
