@@ -51,7 +51,7 @@ This is a collaboration between a human and AI:
 Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
 `ECHO`, `SET` with atomic `NX`/`XX`,
 `GET`, `KEEPTTL`, `EX`/`PX`/`EXAT`/`PXAT` options; `GET`, `MGET`, `MSET`, `MSETNX`,
-`DEL`, `EXISTS`, `QUIT`;
+`DEL`, `UNLINK`, `EXISTS`, `QUIT`;
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
 strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,

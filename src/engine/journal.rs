@@ -869,7 +869,9 @@ fn event_for(
         });
     }
     let category = match name.as_str() {
-        "del" | "delex" | "delifeq" => return Some(("del", NotifyCategory::Generic)),
+        "del" | "delex" | "delifeq" | "unlink" => {
+            return Some(("del", NotifyCategory::Generic));
+        }
         "expire" | "pexpire" | "expireat" | "pexpireat" => {
             let exists = data.entries.get(key).is_some_and(|entry| entry.alive(now));
             return Some((

@@ -290,9 +290,16 @@ impl Store {
             } else {
                 arity("digest", output);
             }
-        } else if command.eq_ignore_ascii_case(b"DEL") {
+        } else if command.eq_ignore_ascii_case(b"DEL") || command.eq_ignore_ascii_case(b"UNLINK") {
             if arguments.len() < 2 {
-                arity("del", output);
+                arity(
+                    if command.eq_ignore_ascii_case(b"UNLINK") {
+                        "unlink"
+                    } else {
+                        "del"
+                    },
+                    output,
+                );
             } else if let Ok(mut data) = self.data.write() {
                 let now = self.now(&data);
                 let mut count = 0;
