@@ -8,7 +8,7 @@ use rillcache::{Config, Server};
 
 mod healthcheck;
 
-const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH and an append-only journal; no native TLS,\nRDB format, eviction or replication. The standalone binary binds to loopback by\ndefault.";
+const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH and an append-only journal; no native TLS,\nRDB format, eviction or replication. The standalone binary binds to loopback by\ndefault.";
 
 enum Options {
     Run(Config),
@@ -52,7 +52,8 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--appendfsync"
             | "--dir"
             | "--maxmemory-policy"
-            | "--notify-keyspace-events" => {
+            | "--notify-keyspace-events"
+            | "--error-dialect" => {
                 let value = arguments
                     .next()
                     .ok_or_else(|| format!("missing value for {option}"))?;
@@ -124,6 +125,10 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                     "--maxmemory-policy" => {
                         config.maxmemory_policy = rillcache::engine::EvictionPolicy::parse(&value)
                             .ok_or("--maxmemory-policy requires a supported policy name")?;
+                    }
+                    "--error-dialect" => {
+                        config.error_dialect = rillcache::engine::ErrorDialect::parse(&value)
+                            .ok_or("--error-dialect requires redis or valkey")?;
                     }
                     "--notify-keyspace-events" => {
                         config.notify_keyspace_events =
@@ -328,6 +333,35 @@ mod tests {
             panic!("expected health check");
         };
         assert_eq!(address, "[::1]:6379".parse().unwrap());
+    }
+
+    #[test]
+    fn error_dialect_is_explicit_and_validated_at_startup() {
+        use rillcache::engine::ErrorDialect;
+        let Options::Run(defaults) = options(Vec::new()).unwrap() else {
+            panic!("expected defaults");
+        };
+        assert_eq!(defaults.error_dialect, ErrorDialect::Valkey);
+        for (name, expected) in [
+            ("redis", ErrorDialect::Redis),
+            ("valkey", ErrorDialect::Valkey),
+        ] {
+            let Options::Run(config) =
+                options(["--error-dialect", name].map(str::to_owned)).unwrap()
+            else {
+                panic!("expected dialect config");
+            };
+            assert_eq!(config.error_dialect, expected);
+        }
+        for arguments in [
+            vec!["--error-dialect"],
+            vec!["--error-dialect", ""],
+            vec!["--error-dialect", "auto"],
+            vec!["--error-dialect", "redis\0"],
+            vec!["--error-dialect", "REDIS"],
+        ] {
+            assert!(options(arguments.into_iter().map(str::to_owned)).is_err());
+        }
     }
 
     #[test]

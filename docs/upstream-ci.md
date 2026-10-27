@@ -78,6 +78,18 @@ the same connection without changing the original Tcl/support sources.
 A failed native control invalidates attribution, but candidate diagnostics still
 run; it is not silently retried or treated as candidate conformance evidence.
 
+The candidate is started with the public `--error-dialect redis` or
+`--error-dialect valkey` setting matching the reference for the entire suite.
+This selects only the verified MSETEX short-pair error wording: pinned Redis
+expects `ERR wrong number of key-value pairs`, while pinned Valkey expects
+`ERR syntax error` for the same invalid counted block. The default application
+setting remains Valkey. The runner records the dialect in result JSON, the
+summary and `server.json` alongside the exact argv; no test name, command input,
+assertion or exclusion controls this choice. The original Tcl is unchanged.
+These configured results are not proof that one unconfigured default returns
+both contradictory errors or that all other vendor divergences are supported.
+Performance runs retain the unchanged default configuration.
+
 `ci/upstream/scope.json` is the capability/exclusion manifest. There are no
 hand-copied or Rust-reimplemented upstream assertions and no test patches,
 protocol proxy, shim server, injected Tcl callbacks or renamed expectations.
