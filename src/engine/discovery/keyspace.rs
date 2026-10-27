@@ -1,0 +1,36 @@
+//! `keyspace` command metadata.
+
+use super::{Command, cmd};
+
+pub(super) const COMMANDS: &[Command] = &[
+    cmd("copy", -3, &["write", "denyoom"], 1, 2, 1),
+    cmd("dbsize", 1, &["readonly", "fast"], 0, 0, 0),
+    cmd("del", -2, &["write", "fast"], 1, -1, 1),
+    cmd("delex", -2, &["write", "fast"], 1, 1, 1),
+    cmd("delifeq", 3, &["write", "fast"], 1, 1, 1),
+    cmd("exists", -2, &["readonly", "fast"], 1, -1, 1),
+    cmd("expire", -3, &["write", "fast"], 1, 1, 1),
+    cmd("expireat", -3, &["write", "fast"], 1, 1, 1),
+    cmd("expiretime", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("flushall", -1, &["write", "slow"], 0, 0, 0),
+    cmd("flushdb", -1, &["write", "slow"], 0, 0, 0),
+    cmd("keys", 2, &["readonly"], 0, 0, 0),
+    cmd("move", 3, &["write", "fast"], 1, 1, 1),
+    cmd("object", -2, &["readonly"], 2, 2, 1),
+    cmd("persist", 2, &["write", "fast"], 1, 1, 1),
+    cmd("pexpire", -3, &["write", "fast"], 1, 1, 1),
+    cmd("pexpireat", -3, &["write", "fast"], 1, 1, 1),
+    cmd("pexpiretime", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("pttl", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("randomkey", 1, &["readonly"], 0, 0, 0),
+    cmd("rename", 3, &["write"], 1, 2, 1),
+    cmd("renamenx", 3, &["write", "fast"], 1, 2, 1),
+    cmd("scan", -2, &["readonly", "slow"], 0, 0, 0),
+    cmd("sort", -2, &["write", "denyoom"], 1, 1, 1),
+    cmd("sort_ro", -2, &["readonly"], 1, 1, 1),
+    cmd("swapdb", 3, &["write", "fast"], 0, 0, 0),
+    cmd("touch", -2, &["readonly", "fast"], 1, -1, 1),
+    cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("type", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("unlink", -2, &["write", "fast"], 1, -1, 1),
+];
