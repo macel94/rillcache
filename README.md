@@ -82,6 +82,13 @@ elements. Values remain ordinary string keys for expiry, keyspace and journal
 handling; the private payload is not Redis's HLL encoding. See
 [HyperLogLog limits](docs/hyperloglog.md).
 
+A bounded stream subset supports `XADD`/`XDEL`/`XLEN`, consumer groups
+(`XGROUP CREATE/SETID/DESTROY/CREATECONSUMER/DELCONSUMER`, `XREADGROUP` with
+`COUNT`/`NOACK`), `XACK`/`XPENDING`, `XRANGE`/`XREVRANGE`, non-blocking
+multi-stream `XREAD` and `XINFO STREAM` (with `FULL`). Pending delivery state is
+volatile across restart; blocking reads, claiming and trimming remain absent. See
+[stream limits](docs/streams.md).
+
 Bounded `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` queue supported data
 commands and execute them under one store-wide gate, with expiry-aware optimistic
 invalidation, RESP2/RESP3 replies and a documented fail-closed version bound. See
