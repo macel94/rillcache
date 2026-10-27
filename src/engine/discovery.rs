@@ -28,6 +28,9 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("bgrewriteaof", 1, &["admin", "dangerous", "slow"], 0, 0, 0),
+    cmd("bitcount", -2, &["readonly"], 1, 1, 1),
+    cmd("bitop", -4, &["write", "denyoom"], 1, -1, 1),
+    cmd("bitpos", -3, &["readonly"], 1, 1, 1),
     cmd("blpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
     cmd("brpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
     cmd(
@@ -397,7 +400,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "msetnx" | "psetex" | "set" | "setex" | "setnx" | "setrange" | "strlen" | "substr" => {
             "string"
         }
-        "getbit" | "setbit" => "bitmap",
+        "bitcount" | "bitop" | "bitpos" | "getbit" | "setbit" => "bitmap",
         "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
         "blpop" | "brpop" | "lindex" | "linsert" | "llen" | "lpop" | "lpush" | "lpushx"
         | "lrange" | "lrem" | "lset" | "ltrim" | "rpop" | "rpush" | "rpushx" => "list",
@@ -646,6 +649,9 @@ mod tests {
             ("pfadd", "hyperloglog"),
             ("pfcount", "hyperloglog"),
             ("pfmerge", "hyperloglog"),
+            ("bitcount", "bitmap"),
+            ("bitop", "bitmap"),
+            ("bitpos", "bitmap"),
         ] {
             assert_eq!(command_group(name), Some(category));
         }
