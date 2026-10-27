@@ -161,11 +161,7 @@ impl Session {
                 }
             }
         }
-        if store.shutdown_requested() {
-            Action::Close
-        } else {
-            action
-        }
+        action
     }
 
     fn record_slowlog(&self, store: &Store, arguments: &[&[u8]], started: Instant) {
@@ -333,6 +329,14 @@ impl Session {
         } else if self.multi.is_some() {
             self.queue(arguments, output);
             return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"SHUTDOWN") {
+            store.shutdown_command(arguments, output);
+            return if store.shutdown_requested() {
+                Action::Close
+            } else {
+                Action::Continue
+            };
         }
         if command.eq_ignore_ascii_case(b"SUBSCRIBE") {
             self.subscribe(store, &arguments[1..], false, output);
