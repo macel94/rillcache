@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::protocol::{Limits, encode_bulk};
+mod acl_log;
 mod administration;
 mod auth;
 mod blocking;
@@ -32,6 +33,7 @@ mod string_algorithms;
 mod string_ranges;
 mod transaction;
 mod xxh3;
+pub use acl_log::AclLogEntry;
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 pub use blocking::PopOutcome;
 pub use blocking::reply_value as blocking_reply;
@@ -91,6 +93,7 @@ pub struct Store {
     pubsub: RwLock<pubsub::PubSub>,
     clients: RwLock<std::collections::BTreeMap<u64, clients::ClientRecord>>,
     notifications: std::sync::atomic::AtomicU32,
+    acl_log: RwLock<std::collections::VecDeque<acl_log::AclLogEntry>>,
     connections_received: std::sync::atomic::AtomicU64,
     commands_processed: std::sync::atomic::AtomicU64,
     rejected_connections: std::sync::atomic::AtomicU64,
@@ -141,6 +144,7 @@ impl Store {
             pubsub: RwLock::new(pubsub::PubSub::default()),
             clients: RwLock::new(std::collections::BTreeMap::new()),
             notifications: std::sync::atomic::AtomicU32::new(0),
+            acl_log: RwLock::new(std::collections::VecDeque::new()),
             connections_received: std::sync::atomic::AtomicU64::new(0),
             commands_processed: std::sync::atomic::AtomicU64::new(0),
             rejected_connections: std::sync::atomic::AtomicU64::new(0),

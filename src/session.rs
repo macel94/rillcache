@@ -96,6 +96,7 @@ impl Session {
         if !is_auth_exempt(command) {
             let authentication_required = store.authentication_required();
             if authentication_required && self.authenticated_user.is_none() {
+                self.log_denial(store, "noauth", "toplevel", command);
                 output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
                 return Action::Continue;
             }
@@ -106,11 +107,13 @@ impl Session {
                 match store.authorize(self.authenticated_user.as_deref(), arguments) {
                     Access::Allowed => {}
                     Access::NoAuth => {
+                        self.log_denial(store, "noauth", "toplevel", command);
                         output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
                         return Action::Continue;
                     }
                     Access::DeniedCommand => {
                         let name = command_name(command);
+                        self.log_denial(store, "command", "toplevel", name.as_bytes());
                         let _ = write!(
                             output,
                             "-NOPERM this user has no permissions to run the '{name}' command\r\n"
@@ -120,7 +123,8 @@ impl Session {
                         }
                         return Action::Continue;
                     }
-                    Access::DeniedKey => {
+                    Access::DeniedKey(key) => {
+                        self.log_denial(store, "key", "toplevel", &key);
                         output.extend_from_slice(
                             b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
                         );
@@ -129,7 +133,8 @@ impl Session {
                         }
                         return Action::Continue;
                     }
-                    Access::DeniedChannel => {
+                    Access::DeniedChannel(channel) => {
+                        self.log_denial(store, "channel", "toplevel", &channel);
                         output.extend_from_slice(
                             b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
                         );
@@ -297,24 +302,28 @@ impl Session {
             match store.authorize(self.authenticated_user.as_deref(), &arguments) {
                 Access::Allowed => {}
                 Access::NoAuth => {
+                    self.log_denial(store, "noauth", "multi", arguments[0]);
                     output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
                     return Action::Continue;
                 }
                 Access::DeniedCommand => {
                     let name = command_name(arguments[0]);
+                    self.log_denial(store, "command", "multi", name.as_bytes());
                     let _ = write!(
                         output,
                         "-NOPERM this user has no permissions to run the '{name}' command\r\n"
                     );
                     return Action::Continue;
                 }
-                Access::DeniedKey => {
+                Access::DeniedKey(key) => {
+                    self.log_denial(store, "key", "multi", &key);
                     output.extend_from_slice(
                         b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
                     );
                     return Action::Continue;
                 }
-                Access::DeniedChannel => {
+                Access::DeniedChannel(channel) => {
+                    self.log_denial(store, "channel", "multi", &channel);
                     output.extend_from_slice(
                         b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
                     );
@@ -539,6 +548,91 @@ impl Session {
                 match store.acl_save() {
                     Ok(()) => output.extend_from_slice(b"+OK\r\n"),
                     Err(error) => acl_error(error, output),
+                }
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"GENPASS") {
+            if arguments.len() > 2 {
+                arity("acl|genpass", output);
+            } else {
+                let bits = if arguments.len() == 1 {
+                    256
+                } else {
+                    match parse_client_id(arguments[1]).filter(|bits| (1..=1024).contains(bits)) {
+                        Some(bits) => bits as usize,
+                        None => {
+                            output.extend_from_slice(b"-ERR GENPASS bits must be 1..=1024\r\n");
+                            return;
+                        }
+                    }
+                };
+                match store.generate_password(bits) {
+                    Some(password) => encode_bulk(Some(password.as_bytes()), output),
+                    None => output.extend_from_slice(b"-ERR secure random source unavailable\r\n"),
+                }
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"DRYRUN") {
+            if arguments.len() < 3 {
+                arity("acl|dryrun", output);
+            } else {
+                match store.acl_dryrun(arguments[1], &arguments[2..]) {
+                    Some(Access::Allowed) => output.extend_from_slice(b"+OK\r\n"),
+                    Some(Access::DeniedCommand) => {
+                        let name = command_name(arguments[2]);
+                        let _ = write!(
+                            output,
+                            "-NOPERM this user has no permissions to run the '{name}' command\r\n"
+                        );
+                    }
+                    Some(Access::DeniedKey(_)) => output.extend_from_slice(
+                        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+                    ),
+                    Some(Access::DeniedChannel(_)) => output.extend_from_slice(
+                        b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
+                    ),
+                    Some(Access::NoAuth) => {
+                        output.extend_from_slice(b"-NOAUTH Authentication required.\r\n")
+                    }
+                    None => output.extend_from_slice(b"-ERR User not found\r\n"),
+                }
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"LOG") {
+            if arguments.len() == 2 && arguments[1].eq_ignore_ascii_case(b"RESET") {
+                if store.reset_acl_log() {
+                    output.extend_from_slice(b"+OK\r\n");
+                } else {
+                    output.extend_from_slice(b"-ERR internal authentication error\r\n");
+                }
+            } else {
+                let count = if arguments.len() == 1 {
+                    10
+                } else if arguments.len() == 2 {
+                    match parse_client_id(arguments[1]).filter(|count| *count > 0) {
+                        Some(count) => count as usize,
+                        None => {
+                            output.extend_from_slice(b"-ERR invalid ACL LOG count\r\n");
+                            return;
+                        }
+                    }
+                } else {
+                    arity("acl|log", output);
+                    return;
+                };
+                let entries = store.acl_log(count);
+                let _ = write!(output, "*{}\r\n", entries.len());
+                for entry in entries {
+                    output.extend_from_slice(b"*6\r\n");
+                    let _ = write!(output, ":{}", entry.count);
+                    output.extend_from_slice(b"\r\n");
+                    for value in [
+                        &entry.reason,
+                        &entry.context,
+                        &entry.object,
+                        &entry.username,
+                    ] {
+                        encode_bulk(Some(value), output);
+                    }
+                    let _ = write!(output, ":{}", entry.age_seconds());
+                    output.extend_from_slice(b"\r\n");
                 }
             }
         } else if subcommand.eq_ignore_ascii_case(b"LOAD") {
@@ -883,6 +977,14 @@ impl Session {
                 }
             }
         }
+    }
+
+    fn log_denial(&self, store: &Store, reason: &str, context: &str, object: &[u8]) {
+        let user = self
+            .authenticated_user
+            .clone()
+            .unwrap_or_else(|| b"default".to_vec());
+        store.record_acl_denial(reason, context, object, &user);
     }
 
     fn sync_client_metadata(&self, store: &Store) {

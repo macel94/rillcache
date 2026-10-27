@@ -68,6 +68,7 @@ reason to couple all future commands into a single large story.
 | S38 | As an operator, I can list live connections with honest metadata and kill selected clients by ID/address/type/user so that stuck or abusive sessions can be managed. | XS | R149–R152; list metadata/filters, kill variants, self-protection and all-mode wire tests |
 | S39 | As a cache user, I can add elements to approximate cardinality sketches, estimate the union of several sketches and merge them, without storing every member. | S | R153–R156; exact small counts, dense tolerance, TTL/merge/error atomicity and all-mode wire tests |
 | S40 | As a service, I can subscribe to keyspace/keyevent notifications so that cache invalidation and audit tooling do not need to poll the keyspace. | S | R157–R160; flag/category frames, MULTI/blocking, runtime toggle, ACL and all-mode wire tests |
+| S41 | As an administrator, I can generate secure ACL passwords, dry-run a user's permissions and inspect a bounded denial log so that credential operations and policy debugging are explicit. | XS | R161–R164; GENPASS source/bounds, DRYRUN, LOG aggregation/reset and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -472,6 +473,29 @@ reason to couple all future commands into a single large story.
   `CONFIG`/`INFO` exposure. Documentation shall retain the missing event classes,
   durable/replicated delivery, global happens-before and exhaustive-audit limits.
 
+### ACL credentials, dry-run and denial log (S41)
+
+- **R161 (event-driven):** When `ACL GENPASS [bits]` receives a valid 1..=1024-bit
+  request (default 256), the server shall return lowercase hex sourced from
+  `/dev/urandom`; if the source is unavailable or bits are invalid, it shall return
+  a bounded error without falling back to weak randomness.
+- **R162 (event-driven):** When `ACL DRYRUN username command [arg ...]` is
+  received, the server shall evaluate the named enabled user's ordered command,
+  key and channel rules without executing the command, mutating state or recording
+  a denial, returning `+OK`/`NOPERM` or a visible unknown-user error.
+- **R163 (event-driven):** When permission is denied, the server shall record a
+  bounded process-local log entry with reason (`noauth`/`command`/`key`/`channel`),
+  context (`toplevel`/`multi`), object, username and age; identical tuples shall
+  aggregate. `ACL LOG [count]` shall return newest entries as
+  `[count, reason, context, object, username, age]` arrays and `ACL LOG RESET`
+  shall clear them.
+- **R164 (ubiquitous):** GENPASS/DRYRUN/LOG shall require the normal ACL command
+  permission and all-mode tests shall cover random output length/hex, invalid bits,
+  allowed/denied dry runs, unknown users, no-log DRYRUN behavior, key/channel/
+  command/noauth aggregation, reset and bounded counts. Documentation shall retain
+  the absence of persistent/replicated/centralized audit, rate limiting, token/
+  timeout metadata and exhaustive security-event coverage.
+
 ### Development and delivery
 
 - **R30 (event-driven):** When `make check` is run, the project shall check formatting,
@@ -807,7 +831,8 @@ and optimistic key invalidation; multi-user ACL users/rules, key patterns and
 atomic ACL-file save/load; opt-in RESP-command append-only persistence with
 fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction;
 payload-budget eviction policies (`noeviction`, allkeys/volatile random/LRU and
-volatile TTL); keyspace/keyevent notifications for supported mutation classes; Redis DIGEST/DELEX
+volatile TTL); keyspace/keyevent notifications for supported mutation classes;
+ACL GENPASS/DRYRUN and a bounded denial log; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
 (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store

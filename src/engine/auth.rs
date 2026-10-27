@@ -211,13 +211,13 @@ pub enum AuthError {
     Internal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Access {
     Allowed,
     NoAuth,
     DeniedCommand,
-    DeniedKey,
-    DeniedChannel,
+    DeniedKey(Vec<u8>),
+    DeniedChannel(Vec<u8>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -397,6 +397,19 @@ impl Auth {
         let Some((_, user)) = self.session_user(authenticated) else {
             return Access::NoAuth;
         };
+        Self::authorize_user_ref(user, arguments)
+    }
+
+    /// Evaluate a named user's rules without changing connection state. Returns
+    /// `None` for a missing or disabled user (used by ACL DRYRUN).
+    pub fn authorize_user(&self, name: &[u8], arguments: &[&[u8]]) -> Option<Access> {
+        let user = self.lookup_name(name)?;
+        let user = self.users.get(&user)?;
+        user.enabled
+            .then(|| Self::authorize_user_ref(user, arguments))
+    }
+
+    fn authorize_user_ref(user: &User, arguments: &[&[u8]]) -> Access {
         // ACL WHOAMI is available to every authenticated user, as in Redis.
         if arguments
             .first()
@@ -415,7 +428,7 @@ impl Auth {
         };
         for key in discovery::key_arguments(command, arguments) {
             if !user.allows_key(key) {
-                return Access::DeniedKey;
+                return Access::DeniedKey(key.to_vec());
             }
         }
         let channels: &[&[u8]] = if command.eq_ignore_ascii_case(b"PUBLISH") {
@@ -431,7 +444,7 @@ impl Auth {
         };
         for channel in channels {
             if !user.allows_channel(channel) {
-                return Access::DeniedChannel;
+                return Access::DeniedChannel(channel.to_vec());
             }
         }
         Access::Allowed
@@ -786,7 +799,7 @@ mod tests {
         assert!(!user.allows_key(b"other:key"));
         assert_eq!(
             auth.authorize(Some(b"reader"), &[b"GET", b"other:key"]),
-            Access::DeniedKey
+            Access::DeniedKey(b"other:key".to_vec())
         );
         assert_eq!(
             auth.authorize(Some(b"reader"), &[b"SET", b"app:key"]),
@@ -794,7 +807,7 @@ mod tests {
         );
         assert_eq!(
             auth.authorize(Some(b"reader"), &[b"SET", b"other:key"]),
-            Access::DeniedKey
+            Access::DeniedKey(b"other:key".to_vec())
         );
         assert_eq!(
             auth.authorize(Some(b"reader"), &[b"DEL", b"app:key"]),
