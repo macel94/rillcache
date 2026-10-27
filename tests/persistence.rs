@@ -396,3 +396,28 @@ fn automatic_rewrite_is_triggered_by_maintenance_and_replays() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn append_after_rewrite_replays_cleanly() {
+    let dir = temp_dir("rewrite-append");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"SET", b"a", b"1"], b"+OK\r\n");
+        send(&mut stream, &[b"BGREWRITEAOF"], b"+OK\r\n");
+        // Without seeking to the snapshot end, this write lands at offset zero
+        // and overwrites the compacted file.
+        send(&mut stream, &[b"SET", b"b", b"2"], b"+OK\r\n");
+        send(&mut stream, &[b"GET", b"a"], b"$1\r\n1\r\n");
+        send(&mut stream, &[b"GET", b"b"], b"$1\r\n2\r\n");
+        server.shutdown().unwrap();
+    }
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"GET", b"a"], b"$1\r\n1\r\n");
+        send(&mut stream, &[b"GET", b"b"], b"$1\r\n2\r\n");
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
