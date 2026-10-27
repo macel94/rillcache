@@ -828,13 +828,33 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
             write!(output, ":{}\r\n", COMMANDS.len()).expect("Vec write");
         }
     } else if sub.eq_ignore_ascii_case(b"LIST") {
+        let mut names: Vec<&'static str> = COMMANDS.iter().map(|item| item.name).collect();
         if arguments.len() != 2 {
-            output.extend_from_slice(b"-ERR unsupported COMMAND LIST options\r\n");
-        } else {
-            write_array_len(COMMANDS.len(), output);
-            for item in COMMANDS {
-                encode_bulk(Some(item.name.as_bytes()), output);
+            if arguments.len() != 5 || !arguments[2].eq_ignore_ascii_case(b"FILTERBY") {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
             }
+            let filter = arguments[3];
+            let value = arguments[4];
+            if filter.eq_ignore_ascii_case(b"MODULE") {
+                names.clear();
+            } else if filter.eq_ignore_ascii_case(b"ACLCAT") {
+                let category = if value.starts_with(b"@") {
+                    &value[1..]
+                } else {
+                    value
+                };
+                names = commands_in_category(category);
+            } else if filter.eq_ignore_ascii_case(b"PATTERN") {
+                names.retain(|name| super::keyspace::glob_match(value, name.as_bytes()));
+            } else {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        write_array_len(names.len(), output);
+        for name in names {
+            encode_bulk(Some(name.as_bytes()), output);
         }
     } else if sub.eq_ignore_ascii_case(b"INFO") {
         if arguments.len() == 2 {
