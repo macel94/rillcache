@@ -37,6 +37,12 @@ module classes. Those classes (`m`, `n`, `d`) and any unknown character are
 rejected by startup/config validation rather than silently accepted. Empty flags
 disable publication (the default).
 
+While neither the expired nor the evicted class is enabled, command dispatch
+skips the lifecycle-delivery drain entirely instead of taking a store write lock
+to discard keys. Pending lifecycle keys are bounded and are cleared whenever the
+notification flags change, so enabling a class never replays events observed
+before that point.
+
 ## Delivery
 
 For each changed key, the server publishes to:

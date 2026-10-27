@@ -284,7 +284,15 @@ fn latency_records_orders_and_resets_measured_commands_in_all_modes() {
             other => panic!("expected doctor report, got {other:?}"),
         }
 
-        assert_eq!(integer(&mut stream, &[b"LATENCY", b"RESET", b"command"]), 1);
+        // Disable sampling so the RESET command itself cannot add a fresh sample.
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"latency-monitor-threshold", b"0"],
+            b"+OK\r\n",
+        );
+        // Reset all series because the maintenance loop may also have recorded
+        // a real expire-cycle sample under a loaded single-CPU run.
+        assert!(integer(&mut stream, &[b"LATENCY", b"RESET"]) >= 1);
         assert_eq!(
             call(&mut stream, &[b"LATENCY", b"HISTORY", b"command"]),
             Value::Array(Some(Vec::new()))

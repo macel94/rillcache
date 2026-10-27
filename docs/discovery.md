@@ -12,7 +12,12 @@ in this worktree's Store dispatcher.
 - `COMMAND INFO [name ...]` returns all metadata when no names are supplied, or
   one metadata record per requested name; matching is ASCII case-insensitive and
   unknown names have null metadata.
-- `COMMAND LIST` returns sorted lower-case command names.
+- `COMMAND LIST` returns registered lower-case command names.
+- `COMMAND LIST FILTERBY (PATTERN glob | ACLCAT category | MODULE name)` filters
+  the same registry. PATTERN uses the server's byte-oriented glob matcher, ACLCAT
+  accepts `@`-prefixed or bare categories and returns an empty list for unknown
+  categories, and MODULE returns an empty list because no modules are loadable.
+  Missing/extra/duplicate filters or unknown filter kinds return a syntax error.
 - `COMMAND GETKEYS <command> [args ...]` returns the declared key arguments
   using the same extraction as ACL key-pattern enforcement, including counted
   key lists, STORE destinations and legacy GEORADIUS destinations. Invalid
@@ -33,9 +38,8 @@ schema. The values describe this implementation's command interfaces, not
 execution-policy claims beyond the listed flags. In particular, no Redis release,
 allocator, RSS, uptime, persistence, or memory-total values are fabricated.
 
-Unsupported COMMAND subcommands, COMMAND LIST filters, extra arguments and
-unsupported INFO sections return bounded errors that do not echo user-supplied
-bytes. All generated output is bounded by the fixed registry/section set, aside
+Unsupported COMMAND subcommands, malformed/extra LIST filters and unsupported
+INFO sections return bounded errors that do not echo user-supplied bytes. All generated output is bounded by the fixed registry/section set, aside
 from the protocol encoder's standard bounded RESP framing.
 
 ## EARS acceptance criteria
@@ -43,6 +47,9 @@ from the protocol encoder's standard bounded RESP framing.
 - **When** a supported COMMAND form is received, **then** the server shall return
   its registered command count/list/metadata with case-insensitive names and
   correct basic arity, flags and key positions.
+- **When** COMMAND LIST FILTERBY is supplied, **then** PATTERN/ACLCAT/MODULE
+  filtering shall return only matching registry names; MODULE and unknown ACL
+  categories shall be empty, and malformed filters shall fail without reflection.
 - **When** COMMAND INFO names an unknown command, **then** that element shall be
   null metadata without reflecting the supplied name.
 - **When** a supported INFO section is requested, **then** the server shall return
@@ -62,6 +69,6 @@ GET/SET forms and RESETSTAT; other runtime settings are unsupported. Every
 advertised name is wired to this worktree's Store dispatcher; unimplemented Redis
 commands remain unadvertised. The HELLO/CLIENT worker owns
 connection-local state; this module does not implement or advertise it. Detailed
-key specifications, ACL categories, subcommand records, filters and Redis
-extended metadata are not supported. No network-facing production-readiness or
+key specifications, subcommand records and Redis extended metadata are not
+supported. No network-facing production-readiness or
 full Redis compatibility claim follows from this feature.
