@@ -5,6 +5,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 CARGO ?= cargo
+GO ?= go
 CARGO_FLAGS := --locked --offline
 BENCH_ARGS ?= --requests 100000 --clients 8 --pipeline 16 --keyspace 1024 --value-size 64 --warmup 1000 --runs 3
 COMPETITOR_JOBS ?= 2
@@ -24,12 +25,12 @@ REQUIRE_THREAD_MODES ?= 0
 CONTAINER_ENGINE ?= docker
 CONTAINER_IMAGE ?= rillcache:local
 
-.PHONY: help fmt fmt-check lint test test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
+.PHONY: help fmt fmt-check lint test test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke tls-proxy-test tls-proxy-build
 # Always validate cached tools: an interrupted linker may leave a truncated file.
 .PHONY: $(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server
 
 help:
-	@printf '%s\n' 'make test       Fast unit, TCP, benchmark and policy tests' 'make check      Formatting, all-target Clippy and tests (offline)' 'make ci         Same fast verification as GitHub, plus release benchmark smoke' 'make run        Run on loopback:6379' 'make bench      Microbenchmarks and repeated local TCP benchmarks' 'make compare    Build pinned competitors once; compare three native servers' 'make package    Build a release archive and SHA-256 checksum' 'make container  Build the optional thin, non-root container image' 'make container-smoke  Test a built image in all three worker modes'
+	@printf '%s\n' 'make test       Fast unit, TCP, benchmark and policy tests' 'make check      Formatting, all-target Clippy and tests (offline)' 'make ci         Same fast verification as GitHub, plus release benchmark smoke' 'make run        Run on loopback:6379' 'make bench      Microbenchmarks and repeated local TCP benchmarks' 'make compare    Build pinned competitors once; compare three native servers' 'make package    Build a release archive and SHA-256 checksum' 'make container  Build the optional thin, non-root container image' 'make container-smoke  Test a built image in all three worker modes' 'make tls-proxy-test   Run the Go TLS 1.3 sidecar tests (needs Go 1.22+)' 'make tls-proxy-build  Build the static TLS 1.3 sidecar'
 
 fmt:
 	$(CARGO) fmt --all
@@ -248,3 +249,9 @@ compare: release metadata competitors
 		kill -0 "$$pid"
 		cleanup
 	done
+
+tls-proxy-test:
+	cd tlsproxy && $(GO) test -race ./...
+
+tls-proxy-build:
+	cd tlsproxy && CGO_ENABLED=0 $(GO) build -trimpath -ldflags='-s -w' -o tlsproxy .
