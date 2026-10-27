@@ -23,12 +23,11 @@ impl Store {
             output.extend_from_slice(b"-ERR invalid numkeys value or out of range\r\n");
             return;
         };
-        // Valkey reports the generic syntax error for an argument list shorter than
-        // `2 + 2*numkeys`, including the overflow-protection counts. Only a genuinely
-        // invalid numkeys value gets the specific numkeys error.
+        // Redis and Valkey disagree on the error text for a short counted block.
+        // The public startup dialect chooses wording, not validation or mutation.
         let pair_end = (count as u64) * 2 + 2;
         if (arguments.len() as u64) < pair_end {
-            output.extend_from_slice(super::options::SYNTAX);
+            output.extend_from_slice(self.error_dialect.short_msetex_pairs());
             return;
         }
         // The comparison above guarantees the conversion is lossless.

@@ -98,13 +98,18 @@ def run(reference, suite, name, directory):
     config = SCOPE["compatibility"]
     argv = ["tclsh", "tests/test_helper.tcl", "--single", suite, *config["options"],
             "--tags", " ".join("-" + tag for tag in config["denied_tags"]), "--host", "127.0.0.1"]
-    with server(name, directory / "instance", compatibility=True) as (proc, port):
+    # Public startup selection, constant for the entire original suite: the
+    # pinned vendors disagree on MSETEX short-pair error wording. No test probing,
+    # assertion rewriting or suite-specific server behavior is involved.
+    error_dialect = reference if name == "rillcache" else None
+    with server(name, directory / "instance", compatibility=True, error_dialect=error_dialect) as (proc, port):
         probes = prerequisites(port, reference)
         argv += ["--port", str(port)]
         result = command(argv, directory / "tcl", cwd=tree, timeout=config["timeout_seconds_per_run"])
         text = (directory / "tcl/stdout.log").read_text(errors="replace")
         text += "\n" + (directory / "tcl/stderr.log").read_text(errors="replace")
         result.update({"events": events(text), "server_alive": proc.poll() is None,
+                       "error_dialect": error_dialect,
                        "prerequisites": probes, "missing_prerequisites": [p for p in probes if p["status"] != "available"]})
         result["counts"] = test_counts(result["events"])
         result["status"] = classify(result)
@@ -170,6 +175,7 @@ def main():
         text += "Skip/ignore events are not an exact skipped-assertion count; conditional un-emitted tests remain unknown. "
         text += "Single DB; encoding/digest checks disabled; DEBUG/replication/slow tags excluded identically. "
         text += "See scope, complete unit inventory, revisions, prerequisites and raw native/candidate logs in artifacts.\n\n"
+        text += f"Candidate startup error dialect: `{args.reference}` (MSETEX short-pair wording only; not a full vendor compatibility mode).\n\n"
         text += f"Redis `{PINS['upstreams']['redis']['revision']}`; Valkey `{PINS['upstreams']['valkey']['revision']}`.\n"
         summary(text, directory / "summary.md")
     return code

@@ -61,7 +61,10 @@ supports collection thresholds, `requirepass`, `maxmemory-policy` and slow-log
 threshold/length; script/function execution is not implemented.
 Memory usage is an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
-[multi-key string limits](docs/multikey-strings.md).
+[multi-key string limits](docs/multikey-strings.md). The startup option
+`--error-dialect redis|valkey` selects the verified MSETEX short-pair error wording
+(default `valkey`); it does not change successful operations or claim a full
+vendor compatibility mode.
 
 Bitmap commands `SETBIT`/`GETBIT`/`BITCOUNT`/`BITPOS`/`BITOP` support binary
 MSB-first bit access, BYTE/BIT ranges, and atomic AND/OR/XOR/NOT destinations.

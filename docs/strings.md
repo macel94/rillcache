@@ -61,17 +61,26 @@ and DIGEST reject existing non-string values; unconditional DELEX deletes any
 supported type. Conditional DELEX uses Redis's specific type error, whereas
 DELIFEQ returns WRONGTYPE.
 
-MSETEX follows Valkey's generic `ERR syntax error` for an argument list shorter
-than `2 + 2*numkeys`, including the overflow-protection counts, and for
-malformed or conflicting options. Only a genuinely invalid numkeys value
+By default MSETEX follows Valkey's generic `ERR syntax error` for an argument
+list shorter than `2 + 2*numkeys`, including the overflow-protection counts.
+Operators can select `--error-dialect redis` to return Redis's
+`ERR wrong number of key-value pairs` for that short counted pair block, or
+explicitly retain the default with `--error-dialect valkey`. Library users set
+`Config.error_dialect` or build a `Store` with `with_error_dialect` and the public
+`engine::ErrorDialect` enum. The setting is immutable after startup; malformed
+names fail startup rather than selecting an automatic mode. Malformed or
+conflicting options remain `ERR syntax error` in both dialects. Only a genuinely invalid numkeys value
 (`0`, negative, non-canonical integer, or greater than `i32::MAX`) returns
 `ERR invalid numkeys value or out of range`, and fewer than four arguments
 return the command arity error. Redis 8.10.2 instead answers
 `ERR wrong number of key-value pairs` for a short counted pair block;
-Rillcache follows Valkey, so the unmodified Valkey Tcl suite observes no
-error-text divergence for these cases. Every rejected form is rejected without
-writes. GET and value/digest conditions are SET-only and rejected by MSETEX.
-Keyspace notifications/replication are not implemented.
+the explicit startup setting lets applications choose either verified wording
+without changing numeric validation, successful commands, TTLs, atomicity,
+transaction behavior or other command errors. It is not a full Redis/Valkey
+compatibility mode: for example the GETEX missing-key divergence above is
+unchanged. Every rejected form is rejected without writes. GET and value/digest
+conditions are SET-only and rejected by MSETEX. MSETEX notifications are described
+in [keyspace notifications](notifications.md); replication remains unsupported.
 
 ## Expiration
 

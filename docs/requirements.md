@@ -177,6 +177,27 @@ reason to couple all future commands into a single large story.
   array; it shall not modify any live stored value. Its reply-size check includes
   RESP framing and duplicate results.
 
+### Explicit startup error wording
+
+As an operator, I can choose the verified Redis or Valkey MSETEX error wording
+so that existing clients do not have to accept contradictory vendor responses.
+This is a small independent string-compatibility increment, not a vendor-mode
+claim for every command. Evidence: `tests/error_dialect.rs`, CLI parsing tests
+and the offline upstream harness tests.
+
+- **When** `--error-dialect redis|valkey` or `Config.error_dialect` is selected,
+  the server **shall** retain that setting for every connection and EXEC batch;
+  the default **shall** preserve Valkey's existing error wording.
+- **When** a valid positive MSETEX count exceeds the available key/value pairs,
+  the server **shall** return Redis's key/value-pair error or Valkey's syntax
+  error according to the selected dialect, including protected large counts.
+- **If** the setting is malformed, startup **shall** fail; other command,
+  option, arity and numeric errors **shall** remain unchanged, and rejected
+  writes **shall** preserve values, TTLs and WATCH state in every worker mode.
+- **When** the original upstream suites run, the runner **shall** explicitly
+  record the candidate's public reference-matched dialect without modifying
+  Tcl assertions, exclusions, failure classification or performance settings.
+
 ### Transactions and optimistic locking (S26)
 
 - **R105 (event-driven):** When `MULTI` is received outside an active transaction,
