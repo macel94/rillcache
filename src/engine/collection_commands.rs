@@ -337,6 +337,197 @@ fn parse_i64(bytes: &[u8]) -> Option<i64> {
     (value.to_string().as_bytes() == bytes).then_some(value)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldTtlMode {
+    /// No TTL option: HSETEX clears the written fields' TTLs; HGETEX leaves them.
+    Default,
+    Keep,
+    Persist,
+    Ex,
+    Px,
+    ExAt,
+    PxAt,
+}
+
+impl FieldTtlMode {
+    fn needs_value(self) -> bool {
+        matches!(self, Self::Ex | Self::Px | Self::ExAt | Self::PxAt)
+    }
+
+    fn absolute(self) -> bool {
+        matches!(self, Self::ExAt | Self::PxAt)
+    }
+}
+
+fn field_ttl_mode(token: &[u8], allow_keep: bool, allow_persist: bool) -> Option<FieldTtlMode> {
+    let matches = |candidate: &[u8]| token.eq_ignore_ascii_case(candidate);
+    if matches(b"EX") {
+        Some(FieldTtlMode::Ex)
+    } else if matches(b"PX") {
+        Some(FieldTtlMode::Px)
+    } else if matches(b"EXAT") {
+        Some(FieldTtlMode::ExAt)
+    } else if matches(b"PXAT") {
+        Some(FieldTtlMode::PxAt)
+    } else if matches(b"KEEPTTL") && allow_keep {
+        Some(FieldTtlMode::Keep)
+    } else if matches(b"PERSIST") && allow_persist {
+        Some(FieldTtlMode::Persist)
+    } else {
+        None
+    }
+}
+
+struct HashFieldOptions {
+    /// `Some(true)` for FNX, `Some(false)` for FXX.
+    condition: Option<bool>,
+    ttl: FieldTtlMode,
+    ttl_value: Option<i64>,
+    fields_index: usize,
+}
+
+/// Parse the optional condition/TTL clause shared by HSETEX and HGETEX. The
+/// order is flexible, but each condition and TTL option may appear only once.
+fn parse_hash_field_options(
+    args: &[&[u8]],
+    allow_condition: bool,
+    allow_keep: bool,
+    allow_persist: bool,
+    out: &mut Vec<u8>,
+) -> Option<HashFieldOptions> {
+    let mut index = 2;
+    let mut condition = None;
+    let mut ttl = FieldTtlMode::Default;
+    let mut ttl_value = None;
+    let mut condition_seen = false;
+    let mut ttl_seen = false;
+    loop {
+        let Some(token) = args.get(index) else {
+            out.extend_from_slice(
+                b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n",
+            );
+            return None;
+        };
+        if token.eq_ignore_ascii_case(b"FIELDS") {
+            break;
+        }
+        if allow_condition
+            && (token.eq_ignore_ascii_case(b"FNX") || token.eq_ignore_ascii_case(b"FXX"))
+        {
+            if condition_seen {
+                out.extend_from_slice(
+                    b"-ERR Only one of FXX or FNX arguments can be specified\r\n",
+                );
+                return None;
+            }
+            condition_seen = true;
+            condition = Some(token.eq_ignore_ascii_case(b"FNX"));
+            index += 1;
+            continue;
+        }
+        let Some(mode) = field_ttl_mode(token, allow_keep, allow_persist) else {
+            out.extend_from_slice(SYNTAX);
+            return None;
+        };
+        if ttl_seen {
+            out.extend_from_slice(if allow_persist {
+                b"-ERR Only one of EX, PX, EXAT, PXAT or PERSIST arguments can be specified\r\n"
+            } else {
+                b"-ERR Only one of EX, PX, EXAT, PXAT or KEEPTTL arguments can be specified\r\n"
+            });
+            return None;
+        }
+        ttl_seen = true;
+        ttl = mode;
+        index += 1;
+        if mode.needs_value() {
+            let Some(raw) = args.get(index) else {
+                out.extend_from_slice(NOT_INTEGER);
+                return None;
+            };
+            let Some(value) = parse_i64(raw) else {
+                out.extend_from_slice(NOT_INTEGER);
+                return None;
+            };
+            if value < 0 {
+                out.extend_from_slice(b"-ERR invalid expire time, must be >= 0\r\n");
+                return None;
+            }
+            if let Some(value) =
+                value.checked_mul(if mode == FieldTtlMode::Ex || mode == FieldTtlMode::ExAt {
+                    1000
+                } else {
+                    1
+                })
+            {
+                ttl_value = Some(value);
+            } else {
+                out.extend_from_slice(b"-ERR invalid expire time\r\n");
+                return None;
+            }
+            index += 1;
+        }
+    }
+    Some(HashFieldOptions {
+        condition,
+        ttl,
+        ttl_value,
+        fields_index: index,
+    })
+}
+
+/// Parse the mandatory `FIELDS numfields ...` block and return its length and
+/// start offset. `pairs` selects field/value pairs (HSETEX) over fields only.
+fn parse_hash_fields_block(
+    args: &[&[u8]],
+    index: usize,
+    pairs: bool,
+    out: &mut Vec<u8>,
+) -> Option<(usize, usize)> {
+    if !args
+        .get(index)
+        .is_some_and(|token| token.eq_ignore_ascii_case(b"FIELDS"))
+    {
+        out.extend_from_slice(
+            b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n",
+        );
+        return None;
+    }
+    let Some(count) = args
+        .get(index + 1)
+        .and_then(|raw| parse_i64(raw))
+        .filter(|count| *count > 0)
+    else {
+        out.extend_from_slice(b"-ERR Parameter `numFields` should be greater than 0\r\n");
+        return None;
+    };
+    let Ok(count) = usize::try_from(count) else {
+        out.extend_from_slice(b"-ERR Parameter `numFields` should be greater than 0\r\n");
+        return None;
+    };
+    let start = index + 2;
+    let needed = if pairs {
+        count.checked_mul(2)
+    } else {
+        Some(count)
+    };
+    if needed.and_then(|needed| start.checked_add(needed)) != Some(args.len()) {
+        out.extend_from_slice(
+            b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+        );
+        return None;
+    }
+    Some((count, start))
+}
+
+fn resolve_field_deadline(mode: FieldTtlMode, value: i64, now: i64) -> Option<i64> {
+    if mode.absolute() {
+        Some(value)
+    } else {
+        now.checked_add(value)
+    }
+}
+
 fn parse_score_bound(bytes: &[u8]) -> Option<(f64, bool)> {
     let (body, inclusive) = match bytes.first() {
         Some(b'(') => (&bytes[1..], false),
@@ -992,6 +1183,18 @@ impl Store {
             } else {
                 self.hash_getdel(args, out);
             }
+        } else if command.eq_ignore_ascii_case(b"HSETEX") {
+            if args.len() < 6 {
+                arity("hsetex", out);
+            } else {
+                self.hash_setex(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HGETEX") {
+            if args.len() < 5 {
+                arity("hgetex", out);
+            } else {
+                self.hash_getex(args, out);
+            }
         } else {
             return false;
         }
@@ -1447,6 +1650,173 @@ impl Store {
         }
         if removed {
             data.touch(args[1]);
+        }
+    }
+
+    fn hash_setex(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(options) = parse_hash_field_options(args, true, true, false, out) else {
+            return;
+        };
+        let Some((_count, start)) = parse_hash_fields_block(args, options.fields_index, true, out)
+        else {
+            return;
+        };
+        let key = args[1];
+        let pairs = args[start..].as_chunks::<2>().0;
+        let fields: Vec<&[u8]> = pairs.iter().map(|pair| pair[0]).collect();
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.clock.now_ms().max(0);
+        data.expire_key(key, now);
+        let deadline = if options.ttl.needs_value() {
+            let Some(deadline) = resolve_field_deadline(
+                options.ttl,
+                options.ttl_value.expect("TTL option parsed with a value"),
+                now,
+            ) else {
+                out.extend_from_slice(b"-ERR invalid expire time\r\n");
+                return;
+            };
+            Some(deadline)
+        } else {
+            None
+        };
+        let current = data.entries.get(key);
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_hash))
+        {
+            wrong_type(out);
+            return;
+        }
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = current
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::hash_items))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(field, value)| (field.to_vec(), value.to_vec()))
+            .collect();
+        let condition_met = match options.condition {
+            None => true,
+            Some(true) => !fields.iter().any(|field| hash.contains_key(*field)),
+            Some(false) => fields.iter().all(|field| hash.contains_key(*field)),
+        };
+        if !condition_met {
+            integer(0, out);
+            return;
+        }
+        for pair in pairs {
+            hash.insert(pair[0].to_vec(), pair[1].to_vec());
+        }
+        if hash.len() > MAX_ELEMENTS {
+            out.extend_from_slice(OOM);
+            return;
+        }
+        let expires = current.and_then(|entry| entry.expires);
+        let bytes = hash
+            .iter()
+            .map(|(field, value)| field.len() + value.len())
+            .sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_hash(hash, &config);
+        let previous = current.map(Entry::payload_len);
+        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        match options.ttl {
+            FieldTtlMode::Default => data.remove_field_ttls(key, &fields),
+            FieldTtlMode::Keep => {}
+            _ => {
+                let deadline = deadline.expect("deadline resolved for TTL option");
+                for field in fields {
+                    data.set_field_ttl(key, field, deadline);
+                }
+            }
+        }
+        integer(1, out);
+    }
+
+    fn hash_getex(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(options) = parse_hash_field_options(args, false, false, true, out) else {
+            return;
+        };
+        let Some((count, start)) = parse_hash_fields_block(args, options.fields_index, false, out)
+        else {
+            return;
+        };
+        let key = args[1];
+        let fields = &args[start..];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.clock.now_ms().max(0);
+        data.expire_key(key, now);
+        let deadline = match options.ttl {
+            FieldTtlMode::Ex | FieldTtlMode::Px | FieldTtlMode::ExAt | FieldTtlMode::PxAt => {
+                let Some(deadline) = resolve_field_deadline(
+                    options.ttl,
+                    options.ttl_value.expect("TTL option parsed with a value"),
+                    now,
+                ) else {
+                    out.extend_from_slice(b"-ERR invalid expire time\r\n");
+                    return;
+                };
+                Some(deadline)
+            }
+            _ => None,
+        };
+        let Some(entry) = data.entries.get(key) else {
+            array(count, out);
+            for _ in 0..count {
+                encode_bulk(None, out);
+            }
+            return;
+        };
+        if !entry.collection.as_ref().is_some_and(Collection::is_hash) {
+            wrong_type(out);
+            return;
+        }
+        let values: Vec<Option<Vec<u8>>> = fields
+            .iter()
+            .map(|field| {
+                entry
+                    .collection
+                    .as_ref()
+                    .and_then(|collection| collection.hash_get(field))
+                    .map(<[u8]>::to_vec)
+            })
+            .collect();
+        let mut changed = false;
+        match options.ttl {
+            FieldTtlMode::Persist => {
+                for (index, field) in fields.iter().enumerate() {
+                    if values[index].is_some() && data.persist_field(key, field) {
+                        changed = true;
+                    }
+                }
+            }
+            FieldTtlMode::Default | FieldTtlMode::Keep => {}
+            _ => {
+                let deadline = deadline.expect("deadline resolved for TTL option");
+                for (index, field) in fields.iter().enumerate() {
+                    if values[index].is_some() {
+                        data.set_field_ttl(key, field, deadline);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            data.touch(key);
+        }
+        array(count, out);
+        for value in values {
+            encode_bulk(value.as_deref(), out);
         }
     }
 

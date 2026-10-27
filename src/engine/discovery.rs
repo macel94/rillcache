@@ -125,6 +125,7 @@ const COMMANDS: &[Command] = &[
     cmd("hget", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("hgetall", 2, &["readonly"], 1, 1, 1),
     cmd("hgetdel", -5, &["write", "fast"], 1, 1, 1),
+    cmd("hgetex", -5, &["write", "fast"], 1, 1, 1),
     cmd(
         "hello",
         -1,
@@ -146,6 +147,7 @@ const COMMANDS: &[Command] = &[
     cmd("hrandfield", -2, &["readonly"], 1, 1, 1),
     cmd("hscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("hset", -4, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("hsetex", -6, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("hsetnx", 4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("hstrlen", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("httl", -5, &["readonly", "fast"], 1, 1, 1),
@@ -638,9 +640,9 @@ fn command_group(name: &str) -> Option<&'static str> {
         "sadd" | "scard" | "sdiff" | "sdiffstore" | "sinter" | "sintercard" | "sinterstore"
         | "sismember" | "smembers" | "smismember" | "smove" | "spop" | "srandmember" | "srem"
         | "sscan" | "sunion" | "sunionstore" => "set",
-        "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hincrby" | "hincrbyfloat"
-        | "hkeys" | "hlen" | "hmget" | "hrandfield" | "hscan" | "hset" | "hsetnx" | "hstrlen"
-        | "hvals" => "hash",
+        "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hgetex" | "hincrby"
+        | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hrandfield" | "hscan" | "hset"
+        | "hsetex" | "hsetnx" | "hstrlen" | "hvals" => "hash",
         "bzmpop" | "zadd" | "zcard" | "zcount" | "zincrby" | "zlexcount" | "zpopmax"
         | "zpopmin" | "zdiff" | "zdiffstore" | "zinter" | "zintercard" | "zinterstore"
         | "zrandmember" | "zrange" | "zrangebyscore" | "zrangestore" | "zrank" | "zrem"

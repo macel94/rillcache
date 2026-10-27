@@ -948,7 +948,7 @@ fn event_for(
         "sinterstore" => ("sinterstore", NotifyCategory::Set),
         "sunionstore" => ("sunionstore", NotifyCategory::Set),
         "sdiffstore" => ("sdiffstore", NotifyCategory::Set),
-        "hset" | "hsetnx" | "hmset" => ("hset", NotifyCategory::Hash),
+        "hset" | "hsetnx" | "hmset" | "hsetex" => ("hset", NotifyCategory::Hash),
         "hdel" => ("hdel", NotifyCategory::Hash),
         "hincrby" => ("hincrby", NotifyCategory::Hash),
         "hincrbyfloat" => ("hincrbyfloat", NotifyCategory::Hash),
