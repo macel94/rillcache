@@ -4794,6 +4794,69 @@ mod tests {
     }
 
     #[test]
+    fn combined_hash_commands_cover_conditions_and_ttls() {
+        let store = Store::new(4096);
+        assert_eq!(
+            run(&store, &[b"HSETEX", b"h", b"FIELDS", b"1", b"a", b"1"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"HSETEX", b"h", b"FNX", b"FIELDS", b"2", b"a", b"x", b"b", b"2",
+                ],
+            ),
+            b":0\r\n"
+        );
+        assert_eq!(run(&store, &[b"HGET", b"h", b"a"]), b"$1\r\n1\r\n");
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"HSETEX", b"h", b"FXX", b"FIELDS", b"2", b"a", b"3", b"b", b"4"
+                ]
+            ),
+            b":0\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"HSETEX", b"h", b"FIELDS", b"1", b"b", b"4"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"HSETEX", b"h", b"FXX", b"FIELDS", b"2", b"a", b"3", b"b", b"5"
+                ]
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"HGETEX", b"h", b"FIELDS", b"2", b"a", b"missing"]
+            ),
+            b"*2\r\n$1\r\n3\r\n$-1\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"HGETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a"]
+            ),
+            b"*1\r\n$1\r\n3\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"HSETEX", b"h", b"FNX", b"FXX", b"FIELDS", b"1", b"a", b"9"]
+            ),
+            b"-ERR Only one of FXX or FNX arguments can be specified\r\n"
+        );
+        assert_eq!(run(&store, &[b"HGET", b"h", b"a"]), b"$1\r\n3\r\n");
+    }
+
+    #[test]
     fn hash_mutations_cover_existence_counters_and_removal() {
         let store = Store::new(4096);
         assert_eq!(run(&store, &[b"HSETNX", b"h", b"f", b"1"]), b":1\r\n");

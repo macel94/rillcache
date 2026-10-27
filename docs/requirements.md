@@ -100,6 +100,7 @@ reason to couple all future commands into a single large story.
 | S70 | As an operator, I can inspect bounded slow-command history and tune its threshold so that latency problems can be diagnosed without log scraping or unbounded memory. | S | R276–R279; command shapes, config, truncation, redaction, blocking/MULTI and all-mode wire tests |
 | S71 | As a hash user, I can set, inspect and clear per-field TTLs so that individual hash entries can expire without deleting the whole key. | S | R280–R283; expire/ttl/expiretime/persist conditions, lazy expiry, journal and all-mode wire tests |
 | S72 | As an operator, I can pause and resume client command processing so that maintenance or failover preparation can drain traffic without dropping connections. | S | R284–R287; ALL/WRITE/timeout/unpause/pipelining/MULTI/shutdown and all-mode wire tests |
+| S73 | As a hash user, I can read or write several fields with a TTL in one round trip, including create-only and update-only conditions, so combined hash workflows are atomic. | S | R288–R291; conditions, TTL clauses, duplicates, validation, journal and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1271,8 +1272,8 @@ and the offline upstream harness tests.
   FIELDS/count/options, negative times and unsupported conditions shall return
   bounded Redis-shaped errors or per-field `-2`/`-1` values without partial
   writes. Field expiry is lazy rather than actively scanned, publishes no
-  per-field notification (matching standalone Redis), and HGETEX/HSETEX remain
-  separately documented as unsupported.
+  per-field notification (matching standalone Redis); the combined HSETEX/HGETEX
+  forms are specified separately by S73.
 - **R283 (ubiquitous):** Tests shall cover conditional expire/GT/LT/NX/XX,
   remaining/absolute TTL forms, past-deadline lazy removal, key deletion, HSET/
   HINCRBY/HDEL/HGETDEL TTL interactions, missing/wrong-type/error cases, journal
@@ -1302,6 +1303,37 @@ and the offline upstream harness tests.
   self-pause/unpause, pipelining order, invalid arguments, disconnect/shutdown
   behavior and every worker mode. Documentation shall retain the absence of
   replication, expiry/eviction pausing and replica-traffic pause semantics.
+
+### Combined hash field reads and writes (S73)
+
+- **R288 (event-driven):** `HSETEX key [FNX|FXX] [EX seconds|PX ms|EXAT
+  unix-seconds|PXAT unix-ms|KEEPTTL] FIELDS numfields field value [...]` shall
+  parse one condition and one expiry clause in either order, apply all pairs
+  atomically with the last value winning for duplicate fields, and reply `1`.
+  Without a condition it shall overwrite or create fields; `FNX` shall reply `0`
+  without changes when any named field exists and `FXX` shall reply `0` without
+  creating a key when any named field is missing. A missing expiry clause shall
+  clear the written fields' TTLs, `KEEPTTL` shall preserve them, and explicit
+  clauses shall set the same deadline on every written field. The hash key's own
+  TTL shall be preserved.
+- **R289 (event-driven):** `HGETEX key [EX seconds|PX ms|EXAT unix-seconds|PXAT
+  unix-ms|PERSIST] FIELDS numfields field [...]` shall return values in request
+  order, with null entries for missing fields or keys, without creating a key.
+  With no expiry clause it shall leave TTLs unchanged; `PERSIST` shall remove the
+  TTL of each existing requested field and expiry clauses shall set the same
+  deadline on them. Duplicate requested fields shall keep their positions.
+- **R290 (unwanted behavior):** If conditions or expiry clauses are repeated or
+  conflicting, `FIELDS`/counts are malformed, times are negative, non-integer or
+  overflowing, or the key has the wrong type, then the command shall return one
+  bounded error and change no value or TTL. `HSETEX` payload admission shall
+  remain atomic on OOM. Fields whose deadline has passed shall be purged lazily
+  on access, deleting an emptied hash key, rather than by a new active scanner.
+- **R291 (ubiquitous):** Tests shall cover creation/overwrite, `FNX`/`FXX`
+  atomicity, duplicate fields, condition/expiry ordering, all expiry forms,
+  default TTL clearing, `KEEPTTL`, `HGETEX` read/set/persist, missing
+  keys/fields, wrong types, validation errors, journal restart with field
+  deadlines, and every worker mode. Documentation shall retain the lazy-expiry,
+  payload-accounting and no-RSS/active-expiry boundaries.
 
 ### Development and delivery
 

@@ -109,9 +109,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":213\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":215\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*213\r\n*6\r\n$3\r\nacl\r\n"));
+        assert!(all_info.starts_with(b"*215\r\n*6\r\n$3\r\nacl\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"MSETEX", b"DIGEST", b"DELIFEQ"]),
             b"*3\r\n*6\r\n$6\r\nmsetex\r\n:-4\r\n*2\r\n+write\r\n+denyoom\r\n:2\r\n:-1\r\n:2\r\n*6\r\n$6\r\ndigest\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*6\r\n$7\r\ndelifeq\r\n:3\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:1\r\n:1\r\n"
@@ -181,6 +181,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"hget",
             b"hgetall",
             b"hgetdel",
+            b"hgetex",
             b"hello",
             b"hincrby",
             b"hincrbyfloat",
@@ -195,6 +196,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"hrandfield",
             b"hscan",
             b"hset",
+            b"hsetex",
             b"hsetnx",
             b"hstrlen",
             b"httl",
