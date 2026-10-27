@@ -46,6 +46,31 @@ fn send(stream: &mut TcpStream, arguments: &[&[u8]], reply: &[u8]) {
     expect(stream, reply);
 }
 
+fn info_clients(stream: &mut TcpStream) -> String {
+    let mut command = Vec::new();
+    encode_request(&[b"INFO", b"clients"], &mut command);
+    stream.write_all(&command).unwrap();
+    let mut header = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        stream.read_exact(&mut byte).unwrap();
+        header.push(byte[0]);
+        if header.ends_with(b"\r\n") {
+            break;
+        }
+    }
+    assert_eq!(header.first(), Some(&b'$'));
+    let size: usize = std::str::from_utf8(&header[1..header.len() - 2])
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut body = vec![0; size + 2];
+    stream.read_exact(&mut body).unwrap();
+    assert_eq!(&body[size..], b"\r\n");
+    body.truncate(size);
+    String::from_utf8(body).unwrap()
+}
+
 #[test]
 fn resp2_commands_are_binary_safe_and_shared_between_connections() {
     let server = start(Config::default());
@@ -229,6 +254,82 @@ fn half_close_flushes_complete_commands_and_reports_a_truncated_frame() {
         output,
         b"+PONG\r\n-ERR Protocol error: unexpected end of stream\r\n"
     );
+}
+
+#[test]
+fn runtime_connection_limit_changes_are_enforced_and_reported() {
+    let server = start(Config::default());
+    let mut admin = connect(&server);
+    send(
+        &mut admin,
+        &[b"CONFIG", b"GET", b"maxclients"],
+        b"*2\r\n$10\r\nmaxclients\r\n$3\r\n128\r\n",
+    );
+    send(
+        &mut admin,
+        &[b"CONFIG", b"SET", b"maxclients", b"2"],
+        b"+OK\r\n",
+    );
+    let mut second = connect(&server);
+    send(&mut second, &[b"PING"], b"+PONG\r\n");
+    let mut rejected = connect(&server);
+    let mut rejection = Vec::new();
+    rejected.read_to_end(&mut rejection).unwrap();
+    assert_eq!(rejection, b"-ERR max number of clients reached\r\n");
+    send(
+        &mut admin,
+        &[b"CONFIG", b"GET", b"maxclients"],
+        b"*2\r\n$10\r\nmaxclients\r\n$1\r\n2\r\n",
+    );
+    assert!(
+        info_clients(&mut admin).contains("maxclients:2\r\n"),
+        "INFO clients must report the live limit"
+    );
+
+    // Lowering the limit keeps admitted clients; raising it admits another one.
+    send(&mut second, &[b"PING"], b"+PONG\r\n");
+    send(
+        &mut admin,
+        &[b"CONFIG", b"SET", b"maxclients", b"3"],
+        b"+OK\r\n",
+    );
+    let mut third = connect(&server);
+    send(&mut third, &[b"PING"], b"+PONG\r\n");
+    assert!(
+        info_clients(&mut admin).contains("maxclients:3\r\n"),
+        "INFO clients must reflect the raised limit"
+    );
+
+    // Lowering below the current count keeps admitted clients but rejects new ones.
+    send(
+        &mut admin,
+        &[b"CONFIG", b"SET", b"maxclients", b"1"],
+        b"+OK\r\n",
+    );
+    send(&mut second, &[b"PING"], b"+PONG\r\n");
+    send(&mut third, &[b"PING"], b"+PONG\r\n");
+    let mut fourth = connect(&server);
+    let mut rejection = Vec::new();
+    fourth.read_to_end(&mut rejection).unwrap();
+    assert_eq!(rejection, b"-ERR max number of clients reached\r\n");
+
+    // Invalid updates do not change the effective limit.
+    send(
+        &mut admin,
+        &[b"CONFIG", b"SET", b"maxclients", b"0"],
+        b"-ERR invalid maxclients\r\n",
+    );
+    send(
+        &mut admin,
+        &[b"CONFIG", b"SET", b"maxclients", b"nope"],
+        b"-ERR invalid maxclients\r\n",
+    );
+    send(
+        &mut admin,
+        &[b"CONFIG", b"GET", b"maxclients"],
+        b"*2\r\n$10\r\nmaxclients\r\n$1\r\n1\r\n",
+    );
+    server.shutdown().unwrap();
 }
 
 #[test]

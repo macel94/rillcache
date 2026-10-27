@@ -43,6 +43,16 @@ filtered forms return the killed count. A killed socket is shut down
 immediately. `INFO clients` reports
 `connected_clients`, `cluster_connections:0` and the configured `maxclients`.
 
+`CONFIG GET maxclients` reports the live connection limit and `CONFIG SET
+maxclients <positive-integer>` changes it at runtime in both thread-per-client
+and fixed-worker modes. Lowering the limit below the current admitted count does
+not close existing clients; new sockets receive `ERR max number of clients
+reached` and increment `rejected_connections` until capacity is available.
+Raising the limit admits new connections without a restart. Zero, negative,
+empty and non-integer values are rejected without changing the limit. The value
+is a connection count, not a file-descriptor, memory or cross-process capacity
+guarantee.
+
 `CLIENT PAUSE timeout [WRITE|ALL]` temporarily defers new client commands for
 `timeout` milliseconds; the default mode is `ALL`. Under `WRITE`, read-only
 commands continue while commands carrying the write flag (and `EXEC`) wait.

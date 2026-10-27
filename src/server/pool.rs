@@ -369,7 +369,10 @@ pub(super) fn serve(
                 break;
             }
             if lanes.iter().any(|lane| lane.thread.is_finished()) {
-                if stopping.load(Ordering::Acquire) {
+                // A worker may observe the protocol shutdown request and exit
+                // before this accept loop publishes the stopping flag.
+                if stopping.load(Ordering::Acquire) || store.shutdown_requested() {
+                    stopping.store(true, Ordering::Release);
                     break;
                 }
                 return Err(io::Error::other("I/O worker exited unexpectedly"));
@@ -385,7 +388,7 @@ pub(super) fn serve(
             };
             stream.set_nodelay(true)?;
             store.record_connection();
-            if admitted.load(Ordering::Acquire) >= config.max_clients {
+            if admitted.load(Ordering::Acquire) >= store.max_clients() {
                 store.record_rejected_connection();
                 stream.set_write_timeout(Some(config.idle_timeout))?;
                 let _ = stream.write_all(b"-ERR max number of clients reached\r\n");

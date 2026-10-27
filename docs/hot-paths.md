@@ -78,6 +78,16 @@ The Rust implementations are newly generated safe code, not transplanted C.
    reporting rejects missing/mismatched new policy evidence while reading legacy
    no-active-poll cohorts unchanged.
 
+6. **Skip unused mutation history and hot-command dispatch.** WATCH versions are
+   always maintained, but per-write journal-event key copies are collected only
+   while append-only persistence or keyspace notifications need them; disabling
+   both releases the bounded history immediately. `PING`, `GET` and `SET` bypass
+   the specialized module dispatch chain before their normal command path runs.
+   Two local core runs measured store-path medians of roughly 40 → 22–27 ns for
+   PING, 106 → 93–96 ns for GET and 335 → 278–312 ns for SET against the
+   pre-change tree. These are isolated shared-VM store results with visible run
+   variance, not network throughput or production claims.
+
 Tests cover capacity shrink/retention, changed bytes, payload and expiry indexes,
 OOM preservation/reaping, parser stack/fallback boundaries, fragmentation,
 execute-once behavior, decimal digit boundaries/usize::MAX, window expiry without

@@ -254,6 +254,7 @@ pub(super) struct Data {
     flush_seq: u64,
     journal_events: VecDeque<(u64, Vec<u8>)>,
     journal_overflow: bool,
+    collect_events: bool,
     expired_events: VecDeque<Vec<u8>>,
     evicted_events: VecDeque<Vec<u8>>,
     pub(in crate::engine) expired_keys: u64,
@@ -306,12 +307,25 @@ impl Data {
             self.epoch = self.epoch.wrapping_add(1);
         }
         self.versions.insert(key.to_vec(), self.version_seq);
+        // Mutation history is only consumed by persistence and keyspace
+        // notifications. Keeping WATCH versions above does not require it.
+        if !self.collect_events {
+            return;
+        }
         if self.journal_events.len() >= MAX_JOURNAL_EVENTS {
             self.journal_events.clear();
             self.journal_overflow = true;
         }
         self.journal_events
             .push_back((self.version_seq, key.to_vec()));
+    }
+
+    pub(super) fn set_collect_events(&mut self, collect: bool) {
+        self.collect_events = collect;
+        if !collect {
+            self.journal_events.clear();
+            self.journal_overflow = false;
+        }
     }
 
     pub(super) fn journal_seq(&self) -> u64 {
@@ -784,6 +798,24 @@ impl Data {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutation_history_is_opt_in_and_cleared_when_disabled() {
+        let mut data = Data::default();
+        data.put(b"k", b"v", None, 0, 0);
+        assert!(data.journal_events.is_empty());
+        assert_eq!(data.changes_since(0), (Vec::new(), false));
+
+        data.set_collect_events(true);
+        data.put(b"k", b"v2", None, 0, 0);
+        assert_eq!(data.changes_since(0), (vec![b"k".to_vec()], false));
+
+        data.set_collect_events(false);
+        assert!(data.journal_events.is_empty());
+        assert!(!data.journal_overflow);
+        data.put(b"k", b"v3", None, 0, 0);
+        assert_eq!(data.changes_since(0), (Vec::new(), false));
+    }
 
     #[test]
     fn lifecycle_queues_are_bounded_and_clearable() {
