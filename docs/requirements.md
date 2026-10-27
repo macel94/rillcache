@@ -116,7 +116,7 @@ reason to couple all future commands into a single large story.
 | S85 | As an operator, I can see the average remaining TTL of expiring keys in `INFO keyspace` so cache freshness is visible without per-key scans. | XS | R326–R327; mean TTL, empty/expired state and all-mode wire tests |
 | S86 | As an ACL administrator, I can define independent command/key scopes per user so one login can read broadly while writing only a key namespace. | S | R328–R331; selector parsing, authorization, listing, ACL-file round-trip and all-mode wire tests |
 | S87 | As an operator, I can inspect the journal mode and change the fsync policy at runtime so durability tuning does not require a restart. | XS | R332–R334; startup values, live policy switch/replay, read-only mode/filename and all-mode wire tests |
-| S91 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R344–R346; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
+| S93 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R350–R352; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
 | S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 | S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
 | S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
@@ -1685,20 +1685,20 @@ and the offline upstream harness tests.
   reload, and changing the fsync policy changes the durability/latency trade-off
   rather than providing a crash-proof guarantee.
 
-### Runtime connection limit (S91)
+### Runtime connection limit (S93)
 
-- **R344 (event-driven):** `CONFIG GET maxclients` (including wildcard and `*`
+- **R350 (event-driven):** `CONFIG GET maxclients` (including wildcard and `*`
   results) shall report the live maximum connection count. `CONFIG SET maxclients
   <positive-integer>` shall update that limit atomically with the other valid
   `CONFIG SET` pairs. Zero, negative, empty and non-integer values shall return a
   bounded error and leave the limit unchanged.
-- **R345 (state-driven):** Both the thread-per-client and fixed-worker accept
+- **R351 (state-driven):** Both the thread-per-client and fixed-worker accept
   paths shall enforce the live limit rather than the startup snapshot. Lowering
   the limit below the current admitted count shall not close existing clients;
   new sockets shall receive `ERR max number of clients reached` and increment
   `rejected_connections` until capacity is available. Raising the limit shall
   admit new connections without a restart.
-- **R346 (ubiquitous):** Tests shall cover the default and wildcard reporting,
+- **R352 (ubiquitous):** Tests shall cover the default and wildcard reporting,
   live admission in every worker mode, lowering and raising, invalid values,
   existing-client survival and `INFO clients` reflecting the live value.
   Documentation shall retain that this is a connection count, not a
