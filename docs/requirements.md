@@ -118,6 +118,7 @@ reason to couple all future commands into a single large story.
 | S87 | As an operator, I can inspect the journal mode and change the fsync policy at runtime so durability tuning does not require a restart. | XS | R332–R334; startup values, live policy switch/replay, read-only mode/filename and all-mode wire tests |
 | S97 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R362–R364; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
 | S98 | As an operator, I can inspect truthful payload accounting and a bounded diagnosis through `MEMORY STATS`/`DOCTOR` so I do not infer RSS or allocator health. | XS | R365–R367; fields/high-water/limit, doctor states, HELP and all-mode wire tests |
+| S99 | As a transaction user, I can queue `PUBLISH` and `SPUBLISH` so `EXEC` matches Redis and messages are delivered once at execution time. | XS | R368–R370; queue/no-early-delivery, fan-out/counts, ACL and all-mode wire tests |
 | S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 | S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
 | S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
@@ -1806,6 +1807,23 @@ and the offline upstream harness tests.
   HELP, arity and every worker mode. Documentation shall retain the absence of
   RSS, allocator active/resident, fragmentation, replication-buffer and
   background-eviction measurements.
+
+### Published messages in transactions (S99)
+
+- **R368 (event-driven):** Inside `MULTI`, valid `PUBLISH channel message` and
+  `SPUBLISH channel message` commands shall return `+QUEUED` and deliver nothing
+  at queue time. `EXEC` shall publish each command once in queue order through
+  the existing normal or sharded fan-out and append its delivered-subscriber
+  count as the corresponding array element.
+- **R369 (unwanted behavior):** Wrong arity shall dirty the transaction and
+  produce `EXECABORT` without publishing. ACL command/channel checks shall run
+  again before `EXEC`; a denial shall abort the transaction before any queued
+  message is published.
+- **R370 (ubiquitous):** Tests shall cover queued normal and sharded messages,
+  no early delivery, EXEC reply order/counts, subscriber delivery and every
+  worker mode. Documentation shall retain that subscription commands, `PUBSUB`
+  introspection and blocking pops remain rejected inside `MULTI`, and that
+  delivery is process-local and at-most-once rather than durable.
 
 ### Development and delivery
 

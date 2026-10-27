@@ -348,7 +348,26 @@ impl Store {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
-        if command.eq_ignore_ascii_case(b"ECHO") {
+        if command.eq_ignore_ascii_case(b"PUBLISH") {
+            if arguments.len() != 3 {
+                arity("publish", output);
+            } else {
+                integer(
+                    i64::try_from(self.publish(arguments[1], arguments[2])).unwrap_or(i64::MAX),
+                    output,
+                );
+            }
+        } else if command.eq_ignore_ascii_case(b"SPUBLISH") {
+            if arguments.len() != 3 {
+                arity("spublish", output);
+            } else {
+                integer(
+                    i64::try_from(self.publish_shard(arguments[1], arguments[2]))
+                        .unwrap_or(i64::MAX),
+                    output,
+                );
+            }
+        } else if command.eq_ignore_ascii_case(b"ECHO") {
             if arguments.len() == 2 {
                 encode_bulk(Some(arguments[1]), output);
             } else {

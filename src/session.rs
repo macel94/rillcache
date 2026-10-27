@@ -2102,7 +2102,6 @@ fn is_session_command(command: &[u8]) -> bool {
         b"CLIENT",
         b"HELLO",
         b"PSUBSCRIBE",
-        b"PUBLISH",
         b"PUBSUB",
         b"PUNSUBSCRIBE",
         b"SELECT",
@@ -3137,6 +3136,52 @@ x\r\n"
         );
         assert!(!subscriber.is_subscribed());
         store.pubsub_remove_client(subscriber.id());
+    }
+
+    #[test]
+    fn publish_and_spublish_are_queued_and_delivered_at_exec() {
+        let store = Store::new(1024);
+        let mut normal = Session::new();
+        let (normal_sender, normal_receiver) = std::sync::mpsc::sync_channel(8);
+        normal.set_pubsub_sender(normal_sender);
+        assert_eq!(
+            call(&mut normal, &store, &[b"SUBSCRIBE", b"normal"]),
+            b"*3\r\n$9\r\nsubscribe\r\n$6\r\nnormal\r\n:1\r\n"
+        );
+        let mut shard = Session::new();
+        let (shard_sender, shard_receiver) = std::sync::mpsc::sync_channel(8);
+        shard.set_pubsub_sender(shard_sender);
+        assert_eq!(
+            call(&mut shard, &store, &[b"SSUBSCRIBE", b"shard"]),
+            b"*3\r\n$10\r\nssubscribe\r\n$5\r\nshard\r\n:1\r\n"
+        );
+
+        let mut publisher = Session::new();
+        assert_eq!(call(&mut publisher, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut publisher, &store, &[b"PUBLISH", b"normal", b"hello"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(
+            call(&mut publisher, &store, &[b"SPUBLISH", b"shard", b"hello"]),
+            b"+QUEUED\r\n"
+        );
+        assert!(normal_receiver.try_recv().is_err());
+        assert!(shard_receiver.try_recv().is_err());
+        assert_eq!(
+            call(&mut publisher, &store, &[b"EXEC"]),
+            b"*2\r\n:1\r\n:1\r\n"
+        );
+        assert_eq!(
+            normal_receiver.try_recv().unwrap(),
+            b"*3\r\n$7\r\nmessage\r\n$6\r\nnormal\r\n$5\r\nhello\r\n"
+        );
+        assert_eq!(
+            shard_receiver.try_recv().unwrap(),
+            b"*3\r\n$8\r\nsmessage\r\n$5\r\nshard\r\n$5\r\nhello\r\n"
+        );
+        store.pubsub_remove_client(normal.id());
+        store.pubsub_remove_client(shard.id());
     }
 
     #[test]
