@@ -181,6 +181,17 @@ impl Store {
             } else {
                 pattern.eq_ignore_ascii_case(b"slowlog-log-slower-than")
             };
+            let wants_latency_threshold = if wildcard {
+                glob_match(&folded_pattern, b"latency-monitor-threshold")
+            } else {
+                pattern.eq_ignore_ascii_case(b"latency-monitor-threshold")
+            };
+            if wants_latency_threshold {
+                matches.push((
+                    b"latency-monitor-threshold",
+                    self.latency_threshold_ms().to_string(),
+                ));
+            }
             if wants_slowlog_threshold {
                 matches.push((
                     b"slowlog-log-slower-than",
@@ -257,6 +268,7 @@ impl Store {
         let mut notify = None;
         let mut slowlog_threshold = None;
         let mut slowlog_max_len = None;
+        let mut latency_threshold = None;
         for pair in args[2..].as_chunks::<2>().0 {
             if pair[0].eq_ignore_ascii_case(b"notify-keyspace-events") {
                 let Some(parsed) = super::NotifyFlags::parse(pair[1]) else {
@@ -283,6 +295,15 @@ impl Store {
                     return;
                 };
                 slowlog_threshold = Some(value);
+            } else if pair[0].eq_ignore_ascii_case(b"latency-monitor-threshold") {
+                let Some(value) = std::str::from_utf8(pair[1])
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                else {
+                    out.extend_from_slice(b"-ERR invalid latency-monitor-threshold\r\n");
+                    return;
+                };
+                latency_threshold = Some(value);
             } else if pair[0].eq_ignore_ascii_case(b"slowlog-max-len") {
                 let Some(value) = std::str::from_utf8(pair[1])
                     .ok()
@@ -327,6 +348,9 @@ impl Store {
         }
         if let Some(value) = slowlog_max_len {
             self.set_slowlog_max_len(value);
+        }
+        if let Some(value) = latency_threshold {
+            self.set_latency_threshold_ms(value);
         }
         out.extend_from_slice(b"+OK\r\n");
     }
@@ -442,7 +466,7 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*36\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*38\r\n"));
     }
 
     #[test]

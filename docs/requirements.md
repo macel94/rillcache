@@ -100,6 +100,7 @@ reason to couple all future commands into a single large story.
 | S70 | As an operator, I can inspect bounded slow-command history and tune its threshold so that latency problems can be diagnosed without log scraping or unbounded memory. | S | R276–R279; command shapes, config, truncation, redaction, blocking/MULTI and all-mode wire tests |
 | S71 | As a hash user, I can set, inspect and clear per-field TTLs so that individual hash entries can expire without deleting the whole key. | S | R280–R283; expire/ttl/expiretime/persist conditions, lazy expiry, journal and all-mode wire tests |
 | S72 | As an operator, I can pause and resume client command processing so that maintenance or failover preparation can drain traffic without dropping connections. | S | R284–R287; ALL/WRITE/timeout/unpause/pipelining/MULTI/shutdown and all-mode wire tests |
+| S73 | As an operator, I can inspect bounded latency event time series so that real spikes can be diagnosed without fabricated fork, AOF or replication metrics. | S | R288–R291; latest/history/reset/doctor, threshold, bounds, unsupported subcommands and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1302,6 +1303,29 @@ and the offline upstream harness tests.
   self-pause/unpause, pipelining order, invalid arguments, disconnect/shutdown
   behavior and every worker mode. Documentation shall retain the absence of
   replication, expiry/eviction pausing and replica-traffic pause semantics.
+
+### Latency event monitoring (S73)
+
+- **R288 (event-driven):** `LATENCY LATEST`, `HISTORY event`, `RESET [event ...]`,
+  `DOCTOR` and `HELP` shall return Redis-shaped arrays, plain-text reports, reset
+  counts and bounded errors. `HISTORY` for an unknown event shall return an empty
+  array; resetting unknown events shall count zero; `GRAPH` and `HISTOGRAM` shall
+  return explicit unsupported errors rather than partial output.
+- **R289 (state-driven):** While `latency-monitor-threshold` is non-zero, only
+  measured events whose duration reaches the threshold shall be retained, up to
+  160 samples per event with latest and all-time maximum values. The default
+  threshold shall be `0` (disabled), `CONFIG GET/SET` shall expose and atomically
+  update it, and negative or non-integer values shall be rejected without
+  changing the active value.
+- **R290 (event-driven):** The server shall record only events it actually
+  measures: command-attempt duration and bounded expire-cycle reclamation.
+  Blocking waits, fork, AOF write/fsync, eviction-cycle, active-defrag and
+  replication latency shall not be represented. `DOCTOR` output shall derive only
+  from measured series and documented limitations.
+- **R291 (ubiquitous):** Tests shall cover configuration and validation, latest
+  and history ordering/shapes, reset counts, the sample bound, threshold changes,
+  unsupported subcommands and every worker mode. Data shall remain process-local,
+  in-memory and absent from persistence or fabricated `INFO` fields.
 
 ### Development and delivery
 

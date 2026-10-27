@@ -155,6 +155,14 @@ const COMMANDS: &[Command] = &[
     cmd("incrbyfloat", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
     cmd("keys", 2, &["readonly"], 0, 0, 0),
+    cmd(
+        "latency",
+        -2,
+        &["admin", "noscript", "loading", "stale", "slow"],
+        0,
+        0,
+        0,
+    ),
     cmd("lcs", -3, &["readonly"], 1, 2, 1),
     cmd("lindex", 3, &["readonly"], 1, 1, 1),
     cmd("linsert", 5, &["write", "denyoom"], 1, 1, 1),
@@ -591,6 +599,7 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
                 | "flushdb"
                 | "function"
                 | "keys"
+                | "latency"
                 | "script"
                 | "slowlog"
                 | "sort"
