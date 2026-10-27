@@ -88,6 +88,10 @@ const COMMANDS: &[Command] = &[
     cmd("geodist", -4, &["readonly"], 1, 1, 1),
     cmd("geohash", -2, &["readonly"], 1, 1, 1),
     cmd("geopos", -2, &["readonly"], 1, 1, 1),
+    cmd("georadius", -6, &["write", "denyoom"], 1, 1, 1),
+    cmd("georadius_ro", -6, &["readonly"], 1, 1, 1),
+    cmd("georadiusbymember", -5, &["write", "denyoom"], 1, 1, 1),
+    cmd("georadiusbymember_ro", -5, &["readonly"], 1, 1, 1),
     cmd("geosearch", -7, &["readonly"], 1, 1, 1),
     cmd("geosearchstore", -8, &["write", "denyoom"], 1, 2, 1),
     cmd("get", 2, &["readonly", "fast"], 1, 1, 1),
@@ -374,6 +378,33 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         let end = 2usize.saturating_add(count).min(args.len());
         return args[2..end].to_vec();
     }
+    // Legacy GEORADIUS* takes its source key plus an optional last-wins
+    // STORE/STOREDIST destination after the radius/unit prefix.
+    let legacy_geo = name.eq_ignore_ascii_case(b"GEORADIUS")
+        || name.eq_ignore_ascii_case(b"GEORADIUS_RO")
+        || name.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER")
+        || name.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER_RO");
+    if legacy_geo {
+        let Some(source) = args.get(1) else {
+            return Vec::new();
+        };
+        let by_member = name.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER")
+            || name.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER_RO");
+        let mut keys = vec![*source];
+        let mut index = if by_member { 5 } else { 6 };
+        while index < args.len() {
+            if (args[index].eq_ignore_ascii_case(b"STORE")
+                || args[index].eq_ignore_ascii_case(b"STOREDIST"))
+                && index + 1 < args.len()
+            {
+                keys.push(args[index + 1]);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        }
+        return keys;
+    }
     // Counted-key sorted-set algebra keeps its key list after `numkeys`, with
     // the destination preceding it for the *STORE variants.
     let counted_zset = name.eq_ignore_ascii_case(b"ZUNION")
@@ -491,7 +522,16 @@ fn command_group(name: &str) -> Option<&'static str> {
         "bitcount" | "bitfield" | "bitfield_ro" | "bitop" | "bitpos" | "getbit" | "setbit" => {
             "bitmap"
         }
-        "geoadd" | "geodist" | "geohash" | "geopos" | "geosearch" | "geosearchstore" => "geo",
+        "geoadd"
+        | "geodist"
+        | "geohash"
+        | "geopos"
+        | "georadius"
+        | "georadius_ro"
+        | "georadiusbymember"
+        | "georadiusbymember_ro"
+        | "geosearch"
+        | "geosearchstore" => "geo",
         "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
         "blpop" | "brpop" | "lindex" | "linsert" | "llen" | "lpop" | "lpush" | "lpushx"
         | "lrange" | "lrem" | "lset" | "ltrim" | "rpop" | "rpush" | "rpushx" => "list",
@@ -762,6 +802,10 @@ mod tests {
             ("geopos", "geo"),
             ("geosearch", "geo"),
             ("geosearchstore", "geo"),
+            ("georadius", "geo"),
+            ("georadius_ro", "geo"),
+            ("georadiusbymember", "geo"),
+            ("georadiusbymember_ro", "geo"),
             ("bitpos", "bitmap"),
             ("spublish", "pubsub"),
             ("ssubscribe", "pubsub"),
@@ -824,6 +868,29 @@ mod tests {
             vec![b"a".as_slice(), b"b".as_slice()]
         );
         assert!(key_arguments(b"BZMPOP", &[b"BZMPOP", b"0", b"0", b"a"]).is_empty());
+        assert_eq!(
+            key_arguments(
+                b"GEORADIUS",
+                &[
+                    b"GEORADIUS",
+                    b"geo",
+                    b"1",
+                    b"2",
+                    b"3",
+                    b"km",
+                    b"STORE",
+                    b"dest"
+                ]
+            ),
+            vec![b"geo".as_slice(), b"dest".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"GEORADIUSBYMEMBER_RO",
+                &[b"GEORADIUSBYMEMBER_RO", b"geo", b"m", b"3", b"km", b"ASC"]
+            ),
+            vec![b"geo".as_slice()]
+        );
     }
 
     #[test]
