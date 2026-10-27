@@ -89,7 +89,11 @@ and stage the complete value before payload admission. See
 
 `CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL` expose bounded per-connection
 metadata and administrative connection controls; `INFO clients` reports the
-registry size. See [client sessions](docs/client-sessions.md).
+registry size. `TIME` returns wall-clock seconds/microseconds and `OBJECT
+ENCODING`/`REFCOUNT`/`HELP` expose actual storage representations and ownership;
+IDLETIME/FREQ report explicit unsupported errors instead of invented metrics.
+See [runtime introspection](docs/introspection.md) and
+[client sessions](docs/client-sessions.md).
 
 `PFADD`/`PFCOUNT`/`PFMERGE` provide bounded HyperLogLog cardinality estimates
 with exact small-cardinality hashes and a dense 2^14-register sketch after 4,096

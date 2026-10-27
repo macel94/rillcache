@@ -88,6 +88,7 @@ reason to couple all future commands into a single large story.
 | S58 | As a stream consumer, I can re-read my owned pending deliveries from a chosen ID so that recovery workflows can inspect and replay unacknowledged work. | S | R229–R232; history IDs/deleted entries/delivery updates/errors and all-mode wire tests |
 | S59 | As a stream consumer, I can wait for new entries on one or more streams so that tailing clients do not have to poll. | S | R233–R236; BLOCK parsing/timeout/wakeup/$/multi-key/MULTI and all-mode wire tests |
 | S60 | As a list user, I can locate repeated elements and pop across several list keys so that queue and feed operations do not require client loops. | S | R237–R240; LPOS rank/count/maxlen, LMPOP order/COUNT, errors and all-mode wire tests |
+| S61 | As an operator or client, I can read the server wall clock and the actual storage encoding of a key without fabricated memory or LFU metrics. | XS | R241–R244; TIME shape, encodings, missing/unsupported cases and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -996,6 +997,27 @@ reason to couple all future commands into a single large story.
   combinations, binary elements, LEFT/RIGHT order, COUNT bounds, TTL, MULTI,
   WATCH, notifications and all worker modes. Blocking `BLMPOP` remains
   documented as unsupported.
+
+### Runtime clock and object introspection (S61)
+
+- **R241 (event-driven):** `TIME` shall return a two-element array of decimal bulk
+  strings containing the current Unix seconds and microsecond component from the
+  system wall clock, with exactly one argument and no keyspace mutation.
+- **R242 (event-driven):** `OBJECT ENCODING key` and `OBJECT REFCOUNT key` shall
+  return the key's actual storage representation and an owned-value refcount of
+  one, respectively, or a null bulk for a missing/expired key. Encoding names
+  shall reflect the selected list/set/hash/zset/stream representation rather than
+  fabricated Redis encodings.
+- **R243 (event-driven):** `OBJECT IDLETIME` and `OBJECT FREQ` shall return
+  explicit unsupported/not-selected errors because read-idle time and LFU
+  frequency are not tracked. `OBJECT HELP` shall return bounded help rows, and
+  unknown subcommands or wrong arities shall return the Redis-shaped OBJECT error.
+- **R244 (ubiquitous):** Discovery/ACL metadata shall expose TIME and OBJECT with
+  truthful arity, category, readonly/fast flags and key position; tests shall
+  cover time shape, encoding transitions, missing/expired keys, refcount,
+  unsupported cases, help, malformed subcommands, MULTI and all worker modes.
+  Allocator/RSS, LFU, radix-tree and true read-idle statistics remain documented
+  as unsupported.
 
 ### Development and delivery
 
