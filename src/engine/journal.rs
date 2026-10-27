@@ -45,6 +45,15 @@ pub(super) struct Journal {
     dirty: bool,
     last_sync: Instant,
     failed: bool,
+    last_rewrite_failed: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PersistenceStatus {
+    pub aof_enabled: bool,
+    pub current_size: Option<u64>,
+    pub write_failed: bool,
+    pub rewrite_failed: bool,
 }
 
 impl Journal {
@@ -77,6 +86,7 @@ impl Journal {
             dirty: false,
             last_sync: Instant::now(),
             failed: false,
+            last_rewrite_failed: false,
         })
     }
 
@@ -239,10 +249,20 @@ impl Journal {
             self.last_sync = Instant::now();
             Ok(records.len() as u64)
         })();
+        self.last_rewrite_failed = result.is_err();
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
         result
+    }
+
+    pub(super) fn status(&self) -> PersistenceStatus {
+        PersistenceStatus {
+            aof_enabled: true,
+            current_size: self.file.metadata().ok().map(|metadata| metadata.len()),
+            write_failed: self.failed,
+            rewrite_failed: self.last_rewrite_failed,
+        }
     }
 }
 
@@ -446,6 +466,26 @@ impl Store {
             return Err(());
         };
         journal.rewrite(&records).map_err(|_| ())
+    }
+
+    pub(super) fn persistence_status(&self) -> PersistenceStatus {
+        let Some(journal) = self.journal.as_ref() else {
+            return PersistenceStatus {
+                aof_enabled: false,
+                current_size: None,
+                write_failed: false,
+                rewrite_failed: false,
+            };
+        };
+        journal.lock().map_or(
+            PersistenceStatus {
+                aof_enabled: true,
+                current_size: None,
+                write_failed: true,
+                rewrite_failed: true,
+            },
+            |journal| journal.status(),
+        )
     }
 
     pub fn journal_sync(&self) -> io::Result<()> {
