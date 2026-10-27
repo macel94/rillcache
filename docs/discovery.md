@@ -13,6 +13,11 @@ in this worktree's Store dispatcher.
   one metadata record per requested name; matching is ASCII case-insensitive and
   unknown names have null metadata.
 - `COMMAND LIST` returns sorted lower-case command names.
+- `COMMAND GETKEYS <command> [args ...]` returns the declared key arguments
+  using the same extraction as ACL key-pattern enforcement, including counted
+  key lists, STORE destinations and legacy GEORADIUS destinations. Invalid
+  commands/arity, no-key commands and unextractable arguments return bounded
+  errors.
 - `INFO [SERVER|MEMORY|KEYSPACE|DEFAULT|ALL]` returns a bounded RESP2 bulk string.
   With no section, the default output includes server, memory and keyspace.
 - INFO reports `rillcache_version` from the package version and `rillcache_*`
