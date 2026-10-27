@@ -61,7 +61,10 @@ supports collection thresholds, `requirepass`, `maxmemory-policy` and slow-log
 threshold/length; script/function execution is not implemented.
 Memory usage is an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
-[multi-key string limits](docs/multikey-strings.md).
+[multi-key string limits](docs/multikey-strings.md). The startup option
+`--error-dialect redis|valkey` selects the verified MSETEX short-pair error wording
+(default `valkey`); it does not change successful operations or claim a full
+vendor compatibility mode.
 
 Bitmap commands `SETBIT`/`GETBIT`/`BITCOUNT`/`BITPOS`/`BITOP` support binary
 MSB-first bit access, BYTE/BIT ranges, and atomic AND/OR/XOR/NOT destinations.
@@ -77,7 +80,9 @@ than a native neighbour index. See [geospatial limits](docs/geospatial.md).
 
 Binary-safe lists, sets, hashes and sorted sets support creation, mutation,
 removal, bounded random selection (`SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`),
-HGETDEL atomic field reads/removal, set algebra/store commands, list position and
+HGETDEL atomic field reads/removal, per-field hash TTL controls
+(`HEXPIRE`/`HPEXPIRE`/`*AT`, `HTTL`/`HPTTL`, `*EXPIRETIME`, `HPERSIST`), set
+algebra/store commands, list position and
 multi-key pop (LPOS/LMPOP/BLMPOP), atomic and blocking list moves
 (LMOVE/RPOPLPUSH/BLMOVE/BRPOPLPUSH), score ranges and rank/range inspection. Sorted sets add unified `ZRANGE` score/lex/reverse/limit
 selection, `ZRANGESTORE`, `ZLEXCOUNT`, `ZREMRANGEBYLEX`, `ZRANDMEMBER` and

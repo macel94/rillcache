@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::engine::{Action, Auth, EvictionPolicy, FsyncPolicy, NotifyFlags, Store};
+use crate::engine::{Action, Auth, ErrorDialect, EvictionPolicy, FsyncPolicy, NotifyFlags, Store};
 use crate::protocol::{Limits, dispatch_request};
 use crate::session::Session;
 use std::path::PathBuf;
@@ -137,6 +137,8 @@ pub struct Config {
     pub maxmemory_policy: EvictionPolicy,
     /// Keyspace/keyevent notification classes; empty disables publication.
     pub notify_keyspace_events: NotifyFlags,
+    /// Verified vendor-specific error wording; defaults to Valkey for compatibility.
+    pub error_dialect: ErrorDialect,
 }
 
 impl std::fmt::Debug for Config {
@@ -159,6 +161,7 @@ impl std::fmt::Debug for Config {
             .field("appendfsync", &self.appendfsync)
             .field("dir", &self.dir)
             .field("maxmemory_policy", &self.maxmemory_policy)
+            .field("error_dialect", &self.error_dialect.as_str())
             .field(
                 "notify_keyspace_events",
                 &self.notify_keyspace_events.as_string(),
@@ -184,6 +187,7 @@ impl Default for Config {
             dir: PathBuf::from("."),
             maxmemory_policy: EvictionPolicy::NoEviction,
             notify_keyspace_events: NotifyFlags::default(),
+            error_dialect: ErrorDialect::default(),
         }
     }
 }
@@ -263,7 +267,8 @@ impl Server {
             )?
         } else {
             Store::with_auth(config.max_data_bytes, auth)
-        };
+        }
+        .with_error_dialect(config.error_dialect);
         store.set_eviction_policy(config.maxmemory_policy);
         store.set_notify_flags(config.notify_keyspace_events);
         let listener = TcpListener::bind(config.bind_addr)?;

@@ -19,6 +19,7 @@ mod collections;
 mod commands;
 mod data;
 mod discovery;
+mod error_dialect;
 pub(crate) use discovery::is_write_command;
 mod eviction;
 mod geo;
@@ -52,6 +53,7 @@ pub(crate) use collection_commands::{
 use collection_config::CollectionConfig;
 use data::Data;
 pub(crate) use data::StreamId;
+pub use error_dialect::ErrorDialect;
 pub use eviction::EvictionPolicy;
 pub use journal::FsyncPolicy;
 pub use notify::{Category as NotifyCategory, NotifyFlags};
@@ -98,6 +100,7 @@ pub struct Stats {
 pub struct Store {
     data: RwLock<Data>,
     max_payload_bytes: usize,
+    error_dialect: ErrorDialect,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
     transaction_gate: RwLock<()>,
@@ -154,6 +157,7 @@ impl Store {
         Self {
             data: RwLock::new(Data::default()),
             max_payload_bytes,
+            error_dialect: ErrorDialect::default(),
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
             transaction_gate: RwLock::new(()),
@@ -176,6 +180,13 @@ impl Store {
             client_pause: std::sync::atomic::AtomicU64::new(0),
         }
     }
+    /// Select verified vendor-specific error wording before sharing the store.
+    /// Currently only MSETEX's short counted key/value block differs.
+    pub fn with_error_dialect(mut self, dialect: ErrorDialect) -> Self {
+        self.error_dialect = dialect;
+        self
+    }
+
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
     /// Every lookup still treats logically expired entries as absent immediately.
     pub fn purge_expired(&self, limit: usize) -> usize {

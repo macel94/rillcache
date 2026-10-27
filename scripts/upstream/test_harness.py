@@ -77,6 +77,62 @@ class ProcessTests(unittest.TestCase):
             self.assertNotEqual(0, result["exit_code"])
 
 
+class ErrorDialectTests(unittest.TestCase):
+    def test_launcher_records_public_dialect_and_keeps_native_servers_unchanged(self):
+        for name, dialect in (("rillcache", "redis"), ("rillcache", "valkey"),
+                              ("rillcache", None), ("redis", None), ("valkey", None)):
+            with self.subTest(name=name, dialect=dialect), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                with patch.object(common.subprocess, "Popen") as popen, patch.object(common, "Client") as client, \
+                     patch.object(common, "terminate", return_value=0):
+                    popen.return_value.poll.return_value = None
+                    popen.return_value.pid = 12345
+                    client.return_value.__enter__.return_value.call.return_value = b"PONG"
+                    with common.server(name, directory, port=1234, compatibility=True, error_dialect=dialect):
+                        pass
+                identity = json.loads((directory / "server.json").read_text())
+                argv = identity["argv"]
+                self.assertEqual(argv, popen.call_args.args[0])
+                if dialect is not None:
+                    self.assertEqual(dialect, argv[argv.index("--error-dialect") + 1])
+                else:
+                    self.assertNotIn("--error-dialect", argv)
+                self.assertEqual((dialect or "valkey") if name == "rillcache" else None,
+                                 identity["error_dialect"])
+
+    def test_bad_dialect_and_native_overrides_fail_before_spawning(self):
+        with patch.object(common.subprocess, "Popen") as popen:
+            for name, dialect in (("rillcache", "auto"), ("rillcache", "redis\0"), ("redis", "redis")):
+                with self.subTest(name=name, dialect=dialect), self.assertRaises(ValueError):
+                    with common.server(name, "/unused", error_dialect=dialect):
+                        self.fail("invalid dialect entered server context")
+            popen.assert_not_called()
+
+    def test_entire_original_suite_uses_explicit_reference_dialect_and_failures_stay_red(self):
+        for reference, name in (("redis", "rillcache"), ("valkey", "rillcache"), ("redis", "redis")):
+            with self.subTest(reference=reference, name=name), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                (directory / "tcl").mkdir()
+                (directory / "tcl/stdout.log").write_text("[err]: Real assertion in tests/unit/type/string.tcl\n[1/1 done]: unit/type/string\n")
+                (directory / "tcl/stderr.log").write_text("")
+                with patch.object(compat, "server") as server, patch.object(compat, "source", return_value=directory), \
+                     patch.object(compat, "prerequisites", return_value=[]), \
+                     patch.object(compat, "command", return_value={"exit_code": 1}) as command:
+                    proc = unittest.mock.MagicMock()
+                    proc.poll.return_value = None
+                    server.return_value.__enter__.return_value = (proc, 1234)
+                    result = compat.run(reference, "unit/type/string", name, directory)
+                dialect = reference if name == "rillcache" else None
+                server.assert_called_once_with(name, directory / "instance", compatibility=True, error_dialect=dialect)
+                self.assertEqual(dialect, result["error_dialect"])
+                self.assertEqual("test_failures", result["status"])
+                self.assertEqual(["Real assertion"], result["events"]["err"])
+                argv = command.call_args.args[0]
+                self.assertEqual("unit/type/string", argv[argv.index("--single") + 1])
+                self.assertEqual(" ".join("-" + tag for tag in common.SCOPE["compatibility"]["denied_tags"]),
+                                 argv[argv.index("--tags") + 1])
+
+
 class RespTests(unittest.TestCase):
     def test_binary_command(self):
         self.assertEqual(b"*2\r\n$4\r\nECHO\r\n$3\r\na\x00b\r\n", common.resp_command("ECHO", b"a\0b"))

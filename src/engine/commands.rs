@@ -89,7 +89,7 @@ impl Store {
     }
 
     pub(super) fn now(&self, data: &Data) -> i64 {
-        if data.expirations.is_empty() {
+        if data.expirations.is_empty() && data.field_ttls == 0 {
             0
         } else {
             self.clock.now_ms().max(0)
