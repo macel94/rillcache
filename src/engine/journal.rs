@@ -701,6 +701,18 @@ fn event_for(
         "append" => ("append", NotifyCategory::String),
         "setrange" => ("setrange", NotifyCategory::String),
         "setbit" => ("setbit", NotifyCategory::String),
+        "geoadd" => ("zadd", NotifyCategory::Zset),
+        "geosearchstore" => {
+            let stored = data
+                .entries
+                .get(key)
+                .is_some_and(|entry| entry.collection.as_ref().is_some_and(Collection::is_zset));
+            return Some(if stored {
+                ("geosearchstore", NotifyCategory::Zset)
+            } else {
+                ("del", NotifyCategory::Generic)
+            });
+        }
         "pfadd" => ("pfadd", NotifyCategory::String),
         "pfmerge" => ("pfadd", NotifyCategory::String),
         "lpush" => ("lpush", NotifyCategory::List),

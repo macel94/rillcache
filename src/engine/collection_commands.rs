@@ -365,7 +365,7 @@ fn encode_hash(hash: HashMap<Vec<u8>, Vec<u8>>, config: &CollectionConfig) -> Co
     }
 }
 
-fn encode_zset(zset: HashMap<Vec<u8>, f64>, config: &CollectionConfig) -> Collection {
+pub(super) fn encode_zset(zset: HashMap<Vec<u8>, f64>, config: &CollectionConfig) -> Collection {
     let compact = zset.len() <= config.zset_max_listpack_entries
         && zset
             .keys()

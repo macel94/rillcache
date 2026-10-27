@@ -83,6 +83,12 @@ const COMMANDS: &[Command] = &[
     cmd("flushall", -1, &["write", "slow"], 0, 0, 0),
     cmd("flushdb", -1, &["write", "slow"], 0, 0, 0),
     cmd("function", -2, &["write", "admin"], 0, 0, 0),
+    cmd("geoadd", -5, &["write", "denyoom"], 1, 1, 1),
+    cmd("geodist", -4, &["readonly"], 1, 1, 1),
+    cmd("geohash", -2, &["readonly"], 1, 1, 1),
+    cmd("geopos", -2, &["readonly"], 1, 1, 1),
+    cmd("geosearch", -7, &["readonly"], 1, 1, 1),
+    cmd("geosearchstore", -8, &["write", "denyoom"], 1, 2, 1),
     cmd("get", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("getbit", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("getdel", 2, &["write", "fast"], 1, 1, 1),
@@ -353,6 +359,7 @@ pub(super) const CATEGORIES: &[&str] = &[
     "connection",
     "dangerous",
     "fast",
+    "geo",
     "hash",
     "keyspace",
     "list",
@@ -395,7 +402,7 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
         b"pubsub" => group == Some("pubsub"),
         b"transaction" => group == Some("transaction"),
         b"keyspace" | b"string" | b"list" | b"set" | b"hash" | b"zset" | b"stream" | b"bitmap"
-        | b"hyperloglog" => group == Some(std::str::from_utf8(category).unwrap_or("")),
+        | b"hyperloglog" | b"geo" => group == Some(std::str::from_utf8(category).unwrap_or("")),
         _ => false,
     }
 }
@@ -410,6 +417,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         "bitcount" | "bitfield" | "bitfield_ro" | "bitop" | "bitpos" | "getbit" | "setbit" => {
             "bitmap"
         }
+        "geoadd" | "geodist" | "geohash" | "geopos" | "geosearch" | "geosearchstore" => "geo",
         "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
         "blpop" | "brpop" | "lindex" | "linsert" | "llen" | "lpop" | "lpush" | "lpushx"
         | "lrange" | "lrem" | "lset" | "ltrim" | "rpop" | "rpush" | "rpushx" => "list",
@@ -663,6 +671,12 @@ mod tests {
             ("bitfield", "bitmap"),
             ("bitfield_ro", "bitmap"),
             ("bitop", "bitmap"),
+            ("geoadd", "geo"),
+            ("geodist", "geo"),
+            ("geohash", "geo"),
+            ("geopos", "geo"),
+            ("geosearch", "geo"),
+            ("geosearchstore", "geo"),
             ("bitpos", "bitmap"),
         ] {
             assert_eq!(command_group(name), Some(category));

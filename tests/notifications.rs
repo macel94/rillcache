@@ -246,3 +246,71 @@ fn keyspace_and_keyevent_notifications_follow_flags_and_categories() {
     assert!(info.contains("notify_keyspace_events:"), "{info}");
     server.shutdown().unwrap();
 }
+
+#[test]
+fn geo_mutations_emit_zset_store_and_deletion_events() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(&mut writer, &[b"GEOADD", b"g", b"0", b"0", b"a"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zadd",
+            b"g"
+        ])
+    );
+    send(
+        &mut writer,
+        &[
+            b"GEOSEARCHSTORE",
+            b"out",
+            b"g",
+            b"FROMLONLAT",
+            b"0",
+            b"0",
+            b"BYRADIUS",
+            b"1",
+            b"km",
+        ],
+        b":1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:geosearchstore",
+            b"out"
+        ])
+    );
+    send(
+        &mut writer,
+        &[
+            b"GEOSEARCHSTORE",
+            b"out",
+            b"g",
+            b"FROMLONLAT",
+            b"90",
+            b"0",
+            b"BYRADIUS",
+            b"1",
+            b"km",
+        ],
+        b":0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:del",
+            b"out"
+        ])
+    );
+    server.shutdown().unwrap();
+}

@@ -20,6 +20,7 @@ mod commands;
 mod data;
 mod discovery;
 mod eviction;
+mod geo;
 mod hll;
 mod journal;
 mod keyspace;
@@ -376,6 +377,7 @@ impl Store {
         } else if !self.execute_keyspace(arguments, output)
             && !self.execute_string_ranges(arguments, output)
             && !self.execute_bitfield(arguments, output)
+            && !self.execute_geo(arguments, output)
             && !self.execute_string_algorithms(arguments, output)
             && !self.execute_hll(arguments, output)
             && !self.execute_collection_commands(arguments, output)
