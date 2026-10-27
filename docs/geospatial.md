@@ -32,6 +32,15 @@ longitude is `-180..180`.
   `COUNT`. `COUNT` without an order implies ascending distance. `WITHDIST`
   reports the distance in the search unit, `WITHHASH` the stored 52-bit score and
   `WITHCOORD` the decoded `[longitude, latitude]` pair.
+- `GEORADIUS key longitude latitude radius unit [options]` and
+  `GEORADIUSBYMEMBER key member radius unit [options]` provide the legacy radius
+  API over the same search. Options may appear in any order: `WITHCOORD`,
+  `WITHDIST`, `WITHHASH`, `COUNT count [ANY]`, `ASC`/`DESC`, `STORE key` and
+  `STOREDIST key`. The last store option wins; `STORE` writes geohash scores and
+  `STOREDIST` writes distances in the requested unit. The read-only
+  `GEORADIUS_RO`/`GEORADIUSBYMEMBER_RO` variants reject both store options.
+  Combining a store option with `WITHCOORD`/`WITHDIST`/`WITHHASH` fails with the
+  legacy GEORADIUS incompatibility error.
 - `GEOSEARCHSTORE destination source ... [STOREDIST]` stores the same matches as
   a sorted set and returns the stored count. The destination is replaced
   atomically, its previous TTL is cleared, and an empty result deletes it.
@@ -50,14 +59,15 @@ stricter ordering than Redis promises.
 
 `GEOADD` changes publish a `zadd` keyspace event. `GEOSEARCHSTORE` publishes
 `geosearchstore` when it writes a destination and `del` when an empty result
-removes one.
+removes one. Legacy `GEORADIUS*` store variants commit journal state but publish
+no separate destination event, matching standalone Redis.
 
 ## Limits
 
-This is not full geospatial compatibility. Legacy `GEORADIUS`,
-`GEORADIUSBYMEMBER`, `GEORADIUS_RO` and `GEORADIUSBYMEMBER_RO` are not
-implemented; use `GEOSEARCH`/`GEOSEARCHSTORE`. The implementation does not use a
-native geohash neighbour index, so search complexity is linear in the source set.
+This is not full geospatial compatibility. The legacy `GEORADIUS` family is
+implemented as an adapter over the same linear search. The implementation does not
+use a native geohash neighbour index, so search complexity is linear in the source
+set.
 Scores written by ordinary `ZADD` are decoded best-effort: non-finite or negative
 scores are treated as non-geographic, while arbitrary finite scores may map to
 clamped coordinates. Geo keys are still sorted sets, so `ZREM`/`ZADD` can change
@@ -67,4 +77,4 @@ geo keys as `ZADD` records.
 
 Reference research: pinned Redis `src/geo.c`, `src/geohash.c`,
 `src/geohash_helper.c` and the Redis command metadata for `GEOADD`, `GEOPOS`,
-`GEODIST`, `GEOHASH`, `GEOSEARCH` and `GEOSEARCHSTORE`.
+`GEODIST`, `GEOHASH`, `GEORADIUS*`, `GEOSEARCH` and `GEOSEARCHSTORE`.

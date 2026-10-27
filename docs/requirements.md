@@ -82,6 +82,7 @@ reason to couple all future commands into a single large story.
 | S52 | As a sorted-set user, I can atomically pop lowest or highest members across several keys so that priority queues span multiple shards without client loops. | XS | R205–R208; key order, MIN/MAX, COUNT, TTL/WATCH and all-mode wire tests |
 | S53 | As a sorted-set user, I can wait for members across several sorted sets so that consumers do not have to poll empty priority queues. | S | R209–R212; blocking timeout/wakeup, MIN/MAX/COUNT, TTL/WATCH, ACL and all-mode wire tests |
 | S54 | As a stream producer, I can append with explicit retention and skip creating a missing stream so that hot streams stay bounded without a separate trim call. | S | R213–R216; XADD trim/NOMKSTREAM/errors/TTL/WATCH and all-mode wire tests |
+| S55 | As a legacy geospatial client, I can use the GEORADIUS command family without rewriting clients to GEOSEARCH so existing radius and store workflows keep working. | M | R217–R220; aliases/RO/store/storedist/options, ACL and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -610,8 +611,9 @@ reason to couple all future commands into a single large story.
   on malformed options, wrong source type or payload OOM. `GEOADD` and
   `GEOSEARCHSTORE` shall publish `zadd`/`geosearchstore`/`del` events, expose
   truthful `@geo` metadata and two ordered keys for the store command, and be
-  covered by unit and all-mode wire tests. Legacy `GEORADIUS*` commands, native
-  neighbour indexes and RDB interchange shall remain documented as unsupported.
+  covered by unit and all-mode wire tests. Legacy `GEORADIUS*` aliases are
+  delivered in S55; native neighbour indexes and RDB interchange shall remain
+  documented as unsupported.
 ### Stream claiming and consumer introspection (S46)
 
 - **R181 (event-driven):** When `XCLAIM key group consumer min-idle-time id [id ...]`
@@ -831,6 +833,36 @@ reason to couple all future commands into a single large story.
   wrong types, malformed options/IDs, MULTI, WATCH, OOM and all worker modes.
   XADD trim shall publish the `xadd` event only; `XSETID`, blocking reads and
   history reads shall remain documented as unsupported.
+
+### Legacy geospatial radius aliases (S55)
+
+- **R217 (event-driven):** `GEORADIUS key longitude latitude radius unit` and
+  `GEORADIUSBYMEMBER key member radius unit` shall parse WGS-84 coordinates or a
+  live member origin, a non-negative radius and a supported M/KM/FT/MI unit, then
+  apply the existing bounded radius search. They shall accept
+  `WITHCOORD`/`WITHDIST`/`WITHHASH`, `COUNT count [ANY]`, `ASC`/`DESC`, `STORE key`
+  and `STOREDIST key` in any order, with the same distance/coordinate/hash reply
+  text as `GEOSEARCH`. Missing sources shall return an empty array, a missing
+  member in an existing source shall return the member-decode error, and
+  wrong-type sources shall return WRONGTYPE.
+- **R218 (event-driven):** `GEORADIUS_RO` and `GEORADIUSBYMEMBER_RO` shall return
+  the same reads but reject `STORE`/`STOREDIST` with a syntax error. For the
+  writable variants, the last `STORE`/`STOREDIST` wins, the destination stores
+  geohash scores or distances in the requested unit respectively, and combining a
+  store option with `WITHCOORD`/`WITHDIST`/`WITHHASH` shall fail with the legacy
+  GEORADIUS incompatibility error.
+- **R219 (event-driven):** Legacy store variants shall atomically replace the
+  destination, clear its TTL, delete it for an empty result or missing source and
+  return the stored count, without partial writes on wrong type, malformed options
+  or payload OOM. They shall commit journal state while publishing no separate
+  destination notification, matching standalone Redis. Source and last-wins store
+  destination shall both be covered by ACL key patterns.
+- **R220 (unwanted behavior):** Invalid floats/coordinates, negative radius,
+  unsupported units, non-positive or non-integer COUNT, ANY without COUNT, unknown
+  options, invalid arity and read-only store attempts shall return bounded errors
+  before any destination write. Tests shall cover both origins, every option
+  combination, RO variants, store/storedist and last-wins behavior, TTL, missing
+  keys/members, wrong types, ACL, discovery metadata and all worker modes.
 
 ### Development and delivery
 

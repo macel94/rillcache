@@ -31,6 +31,8 @@ const ANY_ERROR: &[u8] = b"-ERR the ANY argument requires COUNT argument\r\n";
 const COUNT_ERROR: &[u8] = b"-ERR COUNT must be > 0\r\n";
 const STORE_WITH_ERROR: &[u8] =
     b"-ERR GEOSEARCHSTORE is not compatible with WITHDIST, WITHHASH and WITHCOORD options\r\n";
+const LEGACY_STORE_WITH_ERROR: &[u8] =
+    b"-ERR STORE option in GEORADIUS is not compatible with WITHDIST, WITHHASH and WITHCOORD options\r\n";
 
 #[derive(Clone, Copy)]
 enum Sort {
@@ -115,6 +117,32 @@ impl Store {
                 arity("geosearchstore", out);
             } else {
                 self.geosearch(args, true, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"GEORADIUS")
+            || command.eq_ignore_ascii_case(b"GEORADIUS_RO")
+            || command.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER")
+            || command.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER_RO")
+        {
+            let by_member = command.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER")
+                || command.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER_RO");
+            let readonly = command.eq_ignore_ascii_case(b"GEORADIUS_RO")
+                || command.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER_RO");
+            let name = if by_member {
+                if readonly {
+                    "georadiusbymember_ro"
+                } else {
+                    "georadiusbymember"
+                }
+            } else if readonly {
+                "georadius_ro"
+            } else {
+                "georadius"
+            };
+            if args.len() < if by_member { 5 } else { 6 } {
+                arity(name, out);
+            } else if let Some((search, destination)) = parse_legacy(args, by_member, readonly, out)
+            {
+                self.run_search(args[1], destination, &search, out);
             }
         } else {
             return false;
@@ -312,7 +340,20 @@ impl Store {
         let Some(search) = parse_search(args, store, out) else {
             return;
         };
-        let source = if store { args[2] } else { args[1] };
+        if store {
+            self.run_search(args[2], Some(args[1]), &search, out);
+        } else {
+            self.run_search(args[1], None, &search, out);
+        }
+    }
+
+    fn run_search(
+        &self,
+        source: &[u8],
+        destination: Option<&[u8]>,
+        search: &Search,
+        out: &mut Vec<u8>,
+    ) {
         let Ok(mut data) = self.data.write() else {
             internal_error(out);
             return;
@@ -338,9 +379,9 @@ impl Store {
             }
         };
         let Some(members) = members else {
-            if store {
-                data.expire_key(args[1], now);
-                data.remove(args[1]);
+            if let Some(destination) = destination {
+                data.expire_key(destination, now);
+                data.remove(destination);
                 integer(0, out);
             } else {
                 out.extend_from_slice(b"*0\r\n");
@@ -412,8 +453,8 @@ impl Store {
         if let Some(count) = search.count {
             hits.truncate(count);
         }
-        if store {
-            self.store_search(args[1], hits, &search, &mut data, now, out);
+        if let Some(destination) = destination {
+            self.store_search(destination, hits, search, &mut data, now, out);
             return;
         }
         let options = usize::from(search.with_dist)
@@ -502,6 +543,150 @@ fn sort_hits(hits: &mut [Hit], sort: Sort) {
                 .then_with(|| a.member.cmp(&b.member))
         }),
     }
+}
+
+fn parse_legacy<'a>(
+    args: &'a [&'a [u8]],
+    by_member: bool,
+    readonly: bool,
+    out: &mut Vec<u8>,
+) -> Option<(Search, Option<&'a [u8]>)> {
+    let mut index;
+    let from;
+    let radius;
+    let unit;
+    if by_member {
+        let member = args[2];
+        let Some(raw_radius) = args.get(3) else {
+            out.extend_from_slice(SYNTAX_ERROR);
+            return None;
+        };
+        let Some(raw_unit) = args.get(4) else {
+            out.extend_from_slice(SYNTAX_ERROR);
+            return None;
+        };
+        from = FromSpec::Member(member.to_vec());
+        radius = raw_radius;
+        unit = raw_unit;
+        index = 5;
+    } else {
+        let (Some(raw_lon), Some(raw_lat), Some(raw_radius), Some(raw_unit)) =
+            (args.get(2), args.get(3), args.get(4), args.get(5))
+        else {
+            out.extend_from_slice(SYNTAX_ERROR);
+            return None;
+        };
+        let Some((lon, lat)) = parse_lonlat(raw_lon, raw_lat) else {
+            out.extend_from_slice(FLOAT_ERROR);
+            return None;
+        };
+        if !valid_lonlat(lon, lat) {
+            coordinate_error(lon, lat, out);
+            return None;
+        }
+        from = FromSpec::LonLat(lon, lat);
+        radius = raw_radius;
+        unit = raw_unit;
+        index = 6;
+    }
+    let Some(factor) = unit_factor(unit) else {
+        out.extend_from_slice(UNIT_ERROR);
+        return None;
+    };
+    let Some(radius) = parse_number(radius) else {
+        out.extend_from_slice(b"-ERR need numeric radius\r\n");
+        return None;
+    };
+    if radius < 0.0 {
+        out.extend_from_slice(b"-ERR radius cannot be negative\r\n");
+        return None;
+    }
+    let mut sort = None;
+    let mut count = None;
+    let mut any = false;
+    let mut with_coord = false;
+    let mut with_dist = false;
+    let mut with_hash = false;
+    let mut destination = None;
+    let mut storedist = false;
+    while index < args.len() {
+        let token = args[index];
+        if token.eq_ignore_ascii_case(b"WITHCOORD") {
+            with_coord = true;
+            index += 1;
+        } else if token.eq_ignore_ascii_case(b"WITHDIST") {
+            with_dist = true;
+            index += 1;
+        } else if token.eq_ignore_ascii_case(b"WITHHASH") {
+            with_hash = true;
+            index += 1;
+        } else if token.eq_ignore_ascii_case(b"ASC") {
+            sort = Some(Sort::Asc);
+            index += 1;
+        } else if token.eq_ignore_ascii_case(b"DESC") {
+            sort = Some(Sort::Desc);
+            index += 1;
+        } else if token.eq_ignore_ascii_case(b"COUNT") {
+            let Some(raw) = args.get(index + 1) else {
+                out.extend_from_slice(SYNTAX_ERROR);
+                return None;
+            };
+            let Some(value) = parse_integer(raw) else {
+                out.extend_from_slice(NOT_INTEGER);
+                return None;
+            };
+            if value <= 0 {
+                out.extend_from_slice(COUNT_ERROR);
+                return None;
+            }
+            count = Some(usize::try_from(value).unwrap_or(usize::MAX));
+            index += 2;
+        } else if token.eq_ignore_ascii_case(b"ANY") {
+            any = true;
+            index += 1;
+        } else if token.eq_ignore_ascii_case(b"STORE") || token.eq_ignore_ascii_case(b"STOREDIST") {
+            if readonly {
+                out.extend_from_slice(SYNTAX_ERROR);
+                return None;
+            }
+            let Some(name) = args.get(index + 1) else {
+                out.extend_from_slice(SYNTAX_ERROR);
+                return None;
+            };
+            destination = Some(*name);
+            storedist = token.eq_ignore_ascii_case(b"STOREDIST");
+            index += 2;
+        } else {
+            out.extend_from_slice(SYNTAX_ERROR);
+            return None;
+        }
+    }
+    if any && count.is_none() {
+        out.extend_from_slice(ANY_ERROR);
+        return None;
+    }
+    if destination.is_some() && (with_coord || with_dist || with_hash) {
+        out.extend_from_slice(LEGACY_STORE_WITH_ERROR);
+        return None;
+    }
+    if count.is_some() && sort.is_none() && !any {
+        sort = Some(Sort::Asc);
+    }
+    Some((
+        Search {
+            from,
+            shape: Shape::Radius(radius * factor),
+            sort,
+            count,
+            any,
+            with_coord,
+            with_dist,
+            with_hash,
+            storedist,
+            conversion: factor,
+        },
+        destination,
+    ))
 }
 
 fn parse_search(args: &[&[u8]], store: bool, out: &mut Vec<u8>) -> Option<Search> {
