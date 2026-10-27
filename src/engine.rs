@@ -114,6 +114,7 @@ pub struct Stats {
     pub total_commands_processed: u64,
     pub rejected_connections: u64,
     pub expired_keys: u64,
+    pub expired_subkeys: u64,
     pub evicted_keys: u64,
     pub pubsub_channels: usize,
     pub pubsub_patterns: usize,
@@ -145,6 +146,8 @@ pub struct Store {
     client_pause: std::sync::atomic::AtomicU64,
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
+    auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64,
+    auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64,
     shutdown_requested: AtomicBool,
     commandstats_enabled: AtomicBool,
     command_stats: Vec<CommandStat>,
@@ -209,6 +212,8 @@ impl Store {
                 latency::DEFAULT_THRESHOLD_MS,
             ),
             latency: std::sync::RwLock::new(latency::State::default()),
+            auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64::new(100),
+            auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64::new(64 * 1024 * 1024),
             shutdown_requested: AtomicBool::new(false),
             commandstats_enabled: AtomicBool::new(false),
             command_stats: (0..discovery::command_count())
@@ -700,21 +705,21 @@ impl Store {
     }
 
     pub fn stats(&self) -> Stats {
-        let (expired_keys, evicted_keys, pubsub_channels, pubsub_patterns) = {
-            let (expired, evicted) = self
-                .data
-                .read()
-                .map_or((0, 0), |data| (data.expired_keys, data.evicted_keys));
+        let (expired_keys, expired_subkeys, evicted_keys, pubsub_channels, pubsub_patterns) = {
+            let (expired, subkeys, evicted) = self.data.read().map_or((0, 0, 0), |data| {
+                (data.expired_keys, data.expired_subkeys, data.evicted_keys)
+            });
             let (channels, patterns) = self.pubsub.read().map_or((0, 0), |pubsub| {
                 (pubsub.channel_names(None).len(), pubsub.numpat())
             });
-            (expired, evicted, channels, patterns)
+            (expired, subkeys, evicted, channels, patterns)
         };
         Stats {
             total_connections_received: self.connections_received.load(Ordering::Relaxed),
             total_commands_processed: self.commands_processed.load(Ordering::Relaxed),
             rejected_connections: self.rejected_connections.load(Ordering::Relaxed),
             expired_keys,
+            expired_subkeys,
             evicted_keys,
             pubsub_channels,
             pubsub_patterns,
@@ -728,6 +733,7 @@ impl Store {
         self.reset_command_statistics();
         self.data.write().is_ok_and(|mut data| {
             data.expired_keys = 0;
+            data.expired_subkeys = 0;
             data.evicted_keys = 0;
             true
         })
@@ -738,6 +744,26 @@ impl Store {
             data.eviction = policy;
             true
         })
+    }
+
+    pub(crate) fn auto_aof_rewrite_percentage(&self) -> u64 {
+        self.auto_aof_rewrite_percentage
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn set_auto_aof_rewrite_percentage(&self, value: u64) {
+        self.auto_aof_rewrite_percentage
+            .store(value, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn auto_aof_rewrite_min_size(&self) -> u64 {
+        self.auto_aof_rewrite_min_size
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn set_auto_aof_rewrite_min_size(&self, value: u64) {
+        self.auto_aof_rewrite_min_size
+            .store(value, std::sync::atomic::Ordering::Release);
     }
 
     pub fn eviction_policy(&self) -> EvictionPolicy {

@@ -257,6 +257,7 @@ pub(super) struct Data {
     expired_events: VecDeque<Vec<u8>>,
     evicted_events: VecDeque<Vec<u8>>,
     pub(in crate::engine) expired_keys: u64,
+    pub(in crate::engine) expired_subkeys: u64,
     pub(in crate::engine) evicted_keys: u64,
     pub(in crate::engine) eviction: EvictionPolicy,
     pub field_ttls: usize,
@@ -412,6 +413,9 @@ impl Data {
             }
         }
         self.field_ttls = self.field_ttls.saturating_sub(expired.len());
+        self.expired_subkeys = self
+            .expired_subkeys
+            .saturating_add(u64::try_from(expired.len()).unwrap_or(u64::MAX));
         let remove_key = entry
             .collection
             .as_ref()

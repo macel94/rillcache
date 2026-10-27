@@ -391,3 +391,31 @@ fn a_partial_tail_is_truncated_but_mid_file_corruption_fails() {
     );
     let _ = std::fs::remove_file(&path);
 }
+#[test]
+fn automatic_rewrite_compacts_after_configured_growth() {
+    let path = aof_path("auto-rewrite");
+    {
+        let store = open(&path, FsyncPolicy::Always);
+        store.set_auto_aof_rewrite_percentage(1);
+        store.set_auto_aof_rewrite_min_size(128);
+        for index in 0..300 {
+            let value = format!("value-{index}");
+            assert_eq!(run(&store, &[b"SET", b"key", value.as_bytes()]), b"+OK\r\n");
+        }
+        let before = std::fs::metadata(&path).unwrap().len();
+        assert!(store.auto_rewrite_if_due());
+        let after = std::fs::metadata(&path).unwrap().len();
+        assert!(
+            after < before,
+            "auto rewrite must compact {before} -> {after}"
+        );
+        assert!(!store.auto_rewrite_if_due());
+        for _ in 0..300 {
+            assert_eq!(run(&store, &[b"SET", b"key", b"again"]), b"+OK\r\n");
+        }
+        assert!(store.auto_rewrite_if_due());
+    }
+    let store = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&store, &[b"GET", b"key"]), b"$5\r\nagain\r\n");
+    let _ = std::fs::remove_file(&path);
+}

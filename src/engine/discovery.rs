@@ -809,6 +809,11 @@ impl Store {
             .values()
             .filter(|entry| entry.alive(now) && entry.expires.is_some())
             .count();
+        let subexpiry_keys = data
+            .entries
+            .values()
+            .filter(|entry| entry.alive(now) && !entry.field_ttl.is_empty())
+            .count();
         let mut text = String::new();
         for (index, section) in sections.iter().enumerate() {
             let section = section.to_ascii_lowercase();
@@ -852,7 +857,7 @@ impl Store {
             if matches!(section.as_slice(), b"keyspace" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys}\r"
+                    "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys},subexpiry={subexpiry_keys}\r",
                 );
             }
             if matches!(section.as_slice(), b"clients" | b"default" | b"all") {
@@ -866,11 +871,12 @@ impl Store {
                 let stats = self.stats();
                 let _ = writeln!(
                     text,
-                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r",
+                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nexpired_subkeys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r",
                     stats.total_connections_received,
                     stats.total_commands_processed,
                     stats.rejected_connections,
                     stats.expired_keys,
+                    stats.expired_subkeys,
                     stats.evicted_keys,
                     stats.pubsub_channels,
                     stats.pubsub_patterns

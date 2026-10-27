@@ -105,9 +105,11 @@ reason to couple all future commands into a single large story.
 | S75 | As an operator, I can request a durable protocol-level stop so that maintenance can flush acknowledged journal writes and join workers without relying on signals. | S | R296–R299; flags/errors/ABORT/MULTI/persistence/all-mode shutdown tests |
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
-| S78 | As an operator, I can opt into bounded per-command calls/time/error statistics without paying disabled-observer timing and metadata costs. | S | R306–R309; opt-in/reset/MULTI/error, lazy SLOWLOG capture and all-mode tests |
+| S78 | As an operator, I can configure automatic journal compaction thresholds so that an append-only file does not grow without bound between manual rewrites. | S | R306–R309; config/defaults/growth/baseline/replay and all-mode wire tests |
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
+| S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
+| S82 | As an operator, I can opt into bounded per-command calls/time/error statistics without paying disabled-observer timing and metadata costs. | S | R319–R322; opt-in/reset/MULTI/error, lazy SLOWLOG capture and all-mode tests |
 
 ## EARS acceptance requirements
 
@@ -1375,9 +1377,9 @@ and the offline upstream harness tests.
   rejection, caller close, all worker modes, journal durability across restart,
   and documentation of the remaining absence of a portable SIGTERM handler.
 
-### Per-command statistics (S78)
+### Per-command statistics (S82)
 
-- **R306 (event-driven):** While `commandstats-enabled` is `yes` (default `no`,
+- **R319 (event-driven):** While `commandstats-enabled` is `yes` (default `no`,
   set through `CONFIG SET commandstats-enabled yes|no` and read through `CONFIG
   GET`), `INFO commandstats` or `INFO all` shall return a RESP bulk string with a
   `# Commandstats` section and one
@@ -1391,7 +1393,7 @@ and the offline upstream harness tests.
   transition shall clear them before recording the enabling command. With all
   observers disabled, ordinary dispatch shall create no instrumentation timer;
   CONFIG may retain timing because it can enable an observer during dispatch.
-- **R307 (state-driven):** While recording, `calls` shall count client
+- **R320 (state-driven):** While recording, `calls` shall count client
   dispatches (including failed and rejected calls, `INFO` and `CONFIG RESETSTAT`,
   but not direct embedded `Store::execute` or individually queued `MULTI`
   commands), `usec` shall accumulate measured dispatch time, `failed_calls` shall
@@ -1399,10 +1401,10 @@ and the offline upstream harness tests.
   rejected with `NOAUTH`/`NOPERM`. Blocking wait time shall be excluded and
   documented as a deliberate difference from `SLOWLOG`. Subcommands shall share
   their top-level command name.
-- **R308 (event-driven):** When `CONFIG RESETSTAT` succeeds, it shall zero every
+- **R321 (event-driven):** When `CONFIG RESETSTAT` succeeds, it shall zero every
   per-command counter together with the existing process counters without deleting
   data or subscriptions; the reset command itself may be counted afterwards.
-- **R309 (ubiquitous):** Tests shall cover default-disabled behavior, the
+- **R322 (ubiquitous):** Tests shall cover default-disabled behavior, the
   `CONFIG GET/SET commandstats-enabled` contract, calls, aggregate time shape,
   failed-call classification, authentication/ACL rejection classification,
   unknown-command exclusion, `INFO all` inclusion, reset clearing and every worker
@@ -1457,6 +1459,30 @@ and the offline upstream harness tests.
   replica management, Sentinel, cluster routing, failover and mixed-version
   interoperability.
 
+### Automatic journal compaction (S78)
+
+- **R306 (event-driven):** `CONFIG GET/SET auto-aof-rewrite-percentage` and
+  `auto-aof-rewrite-min-size` shall expose and atomically update the thresholds.
+  Percentage shall default to 100 and disable automatic rewrites at 0; minimum
+  size shall default to 64 MiB. Negative/non-integer values and unsupported
+  options shall fail without changing configuration.
+- **R307 (state-driven):** While a journal is enabled and the percentage is
+  non-zero, the maintenance loop shall compare the open file size with the size
+  recorded at open/last rewrite and trigger compaction once both the minimum size
+  and configured growth percentage are met. Disabled journals or unmet thresholds
+  shall perform no rewrite and add no command-path overhead beyond the periodic
+  maintenance check.
+- **R308 (event-driven):** A triggered rewrite shall use the existing synchronous
+  full-state compaction under the transaction gate, reset the baseline to the new
+  file size, keep the previous journal intact on failure, and preserve replayable
+  data/TTLs across restart. It shall not claim fork-based background or incremental
+  rewrite behavior.
+- **R309 (ubiquitous):** Tests shall cover defaults, `CONFIG GET/SET` round trips
+  and validation, growth/baseline triggering, no-op thresholds/disabled journals,
+  maintenance-triggered compaction, restart replay and all worker modes.
+  Documentation shall retain the absence of background/incremental rewrite,
+  checksums, encryption and crash-consistency guarantees.
+
 ### Truthful persistence status (S80)
 
 - **R313 (event-driven):** When `INFO persistence` or `INFO all` is requested, the
@@ -1475,6 +1501,20 @@ and the offline upstream harness tests.
   all` inclusion and every worker mode. Documentation shall retain the absence
   of RDB, asynchronous/background rewrite, checksum, encryption, ENOSPC and
   crash-recovery guarantees.
+
+### Sub-key expiry observability (S81)
+
+- **R316 (event-driven):** When `INFO keyspace` or `INFO all` is requested, the
+  server shall include `subexpiry` in the `db0` line, counting live hash keys
+  with at least one unexpired field deadline.
+- **R317 (event-driven):** When `INFO stats` or `INFO all` is requested, the
+  server shall include `expired_subkeys`, counting hash fields removed by lazy
+  per-field TTL expiry since startup or the last `CONFIG RESETSTAT`.
+- **R318 (ubiquitous):** Tests shall cover lazy field expiry updating both
+  values, a live field deadline keeping `subexpiry` set, `CONFIG RESETSTAT`
+  clearing `expired_subkeys` without changing live `subexpiry`, and every worker
+  mode. Documentation shall retain that field expiry is lazy, not actively
+  scanned, and that neither value is an RSS or payload-accounting measurement.
 
 ### Development and delivery
 

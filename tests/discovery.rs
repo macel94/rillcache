@@ -380,7 +380,7 @@ fn info_reports_payload_and_live_keyspace_and_rejects_unknown_sections() {
         assert!(
             std::str::from_utf8(&keyspace)
                 .unwrap()
-                .contains("db0:keys=1,expires=0\r\n")
+                .contains("db0:keys=1,expires=0,subexpiry=0\r\n")
         );
         assert_eq!(
             request(&mut client, &[b"INFO", b"anything\0SECRET"]),
