@@ -439,6 +439,23 @@ pub(super) fn canonical_name(name: &[u8]) -> Option<&'static str> {
         .map(|command| command.name)
 }
 
+/// The access a command needs for one declared key argument. Redis key specs
+/// distinguish read-only, write-only and read-write keys; ACL `%R~`/`%W~`
+/// patterns must grant the access the command actually performs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum KeyAccess {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl KeyAccess {
+    /// Whether a pattern with `self` access satisfies a required access.
+    pub(super) fn grants(self, required: Self) -> bool {
+        self == required || self == Self::ReadWrite
+    }
+}
+
 /// Declared key arguments for ACL key-pattern enforcement. Commands with no
 /// static key spec (`KEYS`, `DBSIZE`, `FLUSH*`, `XREADGROUP`) return no keys;
 /// this matches Redis's key-spec behavior and is documented as not a sandbox.
@@ -449,6 +466,18 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
     else {
         return Vec::new();
     };
+    // BITOP's first argument is the operation, then the destination key and
+    // source keys; the static first-key index would mistake the operation for a
+    // key and misattribute the destination.
+    if name.eq_ignore_ascii_case(b"BITOP") {
+        if args.len() < 4 {
+            return Vec::new();
+        }
+        let mut keys = Vec::with_capacity(args.len() - 2);
+        keys.push(args[2]);
+        keys.extend_from_slice(&args[3..]);
+        return keys;
+    }
     // SINTERCARD has a counted key list followed by optional LIMIT arguments.
     // Its static `last_key` would otherwise include the LIMIT tokens as keys.
     if name.eq_ignore_ascii_case(b"SINTERCARD") {
@@ -570,6 +599,140 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         index += step;
     }
     keys
+}
+
+/// Declared key arguments paired with the access each key requires. This mirrors
+/// Redis key-spec read/write flags closely enough for ACL `%R~`/`%W~` checks:
+/// read-only commands read every key, overwrite-only commands (`SET` without
+/// `GET`, `MSET`, `DEL`, stores) write them, and commands that inspect existing
+/// data (`HSET`, `LPOP`, `INCR`, ...) require both. Dynamic/unknown key specs are
+/// handled by [`key_arguments`] and the documented `SORT`/`GEORADIUS` rules.
+pub(super) fn key_accesses<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<(&'a [u8], KeyAccess)> {
+    let keys = key_arguments(name, args);
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let Some(command) = COMMANDS
+        .iter()
+        .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
+    else {
+        return Vec::new();
+    };
+    let readonly = command.flags.contains(&"readonly");
+    keys.into_iter()
+        .enumerate()
+        .map(|(position, key)| {
+            let access = if readonly {
+                KeyAccess::Read
+            } else {
+                write_key_access(command.name, args, position)
+            };
+            (key, access)
+        })
+        .collect()
+}
+
+fn write_key_access(name: &str, args: &[&[u8]], position: usize) -> KeyAccess {
+    let name = name.as_bytes();
+    let eq = |literal: &[u8]| name.eq_ignore_ascii_case(literal);
+    // Commands whose key is created or replaced without reading its value.
+    if eq(b"MSET")
+        || eq(b"MSETNX")
+        || eq(b"MSETEX")
+        || eq(b"PSETEX")
+        || eq(b"SETEX")
+        || eq(b"SETNX")
+        || eq(b"DEL")
+        || eq(b"UNLINK")
+    {
+        return KeyAccess::Write;
+    }
+    // `SET` only reads the key for its optional `GET` reply.
+    if eq(b"SET") {
+        let reads = args
+            .get(3..)
+            .unwrap_or_default()
+            .iter()
+            .any(|argument| argument.eq_ignore_ascii_case(b"GET"));
+        return if reads {
+            KeyAccess::ReadWrite
+        } else {
+            KeyAccess::Write
+        };
+    }
+    // `BITFIELD` reads for `GET` and reads-modifies-writes for `SET`/`INCRBY`.
+    if eq(b"BITFIELD") {
+        let writes = args.get(2..).unwrap_or_default().iter().any(|argument| {
+            argument.eq_ignore_ascii_case(b"SET") || argument.eq_ignore_ascii_case(b"INCRBY")
+        });
+        return if writes {
+            KeyAccess::ReadWrite
+        } else {
+            KeyAccess::Read
+        };
+    }
+    // Multi-key commands that mix read sources with written destinations. Key
+    // ordering here matches `key_arguments`.
+    if eq(b"BITOP") {
+        return if position == 0 {
+            KeyAccess::Write
+        } else {
+            KeyAccess::Read
+        };
+    }
+    if eq(b"COPY") {
+        return if position == 0 {
+            KeyAccess::Read
+        } else {
+            KeyAccess::Write
+        };
+    }
+    if eq(b"GEORADIUS") || eq(b"GEORADIUSBYMEMBER") {
+        return if position == 0 {
+            KeyAccess::Read
+        } else {
+            KeyAccess::Write
+        };
+    }
+    if eq(b"GEOSEARCHSTORE")
+        || eq(b"SDIFFSTORE")
+        || eq(b"SINTERSTORE")
+        || eq(b"SUNIONSTORE")
+        || eq(b"ZDIFFSTORE")
+        || eq(b"ZINTERSTORE")
+        || eq(b"ZUNIONSTORE")
+        || eq(b"ZRANGESTORE")
+    {
+        return if position == 0 {
+            KeyAccess::Write
+        } else {
+            KeyAccess::Read
+        };
+    }
+    if eq(b"PFMERGE") {
+        return if position == 0 {
+            KeyAccess::ReadWrite
+        } else {
+            KeyAccess::Read
+        };
+    }
+    if eq(b"RENAME") || eq(b"RENAMENX") {
+        return if position == 0 {
+            KeyAccess::ReadWrite
+        } else {
+            KeyAccess::Write
+        };
+    }
+    if eq(b"SORT") {
+        return if position == 0 {
+            KeyAccess::Read
+        } else {
+            KeyAccess::Write
+        };
+    }
+    // Everything else that mutates a key inspects it first, as Redis key specs
+    // mark with RW.
+    KeyAccess::ReadWrite
 }
 
 pub(super) const CATEGORIES: &[&str] = &[
@@ -1191,6 +1354,95 @@ mod tests {
             ),
             vec![b"geo".as_slice()]
         );
+    }
+
+    #[test]
+    fn key_access_modes_match_read_write_key_specs() {
+        assert_eq!(
+            key_accesses(b"GET", &[b"GET", b"k"]),
+            vec![(b"k".as_slice(), KeyAccess::Read)]
+        );
+        assert_eq!(
+            key_accesses(b"HSET", &[b"HSET", b"h", b"f", b"v"]),
+            vec![(b"h".as_slice(), KeyAccess::ReadWrite)]
+        );
+        assert_eq!(
+            key_accesses(b"DEL", &[b"DEL", b"a", b"b"]),
+            vec![
+                (b"a".as_slice(), KeyAccess::Write),
+                (b"b".as_slice(), KeyAccess::Write)
+            ]
+        );
+        assert_eq!(
+            key_accesses(b"SET", &[b"SET", b"k", b"v"]),
+            vec![(b"k".as_slice(), KeyAccess::Write)]
+        );
+        assert_eq!(
+            key_accesses(b"SET", &[b"SET", b"k", b"v", b"GET"]),
+            vec![(b"k".as_slice(), KeyAccess::ReadWrite)]
+        );
+        assert_eq!(
+            key_accesses(b"BITFIELD", &[b"BITFIELD", b"b", b"GET", b"u8", b"0"]),
+            vec![(b"b".as_slice(), KeyAccess::Read)]
+        );
+        assert_eq!(
+            key_accesses(
+                b"BITFIELD",
+                &[
+                    b"BITFIELD",
+                    b"b",
+                    b"GET",
+                    b"u8",
+                    b"0",
+                    b"SET",
+                    b"u8",
+                    b"0",
+                    b"1"
+                ]
+            ),
+            vec![(b"b".as_slice(), KeyAccess::ReadWrite)]
+        );
+        assert_eq!(
+            key_accesses(b"BITOP", &[b"BITOP", b"AND", b"dest", b"a", b"b"]),
+            vec![
+                (b"dest".as_slice(), KeyAccess::Write),
+                (b"a".as_slice(), KeyAccess::Read),
+                (b"b".as_slice(), KeyAccess::Read)
+            ]
+        );
+        assert_eq!(
+            key_accesses(b"COPY", &[b"COPY", b"src", b"dest"]),
+            vec![
+                (b"src".as_slice(), KeyAccess::Read),
+                (b"dest".as_slice(), KeyAccess::Write)
+            ]
+        );
+        assert_eq!(
+            key_accesses(b"RENAME", &[b"RENAME", b"src", b"dest"]),
+            vec![
+                (b"src".as_slice(), KeyAccess::ReadWrite),
+                (b"dest".as_slice(), KeyAccess::Write)
+            ]
+        );
+        assert_eq!(
+            key_accesses(
+                b"SORT",
+                &[b"SORT", b"src", b"LIMIT", b"0", b"1", b"STORE", b"dest"]
+            ),
+            vec![
+                (b"src".as_slice(), KeyAccess::Read),
+                (b"dest".as_slice(), KeyAccess::Write)
+            ]
+        );
+        assert_eq!(
+            key_accesses(b"ZINTERSTORE", &[b"ZINTERSTORE", b"dest", b"2", b"a", b"b"]),
+            vec![
+                (b"dest".as_slice(), KeyAccess::Write),
+                (b"a".as_slice(), KeyAccess::Read),
+                (b"b".as_slice(), KeyAccess::Read)
+            ]
+        );
+        assert!(key_accesses(b"PING", &[b"PING"]).is_empty());
     }
 
     #[test]

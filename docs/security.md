@@ -52,7 +52,7 @@ Supported rules:
   `resetpass`
 - `allcommands`/`+@all`, `nocommands`/`-@all`, `+@category`, `-@category`
 - `+command`, `-command`, `+command|subcommand`, `-command|subcommand`
-- `allkeys`, `resetkeys`, `~pattern`
+- `allkeys`, `resetkeys`, `~pattern`, `%R~pattern`, `%W~pattern`, `%RW~pattern`
 - `allchannels`, `resetchannels`, `&pattern`
 - `reset`
 
@@ -63,8 +63,18 @@ Supported categories are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
 is an approximation over the published command table, not a byte-for-byte copy of
 a specific Redis release.
 
+Key patterns carry access modes. `~pattern` and `%RW~pattern` grant reads and
+writes, `%R~pattern` grants reads only and `%W~pattern` writes only. Commands
+require the access their key specs perform: `GET` reads, `SET` without `GET` and
+`DEL` write, while commands that inspect existing data (`HSET`, `LPOP`, `INCR`,
+`BITOP` sources, `COPY` destinations and `*STORE` destinations) are checked per
+key. A read-write key needs both a read and a write grant, which may come from
+different patterns. Patterns are cumulative and `resetkeys` clears all modes;
+`%RW~x` is listed canonically as `~x`, and adding read and write grants for the
+same pattern merges them into `~x`.
+
 `ACL SETUSER` is atomic: a bad rule leaves the previous user untouched. A
-parenthesized rule group, such as `(+set ~app:*)`, defines a Redis 7 selector.
+parenthesized rule group, such as `(+set %W~app:*)`, defines a Redis 7 selector.
 Selectors are alternatives to the root rules: a command is allowed when the root
 rules or any selector permits it, and its keys/channels must be permitted by that
 same set. `clearselectors` removes them and `reset` clears them with the rest of

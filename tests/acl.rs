@@ -342,3 +342,105 @@ fn acl_selectors_authorize_independent_key_scopes_and_round_trip() {
     }
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn acl_key_modes_scope_reads_and_writes_and_round_trip() {
+    let path = temp_name("key-modes");
+    std::fs::write(&path, b"user default on nopass ~* &* +@all\n").unwrap();
+    let config = Config {
+        aclfile: Some(path.clone()),
+        ..Config::default()
+    };
+
+    {
+        let server = start(config.clone());
+        let mut admin = connect(&server);
+        send(
+            &mut admin,
+            &[
+                b"ACL",
+                b"SETUSER",
+                b"writer",
+                b"on",
+                b">secret",
+                b"-@all",
+                b"+get",
+                b"+set",
+                b"+del",
+                b"+lpush",
+                b"%R~r:*",
+                b"%W~w:*",
+                b"%RW~both:*",
+                b"(+set %W~sel:*)",
+            ],
+            b"+OK\r\n",
+        );
+        let list = String::from_utf8(request(&mut admin, &[b"ACL", b"LIST"])).unwrap();
+        assert!(list.contains("%R~r:*"), "{list}");
+        assert!(list.contains("%W~w:*"), "{list}");
+        assert!(list.contains("~both:*"), "{list}");
+        assert!(!list.contains("%RW~both:*"), "{list}");
+        assert!(list.contains("(+set %W~sel:*)"), "{list}");
+        let details =
+            String::from_utf8(request(&mut admin, &[b"ACL", b"GETUSER", b"writer"])).unwrap();
+        assert!(details.contains("%R~r:*"), "{details}");
+        assert!(details.contains("%W~w:*"), "{details}");
+        send(
+            &mut admin,
+            &[b"ACL", b"DRYRUN", b"writer", b"GET", b"w:1"],
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+        );
+        send(
+            &mut admin,
+            &[b"ACL", b"DRYRUN", b"writer", b"GET", b"r:1"],
+            b"+OK\r\n",
+        );
+        send(&mut admin, &[b"ACL", b"SAVE"], b"+OK\r\n");
+
+        let mut writer = connect(&server);
+        send(&mut writer, &[b"AUTH", b"writer", b"secret"], b"+OK\r\n");
+        send(&mut writer, &[b"GET", b"r:1"], b"$-1\r\n");
+        send(
+            &mut writer,
+            &[b"SET", b"r:1", b"v"],
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+        );
+        send(&mut writer, &[b"SET", b"w:1", b"v"], b"+OK\r\n");
+        send(
+            &mut writer,
+            &[b"GET", b"w:1"],
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+        );
+        send(
+            &mut writer,
+            &[b"LPUSH", b"w:list", b"v"],
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+        );
+        send(&mut writer, &[b"DEL", b"w:1"], b":1\r\n");
+        send(&mut writer, &[b"SET", b"both:1", b"v"], b"+OK\r\n");
+        send(&mut writer, &[b"GET", b"both:1"], b"$1\r\nv\r\n");
+        send(&mut writer, &[b"SET", b"sel:1", b"v"], b"+OK\r\n");
+        send(
+            &mut writer,
+            &[b"GET", b"sel:1"],
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+        );
+        server.shutdown().unwrap();
+    }
+
+    {
+        let server = start(config);
+        let mut writer = connect(&server);
+        send(&mut writer, &[b"AUTH", b"writer", b"secret"], b"+OK\r\n");
+        send(&mut writer, &[b"GET", b"r:2"], b"$-1\r\n");
+        send(&mut writer, &[b"SET", b"w:2", b"v"], b"+OK\r\n");
+        send(&mut writer, &[b"SET", b"sel:2", b"v"], b"+OK\r\n");
+        send(
+            &mut writer,
+            &[b"GET", b"w:2"],
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+        );
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_file(&path);
+}

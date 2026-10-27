@@ -1,11 +1,11 @@
 //! Multi-user ACL rules with password digests and command/key permissions.
 //!
 //! The default user keeps the single-password behavior from S27. Additional users
-//! add Redis-shaped `on/off`, password, command-category/command, key and channel
-//! rules. Channel patterns are stored for future pub/sub but have nothing to
-//! enforce until channels exist. This is not a complete Redis ACL implementation:
-//! selectors, subcommand categories beyond explicit `cmd|sub` rules, ACL LOG, and
-//! rate limiting are absent and documented in `docs/security.md`.
+//! add Redis-shaped `on/off`, password, command-category/command, read/write key,
+//! channel and Redis 7 selector rules. This is not a complete Redis ACL
+//! implementation: first-argument command rules, subcommand-specific categories,
+//! persistent audit and rate limiting are absent and documented in
+//! `docs/security.md`.
 
 use super::{discovery, sha256};
 use std::collections::BTreeMap;
@@ -28,11 +28,28 @@ enum Rule {
     Command(Vec<u8>, Option<Vec<u8>>, bool),
 }
 
+/// One key pattern with the access it grants. `~pattern`/`%RW~pattern` grant
+/// both, `%R~pattern` only reads and `%W~pattern` only writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct KeyPattern {
+    pattern: Vec<u8>,
+    access: discovery::KeyAccess,
+}
+
+impl KeyPattern {
+    fn all() -> Self {
+        Self {
+            pattern: b"*".to_vec(),
+            access: discovery::KeyAccess::ReadWrite,
+        }
+    }
+}
+
 /// One Redis 7 selector: an independent command/key/channel rule set.
 #[derive(Clone, Debug, Default)]
 struct Selector {
     rules: Vec<Rule>,
-    keys: Vec<Vec<u8>>,
+    keys: Vec<KeyPattern>,
     channels: Vec<Vec<u8>>,
 }
 
@@ -42,7 +59,7 @@ struct User {
     nopass: bool,
     passwords: Vec<[u8; 32]>,
     rules: Vec<Rule>,
-    keys: Vec<Vec<u8>>,
+    keys: Vec<KeyPattern>,
     channels: Vec<Vec<u8>>,
     selectors: Vec<Selector>,
 }
@@ -97,9 +114,60 @@ fn patterns_allow(patterns: &[Vec<u8>], value: &[u8]) -> bool {
         .any(|pattern| super::keyspace::glob_match(pattern, value))
 }
 
-fn key_patterns_string(keys: &[Vec<u8>]) -> String {
+fn keys_allow(keys: &[KeyPattern], key: &[u8], required: discovery::KeyAccess) -> bool {
+    keys.iter().any(|pattern| {
+        pattern.access.grants(required) && super::keyspace::glob_match(&pattern.pattern, key)
+    })
+}
+
+fn key_access_allow(keys: &[KeyPattern], key: &[u8], access: discovery::KeyAccess) -> bool {
+    match access {
+        discovery::KeyAccess::Read => keys_allow(keys, key, discovery::KeyAccess::Read),
+        discovery::KeyAccess::Write => keys_allow(keys, key, discovery::KeyAccess::Write),
+        discovery::KeyAccess::ReadWrite => {
+            keys_allow(keys, key, discovery::KeyAccess::Read)
+                && keys_allow(keys, key, discovery::KeyAccess::Write)
+        }
+    }
+}
+
+fn add_key_pattern(
+    keys: &mut Vec<KeyPattern>,
+    pattern: &[u8],
+    access: discovery::KeyAccess,
+) -> Result<(), AclError> {
+    if pattern.is_empty() {
+        return Err(AclError::UnknownRule);
+    }
+    if pattern.len() > MAX_PATTERN_BYTES {
+        return Err(AclError::TooLarge);
+    }
+    if let Some(existing) = keys.iter_mut().find(|existing| existing.pattern == pattern) {
+        if existing.access != access {
+            existing.access = discovery::KeyAccess::ReadWrite;
+        }
+        return Ok(());
+    }
+    if keys.len() >= MAX_PATTERNS {
+        return Err(AclError::TooLarge);
+    }
+    keys.push(KeyPattern {
+        pattern: pattern.to_vec(),
+        access,
+    });
+    Ok(())
+}
+
+fn key_patterns_string(keys: &[KeyPattern]) -> String {
     keys.iter()
-        .map(|pattern| format!("~{}", String::from_utf8_lossy(pattern)))
+        .map(|entry| {
+            let prefix = match entry.access {
+                discovery::KeyAccess::Read => "%R~",
+                discovery::KeyAccess::Write => "%W~",
+                discovery::KeyAccess::ReadWrite => "~",
+            };
+            format!("{prefix}{}", String::from_utf8_lossy(&entry.pattern))
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -166,8 +234,8 @@ impl User {
     }
 
     #[cfg(test)]
-    fn allows_key(&self, key: &[u8]) -> bool {
-        patterns_allow(&self.keys, key)
+    fn allows_key(&self, key: &[u8], access: discovery::KeyAccess) -> bool {
+        key_access_allow(&self.keys, key, access)
     }
 
     fn rules_string(&self) -> String {
@@ -287,7 +355,7 @@ impl Default for Auth {
 
 fn ruleset_access(
     rules: &[Rule],
-    keys: &[Vec<u8>],
+    keys: &[KeyPattern],
     channels: &[Vec<u8>],
     arguments: &[&[u8]],
 ) -> Access {
@@ -297,15 +365,17 @@ fn ruleset_access(
     let Some(command) = arguments.first() else {
         return Access::Allowed;
     };
-    let all_keys = keys.len() == 1 && keys[0] == b"*";
+    let all_keys = keys
+        .iter()
+        .any(|entry| entry.pattern == b"*" && entry.access.grants(discovery::KeyAccess::Read));
     if (command.eq_ignore_ascii_case(b"SORT") || command.eq_ignore_ascii_case(b"SORT_RO"))
         && sort_uses_dynamic_keys(arguments)
         && !all_keys
     {
         return Access::DeniedKey(b"BY/GET".to_vec());
     }
-    for key in discovery::key_arguments(command, arguments) {
-        if !patterns_allow(keys, key) {
+    for (key, access) in discovery::key_accesses(command, arguments) {
+        if !key_access_allow(keys, key, access) {
             return Access::DeniedKey(key.to_vec());
         }
     }
@@ -348,7 +418,7 @@ impl Auth {
             enabled: true,
             nopass: true,
             rules: vec![Rule::All(true)],
-            keys: vec![b"*".to_vec()],
+            keys: vec![KeyPattern::all()],
             channels: vec![b"*".to_vec()],
             ..User::default()
         };
@@ -386,7 +456,7 @@ impl Auth {
                 user.enabled
                     && user.nopass
                     && user.rules == [Rule::All(true)]
-                    && user.keys == [b"*".to_vec()]
+                    && user.keys == [KeyPattern::all()]
             })
     }
 
@@ -569,7 +639,7 @@ impl Auth {
         if user.nopass {
             flags.push("nopass");
         }
-        if user.keys == [b"*".to_vec()] {
+        if user.keys == [KeyPattern::all()] {
             flags.push("allkeys");
         }
         if user.channels == [b"*".to_vec()] {
@@ -807,7 +877,7 @@ fn apply_rule(user: &mut User, rule: &[u8]) -> Result<(), AclError> {
     } else if rule.eq_ignore_ascii_case(b"nocommands") || rule.eq_ignore_ascii_case(b"-@all") {
         user.rules.push(Rule::All(false));
     } else if rule.eq_ignore_ascii_case(b"allkeys") {
-        user.keys = vec![b"*".to_vec()];
+        user.keys = vec![KeyPattern::all()];
     } else if rule.eq_ignore_ascii_case(b"resetkeys") {
         user.keys.clear();
     } else if rule.eq_ignore_ascii_case(b"allchannels") {
@@ -867,13 +937,14 @@ fn apply_rule(user: &mut User, rule: &[u8]) -> Result<(), AclError> {
     } else if let Some(command) = rule.strip_prefix(b"-") {
         let (name, subcommand) = split_command(command)?;
         user.rules.push(Rule::Command(name, subcommand, false));
+    } else if let Some(pattern) = rule.strip_prefix(b"%R~") {
+        add_key_pattern(&mut user.keys, pattern, discovery::KeyAccess::Read)?;
+    } else if let Some(pattern) = rule.strip_prefix(b"%W~") {
+        add_key_pattern(&mut user.keys, pattern, discovery::KeyAccess::Write)?;
+    } else if let Some(pattern) = rule.strip_prefix(b"%RW~") {
+        add_key_pattern(&mut user.keys, pattern, discovery::KeyAccess::ReadWrite)?;
     } else if let Some(pattern) = rule.strip_prefix(b"~") {
-        if pattern.len() > MAX_PATTERN_BYTES || user.keys.len() >= MAX_PATTERNS {
-            return Err(AclError::TooLarge);
-        }
-        if !user.keys.iter().any(|existing| existing == pattern) {
-            user.keys.push(pattern.to_vec());
-        }
+        add_key_pattern(&mut user.keys, pattern, discovery::KeyAccess::ReadWrite)?;
     } else if let Some(pattern) = rule.strip_prefix(b"&") {
         if pattern.len() > MAX_PATTERN_BYTES || user.channels.len() >= MAX_PATTERNS {
             return Err(AclError::TooLarge);
@@ -906,7 +977,7 @@ fn apply_rule(user: &mut User, rule: &[u8]) -> Result<(), AclError> {
 
 fn apply_selector_rule(selector: &mut Selector, rule: &[u8]) -> Result<(), AclError> {
     if rule.eq_ignore_ascii_case(b"allkeys") {
-        selector.keys = vec![b"*".to_vec()];
+        selector.keys = vec![KeyPattern::all()];
     } else if rule.eq_ignore_ascii_case(b"resetkeys") {
         selector.keys.clear();
     } else if rule.eq_ignore_ascii_case(b"allchannels") {
@@ -951,13 +1022,14 @@ fn apply_selector_rule(selector: &mut Selector, rule: &[u8]) -> Result<(), AclEr
         }
         let (name, subcommand) = split_command(command)?;
         selector.rules.push(Rule::Command(name, subcommand, false));
+    } else if let Some(pattern) = rule.strip_prefix(b"%R~") {
+        add_key_pattern(&mut selector.keys, pattern, discovery::KeyAccess::Read)?;
+    } else if let Some(pattern) = rule.strip_prefix(b"%W~") {
+        add_key_pattern(&mut selector.keys, pattern, discovery::KeyAccess::Write)?;
+    } else if let Some(pattern) = rule.strip_prefix(b"%RW~") {
+        add_key_pattern(&mut selector.keys, pattern, discovery::KeyAccess::ReadWrite)?;
     } else if let Some(pattern) = rule.strip_prefix(b"~") {
-        if pattern.len() > MAX_PATTERN_BYTES || selector.keys.len() >= MAX_PATTERNS {
-            return Err(AclError::TooLarge);
-        }
-        if !selector.keys.iter().any(|existing| existing == pattern) {
-            selector.keys.push(pattern.to_vec());
-        }
+        add_key_pattern(&mut selector.keys, pattern, discovery::KeyAccess::ReadWrite)?;
     } else if let Some(pattern) = rule.strip_prefix(b"&") {
         if pattern.len() > MAX_PATTERN_BYTES || selector.channels.len() >= MAX_PATTERNS {
             return Err(AclError::TooLarge);
@@ -1044,8 +1116,9 @@ mod tests {
         assert!(user.allows_command(&[b"GET", b"app:key"]));
         assert!(user.allows_command(&[b"SET", b"app:key"]));
         assert!(!user.allows_command(&[b"DEL", b"app:key"]));
-        assert!(user.allows_key(b"app:key"));
-        assert!(!user.allows_key(b"other:key"));
+        assert!(user.allows_key(b"app:key", discovery::KeyAccess::ReadWrite));
+        assert!(user.allows_key(b"app:key", discovery::KeyAccess::Read));
+        assert!(!user.allows_key(b"other:key", discovery::KeyAccess::Read));
         assert_eq!(
             auth.authorize(Some(b"reader"), &[b"GET", b"other:key"]),
             Access::DeniedKey(b"other:key".to_vec())
@@ -1154,6 +1227,57 @@ mod tests {
     }
 
     #[test]
+    fn key_modes_parse_merge_list_and_reject_unknown_prefixes() {
+        let mut auth = Auth::from_password(None);
+        auth.setuser(
+            b"m",
+            &[
+                b"on",
+                b"nopass",
+                b"-@all",
+                b"+get",
+                b"+set",
+                b"%R~read:*",
+                b"%W~write:*",
+                b"%RW~both:*",
+                b"~legacy:*",
+            ],
+        )
+        .unwrap();
+        {
+            let user = auth.users.get(b"m".as_slice()).unwrap();
+            assert!(user.allows_key(b"read:1", discovery::KeyAccess::Read));
+            assert!(!user.allows_key(b"read:1", discovery::KeyAccess::Write));
+            assert!(user.allows_key(b"write:1", discovery::KeyAccess::Write));
+            assert!(!user.allows_key(b"write:1", discovery::KeyAccess::Read));
+            assert!(user.allows_key(b"both:1", discovery::KeyAccess::Read));
+            assert!(user.allows_key(b"both:1", discovery::KeyAccess::Write));
+            assert!(user.allows_key(b"legacy:1", discovery::KeyAccess::ReadWrite));
+            assert!(!user.allows_key(b"other:1", discovery::KeyAccess::Read));
+        }
+        let line = auth.acl_line(b"m").unwrap();
+        assert!(line.contains("%R~read:*"), "{line}");
+        assert!(line.contains("%W~write:*"), "{line}");
+        assert!(line.contains("~both:*"), "{line}");
+        assert!(!line.contains("%RW~both:*"), "{line}");
+
+        // Read and write grants for the same pattern merge into read-write.
+        auth.setuser(b"m", &[b"%R~mix:*", b"%W~mix:*"]).unwrap();
+        let line = auth.acl_line(b"m").unwrap();
+        assert!(line.contains("~mix:*"), "{line}");
+        assert!(!line.contains("%R~mix:*"), "{line}");
+
+        // Unknown or malformed key-mode prefixes reject the whole update.
+        assert_eq!(
+            auth.setuser(b"m", &[b"%X~bad:*"]),
+            Err(AclError::UnknownRule)
+        );
+        assert_eq!(auth.setuser(b"m", &[b"%R~"]), Err(AclError::UnknownRule));
+        let line = auth.acl_line(b"m").unwrap();
+        assert!(!line.contains("bad:*"), "{line}");
+    }
+
+    #[test]
     fn selectors_parse_clear_and_remain_atomic() {
         let mut auth = Auth::from_password(None);
         auth.setuser(b"s", &[b"on", b"nopass", b"(+get ~a*)", b"(+set ~b*)"])
@@ -1162,7 +1286,12 @@ mod tests {
             let user = auth.users.get(b"s".as_slice()).unwrap();
             assert_eq!(user.selectors.len(), 2);
             assert_eq!(user.selectors[0].rules.len(), 1);
-            assert_eq!(user.selectors[1].keys, [b"b*".to_vec()]);
+            assert_eq!(user.selectors[1].keys.len(), 1);
+            assert_eq!(user.selectors[1].keys[0].pattern, b"b*");
+            assert_eq!(
+                user.selectors[1].keys[0].access,
+                discovery::KeyAccess::ReadWrite
+            );
         }
         assert_eq!(
             auth.setuser(b"s", &[b"(+get on)"]),
@@ -1226,7 +1355,9 @@ mod tests {
         let alice = loaded.lookup(b"alice").unwrap();
         assert!(alice.enabled);
         assert!(!alice.nopass);
-        assert_eq!(alice.keys, [b"app:*".to_vec()]);
+        assert_eq!(alice.keys.len(), 1);
+        assert_eq!(alice.keys[0].pattern, b"app:*");
+        assert_eq!(alice.keys[0].access, discovery::KeyAccess::ReadWrite);
         assert_eq!(alice.channels, [b"events:*".to_vec()]);
         assert!(loaded.verify(Some(b"alice"), b"password").is_ok());
         assert!(!alice.allows_command(&[b"DEL", b"app:k"]));
