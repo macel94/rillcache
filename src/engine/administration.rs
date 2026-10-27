@@ -26,6 +26,9 @@ impl Store {
             config(self, args, out);
             return true;
         }
+        if self.execute_slowlog(args, out) {
+            return true;
+        }
         if command.eq_ignore_ascii_case(b"SCRIPT") || command.eq_ignore_ascii_case(b"FUNCTION") {
             let name = if command.eq_ignore_ascii_case(b"SCRIPT") {
                 "script"

@@ -2,8 +2,9 @@
 
 Rillcache exposes a deliberately small set of server counters through
 `INFO stats` (also included by `INFO` and `INFO all`). Values are process-local
-and reset on restart. There is no Prometheus endpoint, latency histogram, slow log,
-per-command table or replication statistics.
+and reset on restart. There is no Prometheus endpoint, latency histogram,
+per-command table or replication statistics. `SLOWLOG` provides bounded,
+process-local command timing as described below.
 
 ## Fields
 
@@ -30,6 +31,33 @@ logical key/value payload and expiry counts, not allocator or RSS measurements;
 miss, net-byte, CPU, latency, fork or replication fields because those values are
 not measured. Missing fields are honest gaps, not zero claims.
 
+## SLOWLOG
+
+`SLOWLOG GET [count]`, `SLOWLOG LEN`, `SLOWLOG RESET` and `SLOWLOG HELP` expose
+the most recent commands whose measured duration reached
+`slowlog-log-slower-than` microseconds. `GET` returns the newest entries first,
+defaults to 10, treats `-1` as all entries and `0` as an empty array. Each entry
+is `[id, unix_seconds, duration_us, argv, client_address, client_name]`.
+
+`CONFIG GET slowlog-log-slower-than slowlog-max-len` reports the active values and
+`CONFIG SET` updates them at runtime. The default threshold is 10000 microseconds
+and the default maximum length is 128 entries. A negative threshold disables
+recording; a zero maximum length clears and disables recording. The maximum length
+is bounded at 1,000,000 entries, and lowering it trims the log immediately.
+
+Retention is deliberately bounded independently of request size: at most 32
+arguments are kept, with the last slot replaced by
+`... (N more arguments)`, and each argument is cut at 128 bytes with a
+`... (N more bytes)` suffix. `AUTH`, `HELLO AUTH`, sensitive `CONFIG SET` values
+and `ACL SETUSER`/`DELUSER`/`GETUSER` arguments are stored as `(redacted)`.
+
+Durations are measured around a client command, so a blocking command records
+the total wait until it succeeds or times out. Commands queued inside `MULTI` are
+not logged separately; `EXEC` is logged as one entry whose duration covers the
+batch. This differs from Redis's per-queued-command entries and is intentional
+for this session-level implementation. The log is in-memory, process-local and
+not included in `INFO` or persisted across restart.
+
 ## Scope and reset
 
 `total_commands_processed` covers connection-level dispatch, so embedding
@@ -53,8 +81,8 @@ keys that merely crossed their deadline and were not yet reaped/lazily removed.
 - No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.
 - No per-client fd/idle/command/buffer/memory/network fields, blocked-client count
   or cross-process client view. `INFO clients` intentionally omits those fields.
-- No `INFO commandstats`, `latencystats`, `slowlog`, full `clients` section,
-  `CLIENT LIST`, CPU/RSS accounting, network-byte counters or per-database stats.
+- No `INFO commandstats` or `latencystats`, latency histograms, CPU/RSS
+  accounting, network-byte counters or per-database stats.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.
 - No persistence/ACL/auth telemetry. Journal replay and rewrite durations are not

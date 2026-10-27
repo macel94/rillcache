@@ -248,6 +248,14 @@ const COMMANDS: &[Command] = &[
     cmd("sintercard", -3, &["readonly"], 2, -1, 1),
     cmd("sinterstore", -3, &["write", "denyoom"], 1, -1, 1),
     cmd("sismember", 3, &["readonly", "fast"], 1, 1, 1),
+    cmd(
+        "slowlog",
+        -2,
+        &["admin", "noscript", "loading", "stale", "slow"],
+        0,
+        0,
+        0,
+    ),
     cmd("smembers", 2, &["readonly"], 1, 1, 1),
     cmd("smismember", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("smove", 4, &["write", "fast"], 1, 2, 1),
@@ -567,6 +575,7 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
                 | "function"
                 | "keys"
                 | "script"
+                | "slowlog"
                 | "sort"
                 | "sort_ro"
         ),

@@ -176,6 +176,25 @@ impl Store {
             if wants_notify {
                 matches.push((b"notify-keyspace-events", self.notify_flags().as_string()));
             }
+            let wants_slowlog_threshold = if wildcard {
+                glob_match(&folded_pattern, b"slowlog-log-slower-than")
+            } else {
+                pattern.eq_ignore_ascii_case(b"slowlog-log-slower-than")
+            };
+            if wants_slowlog_threshold {
+                matches.push((
+                    b"slowlog-log-slower-than",
+                    self.slowlog_threshold_us().to_string(),
+                ));
+            }
+            let wants_slowlog_max_len = if wildcard {
+                glob_match(&folded_pattern, b"slowlog-max-len")
+            } else {
+                pattern.eq_ignore_ascii_case(b"slowlog-max-len")
+            };
+            if wants_slowlog_max_len {
+                matches.push((b"slowlog-max-len", self.slowlog_max_len().to_string()));
+            }
             if wants_password {
                 // Never return the secret. The empty value means unset; any
                 // configured password is reported as a visible redaction.
@@ -236,6 +255,8 @@ impl Store {
         let mut password: Option<Option<Vec<u8>>> = None;
         let mut policy = None;
         let mut notify = None;
+        let mut slowlog_threshold = None;
+        let mut slowlog_max_len = None;
         for pair in args[2..].as_chunks::<2>().0 {
             if pair[0].eq_ignore_ascii_case(b"notify-keyspace-events") {
                 let Some(parsed) = super::NotifyFlags::parse(pair[1]) else {
@@ -252,6 +273,28 @@ impl Store {
                     return;
                 };
                 policy = Some(parsed);
+            } else if pair[0].eq_ignore_ascii_case(b"slowlog-log-slower-than") {
+                let Some(value) = std::str::from_utf8(pair[1])
+                    .ok()
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .filter(|value| *value >= -1)
+                else {
+                    out.extend_from_slice(b"-ERR invalid slowlog-log-slower-than\r\n");
+                    return;
+                };
+                slowlog_threshold = Some(value);
+            } else if pair[0].eq_ignore_ascii_case(b"slowlog-max-len") {
+                let Some(value) = std::str::from_utf8(pair[1])
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value <= super::slowlog::MAX_MAX_LEN)
+                else {
+                    out.extend_from_slice(
+                        b"-ERR slowlog-max-len must be between 0 and 1000000\r\n",
+                    );
+                    return;
+                };
+                slowlog_max_len = Some(value);
             } else if pair[0].eq_ignore_ascii_case(b"requirepass") {
                 if pair[1].len() > 1024 {
                     out.extend_from_slice(b"-ERR requirepass must be at most 1024 bytes\r\n");
@@ -278,6 +321,12 @@ impl Store {
         }
         if let Some(notify) = notify {
             self.set_notify_flags(notify);
+        }
+        if let Some(value) = slowlog_threshold {
+            self.set_slowlog_threshold_us(value);
+        }
+        if let Some(value) = slowlog_max_len {
+            self.set_slowlog_max_len(value);
         }
         out.extend_from_slice(b"+OK\r\n");
     }
@@ -393,7 +442,7 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*32\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*36\r\n"));
     }
 
     #[test]

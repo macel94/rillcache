@@ -32,6 +32,14 @@ pub struct ClientSnapshot {
 }
 
 impl Store {
+    pub(crate) fn client_address(&self, id: u64) -> Option<String> {
+        self.clients
+            .read()
+            .ok()?
+            .get(&id)
+            .map(|client| client.addr.clone())
+    }
+
     pub fn register_client(&self, id: u64, addr: SocketAddr, control: TcpStream) {
         if let Ok(mut clients) = self.clients.write() {
             clients.insert(
