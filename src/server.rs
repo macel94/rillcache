@@ -332,7 +332,7 @@ impl Server {
         let mut workers: Vec<Worker> = Vec::new();
         let mut maintenance = Instant::now();
         let result = (|| {
-            while !stopping.load(Ordering::Acquire) {
+            while !stopping.load(Ordering::Acquire) && !store.shutdown_requested() {
                 if maintenance.elapsed() >= Duration::from_millis(100) {
                     let _ = store.journal_sync();
                     store.purge_expired(128);

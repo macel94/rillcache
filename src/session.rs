@@ -330,6 +330,14 @@ impl Session {
             self.queue(arguments, output);
             return Action::Continue;
         }
+        if command.eq_ignore_ascii_case(b"SHUTDOWN") {
+            store.shutdown_command(arguments, output);
+            return if store.shutdown_requested() {
+                Action::Close
+            } else {
+                Action::Continue
+            };
+        }
         if command.eq_ignore_ascii_case(b"SUBSCRIBE") {
             self.subscribe(store, &arguments[1..], false, output);
             return Action::Continue;
@@ -558,6 +566,11 @@ impl Session {
             return;
         };
         let command = arguments[0];
+        if command.eq_ignore_ascii_case(b"SHUTDOWN") {
+            multi.dirty = true;
+            output.extend_from_slice(b"-ERR SHUTDOWN is not allowed in transactions\r\n");
+            return;
+        }
         if is_session_command(command) {
             multi.dirty = true;
             output.extend_from_slice(b"-ERR session commands are not supported inside MULTI\r\n");

@@ -102,6 +102,7 @@ reason to couple all future commands into a single large story.
 | S72 | As an operator, I can pause and resume client command processing so that maintenance or failover preparation can drain traffic without dropping connections. | S | R284–R287; ALL/WRITE/timeout/unpause/pipelining/MULTI/shutdown and all-mode wire tests |
 | S73 | As an operator, I can inspect bounded latency event time series so that real spikes can be diagnosed without fabricated fork, AOF or replication metrics. | S | R288–R291; latest/history/reset/doctor, threshold, bounds, unsupported subcommands and all-mode wire tests |
 | S74 | As a client or operator, I can detect unsupported cluster, module and replica features through explicit reply contracts instead of unknown commands or fake capabilities. | XS | R292–R295; CLUSTER/module/WAIT shapes, errors and all-mode wire tests |
+| S75 | As an operator, I can request a durable protocol-level stop so that maintenance can flush acknowledged journal writes and join workers without relying on signals. | S | R296–R299; flags/errors/ABORT/MULTI/persistence/all-mode shutdown tests |
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
 
@@ -1351,6 +1352,26 @@ and the offline upstream harness tests.
   module list/load/unknown, WAIT validation and zero, READONLY/READWRITE/ASKING,
   ACL access and all worker modes. Documentation shall retain the absence of
   cluster routing, module execution, replication and Redis-8 extension support.
+
+### Protocol shutdown (S75)
+
+- **R296 (event-driven):** `SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE]` shall accept the
+  documented modifiers, reject unknown modifiers and incompatible combinations
+  with a bounded syntax error, and return `No shutdown in progress.` for `ABORT`
+  because no delayed shutdown state exists. Successful shutdown shall write no
+  reply and close the calling connection.
+- **R297 (state-driven):** Before stopping, SHUTDOWN shall force a journal flush
+  when append-only persistence is enabled and only then request process stop. A
+  flush failure shall return a bounded error and leave the server running.
+  `NOSAVE`/`SAVE` shall not write an RDB file; `NOW`/`FORCE` shall be accepted
+  no-ops because shutdown is immediate.
+- **R298 (event-driven):** A shutdown request shall stop accepting clients, wake
+  and join existing workers, close paused/blocked connections, and return success
+  from the server loop in thread-per-client and fixed-worker modes. `SHUTDOWN`
+  shall be rejected inside `MULTI` with dirty-transaction semantics.
+- **R299 (ubiquitous):** Tests shall cover flag validation, `ABORT`, MULTI
+  rejection, caller close, all worker modes, journal durability across restart,
+  and documentation of the remaining absence of a portable SIGTERM handler.
 
 ### Lifecycle notification delivery cost (S76)
 

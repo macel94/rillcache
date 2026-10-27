@@ -457,6 +457,17 @@ impl Store {
         };
         journal.sync_if_due()
     }
+
+    /// Force a durable flush before process shutdown, regardless of fsync policy.
+    pub fn journal_flush(&self) -> io::Result<()> {
+        let Some(journal) = self.journal.as_ref() else {
+            return Ok(());
+        };
+        let Ok(mut journal) = journal.lock() else {
+            return Err(io::Error::other("poisoned journal lock"));
+        };
+        journal.sync_all()
+    }
 }
 
 /// Encode the final state of one key as a bounded sequence of RESP commands.

@@ -83,9 +83,15 @@ process; replay uses the same local clock rules.
   shutdown (or the OS) provides durability.
 
 On orderly shutdown, joined workers drop the store and the journal's `Drop`
-performs a final sync/flush. The safe-std server still has no portable SIGTERM
+performs a final sync/flush. The `SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE]` command
+forces that flush before stopping the accept loop and joining workers, so clients
+can request a durable stop over the protocol. `NOSAVE` and `SAVE` are accepted
+for client compatibility but neither writes an RDB file; both flush the journal
+when append-only persistence is enabled. `NOW`/`FORCE` are no-ops because shutdown
+is already immediate, and `ABORT` returns `No shutdown in progress.` because no
+delayed shutdown state exists. The safe-std server still has no portable SIGTERM
 handler; `always` is the only policy that does not depend on a clean process exit
-for recent acknowledged writes.
+for recent acknowledged writes unless a client sends `SHUTDOWN`.
 
 If an append or fsync fails, the command reply is replaced with
 `ERR append-only write failed: ...`, the journal enters a failed state and later

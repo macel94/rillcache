@@ -54,7 +54,7 @@ Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
 `DEL`, `UNLINK`, `EXISTS`, `QUIT`;
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
-strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
+strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, protocol `SHUTDOWN`, `CONFIG GET`/`RESETSTAT`,
 `INFO` (including process-local connection/command/expiration/pub-sub statistics),
 bounded `SLOWLOG` command timing, bounded `LATENCY` event series, and logical `MEMORY USAGE`. `CONFIG SET`
 supports collection thresholds, `requirepass`, `maxmemory-policy` and slow-log

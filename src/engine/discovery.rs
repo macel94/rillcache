@@ -266,6 +266,14 @@ const COMMANDS: &[Command] = &[
     cmd("setex", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("setnx", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("setrange", 4, &["write", "denyoom"], 1, 1, 1),
+    cmd(
+        "shutdown",
+        -1,
+        &["admin", "noscript", "loading", "stale", "slow"],
+        0,
+        0,
+        0,
+    ),
     cmd("sinter", -2, &["readonly"], 1, -1, 1),
     cmd("sintercard", -3, &["readonly"], 2, -1, 1),
     cmd("sinterstore", -3, &["write", "denyoom"], 1, -1, 1),
@@ -607,6 +615,7 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
                 | "keys"
                 | "latency"
                 | "script"
+                | "shutdown"
                 | "slowlog"
                 | "sort"
                 | "sort_ro"
