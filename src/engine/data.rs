@@ -302,6 +302,7 @@ impl Data {
     /// optional append-only journal. The event log is bounded; overflow forces a
     /// full-state journal snapshot instead of allowing a missed key.
     pub fn touch(&mut self, key: &[u8]) {
+        self.peak_payload_bytes = self.peak_payload_bytes.max(self.payload_bytes);
         self.version_seq = self.version_seq.wrapping_add(1);
         if self.versions.len() >= MAX_TRACKED_VERSIONS && !self.versions.contains_key(key) {
             self.versions.clear();
@@ -387,10 +388,6 @@ impl Data {
         self.peak_payload_bytes
     }
 
-    pub(super) fn note_payload(&mut self) {
-        self.peak_payload_bytes = self.peak_payload_bytes.max(self.payload_bytes);
-    }
-
     pub fn remove(&mut self, key: &[u8]) -> Option<Entry> {
         let (key, entry) = self.entries.remove_entry(key)?;
         self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
@@ -455,7 +452,6 @@ impl Data {
         if let Some(bytes) = bytes {
             entry.payload_len = bytes;
             self.payload_bytes = self.payload_bytes - previous + bytes;
-            self.note_payload();
         }
         self.touch(key);
     }
@@ -705,7 +701,6 @@ impl Data {
             }
         }
         self.payload_bytes = payload;
-        self.note_payload();
         self.touch(key);
     }
 
@@ -721,7 +716,6 @@ impl Data {
         self.field_ttls = self.field_ttls.saturating_add(entry.field_ttl.len());
         self.entries.insert(key.to_vec(), entry);
         self.payload_bytes = payload;
-        self.note_payload();
         self.touch(key);
     }
 
@@ -766,7 +760,6 @@ impl Data {
             }
         }
         self.payload_bytes = payload;
-        self.note_payload();
         self.touch(key);
     }
 
@@ -808,7 +801,6 @@ impl Data {
             }
         }
         self.payload_bytes = payload;
-        self.note_payload();
         self.touch(key);
     }
 }
