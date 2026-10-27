@@ -385,7 +385,7 @@ pub(super) fn serve(
             };
             stream.set_nodelay(true)?;
             store.record_connection();
-            if admitted.load(Ordering::Acquire) >= config.max_clients {
+            if admitted.load(Ordering::Acquire) >= store.max_clients() {
                 store.record_rejected_connection();
                 stream.set_write_timeout(Some(config.idle_timeout))?;
                 let _ = stream.write_all(b"-ERR max number of clients reached\r\n");

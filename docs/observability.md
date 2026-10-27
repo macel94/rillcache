@@ -35,7 +35,8 @@ milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
 `CONFIG RESETSTAT`; `subexpiry` is live state and is not a counter.
 
 `INFO clients` reports `connected_clients` (the process-local registry size),
-`cluster_connections:0` and `maxclients` (the configured connection limit). `CLIENT LIST` exposes per-connection address/name/user/
+`cluster_connections:0` and `maxclients` (the live connection limit, changeable
+through `CONFIG SET maxclients`). `CLIENT LIST` exposes per-connection address/name/user/
 RESP/subscription metadata.
 
 `INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`. `evicted_keys` resets with
