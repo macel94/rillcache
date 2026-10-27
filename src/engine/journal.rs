@@ -762,6 +762,23 @@ fn event_for(
         "hdel" => ("hdel", NotifyCategory::Hash),
         "hincrby" => ("hincrby", NotifyCategory::Hash),
         "hincrbyfloat" => ("hincrbyfloat", NotifyCategory::Hash),
+        "zunionstore" | "zinterstore" | "zdiffstore" => {
+            if !arguments
+                .get(1)
+                .is_some_and(|destination| *destination == key)
+            {
+                return None;
+            }
+            if !data.entries.contains_key(key) {
+                return Some(("del", NotifyCategory::Generic));
+            }
+            let event = match name.as_str() {
+                "zunionstore" => "zunionstore",
+                "zinterstore" => "zinterstore",
+                _ => "zdiffstore",
+            };
+            return Some((event, NotifyCategory::Zset));
+        }
         "zadd" => ("zadd", NotifyCategory::Zset),
         "zrem" => ("zrem", NotifyCategory::Zset),
         "zincrby" => ("zincrby", NotifyCategory::Zset),

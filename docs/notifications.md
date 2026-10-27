@@ -77,8 +77,8 @@ command are suppressed so an eviction does not appear as a successful mutation.
 Supported event names mirror the command family: `set`, `del`, `expire`,
 `persist`, `rename_from`, `rename_to`, `copy_to`, `append`, `setrange`, `setbit`,
 `incrby`, `decrby`, list push/pop/insert/trim/rem, set add/remove/pop/move/store,
-hash set/delete/counter, sorted-set add/remove/counter/pop/range-removal, stream
-add/delete/group/read/ack/claim/trim and `pfadd` for HLL changes. `GEOADD` maps to
+hash set/delete/counter, sorted-set add/remove/counter/pop/range-removal/store
+algebra, stream add/delete/group/read/ack/claim/trim and `pfadd` for HLL changes. `GEOADD` maps to
 `zadd`; `GEOSEARCHSTORE` emits `geosearchstore` when it writes the destination and
 `del` when an empty result removes it. Unsupported or
 unknown mutating commands emit nothing. Event names are command-family labels,

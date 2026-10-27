@@ -24,7 +24,9 @@ Redis behavior.
   `BYSCORE`/`BYLEX`, `REV`, `LIMIT` and `WITHSCORES`), `ZREVRANGE`,
   `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANGESTORE`, `ZLEXCOUNT`,
   `ZRANDMEMBER`, `ZRANK`, `ZREVRANK`, `ZREMRANGEBYRANK`,
-  `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, `ZPOPMIN`, `ZPOPMAX`. Geospatial
+  `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, `ZPOPMIN`, `ZPOPMAX`, `ZUNION`,
+  `ZUNIONSTORE`, `ZINTER`, `ZINTERSTORE`, `ZDIFF`, `ZDIFFSTORE` and
+  `ZINTERCARD`. Geospatial
 `GEOADD`/`GEOSEARCH`/`GEOSEARCHSTORE` use the same sorted-set representation and
 publish `zadd`/`geosearchstore` events; see [geospatial limits](geospatial.md).
 
@@ -43,8 +45,13 @@ intended for all-equal scores (as in Redis); mixed scores retain score-first
 ordering. `ZRANGESTORE` selects with the same rules, replaces the destination
 atomically, clears its TTL and deletes it for an empty selection. Supported sorted-set
 scores are IEEE-754 floating-point values, including `-inf` and `+inf`, but NaN
-is rejected. `ZADD INCR` and `ZINCRBY` reject a NaN resulting score. `SPOP`,
-`SRANDMEMBER`, `ZRANDMEMBER` and `ZPOPMIN`/`ZPOPMAX` use bounded local randomness;
+is rejected. `ZADD INCR` and `ZINCRBY` reject a NaN resulting score. Sorted-set
+algebra accepts per-key weights and `SUM`/`MIN`/`MAX` aggregation for union and
+intersection; a NaN intermediate or aggregate score becomes zero, matching Redis.
+`ZDIFF` preserves first-set scores, `ZINTERCARD` caps with `LIMIT`, and store
+variants replace the destination atomically, clear its TTL and delete it when the
+result is empty. `SPOP`, `SRANDMEMBER`, `ZRANDMEMBER` and `ZPOPMIN`/`ZPOPMAX` use
+bounded local randomness;
 Redis does not promise a particular random member. Negative `ZRANDMEMBER` counts
 request duplicates and are capped by the collection element limit.
 

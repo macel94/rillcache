@@ -306,7 +306,12 @@ const COMMANDS: &[Command] = &[
     cmd("zadd", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("zcard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("zcount", 4, &["readonly", "fast"], 1, 1, 1),
+    cmd("zdiff", -3, &["readonly"], 0, 0, 0),
+    cmd("zdiffstore", -4, &["write", "denyoom"], 1, 1, 1),
     cmd("zincrby", 4, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("zinter", -3, &["readonly"], 0, 0, 0),
+    cmd("zintercard", -3, &["readonly"], 0, 0, 0),
+    cmd("zinterstore", -4, &["write", "denyoom"], 1, 1, 1),
     cmd("zlexcount", 4, &["readonly", "fast"], 1, 1, 1),
     cmd("zpopmax", -2, &["write", "fast"], 1, 1, 1),
     cmd("zpopmin", -2, &["write", "fast"], 1, 1, 1),
@@ -324,6 +329,8 @@ const COMMANDS: &[Command] = &[
     cmd("zrevrank", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("zscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("zscore", 3, &["readonly", "fast"], 1, 1, 1),
+    cmd("zunion", -3, &["readonly"], 0, 0, 0),
+    cmd("zunionstore", -4, &["write", "denyoom"], 1, 1, 1),
 ];
 
 /// Arity from the published command table; `None` means unsupported.
@@ -364,6 +371,34 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         };
         let end = 2usize.saturating_add(count).min(args.len());
         return args[2..end].to_vec();
+    }
+    // Counted-key sorted-set algebra keeps its key list after `numkeys`, with
+    // the destination preceding it for the *STORE variants.
+    let counted_zset = name.eq_ignore_ascii_case(b"ZUNION")
+        || name.eq_ignore_ascii_case(b"ZINTER")
+        || name.eq_ignore_ascii_case(b"ZDIFF")
+        || name.eq_ignore_ascii_case(b"ZINTERCARD");
+    let store_zset = name.eq_ignore_ascii_case(b"ZUNIONSTORE")
+        || name.eq_ignore_ascii_case(b"ZINTERSTORE")
+        || name.eq_ignore_ascii_case(b"ZDIFFSTORE");
+    if counted_zset || store_zset {
+        let numkeys_index = if store_zset { 2 } else { 1 };
+        let Some(count) = args
+            .get(numkeys_index)
+            .and_then(|raw| std::str::from_utf8(raw).ok())
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|count| *count > 0)
+        else {
+            return Vec::new();
+        };
+        let start = numkeys_index + 1;
+        let end = start.saturating_add(count).min(args.len());
+        let mut keys = Vec::with_capacity(end - start + usize::from(store_zset));
+        if store_zset && let Some(destination) = args.get(1) {
+            keys.push(*destination);
+        }
+        keys.extend_from_slice(&args[start..end]);
+        return keys;
     }
     if command.first_key <= 0 {
         return Vec::new();
@@ -457,10 +492,11 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "sscan" | "sunion" | "sunionstore" => "set",
         "hdel" | "hexists" | "hget" | "hgetall" | "hincrby" | "hincrbyfloat" | "hkeys" | "hlen"
         | "hmget" | "hscan" | "hset" | "hsetnx" | "hstrlen" | "hvals" => "hash",
-        "zadd" | "zcard" | "zcount" | "zincrby" | "zlexcount" | "zpopmax" | "zpopmin"
-        | "zrandmember" | "zrange" | "zrangebyscore" | "zrangestore" | "zrank" | "zrem"
-        | "zremrangebylex" | "zremrangebyrank" | "zremrangebyscore" | "zrevrange"
-        | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" => "zset",
+        "zadd" | "zcard" | "zcount" | "zincrby" | "zlexcount" | "zpopmax" | "zpopmin" | "zdiff"
+        | "zdiffstore" | "zinter" | "zintercard" | "zinterstore" | "zrandmember" | "zrange"
+        | "zrangebyscore" | "zrangestore" | "zrank" | "zrem" | "zremrangebylex"
+        | "zremrangebyrank" | "zremrangebyscore" | "zrevrange" | "zrevrangebyscore"
+        | "zrevrank" | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
         "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
         | "xread" | "xreadgroup" | "xrevrange" => "stream",
         "auth" | "client" | "hello" | "quit" | "reset" | "select" => "connection",
@@ -697,6 +733,13 @@ mod tests {
             ("zrangestore", "zset"),
             ("zremrangebylex", "zset"),
             ("zpopmin", "zset"),
+            ("zunion", "zset"),
+            ("zunionstore", "zset"),
+            ("zinter", "zset"),
+            ("zinterstore", "zset"),
+            ("zdiff", "zset"),
+            ("zdiffstore", "zset"),
+            ("zintercard", "zset"),
             ("pfadd", "hyperloglog"),
             ("pfcount", "hyperloglog"),
             ("pfmerge", "hyperloglog"),
@@ -733,6 +776,37 @@ mod tests {
             vec![b"a".as_slice()]
         );
         assert!(key_arguments(b"SINTERCARD", &[b"SINTERCARD", b"x", b"a"]).is_empty());
+        assert_eq!(
+            key_arguments(
+                b"ZUNION",
+                &[b"ZUNION", b"2", b"a", b"b", b"WEIGHTS", b"1", b"2"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"ZINTERSTORE",
+                &[
+                    b"ZINTERSTORE",
+                    b"dest",
+                    b"2",
+                    b"a",
+                    b"b",
+                    b"AGGREGATE",
+                    b"MIN"
+                ]
+            ),
+            vec![b"dest".as_slice(), b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"ZINTERCARD",
+                &[b"ZINTERCARD", b"2", b"a", b"b", b"LIMIT", b"1"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert!(key_arguments(b"ZUNION", &[b"ZUNION", b"0", b"a"]).is_empty());
+        assert!(key_arguments(b"ZUNIONSTORE", &[b"ZUNIONSTORE", b"d", b"x", b"a"]).is_empty());
     }
 
     #[test]

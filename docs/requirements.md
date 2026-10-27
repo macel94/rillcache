@@ -78,6 +78,7 @@ reason to couple all future commands into a single large story.
 | S48 | As a stream operator, I can bound retained history by length or minimum ID so that long-lived streams do not grow without limit. | XS | R189–R192; exact/approx/LIMIT/errors/TTL/WATCH and all-mode wire tests |
 | S49 | As a cache operator, I can observe expired and evicted keys through keyspace notifications so invalidation tooling can react to lifecycle removal as well as explicit mutations. | S | R193–R196; flag validation, lazy/reaped expiry, eviction policy, bounded queues and all-mode wire tests |
 | S50 | As a sorted-set user, I can query and store rank, score and lex ranges with reversal, limits and random member selection so that leaderboard and index workflows use one type. | M | R197–R200; range/store/lex/random, errors and all-mode wire tests |
+| S51 | As a sorted-set user, I can combine multiple sets with weights and aggregation into results or destinations and count intersections so that rankings can be derived without client-side merging. | M | R201–R204; union/inter/diff/weights/aggregate/store/cardinality, errors, ACL and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -727,8 +728,38 @@ reason to couple all future commands into a single large story.
   documented empty, null or bounded errors without partial writes. Tests shall
   cover rank/score/lex ranges, `REV`, `LIMIT`, `WITHSCORES` combinations,
   `ZRANGESTORE` self/empty/TTL/OOM cases, lex count/removal, random counts,
-  WATCH and all worker modes. Sorted-set algebra (`ZDIFF`/`ZUNION`/`ZINTER`/
-  `ZINTERCARD`) and `ZMPOP`/`BZMPOP` remain documented as unsupported.
+  WATCH and all worker modes. `ZMPOP`/`BZMPOP` remain documented as
+  unsupported.
+
+### Sorted-set algebra (S51)
+
+- **R201 (event-driven):** `ZUNION`, `ZINTER` and `ZDIFF` shall parse a strictly
+  positive `numkeys`, exactly that many source keys, and the documented trailing
+  options. Union and intersection shall accept `WEIGHTS weight [weight ...]`
+  (one per key) and `AGGREGATE SUM|MIN|MAX`; all three shall accept `WITHSCORES`
+  for non-store variants. `ZDIFF` shall reject weights and aggregation. Missing
+  source keys shall count as empty sets, and any wrong-type source shall fail
+  without a result write. Replies shall be ordered by score then binary member.
+- **R202 (event-driven):** Weighted scores shall multiply each input score and
+  aggregate with the selected operation; a NaN intermediate or aggregate score
+  shall become zero as in Redis, while infinities remain. `ZDIFF` shall return
+  first-set members absent from every later set with their original scores.
+  `ZINTERCARD numkeys key [key ...] [LIMIT limit]` shall count members present in
+  every set, cap the reply at a positive limit, use the full count for zero, and
+  reject negative or non-integer limits.
+- **R203 (event-driven):** `ZUNIONSTORE`, `ZINTERSTORE` and `ZDIFFSTORE` shall
+  compute the same result and atomically replace the destination, clear its TTL,
+  delete it for an empty result, support a destination that is also a source,
+  enforce payload and element limits before replacing the destination, and
+  publish a `zunionstore`/`zinterstore`/`zdiffstore` event for the destination
+  only.
+- **R204 (unwanted behavior):** Invalid `numkeys`, insufficient keys, malformed
+  weights, unknown aggregation or options, non-store `WITHSCORES` misuse and
+  wrong types shall return the documented bounded errors without partial writes.
+  ACL key patterns shall cover the counted source list and the store destination.
+  Tests shall cover union/intersection/difference with weights and every
+  aggregation, missing keys, destination replacement/TTL/self/empty/OOM cases,
+  NaN handling, cardinality limits, errors and all worker modes.
 
 ### Development and delivery
 

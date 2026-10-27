@@ -504,3 +504,93 @@ fn expired_and_evicted_flags_accept_config_and_eviction_publishes_events() {
     assert_eq!(reply, frame(&[b"notify-keyspace-events", b"KEx"]));
     server.shutdown().unwrap();
 }
+#[test]
+fn sorted_set_algebra_store_emits_destination_events() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(
+        &mut writer,
+        &[b"ZADD", b"a", b"1", b"m", b"3", b"n"],
+        b":2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zadd",
+            b"a"
+        ])
+    );
+    send(&mut writer, &[b"ZADD", b"b", b"2", b"m"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zadd",
+            b"b"
+        ])
+    );
+
+    send(
+        &mut writer,
+        &[b"ZUNIONSTORE", b"d", b"2", b"a", b"b"],
+        b":2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zunionstore",
+            b"d"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"ZINTERSTORE", b"i", b"2", b"a", b"b"],
+        b":1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zinterstore",
+            b"i"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"ZDIFFSTORE", b"f", b"2", b"a", b"b"],
+        b":1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zdiffstore",
+            b"f"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"ZDIFFSTORE", b"d", b"2", b"a", b"a"],
+        b":0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:del",
+            b"d"
+        ])
+    );
+    server.shutdown().unwrap();
+}
