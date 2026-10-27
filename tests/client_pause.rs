@@ -123,12 +123,27 @@ fn write_pause_defers_writes_but_not_reads_in_all_modes() {
         // A finite pause expires without another client's intervention.
         command(
             &mut admin,
-            &[b"CLIENT", b"PAUSE", b"300", b"WRITE"],
+            &[b"CLIENT", b"PAUSE", b"2000", b"WRITE"],
             b"+OK\r\n",
         );
         send(&mut worker, &[b"SET", b"k", b"v3"]);
-        std::thread::sleep(Duration::from_millis(50));
-        command(&mut admin, &[b"GET", b"k"], b"$2\r\nv2\r\n");
+        // The write stays invisible until the finite pause expires. Poll for
+        // that deadline instead of sleeping a fixed fraction of it, which can
+        // overshoot under CPU saturation.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            send(&mut admin, &[b"GET", b"k"]);
+            let observed = read_frame(&mut admin, 0);
+            if observed == b"$2\r\nv3\r\n" {
+                break;
+            }
+            assert_eq!(observed, b"$2\r\nv2\r\n");
+            assert!(
+                Instant::now() < deadline,
+                "finite client pause did not expire"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert_eq!(read_frame(&mut worker, 0), b"+OK\r\n");
         command(&mut worker, &[b"GET", b"k"], b"$2\r\nv3\r\n");
 
