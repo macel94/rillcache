@@ -87,14 +87,28 @@ order. This is bounded active polling, not a condition-variable wakeup, push
 notification or strict latency guarantee. A disconnect or shutdown closes the
 connection and drops its blocked state. `BLPOP`/`BRPOP` take the normal
 transaction/journal gate only while attempting the pop, so an append-only journal
-records the removal and ACL key patterns are checked before blocking. Blocking
-commands are rejected inside `MULTI` rather than executing a non-blocking variant;
+records the removal and ACL key patterns are checked before blocking. `BLPOP` and
+`BRPOP` are rejected inside `MULTI` rather than executing a non-blocking variant;
 this is a documented divergence from Redis's immediate-null EXEC behavior.
 
-Unit tests cover journal replay after a blocking pop. All-mode wire tests cover
-waiting for a push, multiple-key order, left/right order, timeout nulls,
+### Blocking sorted-set pops
+
+`BZMPOP timeout numkeys key [key ...] MIN|MAX [COUNT count]` applies the same
+`ZMPOP` selection and reply shape but waits for the first live non-empty listed
+sorted set. Positive timeouts return a null array; `0` waits indefinitely.
+Timeout parsing distinguishes non-float/NaN, negative and out-of-range values.
+The blocked connection uses the same bounded polling model as list pops. Unlike
+`BLPOP`/`BRPOP`, `BZMPOP` is accepted inside `MULTI` and executes its non-blocking
+multi-pop equivalent at `EXEC` after timeout validation; `WATCH` conflicts abort
+`EXEC` without popping. Successful blocking and immediate pops share the journal
+gate and emit `zpopmin`/`zpopmax`.
+
+Persistence tests cover journal replay after blocking list and sorted-set pops.
+All-mode wire tests cover waiting for a push, multiple-key order, left/right order, timeout nulls,
 WRONGTYPE/float errors, pipelined commands after unblock, RESP3 null conversion,
-idle-timeout immunity and MULTI rejection.
+idle-timeout immunity and MULTI rejection. `BZMPOP` wire tests cover immediate
+pops, blocking wakeups, timeout nulls, TTL/delete-on-empty, notification
+directions, counted-key ACL checks, timeout errors and non-blocking `EXEC`.
 
 ## Limits and atomicity
 

@@ -13,7 +13,7 @@ use crate::protocol::encode_bulk;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_ELEMENTS: usize = 1_000_000;
 static RANDOM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -24,9 +24,10 @@ impl Store {
         let Some(command) = args.first() else {
             return false;
         };
-        if command
+        if (command
             .first()
             .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'z'))
+            || command.eq_ignore_ascii_case(b"BZMPOP"))
             && self.execute_zset_extended(args, out)
         {
             return true;
@@ -706,6 +707,111 @@ fn normalize_index(index: i64, len: usize) -> Option<usize> {
         index as i128
     };
     (0..len).contains(&index).then_some(index as usize)
+}
+
+pub(crate) struct MPopOptions<'a> {
+    pub keys: Vec<&'a [u8]>,
+    pub max: bool,
+    pub count: usize,
+}
+
+pub(crate) fn parse_mpop<'a>(
+    args: &[&'a [u8]],
+    numkeys_index: usize,
+) -> Result<MPopOptions<'a>, &'static [u8]> {
+    let Some(numkeys) = args
+        .get(numkeys_index)
+        .and_then(|raw| parse_i64(raw))
+        .filter(|value| *value > 0)
+    else {
+        return Err(b"-ERR numkeys should be greater than 0\r\n");
+    };
+    let Ok(numkeys) = usize::try_from(numkeys) else {
+        return Err(SYNTAX);
+    };
+    let keys_start = numkeys_index + 1;
+    let Some(where_index) = keys_start.checked_add(numkeys) else {
+        return Err(SYNTAX);
+    };
+    let Some(direction) = args.get(where_index) else {
+        return Err(SYNTAX);
+    };
+    let max = if direction.eq_ignore_ascii_case(b"MIN") {
+        false
+    } else if direction.eq_ignore_ascii_case(b"MAX") {
+        true
+    } else {
+        return Err(SYNTAX);
+    };
+    let mut count = 1usize;
+    let mut count_set = false;
+    let mut index = where_index + 1;
+    while index < args.len() {
+        if !count_set && args[index].eq_ignore_ascii_case(b"COUNT") && index + 1 < args.len() {
+            let Some(value) = parse_i64(args[index + 1]).filter(|value| *value > 0) else {
+                return Err(b"-ERR count should be greater than 0\r\n");
+            };
+            count = usize::try_from(value).unwrap_or(usize::MAX);
+            count_set = true;
+            index += 2;
+        } else {
+            return Err(SYNTAX);
+        }
+    }
+    Ok(MPopOptions {
+        keys: args[keys_start..where_index].to_vec(),
+        max,
+        count,
+    })
+}
+
+pub(crate) fn parse_bzmpop_timeout(raw: &[u8]) -> Result<f64, &'static [u8]> {
+    let Some(text) = std::str::from_utf8(raw).ok() else {
+        return Err(b"-ERR timeout is not a float or out of range\r\n");
+    };
+    let Ok(value) = text.parse::<f64>() else {
+        return Err(b"-ERR timeout is not a float or out of range\r\n");
+    };
+    if value.is_nan() {
+        return Err(b"-ERR timeout is not a float or out of range\r\n");
+    }
+    if value < 0.0 {
+        return Err(b"-ERR timeout is negative\r\n");
+    }
+    if !value.is_finite() || Duration::try_from_secs_f64(value).is_err() {
+        return Err(b"-ERR timeout is out of range\r\n");
+    }
+    Ok(value)
+}
+
+pub(crate) enum ZSetPopOutcome {
+    Popped {
+        key: Vec<u8>,
+        items: Vec<(Vec<u8>, f64)>,
+    },
+    Empty,
+    WrongType,
+    Oom,
+    JournalError,
+}
+
+pub(crate) fn zset_pop_reply(outcome: ZSetPopOutcome, out: &mut Vec<u8>) {
+    match outcome {
+        ZSetPopOutcome::Popped { key, items } => {
+            out.extend_from_slice(b"*2\r\n");
+            encode_bulk(Some(&key), out);
+            write!(out, "*{}\r\n", items.len()).expect("Vec write");
+            for (member, score) in &items {
+                out.extend_from_slice(b"*2\r\n");
+                encode_bulk(Some(member), out);
+                encode_bulk(Some(&score_bytes(*score)), out);
+            }
+        }
+        ZSetPopOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
+        ZSetPopOutcome::WrongType => wrong_type(out),
+        ZSetPopOutcome::Oom => out.extend_from_slice(OOM),
+        ZSetPopOutcome::JournalError => out.extend_from_slice(b"-ERR append-only write failed\r\n"),
+    }
 }
 
 fn ordered_zset(items: Vec<(&[u8], f64)>, reverse: bool) -> Vec<(Vec<u8>, f64)> {
@@ -2455,7 +2561,16 @@ impl Store {
             if args.len() < 4 {
                 arity("zmpop", out);
             } else {
-                self.zset_mpop(args, out);
+                self.zset_mpop(args, 1, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"BZMPOP") {
+            if args.len() < 5 {
+                arity("bzmpop", out);
+            } else {
+                match parse_bzmpop_timeout(args[1]) {
+                    Ok(_) => self.zset_mpop(args, 2, out),
+                    Err(error) => out.extend_from_slice(error),
+                }
             }
         } else {
             return false;
@@ -2463,61 +2578,37 @@ impl Store {
         true
     }
 
-    fn zset_mpop(&self, args: &[&[u8]], out: &mut Vec<u8>) {
-        let Some(numkeys) = parse_i64(args[1]).filter(|value| *value > 0) else {
-            out.extend_from_slice(b"-ERR numkeys should be greater than 0\r\n");
-            return;
-        };
-        let Ok(numkeys) = usize::try_from(numkeys) else {
-            out.extend_from_slice(b"-ERR syntax error\r\n");
-            return;
-        };
-        let Some(where_index) = numkeys.checked_add(2) else {
-            out.extend_from_slice(b"-ERR syntax error\r\n");
-            return;
-        };
-        let Some(where_token) = args.get(where_index) else {
-            out.extend_from_slice(b"-ERR syntax error\r\n");
-            return;
-        };
-        let max = if where_token.eq_ignore_ascii_case(b"MIN") {
-            false
-        } else if where_token.eq_ignore_ascii_case(b"MAX") {
-            true
-        } else {
-            out.extend_from_slice(b"-ERR syntax error\r\n");
-            return;
-        };
-        let mut count = 1usize;
-        let mut count_set = false;
-        let mut index = where_index + 1;
-        while index < args.len() {
-            if !count_set && args[index].eq_ignore_ascii_case(b"COUNT") && index + 1 < args.len() {
-                let Some(value) = parse_i64(args[index + 1]).filter(|value| *value > 0) else {
-                    out.extend_from_slice(b"-ERR count should be greater than 0\r\n");
-                    return;
-                };
-                count = usize::try_from(value).unwrap_or(usize::MAX);
-                count_set = true;
-                index += 2;
-            } else {
-                out.extend_from_slice(b"-ERR syntax error\r\n");
+    fn zset_mpop(&self, args: &[&[u8]], numkeys_index: usize, out: &mut Vec<u8>) {
+        let options = match parse_mpop(args, numkeys_index) {
+            Ok(options) => options,
+            Err(error) => {
+                out.extend_from_slice(error);
                 return;
             }
-        }
+        };
         let Ok(mut data) = self.data.write() else {
             internal_error(out);
             return;
         };
         let now = self.now(&data);
-        for key in &args[2..where_index] {
-            let mut zset = match owned_zset(&mut data, key, now) {
+        let outcome =
+            self.zset_pop_in_data(&mut data, &options.keys, options.max, options.count, now);
+        zset_pop_reply(outcome, out);
+    }
+
+    pub(super) fn zset_pop_in_data(
+        &self,
+        data: &mut Data,
+        keys: &[&[u8]],
+        max: bool,
+        count: usize,
+        now: i64,
+    ) -> ZSetPopOutcome {
+        for key in keys {
+            let mut zset = match owned_zset(data, key, now) {
                 Ok(Some(zset)) => zset,
                 Ok(None) => continue,
-                Err(()) => {
-                    wrong_type(out);
-                    return;
-                }
+                Err(()) => return ZSetPopOutcome::WrongType,
             };
             if zset.is_empty() {
                 continue;
@@ -2539,19 +2630,10 @@ impl Store {
                 None
             } else {
                 let Ok(config) = self.collection_config.read() else {
-                    internal_error(out);
-                    return;
+                    return ZSetPopOutcome::JournalError;
                 };
                 Some(encode_zset(zset, &config))
             };
-            write!(out, "*2\r\n").expect("Vec write");
-            encode_bulk(Some(key), out);
-            write!(out, "*{take}\r\n").expect("Vec write");
-            for (member, score) in ordered.iter().take(take) {
-                write!(out, "*2\r\n").expect("Vec write");
-                encode_bulk(Some(member), out);
-                encode_bulk(Some(&score_bytes(*score)), out);
-            }
             match encoded {
                 Some(encoded) => {
                     let Some(payload) = data.reserve(
@@ -2561,9 +2643,7 @@ impl Store {
                         self.max_payload_bytes,
                         now,
                     ) else {
-                        out.clear();
-                        out.extend_from_slice(OOM);
-                        return;
+                        return ZSetPopOutcome::Oom;
                     };
                     data.put_collection(key, encoded, expires, payload, now);
                 }
@@ -2571,9 +2651,12 @@ impl Store {
                     data.remove(key);
                 }
             }
-            return;
+            return ZSetPopOutcome::Popped {
+                key: key.to_vec(),
+                items: ordered.into_iter().take(take).collect(),
+            };
         }
-        out.extend_from_slice(b"*-1\r\n");
+        ZSetPopOutcome::Empty
     }
 
     fn zset_range(&self, args: &[&[u8]], store: bool, out: &mut Vec<u8>) {

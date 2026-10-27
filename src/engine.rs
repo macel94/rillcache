@@ -40,6 +40,9 @@ pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 pub use blocking::PopOutcome;
 pub use blocking::reply_value as blocking_reply;
 pub use clients::ClientSnapshot;
+pub(crate) use collection_commands::{
+    ZSetPopOutcome, parse_bzmpop_timeout, parse_mpop, zset_pop_reply as blocking_zpop_reply,
+};
 use collection_config::CollectionConfig;
 use data::Data;
 pub use eviction::EvictionPolicy;

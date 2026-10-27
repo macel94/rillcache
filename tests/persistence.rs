@@ -271,3 +271,44 @@ fn journal_is_off_by_default_and_validation_is_explicit() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+#[test]
+fn blocking_sorted_set_pop_persists_remaining_members_and_ttl() {
+    let dir = temp_dir("bzmpop");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(
+            &mut stream,
+            &[b"ZADD", b"z", b"1", b"a", b"2", b"b"],
+            b":2\r\n",
+        );
+        send(&mut stream, &[b"PEXPIRE", b"z", b"3600000"], b":1\r\n");
+        send(
+            &mut stream,
+            &[b"BZMPOP", b"0", b"1", b"z", b"MIN"],
+            b"*2\r\n$1\r\nz\r\n*1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n",
+        );
+        server.shutdown().unwrap();
+    }
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(
+            &mut stream,
+            &[b"ZRANGE", b"z", b"0", b"-1", b"WITHSCORES"],
+            b"*2\r\n$1\r\nb\r\n$1\r\n2\r\n",
+        );
+        let mut pttl = [0u8; 7];
+        send_raw(&mut stream, &[b"PTTL", b"z"], &mut pttl);
+        assert!(pttl[0] == b':' && pttl[1] != b'-');
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn send_raw(stream: &mut TcpStream, arguments: &[&[u8]], reply: &mut [u8]) {
+    let mut bytes = Vec::new();
+    encode_request(arguments, &mut bytes);
+    stream.write_all(&bytes).unwrap();
+    stream.read_exact(reply).unwrap();
+}

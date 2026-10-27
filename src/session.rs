@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::engine::{
     Access, AclError, Action, AuthError, PopOutcome, Store, TransactionOutcome, WatchState,
-    blocking_reply,
+    ZSetPopOutcome, blocking_reply, blocking_zpop_reply, parse_bzmpop_timeout, parse_mpop,
 };
 use crate::protocol::encode_bulk;
 
@@ -49,8 +49,14 @@ pub struct Session {
 #[derive(Debug)]
 struct Blocked {
     keys: Vec<Vec<u8>>,
-    left: bool,
     deadline: Option<Instant>,
+    kind: BlockedKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BlockedKind {
+    List { left: bool },
+    ZSet { max: bool, count: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,6 +226,10 @@ impl Session {
         if command.eq_ignore_ascii_case(b"BLPOP") || command.eq_ignore_ascii_case(b"BRPOP") {
             let left = command.eq_ignore_ascii_case(b"BLPOP");
             self.blocking(store, &arguments[1..], left, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"BZMPOP") {
+            self.blocking_zpop(store, &arguments[1..], output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"PUBLISH") {
@@ -919,8 +929,53 @@ impl Session {
         };
         self.blocked = Some(Blocked {
             keys,
-            left,
             deadline,
+            kind: BlockedKind::List { left },
+        });
+    }
+
+    fn blocking_zpop(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() < 4 {
+            arity("bzmpop", output);
+            return;
+        }
+        let timeout = match parse_bzmpop_timeout(arguments[0]) {
+            Ok(timeout) => timeout,
+            Err(error) => {
+                output.extend_from_slice(error);
+                return;
+            }
+        };
+        let options = match parse_mpop(arguments, 1) {
+            Ok(options) => options,
+            Err(error) => {
+                output.extend_from_slice(error);
+                return;
+            }
+        };
+        match store.blocking_zpop(&options.keys, options.max, options.count) {
+            ZSetPopOutcome::Empty => {}
+            outcome => {
+                blocking_zpop_reply(outcome, output);
+                return;
+            }
+        }
+        let deadline = if timeout == 0.0 {
+            None
+        } else {
+            let Some(duration) = Duration::try_from_secs_f64(timeout).ok() else {
+                output.extend_from_slice(b"-ERR timeout is out of range\r\n");
+                return;
+            };
+            Instant::now().checked_add(duration)
+        };
+        self.blocked = Some(Blocked {
+            keys: options.keys.iter().map(|key| key.to_vec()).collect(),
+            deadline,
+            kind: BlockedKind::ZSet {
+                max: options.max,
+                count: options.count,
+            },
         });
     }
 
@@ -933,23 +988,38 @@ impl Session {
     pub fn poll_blocked(&mut self, store: &Store) -> Option<Vec<u8>> {
         let blocked = self.blocked.as_ref()?;
         let keys: Vec<&[u8]> = blocked.keys.iter().map(Vec::as_slice).collect();
-        let left = blocked.left;
-        let outcome = store.blocking_pop(&keys, left);
+        let kind = blocked.kind;
         let expired = blocked
             .deadline
             .is_some_and(|deadline| Instant::now() >= deadline);
-        match outcome {
-            PopOutcome::Empty if !expired => None,
-            outcome => {
-                self.blocked = None;
-                let mut reply = Vec::new();
-                blocking_reply(outcome, &mut reply);
-                if self.protocol == Protocol::Resp3 {
-                    reply = convert_resp2_reply(&reply);
+        let mut reply = Vec::new();
+        let ready = match kind {
+            BlockedKind::List { left } => match store.blocking_pop(&keys, left) {
+                PopOutcome::Empty => false,
+                outcome => {
+                    blocking_reply(outcome, &mut reply);
+                    true
                 }
-                Some(reply)
-            }
+            },
+            BlockedKind::ZSet { max, count } => match store.blocking_zpop(&keys, max, count) {
+                ZSetPopOutcome::Empty => false,
+                outcome => {
+                    blocking_zpop_reply(outcome, &mut reply);
+                    true
+                }
+            },
+        };
+        if !ready && !expired {
+            return None;
         }
+        self.blocked = None;
+        if !ready {
+            reply.extend_from_slice(b"*-1\r\n");
+        }
+        if self.protocol == Protocol::Resp3 {
+            reply = convert_resp2_reply(&reply);
+        }
+        Some(reply)
     }
 
     fn subscriber_ping(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {

@@ -652,3 +652,54 @@ fn zmpop_emits_direction_specific_pop_events() {
     );
     server.shutdown().unwrap();
 }
+#[test]
+fn bzmpop_emits_direction_specific_pop_events() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(
+        &mut writer,
+        &[b"ZADD", b"n", b"1", b"a", b"2", b"b"],
+        b":2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zadd",
+            b"n"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"BZMPOP", b"0", b"1", b"n", b"MAX"],
+        b"*2\r\n$1\r\nn\r\n*1\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zpopmax",
+            b"n"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"BZMPOP", b"0", b"1", b"n", b"MIN"],
+        b"*2\r\n$1\r\nn\r\n*1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zpopmin",
+            b"n"
+        ])
+    );
+    server.shutdown().unwrap();
+}

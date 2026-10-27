@@ -784,13 +784,14 @@ fn event_for(
         "zincrby" => ("zincrby", NotifyCategory::Zset),
         "zpopmin" => ("zpopmin", NotifyCategory::Zset),
         "zpopmax" => ("zpopmax", NotifyCategory::Zset),
-        "zmpop" => {
+        "zmpop" | "bzmpop" => {
+            let numkeys_index = if name == "bzmpop" { 2 } else { 1 };
             let numkeys = arguments
-                .get(1)
+                .get(numkeys_index)
                 .and_then(|raw| std::str::from_utf8(raw).ok())
                 .and_then(|raw| raw.parse::<usize>().ok())
                 .unwrap_or(0);
-            let direction = arguments.get(2usize.saturating_add(numkeys));
+            let direction = arguments.get(numkeys_index.saturating_add(1).saturating_add(numkeys));
             if direction.is_some_and(|value| value.eq_ignore_ascii_case(b"MAX")) {
                 return Some(("zpopmax", NotifyCategory::Zset));
             }
