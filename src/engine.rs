@@ -27,6 +27,7 @@ mod hll;
 mod introspection;
 mod journal;
 mod keyspace;
+mod latency;
 mod multikey;
 mod notify;
 mod options;
@@ -39,6 +40,7 @@ mod streams;
 mod string_algorithms;
 mod string_ranges;
 mod transaction;
+mod unsupported;
 mod xxh3;
 pub use acl_log::AclLogEntry;
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
@@ -121,6 +123,9 @@ pub struct Store {
     slowlog_threshold_us: std::sync::atomic::AtomicI64,
     slowlog_max_len: std::sync::atomic::AtomicUsize,
     client_pause: std::sync::atomic::AtomicU64,
+    latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
+    latency: std::sync::RwLock<latency::State>,
+    shutdown_requested: AtomicBool,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -178,6 +183,11 @@ impl Store {
             slowlog_threshold_us: std::sync::atomic::AtomicI64::new(slowlog::DEFAULT_THRESHOLD_US),
             slowlog_max_len: std::sync::atomic::AtomicUsize::new(slowlog::DEFAULT_MAX_LEN),
             client_pause: std::sync::atomic::AtomicU64::new(0),
+            latency_monitor_threshold_ms: std::sync::atomic::AtomicU64::new(
+                latency::DEFAULT_THRESHOLD_MS,
+            ),
+            latency: std::sync::RwLock::new(latency::State::default()),
+            shutdown_requested: AtomicBool::new(false),
         }
     }
     /// Select verified vendor-specific error wording before sharing the store.
@@ -189,7 +199,16 @@ impl Store {
 
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
     /// Every lookup still treats logically expired entries as absent immediately.
+    pub(crate) fn request_shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire)
+    }
+
     pub fn purge_expired(&self, limit: usize) -> usize {
+        let started = self.latency_enabled().then(std::time::Instant::now);
         let Ok(_gate) = self.transaction_gate.read() else {
             return 0;
         };
@@ -203,6 +222,9 @@ impl Store {
         };
         for key in expired {
             self.notify_event("expired", &key, NotifyCategory::Expired);
+        }
+        if let Some(started) = started {
+            self.record_expire_latency(started.elapsed());
         }
         count
     }
@@ -234,6 +256,11 @@ impl Store {
 
     fn publish_lifecycle_events(&self) {
         let flags = self.notify_flags();
+        // No lifecycle classes means there is nothing to deliver. Avoid taking
+        // the store write lock on every command just to discard queued keys.
+        if !flags.expired && !flags.evicted {
+            return;
+        }
         let (expired, evicted) = {
             let Ok(mut data) = self.data.write() else {
                 return;
@@ -452,6 +479,7 @@ impl Store {
             && !self.execute_string_algorithms(arguments, output)
             && !self.execute_hll(arguments, output)
             && !self.execute_collection_commands(arguments, output)
+            && !self.execute_unsupported(arguments, output)
             && !self.execute_collections(arguments, output)
         {
             output.extend_from_slice(b"-ERR unknown command\r\n");
@@ -621,6 +649,10 @@ impl Store {
     }
 
     pub fn set_notify_flags(&self, flags: NotifyFlags) {
+        // Events queued while a class was disabled are stale for delivery.
+        if let Ok(mut data) = self.data.write() {
+            data.clear_lifecycle();
+        }
         self.notifications.store(flags.bits(), Ordering::Release);
     }
 

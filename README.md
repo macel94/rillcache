@@ -54,9 +54,9 @@ Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
 `DEL`, `UNLINK`, `EXISTS`, `QUIT`;
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
-strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
+strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, protocol `SHUTDOWN`, `CONFIG GET`/`RESETSTAT`,
 `INFO` (including process-local connection/command/expiration/pub-sub statistics),
-bounded `SLOWLOG` command timing, and logical `MEMORY USAGE`. `CONFIG SET`
+bounded `SLOWLOG` command timing, bounded `LATENCY` event series, and logical `MEMORY USAGE`. `CONFIG SET`
 supports collection thresholds, `requirepass`, `maxmemory-policy` and slow-log
 threshold/length; script/function execution is not implemented.
 Memory usage is an entry-size estimate, not allocator/RSS data.
@@ -129,7 +129,8 @@ Channel, pattern and sharded-channel pub/sub
 bounded, at-most-once messages to live connections, with separate normal/sharded
 namespaces, RESP3 push frames and ACL channel patterns. There is no cluster
 hash-slot routing, keyspace notification integration, persistence or replication
-of messages. See [pub/sub](docs/pubsub.md).
+of messages. Cluster/module/replica probing returns explicit unsupported replies;
+see [cluster/module boundaries](docs/unsupported.md). See [pub/sub](docs/pubsub.md).
 
 Keyspace/keyevent notifications publish changed-key events to normal pub/sub
 channels under `K`/`E` and `g$lshztxe`/`A` flags, including bounded at-most-once

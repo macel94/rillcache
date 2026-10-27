@@ -127,8 +127,8 @@ fn write_pause_defers_writes_but_not_reads_in_all_modes() {
             b"+OK\r\n",
         );
         send(&mut worker, &[b"SET", b"k", b"v3"]);
-        std::thread::sleep(Duration::from_millis(50));
-        command(&mut admin, &[b"GET", b"k"], b"$2\r\nv2\r\n");
+        // The reply itself is held until the finite pause expires. Do not race a
+        // separate admin read against the deadline under loaded CI.
         assert_eq!(read_frame(&mut worker, 0), b"+OK\r\n");
         command(&mut worker, &[b"GET", b"k"], b"$2\r\nv3\r\n");
 

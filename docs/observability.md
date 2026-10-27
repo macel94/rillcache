@@ -3,8 +3,8 @@
 Rillcache exposes a deliberately small set of server counters through
 `INFO stats` (also included by `INFO` and `INFO all`). Values are process-local
 and reset on restart. There is no Prometheus endpoint, latency histogram,
-per-command table or replication statistics. `SLOWLOG` provides bounded,
-process-local command timing as described below.
+per-command table or replication statistics. `SLOWLOG` and `LATENCY` provide
+bounded, process-local timing as described below.
 
 ## Fields
 
@@ -58,6 +58,32 @@ batch. This differs from Redis's per-queued-command entries and is intentional
 for this session-level implementation. The log is in-memory, process-local and
 not included in `INFO` or persisted across restart.
 
+## LATENCY
+
+`LATENCY LATEST` returns `[event, latest_timestamp_seconds, latest_ms, max_ms]`
+for each event series, sorted by event name. `LATENCY HISTORY event` returns the
+oldest-to-newest `[timestamp_seconds, latency_ms]` samples, up to 160 per event.
+`LATENCY RESET [event ...]` clears one or more series (or all without names) and
+returns the number removed. `LATENCY DOCTOR` returns a plain-text report derived
+only from measured series, and `LATENCY HELP` lists the supported subcommands.
+Unknown history events return an empty array and resetting unknown events returns
+zero.
+
+Samples are recorded only when `latency-monitor-threshold` milliseconds is
+non-zero and a measured event reaches that threshold. The default is `0`
+(disabled); `CONFIG GET/SET latency-monitor-threshold` exposes and updates it at
+runtime and rejects negative or non-integer values. The server measures exactly
+two event classes:
+
+- `command`: the duration of a client command attempt, excluding a blocking
+  wait; blocked commands record their immediate attempt only.
+- `expire-cycle`: bounded expiry reclamation in the maintenance loop.
+
+Fork, AOF write/fsync, eviction-cycle, active-defrag and replication latency are
+not measured and are never fabricated. `LATENCY GRAPH` and `LATENCY HISTOGRAM`
+return explicit unsupported errors rather than partial data. Data is
+process-local, in-memory and reset on restart or benchmark/manual reset.
+
 ## Scope and reset
 
 `total_commands_processed` covers connection-level dispatch, so embedding
@@ -82,7 +108,8 @@ keys that merely crossed their deadline and were not yet reaped/lazily removed.
 - No per-client fd/idle/command/buffer/memory/network fields, blocked-client count
   or cross-process client view. `INFO clients` intentionally omits those fields.
 - No `INFO commandstats` or `latencystats`, latency histograms, CPU/RSS
-  accounting, network-byte counters or per-database stats.
+  accounting, network-byte counters or per-database stats. `LATENCY` exposes
+  only the two measured event series listed above.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.
 - No persistence/ACL/auth telemetry. Journal replay and rewrite durations are not

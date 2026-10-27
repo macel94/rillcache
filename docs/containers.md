@@ -140,8 +140,11 @@ use the `ghcr.io/macel94/rillcache@sha256:...` reference printed by the workflow
 in place of `:latest`. `latest` is a convenience main-build tag, not a stable release.
 
 **Termination:** the current safe-std server has no portable signal-handler API.
-Docker's `--init` / Compose `init: true` forwards termination to the application as
-a normal child; this ends the process but is not a graceful drain. With
+A client can request a protocol-level graceful stop with `SHUTDOWN`, which flushes
+the journal and joins workers, but that is not a signal handler and cannot run
+once the process receives SIGTERM. Docker's `--init` / Compose `init: true`
+forwards termination to the application as a normal child; this ends the process
+but is not a graceful drain. With
 `--appendfsync always`, acknowledged records are already synced; with `everysec`
 or `no`, termination can lose the unsynced tail. As Kubernetes
 PID 1 the default SIGTERM may be ignored; the example allows five seconds before

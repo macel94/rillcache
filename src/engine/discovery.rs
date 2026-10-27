@@ -19,6 +19,7 @@ struct Command {
 const COMMANDS: &[Command] = &[
     cmd("acl", -2, &["admin", "dangerous", "slow"], 0, 0, 0),
     cmd("append", 3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("asking", 1, &["fast"], 0, 0, 0),
     cmd(
         "auth",
         -2,
@@ -61,6 +62,7 @@ const COMMANDS: &[Command] = &[
         0,
         0,
     ),
+    cmd("cluster", -2, &[], 0, 0, 0),
     cmd("command", -1, &["loading", "stale"], 0, 0, 0),
     cmd("config", -2, &["admin", "noscript"], 0, 0, 0),
     cmd("copy", -3, &["write", "denyoom"], 1, 2, 1),
@@ -157,6 +159,14 @@ const COMMANDS: &[Command] = &[
     cmd("incrbyfloat", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
     cmd("keys", 2, &["readonly"], 0, 0, 0),
+    cmd(
+        "latency",
+        -2,
+        &["admin", "noscript", "loading", "stale", "slow"],
+        0,
+        0,
+        0,
+    ),
     cmd("lcs", -3, &["readonly"], 1, 2, 1),
     cmd("lindex", 3, &["readonly"], 1, 1, 1),
     cmd("linsert", 5, &["write", "denyoom"], 1, 1, 1),
@@ -173,6 +183,7 @@ const COMMANDS: &[Command] = &[
     cmd("ltrim", 4, &["write"], 1, 1, 1),
     cmd("memory", -2, &["readonly", "slow"], 0, 0, 0),
     cmd("mget", -2, &["readonly", "fast"], 1, -1, 1),
+    cmd("module", -2, &[], 0, 0, 0),
     cmd("mset", -3, &["write", "denyoom"], 1, -1, 2),
     cmd("msetex", -4, &["write", "denyoom"], 2, -1, 2),
     cmd("msetnx", -3, &["write", "denyoom"], 1, -1, 2),
@@ -229,6 +240,8 @@ const COMMANDS: &[Command] = &[
     ),
     cmd("quit", -1, &["fast"], 0, 0, 0),
     cmd("randomkey", 1, &["readonly"], 0, 0, 0),
+    cmd("readonly", 1, &["fast"], 0, 0, 0),
+    cmd("readwrite", 1, &["fast"], 0, 0, 0),
     cmd("rename", 3, &["write"], 1, 2, 1),
     cmd("renamenx", 3, &["write", "fast"], 1, 2, 1),
     cmd(
@@ -255,6 +268,14 @@ const COMMANDS: &[Command] = &[
     cmd("setex", 4, &["write", "denyoom"], 1, 1, 1),
     cmd("setnx", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("setrange", 4, &["write", "denyoom"], 1, 1, 1),
+    cmd(
+        "shutdown",
+        -1,
+        &["admin", "noscript", "loading", "stale", "slow"],
+        0,
+        0,
+        0,
+    ),
     cmd("sinter", -2, &["readonly"], 1, -1, 1),
     cmd("sintercard", -3, &["readonly"], 2, -1, 1),
     cmd("sinterstore", -3, &["write", "denyoom"], 1, -1, 1),
@@ -333,6 +354,7 @@ const COMMANDS: &[Command] = &[
         0,
         0,
     ),
+    cmd("wait", 3, &["blocking"], 0, 0, 0),
     cmd(
         "watch",
         -2,
@@ -593,7 +615,9 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
                 | "flushdb"
                 | "function"
                 | "keys"
+                | "latency"
                 | "script"
+                | "shutdown"
                 | "slowlog"
                 | "sort"
                 | "sort_ro"
@@ -650,7 +674,8 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
         "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
         | "xread" | "xreadgroup" | "xrevrange" | "xsetid" | "xtrim" => "stream",
-        "auth" | "client" | "hello" | "quit" | "reset" | "select" => "connection",
+        "asking" | "auth" | "client" | "hello" | "quit" | "readonly" | "readwrite" | "reset"
+        | "select" => "connection",
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "spublish" | "ssubscribe"
         | "subscribe" | "sunsubscribe" | "unsubscribe" => "pubsub",
@@ -814,13 +839,33 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
             write!(output, ":{}\r\n", COMMANDS.len()).expect("Vec write");
         }
     } else if sub.eq_ignore_ascii_case(b"LIST") {
+        let mut names: Vec<&'static str> = COMMANDS.iter().map(|item| item.name).collect();
         if arguments.len() != 2 {
-            output.extend_from_slice(b"-ERR unsupported COMMAND LIST options\r\n");
-        } else {
-            write_array_len(COMMANDS.len(), output);
-            for item in COMMANDS {
-                encode_bulk(Some(item.name.as_bytes()), output);
+            if arguments.len() != 5 || !arguments[2].eq_ignore_ascii_case(b"FILTERBY") {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
             }
+            let filter = arguments[3];
+            let value = arguments[4];
+            if filter.eq_ignore_ascii_case(b"MODULE") {
+                names.clear();
+            } else if filter.eq_ignore_ascii_case(b"ACLCAT") {
+                let category = if value.starts_with(b"@") {
+                    &value[1..]
+                } else {
+                    value
+                };
+                names = commands_in_category(category);
+            } else if filter.eq_ignore_ascii_case(b"PATTERN") {
+                names.retain(|name| super::keyspace::glob_match(value, name.as_bytes()));
+            } else {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        write_array_len(names.len(), output);
+        for name in names {
+            encode_bulk(Some(name.as_bytes()), output);
         }
     } else if sub.eq_ignore_ascii_case(b"INFO") {
         if arguments.len() == 2 {

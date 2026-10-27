@@ -135,22 +135,30 @@ impl Session {
             });
             return Action::Continue;
         }
-        let tracked = arguments.first().is_some_and(|command| {
+        let (slowlog, latency) = arguments.first().map_or((false, false), |command| {
             let queued = self.multi.is_some() && !command.eq_ignore_ascii_case(b"EXEC");
-            !queued && store.slowlog_enabled()
+            (
+                !queued && store.slowlog_enabled(),
+                !queued && store.latency_enabled(),
+            )
         });
-        let started = tracked.then(Instant::now);
+        let started = (slowlog || latency).then(Instant::now);
         let action = self.execute_inner(store, arguments, output);
         if let Some(started) = started {
-            if self.blocked.is_some() {
-                if let Some(blocked) = self.blocked.as_mut() {
-                    blocked.slowlog = Some((
-                        started,
-                        arguments.iter().map(|argument| argument.to_vec()).collect(),
-                    ));
+            if latency {
+                store.record_command_latency(started.elapsed());
+            }
+            if slowlog {
+                if self.blocked.is_some() {
+                    if let Some(blocked) = self.blocked.as_mut() {
+                        blocked.slowlog = Some((
+                            started,
+                            arguments.iter().map(|argument| argument.to_vec()).collect(),
+                        ));
+                    }
+                } else {
+                    self.record_slowlog(store, arguments, started);
                 }
-            } else {
-                self.record_slowlog(store, arguments, started);
             }
         }
         action
@@ -321,6 +329,14 @@ impl Session {
         } else if self.multi.is_some() {
             self.queue(arguments, output);
             return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"SHUTDOWN") {
+            store.shutdown_command(arguments, output);
+            return if store.shutdown_requested() {
+                Action::Close
+            } else {
+                Action::Continue
+            };
         }
         if command.eq_ignore_ascii_case(b"SUBSCRIBE") {
             self.subscribe(store, &arguments[1..], false, output);
@@ -550,6 +566,11 @@ impl Session {
             return;
         };
         let command = arguments[0];
+        if command.eq_ignore_ascii_case(b"SHUTDOWN") {
+            multi.dirty = true;
+            output.extend_from_slice(b"-ERR SHUTDOWN is not allowed in transactions\r\n");
+            return;
+        }
         if is_session_command(command) {
             multi.dirty = true;
             output.extend_from_slice(b"-ERR session commands are not supported inside MULTI\r\n");

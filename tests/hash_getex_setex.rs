@@ -348,7 +348,7 @@ fn hsetex_and_hgetex_ttl_options_in_all_modes() {
             b"*1\r\n:-1\r\n",
         );
 
-        // An absolute deadline in the past expires the fields lazily.
+        // A due absolute deadline deletes the written fields immediately.
         command(
             &mut stream,
             &[
@@ -389,17 +389,17 @@ fn hsetex_and_hgetex_validation_in_all_modes() {
         command(
             &mut stream,
             &[b"HSETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a", b"2"],
-            b"-ERR syntax error\r\n",
+            b"-ERR unknown argument: PERSIST\r\n",
         );
         command(
             &mut stream,
             &[b"HSETEX", b"h", b"FIELDS", b"0", b"a", b"1"],
-            b"-ERR Parameter `numFields` should be greater than 0\r\n",
+            b"-ERR invalid number of fields\r\n",
         );
         command(
             &mut stream,
             &[b"HSETEX", b"h", b"FIELDS", b"2", b"a", b"1"],
-            b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+            b"-ERR wrong number of arguments\r\n",
         );
         command(
             &mut stream,
@@ -414,7 +414,7 @@ fn hsetex_and_hgetex_validation_in_all_modes() {
         command(
             &mut stream,
             &[b"HGETEX", b"h", b"KEEPTTL", b"FIELDS", b"1", b"a"],
-            b"-ERR syntax error\r\n",
+            b"-ERR unknown argument: KEEPTTL\r\n",
         );
         command(
             &mut stream,
@@ -426,11 +426,119 @@ fn hsetex_and_hgetex_validation_in_all_modes() {
         command(
             &mut stream,
             &[b"HGETEX", b"h", b"FIELDS", b"3", b"a"],
-            b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+            b"-ERR wrong number of arguments\r\n",
         );
         // Rejected commands left the hash untouched.
         command(&mut stream, &[b"HGET", b"h", b"a"], b"$1\r\n1\r\n");
 
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn combined_hash_commands_respect_watch_transactions_and_acl_in_all_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut watcher = connect(&server);
+        let mut writer = connect(&server);
+        command(
+            &mut writer,
+            &[
+                b"HSETEX",
+                b"h",
+                b"PXAT",
+                b"4102444800000",
+                b"FIELDS",
+                b"1",
+                b"a",
+                b"1",
+            ],
+            b":1\r\n",
+        );
+        command(&mut watcher, &[b"WATCH", b"h"], b"+OK\r\n");
+        command(
+            &mut writer,
+            &[b"HSETEX", b"h", b"FNX", b"FIELDS", b"1", b"a", b"no"],
+            b":0\r\n",
+        );
+        command(&mut watcher, &[b"MULTI"], b"+OK\r\n");
+        command(
+            &mut watcher,
+            &[b"HGETEX", b"h", b"FIELDS", b"1", b"a"],
+            b"+QUEUED\r\n",
+        );
+        command(&mut watcher, &[b"EXEC"], b"*1\r\n*1\r\n$1\r\n1\r\n");
+
+        command(&mut watcher, &[b"WATCH", b"h"], b"+OK\r\n");
+        command(
+            &mut writer,
+            &[b"HGETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a"],
+            b"*1\r\n$1\r\n1\r\n",
+        );
+        command(&mut watcher, &[b"MULTI"], b"+OK\r\n");
+        command(&mut watcher, &[b"PING"], b"+QUEUED\r\n");
+        command(&mut watcher, &[b"EXEC"], b"*-1\r\n");
+
+        // Repeating PERSIST without a TTL is a read-only no-op for WATCH.
+        command(&mut watcher, &[b"WATCH", b"h"], b"+OK\r\n");
+        command(
+            &mut writer,
+            &[b"HGETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a"],
+            b"*1\r\n$1\r\n1\r\n",
+        );
+        command(&mut watcher, &[b"MULTI"], b"+OK\r\n");
+        command(
+            &mut watcher,
+            &[b"HSETEX", b"h", b"FXX", b"FIELDS", b"1", b"a", b"2"],
+            b"+QUEUED\r\n",
+        );
+        command(&mut watcher, &[b"EXEC"], b"*1\r\n:1\r\n");
+        command(&mut writer, &[b"HGET", b"h", b"a"], b"$1\r\n2\r\n");
+
+        command(
+            &mut writer,
+            &[
+                b"ACL",
+                b"SETUSER",
+                b"hash-user",
+                b"on",
+                b">secret",
+                b"~ok:*",
+                b"+@hash",
+            ],
+            b"+OK\r\n",
+        );
+        let mut restricted = connect(&server);
+        command(
+            &mut restricted,
+            &[b"AUTH", b"hash-user", b"secret"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut restricted,
+            &[b"HSETEX", b"ok:hash", b"FIELDS", b"1", b"\0\xff", b"v"],
+            b":1\r\n",
+        );
+        command(
+            &mut restricted,
+            &[b"HGETEX", b"ok:hash", b"FIELDS", b"1", b"\0\xff"],
+            b"*1\r\n$1\r\nv\r\n",
+        );
+        assert!(
+            reply(
+                &mut restricted,
+                &[b"HGETEX", b"forbidden", b"FIELDS", b"1", b"a"]
+            )
+            .starts_with(b"-NOPERM")
+        );
+        assert!(
+            reply(
+                &mut restricted,
+                &[b"HSETEX", b"forbidden", b"FIELDS", b"1", b"a", b"v"]
+            )
+            .starts_with(b"-NOPERM")
+        );
+        command(&mut writer, &[b"EXISTS", b"forbidden"], b":0\r\n");
         server.shutdown().unwrap();
     }
 }

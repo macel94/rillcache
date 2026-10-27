@@ -109,9 +109,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":215\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":223\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*215\r\n*6\r\n$3\r\nacl\r\n"));
+        assert!(all_info.starts_with(b"*223\r\n*6\r\n$3\r\nacl\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"MSETEX", b"DIGEST", b"DELIFEQ"]),
             b"*3\r\n*6\r\n$6\r\nmsetex\r\n:-4\r\n*2\r\n+write\r\n+denyoom\r\n:2\r\n:-1\r\n:2\r\n*6\r\n$6\r\ndigest\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*6\r\n$7\r\ndelifeq\r\n:3\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:1\r\n:1\r\n"
@@ -123,6 +123,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
         let expected_names: &[&[u8]] = &[
             b"acl",
             b"append",
+            b"asking",
             b"auth",
             b"bgrewriteaof",
             b"bitcount",
@@ -137,6 +138,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"brpoplpush",
             b"bzmpop",
             b"client",
+            b"cluster",
             b"command",
             b"config",
             b"copy",
@@ -206,6 +208,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"incrbyfloat",
             b"info",
             b"keys",
+            b"latency",
             b"lcs",
             b"lindex",
             b"linsert",
@@ -222,6 +225,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"ltrim",
             b"memory",
             b"mget",
+            b"module",
             b"mset",
             b"msetex",
             b"msetnx",
@@ -243,6 +247,8 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"punsubscribe",
             b"quit",
             b"randomkey",
+            b"readonly",
+            b"readwrite",
             b"rename",
             b"renamenx",
             b"reset",
@@ -262,6 +268,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"setex",
             b"setnx",
             b"setrange",
+            b"shutdown",
             b"sinter",
             b"sintercard",
             b"sinterstore",
@@ -291,6 +298,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"unlink",
             b"unsubscribe",
             b"unwatch",
+            b"wait",
             b"watch",
             b"xack",
             b"xadd",
@@ -403,7 +411,18 @@ fn unsupported_command_options_are_rejected_without_reflecting_input() {
                     b"secret\0bytes"
                 ]
             ),
-            b"-ERR unsupported COMMAND LIST options\r\n"
+            b"*0\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"LIST", b"FILTERBY", b"PATTERN"]),
+            b"-ERR syntax error\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"LIST", b"FILTERBY", b"BOGUS", b"x"]
+            ),
+            b"-ERR syntax error\r\n"
         );
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"UNKNOWN", b"secret\0bytes"]),
@@ -499,6 +518,65 @@ fn command_getkeys_reuses_acl_key_specs() {
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"GETKEYS"]),
             b"-ERR wrong number of arguments for 'command|getkeys' command\r\n"
+        );
+        server.shutdown().unwrap();
+    }
+}
+#[test]
+fn command_list_filters_by_pattern_category_and_module() {
+    for mode in [None, Some(1), Some(4)] {
+        let server = start(mode);
+        let mut client = connect(&server);
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"LIST", b"FILTERBY", b"PATTERN", b"set*"]
+            ),
+            b"*5\r\n$3\r\nset\r\n$6\r\nsetbit\r\n$5\r\nsetex\r\n$5\r\nsetnx\r\n$8\r\nsetrange\r\n"
+        );
+        let read = request(
+            &mut client,
+            &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"read"],
+        );
+        assert!(read.starts_with(b"*"));
+        assert!(read.windows(4).any(|window| window == b"get\r"));
+        assert!(!read.windows(3).any(|window| window == b"set"));
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"@read"]
+            ),
+            read
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"nosuch"]
+            ),
+            b"*0\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"LIST", b"FILTERBY", b"MODULE", b"missing"]
+            ),
+            b"*0\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND",
+                    b"LIST",
+                    b"FILTERBY",
+                    b"PATTERN",
+                    b"x",
+                    b"FILTERBY",
+                    b"PATTERN",
+                    b"y"
+                ]
+            ),
+            b"-ERR syntax error\r\n"
         );
         server.shutdown().unwrap();
     }

@@ -100,7 +100,12 @@ reason to couple all future commands into a single large story.
 | S70 | As an operator, I can inspect bounded slow-command history and tune its threshold so that latency problems can be diagnosed without log scraping or unbounded memory. | S | R276–R279; command shapes, config, truncation, redaction, blocking/MULTI and all-mode wire tests |
 | S71 | As a hash user, I can set, inspect and clear per-field TTLs so that individual hash entries can expire without deleting the whole key. | S | R280–R283; expire/ttl/expiretime/persist conditions, lazy expiry, journal and all-mode wire tests |
 | S72 | As an operator, I can pause and resume client command processing so that maintenance or failover preparation can drain traffic without dropping connections. | S | R284–R287; ALL/WRITE/timeout/unpause/pipelining/MULTI/shutdown and all-mode wire tests |
-| S73 | As a hash user, I can read or write several fields with a TTL in one round trip, including create-only and update-only conditions, so combined hash workflows are atomic. | S | R288–R291; conditions, TTL clauses, duplicates, validation, journal and all-mode wire tests |
+| S73 | As an operator, I can inspect bounded latency event time series so that real spikes can be diagnosed without fabricated fork, AOF or replication metrics. | S | R288–R291; latest/history/reset/doctor, threshold, bounds, unsupported subcommands and all-mode wire tests |
+| S74 | As a client or operator, I can detect unsupported cluster, module and replica features through explicit reply contracts instead of unknown commands or fake capabilities. | XS | R292–R295; CLUSTER/module/WAIT shapes, errors and all-mode wire tests |
+| S75 | As an operator, I can request a durable protocol-level stop so that maintenance can flush acknowledged journal writes and join workers without relying on signals. | S | R296–R299; flags/errors/ABORT/MULTI/persistence/all-mode shutdown tests |
+| S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
+| S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
+| S83 | As a hash user, I can atomically read or set counted fields together with their expiry so that conditional writes and TTL updates do not race separate commands. | S | R324–R327; duplicate/binary/due-deadline/OOM/bounds/concurrency, journal, transaction and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1272,8 +1277,8 @@ and the offline upstream harness tests.
   FIELDS/count/options, negative times and unsupported conditions shall return
   bounded Redis-shaped errors or per-field `-2`/`-1` values without partial
   writes. Field expiry is lazy rather than actively scanned, publishes no
-  per-field notification (matching standalone Redis); the combined HSETEX/HGETEX
-  forms are specified separately by S73.
+  per-field notification. Combined HGETEX/HSETEX value/TTL operations are
+  specified separately by S83; this is not a full vendor notification claim.
 - **R283 (ubiquitous):** Tests shall cover conditional expire/GT/LT/NX/XX,
   remaining/absolute TTL forms, past-deadline lazy removal, key deletion, HSET/
   HINCRBY/HDEL/HGETDEL TTL interactions, missing/wrong-type/error cases, journal
@@ -1304,36 +1309,123 @@ and the offline upstream harness tests.
   behavior and every worker mode. Documentation shall retain the absence of
   replication, expiry/eviction pausing and replica-traffic pause semantics.
 
-### Combined hash field reads and writes (S73)
+### Latency event monitoring (S73)
 
-- **R288 (event-driven):** `HSETEX key [FNX|FXX] [EX seconds|PX ms|EXAT
-  unix-seconds|PXAT unix-ms|KEEPTTL] FIELDS numfields field value [...]` shall
-  parse one condition and one expiry clause in either order, apply all pairs
-  atomically with the last value winning for duplicate fields, and reply `1`.
-  Without a condition it shall overwrite or create fields; `FNX` shall reply `0`
-  without changes when any named field exists and `FXX` shall reply `0` without
-  creating a key when any named field is missing. A missing expiry clause shall
-  clear the written fields' TTLs, `KEEPTTL` shall preserve them, and explicit
-  clauses shall set the same deadline on every written field. The hash key's own
-  TTL shall be preserved.
-- **R289 (event-driven):** `HGETEX key [EX seconds|PX ms|EXAT unix-seconds|PXAT
-  unix-ms|PERSIST] FIELDS numfields field [...]` shall return values in request
-  order, with null entries for missing fields or keys, without creating a key.
-  With no expiry clause it shall leave TTLs unchanged; `PERSIST` shall remove the
-  TTL of each existing requested field and expiry clauses shall set the same
-  deadline on them. Duplicate requested fields shall keep their positions.
-- **R290 (unwanted behavior):** If conditions or expiry clauses are repeated or
-  conflicting, `FIELDS`/counts are malformed, times are negative, non-integer or
-  overflowing, or the key has the wrong type, then the command shall return one
-  bounded error and change no value or TTL. `HSETEX` payload admission shall
-  remain atomic on OOM. Fields whose deadline has passed shall be purged lazily
-  on access, deleting an emptied hash key, rather than by a new active scanner.
-- **R291 (ubiquitous):** Tests shall cover creation/overwrite, `FNX`/`FXX`
-  atomicity, duplicate fields, condition/expiry ordering, all expiry forms,
-  default TTL clearing, `KEEPTTL`, `HGETEX` read/set/persist, missing
-  keys/fields, wrong types, validation errors, journal restart with field
-  deadlines, and every worker mode. Documentation shall retain the lazy-expiry,
-  payload-accounting and no-RSS/active-expiry boundaries.
+- **R288 (event-driven):** `LATENCY LATEST`, `HISTORY event`, `RESET [event ...]`,
+  `DOCTOR` and `HELP` shall return Redis-shaped arrays, plain-text reports, reset
+  counts and bounded errors. `HISTORY` for an unknown event shall return an empty
+  array; resetting unknown events shall count zero; `GRAPH` and `HISTOGRAM` shall
+  return explicit unsupported errors rather than partial output.
+- **R289 (state-driven):** While `latency-monitor-threshold` is non-zero, only
+  measured events whose duration reaches the threshold shall be retained, up to
+  160 samples per event with latest and all-time maximum values. The default
+  threshold shall be `0` (disabled), `CONFIG GET/SET` shall expose and atomically
+  update it, and negative or non-integer values shall be rejected without
+  changing the active value.
+- **R290 (event-driven):** The server shall record only events it actually
+  measures: command-attempt duration and bounded expire-cycle reclamation.
+  Blocking waits, fork, AOF write/fsync, eviction-cycle, active-defrag and
+  replication latency shall not be represented. `DOCTOR` output shall derive only
+  from measured series and documented limitations.
+- **R291 (ubiquitous):** Tests shall cover configuration and validation, latest
+  and history ordering/shapes, reset counts, the sample bound, threshold changes,
+  unsupported subcommands and every worker mode. Data shall remain process-local,
+  in-memory and absent from persistence or fabricated `INFO` fields.
+
+### Explicit unsupported cluster, module and replica surface (S74)
+
+- **R292 (event-driven):** `CLUSTER <subcommand>` shall return the documented
+  cluster-disabled error for known subcommands, one bounded explanatory row for
+  `HELP`, and the normal arity error without a subcommand. `READONLY`,
+  `READWRITE` and `ASKING` shall return the same disabled error. No slot table,
+  node identity, redirection or migration behavior shall be fabricated.
+- **R293 (event-driven):** `MODULE LIST` shall return an empty array because no
+  modules are loadable. `MODULE HELP` shall return one bounded explanatory row;
+  `LOAD`/`LOADEX`/`UNLOAD` shall return an explicit unsupported error without
+  executing code; unknown subcommands shall return a bounded unknown-subcommand
+  error.
+- **R294 (event-driven):** `WAIT numreplicas timeout` shall validate integer
+  arguments, reject a negative timeout with the Redis timeout error, and return
+  zero without sleeping because no replicas are configured. It shall not claim
+  replication or acknowledgment semantics.
+- **R295 (ubiquitous):** Discovery metadata/categories shall expose the supported
+  command shapes truthfully. Tests shall cover cluster subcommands, help, arity,
+  module list/load/unknown, WAIT validation and zero, READONLY/READWRITE/ASKING,
+  ACL access and all worker modes. Documentation shall retain the absence of
+  cluster routing, module execution, replication and Redis-8 extension support.
+
+### Protocol shutdown (S75)
+
+- **R296 (event-driven):** `SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE]` shall accept the
+  documented modifiers, reject unknown modifiers and incompatible combinations
+  with a bounded syntax error, and return `No shutdown in progress.` for `ABORT`
+  because no delayed shutdown state exists. Successful shutdown shall write no
+  reply and close the calling connection.
+- **R297 (state-driven):** Before stopping, SHUTDOWN shall force a journal flush
+  when append-only persistence is enabled and only then request process stop. A
+  flush failure shall return a bounded error and leave the server running.
+  `NOSAVE`/`SAVE` shall not write an RDB file; `NOW`/`FORCE` shall be accepted
+  no-ops because shutdown is immediate.
+- **R298 (event-driven):** A shutdown request shall stop accepting clients, wake
+  and join existing workers, close paused/blocked connections, and return success
+  from the server loop in thread-per-client and fixed-worker modes. `SHUTDOWN`
+  shall be rejected inside `MULTI` with dirty-transaction semantics.
+- **R299 (ubiquitous):** Tests shall cover flag validation, `ABORT`, MULTI
+  rejection, caller close, all worker modes, journal durability across restart,
+  and documentation of the remaining absence of a portable SIGTERM handler.
+
+### Lifecycle notification delivery cost (S76)
+
+- **R300 (state-driven):** While neither the expired nor the evicted notification
+  class is enabled, command dispatch shall not acquire the store write lock solely
+  to drain lifecycle queues, and pending lifecycle keys shall remain bounded.
+- **R301 (event-driven):** When notification flags change, the server shall discard
+  pending undispatched lifecycle keys before storing the new flags, so enabling an
+  expired/evicted class only delivers events observed after that point.
+- **R302 (ubiquitous):** Core dispatch benchmarks shall record the improvement and
+  all-mode notification tests shall still cover expired/evicted delivery, runtime
+  toggles, bounded queues and joined shutdown. Documentation shall retain the
+  process-local, at-most-once and non-persistent delivery limits.
+### Command registry filters (S77)
+
+- **R303 (event-driven):** `COMMAND LIST FILTERBY PATTERN glob` shall return only
+  registered command names matching the byte-oriented glob, preserving registry
+  (lower-case sorted) order without reflecting arbitrary input in errors.
+- **R304 (event-driven):** `COMMAND LIST FILTERBY ACLCAT category` shall accept a
+  bare or `@`-prefixed category, reuse the ACL category matcher for registered
+  names, and return an empty list for unknown categories. `FILTERBY MODULE name`
+  shall return an empty list because no modules are loadable.
+- **R305 (ubiquitous):** Missing values, unknown filters, duplicate/multiple
+  FILTERBY clauses and extra arguments shall return bounded syntax errors without
+  partial output. Tests shall cover pattern/category/module filters, `@` prefixes,
+  unknown categories, syntax failures and all worker modes. No module metadata or
+  Redis extended command docs are implied.
+
+### Combined hash field values and expiry (S83)
+
+- **R324 (event-driven):** When HSETEX receives a valid counted field/value block,
+  it shall atomically apply all pairs (last duplicate wins), return one on success
+  or zero when FNX/FXX fails against the original live fields, preserve the key
+  TTL, clear written field TTLs by default, and support KEEPTTL or one explicit
+  EX/PX/EXAT/PXAT deadline. A due deadline shall remove targeted fields without
+  reserving discarded values; removing the final field shall delete the key.
+- **R325 (event-driven):** When HGETEX receives a valid counted field block, it
+  shall return binary values/nulls in argument order, preserve TTLs by default,
+  and apply PERSIST or one explicit deadline to existing fields only. A due
+  deadline shall remove each field after its first returned value, so a later
+  duplicate shall return null. Missing keys shall not be created.
+- **R326 (unwanted behavior):** If options/counts/times/types are invalid, final
+  payload admission fails, or a complete HGETEX RESP reply exceeds 2 MiB including
+  duplicates and framing, it shall return one bounded error with no partial reply
+  or live value/TTL mutation. Counts shall be positive signed-32-bit values;
+  deadlines shall not exceed Redis's verified `(2^48 - 1) >> 2` milliseconds.
+  Options may precede or follow the counted FIELDS block; duplicate clauses and
+  unsupported options shall be rejected without reflecting arbitrary bytes.
+- **R327 (ubiquitous):** Tests shall cover due/zero/equal deadlines with injected
+  clocks, repeated/binary fields, FNX races, OOM and reply-size atomicity, errors,
+  key/field TTL interactions, discovery/ACL, WATCH/MULTI, persistence and all worker
+  modes. No active field-expiry scan, exhaustive vendor event parity, RSS ceiling,
+  eviction rollback, replication or full hash-command compatibility is implied.
 
 ### Development and delivery
 
@@ -1739,7 +1831,7 @@ error frames. Conservative defaults remain smaller than Redis limits.
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
 1..=1024-byte password (via flag or file; ACL files add hashed users),
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload and a 2 MiB
-maximum MGET RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
+maximum MGET or HGETEX RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
 request bounds up to 512 MiB (bulk must fit within frame); larger requests remain
 finite and grow buffers only as bytes arrive. Compatibility-only upstream runs
 match native and candidate at 8 MiB bulk and 16 MiB frame; MGET remains capped at
