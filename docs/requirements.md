@@ -1175,8 +1175,9 @@ and the offline upstream harness tests.
   GEORADIUS destinations and sorted-set source/destination rules.
 - **R263 (event-driven):** Commands with no declared keys and dynamic lists that
   cannot be extracted from the supplied arguments shall return bounded errors
-  rather than fabricating keys. BY/GET-derived SORT keys and dynamic XREAD keys
-  remain outside static extraction and are documented as such.
+  rather than fabricating keys. BY/GET-derived SORT keys remain outside static
+  extraction and are documented as such; XREAD/XREADGROUP stream keys are
+  extracted from the supplied `STREAMS` block.
 - **R264 (ubiquitous):** Tests shall cover string, multi-key, counted, STORE,
   GEORADIUS and no-key commands, invalid command/arity and all worker modes.
   COMMAND GETKEYS does not change keyspace state or bypass ACL enforcement.
@@ -1603,8 +1604,10 @@ and the offline upstream harness tests.
   per key (`BITOP` destination versus sources, `COPY` source versus destination,
   `RENAME` source versus destination, and store destinations of `SORT`,
   `GEORADIUS*` and `*STORE`). `SORT ... STORE` and `GEORADIUS ... STORE` shall
-  require read on the source and write on the destination; `SET` with `GET` and
-  mutating `BITFIELD` operations shall require both accesses.
+  require read on the source and write on the effective last-wins destination;
+  `XREAD`/`XREADGROUP` shall check each key in the dynamic `STREAMS` block, and
+  `PFCOUNT` shall require both accesses per Redis 7's RW key spec. `SET` with
+  `GET` and mutating `BITFIELD` operations shall require both accesses.
 - **R337 (event-driven):** `ACL LIST` and `ACL GETUSER` shall render read-only
   patterns as `%R~`, write-only patterns as `%W~` and read-write patterns as `~`.
   Adding read and write grants for the same pattern shall merge into `~`. `ACL

@@ -492,7 +492,29 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         let end = 2usize.saturating_add(count).min(args.len());
         return args[2..end].to_vec();
     }
-    // Legacy GEORADIUS* takes its source key plus an optional last-wins
+    // XREAD and XREADGROUP declare stream keys dynamically in the STREAMS
+    // block. Only the key half of that block is a key list; IDs are not keys.
+    if name.eq_ignore_ascii_case(b"XREAD") || name.eq_ignore_ascii_case(b"XREADGROUP") {
+        let minimum = if name.eq_ignore_ascii_case(b"XREADGROUP") {
+            4 // command, GROUP, group name, consumer name
+        } else {
+            1
+        };
+        let Some(streams) = args
+            .iter()
+            .enumerate()
+            .skip(minimum)
+            .find_map(|(index, arg)| arg.eq_ignore_ascii_case(b"STREAMS").then_some(index))
+        else {
+            return Vec::new();
+        };
+        let values = &args[streams + 1..];
+        if values.is_empty() || values.len() % 2 != 0 {
+            return Vec::new();
+        }
+        return values[..values.len() / 2].to_vec();
+    }
+    // Legacy GEORADIUS* takes its source key plus the effective last-wins
     // STORE/STOREDIST destination after the radius/unit prefix.
     let legacy_geo = name.eq_ignore_ascii_case(b"GEORADIUS")
         || name.eq_ignore_ascii_case(b"GEORADIUS_RO")
@@ -504,19 +526,21 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         };
         let by_member = name.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER")
             || name.eq_ignore_ascii_case(b"GEORADIUSBYMEMBER_RO");
-        let mut keys = vec![*source];
+        let mut destination = None;
         let mut index = if by_member { 5 } else { 6 };
         while index < args.len() {
             if (args[index].eq_ignore_ascii_case(b"STORE")
                 || args[index].eq_ignore_ascii_case(b"STOREDIST"))
                 && index + 1 < args.len()
             {
-                keys.push(args[index + 1]);
+                destination = Some(args[index + 1]);
                 index += 2;
             } else {
                 index += 1;
             }
         }
+        let mut keys = vec![*source];
+        keys.extend(destination);
         return keys;
     }
     // SORT has a fixed source plus a STORE destination that may appear anywhere
@@ -526,15 +550,17 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         if let Some(source) = args.get(1) {
             keys.push(*source);
         }
+        let mut destination = None;
         let mut index = 2;
         while index < args.len() {
             if args[index].eq_ignore_ascii_case(b"STORE") && index + 1 < args.len() {
-                keys.push(args[index + 1]);
+                destination = Some(args[index + 1]);
                 index += 2;
             } else {
                 index += 1;
             }
         }
+        keys.extend(destination);
         return keys;
     }
     if name.eq_ignore_ascii_case(b"BLMPOP") {
@@ -601,12 +627,9 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
     keys
 }
 
-/// Declared key arguments paired with the access each key requires. This mirrors
-/// Redis key-spec read/write flags closely enough for ACL `%R~`/`%W~` checks:
-/// read-only commands read every key, overwrite-only commands (`SET` without
-/// `GET`, `MSET`, `DEL`, stores) write them, and commands that inspect existing
-/// data (`HSET`, `LPOP`, `INCR`, ...) require both. Dynamic/unknown key specs are
-/// handled by [`key_arguments`] and the documented `SORT`/`GEORADIUS` rules.
+/// Declared key arguments paired with the access each key requires, following
+/// Redis 7 key-spec RO/OW/RW flags rather than treating command-level WRITE as
+/// a key permission. Dynamic keys are extracted by [`key_arguments`].
 pub(super) fn key_accesses<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<(&'a [u8], KeyAccess)> {
     let keys = key_arguments(name, args);
     if keys.is_empty() {
@@ -622,7 +645,9 @@ pub(super) fn key_accesses<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<(&'a [u
     keys.into_iter()
         .enumerate()
         .map(|(position, key)| {
-            let access = if readonly {
+            let access = if (readonly || name.eq_ignore_ascii_case(b"XREADGROUP"))
+                && !name.eq_ignore_ascii_case(b"PFCOUNT")
+            {
                 KeyAccess::Read
             } else {
                 write_key_access(command.name, args, position)
@@ -647,18 +672,31 @@ fn write_key_access(name: &str, args: &[&[u8]], position: usize) -> KeyAccess {
     {
         return KeyAccess::Write;
     }
-    // `SET` only reads the key for its optional `GET` reply.
+    // Redis marks SET's key spec RW/ACCESS with variable flags: plain SET is
+    // overwrite-only, while GET also accesses the previous value. Skip option
+    // operands so e.g. `SET k v EX GET` does not mistake an expiry value for GET.
     if eq(b"SET") {
-        let reads = args
-            .get(3..)
-            .unwrap_or_default()
-            .iter()
-            .any(|argument| argument.eq_ignore_ascii_case(b"GET"));
-        return if reads {
-            KeyAccess::ReadWrite
-        } else {
-            KeyAccess::Write
-        };
+        let mut index = 3;
+        while index < args.len() {
+            let option = args[index];
+            if option.eq_ignore_ascii_case(b"GET") {
+                return KeyAccess::ReadWrite;
+            }
+            index += if option.eq_ignore_ascii_case(b"EX")
+                || option.eq_ignore_ascii_case(b"PX")
+                || option.eq_ignore_ascii_case(b"EXAT")
+                || option.eq_ignore_ascii_case(b"PXAT")
+                || option.eq_ignore_ascii_case(b"IFEQ")
+                || option.eq_ignore_ascii_case(b"IFNE")
+                || option.eq_ignore_ascii_case(b"IFDEQ")
+                || option.eq_ignore_ascii_case(b"IFDNE")
+            {
+                2
+            } else {
+                1
+            };
+        }
+        return KeyAccess::Write;
     }
     // `BITFIELD` reads for `GET` and reads-modifies-writes for `SET`/`INCRBY`.
     if eq(b"BITFIELD") {
@@ -1382,6 +1420,10 @@ mod tests {
             vec![(b"k".as_slice(), KeyAccess::ReadWrite)]
         );
         assert_eq!(
+            key_accesses(b"SET", &[b"SET", b"k", b"v", b"EX", b"GET"]),
+            vec![(b"k".as_slice(), KeyAccess::Write)]
+        );
+        assert_eq!(
             key_accesses(b"BITFIELD", &[b"BITFIELD", b"b", b"GET", b"u8", b"0"]),
             vec![(b"b".as_slice(), KeyAccess::Read)]
         );
@@ -1441,6 +1483,62 @@ mod tests {
                 (b"a".as_slice(), KeyAccess::Read),
                 (b"b".as_slice(), KeyAccess::Read)
             ]
+        );
+        // Redis 7 marks PFCOUNT RW because it may promote a compact sketch,
+        // despite its command-level READONLY flag.
+        assert_eq!(
+            key_accesses(b"PFCOUNT", &[b"PFCOUNT", b"hll"]),
+            vec![(b"hll".as_slice(), KeyAccess::ReadWrite)]
+        );
+        assert_eq!(
+            key_accesses(
+                b"XREAD",
+                &[
+                    b"XREAD", b"COUNT", b"2", b"STREAMS", b"s1", b"s2", b"0-0", b"0-0"
+                ]
+            ),
+            vec![
+                (b"s1".as_slice(), KeyAccess::Read),
+                (b"s2".as_slice(), KeyAccess::Read)
+            ]
+        );
+        assert_eq!(
+            key_accesses(
+                b"XREADGROUP",
+                &[b"XREADGROUP", b"GROUP", b"g", b"c", b"STREAMS", b"s", b">"]
+            ),
+            vec![(b"s".as_slice(), KeyAccess::Read)]
+        );
+        assert_eq!(
+            key_arguments(
+                b"SORT",
+                &[b"SORT", b"src", b"STORE", b"first", b"STORE", b"last"]
+            ),
+            vec![b"src".as_slice(), b"last".as_slice()]
+        );
+        assert_eq!(
+            key_accesses(
+                b"GEORADIUS",
+                &[
+                    b"GEORADIUS",
+                    b"geo",
+                    b"1",
+                    b"2",
+                    b"3",
+                    b"km",
+                    b"STORE",
+                    b"a",
+                    b"STOREDIST",
+                    b"b"
+                ]
+            ),
+            vec![
+                (b"geo".as_slice(), KeyAccess::Read),
+                (b"b".as_slice(), KeyAccess::Write)
+            ]
+        );
+        assert!(
+            key_arguments(b"XREAD", &[b"XREAD", b"STREAMS", b"s", b"0-0", b"extra"]).is_empty()
         );
         assert!(key_accesses(b"PING", &[b"PING"]).is_empty());
     }

@@ -444,3 +444,154 @@ fn acl_key_modes_scope_reads_and_writes_and_round_trip() {
     }
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn acl_key_modes_scope_mixed_dynamic_and_option_dependent_specs() {
+    let server = start(Config::default());
+    let mut admin = connect(&server);
+    send(&mut admin, &[b"SET", b"src:bit", b"\xff"], b"+OK\r\n");
+    send(
+        &mut admin,
+        &[b"SET", b"src:copy", b"copy-value"],
+        b"+OK\r\n",
+    );
+    send(
+        &mut admin,
+        &[
+            b"XGROUP",
+            b"CREATE",
+            b"stream:read",
+            b"g",
+            b"0",
+            b"MKSTREAM",
+        ],
+        b"+OK\r\n",
+    );
+    send(&mut admin, &[b"RPUSH", b"sort:read", b"b", b"a"], b":2\r\n");
+    send(
+        &mut admin,
+        &[b"GEOADD", b"geo:read", b"1", b"2", b"member"],
+        b":1\r\n",
+    );
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"SETUSER",
+            b"scoped",
+            b"on",
+            b">pw",
+            b"-@all",
+            b"+@all",
+            b"%R~read:*",
+            b"%W~write:*",
+            b"%RW~rw:*",
+            b"%R~src:*",
+            b"%W~dst:*",
+            b"%R~stream:*",
+            b"%R~hll:*",
+            b"%W~hll:*",
+            b"%R~only-hll:*",
+            b"%R~sort:*",
+            b"%W~sortdst:*",
+            b"%R~geo:*",
+            b"%W~geodst:*",
+            b"(+set %W~selector:*)",
+        ],
+        b"+OK\r\n",
+    );
+    let mut client = connect(&server);
+    send(&mut client, &[b"AUTH", b"scoped", b"pw"], b"+OK\r\n");
+
+    // Write-only grants permit replacement without granting read access.
+    send(&mut client, &[b"SET", b"write:\0key", b"v"], b"+OK\r\n");
+    send(
+        &mut client,
+        &[b"GET", b"write:\0key"],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    send(
+        &mut client,
+        &[b"SET", b"read:key", b"v"],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    send(&mut client, &[b"SET", b"rw:key", b"v"], b"+OK\r\n");
+    send(&mut client, &[b"GET", b"rw:key"], b"$1\r\nv\r\n");
+
+    // Mixed specs check each key position, not the command-wide WRITE flag.
+    send(
+        &mut client,
+        &[b"BITOP", b"AND", b"dst:bit", b"src:bit"],
+        b":1\r\n",
+    );
+    send(&mut client, &[b"COPY", b"src:copy", b"dst:copy"], b":1\r\n");
+    send(
+        &mut client,
+        &[b"COPY", b"write:copy", b"read:copy"],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    // PFCOUNT has an RW key spec despite the command-level READONLY flag.
+    send(&mut client, &[b"PFCOUNT", b"hll:missing"], b":0\r\n");
+    send(
+        &mut client,
+        &[b"PFCOUNT", b"only-hll:missing"],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+
+    // SORT and GEORADIUS access read-only sources and write-only destinations.
+    let sorted = request(
+        &mut client,
+        &[b"SORT", b"sort:read", b"ALPHA", b"STORE", b"sortdst:result"],
+    );
+    assert_eq!(sorted, b":2\r\n");
+    let geo = request(
+        &mut client,
+        &[
+            b"GEORADIUS",
+            b"geo:read",
+            b"1",
+            b"2",
+            b"1",
+            b"KM",
+            b"STORE",
+            b"geodst:result",
+        ],
+    );
+    assert!(!geo.starts_with(b"-NOPERM"), "{geo:?}");
+
+    // STREAMS key/ID halves are dynamic key specs and ACL checked.
+    let xread = request(&mut client, &[b"XREAD", b"STREAMS", b"stream:read", b"0-0"]);
+    assert!(!xread.starts_with(b"-NOPERM"), "{xread:?}");
+    send(
+        &mut client,
+        &[b"XREAD", b"STREAMS", b"write:stream", b"0-0"],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    let group_read = request(
+        &mut client,
+        &[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g",
+            b"c",
+            b"STREAMS",
+            b"stream:read",
+            b">",
+        ],
+    );
+    assert!(!group_read.starts_with(b"-NOPERM"), "{group_read:?}");
+
+    // The root permits the command but the selector grants only SET on its key.
+    send(&mut client, &[b"SET", b"selector:1", b"v"], b"+OK\r\n");
+    send(
+        &mut client,
+        &[b"GET", b"selector:1"],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    send(
+        &mut admin,
+        &[b"ACL", b"DRYRUN", b"scoped", b"GET", b"write:\0key"],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    server.shutdown().unwrap();
+}
