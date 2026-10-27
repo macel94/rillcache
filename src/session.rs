@@ -10,11 +10,11 @@ use std::sync::mpsc::SyncSender;
 use std::time::{Duration, Instant};
 
 use crate::engine::{
-    Access, AclError, Action, AuthError, ListPopOutcome, PopOutcome, Store, StreamId,
-    TransactionOutcome, WatchState, XReadGroupOptions, XReadGroupOutcome, XReadGroupStart,
-    XReadOutcome, ZSetPopOutcome, blocking_lmpop_reply, blocking_reply, blocking_zpop_reply,
-    parse_bzmpop_timeout, parse_list_mpop, parse_mpop, parse_xread, parse_xreadgroup, xread_reply,
-    xreadgroup_reply,
+    Access, AclError, Action, AuthError, ListMoveOutcome, ListPopOutcome, PopOutcome, Store,
+    StreamId, TransactionOutcome, WatchState, XReadGroupOptions, XReadGroupOutcome,
+    XReadGroupStart, XReadOutcome, ZSetPopOutcome, blocking_lmpop_reply, blocking_reply,
+    blocking_zpop_reply, list_move_reply, parse_bzmpop_timeout, parse_list_mpop, parse_mpop,
+    parse_side, parse_xread, parse_xreadgroup, xread_reply, xreadgroup_reply,
 };
 use crate::protocol::encode_bulk;
 
@@ -64,6 +64,12 @@ enum BlockedKind {
     ListMulti {
         left: bool,
         count: usize,
+    },
+    ListMove {
+        source: Vec<u8>,
+        destination: Vec<u8>,
+        from_left: bool,
+        to_left: bool,
     },
     ZSet {
         max: bool,
@@ -252,6 +258,10 @@ impl Session {
         }
         if command.eq_ignore_ascii_case(b"BLMPOP") {
             self.blocking_lmpop(store, &arguments[1..], output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"BLMOVE") || command.eq_ignore_ascii_case(b"BRPOPLPUSH") {
+            self.blocking_list_move(store, arguments, output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"BZMPOP") {
@@ -1020,6 +1030,67 @@ impl Session {
         });
     }
 
+    fn blocking_list_move(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        let blmove = arguments[0].eq_ignore_ascii_case(b"BLMOVE");
+        let (source, destination, from_left, to_left, timeout_raw) = if blmove {
+            if arguments.len() != 6 {
+                arity("blmove", output);
+                return;
+            }
+            let (Some(from_left), Some(to_left)) =
+                (parse_side(arguments[3]), parse_side(arguments[4]))
+            else {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            };
+            (arguments[1], arguments[2], from_left, to_left, arguments[5])
+        } else {
+            if arguments.len() != 4 {
+                arity("brpoplpush", output);
+                return;
+            }
+            (arguments[1], arguments[2], false, true, arguments[3])
+        };
+        let Some(timeout) = std::str::from_utf8(timeout_raw)
+            .ok()
+            .and_then(|text| text.parse::<f64>().ok())
+            .filter(|seconds| seconds.is_finite())
+        else {
+            output.extend_from_slice(b"-ERR timeout is not a float or out of range\r\n");
+            return;
+        };
+        if timeout < 0.0 {
+            output.extend_from_slice(b"-ERR timeout is negative\r\n");
+            return;
+        }
+        match store.blocking_list_move(source, destination, from_left, to_left) {
+            ListMoveOutcome::Empty => {}
+            outcome => {
+                list_move_reply(outcome, output);
+                return;
+            }
+        }
+        let deadline = if timeout == 0.0 {
+            None
+        } else {
+            let Some(duration) = Duration::try_from_secs_f64(timeout).ok() else {
+                output.extend_from_slice(b"-ERR timeout is out of range\r\n");
+                return;
+            };
+            Instant::now().checked_add(duration)
+        };
+        self.blocked = Some(Blocked {
+            keys: vec![source.to_vec(), destination.to_vec()],
+            deadline,
+            kind: BlockedKind::ListMove {
+                source: source.to_vec(),
+                destination: destination.to_vec(),
+                from_left,
+                to_left,
+            },
+        });
+    }
+
     fn blocking_zpop(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         if arguments.len() < 4 {
             arity("bzmpop", output);
@@ -1165,6 +1236,18 @@ impl Session {
                     }
                 }
             }
+            BlockedKind::ListMove {
+                source,
+                destination,
+                from_left,
+                to_left,
+            } => match store.blocking_list_move(&source, &destination, from_left, to_left) {
+                ListMoveOutcome::Empty => false,
+                outcome => {
+                    list_move_reply(outcome, &mut reply);
+                    true
+                }
+            },
             BlockedKind::ZSet { max, count } => match store.blocking_zpop(&keys, max, count) {
                 ZSetPopOutcome::Empty => false,
                 outcome => {

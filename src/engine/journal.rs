@@ -392,6 +392,30 @@ impl Store {
         }
     }
 
+    /// Redis-compatible keyspace notifications for LMOVE/RPOPLPUSH and their
+    /// blocking forms: a push event on the destination, a pop event on the
+    /// source, and a generic `del` when moving emptied the source.
+    pub(super) fn notify_list_move(
+        &self,
+        source: &[u8],
+        destination: &[u8],
+        from_left: bool,
+        to_left: bool,
+        source_emptied: bool,
+    ) {
+        let flags = self.notify_flags();
+        for (channel, payload) in list_move_events(
+            flags,
+            source,
+            destination,
+            from_left,
+            to_left,
+            source_emptied,
+        ) {
+            self.publish(&channel, &payload);
+        }
+    }
+
     /// Rewrite the journal as a complete state snapshot. The caller must already
     /// hold the exclusive transaction gate (the journal-enabled execute path).
     pub(super) fn rewrite_journal(&self) -> Result<u64, ()> {
@@ -681,6 +705,20 @@ fn notification_events(
     if command.eq_ignore_ascii_case(b"MSETEX") {
         return msetex_notification_events(data, arguments, keys, flags, reply);
     }
+    if let Some((from_left, to_left)) = list_move_sides(command, arguments) {
+        if !reply.starts_with(b"$") || reply == b"$-1\r\n" {
+            return Vec::new();
+        }
+        let source = arguments[1];
+        return list_move_events(
+            flags,
+            source,
+            arguments[2],
+            from_left,
+            to_left,
+            !data.entries.contains_key(source),
+        );
+    }
     let mut events = Vec::new();
     for key in keys {
         if data.was_evicted(key) {
@@ -742,6 +780,56 @@ fn msetex_notification_events(
         if flags.generic && options.expiry.is_some() {
             events.extend(build_event(flags, b"expire", key));
         }
+    }
+    events
+}
+
+fn list_move_sides(command: &[u8], arguments: &[&[u8]]) -> Option<(bool, bool)> {
+    let side = |raw: &[u8]| {
+        if raw.eq_ignore_ascii_case(b"LEFT") {
+            Some(true)
+        } else if raw.eq_ignore_ascii_case(b"RIGHT") {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    if command.eq_ignore_ascii_case(b"LMOVE") || command.eq_ignore_ascii_case(b"BLMOVE") {
+        Some((side(arguments.get(3)?)?, side(arguments.get(4)?)?))
+    } else if command.eq_ignore_ascii_case(b"RPOPLPUSH")
+        || command.eq_ignore_ascii_case(b"BRPOPLPUSH")
+    {
+        Some((false, true))
+    } else {
+        None
+    }
+}
+
+fn list_move_events(
+    flags: NotifyFlags,
+    source: &[u8],
+    destination: &[u8],
+    from_left: bool,
+    to_left: bool,
+    source_emptied: bool,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut events = Vec::new();
+    if flags.list {
+        let push = if to_left {
+            b"lpush".as_slice()
+        } else {
+            b"rpush"
+        };
+        let pop = if from_left {
+            b"lpop".as_slice()
+        } else {
+            b"rpop"
+        };
+        events.extend(build_event(flags, push, destination));
+        events.extend(build_event(flags, pop, source));
+    }
+    if flags.generic && source_emptied {
+        events.extend(build_event(flags, b"del", source));
     }
     events
 }
@@ -838,8 +926,6 @@ fn event_for(
         "lset" => ("lset", NotifyCategory::List),
         "ltrim" => ("ltrim", NotifyCategory::List),
         "lrem" => ("lrem", NotifyCategory::List),
-        "lmove" => ("lmove", NotifyCategory::List),
-        "rpoplpush" => ("rpoplpush", NotifyCategory::List),
         "blmpop" | "lmpop" => ("lmpop", NotifyCategory::List),
         "sadd" => ("sadd", NotifyCategory::Set),
         "srem" => ("srem", NotifyCategory::Set),

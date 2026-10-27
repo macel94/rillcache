@@ -32,9 +32,10 @@ impl Store {
         {
             return true;
         }
-        if command.first().is_some_and(|byte| {
+        if (command.first().is_some_and(|byte| {
             byte.eq_ignore_ascii_case(&b'l') || byte.eq_ignore_ascii_case(&b'b')
-        }) && self.execute_list_extended(args, out)
+        }) || command.eq_ignore_ascii_case(b"RPOPLPUSH"))
+            && self.execute_list_extended(args, out)
         {
             return true;
         }
@@ -803,6 +804,40 @@ pub(crate) fn list_pop_reply(outcome: ListPopOutcome, out: &mut Vec<u8>) {
     }
 }
 
+pub(crate) enum ListMoveOutcome {
+    Moved {
+        source: Vec<u8>,
+        value: Vec<u8>,
+        source_emptied: bool,
+    },
+    Empty,
+    WrongType,
+    Oom,
+    JournalError,
+}
+
+pub(crate) fn list_move_reply(outcome: ListMoveOutcome, out: &mut Vec<u8>) {
+    match outcome {
+        ListMoveOutcome::Moved { value, .. } => encode_bulk(Some(&value), out),
+        ListMoveOutcome::Empty => encode_bulk(None, out),
+        ListMoveOutcome::WrongType => wrong_type(out),
+        ListMoveOutcome::Oom => out.extend_from_slice(OOM),
+        ListMoveOutcome::JournalError => {
+            out.extend_from_slice(b"-ERR append-only write failed\r\n")
+        }
+    }
+}
+
+pub(crate) fn parse_side(raw: &[u8]) -> Option<bool> {
+    if raw.eq_ignore_ascii_case(b"LEFT") {
+        Some(true)
+    } else if raw.eq_ignore_ascii_case(b"RIGHT") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 pub(crate) struct MPopOptions<'a> {
     pub keys: Vec<&'a [u8]>,
     pub max: bool,
@@ -1494,6 +1529,30 @@ impl Store {
                     Err(error) => out.extend_from_slice(error),
                 }
             }
+        } else if command.eq_ignore_ascii_case(b"LMOVE") {
+            if args.len() != 5 {
+                arity("lmove", out);
+            } else {
+                self.list_move_command(args, args[3], args[4], out);
+            }
+        } else if command.eq_ignore_ascii_case(b"RPOPLPUSH") {
+            if args.len() != 3 {
+                arity("rpoplpush", out);
+            } else {
+                self.list_move_command(args, b"RIGHT", b"LEFT", out);
+            }
+        } else if command.eq_ignore_ascii_case(b"BLMOVE") {
+            if args.len() != 6 {
+                arity("blmove", out);
+            } else {
+                self.list_move_command(args, args[3], args[4], out);
+            }
+        } else if command.eq_ignore_ascii_case(b"BRPOPLPUSH") {
+            if args.len() != 4 {
+                arity("brpoplpush", out);
+            } else {
+                self.list_move_command(args, b"RIGHT", b"LEFT", out);
+            }
         } else {
             return false;
         }
@@ -1704,6 +1763,147 @@ impl Store {
             };
         }
         ListPopOutcome::Empty
+    }
+
+    fn list_move_command(&self, args: &[&[u8]], from_raw: &[u8], to_raw: &[u8], out: &mut Vec<u8>) {
+        let (Some(from_left), Some(to_left)) = (parse_side(from_raw), parse_side(to_raw)) else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let outcome = self.list_move_in_data(&mut data, args[1], args[2], from_left, to_left, now);
+        list_move_reply(outcome, out);
+    }
+
+    pub(super) fn list_move_in_data(
+        &self,
+        data: &mut Data,
+        source: &[u8],
+        destination: &[u8],
+        from_left: bool,
+        to_left: bool,
+        now: i64,
+    ) -> ListMoveOutcome {
+        data.expire_key(source, now);
+        let Some(source_entry) = data.entries.get(source) else {
+            return ListMoveOutcome::Empty;
+        };
+        let Some(mut source_list) = source_entry
+            .collection
+            .as_ref()
+            .and_then(Collection::list_values)
+        else {
+            return ListMoveOutcome::WrongType;
+        };
+        if source_list.is_empty() {
+            return ListMoveOutcome::Empty;
+        }
+        let source_expires = source_entry.expires;
+        let source_previous = source_entry.payload_len();
+        let same = source == destination;
+        let mut destination_list = if same {
+            VecDeque::new()
+        } else {
+            data.expire_key(destination, now);
+            match data.entries.get(destination) {
+                None => VecDeque::new(),
+                Some(entry) => {
+                    let Some(list) = entry.collection.as_ref().and_then(Collection::list_values)
+                    else {
+                        return ListMoveOutcome::WrongType;
+                    };
+                    list
+                }
+            }
+        };
+        let value = if from_left {
+            source_list.pop_front().expect("nonempty list")
+        } else {
+            source_list.pop_back().expect("nonempty list")
+        };
+        let source_emptied = !same && source_list.is_empty();
+        if same {
+            if to_left {
+                source_list.push_front(value.clone());
+            } else {
+                source_list.push_back(value.clone());
+            }
+        } else if to_left {
+            destination_list.push_front(value.clone());
+        } else {
+            destination_list.push_back(value.clone());
+        }
+        let source_bytes = source_list.iter().map(Vec::len).sum::<usize>();
+        let destination_bytes = destination_list.iter().map(Vec::len).sum::<usize>();
+        let new_payload = if same {
+            data.payload_bytes
+                .checked_sub(source_previous)
+                .and_then(|bytes| bytes.checked_add(source_bytes))
+        } else {
+            let destination_previous = data.entries.get(destination).map(|entry| entry.payload_len);
+            data.payload_bytes
+                .checked_sub(source_previous + source.len())
+                .and_then(|bytes| match source_list.is_empty() {
+                    true => Some(bytes),
+                    false => bytes.checked_add(source_bytes + source.len()),
+                })
+                .and_then(|bytes| match destination_previous {
+                    Some(previous) => bytes.checked_sub(previous),
+                    None => bytes.checked_add(destination.len()),
+                })
+                .and_then(|bytes| bytes.checked_add(destination_bytes))
+        };
+        let Some(new_payload) = new_payload.filter(|bytes| *bytes <= self.max_payload_bytes) else {
+            return ListMoveOutcome::Oom;
+        };
+        let Ok(config) = self.collection_config.read() else {
+            return ListMoveOutcome::JournalError;
+        };
+        let destination_expires = if same {
+            source_expires
+        } else {
+            data.entries
+                .get(destination)
+                .and_then(|entry| entry.expires)
+        };
+        data.remove(source);
+        if same {
+            data.put_collection(
+                destination,
+                encode_list(source_list, config.list_max_listpack_size),
+                destination_expires,
+                0,
+                now,
+            );
+        } else {
+            data.remove(destination);
+            if !source_list.is_empty() {
+                data.put_collection(
+                    source,
+                    encode_list(source_list, config.list_max_listpack_size),
+                    source_expires,
+                    0,
+                    now,
+                );
+            }
+            data.put_collection(
+                destination,
+                encode_list(destination_list, config.list_max_listpack_size),
+                destination_expires,
+                0,
+                now,
+            );
+        }
+        data.payload_bytes = new_payload;
+        ListMoveOutcome::Moved {
+            source: source.to_vec(),
+            value,
+            source_emptied,
+        }
     }
 
     fn list_index(&self, args: &[&[u8]], out: &mut Vec<u8>) {
