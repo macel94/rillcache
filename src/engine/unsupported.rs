@@ -8,6 +8,7 @@
 use super::options::NOT_INTEGER;
 use super::{Store, arity, integer};
 use crate::protocol::encode_bulk;
+use std::io::Write as _;
 
 const CLUSTER_DISABLED: &[u8] = b"-ERR This instance has cluster support disabled\r\n";
 const MODULE_DISABLED: &[u8] = b"-ERR MODULE loading is not supported by this server\r\n";
@@ -75,6 +76,33 @@ impl Store {
                 } else {
                     // No replicas are configured; no acknowledgement can succeed.
                     integer(0, out);
+                }
+            }
+        } else if command.eq_ignore_ascii_case(b"WAITAOF") {
+            // Queue-time blocking commands execute without blocking inside EXEC.
+            if args.len() != 4 {
+                arity("waitaof", out);
+            } else {
+                let parse = |raw: &[u8]| {
+                    std::str::from_utf8(raw)
+                        .ok()
+                        .and_then(|text| text.parse::<i64>().ok())
+                };
+                let (Some(numlocal), Some(numreplicas), Some(timeout)) =
+                    (parse(args[1]), parse(args[2]), parse(args[3]))
+                else {
+                    out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                    return true;
+                };
+                if timeout < 0 {
+                    out.extend_from_slice(b"-ERR timeout can't be negative\r\n");
+                } else {
+                    match self.waitaof_probe(numlocal, numreplicas) {
+                        Ok((local, replicas)) => {
+                            let _ = write!(out, "*2\r\n:{local}\r\n:{replicas}\r\n");
+                        }
+                        Err(error) => out.extend_from_slice(error),
+                    }
                 }
             }
         } else if command.eq_ignore_ascii_case(b"MONITOR") {

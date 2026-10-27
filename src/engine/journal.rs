@@ -599,6 +599,34 @@ impl Store {
         journal.sync_if_due()
     }
 
+    /// Validate WAITAOF arguments and synchronously fsync the local journal when
+    /// the AOF is enabled. Returns `(local acknowledgements, replica
+    /// acknowledgements)`; this standalone server never has replicas.
+    pub(crate) fn waitaof_probe(
+        &self,
+        numlocal: i64,
+        numreplicas: i64,
+    ) -> Result<(u64, u64), &'static [u8]> {
+        if !(0..=1).contains(&numlocal) {
+            return Err(b"-ERR numlocal can't be greater than 1\r\n");
+        }
+        if numreplicas < 0 {
+            return Err(b"-ERR numreplicas can't be negative\r\n");
+        }
+        let enabled = self.aof_config().is_some_and(|config| config.appendonly);
+        if numlocal > 0 && !enabled {
+            return Err(
+                b"-ERR WAITAOF cannot be used when numlocal is set to 1 but the AOF is not enabled.\r\n",
+            );
+        }
+        if !enabled {
+            return Ok((0, 0));
+        }
+        self.journal_flush()
+            .map_err(|_| &b"-ERR append-only journal sync failed\r\n"[..])?;
+        Ok((1, 0))
+    }
+
     /// Force a durable flush before process shutdown, regardless of fsync policy.
     pub fn journal_flush(&self) -> io::Result<()> {
         let Some(journal) = self.journal.as_ref() else {
