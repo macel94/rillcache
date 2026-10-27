@@ -434,6 +434,7 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("wait", 3, &["blocking"], 0, 0, 0),
+    cmd("waitaof", 4, &["blocking"], 0, 0, 0),
     cmd(
         "watch",
         -2,

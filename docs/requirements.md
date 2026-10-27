@@ -121,6 +121,7 @@ reason to couple all future commands into a single large story.
 | S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
 | S92 | As an operator or compatibility tool, I can probe RDB, replication and multi-database commands and receive explicit standalone responses instead of misleading unknown-command errors. | XS | R347–R349; truthful LASTSAVE, explicit SAVE/BGSAVE/replica/database boundaries, data preservation and all-mode wire tests |
 | S93 | As an operator debugging a live instance, I can stream received commands with bounded output and redacted credentials without letting a slow monitor stall normal command service. | S | R350–R352; line format/bounds, redaction, RESET/QUIT cleanup, slow-reader behavior and all-mode wire tests |
+| S94 | As a durability-sensitive client, I can wait for the local AOF to fsync my preceding writes and get the actual acknowledgement counts even when no replicas exist. | S | R353–R355; local/no-AOF results, absent-replica timeout, transaction non-blocking behavior and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1632,6 +1633,25 @@ and the offline upstream harness tests.
   RESET, arity, slow-reader service and every worker mode. Documentation shall
   retain that the stream is process-local, not persisted, not replayed,
   best-effort under backpressure and not a complete audit trail.
+
+### WAITAOF durability acknowledgements (S94)
+
+- **R353 (event-driven):** `WAITAOF numlocal numreplicas timeout` shall validate
+  `numlocal` (0 or 1), non-negative `numreplicas` and non-negative millisecond
+  timeout. With AOF enabled it shall fsync the local journal and report
+  `[1, 0]`; without AOF it shall report local `0` when `numlocal` is 0 and return
+  the documented AOF-disabled error when `numlocal` is 1. Invalid integers shall
+  return the standard integer error.
+- **R354 (state-driven):** While `numreplicas` is greater than zero and no
+  replicas exist, the command shall remain blocked until the timeout and then
+  return the actual `[local, 0]` counts, or block indefinitely when the timeout
+  is 0. Inside `MULTI`/`EXEC` it shall not block and shall return the current
+  counts immediately.
+- **R355 (ubiquitous):** All-mode tests shall cover both AOF states, argument and
+  arity errors, absent-replica timeout duration, transaction non-blocking
+  behavior and every worker mode. Documentation shall retain that this is a
+  local-journal acknowledgement only, not replication, failover, RDB or a
+  strong-consistency guarantee.
 
 ### Error reply statistics (S84)
 

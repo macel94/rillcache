@@ -87,6 +87,9 @@ enum BlockedKind {
     ZSetSingle {
         max: bool,
     },
+    WaitAof {
+        local: u64,
+    },
     XRead {
         starts: Vec<StreamId>,
         count: usize,
@@ -343,6 +346,10 @@ impl Session {
         }
         if command.eq_ignore_ascii_case(b"MONITOR") {
             self.monitor(store, arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"WAITAOF") {
+            self.waitaof(store, arguments, output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"SHUTDOWN") {
@@ -1464,6 +1471,14 @@ impl Session {
                     true
                 }
             },
+            BlockedKind::WaitAof { local } => {
+                if expired {
+                    let _ = write!(reply, "*2\r\n:{local}\r\n:0\r\n");
+                    true
+                } else {
+                    false
+                }
+            }
             BlockedKind::XRead { starts, count } => match store.xread_once(&keys, &starts, count) {
                 Some(XReadOutcome::Empty) | None => false,
                 Some(outcome) => {
@@ -1942,6 +1957,53 @@ impl Session {
     }
 
     /// Disconnect-equivalent server-side context reset (Redis RESET).
+    fn waitaof(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() != 4 {
+            arity("waitaof", output);
+            return;
+        }
+        let parse = |raw: &[u8]| {
+            std::str::from_utf8(raw)
+                .ok()
+                .and_then(|text| text.parse::<i64>().ok())
+        };
+        let (Some(numlocal), Some(numreplicas), Some(timeout)) = (
+            parse(arguments[1]),
+            parse(arguments[2]),
+            parse(arguments[3]),
+        ) else {
+            output.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+            return;
+        };
+        if timeout < 0 {
+            output.extend_from_slice(b"-ERR timeout can't be negative\r\n");
+            return;
+        }
+        let (local, _) = match store.waitaof_probe(numlocal, numreplicas) {
+            Ok(result) => result,
+            Err(error) => {
+                output.extend_from_slice(error);
+                return;
+            }
+        };
+        if numreplicas == 0 {
+            let _ = write!(output, "*2\r\n:{local}\r\n:0\r\n");
+            return;
+        }
+        let deadline = if timeout == 0 {
+            None
+        } else {
+            let millis = u64::try_from(timeout).unwrap_or(u64::MAX);
+            Instant::now().checked_add(Duration::from_millis(millis))
+        };
+        self.blocked = Some(Blocked {
+            slowlog: None,
+            keys: Vec::new(),
+            deadline,
+            kind: BlockedKind::WaitAof { local },
+        });
+    }
+
     fn monitor(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         if arguments.len() != 1 {
             arity("monitor", output);
