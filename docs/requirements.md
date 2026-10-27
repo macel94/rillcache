@@ -117,6 +117,7 @@ reason to couple all future commands into a single large story.
 | S86 | As an ACL administrator, I can define independent command/key scopes per user so one login can read broadly while writing only a key namespace. | S | R328–R331; selector parsing, authorization, listing, ACL-file round-trip and all-mode wire tests |
 | S87 | As an operator, I can inspect the journal mode and change the fsync policy at runtime so durability tuning does not require a restart. | XS | R332–R334; startup values, live policy switch/replay, read-only mode/filename and all-mode wire tests |
 | S97 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R362–R364; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
+| S98 | As an operator, I can inspect truthful payload accounting and a bounded diagnosis through `MEMORY STATS`/`DOCTOR` so I do not infer RSS or allocator health. | XS | R365–R367; fields/high-water/limit, doctor states, HELP and all-mode wire tests |
 | S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 | S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
 | S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
@@ -1784,6 +1785,27 @@ and the offline upstream harness tests.
   existing-client survival and `INFO clients` reflecting the live value.
   Documentation shall retain that this is a connection count, not a
   file-descriptor, memory or cross-process capacity guarantee.
+
+### Payload memory reporting (S98)
+
+- **R365 (event-driven):** `MEMORY STATS` shall return a flat RESP2 map containing
+  `peak.allocated`, `total.allocated`, `keys.count`, `dataset.bytes`,
+  `dataset.percentage`, `rillcache.payload.limit_bytes` and
+  `rillcache.payload.scope`. The peak shall be the process-lifetime payload
+  high-water mark and shall survive deletes, flush and `CONFIG RESETSTAT`;
+  `keys.count` shall count live keys, while byte fields report currently held
+  key-plus-value payload. Extra arguments shall return a bounded arity error.
+- **R366 (event-driven):** `MEMORY DOCTOR` shall return a bounded plain-text
+  report derived from the same snapshot, distinguishing an empty payload, high
+  pressure at or above 90% with `noeviction`, pressure at or above 75%, and a
+  healthy state. It shall always identify the report as payload accounting, not
+  RSS or allocator health. `MEMORY HELP` shall list the supported subcommands and
+  `MEMORY USAGE` shall retain its existing logical estimate.
+- **R367 (ubiquitous):** Tests shall cover the empty and populated fields, peak
+  retention after deletion, limit changes, the pressure and empty doctor states,
+  HELP, arity and every worker mode. Documentation shall retain the absence of
+  RSS, allocator active/resident, fragmentation, replication-buffer and
+  background-eviction measurements.
 
 ### Development and delivery
 

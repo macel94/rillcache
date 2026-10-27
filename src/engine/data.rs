@@ -247,6 +247,7 @@ const MAX_JOURNAL_EVENTS: usize = 65_536;
 pub(super) struct Data {
     pub entries: HashMap<Vec<u8>, Entry>,
     pub payload_bytes: usize,
+    peak_payload_bytes: usize,
     pub expirations: BTreeSet<(i64, Vec<u8>)>,
     pub(super) versions: HashMap<Vec<u8>, u64>,
     version_seq: u64,
@@ -301,6 +302,7 @@ impl Data {
     /// optional append-only journal. The event log is bounded; overflow forces a
     /// full-state journal snapshot instead of allowing a missed key.
     pub fn touch(&mut self, key: &[u8]) {
+        self.peak_payload_bytes = self.peak_payload_bytes.max(self.payload_bytes);
         self.version_seq = self.version_seq.wrapping_add(1);
         if self.versions.len() >= MAX_TRACKED_VERSIONS && !self.versions.contains_key(key) {
             self.versions.clear();
@@ -382,6 +384,10 @@ impl Data {
         self.field_ttls = 0;
     }
 
+    pub(super) fn peak_payload_bytes(&self) -> usize {
+        self.peak_payload_bytes
+    }
+
     pub fn remove(&mut self, key: &[u8]) -> Option<Entry> {
         let (key, entry) = self.entries.remove_entry(key)?;
         self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
@@ -438,10 +444,14 @@ impl Data {
             self.remove(key);
             return;
         }
-        if let Some(collection) = entry.collection.as_ref() {
-            let bytes = collection.payload_len();
-            self.payload_bytes = self.payload_bytes - entry.payload_len + bytes;
+        let previous = entry.payload_len;
+        let bytes = entry
+            .collection
+            .as_ref()
+            .map(|collection| collection.payload_len());
+        if let Some(bytes) = bytes {
             entry.payload_len = bytes;
+            self.payload_bytes = self.payload_bytes - previous + bytes;
         }
         self.touch(key);
     }
@@ -815,6 +825,23 @@ mod tests {
         assert!(!data.journal_overflow);
         data.put(b"k", b"v3", None, 0, 0);
         assert_eq!(data.changes_since(0), (Vec::new(), false));
+    }
+
+    #[test]
+    fn peak_payload_tracks_the_high_water_mark() {
+        let mut data = Data::default();
+        data.put(b"k", b"value", None, 6, 0);
+        let peak = data.peak_payload_bytes();
+        assert_eq!(peak, data.payload_bytes);
+        data.remove(b"k");
+        assert_eq!(data.payload_bytes, 0);
+        assert_eq!(data.peak_payload_bytes(), peak);
+        data.put(b"small", b"v", None, 6, 0);
+        assert_eq!(data.payload_bytes, 6);
+        assert_eq!(data.peak_payload_bytes(), peak);
+        data.flush();
+        assert_eq!(data.payload_bytes, 0);
+        assert_eq!(data.peak_payload_bytes(), peak);
     }
 
     #[test]
