@@ -782,6 +782,17 @@ fn event_for(
         "zadd" => ("zadd", NotifyCategory::Zset),
         "zrem" => ("zrem", NotifyCategory::Zset),
         "zincrby" => ("zincrby", NotifyCategory::Zset),
+        "sort" => {
+            let stored = data
+                .entries
+                .get(key)
+                .is_some_and(|entry| entry.collection.as_ref().is_some_and(Collection::is_list));
+            return Some(if stored {
+                ("sortstore", NotifyCategory::List)
+            } else {
+                ("del", NotifyCategory::Generic)
+            });
+        }
         "zpopmin" => ("zpopmin", NotifyCategory::Zset),
         "zpopmax" => ("zpopmax", NotifyCategory::Zset),
         "zmpop" | "bzmpop" => {
