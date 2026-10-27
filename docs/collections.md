@@ -70,7 +70,11 @@ regressions cover exact deadlines, OOM, FNX races and reply amplification.
 The semantic reference is pinned Redis
 [`t_hash.c`](https://github.com/redis/redis/blob/498ecd0d6d007db11ddb3aea9428552598a78622/src/t_hash.c)
 and [`ebuckets.h`](https://github.com/redis/redis/blob/498ecd0d6d007db11ddb3aea9428552598a78622/src/ebuckets.h).
-This does not claim the entire original upstream hash suite or vendor event parity.
+Successful HSETEX emits the existing hash-key `hset` notification only for its
+supplied target. Rejected writes and unrelated keys reaped for admission receive
+no synthetic `hset`; genuine key lifecycle events remain separate. Field-level
+`hexpire`/`hdel`/`hexpired` event parity is not implemented. This does not claim the
+entire original upstream hash suite or vendor event parity.
 
 Mutation commands stage their complete replacement value and check the configured
 key/value payload budget before publishing; failed writes preserve the previous
