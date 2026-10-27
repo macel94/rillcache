@@ -98,6 +98,7 @@ reason to couple all future commands into a single large story.
 | S68 | As a list user, I can move elements between two lists atomically, including blocking until a source element exists, so that queues and worker handoff do not need read-then-write races. | S | R269–R272; LMOVE/RPOPLPUSH sides, same-key rotation, TTL/OOM, blocking wake/timeout, MULTI/WATCH and all-mode wire tests |
 | S69 | As a keyspace user, I can request deletion through the standard `UNLINK` command so that clients and libraries that prefer asynchronous deletion remain compatible. | XS | R273–R275; mixed types/duplicates/expiry/MULTI/GETKEYS/notifications and all-mode wire tests |
 | S70 | As an operator, I can inspect bounded slow-command history and tune its threshold so that latency problems can be diagnosed without log scraping or unbounded memory. | S | R276–R279; command shapes, config, truncation, redaction, blocking/MULTI and all-mode wire tests |
+| S71 | As a hash user, I can set, inspect and clear per-field TTLs so that individual hash entries can expire without deleting the whole key. | S | R280–R283; expire/ttl/expiretime/persist conditions, lazy expiry, journal and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1249,6 +1250,33 @@ and the offline upstream harness tests.
   truncation, redaction, configuration validation and bounds, blocking duration,
   `MULTI` behavior, disabling and every worker mode. The log shall remain
   process-local, in-memory and absent from persistent storage or `INFO`.
+
+### Hash field expiry controls (S71)
+
+- **R280 (event-driven):** `HEXPIRE`/`HPEXPIRE`, `HEXPIREAT`/`HPEXPIREAT`,
+  `HTTL`/`HPTTL`, `HEXPIRETIME`/`HPEXPIRETIME` and `HPERSIST` shall parse the
+  documented FIELDS count and field list, reject malformed/mismatched counts and
+  negative relative times, and operate on individual hash fields. Expire forms
+  shall accept one NX/XX/GT/LT condition and return per-field `1`/`0`/`-2`;
+  introspection shall return remaining/absolute time, `-1` for no TTL and `-2`
+  for a missing field/key; persist shall return `1`/`-1`/`-2`.
+- **R281 (state-driven):** Field deadlines shall be stored separately from hash
+  values, survive key-level TTL operations, COPY/RENAME and journal snapshots,
+  and be cleared when a field is overwritten by HSET, deleted, or removed by
+  HGETDEL. HINCRBY shall preserve a field's TTL. Lazy access shall purge fields
+  whose deadline has passed, reclaim their payload bytes, delete the key when the
+  last field expires, and touch the key for WATCH/journal capture.
+- **R282 (unwanted behavior):** Wrong-type keys, missing keys/fields, malformed
+  FIELDS/count/options, negative times and unsupported conditions shall return
+  bounded Redis-shaped errors or per-field `-2`/`-1` values without partial
+  writes. Field expiry is lazy rather than actively scanned, publishes no
+  per-field notification (matching standalone Redis), and HGETEX/HSETEX remain
+  separately documented as unsupported.
+- **R283 (ubiquitous):** Tests shall cover conditional expire/GT/LT/NX/XX,
+  remaining/absolute TTL forms, past-deadline lazy removal, key deletion, HSET/
+  HINCRBY/HDEL/HGETDEL TTL interactions, missing/wrong-type/error cases, journal
+  restart and all worker modes. Field-TTL bookkeeping remains excluded from the
+  key/value payload accounting claim and carries no active-expiry or RSS claim. (feat: add per-field hash expiration controls)
 
 ### Development and delivery
 
