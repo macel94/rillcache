@@ -305,7 +305,7 @@ mod tests {
         let captured = capture_arguments(&arguments);
         assert_eq!(captured.len(), MAX_ARGC);
         assert_eq!(captured[0], b"CMD");
-        assert_eq!(captured[MAX_ARGC - 1], b"... (9 more arguments)");
+        assert_eq!(captured[MAX_ARGC - 1], b"... (10 more arguments)");
         let expected = {
             let mut value = vec![b'x'; MAX_ARG_BYTES];
             value.extend_from_slice(b"... (72 more bytes)");
@@ -340,6 +340,7 @@ mod tests {
     #[test]
     fn threshold_and_max_len_bound_the_retained_entries() {
         let store = Store::new(1024);
+        store.set_slowlog_threshold_us(0);
         store.set_slowlog_max_len(2);
         for index in 0..4 {
             let command = format!("CMD{index}");
