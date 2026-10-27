@@ -106,7 +106,8 @@ than silently converted into success.
 **synchronous** despite the Redis-compatible name: it holds the exclusive
 transaction gate while encoding the snapshot, writing a mode-0600 temporary file
 in the journal directory, fsyncing it, atomically renaming it over the journal and
-reopening it. Command service pauses for the duration. There is no fork, copy-on-
+reopening it at the snapshot end so the next append follows the snapshot instead
+of overwriting it. Command service pauses for the duration. There is no fork, copy-on-
 write page sharing, incremental rewrite or background progress reporting.
 
 A successful `+OK` means the old log has been atomically replaced with a complete

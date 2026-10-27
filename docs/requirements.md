@@ -356,15 +356,17 @@ and the offline upstream harness tests.
 - **R129 (event-driven):** When `BGREWRITEAOF` is received on an enabled journal,
   the server shall encode a complete current-state snapshot (`FLUSHALL` plus every
   live key with absolute TTLs), write a mode-0600 temporary file in the journal
-  directory, fsync it, atomically rename it over the journal and reopen it.
+  directory, fsync it, atomically rename it over the journal and reopen it
+  positioned at the snapshot end for subsequent appends.
 - **R130 (state-driven):** While the rewrite runs, the server shall hold the
   exclusive transaction gate so no mutation can be lost or appended to the replaced
   file; command service may pause for the synchronous rewrite. A failed write/sync/
-  rename shall retain the previous journal and return a visible error.
+  rename shall retain the previous journal and return a visible error. The
+  reopened handle shall append after the snapshot rather than at offset zero.
 - **R131 (unwanted behavior):** If the journal is disabled or the rewrite cannot be
   completed, then the command shall return a bounded error without claiming
   compaction. Tests shall cover a compacted live log, replay after rewrite, disabled
-  journals, failure atomicity and all execution modes. Documentation shall not call
+  journals, failure atomicity, append-after-rewrite replay and all execution modes. Documentation shall not call
   this background, incremental or automatically scheduled.
 
 ### Connection reset (S33)
