@@ -306,6 +306,46 @@ fn blocking_sorted_set_pop_persists_remaining_members_and_ttl() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn list_move_commands_persist_both_keys_and_ttl() {
+    let dir = temp_dir("list-move");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"RPUSH", b"src", b"a", b"b"], b":2\r\n");
+        send(&mut stream, &[b"PEXPIRE", b"src", b"3600000"], b":1\r\n");
+        send(&mut stream, &[b"RPUSH", b"dst", b"z"], b":1\r\n");
+        send(&mut stream, &[b"PEXPIRE", b"dst", b"3600000"], b":1\r\n");
+        send(
+            &mut stream,
+            &[b"BLMOVE", b"src", b"dst", b"LEFT", b"RIGHT", b"0"],
+            b"$1\r\na\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"LMOVE", b"src", b"dst", b"RIGHT", b"LEFT"],
+            b"$1\r\nb\r\n",
+        );
+        send(&mut stream, &[b"EXISTS", b"src"], b":0\r\n");
+        server.shutdown().unwrap();
+    }
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"EXISTS", b"src"], b":0\r\n");
+        send(
+            &mut stream,
+            &[b"LRANGE", b"dst", b"0", b"-1"],
+            b"*3\r\n$1\r\nb\r\n$1\r\nz\r\n$1\r\na\r\n",
+        );
+        let mut pttl = [0u8; 7];
+        send_raw(&mut stream, &[b"PTTL", b"dst"], &mut pttl);
+        assert!(pttl[0] == b':' && pttl[1] != b'-');
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn send_raw(stream: &mut TcpStream, arguments: &[&[u8]], reply: &mut [u8]) {
     let mut bytes = Vec::new();
     encode_request(arguments, &mut bytes);

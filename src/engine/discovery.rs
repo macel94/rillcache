@@ -33,9 +33,25 @@ const COMMANDS: &[Command] = &[
     cmd("bitfield_ro", -2, &["readonly"], 1, 1, 1),
     cmd("bitop", -4, &["write", "denyoom"], 1, -1, 1),
     cmd("bitpos", -3, &["readonly"], 1, 1, 1),
+    cmd(
+        "blmove",
+        6,
+        &["write", "denyoom", "noscript", "blocking"],
+        1,
+        2,
+        1,
+    ),
     cmd("blmpop", -5, &["write"], 3, -1, 1),
     cmd("blpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
     cmd("brpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
+    cmd(
+        "brpoplpush",
+        4,
+        &["write", "denyoom", "noscript", "blocking"],
+        1,
+        2,
+        1,
+    ),
     cmd("bzmpop", -5, &["write", "noscript", "blocking"], 0, 0, 0),
     cmd(
         "client",
@@ -134,6 +150,7 @@ const COMMANDS: &[Command] = &[
     cmd("lindex", 3, &["readonly"], 1, 1, 1),
     cmd("linsert", 5, &["write", "denyoom"], 1, 1, 1),
     cmd("llen", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("lmove", 5, &["write", "denyoom"], 1, 2, 1),
     cmd("lmpop", -4, &["write"], 2, -1, 1),
     cmd("lpop", -2, &["write", "fast"], 1, 1, 1),
     cmd("lpos", -3, &["readonly"], 1, 1, 1),
@@ -212,6 +229,7 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("rpop", -2, &["write", "fast"], 1, 1, 1),
+    cmd("rpoplpush", 3, &["write", "denyoom"], 1, 2, 1),
     cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("rpushx", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("sadd", -3, &["write", "denyoom", "fast"], 1, 1, 1),
@@ -588,10 +606,9 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "geosearch"
         | "geosearchstore" => "geo",
         "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
-        "blpop" | "brpop" | "lindex" | "linsert" | "llen" | "lpop" | "lpush" | "lpushx"
-        | "lrange" | "lrem" | "lset" | "ltrim" | "lmpop" | "lpos" | "rpop" | "rpush" | "rpushx" => {
-            "list"
-        }
+        "blmove" | "blpop" | "brpop" | "brpoplpush" | "lindex" | "linsert" | "llen" | "lmove"
+        | "lpop" | "lpush" | "lpushx" | "lrange" | "lrem" | "lset" | "ltrim" | "lmpop" | "lpos"
+        | "rpop" | "rpoplpush" | "rpush" | "rpushx" => "list",
         "sadd" | "scard" | "sdiff" | "sdiffstore" | "sinter" | "sintercard" | "sinterstore"
         | "sismember" | "smembers" | "smismember" | "smove" | "spop" | "srandmember" | "srem"
         | "sscan" | "sunion" | "sunionstore" => "set",
