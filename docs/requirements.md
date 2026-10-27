@@ -118,6 +118,7 @@ reason to couple all future commands into a single large story.
 | S85 | As an operator, I can see the average remaining TTL of expiring keys in `INFO keyspace` so cache freshness is visible without per-key scans. | XS | R326–R327; mean TTL, empty/expired state and all-mode wire tests |
 | S86 | As an ACL administrator, I can define independent command/key scopes per user so one login can read broadly while writing only a key namespace. | S | R328–R331; selector parsing, authorization, listing, ACL-file round-trip and all-mode wire tests |
 | S87 | As an operator, I can inspect the journal mode and change the fsync policy at runtime so durability tuning does not require a restart. | XS | R332–R334; startup values, live policy switch/replay, read-only mode/filename and all-mode wire tests |
+| S88 | As an ACL administrator, I can grant read-only and write-only key namespaces so a write credential cannot exfiltrate data and a read credential cannot mutate it. | S | R335–R338; read/write parsing, per-key access checks, listing, ACL-file round-trip and all-mode wire tests |
 | S97 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R362–R364; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
 | S98 | As an operator, I can inspect truthful payload accounting and a bounded diagnosis through `MEMORY STATS`/`DOCTOR` so I do not infer RSS or allocator health. | XS | R365–R367; fields/high-water/limit, doctor states, HELP and all-mode wire tests |
 | S99 | As a transaction user, I can queue `PUBLISH` and `SPUBLISH` so `EXEC` matches Redis and messages are delivered once at execution time. | XS | R368–R370; queue/no-early-delivery, fan-out/counts, ACL and all-mode wire tests |
@@ -296,9 +297,9 @@ and the offline upstream harness tests.
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
-  Documentation shall retain the missing `%R~`/`%W~` key modes, first-argument
-  rules, subcommand categories, persistent audit, rate limiting, native TLS,
-  key-spec-blind commands and process-level tenant-isolation boundaries.
+  Documentation shall retain the missing first-argument rules, subcommand
+  categories, persistent audit, rate limiting, native TLS, key-spec-blind
+  commands and process-level tenant-isolation boundaries.
 
 ### Append-only persistence (S29)
 
@@ -1188,8 +1189,9 @@ and the offline upstream harness tests.
   GEORADIUS destinations and sorted-set source/destination rules.
 - **R263 (event-driven):** Commands with no declared keys and dynamic lists that
   cannot be extracted from the supplied arguments shall return bounded errors
-  rather than fabricating keys. BY/GET-derived SORT keys and dynamic XREAD keys
-  remain outside static extraction and are documented as such.
+  rather than fabricating keys. BY/GET-derived SORT keys remain outside static
+  extraction and are documented as such; XREAD/XREADGROUP stream keys are
+  extracted from the supplied `STREAMS` block.
 - **R264 (ubiquitous):** Tests shall cover string, multi-key, counted, STORE,
   GEORADIUS and no-key commands, invalid command/arity and all worker modes.
   COMMAND GETKEYS does not change keyspace state or bypass ACL enforcement.
@@ -1784,9 +1786,40 @@ and the offline upstream harness tests.
 - **R331 (ubiquitous):** Tests shall cover root/selector alternatives, key-scoped
   writes with broad reads, `clearselectors`/`reset`, atomic rejection, LIST/
   GETUSER exposure, ACL-file restart round-trips and every worker mode.
-  Documentation shall retain the absence of `%R~`/`%W~` key modes, first-argument
-  rules, nested selectors, subcommand categories, rate limiting, persistent audit
-  and native TLS.
+  Documentation shall retain the absence of first-argument rules, nested
+  selectors, subcommand categories, rate limiting, persistent audit and native
+  TLS.
+
+### ACL read/write key modes (S88)
+
+- **R335 (event-driven):** `ACL SETUSER`, selector groups and ACL files shall
+  accept `%R~pattern` (read), `%W~pattern` (write), `%RW~pattern` and legacy
+  `~pattern` (read-write) key rules. `allkeys` shall grant read-write `*`;
+  `resetkeys` and `reset` shall clear key patterns. Empty patterns, unknown
+  `%`-prefixed forms and oversized patterns shall reject the whole update
+  atomically.
+- **R336 (state-driven):** While authorizing a command, each declared key shall be
+  checked against the access required by its Redis key spec: read-only keys need
+  a read grant, overwrite/update keys need a write grant, and read-write keys need
+  both, which may come from different patterns. Mixed commands shall be checked
+  per key (`BITOP` destination versus sources, `COPY` source versus destination,
+  `RENAME` source versus destination, and store destinations of `SORT`,
+  `GEORADIUS*` and `*STORE`). `SORT ... STORE` and `GEORADIUS ... STORE` shall
+  require read on the source and write on the effective last-wins destination;
+  `XREAD`/`XREADGROUP` shall check each key in the dynamic `STREAMS` block, and
+  `PFCOUNT` shall require both accesses per Redis 7's RW key spec. `SET` with
+  `GET` and mutating `BITFIELD` operations shall require both accesses.
+- **R337 (event-driven):** `ACL LIST` and `ACL GETUSER` shall render read-only
+  patterns as `%R~`, write-only patterns as `%W~` and read-write patterns as `~`.
+  Adding read and write grants for the same pattern shall merge into `~`. `ACL
+  SAVE`/`LOAD` shall round-trip all modes, and `ACL DRYRUN` shall apply the same
+  key-access decisions without executing the command.
+- **R338 (ubiquitous):** Tests shall cover read-only, write-only and read-write
+  grants, per-key mixed commands, read denial for a write-only credential, write
+  denial for a read-only credential, listing, `ACL DRYRUN`, ACL-file restart
+  round-trips and every worker mode. Documentation shall retain the first-argument
+  rule, subcommand-category, dynamic-key-sandbox, persistent-audit, rate-limiting
+  and native-TLS boundaries.
 
 ### Journal configuration visibility and runtime fsync (S87)
 
@@ -2212,8 +2245,8 @@ EX/PX/EXAT/PXAT and IFEQ (plus Redis IFNE/IFDEQ/IFDNE); `GET`, `DEL`, `EXISTS`,
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
 INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX;
 MULTI/EXEC/DISCARD/WATCH/UNWATCH with a bounded queue, atomic batch execution
-and optimistic key invalidation; multi-user ACL users/rules, key patterns and
-atomic ACL-file save/load; opt-in RESP-command append-only persistence with
+and optimistic key invalidation; multi-user ACL users/rules, read/write key
+patterns, selectors and atomic ACL-file save/load; opt-in RESP-command append-only persistence with
 fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction;
 payload-budget eviction policies (`noeviction`, allkeys/volatile random/LRU and
 volatile TTL); keyspace/keyevent notifications for supported mutation classes;
@@ -2273,8 +2306,10 @@ indices, native TLS, RDB/AOF-rewrite compatibility, replication, clustering,
 sharded pub/sub, keyspace notifications and scripts. Cluster mode,
 multi-database, and arbitrary Redis AOF/RDB files are not accepted.
 Single-password and multi-user ACL-file authentication are supported with
-`AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors, audit
-logging, dry-run, generated passwords and channel enforcement remain absent. See
+`AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors,
+read/write key modes, `ACL LOG`/`DRYRUN`/`GENPASS` and pub/sub channel enforcement
+are implemented. First-argument command rules, subcommand-specific categories,
+persistent/centralized audit and rate limiting remain absent. See
 [security](security.md).
 Connection-local commands are rejected rather than queued inside MULTI. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
@@ -2301,8 +2336,8 @@ Not implemented or implied by the completed increments:
 1. Validate HELLO/CLIENT session negotiation against real pinned redis-cli and
    language clients; add command discovery and multiple databases only as separate
    compatible increments.
-2. `%R~/`%W~` selector key modes, first-argument rules, brute-force controls, a
-   persistent audit path and a safe transport-security deployment boundary; then AOF
+2. First-argument command rules, brute-force controls, a persistent audit path and
+   a safe transport-security deployment boundary; then AOF
    rewrite/compaction, RDB interoperability, backup/restore drills and disk-fault
    recovery beyond the current append-only restart path.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and
