@@ -71,6 +71,7 @@ reason to couple all future commands into a single large story.
 | S41 | As an administrator, I can generate secure ACL passwords, dry-run a user's permissions and inspect a bounded denial log so that credential operations and policy debugging are explicit. | XS | R161–R164; GENPASS source/bounds, DRYRUN, LOG aggregation/reset and all-mode wire tests |
 | S42 | As a bitmap user, I can count, locate and combine bits over binary strings with byte/bit ranges and atomic destinations. | S | R165–R168; range/padding/alias/TTL/OOM/WRONGTYPE and all-mode wire tests |
 | S43 | As a stream consumer, I can range-read entries, inspect and acknowledge pending deliveries, and read multiple streams without blocking so that consumer groups are usable beyond one read. | S | R169–R172; ack/pending/range/read/group lifecycle and all-mode wire tests |
+| S44 | As a bitmap user, I can read and atomically update signed or unsigned bit fields of arbitrary width with wrap, saturate or fail overflow behavior. | S | R173–R176; field/offset/overflow/RO/OOM/WRONGTYPE and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -522,7 +523,6 @@ reason to couple all future commands into a single large story.
   publication; tests shall cover BYTE/BIT and negative ranges, padding, empty keys,
   aliases, destination TTL, wrong type and all execution modes.
 
-
 ### Stream pending, range and multi-stream reads (S43)
 
 - **R169 (event-driven):** When `XACK key group id [id ...]` succeeds, it shall
@@ -547,6 +547,31 @@ reason to couple all future commands into a single large story.
   read/group lifecycle, errors and multi-stream reads; docs shall retain missing
   blocking/claim/trim/XINFO subcommands, volatile pending across restart and
   dynamic-key ACL limitations.
+
+### Arbitrary-width bitfields (S44)
+
+- **R173 (event-driven):** When `BITFIELD key` receives `GET type offset`,
+  `SET type offset value` and `INCRBY type offset increment` subcommands, it shall
+  execute them left-to-right and return one RESP array element per operation:
+  `GET` returns the field, `SET` returns the previous field, and `INCRBY` returns
+  the new field. Types shall be signed `i1`..`i64` or unsigned `u1`..`u63`; offsets
+  shall be numeric bit positions or `#n` field-width multiples within the bounded
+  32-bit offset range. Missing bytes shall read as zero.
+- **R174 (event-driven):** While `OVERFLOW WRAP|SAT|FAIL` applies to following
+  `SET`/`INCRBY` operations, the server shall wrap (default), saturate or return a
+  null array element without writing when the value cannot fit. Successful writes
+  shall zero-fill gaps, preserve TTL and publish the complete new string only after
+  all parse, offset and payload-admission checks succeed.
+- **R175 (event-driven):** `BITFIELD_RO` shall permit only `GET` (and `OVERFLOW`)
+  and return `ERR BITFIELD_RO only supports the GET subcommand` for writes. A
+  wrong-type key, invalid type/offset/value/overflow token or payload-budget
+  failure shall return one bounded error without exposing partial writes.
+- **R176 (ubiquitous):** The commands shall publish truthful command metadata and
+  the `@bitmap` ACL category, never require external dependencies or unsafe code,
+  and be covered by unit and all-mode wire tests for signed/unsigned fields,
+  `#` offsets, overflow policies, zero-fill, TTL, RO/error paths, transactions and
+  OOM atomicity. `u64` remains unsupported and no Redis-internal encoding guarantee
+  is claimed.
 
 ### Development and delivery
 
@@ -886,8 +911,8 @@ payload-budget eviction policies (`noeviction`, allkeys/volatile random/LRU and
 volatile TTL); keyspace/keyevent notifications for supported mutation classes;
 ACL GENPASS/DRYRUN and a bounded denial log; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT/
-BITCOUNT/BITPOS/BITOP; LCS (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); lists, sets,
-hashes and sorted sets with
+BITCOUNT/BITPOS/BITOP/BITFIELD/BITFIELD_RO; LCS (LEN/IDX/WITHMATCHLEN/
+MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store
 commands, score/rank ranges, pops and bounded blocking `BLPOP`/`BRPOP` documented
 in [typed collections](collections.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor

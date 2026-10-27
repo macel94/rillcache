@@ -29,6 +29,8 @@ const COMMANDS: &[Command] = &[
     ),
     cmd("bgrewriteaof", 1, &["admin", "dangerous", "slow"], 0, 0, 0),
     cmd("bitcount", -2, &["readonly"], 1, 1, 1),
+    cmd("bitfield", -2, &["write", "denyoom"], 1, 1, 1),
+    cmd("bitfield_ro", -2, &["readonly"], 1, 1, 1),
     cmd("bitop", -4, &["write", "denyoom"], 1, -1, 1),
     cmd("bitpos", -3, &["readonly"], 1, 1, 1),
     cmd("blpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
@@ -405,7 +407,9 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "msetnx" | "psetex" | "set" | "setex" | "setnx" | "setrange" | "strlen" | "substr" => {
             "string"
         }
-        "bitcount" | "bitop" | "bitpos" | "getbit" | "setbit" => "bitmap",
+        "bitcount" | "bitfield" | "bitfield_ro" | "bitop" | "bitpos" | "getbit" | "setbit" => {
+            "bitmap"
+        }
         "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
         "blpop" | "brpop" | "lindex" | "linsert" | "llen" | "lpop" | "lpush" | "lpushx"
         | "lrange" | "lrem" | "lset" | "ltrim" | "rpop" | "rpush" | "rpushx" => "list",
@@ -656,6 +660,8 @@ mod tests {
             ("pfcount", "hyperloglog"),
             ("pfmerge", "hyperloglog"),
             ("bitcount", "bitmap"),
+            ("bitfield", "bitmap"),
+            ("bitfield_ro", "bitmap"),
             ("bitop", "bitmap"),
             ("bitpos", "bitmap"),
         ] {

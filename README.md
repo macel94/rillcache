@@ -64,7 +64,9 @@ See [string semantics](docs/strings.md) and
 
 Bitmap commands `SETBIT`/`GETBIT`/`BITCOUNT`/`BITPOS`/`BITOP` support binary
 MSB-first bit access, BYTE/BIT ranges, and atomic AND/OR/XOR/NOT destinations.
-See [bitmap/LCS/float limits](docs/string-algorithms.md).
+`BITFIELD`/`BITFIELD_RO` add signed/unsigned fields, `#` offsets and
+wrap/saturate/fail overflow policies. See
+[bitmap/LCS/float limits](docs/string-algorithms.md).
 
 Binary-safe lists, sets, hashes and sorted sets support creation, mutation,
 removal, bounded random selection, set algebra/store commands, score ranges and
