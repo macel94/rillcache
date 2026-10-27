@@ -784,6 +784,18 @@ fn event_for(
         "zincrby" => ("zincrby", NotifyCategory::Zset),
         "zpopmin" => ("zpopmin", NotifyCategory::Zset),
         "zpopmax" => ("zpopmax", NotifyCategory::Zset),
+        "zmpop" => {
+            let numkeys = arguments
+                .get(1)
+                .and_then(|raw| std::str::from_utf8(raw).ok())
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .unwrap_or(0);
+            let direction = arguments.get(2usize.saturating_add(numkeys));
+            if direction.is_some_and(|value| value.eq_ignore_ascii_case(b"MAX")) {
+                return Some(("zpopmax", NotifyCategory::Zset));
+            }
+            return Some(("zpopmin", NotifyCategory::Zset));
+        }
         "zremrangebyrank" => ("zremrangebyrank", NotifyCategory::Zset),
         "zremrangebyscore" => ("zremrangebyscore", NotifyCategory::Zset),
         "zremrangebylex" => ("zremrangebylex", NotifyCategory::Zset),

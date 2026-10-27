@@ -594,3 +594,61 @@ fn sorted_set_algebra_store_emits_destination_events() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn zmpop_emits_direction_specific_pop_events() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(&mut writer, &[b"ZADD", b"z", b"1", b"a"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zadd",
+            b"z"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"ZMPOP", b"1", b"z", b"MIN"],
+        b"*2\r\n$1\r\nz\r\n*1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zpopmin",
+            b"z"
+        ])
+    );
+    send(&mut writer, &[b"ZADD", b"z", b"1", b"a"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zadd",
+            b"z"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"ZMPOP", b"1", b"z", b"MAX"],
+        b"*2\r\n$1\r\nz\r\n*1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:zpopmax",
+            b"z"
+        ])
+    );
+    server.shutdown().unwrap();
+}

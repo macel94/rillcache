@@ -313,6 +313,7 @@ const COMMANDS: &[Command] = &[
     cmd("zintercard", -3, &["readonly"], 0, 0, 0),
     cmd("zinterstore", -4, &["write", "denyoom"], 1, 1, 1),
     cmd("zlexcount", 4, &["readonly", "fast"], 1, 1, 1),
+    cmd("zmpop", -4, &["write"], 2, -1, 1),
     cmd("zpopmax", -2, &["write", "fast"], 1, 1, 1),
     cmd("zpopmin", -2, &["write", "fast"], 1, 1, 1),
     cmd("zrandmember", -2, &["readonly"], 1, 1, 1),
@@ -377,7 +378,8 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
     let counted_zset = name.eq_ignore_ascii_case(b"ZUNION")
         || name.eq_ignore_ascii_case(b"ZINTER")
         || name.eq_ignore_ascii_case(b"ZDIFF")
-        || name.eq_ignore_ascii_case(b"ZINTERCARD");
+        || name.eq_ignore_ascii_case(b"ZINTERCARD")
+        || name.eq_ignore_ascii_case(b"ZMPOP");
     let store_zset = name.eq_ignore_ascii_case(b"ZUNIONSTORE")
         || name.eq_ignore_ascii_case(b"ZINTERSTORE")
         || name.eq_ignore_ascii_case(b"ZDIFFSTORE");

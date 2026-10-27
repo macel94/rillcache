@@ -2451,10 +2451,129 @@ impl Store {
             } else {
                 self.zset_intercard(args, out);
             }
+        } else if command.eq_ignore_ascii_case(b"ZMPOP") {
+            if args.len() < 4 {
+                arity("zmpop", out);
+            } else {
+                self.zset_mpop(args, out);
+            }
         } else {
             return false;
         }
         true
+    }
+
+    fn zset_mpop(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(numkeys) = parse_i64(args[1]).filter(|value| *value > 0) else {
+            out.extend_from_slice(b"-ERR numkeys should be greater than 0\r\n");
+            return;
+        };
+        let Ok(numkeys) = usize::try_from(numkeys) else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let Some(where_index) = numkeys.checked_add(2) else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let Some(where_token) = args.get(where_index) else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let max = if where_token.eq_ignore_ascii_case(b"MIN") {
+            false
+        } else if where_token.eq_ignore_ascii_case(b"MAX") {
+            true
+        } else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let mut count = 1usize;
+        let mut count_set = false;
+        let mut index = where_index + 1;
+        while index < args.len() {
+            if !count_set && args[index].eq_ignore_ascii_case(b"COUNT") && index + 1 < args.len() {
+                let Some(value) = parse_i64(args[index + 1]).filter(|value| *value > 0) else {
+                    out.extend_from_slice(b"-ERR count should be greater than 0\r\n");
+                    return;
+                };
+                count = usize::try_from(value).unwrap_or(usize::MAX);
+                count_set = true;
+                index += 2;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        for key in &args[2..where_index] {
+            let mut zset = match owned_zset(&mut data, key, now) {
+                Ok(Some(zset)) => zset,
+                Ok(None) => continue,
+                Err(()) => {
+                    wrong_type(out);
+                    return;
+                }
+            };
+            if zset.is_empty() {
+                continue;
+            }
+            let entry = data.entries.get(*key).expect("zset exists");
+            let expires = entry.expires;
+            let previous = entry.payload_len();
+            let ordered = ordered_zset(
+                zset.iter()
+                    .map(|(member, score)| (member.as_slice(), *score))
+                    .collect(),
+                max,
+            );
+            let take = count.min(ordered.len());
+            for (member, _) in ordered.iter().take(take) {
+                zset.remove(member);
+            }
+            let encoded = if zset.is_empty() {
+                None
+            } else {
+                let Ok(config) = self.collection_config.read() else {
+                    internal_error(out);
+                    return;
+                };
+                Some(encode_zset(zset, &config))
+            };
+            write!(out, "*2\r\n").expect("Vec write");
+            encode_bulk(Some(key), out);
+            write!(out, "*{take}\r\n").expect("Vec write");
+            for (member, score) in ordered.iter().take(take) {
+                write!(out, "*2\r\n").expect("Vec write");
+                encode_bulk(Some(member), out);
+                encode_bulk(Some(&score_bytes(*score)), out);
+            }
+            match encoded {
+                Some(encoded) => {
+                    let Some(payload) = data.reserve(
+                        key,
+                        encoded.payload_len(),
+                        Some(previous),
+                        self.max_payload_bytes,
+                        now,
+                    ) else {
+                        out.clear();
+                        out.extend_from_slice(OOM);
+                        return;
+                    };
+                    data.put_collection(key, encoded, expires, payload, now);
+                }
+                None => {
+                    data.remove(key);
+                }
+            }
+            return;
+        }
+        out.extend_from_slice(b"*-1\r\n");
     }
 
     fn zset_range(&self, args: &[&[u8]], store: bool, out: &mut Vec<u8>) {
