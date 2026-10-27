@@ -31,6 +31,14 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("bgrewriteaof", 1, &["admin", "dangerous", "slow"], 0, 0, 0),
+    cmd(
+        "bgsave",
+        -1,
+        &["admin", "noscript", "no_async_loading"],
+        0,
+        0,
+        0,
+    ),
     cmd("bitcount", -2, &["readonly"], 1, 1, 1),
     cmd("bitfield", -2, &["write", "denyoom"], 1, 1, 1),
     cmd("bitfield_ro", -2, &["readonly"], 1, 1, 1),
@@ -104,6 +112,7 @@ const COMMANDS: &[Command] = &[
     cmd("expire", -3, &["write", "fast"], 1, 1, 1),
     cmd("expireat", -3, &["write", "fast"], 1, 1, 1),
     cmd("expiretime", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("failover", -1, &["admin", "noscript", "stale"], 0, 0, 0),
     cmd("flushall", -1, &["write", "slow"], 0, 0, 0),
     cmd("flushdb", -1, &["write", "slow"], 0, 0, 0),
     cmd("function", -2, &["write", "admin"], 0, 0, 0),
@@ -164,6 +173,7 @@ const COMMANDS: &[Command] = &[
     cmd("incrbyfloat", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
     cmd("keys", 2, &["readonly"], 0, 0, 0),
+    cmd("lastsave", 1, &["loading", "stale", "fast"], 0, 0, 0),
     cmd(
         "latency",
         -2,
@@ -191,6 +201,7 @@ const COMMANDS: &[Command] = &[
     cmd("module", -2, &[], 0, 0, 0),
     cmd("mset", -3, &["write", "denyoom"], 1, -1, 2),
     cmd("msetex", -4, &["write", "denyoom"], 2, -1, 2),
+    cmd("move", 3, &["write", "fast"], 1, 1, 1),
     cmd("msetnx", -3, &["write", "denyoom"], 1, -1, 2),
     cmd(
         "multi",
@@ -210,6 +221,14 @@ const COMMANDS: &[Command] = &[
     cmd("pfmerge", -2, &["write", "denyoom"], 1, -1, 1),
     cmd("ping", -1, &["fast"], 0, 0, 0),
     cmd("psetex", 4, &["write", "denyoom"], 1, 1, 1),
+    cmd(
+        "psync",
+        -3,
+        &["admin", "noscript", "no_async_loading", "no_multi"],
+        0,
+        0,
+        0,
+    ),
     cmd(
         "psubscribe",
         -2,
@@ -248,6 +267,22 @@ const COMMANDS: &[Command] = &[
     cmd("readonly", 1, &["fast"], 0, 0, 0),
     cmd("readwrite", 1, &["fast"], 0, 0, 0),
     cmd("rename", 3, &["write"], 1, 2, 1),
+    cmd(
+        "replicaof",
+        3,
+        &["admin", "noscript", "stale", "no_async_loading"],
+        0,
+        0,
+        0,
+    ),
+    cmd(
+        "replconf",
+        -1,
+        &["admin", "noscript", "loading", "stale", "allow_busy"],
+        0,
+        0,
+        0,
+    ),
     cmd("renamenx", 3, &["write", "fast"], 1, 2, 1),
     cmd(
         "reset",
@@ -270,6 +305,14 @@ const COMMANDS: &[Command] = &[
     cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("rpushx", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("sadd", -3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd(
+        "save",
+        1,
+        &["admin", "noscript", "no_async_loading", "no_multi"],
+        0,
+        0,
+        0,
+    ),
     cmd("scan", -2, &["readonly", "slow"], 0, 0, 0),
     cmd("scard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("script", -2, &["admin"], 0, 0, 0),
@@ -297,6 +340,14 @@ const COMMANDS: &[Command] = &[
         "slowlog",
         -2,
         &["admin", "noscript", "loading", "stale", "slow"],
+        0,
+        0,
+        0,
+    ),
+    cmd(
+        "slaveof",
+        3,
+        &["admin", "noscript", "stale", "no_async_loading"],
         0,
         0,
         0,
@@ -336,6 +387,15 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("substr", 4, &["readonly"], 1, 1, 1),
+    cmd("swapdb", 3, &["write", "fast"], 0, 0, 0),
+    cmd(
+        "sync",
+        1,
+        &["admin", "noscript", "no_async_loading", "no_multi"],
+        0,
+        0,
+        0,
+    ),
     cmd("sunion", -2, &["readonly"], 1, -1, 1),
     cmd("sunionstore", -3, &["write", "denyoom"], 1, -1, 1),
     cmd(
@@ -731,11 +791,12 @@ fn command_group(name: &str) -> Option<&'static str> {
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "spublish" | "ssubscribe"
         | "subscribe" | "sunsubscribe" | "unsubscribe" => "pubsub",
-        "object" | "time" | "sort" | "sort_ro" => "generic",
+        "object" | "time" | "sort" | "sort_ro" | "bgsave" | "failover" | "lastsave" | "psync"
+        | "replicaof" | "replconf" | "save" | "slaveof" | "sync" => "generic",
         "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
         | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
         | "pexpiretime" | "pttl" | "randomkey" | "rename" | "renamenx" | "touch" | "ttl"
-        | "type" | "unlink" | "scan" => "keyspace",
+        | "type" | "unlink" | "scan" | "move" | "swapdb" => "keyspace",
         _ => return None,
     })
 }
