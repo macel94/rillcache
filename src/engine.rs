@@ -124,6 +124,7 @@ pub struct Store {
     slowlog_threshold_us: std::sync::atomic::AtomicI64,
     slowlog_max_len: std::sync::atomic::AtomicUsize,
     client_pause: std::sync::atomic::AtomicU64,
+    max_clients: std::sync::atomic::AtomicUsize,
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
     auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64,
@@ -186,6 +187,7 @@ impl Store {
             slowlog_threshold_us: std::sync::atomic::AtomicI64::new(slowlog::DEFAULT_THRESHOLD_US),
             slowlog_max_len: std::sync::atomic::AtomicUsize::new(slowlog::DEFAULT_MAX_LEN),
             client_pause: std::sync::atomic::AtomicU64::new(0),
+            max_clients: std::sync::atomic::AtomicUsize::new(128),
             latency_monitor_threshold_ms: std::sync::atomic::AtomicU64::new(
                 latency::DEFAULT_THRESHOLD_MS,
             ),
@@ -639,6 +641,14 @@ impl Store {
             data.evicted_keys = 0;
             true
         })
+    }
+
+    pub fn set_max_clients(&self, value: usize) {
+        self.max_clients.store(value, Ordering::Relaxed);
+    }
+
+    pub fn max_clients(&self) -> usize {
+        self.max_clients.load(Ordering::Relaxed)
     }
 
     pub fn set_eviction_policy(&self, policy: EvictionPolicy) -> bool {

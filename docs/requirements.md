@@ -105,10 +105,12 @@ reason to couple all future commands into a single large story.
 | S75 | As an operator, I can request a durable protocol-level stop so that maintenance can flush acknowledged journal writes and join workers without relying on signals. | S | R296–R299; flags/errors/ABORT/MULTI/persistence/all-mode shutdown tests |
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
-| S83 | As a hash user, I can atomically read or set counted fields together with their expiry so that conditional writes and TTL updates do not race separate commands. | S | R324–R327; duplicate/binary/due-deadline/OOM/bounds/concurrency, journal, transaction and all-mode wire tests |
+| S-HC | As a hash user, I can atomically read or set counted fields together with their expiry so that conditional writes and TTL updates do not race separate commands. | S | R-HC1–R-HC4; duplicate/binary/due-deadline/OOM/bounds/concurrency, journal, transaction and all-mode wire tests |
 | S78 | As an operator, I can configure automatic journal compaction thresholds so that an append-only file does not grow without bound between manual rewrites. | S | R306–R309; config/defaults/growth/baseline/replay and all-mode wire tests |
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
+| S82 | As an operator, I can see the configured connection limit in `INFO clients` so capacity tooling does not have to guess it. | XS | R319–R320; configured/default maxclients, INFO all and all-mode wire tests |
+| S83 | As an operator, I can kill connections by minimum age so stale or leaky clients can be reaped without knowing their IDs. | XS | R321–R322; MAXAGE matching, invalid values, caller protection and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 
 ## EARS acceptance requirements
@@ -1282,7 +1284,7 @@ and the offline upstream harness tests.
   bounded Redis-shaped errors or per-field `-2`/`-1` values without partial
   writes. Field expiry is lazy rather than actively scanned, publishes no
   per-field notification. Combined HGETEX/HSETEX value/TTL operations are
-  specified separately by S83; this is not a full vendor notification claim.
+  specified separately by S-HC; this is not a full vendor notification claim.
 - **R283 (ubiquitous):** Tests shall cover conditional expire/GT/LT/NX/XX,
   remaining/absolute TTL forms, past-deadline lazy removal, key deletion, HSET/
   HINCRBY/HDEL/HGETDEL TTL interactions, missing/wrong-type/error cases, journal
@@ -1405,27 +1407,27 @@ and the offline upstream harness tests.
   unknown categories, syntax failures and all worker modes. No module metadata or
   Redis extended command docs are implied.
 
-### Combined hash field values and expiry (S83)
+### Combined hash field values and expiry (S-HC)
 
-- **R324 (event-driven):** When HSETEX receives a valid counted field/value block,
+- **R-HC1 (event-driven):** When HSETEX receives a valid counted field/value block,
   it shall atomically apply all pairs (last duplicate wins), return one on success
   or zero when FNX/FXX fails against the original live fields, preserve the key
   TTL, clear written field TTLs by default, and support KEEPTTL or one explicit
   EX/PX/EXAT/PXAT deadline. A due deadline shall remove targeted fields without
   reserving discarded values; removing the final field shall delete the key.
-- **R325 (event-driven):** When HGETEX receives a valid counted field block, it
+- **R-HC2 (event-driven):** When HGETEX receives a valid counted field block, it
   shall return binary values/nulls in argument order, preserve TTLs by default,
   and apply PERSIST or one explicit deadline to existing fields only. A due
   deadline shall remove each field after its first returned value, so a later
   duplicate shall return null. Missing keys shall not be created.
-- **R326 (unwanted behavior):** If options/counts/times/types are invalid, final
+- **R-HC3 (unwanted behavior):** If options/counts/times/types are invalid, final
   payload admission fails, or a complete HGETEX RESP reply exceeds 2 MiB including
   duplicates and framing, it shall return one bounded error with no partial reply
   or live value/TTL mutation. Counts shall be positive signed-32-bit values;
   deadlines shall not exceed Redis's verified `(2^48 - 1) >> 2` milliseconds.
   Options may precede or follow the counted FIELDS block; duplicate clauses and
   unsupported options shall be rejected without reflecting arbitrary bytes.
-- **R327 (ubiquitous):** Tests shall cover due/zero/equal deadlines with injected
+- **R-HC4 (ubiquitous):** Tests shall cover due/zero/equal deadlines with injected
   clocks, repeated/binary fields, FNX races, OOM and reply-size atomicity, errors,
   key/field TTL interactions, discovery/ACL, WATCH/MULTI, persistence and all worker
   modes. No active field-expiry scan, exhaustive vendor event parity, RSS ceiling,
@@ -1506,6 +1508,27 @@ and the offline upstream harness tests.
   clearing `expired_subkeys` without changing live `subexpiry`, and every worker
   mode. Documentation shall retain that field expiry is lazy, not actively
   scanned, and that neither value is an RSS or payload-accounting measurement.
+
+### Configured connection limit visibility (S82)
+
+- **R319 (event-driven):** When `INFO clients` or `INFO all` is requested, the
+  server shall report `maxclients` equal to the configured maximum connection
+  limit, alongside `connected_clients` and `cluster_connections:0`.
+- **R320 (ubiquitous):** Tests shall cover a custom and the default limit in
+  every worker mode and `INFO all` inclusion. Documentation shall retain that the
+  field reports configuration, not current capacity, blocked clients, per-client
+  file descriptors or a cross-process view.
+
+### Client kill by age (S83)
+
+- **R321 (event-driven):** When `CLIENT KILL MAXAGE <milliseconds>` receives a
+  non-negative integer, the server shall kill matching connections whose age is
+  at least that value, intersecting the filter with `ID`/`ADDR`/`TYPE`/`USER`
+  filters, returning the killed count and always skipping the caller.
+- **R322 (ubiquitous):** Tests shall cover old connections being killed, a young
+  connection surviving, caller protection, invalid `MAXAGE` values, the
+  unchanged legacy form and every worker mode. Documentation shall retain the
+  absence of `SKIPME no`, fd/idle/blocked metadata and a cross-process view.
 
 ### Development and delivery
 

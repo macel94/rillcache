@@ -32,12 +32,13 @@ key=value record per registered connection with `id`, `addr`, `name`, `age`,
 `lib-name` and `lib-ver`. It intentionally omits fields this server does not
 measure (fd, idle, command, buffers, memory, redirection, network totals) rather
 than inventing values. `CLIENT KILL` uses filters intersecting with each other:
-`ID <id>`, `ADDR <ip:port>`, `TYPE normal|pubsub` and `USER <name>`, with
+`ID <id>`, `ADDR <ip:port>`, `TYPE normal|pubsub`, `USER <name>` and
+`MAXAGE <milliseconds>` (matching connections at least that old), with
 `SKIPME yes` only (default); `SKIPME no` returns an explicit unsupported error.
 The legacy single-address form returns `+OK`/`No such client`, while filtered
 forms return the killed count. The calling connection is always skipped, and a
 killed socket is shut down immediately. `INFO clients` reports
-`connected_clients` and `cluster_connections:0`.
+`connected_clients`, `cluster_connections:0` and the configured `maxclients`.
 
 `CLIENT PAUSE timeout [WRITE|ALL]` temporarily defers new client commands for
 `timeout` milliseconds; the default mode is `ALL`. Under `WRITE`, read-only
