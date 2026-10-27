@@ -65,7 +65,20 @@ a specific Redis release.
 
 `ACL SETUSER` is atomic: a bad rule leaves the previous user untouched.
 `ACL DELUSER`, `ACL WHOAMI`, `ACL USERS`, `ACL LIST`, `ACL GETUSER`, `ACL CAT`,
-`ACL SAVE` and `ACL LOAD` are implemented. `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
+`ACL SAVE`, `ACL LOAD`, `ACL GENPASS`, `ACL DRYRUN` and `ACL LOG` are implemented.
+`ACL DRYRUN user command [arg ...]` evaluates the named user's current rules
+without executing the command or recording a denial. `ACL GENPASS [bits]` returns
+hex from `/dev/urandom` (1..=1024 bits, default 256) and fails visibly if the OS
+source is unavailable rather than falling back to weak randomness.
+
+`ACL LOG [count]` returns the most recent denial entries (default 10, bounded to
+128) as `[count, reason, context, object, username, age-seconds]` arrays;
+identical denial tuples aggregate by count. Reasons distinguish `noauth`,
+`command`, `key` and `channel`; context is `toplevel` or `multi`. `ACL LOG RESET`
+clears the buffer. Entries contain command/key/channel names and usernames and are
+therefore administrative data; the log is process-local, not persisted or
+replicated, and is not an exhaustive security audit trail. Unauthenticated denials
+are attributed to `default`. `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
 renames it over the target and fsyncs the directory (where supported); hashes are
 saved as `#...`, never plaintext passwords. ACL files are bounded to 4 MiB,
 10,000 users, 1,024 rules per user/operation and 1,024 key/channel patterns per

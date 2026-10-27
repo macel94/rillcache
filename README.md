@@ -114,8 +114,10 @@ Access control starts with a single operator password for the `default` user
 multi-user ACL file (`--aclfile`) with hashed passwords, ordered
 command/category rules, declared-key patterns and atomic `ACL SAVE`/`LOAD`.
 `NOAUTH`/`NOPERM` are checked before store access and apply to live connections.
-ACL selectors, audit logging, brute-force controls and native TLS remain separate
-security gates; channel patterns are enforced for pub/sub. See
+ACL selectors, persistent/centralized audit, brute-force controls and native TLS
+remain separate security gates; channel patterns are enforced for pub/sub.
+`ACL GENPASS`, `ACL DRYRUN` and a bounded process-local `ACL LOG` support
+credential operations and policy debugging. See
 [security](docs/security.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
