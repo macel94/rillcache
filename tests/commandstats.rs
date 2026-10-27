@@ -168,6 +168,66 @@ fn info_commandstats_records_calls_failures_and_resets_in_all_modes() {
 }
 
 #[test]
+fn disabled_observers_and_multi_keep_commandstats_opt_in_and_count_only_exec() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers, None);
+        let mut stream = connect(&server);
+        let mut observer = connect(&server);
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"slowlog-log-slower-than", b"-1"],
+            b"+OK\r\n",
+        );
+        command(&mut stream, &[b"PING"], b"+PONG\r\n");
+        let disabled = bulk_text(&reply(&mut observer, &[b"INFO", b"commandstats"]));
+        assert!(stat_line(&disabled, "ping").is_none());
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"commandstats-enabled", b"yes"],
+            b"+OK\r\n",
+        );
+        let enabled = bulk_text(&reply(&mut observer, &[b"INFO", b"commandstats"]));
+        assert!(stat_line(&enabled, "config").unwrap().contains("calls=1,"));
+        command(&mut stream, &[b"MULTI"], b"+OK\r\n");
+        command(&mut stream, &[b"PING"], b"+QUEUED\r\n");
+        command(&mut stream, &[b"SET", b"k", b"v"], b"+QUEUED\r\n");
+        let queued = bulk_text(&reply(&mut observer, &[b"INFO", b"commandstats"]));
+        assert!(stat_line(&queued, "ping").is_none(), "{queued}");
+        assert!(stat_line(&queued, "set").is_none(), "{queued}");
+        command(&mut stream, &[b"EXEC"], b"*2\r\n+PONG\r\n+OK\r\n");
+        let executed = bulk_text(&reply(&mut observer, &[b"INFO", b"commandstats"]));
+        assert!(stat_line(&executed, "exec").unwrap().contains("calls=1,"));
+        assert!(stat_line(&executed, "ping").is_none());
+        assert!(stat_line(&executed, "set").is_none());
+        command(&mut stream, &[b"PING"], b"+PONG\r\n");
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"commandstats-enabled", b"no"],
+            b"+OK\r\n",
+        );
+        command(&mut stream, &[b"PING"], b"+PONG\r\n");
+        let stopped = bulk_text(&reply(&mut observer, &[b"INFO", b"commandstats"]));
+        assert!(stat_line(&stopped, "ping").unwrap().contains("calls=1,"));
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"commandstats-enabled", b"yes"],
+            b"+OK\r\n",
+        );
+        let restarted = bulk_text(&reply(&mut observer, &[b"INFO", b"commandstats"]));
+        assert!(stat_line(&restarted, "ping").is_none(), "{restarted}");
+        command(&mut stream, &[b"PING"], b"+PONG\r\n");
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"commandstats-enabled", b"yes"],
+            b"+OK\r\n",
+        );
+        let unchanged = bulk_text(&reply(&mut observer, &[b"INFO", b"commandstats"]));
+        assert!(stat_line(&unchanged, "ping").unwrap().contains("calls=1,"));
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn info_commandstats_counts_authentication_rejections_in_all_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers, Some(b"secret"));

@@ -105,6 +105,7 @@ reason to couple all future commands into a single large story.
 | S75 | As an operator, I can request a durable protocol-level stop so that maintenance can flush acknowledged journal writes and join workers without relying on signals. | S | R296–R299; flags/errors/ABORT/MULTI/persistence/all-mode shutdown tests |
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
+| S78 | As an operator, I can opt into bounded per-command calls/time/error statistics without paying disabled-observer timing and metadata costs. | S | R306–R309; opt-in/reset/MULTI/error, lazy SLOWLOG capture and all-mode tests |
 
 ## EARS acceptance requirements
 
@@ -1383,7 +1384,11 @@ and the offline upstream harness tests.
   last reset. Recording shall start from an empty table, registered commands with
   no calls and unknown commands shall be omitted, and `usec_per_call` shall be
   integer `usec / calls`. When disabled, the dispatch path shall incur no
-  per-command lookup or counter update and the section shall remain empty.
+  per-command lookup, elapsed-clock read or counter update solely for commandstats.
+  Existing counters shall remain readable while disabled; a disabled-to-enabled
+  transition shall clear them before recording the enabling command. With all
+  observers disabled, ordinary dispatch shall create no instrumentation timer;
+  CONFIG may retain timing because it can enable an observer during dispatch.
 - **R307 (state-driven):** While recording, `calls` shall count client
   dispatches (including failed and rejected calls, `INFO` and `CONFIG RESETSTAT`,
   but not direct embedded `Store::execute` or individually queued `MULTI`
@@ -1400,7 +1405,9 @@ and the offline upstream harness tests.
   failed-call classification, authentication/ACL rejection classification,
   unknown-command exclusion, `INFO all` inclusion, reset clearing and every worker
   mode. Documentation shall retain the absence of latency histograms/percentiles,
-  cross-process aggregation, persistence and billing-grade exactness.
+  cross-process aggregation, persistence and billing-grade exactness. SLOWLOG
+  shall capture client address/name only after a sample passes its threshold;
+  tests shall prove rejected/disabled samples do not invoke metadata capture.
 
 ### Lifecycle notification delivery cost (S76)
 

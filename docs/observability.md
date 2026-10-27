@@ -35,7 +35,11 @@ Recording is **opt-in** because the merge gate requires the default dispatch pat
 to stay free of the per-command lookup and atomic updates. `CONFIG SET
 commandstats-enabled yes` starts recording (default `no`); `CONFIG GET
 commandstats-enabled` reports the live setting. Enabling begins from an empty
-table, and disabling keeps the existing counters readable until the next reset.
+table on each disabled-to-enabled transition; setting `yes` while already enabled
+does not reset it. Disabling keeps the existing counters readable until reset or
+re-enable. Disabled commandstats performs no lookup, counter update or extra
+elapsed-clock read; ordinary commands need no instrumentation timer when all
+observers are disabled.
 
 - `calls` counts dispatches through a client `Session`; direct embedded
   `Store::execute` calls and commands executed inside `MULTI` are not counted
@@ -70,6 +74,8 @@ is `[id, unix_seconds, duration_us, argv, client_address, client_name]`.
 and the default maximum length is 128 entries. A negative threshold disables
 recording; a zero maximum length clears and disables recording. The maximum length
 is bounded at 1,000,000 entries, and lowering it trims the log immediately.
+Client address/name lookup and cloning happen only after a measured command
+passes the duration threshold, not for every fast command.
 
 Retention is deliberately bounded independently of request size: at most 32
 arguments are kept, with the last slot replaced by

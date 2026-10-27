@@ -142,24 +142,35 @@ impl Session {
                 !queued && store.latency_enabled(),
             )
         });
-        let started = Instant::now();
+        // CONFIG can enable commandstats during this dispatch, so retain its
+        // timing even when every observer was initially disabled.
+        let config = arguments
+            .first()
+            .is_some_and(|name| name.eq_ignore_ascii_case(b"CONFIG"));
+        let started =
+            (slowlog || latency || store.commandstats_enabled() || config).then(Instant::now);
         let reply_start = output.len();
         let action = self.execute_inner(store, arguments, output);
-        let elapsed = started.elapsed();
-        store.record_command_stats(arguments.first().copied(), elapsed, &output[reply_start..]);
-        if latency {
-            store.record_command_latency(elapsed);
-        }
-        if slowlog {
-            if self.blocked.is_some() {
+        if let Some(started) = started {
+            let reply = &output[reply_start..];
+            if latency || (store.commandstats_enabled() && reply != b"+QUEUED\r\n") {
+                let elapsed = started.elapsed();
+                if reply != b"+QUEUED\r\n" {
+                    store.record_command_stats(arguments.first().copied(), elapsed, reply);
+                }
+                if latency {
+                    store.record_command_latency(elapsed);
+                }
+            }
+            if slowlog {
                 if let Some(blocked) = self.blocked.as_mut() {
                     blocked.slowlog = Some((
                         started,
                         arguments.iter().map(|argument| argument.to_vec()).collect(),
                     ));
+                } else {
+                    self.record_slowlog(store, arguments, started);
                 }
-            } else {
-                self.record_slowlog(store, arguments, started);
             }
         }
         action
@@ -169,12 +180,12 @@ impl Session {
         if !store.slowlog_enabled() {
             return;
         }
-        store.slowlog_push(
-            arguments,
-            started.elapsed(),
-            &store.client_address(self.id).unwrap_or_default(),
-            self.name.as_deref().unwrap_or_default(),
-        );
+        store.slowlog_push(arguments, started.elapsed(), || {
+            (
+                store.client_address(self.id).unwrap_or_default(),
+                self.name.clone().unwrap_or_default(),
+            )
+        });
     }
 
     pub fn is_paused(&self) -> bool {

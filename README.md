@@ -54,17 +54,12 @@ Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
 `DEL`, `UNLINK`, `EXISTS`, `QUIT`;
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
-<<<<<<< HEAD
-strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, protocol `SHUTDOWN`, `CONFIG GET`/`RESETSTAT`,
-`INFO` (including process-local connection/command/expiration/pub-sub statistics),
-bounded `SLOWLOG` command timing, bounded `LATENCY` event series, and logical `MEMORY USAGE`. `CONFIG SET`
-=======
-strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
-`INFO` (including process-local connection/command/expiration/pub-sub statistics
-and opt-in aggregate per-command `commandstats` via `CONFIG SET
-commandstats-enabled yes`), bounded `SLOWLOG` command timing,
-bounded `LATENCY` event series, and logical `MEMORY USAGE`. `CONFIG SET`
->>>>>>> 92375b7 (feat: add per-command INFO commandstats observability)
+strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, protocol `SHUTDOWN`,
+`CONFIG GET`/`RESETSTAT`, `INFO` (including process-local
+connection/command/expiration/pub-sub statistics and opt-in aggregate per-command
+`commandstats` via `CONFIG SET commandstats-enabled yes`), bounded `SLOWLOG`
+command timing, bounded `LATENCY` event series, and logical `MEMORY USAGE`.
+`CONFIG SET`
 supports collection thresholds, `requirepass`, `maxmemory-policy` and slow-log
 threshold/length; script/function execution is not implemented.
 Memory usage is an entry-size estimate, not allocator/RSS data.

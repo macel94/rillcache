@@ -666,7 +666,19 @@ impl Store {
     }
 
     pub fn set_commandstats_enabled(&self, enabled: bool) {
-        self.commandstats_enabled.store(enabled, Ordering::Relaxed);
+        let previous = self.commandstats_enabled.swap(enabled, Ordering::Relaxed);
+        if enabled && !previous {
+            self.reset_command_statistics();
+        }
+    }
+
+    fn reset_command_statistics(&self) {
+        for stat in &self.command_stats {
+            stat.calls.store(0, Ordering::Relaxed);
+            stat.usec.store(0, Ordering::Relaxed);
+            stat.rejected_calls.store(0, Ordering::Relaxed);
+            stat.failed_calls.store(0, Ordering::Relaxed);
+        }
     }
 
     /// Snapshot only commands with at least one recorded call, in registry order.
@@ -713,12 +725,7 @@ impl Store {
         self.connections_received.store(0, Ordering::Relaxed);
         self.commands_processed.store(0, Ordering::Relaxed);
         self.rejected_connections.store(0, Ordering::Relaxed);
-        for stat in &self.command_stats {
-            stat.calls.store(0, Ordering::Relaxed);
-            stat.usec.store(0, Ordering::Relaxed);
-            stat.rejected_calls.store(0, Ordering::Relaxed);
-            stat.failed_calls.store(0, Ordering::Relaxed);
-        }
+        self.reset_command_statistics();
         self.data.write().is_ok_and(|mut data| {
             data.expired_keys = 0;
             data.evicted_keys = 0;
