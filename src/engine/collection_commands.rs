@@ -2658,6 +2658,7 @@ impl Store {
             );
         }
         data.payload_bytes = new_payload;
+        data.note_payload();
         ListMoveOutcome::Moved {
             source: source.to_vec(),
             value,

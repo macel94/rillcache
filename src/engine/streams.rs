@@ -529,6 +529,7 @@ impl Store {
         let old_len = entry.payload_len;
         entry.payload_len = bytes;
         data.payload_bytes = data.payload_bytes - old_len + bytes;
+        data.note_payload();
         data.touch(a[1]);
         integer(deleted as i64, out);
     }
@@ -1446,6 +1447,7 @@ impl Store {
             let previous = entry.payload_len;
             entry.payload_len = bytes;
             data.payload_bytes = data.payload_bytes - previous + bytes;
+            data.note_payload();
             data.touch(a[1]);
         }
         integer(deleted, out);
