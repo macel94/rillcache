@@ -223,9 +223,25 @@ const COMMANDS: &[Command] = &[
     cmd("smismember", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("smove", 4, &["write", "fast"], 1, 2, 1),
     cmd("spop", -2, &["write", "fast"], 1, 1, 1),
+    cmd(
+        "spublish",
+        3,
+        &["pubsub", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
     cmd("srandmember", -2, &["readonly"], 1, 1, 1),
     cmd("srem", -3, &["write", "fast"], 1, 1, 1),
     cmd("sscan", -3, &["readonly", "slow"], 1, 1, 1),
+    cmd(
+        "ssubscribe",
+        -2,
+        &["pubsub", "noscript", "loading", "stale"],
+        0,
+        0,
+        0,
+    ),
     cmd("strlen", 2, &["readonly", "fast"], 1, 1, 1),
     cmd(
         "subscribe",
@@ -238,6 +254,14 @@ const COMMANDS: &[Command] = &[
     cmd("substr", 4, &["readonly"], 1, 1, 1),
     cmd("sunion", -2, &["readonly"], 1, -1, 1),
     cmd("sunionstore", -3, &["write", "denyoom"], 1, -1, 1),
+    cmd(
+        "sunsubscribe",
+        -1,
+        &["pubsub", "noscript", "loading", "stale"],
+        0,
+        0,
+        0,
+    ),
     cmd("touch", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("type", 2, &["readonly", "fast"], 1, 1, 1),
@@ -435,9 +459,8 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "xread" | "xreadgroup" | "xrevrange" => "stream",
         "auth" | "client" | "hello" | "quit" | "reset" | "select" => "connection",
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
-        "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "subscribe" | "unsubscribe" => {
-            "pubsub"
-        }
+        "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "spublish" | "ssubscribe"
+        | "subscribe" | "sunsubscribe" | "unsubscribe" => "pubsub",
         "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
         | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
         | "pexpiretime" | "pttl" | "randomkey" | "rename" | "renamenx" | "touch" | "ttl"
@@ -680,6 +703,9 @@ mod tests {
             ("geosearch", "geo"),
             ("geosearchstore", "geo"),
             ("bitpos", "bitmap"),
+            ("spublish", "pubsub"),
+            ("ssubscribe", "pubsub"),
+            ("sunsubscribe", "pubsub"),
         ] {
             assert_eq!(command_group(name), Some(category));
         }

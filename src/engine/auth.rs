@@ -431,12 +431,16 @@ impl Auth {
                 return Access::DeniedKey(key.to_vec());
             }
         }
-        let channels: &[&[u8]] = if command.eq_ignore_ascii_case(b"PUBLISH") {
+        let channels: &[&[u8]] = if command.eq_ignore_ascii_case(b"PUBLISH")
+            || command.eq_ignore_ascii_case(b"SPUBLISH")
+        {
             &arguments[1..arguments.len().min(2)]
         } else if command.eq_ignore_ascii_case(b"SUBSCRIBE")
             || command.eq_ignore_ascii_case(b"UNSUBSCRIBE")
             || command.eq_ignore_ascii_case(b"PSUBSCRIBE")
             || command.eq_ignore_ascii_case(b"PUNSUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"SSUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"SUNSUBSCRIBE")
         {
             &arguments[1..]
         } else {

@@ -74,6 +74,7 @@ reason to couple all future commands into a single large story.
 | S44 | As a bitmap user, I can read and atomically update signed or unsigned bit fields of arbitrary width with wrap, saturate or fail overflow behavior. | S | R173–R176; field/offset/overflow/RO/OOM/WRONGTYPE and all-mode wire tests |
 | S45 | As a location application, I can store points, inspect their coordinates, distance and geohash, and search by radius or box so that proximity queries do not require a separate index. | M | R177–R180; encoding, distance format, search/store atomicity, errors and all-mode wire tests |
 | S46 | As a stream consumer-group operator, I can recover, reassign and inspect pending deliveries so that stalled consumers can be replaced without losing acknowledged work. | S | R181–R184; claim/autoclaim/introspection, errors and all-mode wire tests |
+| S47 | As a sharded-channel client, I can subscribe and publish on a namespace separate from normal channels so that shard-oriented workers do not receive unrelated broadcasts. | S | R185–R188; separate fan-out/counts, shard introspection, ACL/RESET and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -603,7 +604,6 @@ reason to couple all future commands into a single large story.
   truthful `@geo` metadata and two ordered keys for the store command, and be
   covered by unit and all-mode wire tests. Legacy `GEORADIUS*` commands, native
   neighbour indexes and RDB interchange shall remain documented as unsupported.
-
 ### Stream claiming and consumer introspection (S46)
 
 - **R181 (event-driven):** When `XCLAIM key group consumer min-idle-time id [id ...]`
@@ -629,6 +629,32 @@ reason to couple all future commands into a single large story.
   preserve payload accounting and TTL, keep pending metadata process-local, and
   be covered by unit and all-mode wire tests. Trimming, `XSETID`, blocking and
   history reads shall remain documented as unsupported.
+
+
+### Sharded publish/subscribe (S47)
+
+- **R185 (event-driven):** When `SSUBSCRIBE channel [channel ...]` and
+  `SUNSUBSCRIBE [channel ...]` run, the server shall maintain an independent
+  sharded-channel set per connection, return one confirmation per name using the
+  shard subscription count, remove all named or all local shard subscriptions, and
+  use a null channel confirmation when no shard subscriptions remain.
+- **R186 (event-driven):** When `SPUBLISH channel message` runs, it shall deliver
+  one preformatted `smessage` frame to each current sharded subscriber only and
+  return the delivered count. Normal `PUBLISH` shall not reach sharded subscribers
+  and `SPUBLISH` shall not reach normal/pattern subscribers. `PUBSUB
+  SHARDCHANNELS [pattern]` and `PUBSUB SHARDNUMSUB [channel ...]` shall expose only
+  the sharded namespace.
+- **R187 (state-driven):** While a RESP2 connection has any normal or sharded
+  subscription, only the documented subscribe/unsubscribe, PING, QUIT and RESET
+  commands shall execute; `RESET`/close/QUIT cleanup shall remove shard registry
+  entries exactly once. ACL channel patterns shall gate `SSUBSCRIBE`,
+  `SUNSUBSCRIBE` and `SPUBLISH`.
+- **R188 (ubiquitous):** Sharded delivery shall use the existing bounded
+  per-subscriber queue and at-most-once non-blocking fan-out, add no permanent
+  worker or dependency, and be covered by unit/all-mode wire tests for binary
+  channels, counts, separation, introspection, subscriber-mode errors, RESP3 push
+  frames and cleanup. There is no cluster hash-slot routing, persistence,
+  replication or durable delivery claim.
 
 ### Development and delivery
 
@@ -976,8 +1002,8 @@ in [typed collections](collections.md); geospatial sorted sets (`GEOADD`,
 `GEOPOS`, `GEODIST`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`) documented in
 [geospatial limits](geospatial.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor
 iteration with MATCH/COUNT/TYPE/NOVALUES; PFADD/PFCOUNT/PFMERGE approximate
-cardinality; PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE and PUBSUB
-introspection.
+cardinality; PUBLISH/SPUBLISH, SUBSCRIBE/PSUBSCRIBE/SSUBSCRIBE,
+UNSUBSCRIBE/PUNSUBSCRIBE/SUNSUBSCRIBE and PUBSUB introspection.
 See [string semantics](strings.md), [string ranges](string-ranges.md),
 [bitmap/LCS/float limits](string-algorithms.md), [multi-key string limits](multikey-strings.md),
 [typed collections](collections.md), [HyperLogLog](hyperloglog.md),
