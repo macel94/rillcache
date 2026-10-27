@@ -1352,7 +1352,6 @@ and the offline upstream harness tests.
   module list/load/unknown, WAIT validation and zero, READONLY/READWRITE/ASKING,
   ACL access and all worker modes. Documentation shall retain the absence of
   cluster routing, module execution, replication and Redis-8 extension support.
-
 ### Protocol shutdown (S75)
 
 - **R296 (event-driven):** `SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE]` shall accept the
@@ -1372,6 +1371,31 @@ and the offline upstream harness tests.
 - **R299 (ubiquitous):** Tests shall cover flag validation, `ABORT`, MULTI
   rejection, caller close, all worker modes, journal durability across restart,
   and documentation of the remaining absence of a portable SIGTERM handler.
+
+### Per-command statistics (S78)
+
+- **R306 (event-driven):** When `INFO commandstats` or `INFO all` is requested,
+  the server shall return a RESP bulk string with a `# Commandstats` section and
+  one `cmdstat_<name>:calls=..,usec=..,usec_per_call=..,rejected_calls=..,failed_calls=..`
+  line for each command dispatched through a client session since startup or the
+  last reset. Registered commands with no calls and unknown commands shall be
+  omitted, and `usec_per_call` shall be integer `usec / calls`.
+- **R307 (state-driven):** While commands are served, `calls` shall count client
+  dispatches (including failed and rejected calls, `INFO` and `CONFIG RESETSTAT`,
+  but not direct embedded `Store::execute` or individually queued `MULTI`
+  commands), `usec` shall accumulate measured dispatch time, `failed_calls` shall
+  count top-level error replies, and `rejected_calls` shall count the subset
+  rejected with `NOAUTH`/`NOPERM`. Blocking wait time shall be excluded and
+  documented as a deliberate difference from `SLOWLOG`. Subcommands shall share
+  their top-level command name.
+- **R308 (event-driven):** When `CONFIG RESETSTAT` succeeds, it shall zero every
+  per-command counter together with the existing process counters without deleting
+  data or subscriptions; the reset command itself may be counted afterwards.
+- **R309 (ubiquitous):** Tests shall cover calls, aggregate time shape,
+  failed-call classification, authentication/ACL rejection classification,
+  unknown-command exclusion, `INFO all` inclusion, reset clearing and every worker
+  mode. Documentation shall retain the absence of latency histograms/percentiles,
+  cross-process aggregation, persistence and billing-grade exactness.
 
 ### Lifecycle notification delivery cost (S76)
 

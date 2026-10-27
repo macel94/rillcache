@@ -1,10 +1,10 @@
 # Statistics and INFO observability
 
 Rillcache exposes a deliberately small set of server counters through
-`INFO stats` (also included by `INFO` and `INFO all`). Values are process-local
-and reset on restart. There is no Prometheus endpoint, latency histogram,
-per-command table or replication statistics. `SLOWLOG` and `LATENCY` provide
-bounded, process-local timing as described below.
+`INFO stats` (also included by `INFO` and `INFO all`) and a bounded per-command
+table through `INFO commandstats`. Values are process-local and reset on restart.
+There is no Prometheus endpoint, latency histogram or replication statistics.
+`SLOWLOG` and `LATENCY` provide bounded, process-local timing as described below.
 
 ## Fields
 
@@ -24,6 +24,26 @@ RESP/subscription metadata.
 
 `INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`. `evicted_keys` resets with
 `CONFIG RESETSTAT`; the policy itself does not.
+
+## INFO commandstats
+
+`INFO commandstats` (and the commandstats block of `INFO all`) lists only
+commands with at least one recorded network dispatch. Each line uses the Redis
+shape `cmdstat_<name>:calls=<n>,usec=<n>,usec_per_call=<n>,rejected_calls=<n>,failed_calls=<n>`.
+
+- `calls` counts dispatches through a client `Session`; direct embedded
+  `Store::execute` calls and commands executed inside `MULTI` are not counted
+  separately. `EXEC` is counted once.
+- `usec` is measured around client dispatch. Blocking wait time is excluded: a
+  blocked command is accounted when it blocks, unlike `SLOWLOG`, which records
+  the full wait. A blocked command that disconnects before completion keeps its
+  call count but contributes only pre-block time.
+- `failed_calls` counts replies whose top-level RESP frame is an error.
+  `rejected_calls` counts the subset rejected with `NOAUTH` or `NOPERM`.
+- Unknown commands are not tracked. Subcommands share their top-level command
+  name. `INFO commandstats` does not include its own in-progress call.
+- Counters are relaxed atomics and may be observed slightly asynchronously
+  across worker threads. They are diagnostic, not a billing ledger.
 
 `INFO server`, `memory` and `keyspace` remain available. Memory fields are the
 logical key/value payload and expiry counts, not allocator or RSS measurements;
@@ -92,8 +112,8 @@ counts `MULTI`, each queued command and `EXEC` as separate dispatches. A rejecte
 command still counts as processed; it does not increment data-specific counters.
 Health-check PING probes are ordinary connections and commands.
 
-`CONFIG RESETSTAT` zeroes the connection, command, rejected, expired, evicted and
-pub/sub counters. It does not delete data, clear subscriptions, reset the keyspace or reset
+`CONFIG RESETSTAT` zeroes the connection, command, rejected, expired, evicted,
+pub/sub and per-command counters. It does not delete data, clear subscriptions, reset the keyspace or reset
 payload accounting. Because the reset command itself is counted before dispatch,
 the next `INFO` typically reports `total_commands_processed:1` (the `INFO` command).
 
@@ -107,9 +127,10 @@ keys that merely crossed their deadline and were not yet reaped/lazily removed.
 - No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.
 - No per-client fd/idle/command/buffer/memory/network fields, blocked-client count
   or cross-process client view. `INFO clients` intentionally omits those fields.
-- No `INFO commandstats` or `latencystats`, latency histograms, CPU/RSS
-  accounting, network-byte counters or per-database stats. `LATENCY` exposes
-  only the two measured event series listed above.
+- No `INFO latencystats`, latency histograms/percentiles, CPU/RSS accounting,
+  network-byte counters or per-database stats. `LATENCY` exposes only the two
+  measured event series listed above, and command timing is aggregate only with
+  no histogram or tail-latency distribution.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.
 - No persistence/ACL/auth telemetry. Journal replay and rewrite durations are not
@@ -120,5 +141,7 @@ keys that merely crossed their deadline and were not yet reaped/lazily removed.
 
 `tests/observability.rs` runs in all worker modes and verifies connection/command
 counts across two clients, reset behavior, maximum-client rejection visibility and
-lazy expiration counting. It parses `INFO stats` as a real RESP bulk reply rather
-than asserting on an implementation string alone.
+lazy expiration counting. `tests/commandstats.rs` verifies per-command calls,
+failed/rejected classification, unknown-command exclusion, `INFO all` inclusion
+and `CONFIG RESETSTAT` clearing in every worker mode. Both parse `INFO` as a real
+RESP bulk reply rather than asserting on an implementation string alone.

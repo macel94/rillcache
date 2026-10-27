@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::protocol::{Limits, encode_bulk};
 mod acl_log;
@@ -88,6 +88,26 @@ impl Clock for SystemClock {
     }
 }
 
+/// Per-command counters exposed through `INFO commandstats`. Each slot maps to
+/// one registered command and is updated with relaxed atomics so recording does
+/// not serialize independent worker threads.
+#[derive(Default)]
+pub(super) struct CommandStat {
+    calls: std::sync::atomic::AtomicU64,
+    usec: std::sync::atomic::AtomicU64,
+    rejected_calls: std::sync::atomic::AtomicU64,
+    failed_calls: std::sync::atomic::AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CommandStatValues {
+    pub name: &'static str,
+    pub calls: u64,
+    pub usec: u64,
+    pub rejected_calls: u64,
+    pub failed_calls: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Stats {
     pub total_connections_received: u64,
@@ -126,6 +146,7 @@ pub struct Store {
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
     shutdown_requested: AtomicBool,
+    command_stats: Vec<CommandStat>,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -188,6 +209,9 @@ impl Store {
             ),
             latency: std::sync::RwLock::new(latency::State::default()),
             shutdown_requested: AtomicBool::new(false),
+            command_stats: (0..discovery::command_count())
+                .map(|_| CommandStat::default())
+                .collect(),
         }
     }
     /// Select verified vendor-specific error wording before sharing the store.
@@ -602,6 +626,54 @@ impl Store {
         self.commands_processed.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record one network command dispatch. `reply` is only the bytes produced
+    /// by this call, so a leading `-` identifies a failed call and NOAUTH/NOPERM
+    /// identify authentication/authorization rejections.
+    pub(crate) fn record_command_stats(
+        &self,
+        command: Option<&[u8]>,
+        elapsed: Duration,
+        reply: &[u8],
+    ) {
+        let Some(command) = command else {
+            return;
+        };
+        let Some(stat) =
+            discovery::command_index(command).and_then(|index| self.command_stats.get(index))
+        else {
+            return;
+        };
+        stat.calls.fetch_add(1, Ordering::Relaxed);
+        stat.usec.fetch_add(
+            u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        if reply.starts_with(b"-") {
+            stat.failed_calls.fetch_add(1, Ordering::Relaxed);
+        }
+        if reply.starts_with(b"-NOAUTH") || reply.starts_with(b"-NOPERM") {
+            stat.rejected_calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Snapshot only commands with at least one recorded call, in registry order.
+    pub(super) fn command_statistics(&self) -> Vec<CommandStatValues> {
+        self.command_stats
+            .iter()
+            .enumerate()
+            .filter_map(|(index, stat)| {
+                let calls = stat.calls.load(Ordering::Relaxed);
+                (calls > 0).then(|| CommandStatValues {
+                    name: discovery::command_name_at(index).unwrap_or("unknown"),
+                    calls,
+                    usec: stat.usec.load(Ordering::Relaxed),
+                    rejected_calls: stat.rejected_calls.load(Ordering::Relaxed),
+                    failed_calls: stat.failed_calls.load(Ordering::Relaxed),
+                })
+            })
+            .collect()
+    }
+
     pub fn stats(&self) -> Stats {
         let (expired_keys, evicted_keys, pubsub_channels, pubsub_patterns) = {
             let (expired, evicted) = self
@@ -628,6 +700,12 @@ impl Store {
         self.connections_received.store(0, Ordering::Relaxed);
         self.commands_processed.store(0, Ordering::Relaxed);
         self.rejected_connections.store(0, Ordering::Relaxed);
+        for stat in &self.command_stats {
+            stat.calls.store(0, Ordering::Relaxed);
+            stat.usec.store(0, Ordering::Relaxed);
+            stat.rejected_calls.store(0, Ordering::Relaxed);
+            stat.failed_calls.store(0, Ordering::Relaxed);
+        }
         self.data.write().is_ok_and(|mut data| {
             data.expired_keys = 0;
             data.evicted_keys = 0;

@@ -142,23 +142,24 @@ impl Session {
                 !queued && store.latency_enabled(),
             )
         });
-        let started = (slowlog || latency).then(Instant::now);
+        let started = Instant::now();
+        let reply_start = output.len();
         let action = self.execute_inner(store, arguments, output);
-        if let Some(started) = started {
-            if latency {
-                store.record_command_latency(started.elapsed());
-            }
-            if slowlog {
-                if self.blocked.is_some() {
-                    if let Some(blocked) = self.blocked.as_mut() {
-                        blocked.slowlog = Some((
-                            started,
-                            arguments.iter().map(|argument| argument.to_vec()).collect(),
-                        ));
-                    }
-                } else {
-                    self.record_slowlog(store, arguments, started);
+        let elapsed = started.elapsed();
+        store.record_command_stats(arguments.first().copied(), elapsed, &output[reply_start..]);
+        if latency {
+            store.record_command_latency(elapsed);
+        }
+        if slowlog {
+            if self.blocked.is_some() {
+                if let Some(blocked) = self.blocked.as_mut() {
+                    blocked.slowlog = Some((
+                        started,
+                        arguments.iter().map(|argument| argument.to_vec()).collect(),
+                    ));
                 }
+            } else {
+                self.record_slowlog(store, arguments, started);
             }
         }
         action
