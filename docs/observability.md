@@ -14,9 +14,14 @@ bounded, process-local timing as described below.
 | `total_commands_processed` | Client command dispatches admitted to `Session::execute`; includes session/pub-sub/admin commands and `INFO` itself |
 | `rejected_connections` | Accepted sockets closed with `ERR max number of clients reached` |
 | `expired_keys` | Live keys removed by lazy expiration or the bounded maintenance reaper |
+| `expired_subkeys` | Hash fields removed by lazy per-field TTL expiry (Redis 7.4 `expired_subkeys`) |
 | `evicted_keys` | Keys removed by an enabled payload-budget eviction policy |
 | `pubsub_channels` | Distinct channels with at least one live subscription |
 | `pubsub_patterns` | Total pattern subscriptions (not distinct patterns) |
+
+`INFO keyspace` reports `keys`, `expires` and `subexpiry` (the number of live
+hash keys with at least one field deadline). `expired_subkeys` resets with
+`CONFIG RESETSTAT`; `subexpiry` is live state and is not a counter.
 
 `INFO clients` reports `connected_clients` (the process-local registry size) and
 `cluster_connections:0`. `CLIENT LIST` exposes per-connection address/name/user/

@@ -106,6 +106,7 @@ reason to couple all future commands into a single large story.
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
+| S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 
 ## EARS acceptance requirements
@@ -1439,6 +1440,20 @@ and the offline upstream harness tests.
   all` inclusion and every worker mode. Documentation shall retain the absence
   of RDB, asynchronous/background rewrite, checksum, encryption, ENOSPC and
   crash-recovery guarantees.
+
+### Sub-key expiry observability (S81)
+
+- **R316 (event-driven):** When `INFO keyspace` or `INFO all` is requested, the
+  server shall include `subexpiry` in the `db0` line, counting live hash keys
+  with at least one unexpired field deadline.
+- **R317 (event-driven):** When `INFO stats` or `INFO all` is requested, the
+  server shall include `expired_subkeys`, counting hash fields removed by lazy
+  per-field TTL expiry since startup or the last `CONFIG RESETSTAT`.
+- **R318 (ubiquitous):** Tests shall cover lazy field expiry updating both
+  values, a live field deadline keeping `subexpiry` set, `CONFIG RESETSTAT`
+  clearing `expired_subkeys` without changing live `subexpiry`, and every worker
+  mode. Documentation shall retain that field expiry is lazy, not actively
+  scanned, and that neither value is an RSS or payload-accounting measurement.
 
 ### Development and delivery
 
