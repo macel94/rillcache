@@ -5,6 +5,14 @@ The baseline is `3dca0c7fb4beb9923bd05f0d891602a5cd9b3790`. The published
 [comparative dashboard](../benchmarks/README.md) identifies its own tested source;
 container/correctness smoke and local experiments are not a newer Redis comparison.
 
+## Current-source diagnostic follow-up
+
+The [2026-10-27/28 source-pinned bottleneck study](../benchmarks/studies/current-bottlenecks/README.md)
+measures collection/cardinality and administrative-query scaling after the later
+compatibility work. It retains 84 checked component samples, controls, CPU profiles,
+losses and limits. It is not a replacement native comparison or an optimization
+claim; the historical profiles below remain labeled with their original baseline.
+
 ## Investigation
 
 The preceding published comparison was weakest with one logical server CPU and
