@@ -9,6 +9,7 @@
 
 use super::Store;
 use super::data::{Collection, Data};
+use super::notify::{Category as NotifyCategory, NotifyFlags};
 use crate::protocol::{Limits, dispatch_request, encode_request};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -258,7 +259,9 @@ impl Store {
     }
 
     pub(super) fn journal_marks(&self) -> Option<(u64, u64)> {
-        self.journal.as_ref()?;
+        if self.journal.is_none() && !self.notifications_enabled() {
+            return None;
+        }
         let data = self.data.read().ok()?;
         Some((data.journal_seq(), data.flush_seq()))
     }
@@ -266,19 +269,24 @@ impl Store {
     pub(super) fn commit_journal(
         &self,
         marks: Option<(u64, u64)>,
+        arguments: &[&[u8]],
         output: &mut Vec<u8>,
         start: usize,
     ) {
         let Some((sequence, flush_sequence)) = marks else {
             return;
         };
-        let Some(journal) = self.journal.as_ref() else {
+        let journaled = self.journal.is_some();
+        let notified = self.notifications_enabled();
+        if !journaled && !notified {
             return;
-        };
-        let records = {
+        }
+        let (records, events) = {
             let Ok(mut data) = self.data.write() else {
-                output.truncate(start);
-                output.extend_from_slice(b"-ERR internal journal error\r\n");
+                if journaled {
+                    output.truncate(start);
+                    output.extend_from_slice(b"-ERR internal journal error\r\n");
+                }
                 return;
             };
             let flushed = data.flush_seq() != flush_sequence;
@@ -291,38 +299,67 @@ impl Store {
                 return;
             }
             let now = self.clock.now_ms().max(0);
-            let mut records = Vec::new();
-            if full {
-                encode_request(&[b"FLUSHALL"], &mut records);
-            }
-            let keys = if full {
+            let keys = if full && journaled {
                 let mut all: Vec<Vec<u8>> = data.entries.keys().cloned().collect();
                 all.sort_unstable();
                 all
             } else {
                 keys
             };
-            let budget = self
-                .journal_limits
-                .max_frame_bytes
-                .saturating_sub(4096)
-                .clamp(1024, CHUNK_BUDGET);
-            for key in &keys {
-                encode_key(&data, key, now, budget, &mut records);
+            let events = if notified && !full {
+                notification_events(&data, arguments, &keys, now, self.notify_flags())
+            } else {
+                Vec::new()
+            };
+            let records = if journaled {
+                let mut records = Vec::new();
+                if full {
+                    encode_request(&[b"FLUSHALL"], &mut records);
+                }
+                let budget = self
+                    .journal_limits
+                    .max_frame_bytes
+                    .saturating_sub(4096)
+                    .clamp(1024, CHUNK_BUDGET);
+                for key in &keys {
+                    encode_key(&data, key, now, budget, &mut records);
+                }
+                records
+            } else {
+                Vec::new()
+            };
+            (records, events)
+        };
+        if journaled {
+            let Some(journal) = self.journal.as_ref() else {
+                return;
+            };
+            let Ok(mut journal) = journal.lock() else {
+                output.truncate(start);
+                output.extend_from_slice(b"-ERR internal journal error\r\n");
+                return;
+            };
+            if let Err(error) = journal.append(&records) {
+                output.truncate(start);
+                let _ = std::io::Write::write_fmt(
+                    output,
+                    format_args!("-ERR append-only write failed: {error}\r\n"),
+                );
+                return;
             }
-            records
-        };
-        let Ok(mut journal) = journal.lock() else {
-            output.truncate(start);
-            output.extend_from_slice(b"-ERR internal journal error\r\n");
+        }
+        for (channel, payload) in events {
+            self.publish(&channel, &payload);
+        }
+    }
+
+    pub(super) fn notify_event(&self, event: &str, key: &[u8], category: NotifyCategory) {
+        let flags = self.notify_flags();
+        if !flags.category(category) {
             return;
-        };
-        if let Err(error) = journal.append(&records) {
-            output.truncate(start);
-            let _ = std::io::Write::write_fmt(
-                output,
-                format_args!("-ERR append-only write failed: {error}\r\n"),
-            );
+        }
+        for (channel, payload) in build_event(flags, event.as_bytes(), key) {
+            self.publish(&channel, &payload);
         }
     }
 
@@ -582,6 +619,131 @@ fn encode_chunks<'a>(
 
 fn id_text(id: super::data::StreamId) -> Vec<u8> {
     format!("{}-{}", id.ms, id.seq).into_bytes()
+}
+
+fn notification_events(
+    data: &Data,
+    arguments: &[&[u8]],
+    keys: &[Vec<u8>],
+    now: i64,
+    flags: NotifyFlags,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let Some(command) = arguments.first() else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    for key in keys {
+        let Some((event, category)) = event_for(data, command, arguments, key, now) else {
+            continue;
+        };
+        if !flags.category(category) {
+            continue;
+        }
+        events.extend(build_event(flags, event.as_bytes(), key));
+    }
+    events
+}
+
+fn build_event(flags: NotifyFlags, event: &[u8], key: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut events = Vec::with_capacity(2);
+    if flags.keyspace {
+        let mut channel = b"__keyspace@0__:".to_vec();
+        channel.extend_from_slice(key);
+        events.push((channel, event.to_vec()));
+    }
+    if flags.keyevent {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        events.push((channel, key.to_vec()));
+    }
+    events
+}
+
+fn event_for(
+    data: &Data,
+    command: &[u8],
+    arguments: &[&[u8]],
+    key: &[u8],
+    now: i64,
+) -> Option<(&'static str, NotifyCategory)> {
+    let name = std::str::from_utf8(command).ok()?.to_ascii_lowercase();
+    let category = match name.as_str() {
+        "del" | "delex" | "delifeq" => return Some(("del", NotifyCategory::Generic)),
+        "expire" | "pexpire" | "expireat" | "pexpireat" => {
+            let exists = data.entries.get(key).is_some_and(|entry| entry.alive(now));
+            return Some((
+                if exists { "expire" } else { "del" },
+                NotifyCategory::Generic,
+            ));
+        }
+        "persist" => return Some(("persist", NotifyCategory::Generic)),
+        "rename" | "renamenx" => {
+            let source = arguments.get(1).copied();
+            if source == Some(key) {
+                return Some(("rename_from", NotifyCategory::Generic));
+            }
+            return Some(("rename_to", NotifyCategory::Generic));
+        }
+        "copy" => {
+            if arguments
+                .get(2)
+                .is_some_and(|destination| *destination == key)
+            {
+                return Some(("copy_to", NotifyCategory::Generic));
+            }
+            return None;
+        }
+        "getdel" => return Some(("del", NotifyCategory::Generic)),
+        "set" | "setex" | "psetex" | "setnx" | "getset" | "mset" | "msetnx" | "msetex"
+        | "getex" => ("set", NotifyCategory::String),
+        "incr" | "incrby" | "incrbyfloat" => ("incrby", NotifyCategory::String),
+        "decr" | "decrby" => ("decrby", NotifyCategory::String),
+        "append" => ("append", NotifyCategory::String),
+        "setrange" => ("setrange", NotifyCategory::String),
+        "setbit" => ("setbit", NotifyCategory::String),
+        "pfadd" => ("pfadd", NotifyCategory::String),
+        "pfmerge" => ("pfadd", NotifyCategory::String),
+        "lpush" => ("lpush", NotifyCategory::List),
+        "rpush" => ("rpush", NotifyCategory::List),
+        "lpop" => ("lpop", NotifyCategory::List),
+        "rpop" => ("rpop", NotifyCategory::List),
+        "linsert" => ("linsert", NotifyCategory::List),
+        "lset" => ("lset", NotifyCategory::List),
+        "ltrim" => ("ltrim", NotifyCategory::List),
+        "lrem" => ("lrem", NotifyCategory::List),
+        "lmove" => ("lmove", NotifyCategory::List),
+        "rpoplpush" => ("rpoplpush", NotifyCategory::List),
+        "lmpop" => ("lmpop", NotifyCategory::List),
+        "sadd" => ("sadd", NotifyCategory::Set),
+        "srem" => ("srem", NotifyCategory::Set),
+        "spop" => ("spop", NotifyCategory::Set),
+        "smove" => ("smove", NotifyCategory::Set),
+        "sinterstore" => ("sinterstore", NotifyCategory::Set),
+        "sunionstore" => ("sunionstore", NotifyCategory::Set),
+        "sdiffstore" => ("sdiffstore", NotifyCategory::Set),
+        "hset" | "hsetnx" | "hmset" => ("hset", NotifyCategory::Hash),
+        "hdel" => ("hdel", NotifyCategory::Hash),
+        "hincrby" => ("hincrby", NotifyCategory::Hash),
+        "hincrbyfloat" => ("hincrbyfloat", NotifyCategory::Hash),
+        "zadd" => ("zadd", NotifyCategory::Zset),
+        "zrem" => ("zrem", NotifyCategory::Zset),
+        "zincrby" => ("zincrby", NotifyCategory::Zset),
+        "zpopmin" => ("zpopmin", NotifyCategory::Zset),
+        "zpopmax" => ("zpopmax", NotifyCategory::Zset),
+        "zremrangebyrank" => ("zremrangebyrank", NotifyCategory::Zset),
+        "zremrangebyscore" => ("zremrangebyscore", NotifyCategory::Zset),
+        "zremrangebylex" => ("zremrangebylex", NotifyCategory::Zset),
+        "xadd" => ("xadd", NotifyCategory::Stream),
+        "xdel" => ("xdel", NotifyCategory::Stream),
+        "xgroup" => ("xgroup", NotifyCategory::Stream),
+        "xreadgroup" => ("xreadgroup", NotifyCategory::Stream),
+        "xack" => ("xack", NotifyCategory::Stream),
+        "xclaim" => ("xclaim", NotifyCategory::Stream),
+        "xautoclaim" => ("xautoclaim", NotifyCategory::Stream),
+        "xtrim" => ("xtrim", NotifyCategory::Stream),
+        _ => return None,
+    };
+    Some(category)
 }
 
 #[cfg(test)]

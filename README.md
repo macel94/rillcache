@@ -87,6 +87,12 @@ bounded, at-most-once messages to live connections, with RESP3 push frames and A
 channel patterns. There is no sharded pub/sub, keyspace notification, persistence
 or replication of messages. See [pub/sub](docs/pubsub.md).
 
+Keyspace/keyevent notifications publish changed-key events to normal pub/sub
+channels under `K`/`E` and `g$lshzt`/`A` flags, with runtime `CONFIG SET`
+toggling. Expired/evicted/keymiss/new-key and `FLUSH*` event classes are explicitly
+unsupported, and delivery is at-most-once and non-persistent. See
+[keyspace notifications](docs/notifications.md).
+
 Optional payload-budget eviction (`--maxmemory-policy noeviction|allkeys-random|
 allkeys-lru|volatile-random|volatile-lru|volatile-ttl`, runtime `CONFIG SET`) keeps
 writes succeeding by evicting eligible non-target keys; the budget is still

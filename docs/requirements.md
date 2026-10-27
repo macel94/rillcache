@@ -67,6 +67,7 @@ reason to couple all future commands into a single large story.
 | S37 | As a cache user, I can mutate, count, remove and range over hashes, lists, sets and sorted sets so that typed collections are usable beyond creation and basic reads. | S | R145–R148; binary/count/order/TTL/OOM/WRONGTYPE, multi-key set atomicity and all-mode wire tests |
 | S38 | As an operator, I can list live connections with honest metadata and kill selected clients by ID/address/type/user so that stuck or abusive sessions can be managed. | XS | R149–R152; list metadata/filters, kill variants, self-protection and all-mode wire tests |
 | S39 | As a cache user, I can add elements to approximate cardinality sketches, estimate the union of several sketches and merge them, without storing every member. | S | R153–R156; exact small counts, dense tolerance, TTL/merge/error atomicity and all-mode wire tests |
+| S40 | As a service, I can subscribe to keyspace/keyevent notifications so that cache invalidation and audit tooling do not need to poll the keyspace. | S | R157–R160; flag/category frames, MULTI/blocking, runtime toggle, ACL and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -446,6 +447,31 @@ reason to couple all future commands into a single large story.
   elements, TTL, merge, malformed payloads, wrong types, ACL category metadata and
   transaction queueing in all execution modes.
 
+### Keyspace notifications (S40)
+
+- **R157 (event-driven):** When `--notify-keyspace-events` or `CONFIG SET
+  notify-keyspace-events` receives supported flags (`K`, `E`, `g`, `$`, `l`, `s`,
+  `h`, `z`, `t`, `A`), the server shall atomically update the live classes;
+  unsupported/unknown classes and malformed flags shall fail without changing
+  configuration.
+- **R158 (event-driven):** When a supported mutating command changes keys, the
+  server shall publish one `__keyspace@0__:<key>` message with the event name if
+  `K` and the category are enabled and one `__keyevent@0__:<event>` message with
+  the key if `E` and the category are enabled. Non-mutating/rejected commands shall
+  publish nothing; MULTI shall publish per queued command and blocking pops shall
+  publish on success.
+- **R159 (unwanted behavior):** If notifications are disabled, a category is not
+  selected, a subscriber lacks ACL channel permission, or a command is unknown/
+  non-mutating, then no notification event shall be emitted or delivered to that
+  subscriber. Expired/evicted/keymiss/new-key/module and `FLUSH*` events shall not
+  be claimed; their flags shall be rejected.
+- **R160 (state-driven):** While notifications are enabled, mutation capture and
+  publication shall follow command execution order and remain at-most-once and
+  non-persistent. All-mode tests shall cover keyspace/keyevent frames, category and
+  runtime toggles, binary channels, rename/expire, MULTI, blocking pops, HLL and
+  `CONFIG`/`INFO` exposure. Documentation shall retain the missing event classes,
+  durable/replicated delivery, global happens-before and exhaustive-audit limits.
+
 ### Development and delivery
 
 - **R30 (event-driven):** When `make check` is run, the project shall check formatting,
@@ -781,7 +807,7 @@ and optimistic key invalidation; multi-user ACL users/rules, key patterns and
 atomic ACL-file save/load; opt-in RESP-command append-only persistence with
 fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction;
 payload-budget eviction policies (`noeviction`, allkeys/volatile random/LRU and
-volatile TTL); Redis DIGEST/DELEX
+volatile TTL); keyspace/keyevent notifications for supported mutation classes; Redis DIGEST/DELEX
 and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
 (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store

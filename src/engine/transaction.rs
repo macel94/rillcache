@@ -97,7 +97,6 @@ impl Store {
             super::internal_error(output);
             return TransactionOutcome::InternalError;
         };
-        let marks = self.journal_marks();
         let start = output.len();
         let Ok(data) = self.data.read() else {
             super::internal_error(output);
@@ -114,12 +113,14 @@ impl Store {
         let mut action = super::Action::Continue;
         for command in commands {
             let arguments: Vec<&[u8]> = command.iter().map(Vec::as_slice).collect();
+            let marks = self.journal_marks();
+            let command_start = output.len();
             action = self.execute_locked(&arguments, output);
+            self.commit_journal(marks, &arguments, output, command_start);
             if action == super::Action::Close {
                 break;
             }
         }
-        self.commit_journal(marks, output, start);
         TransactionOutcome::Completed(action)
     }
 }

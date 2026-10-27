@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::engine::{Action, Auth, EvictionPolicy, FsyncPolicy, Store};
+use crate::engine::{Action, Auth, EvictionPolicy, FsyncPolicy, NotifyFlags, Store};
 use crate::protocol::{Limits, dispatch_request};
 use crate::session::Session;
 use std::path::PathBuf;
@@ -135,6 +135,8 @@ pub struct Config {
     pub dir: PathBuf,
     /// Policy used when payload admission would otherwise fail.
     pub maxmemory_policy: EvictionPolicy,
+    /// Keyspace/keyevent notification classes; empty disables publication.
+    pub notify_keyspace_events: NotifyFlags,
 }
 
 impl std::fmt::Debug for Config {
@@ -157,6 +159,10 @@ impl std::fmt::Debug for Config {
             .field("appendfsync", &self.appendfsync)
             .field("dir", &self.dir)
             .field("maxmemory_policy", &self.maxmemory_policy)
+            .field(
+                "notify_keyspace_events",
+                &self.notify_keyspace_events.as_string(),
+            )
             .finish()
     }
 }
@@ -177,6 +183,7 @@ impl Default for Config {
             appendfsync: FsyncPolicy::EverySec,
             dir: PathBuf::from("."),
             maxmemory_policy: EvictionPolicy::NoEviction,
+            notify_keyspace_events: NotifyFlags::default(),
         }
     }
 }
@@ -258,6 +265,7 @@ impl Server {
             Store::with_auth(config.max_data_bytes, auth)
         };
         store.set_eviction_policy(config.maxmemory_policy);
+        store.set_notify_flags(config.notify_keyspace_events);
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
         let capacity = thread::available_parallelism().ok().map(usize::from);
