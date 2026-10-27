@@ -257,12 +257,17 @@ const COMMANDS: &[Command] = &[
         -1,
         1,
     ),
+    cmd("xack", -4, &["write", "fast"], 1, 1, 1),
     cmd("xadd", -5, &["write", "denyoom"], 1, 1, 1),
     cmd("xdel", -3, &["write"], 1, 1, 1),
     cmd("xgroup", -2, &["write"], 2, 2, 1),
     cmd("xinfo", -2, &["readonly"], 2, 2, 1),
     cmd("xlen", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("xpending", -3, &["readonly", "slow"], 1, 1, 1),
+    cmd("xrange", -4, &["readonly", "slow"], 1, 1, 1),
+    cmd("xread", -4, &["readonly", "blocking"], 0, 0, 0),
     cmd("xreadgroup", -7, &["write"], 0, 0, 0),
+    cmd("xrevrange", -4, &["readonly", "slow"], 1, 1, 1),
     cmd("zadd", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("zcard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("zcount", 4, &["readonly", "fast"], 1, 1, 1),
@@ -412,7 +417,8 @@ fn command_group(name: &str) -> Option<&'static str> {
         "zadd" | "zcard" | "zcount" | "zincrby" | "zpopmax" | "zpopmin" | "zrange"
         | "zrangebyscore" | "zrank" | "zrem" | "zremrangebyrank" | "zremrangebyscore"
         | "zrevrange" | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" => "zset",
-        "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xreadgroup" => "stream",
+        "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
+        | "xread" | "xreadgroup" | "xrevrange" => "stream",
         "auth" | "client" | "hello" | "quit" | "reset" | "select" => "connection",
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "subscribe" | "unsubscribe" => {

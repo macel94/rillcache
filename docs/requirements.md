@@ -70,6 +70,7 @@ reason to couple all future commands into a single large story.
 | S40 | As a service, I can subscribe to keyspace/keyevent notifications so that cache invalidation and audit tooling do not need to poll the keyspace. | S | R157–R160; flag/category frames, MULTI/blocking, runtime toggle, ACL and all-mode wire tests |
 | S41 | As an administrator, I can generate secure ACL passwords, dry-run a user's permissions and inspect a bounded denial log so that credential operations and policy debugging are explicit. | XS | R161–R164; GENPASS source/bounds, DRYRUN, LOG aggregation/reset and all-mode wire tests |
 | S42 | As a bitmap user, I can count, locate and combine bits over binary strings with byte/bit ranges and atomic destinations. | S | R165–R168; range/padding/alias/TTL/OOM/WRONGTYPE and all-mode wire tests |
+| S43 | As a stream consumer, I can range-read entries, inspect and acknowledge pending deliveries, and read multiple streams without blocking so that consumer groups are usable beyond one read. | S | R169–R172; ack/pending/range/read/group lifecycle and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -522,6 +523,31 @@ reason to couple all future commands into a single large story.
   aliases, destination TTL, wrong type and all execution modes.
 
 
+### Stream pending, range and multi-stream reads (S43)
+
+- **R169 (event-driven):** When `XACK key group id [id ...]` succeeds, it shall
+  remove each owned pending entry from the group and its consumer and return the
+  acknowledged count; missing keys/groups and unknown IDs shall return zero without
+  mutation, and wrong types shall return WRONGTYPE.
+- **R170 (event-driven):** When `XPENDING key group` summary or
+  `XPENDING key group [IDLE ms] start end count [consumer]` extended forms run,
+  they shall return count/min/max/consumer counts or bounded
+  `[id, consumer, idle, deliveries]` rows with inclusive bounds, consumer and idle
+  filtering; missing key/group shall return NOGROUP and invalid arguments shall
+  fail before mutation.
+- **R171 (event-driven):** When `XRANGE`/`XREVRANGE` or non-blocking
+  `XREAD [COUNT] STREAMS ...` run, they shall return bounded entries/streams in
+  requested order with inclusive IDs, `-`/`+` and incomplete-ID expansion, `$`
+  resolved at command time and `*-1` when no stream has new entries. Blocking
+  XREAD shall return an explicit unsupported error.
+- **R172 (event-driven):** `XGROUP DESTROY`, `CREATECONSUMER` and `DELCONSUMER`
+  shall update group/consumer metadata atomically, report created/removed counts,
+  delete a consumer's pending references, preserve TTL/accounting and touch the
+  stream for WATCH/journal capture. All-mode tests shall cover ack/pending/range/
+  read/group lifecycle, errors and multi-stream reads; docs shall retain missing
+  blocking/claim/trim/XINFO subcommands, volatile pending across restart and
+  dynamic-key ACL limitations.
+
 ### Development and delivery
 
 - **R30 (event-driven):** When `make check` is run, the project shall check formatting,
@@ -877,9 +903,10 @@ for grammar,
 clocks, rounding, integer limits, resource bounds, queue isolation and atomic
 error behavior. Conditions are atomic and
 case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
-A bounded stream subset supports XADD, XDEL, XLEN, XGROUP CREATE/SETID,
-XREADGROUP GROUP with COUNT/NOACK for new entries on one stream, XINFO STREAM
-(with FULL). See [stream limits](streams.md). All types share expiry, payload
+A bounded stream subset supports XADD, XDEL, XLEN, XGROUP CREATE/SETID/DESTROY/
+CREATECONSUMER/DELCONSUMER, XREADGROUP GROUP with COUNT/NOACK for new entries on
+one stream, XACK, XPENDING summary/extended, XRANGE/XREVRANGE, non-blocking XREAD
+over multiple streams, and XINFO STREAM (with FULL). See [stream limits](streams.md). All types share expiry, payload
 accounting, TYPE, RENAME and deep same-database COPY; byte-oriented KEYS and
 RANDOMKEY inspect that same keyspace. See [keyspace limits](keyspace.md).
 CONFIG GET/SET collection thresholds select actual collection representations;
