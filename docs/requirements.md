@@ -1310,8 +1310,11 @@ and the offline upstream harness tests.
 - **R287 (ubiquitous):** Tests shall cover `WRITE` read passthrough, deferred
   writes and `ALL` reads, deadline expiry, explicit unpause, zero timeout,
   self-pause/unpause, pipelining order, invalid arguments, disconnect/shutdown
-  behavior and every worker mode. Documentation shall retain the absence of
-  replication, expiry/eviction pausing and replica-traffic pause semantics.
+  behavior and every worker mode. A zero-deadline client-pause query shall return
+  without sampling wall time, verified by an injected counting clock through
+  ordinary session dispatch. Nonzero-state deadline/mode semantics shall remain
+  unchanged. Documentation shall retain the absence of replication,
+  expiry/eviction pausing and replica-traffic pause semantics.
 
 ### Latency event monitoring (S73)
 

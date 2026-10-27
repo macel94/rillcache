@@ -44,7 +44,9 @@ table on each disabled-to-enabled transition; setting `yes` while already enable
 does not reset it. Disabling keeps the existing counters readable until reset or
 re-enable. Disabled commandstats performs no lookup, counter update or extra
 elapsed-clock read; ordinary commands need no instrumentation timer when all
-observers are disabled.
+observers are disabled. A client-pause query also checks the existing atomic
+zero-deadline sentinel before sampling wall time; nonzero pause states retain
+their existing deadline/mode and concurrency behavior.
 
 - `calls` counts dispatches through a client `Session`; direct embedded
   `Store::execute` calls and commands executed inside `MULTI` are not counted
