@@ -713,7 +713,16 @@ impl Session {
                 encode_bulk(Some(b"channels"), output);
                 encode_bulk(Some(details.channels.as_bytes()), output);
                 encode_bulk(Some(b"selectors"), output);
-                output.extend_from_slice(b"*0\r\n");
+                write!(output, "*{}\r\n", details.selectors.len()).expect("Vec write");
+                for (commands, keys, channels) in details.selectors {
+                    output.extend_from_slice(b"*6\r\n");
+                    encode_bulk(Some(b"commands"), output);
+                    encode_bulk(Some(commands.as_bytes()), output);
+                    encode_bulk(Some(b"keys"), output);
+                    encode_bulk(Some(keys.as_bytes()), output);
+                    encode_bulk(Some(b"channels"), output);
+                    encode_bulk(Some(channels.as_bytes()), output);
+                }
             } else {
                 output.extend_from_slice(b"$-1\r\n");
             }

@@ -164,8 +164,9 @@ Access control starts with a single operator password for the `default` user
 multi-user ACL file (`--aclfile`) with hashed passwords, ordered
 command/category rules, declared-key patterns and atomic `ACL SAVE`/`LOAD`.
 `NOAUTH`/`NOPERM` are checked before store access and apply to live connections.
-ACL selectors, persistent/centralized audit, brute-force controls and native TLS
-remain separate security gates; channel patterns are enforced for pub/sub.
+Persistent/centralized audit, brute-force controls and native TLS remain separate
+security gates; ACL selectors group command/key/channel rules and channel patterns
+are enforced for pub/sub.
 `ACL GENPASS`, `ACL DRYRUN` and a bounded process-local `ACL LOG` support
 credential operations and policy debugging. See
 [security](docs/security.md).
@@ -180,7 +181,7 @@ This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata,
 `SELECT 0`, disconnect-equivalent `RESET`, `CLIENT LIST`/`KILL` and honest client
 statistics; single-password and multi-user ACL authentication are implemented.
-ACL selectors/audit controls, native TLS, brute-force protection, RDB/background-AOF
+Audit controls, native TLS, brute-force protection, RDB/background-AOF
 interoperability, backup/restore drills, scripts/functions, sharded pub/sub,
 keyspace notifications, replication, clustering, and real client-library
 interoperability remain production blockers. RESP3 replies are limited to the current command

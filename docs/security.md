@@ -4,8 +4,8 @@ Rillcache supports either one operator-configured password for the implicit Redi
 `default` user or a Redis-style ACL file with multiple users, password hashes,
 command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
-design. It does not add native TLS, rate limiting, an audit log, ACL selectors,
-or credential encryption at rest.
+design. It does not add native TLS, rate limiting, a persistent/centralized audit
+log, or credential encryption at rest.
 
 ## What is implemented
 
@@ -63,7 +63,12 @@ Supported categories are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
 is an approximation over the published command table, not a byte-for-byte copy of
 a specific Redis release.
 
-`ACL SETUSER` is atomic: a bad rule leaves the previous user untouched.
+`ACL SETUSER` is atomic: a bad rule leaves the previous user untouched. A
+parenthesized rule group, such as `(+set ~app:*)`, defines a Redis 7 selector.
+Selectors are alternatives to the root rules: a command is allowed when the root
+rules or any selector permits it, and its keys/channels must be permitted by that
+same set. `clearselectors` removes them and `reset` clears them with the rest of
+the user.
 `ACL DELUSER`, `ACL WHOAMI`, `ACL USERS`, `ACL LIST`, `ACL GETUSER`, `ACL CAT`,
 `ACL SAVE`, `ACL LOAD`, `ACL GENPASS`, `ACL DRYRUN` and `ACL LOG` are implemented.
 `ACL DRYRUN user command [arg ...]` evaluates the named user's current rules

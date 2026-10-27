@@ -114,6 +114,7 @@ reason to couple all future commands into a single large story.
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 | S84 | As an operator, I can inspect bounded per-error-code command reply counts so that repeated failures are visible without scraping client logs. | XS | R323–R325; counts/reset/INFO all/all-mode wire tests |
 | S85 | As an operator, I can see the average remaining TTL of expiring keys in `INFO keyspace` so cache freshness is visible without per-key scans. | XS | R326–R327; mean TTL, empty/expired state and all-mode wire tests |
+| S86 | As an ACL administrator, I can define independent command/key scopes per user so one login can read broadly while writing only a key namespace. | S | R328–R331; selector parsing, authorization, listing, ACL-file round-trip and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -281,9 +282,9 @@ and the offline upstream harness tests.
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
-  Documentation shall retain the missing selectors, audit/log/dry-run/gen-pass,
-  channel enforcement, rate limiting, native TLS, key-spec-blind commands and
-  process-level tenant-isolation boundaries.
+  Documentation shall retain the missing `%R~`/`%W~` key modes, first-argument
+  rules, subcommand categories, persistent audit, rate limiting, native TLS,
+  key-spec-blind commands and process-level tenant-isolation boundaries.
 
 ### Append-only persistence (S29)
 
@@ -1560,6 +1561,31 @@ and the offline upstream harness tests.
   Documentation shall retain that this is an exact mean over live key deadlines,
   not Redis's sampled estimate, and not an RSS or payload measurement.
 
+### ACL selectors (S86)
+
+- **R328 (event-driven):** `ACL SETUSER` shall accept one or more parenthesized
+  selector groups containing command (`+cmd`/`-cmd`), category (`+@cat`/`-@cat`),
+  key (`~`) and channel (`&`) rules, plus `allkeys`/`resetkeys`,
+  `allchannels`/`resetchannels`. `clearselectors` shall remove all selectors and
+  `reset` shall clear them with the rest of the user. Invalid or oversized
+  groups shall reject the whole `SETUSER` atomically.
+- **R329 (state-driven):** While authorizing a command, the server shall allow it
+  when the root rules or any selector permits the command, its declared keys and
+  its channel arguments as one set; a selector that permits the command but not
+  its keys or channels shall not grant it. Dynamic `SORT` BY/GET keys shall
+  require all-keys in the matching set, and denials shall report command, key or
+  channel consistently.
+- **R330 (event-driven):** `ACL LIST` shall render selectors as parenthesized
+  groups and `ACL GETUSER` shall expose a `selectors` array of commands/keys/
+  channels maps. `ACL SAVE`/`LOAD` shall round-trip selector groups with spaces
+  intact and preserve the documented bounds.
+- **R331 (ubiquitous):** Tests shall cover root/selector alternatives, key-scoped
+  writes with broad reads, `clearselectors`/`reset`, atomic rejection, LIST/
+  GETUSER exposure, ACL-file restart round-trips and every worker mode.
+  Documentation shall retain the absence of `%R~`/`%W~` key modes, first-argument
+  rules, nested selectors, subcommand categories, rate limiting, persistent audit
+  and native TLS.
+
 ### Development and delivery
 
 - **R30 (event-driven):** When `make check` is run, the project shall check formatting,
@@ -1980,8 +2006,8 @@ Not implemented or implied by the completed increments:
 1. Validate HELLO/CLIENT session negotiation against real pinned redis-cli and
    language clients; add command discovery and multiple databases only as separate
    compatible increments.
-2. ACL selectors and channel enforcement (with pub/sub), brute-force controls, an
-   audit path and a safe transport-security deployment boundary; then AOF
+2. `%R~/`%W~` selector key modes, first-argument rules, brute-force controls, a
+   persistent audit path and a safe transport-security deployment boundary; then AOF
    rewrite/compaction, RDB interoperability, backup/restore drills and disk-fault
    recovery beyond the current append-only restart path.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and
