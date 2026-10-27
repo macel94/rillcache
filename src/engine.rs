@@ -126,6 +126,8 @@ pub struct Store {
     client_pause: std::sync::atomic::AtomicU64,
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
+    auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64,
+    auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64,
     shutdown_requested: AtomicBool,
 }
 impl Store {
@@ -188,6 +190,8 @@ impl Store {
                 latency::DEFAULT_THRESHOLD_MS,
             ),
             latency: std::sync::RwLock::new(latency::State::default()),
+            auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64::new(100),
+            auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64::new(64 * 1024 * 1024),
             shutdown_requested: AtomicBool::new(false),
         }
     }
@@ -642,6 +646,26 @@ impl Store {
             data.eviction = policy;
             true
         })
+    }
+
+    pub(crate) fn auto_aof_rewrite_percentage(&self) -> u64 {
+        self.auto_aof_rewrite_percentage
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn set_auto_aof_rewrite_percentage(&self, value: u64) {
+        self.auto_aof_rewrite_percentage
+            .store(value, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn auto_aof_rewrite_min_size(&self) -> u64 {
+        self.auto_aof_rewrite_min_size
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn set_auto_aof_rewrite_min_size(&self, value: u64) {
+        self.auto_aof_rewrite_min_size
+            .store(value, std::sync::atomic::Ordering::Release);
     }
 
     pub fn eviction_policy(&self) -> EvictionPolicy {

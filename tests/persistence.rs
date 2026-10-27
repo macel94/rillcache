@@ -352,3 +352,47 @@ fn send_raw(stream: &mut TcpStream, arguments: &[&[u8]], reply: &mut [u8]) {
     stream.write_all(&bytes).unwrap();
     stream.read_exact(reply).unwrap();
 }
+#[test]
+fn automatic_rewrite_is_triggered_by_maintenance_and_replays() {
+    let dir = temp_dir("auto-rewrite");
+    let path = dir.join("test.aof");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(
+            &mut stream,
+            &[
+                b"CONFIG",
+                b"SET",
+                b"auto-aof-rewrite-percentage",
+                b"1",
+                b"auto-aof-rewrite-min-size",
+                b"128",
+            ],
+            b"+OK\r\n",
+        );
+        for index in 0..400 {
+            let value = format!("value-{index}");
+            send(&mut stream, &[b"SET", b"key", value.as_bytes()], b"+OK\r\n");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::fs::metadata(&path)
+            .map(|metadata| metadata.len() >= 2048)
+            .unwrap_or(true)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert!(size < 2048, "maintenance auto rewrite left {size} bytes");
+        send(&mut stream, &[b"GET", b"key"], b"$9\r\nvalue-399\r\n");
+        server.shutdown().unwrap();
+    }
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"GET", b"key"], b"$9\r\nvalue-399\r\n");
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

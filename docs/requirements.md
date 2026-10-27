@@ -105,6 +105,7 @@ reason to couple all future commands into a single large story.
 | S75 | As an operator, I can request a durable protocol-level stop so that maintenance can flush acknowledged journal writes and join workers without relying on signals. | S | R296–R299; flags/errors/ABORT/MULTI/persistence/all-mode shutdown tests |
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
+| S78 | As an operator, I can configure automatic journal compaction thresholds so that an append-only file does not grow without bound between manual rewrites. | S | R306–R309; config/defaults/growth/baseline/replay and all-mode wire tests |
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
@@ -1421,6 +1422,30 @@ and the offline upstream harness tests.
   worker mode. Documentation shall retain the absence of replication, PSYNC,
   replica management, Sentinel, cluster routing, failover and mixed-version
   interoperability.
+
+### Automatic journal compaction (S78)
+
+- **R306 (event-driven):** `CONFIG GET/SET auto-aof-rewrite-percentage` and
+  `auto-aof-rewrite-min-size` shall expose and atomically update the thresholds.
+  Percentage shall default to 100 and disable automatic rewrites at 0; minimum
+  size shall default to 64 MiB. Negative/non-integer values and unsupported
+  options shall fail without changing configuration.
+- **R307 (state-driven):** While a journal is enabled and the percentage is
+  non-zero, the maintenance loop shall compare the open file size with the size
+  recorded at open/last rewrite and trigger compaction once both the minimum size
+  and configured growth percentage are met. Disabled journals or unmet thresholds
+  shall perform no rewrite and add no command-path overhead beyond the periodic
+  maintenance check.
+- **R308 (event-driven):** A triggered rewrite shall use the existing synchronous
+  full-state compaction under the transaction gate, reset the baseline to the new
+  file size, keep the previous journal intact on failure, and preserve replayable
+  data/TTLs across restart. It shall not claim fork-based background or incremental
+  rewrite behavior.
+- **R309 (ubiquitous):** Tests shall cover defaults, `CONFIG GET/SET` round trips
+  and validation, growth/baseline triggering, no-op thresholds/disabled journals,
+  maintenance-triggered compaction, restart replay and all worker modes.
+  Documentation shall retain the absence of background/incremental rewrite,
+  checksums, encryption and crash-consistency guarantees.
 
 ### Truthful persistence status (S80)
 
