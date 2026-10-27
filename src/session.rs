@@ -1771,6 +1771,7 @@ impl Session {
 
     fn client_list(&self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let mut type_filter = None;
+        let mut absent_type = false;
         let mut ids: Option<Vec<u64>> = None;
         let mut index = 0;
         while index < arguments.len() {
@@ -1783,6 +1784,12 @@ impl Session {
                     type_filter = Some(false);
                 } else if value.eq_ignore_ascii_case(b"pubsub") {
                     type_filter = Some(true);
+                } else if value.eq_ignore_ascii_case(b"master")
+                    || value.eq_ignore_ascii_case(b"replica")
+                    || value.eq_ignore_ascii_case(b"slave")
+                {
+                    // Standalone servers have no master/replica clients.
+                    absent_type = true;
                 } else {
                     output.extend_from_slice(b"-ERR unknown client type\r\n");
                     return;
@@ -1804,7 +1811,11 @@ impl Session {
                 return;
             }
         }
-        let snapshots = store.client_snapshots(type_filter);
+        let snapshots = if absent_type {
+            Vec::new()
+        } else {
+            store.client_snapshots(type_filter)
+        };
         let mut text = String::new();
         for snapshot in snapshots {
             if ids.as_ref().is_some_and(|ids| !ids.contains(&snapshot.id)) {
@@ -1862,6 +1873,8 @@ impl Session {
         let mut laddr_filter: Option<Vec<u8>> = None;
         let mut id_filter = None;
         let mut type_filter = None;
+        let mut absent_type = false;
+        let mut skip_caller = true;
         let mut user_filter: Option<Vec<u8>> = None;
         let mut max_age = None;
         if legacy {
@@ -1888,6 +1901,11 @@ impl Session {
                         type_filter = Some(false);
                     } else if value.eq_ignore_ascii_case(b"pubsub") {
                         type_filter = Some(true);
+                    } else if value.eq_ignore_ascii_case(b"master")
+                        || value.eq_ignore_ascii_case(b"replica")
+                        || value.eq_ignore_ascii_case(b"slave")
+                    {
+                        absent_type = true;
                     } else {
                         output.extend_from_slice(b"-ERR unknown client type\r\n");
                         return;
@@ -1904,9 +1922,12 @@ impl Session {
                     };
                     max_age = Some(age);
                 } else if arguments[index].eq_ignore_ascii_case(b"SKIPME") {
-                    if !value.eq_ignore_ascii_case(b"yes") {
-                        output
-                            .extend_from_slice(b"-ERR CLIENT KILL SKIPME no is not supported\r\n");
+                    if value.eq_ignore_ascii_case(b"yes") {
+                        skip_caller = true;
+                    } else if value.eq_ignore_ascii_case(b"no") {
+                        skip_caller = false;
+                    } else {
+                        output.extend_from_slice(b"-ERR syntax error\r\n");
                         return;
                     }
                 } else {
@@ -1917,7 +1938,12 @@ impl Session {
             }
         }
         let mut ids = Vec::new();
-        for snapshot in store.client_snapshots(type_filter) {
+        let snapshots = if absent_type {
+            Vec::new()
+        } else {
+            store.client_snapshots(type_filter)
+        };
+        for snapshot in snapshots {
             if id_filter.is_some_and(|id| snapshot.id != id) {
                 continue;
             }
@@ -1944,7 +1970,7 @@ impl Session {
             }
             ids.push(snapshot.id);
         }
-        let killed = store.client_kill_ids(&ids, self.id);
+        let killed = store.client_kill_ids(&ids, if skip_caller { self.id } else { 0 });
         if legacy {
             if killed == 0 {
                 output.extend_from_slice(b"-ERR No such client\r\n");
