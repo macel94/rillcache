@@ -123,7 +123,7 @@ fn write_pause_defers_writes_but_not_reads_in_all_modes() {
         // A finite pause expires without another client's intervention.
         command(
             &mut admin,
-            &[b"CLIENT", b"PAUSE", b"300", b"WRITE"],
+            &[b"CLIENT", b"PAUSE", b"2000", b"WRITE"],
             b"+OK\r\n",
         );
         send(&mut worker, &[b"SET", b"k", b"v3"]);

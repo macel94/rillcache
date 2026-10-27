@@ -2,8 +2,10 @@
 
 use super::Store;
 use crate::protocol::encode_bulk;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Write as _;
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy)]
 struct Command {
@@ -492,6 +494,40 @@ const COMMANDS: &[Command] = &[
     cmd("zunionstore", -4, &["write", "denyoom"], 1, 1, 1),
 ];
 
+pub(super) const fn command_count() -> usize {
+    COMMANDS.len()
+}
+
+pub(super) fn command_name_at(index: usize) -> Option<&'static str> {
+    COMMANDS.get(index).map(|command| command.name)
+}
+
+static COMMAND_LOOKUP: OnceLock<HashMap<&'static str, usize>> = OnceLock::new();
+
+/// Registry index for per-command statistics. Names are normalized in a stack
+/// buffer and looked up in a one-time map so the command hot path does not scan
+/// the whole table.
+pub(super) fn command_index(name: &[u8]) -> Option<usize> {
+    if name.len() > 32 {
+        return None;
+    }
+    let mut lower = [0u8; 32];
+    for (slot, byte) in lower.iter_mut().zip(name) {
+        *slot = byte.to_ascii_lowercase();
+    }
+    let name = std::str::from_utf8(&lower[..name.len()]).ok()?;
+    COMMAND_LOOKUP
+        .get_or_init(|| {
+            COMMANDS
+                .iter()
+                .enumerate()
+                .map(|(index, command)| (command.name, index))
+                .collect()
+        })
+        .get(name)
+        .copied()
+}
+
 /// Arity from the published command table; `None` means unsupported.
 pub(super) fn command_arity(name: &[u8]) -> Option<i64> {
     COMMANDS
@@ -889,6 +925,7 @@ impl Store {
                     | b"keyspace"
                     | b"stats"
                     | b"clients"
+                    | b"commandstats"
                     | b"replication"
                     | b"persistence"
                     | b"errorstats"
@@ -947,6 +984,21 @@ impl Store {
                     stats.pubsub_channels,
                     stats.pubsub_patterns
                 );
+            }
+            if matches!(section.as_slice(), b"commandstats" | b"all") {
+                text.push_str("# Commandstats\r\n");
+                for stat in self.command_statistics() {
+                    let _ = writeln!(
+                        text,
+                        "cmdstat_{}:calls={},usec={},usec_per_call={},rejected_calls={},failed_calls={}\r",
+                        stat.name,
+                        stat.calls,
+                        stat.usec,
+                        stat.usec / stat.calls,
+                        stat.rejected_calls,
+                        stat.failed_calls
+                    );
+                }
             }
             if matches!(section.as_slice(), b"persistence" | b"all") {
                 let persistence = self.persistence_status();
@@ -1125,6 +1177,17 @@ fn write_array_len(length: usize, output: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_registry_lookup_is_case_insensitive() {
+        assert_eq!(command_index(b"GET"), command_index(b"get"));
+        assert!(command_index(b"GET").is_some());
+        assert!(command_index(b"not-a-command").is_none());
+        assert!(command_index(&[b'x'; 33]).is_none());
+        let index = command_index(b"ping").unwrap();
+        assert_eq!(command_name_at(index), Some("ping"));
+        assert!(command_count() > index);
+    }
 
     #[test]
     fn role_reports_admin_fast_and_dangerous_categories() {

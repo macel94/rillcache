@@ -78,9 +78,16 @@ impl Store {
 
     /// Returns `Some(writes_only)` while a pause is active.
     pub(crate) fn client_pause_mode(&self) -> Option<bool> {
-        let now = u64::try_from(self.clock.now_ms().max(0)).unwrap_or(0);
         let current = self.client_pause.load(Ordering::Relaxed);
-        (current & !PAUSE_WRITE_ONLY > now).then_some(current & PAUSE_WRITE_ONLY != 0)
+        let deadline = current & !PAUSE_WRITE_ONLY;
+        // Zero can never be active, regardless of the wall clock. Avoid a
+        // dynamic clock call on ordinary dispatch; nonzero pause semantics
+        // and the coherent atomic deadline/mode snapshot remain unchanged.
+        if deadline == 0 {
+            return None;
+        }
+        let now = u64::try_from(self.clock.now_ms().max(0)).unwrap_or(0);
+        (deadline > now).then_some(current & PAUSE_WRITE_ONLY != 0)
     }
 
     pub(crate) fn client_address(&self, id: u64) -> Option<String> {
