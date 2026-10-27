@@ -8,7 +8,7 @@ use std::io::Write as _;
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy)]
-struct Command {
+pub(super) struct Command {
     name: &'static str,
     arity: i64,
     flags: &'static [&'static str],
@@ -17,489 +17,70 @@ struct Command {
     key_step: i64,
 }
 
-// Every registered command is wired to this worktree's Store or server dispatcher.
-const COMMANDS: &[Command] = &[
-    cmd("acl", -2, &["admin", "dangerous", "slow"], 0, 0, 0),
-    cmd("append", 3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("asking", 1, &["fast"], 0, 0, 0),
-    cmd(
-        "auth",
-        -2,
-        &["noscript", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd("bgrewriteaof", 1, &["admin", "dangerous", "slow"], 0, 0, 0),
-    cmd(
-        "bgsave",
-        -1,
-        &["admin", "noscript", "no_async_loading"],
-        0,
-        0,
-        0,
-    ),
-    cmd("bitcount", -2, &["readonly"], 1, 1, 1),
-    cmd("bitfield", -2, &["write", "denyoom"], 1, 1, 1),
-    cmd("bitfield_ro", -2, &["readonly"], 1, 1, 1),
-    cmd("bitop", -4, &["write", "denyoom"], 1, -1, 1),
-    cmd("bitpos", -3, &["readonly"], 1, 1, 1),
-    cmd(
-        "blmove",
-        6,
-        &["write", "denyoom", "noscript", "blocking"],
-        1,
-        2,
-        1,
-    ),
-    cmd("blmpop", -5, &["write"], 3, -1, 1),
-    cmd("blpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
-    cmd("brpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
-    cmd(
-        "brpoplpush",
-        4,
-        &["write", "denyoom", "noscript", "blocking"],
-        1,
-        2,
-        1,
-    ),
-    cmd("bzmpop", -5, &["write", "noscript", "blocking"], 0, 0, 0),
-    cmd("bzpopmax", -3, &["write", "blocking", "fast"], 1, -2, 1),
-    cmd("bzpopmin", -3, &["write", "blocking", "fast"], 1, -2, 1),
-    cmd(
-        "client",
-        -2,
-        &["admin", "noscript", "loading", "stale"],
-        0,
-        0,
-        0,
-    ),
-    cmd("cluster", -2, &[], 0, 0, 0),
-    cmd("command", -1, &["loading", "stale"], 0, 0, 0),
-    cmd("config", -2, &["admin", "noscript"], 0, 0, 0),
-    cmd("copy", -3, &["write", "denyoom"], 1, 2, 1),
-    cmd("dbsize", 1, &["readonly", "fast"], 0, 0, 0),
-    cmd("decr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("decrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("del", -2, &["write", "fast"], 1, -1, 1),
-    cmd("delex", -2, &["write", "fast"], 1, 1, 1),
-    cmd("delifeq", 3, &["write", "fast"], 1, 1, 1),
-    cmd("digest", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd(
-        "discard",
-        1,
-        &["noscript", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd("echo", 2, &["fast"], 0, 0, 0),
-    cmd(
-        "exec",
-        1,
-        &[
-            "noscript",
-            "loading",
-            "stale",
-            "skip_monitor",
-            "skip_slowlog",
-        ],
-        0,
-        0,
-        0,
-    ),
-    cmd("exists", -2, &["readonly", "fast"], 1, -1, 1),
-    cmd("expire", -3, &["write", "fast"], 1, 1, 1),
-    cmd("expireat", -3, &["write", "fast"], 1, 1, 1),
-    cmd("expiretime", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("failover", -1, &["admin", "noscript", "stale"], 0, 0, 0),
-    cmd("flushall", -1, &["write", "slow"], 0, 0, 0),
-    cmd("flushdb", -1, &["write", "slow"], 0, 0, 0),
-    cmd("function", -2, &["write", "admin"], 0, 0, 0),
-    cmd("geoadd", -5, &["write", "denyoom"], 1, 1, 1),
-    cmd("geodist", -4, &["readonly"], 1, 1, 1),
-    cmd("geohash", -2, &["readonly"], 1, 1, 1),
-    cmd("geopos", -2, &["readonly"], 1, 1, 1),
-    cmd("georadius", -6, &["write", "denyoom"], 1, 1, 1),
-    cmd("georadius_ro", -6, &["readonly"], 1, 1, 1),
-    cmd("georadiusbymember", -5, &["write", "denyoom"], 1, 1, 1),
-    cmd("georadiusbymember_ro", -5, &["readonly"], 1, 1, 1),
-    cmd("geosearch", -7, &["readonly"], 1, 1, 1),
-    cmd("geosearchstore", -8, &["write", "denyoom"], 1, 2, 1),
-    cmd("get", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("getbit", 3, &["readonly", "fast"], 1, 1, 1),
-    cmd("getdel", 2, &["write", "fast"], 1, 1, 1),
-    cmd("getex", -2, &["write", "fast"], 1, 1, 1),
-    cmd("getrange", 4, &["readonly"], 1, 1, 1),
-    cmd("getset", 3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("hdel", -3, &["write", "fast"], 1, 1, 1),
-    cmd("hexists", 3, &["readonly", "fast"], 1, 1, 1),
-    cmd("hexpire", -6, &["write", "fast"], 1, 1, 1),
-    cmd("hexpireat", -6, &["write", "fast"], 1, 1, 1),
-    cmd("hexpiretime", -5, &["readonly", "fast"], 1, 1, 1),
-    cmd("hget", 3, &["readonly", "fast"], 1, 1, 1),
-    cmd("hgetall", 2, &["readonly"], 1, 1, 1),
-    cmd("hgetdel", -5, &["write", "fast"], 1, 1, 1),
-    cmd("hgetex", -5, &["write", "fast"], 1, 1, 1),
-    cmd(
-        "hello",
-        -1,
-        &["noscript", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd("hincrby", 4, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("hincrbyfloat", 4, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("hkeys", 2, &["readonly"], 1, 1, 1),
-    cmd("hlen", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("hmget", -3, &["readonly", "fast"], 1, 1, 1),
-    cmd("hmset", -4, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("hpersist", -5, &["write", "fast"], 1, 1, 1),
-    cmd("hpexpire", -6, &["write", "fast"], 1, 1, 1),
-    cmd("hpexpireat", -6, &["write", "fast"], 1, 1, 1),
-    cmd("hpexpiretime", -5, &["readonly", "fast"], 1, 1, 1),
-    cmd("hpttl", -5, &["readonly", "fast"], 1, 1, 1),
-    cmd("hrandfield", -2, &["readonly"], 1, 1, 1),
-    cmd("hscan", -3, &["readonly", "slow"], 1, 1, 1),
-    cmd("hset", -4, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("hsetex", -6, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("hsetnx", 4, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("hstrlen", 3, &["readonly", "fast"], 1, 1, 1),
-    cmd("httl", -5, &["readonly", "fast"], 1, 1, 1),
-    cmd("hvals", 2, &["readonly"], 1, 1, 1),
-    cmd("incr", 2, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("incrby", 3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("incrbyfloat", 3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("info", -1, &["loading", "stale"], 0, 0, 0),
-    cmd("keys", 2, &["readonly"], 0, 0, 0),
-    cmd("lastsave", 1, &["loading", "stale", "fast"], 0, 0, 0),
-    cmd(
-        "latency",
-        -2,
-        &["admin", "noscript", "loading", "stale", "slow"],
-        0,
-        0,
-        0,
-    ),
-    cmd("lcs", -3, &["readonly"], 1, 2, 1),
-    cmd("lindex", 3, &["readonly"], 1, 1, 1),
-    cmd("linsert", 5, &["write", "denyoom"], 1, 1, 1),
-    cmd("llen", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("lmove", 5, &["write", "denyoom"], 1, 2, 1),
-    cmd("lmpop", -4, &["write"], 2, -1, 1),
-    cmd("lpop", -2, &["write", "fast"], 1, 1, 1),
-    cmd("lpos", -3, &["readonly"], 1, 1, 1),
-    cmd("lpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("lpushx", -3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("lrange", 4, &["readonly"], 1, 1, 1),
-    cmd("lrem", 4, &["write"], 1, 1, 1),
-    cmd("lset", 4, &["write", "denyoom"], 1, 1, 1),
-    cmd("ltrim", 4, &["write"], 1, 1, 1),
-    cmd("memory", -2, &["readonly", "slow"], 0, 0, 0),
-    cmd("mget", -2, &["readonly", "fast"], 1, -1, 1),
-    cmd("module", -2, &[], 0, 0, 0),
-    cmd(
-        "monitor",
-        1,
-        &["admin", "noscript", "loading", "stale"],
-        0,
-        0,
-        0,
-    ),
-    cmd("mset", -3, &["write", "denyoom"], 1, -1, 2),
-    cmd("msetex", -4, &["write", "denyoom"], 2, -1, 2),
-    cmd("move", 3, &["write", "fast"], 1, 1, 1),
-    cmd("msetnx", -3, &["write", "denyoom"], 1, -1, 2),
-    cmd(
-        "multi",
-        1,
-        &["noscript", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd("object", -2, &["readonly"], 2, 2, 1),
-    cmd("persist", 2, &["write", "fast"], 1, 1, 1),
-    cmd("pexpire", -3, &["write", "fast"], 1, 1, 1),
-    cmd("pexpireat", -3, &["write", "fast"], 1, 1, 1),
-    cmd("pexpiretime", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("pfadd", -2, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("pfcount", -2, &["readonly"], 1, -1, 1),
-    cmd("pfmerge", -2, &["write", "denyoom"], 1, -1, 1),
-    cmd("ping", -1, &["fast"], 0, 0, 0),
-    cmd("psetex", 4, &["write", "denyoom"], 1, 1, 1),
-    cmd(
-        "psync",
-        -3,
-        &["admin", "noscript", "no_async_loading", "no_multi"],
-        0,
-        0,
-        0,
-    ),
-    cmd(
-        "psubscribe",
-        -2,
-        &["pubsub", "noscript", "loading", "stale"],
-        0,
-        0,
-        0,
-    ),
-    cmd("pttl", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd(
-        "publish",
-        3,
-        &["pubsub", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd(
-        "pubsub",
-        -2,
-        &["pubsub", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd(
-        "punsubscribe",
-        -1,
-        &["pubsub", "noscript", "loading", "stale"],
-        0,
-        0,
-        0,
-    ),
-    cmd("quit", -1, &["fast"], 0, 0, 0),
-    cmd("randomkey", 1, &["readonly"], 0, 0, 0),
-    cmd("readonly", 1, &["fast"], 0, 0, 0),
-    cmd("readwrite", 1, &["fast"], 0, 0, 0),
-    cmd("rename", 3, &["write"], 1, 2, 1),
-    cmd(
-        "replicaof",
-        3,
-        &["admin", "noscript", "stale", "no_async_loading"],
-        0,
-        0,
-        0,
-    ),
-    cmd(
-        "replconf",
-        -1,
-        &["admin", "noscript", "loading", "stale", "allow_busy"],
-        0,
-        0,
-        0,
-    ),
-    cmd("renamenx", 3, &["write", "fast"], 1, 2, 1),
-    cmd(
-        "reset",
-        1,
-        &["noscript", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd(
-        "role",
-        1,
-        &["admin", "noscript", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd("rpop", -2, &["write", "fast"], 1, 1, 1),
-    cmd("rpoplpush", 3, &["write", "denyoom"], 1, 2, 1),
-    cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("rpushx", -3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("sadd", -3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd(
-        "save",
-        1,
-        &["admin", "noscript", "no_async_loading", "no_multi"],
-        0,
-        0,
-        0,
-    ),
-    cmd("scan", -2, &["readonly", "slow"], 0, 0, 0),
-    cmd("scard", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("script", -2, &["admin"], 0, 0, 0),
-    cmd("sdiff", -2, &["readonly"], 1, -1, 1),
-    cmd("sdiffstore", -3, &["write", "denyoom"], 1, -1, 1),
-    cmd("select", 2, &["loading", "stale", "fast"], 0, 0, 0),
-    cmd("set", -3, &["write", "denyoom"], 1, 1, 1),
-    cmd("setbit", 4, &["write", "denyoom"], 1, 1, 1),
-    cmd("setex", 4, &["write", "denyoom"], 1, 1, 1),
-    cmd("setnx", 3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("setrange", 4, &["write", "denyoom"], 1, 1, 1),
-    cmd(
-        "shutdown",
-        -1,
-        &["admin", "noscript", "loading", "stale", "slow"],
-        0,
-        0,
-        0,
-    ),
-    cmd("sinter", -2, &["readonly"], 1, -1, 1),
-    cmd("sintercard", -3, &["readonly"], 2, -1, 1),
-    cmd("sinterstore", -3, &["write", "denyoom"], 1, -1, 1),
-    cmd("sismember", 3, &["readonly", "fast"], 1, 1, 1),
-    cmd(
-        "slowlog",
-        -2,
-        &["admin", "noscript", "loading", "stale", "slow"],
-        0,
-        0,
-        0,
-    ),
-    cmd(
-        "slaveof",
-        3,
-        &["admin", "noscript", "stale", "no_async_loading"],
-        0,
-        0,
-        0,
-    ),
-    cmd("smembers", 2, &["readonly"], 1, 1, 1),
-    cmd("smismember", -3, &["readonly", "fast"], 1, 1, 1),
-    cmd("smove", 4, &["write", "fast"], 1, 2, 1),
-    cmd("sort", -2, &["write", "denyoom"], 1, 1, 1),
-    cmd("sort_ro", -2, &["readonly"], 1, 1, 1),
-    cmd("spop", -2, &["write", "fast"], 1, 1, 1),
-    cmd(
-        "spublish",
-        3,
-        &["pubsub", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd("srandmember", -2, &["readonly"], 1, 1, 1),
-    cmd("srem", -3, &["write", "fast"], 1, 1, 1),
-    cmd("sscan", -3, &["readonly", "slow"], 1, 1, 1),
-    cmd(
-        "ssubscribe",
-        -2,
-        &["pubsub", "noscript", "loading", "stale"],
-        0,
-        0,
-        0,
-    ),
-    cmd("strlen", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd(
-        "subscribe",
-        -2,
-        &["pubsub", "noscript", "loading", "stale"],
-        0,
-        0,
-        0,
-    ),
-    cmd("substr", 4, &["readonly"], 1, 1, 1),
-    cmd("swapdb", 3, &["write", "fast"], 0, 0, 0),
-    cmd(
-        "sync",
-        1,
-        &["admin", "noscript", "no_async_loading", "no_multi"],
-        0,
-        0,
-        0,
-    ),
-    cmd("sunion", -2, &["readonly"], 1, -1, 1),
-    cmd("sunionstore", -3, &["write", "denyoom"], 1, -1, 1),
-    cmd(
-        "sunsubscribe",
-        -1,
-        &["pubsub", "noscript", "loading", "stale"],
-        0,
-        0,
-        0,
-    ),
-    cmd("time", 1, &["readonly", "fast"], 0, 0, 0),
-    cmd("touch", -2, &["readonly", "fast"], 1, -1, 1),
-    cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("type", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("unlink", -2, &["write", "fast"], 1, -1, 1),
-    cmd(
-        "unsubscribe",
-        -1,
-        &["pubsub", "noscript", "loading", "stale"],
-        0,
-        0,
-        0,
-    ),
-    cmd(
-        "unwatch",
-        1,
-        &["noscript", "loading", "stale", "fast"],
-        0,
-        0,
-        0,
-    ),
-    cmd("wait", 3, &["blocking"], 0, 0, 0),
-    cmd("waitaof", 4, &["blocking"], 0, 0, 0),
-    cmd(
-        "watch",
-        -2,
-        &["noscript", "loading", "stale", "fast"],
-        1,
-        -1,
-        1,
-    ),
-    cmd("xack", -4, &["write", "fast"], 1, 1, 1),
-    cmd("xadd", -5, &["write", "denyoom"], 1, 1, 1),
-    cmd("xautoclaim", -6, &["write", "fast"], 1, 1, 1),
-    cmd("xclaim", -6, &["write", "fast"], 1, 1, 1),
-    cmd("xdel", -3, &["write"], 1, 1, 1),
-    cmd("xgroup", -2, &["write"], 2, 2, 1),
-    cmd("xinfo", -2, &["readonly"], 2, 2, 1),
-    cmd("xlen", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("xpending", -3, &["readonly", "slow"], 1, 1, 1),
-    cmd("xrange", -4, &["readonly", "slow"], 1, 1, 1),
-    cmd("xread", -4, &["readonly", "blocking"], 0, 0, 0),
-    cmd("xreadgroup", -7, &["write"], 0, 0, 0),
-    cmd("xrevrange", -4, &["readonly", "slow"], 1, 1, 1),
-    cmd("xsetid", -3, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("xtrim", -4, &["write"], 1, 1, 1),
-    cmd("zadd", -4, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("zcard", 2, &["readonly", "fast"], 1, 1, 1),
-    cmd("zcount", 4, &["readonly", "fast"], 1, 1, 1),
-    cmd("zdiff", -3, &["readonly"], 0, 0, 0),
-    cmd("zdiffstore", -4, &["write", "denyoom"], 1, 1, 1),
-    cmd("zincrby", 4, &["write", "denyoom", "fast"], 1, 1, 1),
-    cmd("zinter", -3, &["readonly"], 0, 0, 0),
-    cmd("zintercard", -3, &["readonly"], 0, 0, 0),
-    cmd("zinterstore", -4, &["write", "denyoom"], 1, 1, 1),
-    cmd("zlexcount", 4, &["readonly", "fast"], 1, 1, 1),
-    cmd("zmpop", -4, &["write"], 2, -1, 1),
-    cmd("zmscore", -3, &["readonly", "fast"], 1, 1, 1),
-    cmd("zpopmax", -2, &["write", "fast"], 1, 1, 1),
-    cmd("zpopmin", -2, &["write", "fast"], 1, 1, 1),
-    cmd("zrandmember", -2, &["readonly"], 1, 1, 1),
-    cmd("zrange", -4, &["readonly"], 1, 1, 1),
-    cmd("zrangebylex", -4, &["readonly"], 1, 1, 1),
-    cmd("zrangebyscore", -4, &["readonly"], 1, 1, 1),
-    cmd("zrangestore", -5, &["write", "denyoom"], 1, 2, 1),
-    cmd("zrank", -3, &["readonly", "fast"], 1, 1, 1),
-    cmd("zrem", -3, &["write", "fast"], 1, 1, 1),
-    cmd("zremrangebylex", 4, &["write"], 1, 1, 1),
-    cmd("zremrangebyrank", 4, &["write"], 1, 1, 1),
-    cmd("zremrangebyscore", 4, &["write"], 1, 1, 1),
-    cmd("zrevrange", -4, &["readonly"], 1, 1, 1),
-    cmd("zrevrangebylex", -4, &["readonly"], 1, 1, 1),
-    cmd("zrevrangebyscore", -4, &["readonly"], 1, 1, 1),
-    cmd("zrevrank", -3, &["readonly", "fast"], 1, 1, 1),
-    cmd("zscan", -3, &["readonly", "slow"], 1, 1, 1),
-    cmd("zscore", 3, &["readonly", "fast"], 1, 1, 1),
-    cmd("zunion", -3, &["readonly"], 0, 0, 0),
-    cmd("zunionstore", -4, &["write", "denyoom"], 1, 1, 1),
+mod bitmaps;
+mod connections;
+mod geo;
+mod hashes;
+mod hyperloglog;
+mod keyspace;
+mod lists;
+mod pubsub;
+mod server;
+mod sets;
+mod streams;
+mod strings;
+mod transactions;
+mod zsets;
+
+/// Commands grouped by the feature family that owns their metadata.
+///
+/// Every registered command is wired to this worktree's Store or server
+/// dispatcher. Adding a command means editing its family module, not a shared
+/// array. The groups are flattened and sorted once, and every lookup and
+/// enumeration goes through [`registry`] so group order is never observable.
+const GROUPS: &[&[Command]] = &[
+    bitmaps::COMMANDS,
+    connections::COMMANDS,
+    geo::COMMANDS,
+    hashes::COMMANDS,
+    hyperloglog::COMMANDS,
+    keyspace::COMMANDS,
+    lists::COMMANDS,
+    pubsub::COMMANDS,
+    server::COMMANDS,
+    sets::COMMANDS,
+    streams::COMMANDS,
+    strings::COMMANDS,
+    transactions::COMMANDS,
+    zsets::COMMANDS,
 ];
 
+static REGISTRY: OnceLock<Vec<Command>> = OnceLock::new();
+
+/// Flatten the family groups into one strictly name-sorted registry.
+fn registry() -> &'static [Command] {
+    REGISTRY.get_or_init(|| {
+        let mut commands = Vec::with_capacity(GROUPS.iter().map(|group| group.len()).sum());
+        for group in GROUPS {
+            commands.extend_from_slice(group);
+        }
+        commands.sort_unstable_by(|left, right| left.name.cmp(right.name));
+        commands
+    })
+}
+
 pub(super) const fn command_count() -> usize {
-    COMMANDS.len()
+    let mut count = 0;
+    let mut group = 0;
+    while group < GROUPS.len() {
+        count += GROUPS[group].len();
+        group += 1;
+    }
+    count
 }
 
 pub(super) fn command_name_at(index: usize) -> Option<&'static str> {
-    COMMANDS.get(index).map(|command| command.name)
+    registry().get(index).map(|command| command.name)
 }
 
 static COMMAND_LOOKUP: OnceLock<HashMap<&'static str, usize>> = OnceLock::new();
@@ -518,7 +99,7 @@ pub(super) fn command_index(name: &[u8]) -> Option<usize> {
     let name = std::str::from_utf8(&lower[..name.len()]).ok()?;
     COMMAND_LOOKUP
         .get_or_init(|| {
-            COMMANDS
+            registry()
                 .iter()
                 .enumerate()
                 .map(|(index, command)| (command.name, index))
@@ -530,21 +111,21 @@ pub(super) fn command_index(name: &[u8]) -> Option<usize> {
 
 /// Arity from the published command table; `None` means unsupported.
 pub(super) fn command_arity(name: &[u8]) -> Option<i64> {
-    COMMANDS
+    registry()
         .iter()
         .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
         .map(|command| command.arity)
 }
 
 pub(crate) fn is_write_command(name: &[u8]) -> bool {
-    COMMANDS
+    registry()
         .iter()
         .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
         .is_some_and(|command| command.flags.contains(&"write"))
 }
 
 pub(super) fn canonical_name(name: &[u8]) -> Option<&'static str> {
-    COMMANDS
+    registry()
         .iter()
         .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
         .map(|command| command.name)
@@ -571,7 +152,7 @@ impl KeyAccess {
 /// static key spec (`KEYS`, `DBSIZE`, `FLUSH*`) return no keys. Dynamic
 /// `XREAD`/`XREADGROUP` stream keys are extracted from their STREAMS blocks.
 pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u8]> {
-    let Some(command) = COMMANDS
+    let Some(command) = registry()
         .iter()
         .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
     else {
@@ -746,7 +327,7 @@ pub(super) fn key_accesses<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<(&'a [u
     if keys.is_empty() {
         return Vec::new();
     }
-    let Some(command) = COMMANDS
+    let Some(command) = registry()
         .iter()
         .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
     else {
@@ -911,7 +492,7 @@ pub(super) const CATEGORIES: &[&str] = &[
 /// `@slow` covers commands without the `fast` flag; script/module categories do
 /// not exist because neither capability does.
 pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) -> bool {
-    let Some(command) = COMMANDS
+    let Some(command) = registry()
         .iter()
         .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
     else {
@@ -1013,7 +594,7 @@ fn command_group(name: &str) -> Option<&'static str> {
 }
 
 pub(super) fn commands_in_category(category: &[u8]) -> Vec<&'static str> {
-    COMMANDS
+    registry()
         .iter()
         .filter(|command| {
             let name = command.name.as_bytes();
@@ -1253,8 +834,8 @@ impl Store {
 
 fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
     if arguments.len() == 1 {
-        write_array_len(COMMANDS.len(), output);
-        for item in COMMANDS {
+        write_array_len(registry().len(), output);
+        for item in registry() {
             metadata(item, output);
         }
         return;
@@ -1266,10 +847,10 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
                 b"-ERR wrong number of arguments for 'command|count' command\r\n",
             );
         } else {
-            write!(output, ":{}\r\n", COMMANDS.len()).expect("Vec write");
+            write!(output, ":{}\r\n", registry().len()).expect("Vec write");
         }
     } else if sub.eq_ignore_ascii_case(b"LIST") {
-        let mut names: Vec<&'static str> = COMMANDS.iter().map(|item| item.name).collect();
+        let mut names: Vec<&'static str> = registry().iter().map(|item| item.name).collect();
         if arguments.len() != 2 {
             if arguments.len() != 5 || !arguments[2].eq_ignore_ascii_case(b"FILTERBY") {
                 output.extend_from_slice(b"-ERR syntax error\r\n");
@@ -1299,14 +880,14 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
         }
     } else if sub.eq_ignore_ascii_case(b"INFO") {
         if arguments.len() == 2 {
-            write_array_len(COMMANDS.len(), output);
-            for item in COMMANDS {
+            write_array_len(registry().len(), output);
+            for item in registry() {
                 metadata(item, output);
             }
         } else {
             write_array_len(arguments.len() - 2, output);
             for name in &arguments[2..] {
-                if let Some(item) = COMMANDS
+                if let Some(item) = registry()
                     .iter()
                     .find(|item| name.eq_ignore_ascii_case(item.name.as_bytes()))
                 {
@@ -1324,7 +905,7 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
             return;
         }
         let target = &arguments[2..];
-        let Some(item) = COMMANDS
+        let Some(item) = registry()
             .iter()
             .find(|item| target[0].eq_ignore_ascii_case(item.name.as_bytes()))
         else {
@@ -1379,6 +960,60 @@ fn write_array_len(length: usize, output: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn family_groups_flatten_to_sorted_unique_registry() {
+        let flattened: Vec<&'static str> = GROUPS
+            .iter()
+            .flat_map(|group| group.iter().map(|command| command.name))
+            .collect();
+        assert_eq!(flattened.len(), command_count());
+        assert_eq!(registry().len(), command_count());
+
+        let names: Vec<&str> = registry().iter().map(|command| command.name).collect();
+        assert!(
+            names.windows(2).all(|pair| pair[0] < pair[1]),
+            "flattened registry must be strictly name-sorted and unique"
+        );
+
+        for group in GROUPS {
+            assert!(
+                group.windows(2).all(|pair| pair[0].name < pair[1].name),
+                "each family group must be strictly name-sorted"
+            );
+        }
+
+        let mut unique = flattened;
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            command_count(),
+            "command names must be unique across family groups"
+        );
+
+        for name in [
+            "get",
+            "setbit",
+            "hset",
+            "lpush",
+            "sadd",
+            "zadd",
+            "xadd",
+            "subscribe",
+            "hello",
+            "info",
+            "expire",
+            "watch",
+            "geoadd",
+            "pfadd",
+        ] {
+            assert!(
+                command_index(name.as_bytes()).is_some(),
+                "representative command {name} is missing"
+            );
+        }
+    }
 
     #[test]
     fn command_registry_lookup_is_case_insensitive() {

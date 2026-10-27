@@ -60,6 +60,22 @@ from the protocol encoder's standard bounded RESP framing.
 - **When** the same wire requests run in managed per-client, one-worker and
   four-worker modes, **then** replies shall preserve RESP2 framing and order.
 
+## Registry module layout and ownership
+
+Command metadata lives under `src/engine/discovery/`, with one file per feature
+family (`strings.rs`, `hashes.rs`, `lists.rs`, `sets.rs`, `zsets.rs`,
+`streams.rs`, `pubsub.rs`, `keyspace.rs`, `connections.rs`, `server.rs` and the
+smaller `geo`, `bitmaps`, `hyperloglog` and `transactions` families). `mod.rs`
+owns only the `Command` shape, the `GROUPS` list, the one-time flattened registry
+and discovery behavior; each family file owns just its own metadata entries.
+
+To register a command, add it to the family file that owns the feature (or add a
+new family module and list its slice in `GROUPS`). Do not add entries to a
+shared monolithic array. The registry is flattened and strictly name-sorted once
+on first use, so parallel feature work only edits its own family file and never
+reorders a shared table. `command_count`, command-at/index lookups, category
+filters and `COMMAND`/`INFO` output all read that single sorted registry.
+
 ## Compatibility limits / coordinator integration
 
 The registered command list includes implemented Store commands, including typed
