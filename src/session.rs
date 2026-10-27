@@ -152,20 +152,35 @@ impl Session {
                 !queued && store.latency_enabled(),
             )
         });
-        let started = (slowlog || latency).then(Instant::now);
+        // CONFIG, or EXEC containing a queued CONFIG, can enable commandstats
+        // during this dispatch. Check these cold exceptions only if no observer
+        // already needs a timer; an individually queued CONFIG changes nothing.
+        let observed = slowlog || latency || store.commandstats_enabled();
+        let may_enable = !observed
+            && arguments.first().is_some_and(|name| {
+                name.eq_ignore_ascii_case(b"EXEC")
+                    || (self.multi.is_none() && name.eq_ignore_ascii_case(b"CONFIG"))
+            });
+        let started = (observed || may_enable).then(Instant::now);
+        let reply_start = output.len();
         let action = self.execute_inner(store, arguments, output);
         if let Some(started) = started {
-            if latency {
-                store.record_command_latency(started.elapsed());
+            let reply = &output[reply_start..];
+            if latency || (store.commandstats_enabled() && reply != b"+QUEUED\r\n") {
+                let elapsed = started.elapsed();
+                if reply != b"+QUEUED\r\n" {
+                    store.record_command_stats(arguments.first().copied(), elapsed, reply);
+                }
+                if latency {
+                    store.record_command_latency(elapsed);
+                }
             }
             if slowlog {
-                if self.blocked.is_some() {
-                    if let Some(blocked) = self.blocked.as_mut() {
-                        blocked.slowlog = Some((
-                            started,
-                            arguments.iter().map(|argument| argument.to_vec()).collect(),
-                        ));
-                    }
+                if let Some(blocked) = self.blocked.as_mut() {
+                    blocked.slowlog = Some((
+                        started,
+                        arguments.iter().map(|argument| argument.to_vec()).collect(),
+                    ));
                 } else {
                     self.record_slowlog(store, arguments, started);
                 }
@@ -185,12 +200,12 @@ impl Session {
         if !store.slowlog_enabled() {
             return;
         }
-        store.slowlog_push(
-            arguments,
-            started.elapsed(),
-            &store.client_address(self.id).unwrap_or_default(),
-            self.name.as_deref().unwrap_or_default(),
-        );
+        store.slowlog_push(arguments, started.elapsed(), || {
+            (
+                store.client_address(self.id).unwrap_or_default(),
+                self.name.clone().unwrap_or_default(),
+            )
+        });
     }
 
     pub fn is_paused(&self) -> bool {
@@ -303,16 +318,26 @@ impl Session {
                 }
             }
         }
-        if self.is_subscribed()
-            && self.protocol == Protocol::Resp2
-            && !allows_subscriber_command(command)
-        {
+        let subscribed = self.is_subscribed();
+        if subscribed && self.protocol == Protocol::Resp2 && !allows_subscriber_command(command) {
             let name = command_name(command);
             let _ = write!(
                 output,
                 "-ERR Can't execute '{name}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n"
             );
             return Action::Continue;
+        }
+        // Ordinary data requests need none of the cold connection-control
+        // probes below. Authorization/subscriber restrictions still run first;
+        // MULTI queueing and RESP2 subscriber PING keep their original paths.
+        if self.multi.is_none()
+            && (!subscribed || self.protocol != Protocol::Resp2)
+            && (command.eq_ignore_ascii_case(b"PING")
+                || command.eq_ignore_ascii_case(b"GET")
+                || command.eq_ignore_ascii_case(b"SET")
+                || command.eq_ignore_ascii_case(b"ECHO"))
+        {
+            return self.execute_store(store, arguments, output);
         }
         if command.eq_ignore_ascii_case(b"MULTI") {
             self.multi(arguments, output);
@@ -470,6 +495,10 @@ impl Session {
             return Action::Continue;
         }
 
+        self.execute_store(store, arguments, output)
+    }
+
+    fn execute_store(&self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
         let start = output.len();
         let action = store.execute(arguments, output);
         self.convert_reply(start, output);
