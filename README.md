@@ -80,9 +80,9 @@ multi-key pop (LPOS/LMPOP/BLMPOP), score ranges and rank/range inspection. Sorte
 selection, `ZRANGESTORE`, `ZLEXCOUNT`, `ZREMRANGEBYLEX`, `ZRANDMEMBER` and
 weighted union/intersection/difference algebra with store and cardinality
 variants plus multi-key `ZMPOP` (blocking `BZMPOP` remains absent). `SORT`/
-`SORT_RO` order lists, sets and sorted sets with `ASC`/`DESC`, `ALPHA`, `LIMIT`
-and atomic `STORE`; dynamic `BY`/`GET` patterns remain unsupported. See
-[SORT limits](docs/sort.md).
+`SORT_RO` order lists, sets and sorted sets with `ASC`/`DESC`, `ALPHA`, `LIMIT`,
+dynamic `BY` weights, `GET` output patterns and atomic `STORE`. Dynamic patterns
+require all-key ACL access. See [SORT limits](docs/sort.md).
 Collection writes preserve expiry metadata where Redis does, delete empty keys,
 and stage the complete value before payload admission. See
 [typed collections](docs/collections.md).

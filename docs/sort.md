@@ -7,8 +7,9 @@ share the normal type, expiry, payload-accounting and keyspace behavior.
 ## Supported syntax
 
 ```text
-SORT key [ASC|DESC] [ALPHA] [LIMIT offset count] [STORE destination]
-SORT_RO key [ASC|DESC] [ALPHA] [LIMIT offset count]
+SORT key [BY pattern] [LIMIT offset count] [GET pattern ...] [ASC|DESC]
+          [ALPHA] [STORE destination]
+SORT_RO key [BY pattern] [LIMIT offset count] [GET pattern ...] [ASC|DESC] [ALPHA]
 ```
 
 - Numeric sorting is the default. Elements must parse as finite or infinite
@@ -19,9 +20,19 @@ SORT_RO key [ASC|DESC] [ALPHA] [LIMIT offset count]
 - `ASC` is the default; `DESC` reverses the ordering. Equal keys are ordered by
   member bytes for deterministic replies (Redis leaves equal-key ordering
   unspecified).
+- `BY pattern` substitutes the first `*` in the pattern with each element to
+  read a weight. A `->field` suffix dereferences a hash field. Missing or
+  wrong-type weight keys contribute numeric zero or an empty ALPHA weight;
+  existing but non-numeric numeric weights return the documented conversion
+  error. A `BY` pattern without `*` disables sorting and preserves list/zset
+  native order (set order is byte-sorted for determinism), reversed by DESC.
 - `LIMIT offset count` clamps a negative offset to zero, treats a negative count
   as unbounded, returns an empty result when the offset is beyond the source, and
   applies after sorting.
+- `GET pattern ...` substitutes each selected element into each pattern and
+  returns the referenced string/hash value, with `GET #` returning the element
+  itself. Missing or wrong-type references return null in replies and an empty
+  string when stored. Multiple GET patterns multiply the reply length.
 - Missing source keys return an empty array.
 - `STORE destination` writes the selected values to a list, replaces any existing
   destination type, clears its TTL, returns the stored count and deletes the
@@ -33,15 +44,19 @@ SORT_RO key [ASC|DESC] [ALPHA] [LIMIT offset count]
   existing destination publishes `del`.
 
 The source key and an optional `STORE` destination are included in ACL key
-checks. The commands expose `@generic` plus `@list`, `@set`, `@zset` and
-`@dangerous` approximations in command discovery.
+checks. Because `BY pattern` with `*` and every `GET pattern` derive key names
+from source contents, ACL authorization requires the user to have all-key access
+(`allkeys`); restricted users are denied before any derived lookup. A constant
+`BY` pattern (no `*`) is allowed with source-key access. The commands expose
+`@generic` plus `@list`, `@set`, `@zset` and `@dangerous` approximations in
+command discovery.
 
 ## Limits
 
-This is deliberately a bounded subset: `BY` and `GET` patterns are rejected
-rather than silently ignored. Their derived keys depend on source contents, so
-supporting them safely requires a separate dynamic-key ACL and lookup-bound
-design. There is no cluster routing, no external sort operator and no fabricated
-partial result. Collection size and payload limits are the existing one-million
-element and configured byte budgets. SORT is not a durable index; rerun it after
-source mutations.
+Derived BY/GET lookups are linear in the selected source elements; there is no
+cluster routing, external sort operator or cached index. Missing derived keys are
+represented as zero/empty/null rather than fabricated values. Collection size and
+payload limits are the existing one-million element and configured byte budgets.
+SORT is not a durable index; rerun it after source mutations. Users with
+`allkeys` can read any derived key, so grant that permission only to trusted
+operators.

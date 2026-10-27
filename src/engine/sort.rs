@@ -1,24 +1,23 @@
 //! Bounded SORT/SORT_RO over list, set and sorted-set source values.
 //!
-//! This subset supports ASC/DESC, ALPHA, LIMIT and STORE. The dynamic BY/GET
-//! pattern lookups are intentionally rejected until their derived-key ACL and
-//! lookup bounds have their own design; all reads and stored output remain
-//! bounded by the configured collection and payload limits.
+//! Supports ASC/DESC, ALPHA, LIMIT, STORE, dynamic BY weights and GET output
+//! patterns. Derived BY/GET keys are readable only by users with all-key ACL
+//! access, matching Redis's dynamic-key rule; every lookup and output remains
+//! bounded by the source collection, request and payload limits.
 
 use super::collections::encode_list;
-use super::data::Collection;
+use super::data::{Collection, Data};
 use super::options::NOT_INTEGER;
 use super::{Store, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 use std::io::Write;
 
 const NUMERIC_ERROR: &[u8] = b"-ERR One or more scores can't be converted into double\r\n";
-const PATTERN_ERROR: &[u8] =
-    b"-ERR BY and GET options are not supported by this bounded SORT subset\r\n";
 
 struct Item {
     value: Vec<u8>,
     number: f64,
+    compare: Vec<u8>,
 }
 
 impl Store {
@@ -52,6 +51,8 @@ impl Store {
         let mut alpha = false;
         let mut limit = None;
         let mut store = None;
+        let mut by = None;
+        let mut gets = Vec::new();
         let mut index = 2;
         while index < args.len() {
             let token = args[index];
@@ -80,9 +81,20 @@ impl Store {
             } else if !read_only && token.eq_ignore_ascii_case(b"STORE") && index + 1 < args.len() {
                 store = Some(args[index + 1]);
                 index += 2;
-            } else if token.eq_ignore_ascii_case(b"BY") || token.eq_ignore_ascii_case(b"GET") {
-                out.extend_from_slice(PATTERN_ERROR);
-                return;
+            } else if token.eq_ignore_ascii_case(b"BY") {
+                if index + 1 >= args.len() {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
+                by = Some(args[index + 1]);
+                index += 2;
+            } else if token.eq_ignore_ascii_case(b"GET") {
+                if index + 1 >= args.len() {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
+                gets.push(args[index + 1]);
+                index += 2;
             } else {
                 out.extend_from_slice(b"-ERR syntax error\r\n");
                 return;
@@ -114,29 +126,56 @@ impl Store {
             }
             return;
         };
+        let dontsort = by.is_some_and(|pattern| !pattern.contains(&b'*'));
         let mut items = Vec::with_capacity(values.len());
         for value in values {
-            let number = if alpha {
-                0.0
+            let weight = if dontsort {
+                None
+            } else if let Some(pattern) = by {
+                lookup_pattern(&mut data, pattern, &value, now)
             } else {
-                let Some(number) = sort_number(&value) else {
-                    out.extend_from_slice(NUMERIC_ERROR);
-                    return;
-                };
-                number
+                Some(value.clone())
             };
-            items.push(Item { value, number });
+            let (number, compare) = if dontsort {
+                (0.0, Vec::new())
+            } else if alpha {
+                (0.0, weight.unwrap_or_default())
+            } else {
+                match weight {
+                    None => (0.0, Vec::new()),
+                    Some(weight) => {
+                        let Some(number) = sort_number(&weight) else {
+                            out.extend_from_slice(NUMERIC_ERROR);
+                            return;
+                        };
+                        (number, Vec::new())
+                    }
+                }
+            };
+            items.push(Item {
+                value,
+                number,
+                compare,
+            });
         }
-        items.sort_by(|left, right| {
-            let ordering = if alpha {
-                left.value.cmp(&right.value)
-            } else {
-                left.number
-                    .total_cmp(&right.number)
-                    .then_with(|| left.value.cmp(&right.value))
-            };
-            if desc { ordering.reverse() } else { ordering }
-        });
+        if dontsort {
+            if desc {
+                items.reverse();
+            }
+        } else {
+            items.sort_by(|left, right| {
+                let ordering = if alpha {
+                    left.compare
+                        .cmp(&right.compare)
+                        .then_with(|| left.value.cmp(&right.value))
+                } else {
+                    left.number
+                        .total_cmp(&right.number)
+                        .then_with(|| left.value.cmp(&right.value))
+                };
+                if desc { ordering.reverse() } else { ordering }
+            });
+        }
         let (offset, count) = limit.unwrap_or((0, -1));
         let offset = usize::try_from(offset.max(0)).unwrap_or(usize::MAX);
         if offset >= items.len() {
@@ -147,30 +186,64 @@ impl Store {
                 items.truncate(usize::try_from(count).unwrap_or(usize::MAX));
             }
         }
-        let Some(destination) = store else {
-            write!(out, "*{}\r\n", items.len()).expect("Vec write");
-            for item in items {
-                encode_bulk(Some(&item.value), out);
+        let values: Vec<Vec<u8>> = items.into_iter().map(|item| item.value).collect();
+        if gets.is_empty() {
+            if let Some(destination) = store {
+                self.store_sorted(&mut data, destination, values, now, out);
+            } else {
+                write!(out, "*{}\r\n", values.len()).expect("Vec write");
+                for value in values {
+                    encode_bulk(Some(&value), out);
+                }
             }
             return;
-        };
+        }
+        let mut results = Vec::with_capacity(values.len() * gets.len());
+        for value in &values {
+            for pattern in &gets {
+                if *pattern == b"#" {
+                    results.push(Some(value.clone()));
+                } else {
+                    results.push(lookup_pattern(&mut data, pattern, value, now));
+                }
+            }
+        }
+        if let Some(destination) = store {
+            let values = results
+                .into_iter()
+                .map(|value| value.unwrap_or_default())
+                .collect();
+            self.store_sorted(&mut data, destination, values, now, out);
+            return;
+        }
+        write!(out, "*{}\r\n", results.len()).expect("Vec write");
+        for result in results {
+            encode_bulk(result.as_deref(), out);
+        }
+    }
+
+    fn store_sorted(
+        &self,
+        data: &mut Data,
+        destination: &[u8],
+        values: Vec<Vec<u8>>,
+        now: i64,
+        out: &mut Vec<u8>,
+    ) {
         data.expire_key(destination, now);
-        if items.is_empty() {
+        if values.is_empty() {
             data.remove(destination);
             integer(0, out);
             return;
         }
-        let count = items.len();
-        let bytes = items.iter().map(|item| item.value.len()).sum::<usize>();
+        let count = values.len();
+        let bytes = values.iter().map(Vec::len).sum::<usize>();
         let previous = data.entries.get(destination).map(|entry| entry.payload_len);
         let Ok(config) = self.collection_config.read() else {
             internal_error(out);
             return;
         };
-        let encoded = encode_list(
-            items.into_iter().map(|item| item.value).collect(),
-            config.list_max_listpack_size,
-        );
+        let encoded = encode_list(values.into_iter().collect(), config.list_max_listpack_size);
         let Some(payload) = data.reserve(destination, bytes, previous, self.max_payload_bytes, now)
         else {
             out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
@@ -188,17 +261,53 @@ fn source_values(collection: &Collection) -> Option<Vec<Vec<u8>>> {
             .map(|values| values.into_iter().map(<[u8]>::to_vec).collect());
     }
     if collection.is_set() {
-        return collection.set_items();
+        let mut values = collection.set_items()?;
+        values.sort_unstable();
+        return Some(values);
     }
     if collection.is_zset() {
-        return collection.zset_items().map(|values| {
+        let mut values = collection.zset_items()?;
+        values.sort_unstable_by(|(member_a, score_a), (member_b, score_b)| {
+            score_a
+                .total_cmp(score_b)
+                .then_with(|| member_a.cmp(member_b))
+        });
+        return Some(
             values
                 .into_iter()
                 .map(|(member, _)| member.to_vec())
-                .collect()
-        });
+                .collect(),
+        );
     }
     None
+}
+
+fn lookup_pattern(data: &mut Data, pattern: &[u8], element: &[u8], now: i64) -> Option<Vec<u8>> {
+    if pattern == b"#" {
+        return Some(element.to_vec());
+    }
+    let star = pattern.iter().position(|byte| *byte == b'*')?;
+    let field_at = pattern[star + 1..]
+        .windows(2)
+        .position(|window| window == b"->")
+        .map(|position| star + 1 + position)
+        .filter(|position| position + 2 < pattern.len());
+    let key_end = field_at.unwrap_or(pattern.len());
+    let mut key = Vec::with_capacity(star + element.len() + key_end - star - 1);
+    key.extend_from_slice(&pattern[..star]);
+    key.extend_from_slice(element);
+    key.extend_from_slice(&pattern[star + 1..key_end]);
+    data.expire_key(&key, now);
+    let entry = data.entries.get(&key)?;
+    if let Some(field_at) = field_at {
+        entry
+            .collection
+            .as_ref()
+            .and_then(|collection| collection.hash_get(&pattern[field_at + 2..]))
+            .map(<[u8]>::to_vec)
+    } else {
+        entry.is_string().then(|| entry.value.clone())
+    }
 }
 
 fn sort_number(raw: &[u8]) -> Option<f64> {
@@ -256,9 +365,21 @@ mod tests {
         let store = Store::new(64);
         run(&store, &[b"RPUSH", b"list", b"bad", b"1"]);
         assert_eq!(run(&store, &[b"SORT", b"list"]), NUMERIC_ERROR);
+        run(&store, &[b"RPUSH", b"nums", b"2", b"1"]);
+        run(&store, &[b"SET", b"w_1", b"10"]);
+        run(&store, &[b"SET", b"w_2", b"5"]);
         assert_eq!(
-            run(&store, &[b"SORT", b"list", b"BY", b"weight_*"]),
-            PATTERN_ERROR
+            run(&store, &[b"SORT", b"nums", b"BY", b"w_*"]),
+            b"*2\r\n$1\r\n2\r\n$1\r\n1\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"SORT", b"nums", b"BY", b"w_*", b"GET", b"#", b"GET", b"w_*"
+                ]
+            ),
+            b"*4\r\n$1\r\n2\r\n$1\r\n5\r\n$1\r\n1\r\n$2\r\n10\r\n"
         );
         assert!(run(&store, &[b"SORT_RO", b"list", b"STORE", b"out"]).starts_with(b"-ERR syntax"));
         run(&store, &[b"RPUSH", b"ok", b"2", b"1"]);
