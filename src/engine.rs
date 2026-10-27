@@ -50,7 +50,7 @@ pub use clients::ClientSnapshot;
 pub(crate) use collection_commands::{
     ListMoveOutcome, ListPopOutcome, ZSetPopOutcome, list_move_reply,
     list_pop_reply as blocking_lmpop_reply, parse_bzmpop_timeout, parse_list_mpop, parse_mpop,
-    parse_side, zset_pop_reply as blocking_zpop_reply,
+    parse_side, zset_pop_reply as blocking_zpop_reply, zset_pop_single_reply,
 };
 use collection_config::CollectionConfig;
 use data::Data;

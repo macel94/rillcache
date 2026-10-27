@@ -1144,8 +1144,8 @@ fn event_for(
                 ("del", NotifyCategory::Generic)
             });
         }
-        "zpopmin" => ("zpopmin", NotifyCategory::Zset),
-        "zpopmax" => ("zpopmax", NotifyCategory::Zset),
+        "zpopmin" | "bzpopmin" => ("zpopmin", NotifyCategory::Zset),
+        "zpopmax" | "bzpopmax" => ("zpopmax", NotifyCategory::Zset),
         "zmpop" | "bzmpop" => {
             let numkeys_index = if name == "bzmpop" { 2 } else { 1 };
             let numkeys = arguments
