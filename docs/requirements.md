@@ -123,6 +123,7 @@ reason to couple all future commands into a single large story.
 | S93 | As an operator debugging a live instance, I can stream received commands with bounded output and redacted credentials without letting a slow monitor stall normal command service. | S | R350–R352; line format/bounds, redaction, RESET/QUIT cleanup, slow-reader behavior and all-mode wire tests |
 | S94 | As a durability-sensitive client, I can wait for the local AOF to fsync my preceding writes and get the actual acknowledgement counts even when no replicas exist. | S | R353–R355; local/no-AOF results, absent-replica timeout, transaction non-blocking behavior and all-mode wire tests |
 | S95 | As a client operator, I can query and kill the Redis client types (including absent master/replica types) and optionally include my own connection so client-management tooling matches Redis semantics. | XS | R356–R358; absent-type empty results, SKIPME yes/no, self-kill race and all-mode wire tests |
+| S96 | As an operator, I can read and change the payload byte budget at runtime so capacity can be reduced or raised without restarting the server. | S | R359–R361; visible maxmemory, policy-driven eviction, atomic validation and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1671,6 +1672,25 @@ and the offline upstream harness tests.
   cleanup, invalid filters, the unchanged legacy form and every worker mode.
   Documentation shall retain the absence of fd/idle/blocked metadata and a
   cross-process view.
+
+### Runtime payload budget (S96)
+
+- **R359 (event-driven):** `CONFIG GET maxmemory` (including pattern and
+  wildcard matches) shall report the current positive payload byte budget, and
+  `CONFIG SET maxmemory <positive integer>` shall update it atomically with other
+  valid `CONFIG SET` pairs. Invalid, negative, non-numeric or zero values shall
+  return an explicit error and leave both the budget and other pairs unchanged.
+- **R360 (state-driven):** Applying a lower budget shall evict keys down to it
+  using the active policy, with `allkeys` and eligible `volatile` candidates only.
+  When the policy cannot evict enough (`noeviction`, or volatile without TTL
+  keys), the server shall remain above the new budget and refuse later
+  over-budget admissions with OOM rather than deleting ineligible keys. Raising
+  the budget shall take effect immediately for later admissions.
+- **R361 (ubiquitous):** All-mode tests shall cover visibility, lowering with
+  eviction, invalid/zero values, atomic rejection with another pair and every
+  worker mode. Documentation shall retain that this is a key/value payload budget,
+  not RSS/allocator memory, and that zero (unlimited) is deliberately rejected
+  to preserve bounded operation.
 
 ### Error reply statistics (S84)
 

@@ -128,3 +128,47 @@ fn volatile_policy_never_evicts_persistent_keys() {
     send(&mut stream, &[b"PING"], b"+PONG\r\n");
     server.shutdown().unwrap();
 }
+
+#[test]
+fn runtime_maxmemory_is_configurable_and_keeps_the_budget_bounded() {
+    let server = start();
+    let mut stream = connect(&server);
+    send(
+        &mut stream,
+        &[b"CONFIG", b"GET", b"maxmemory"],
+        b"*2\r\n$9\r\nmaxmemory\r\n$2\r\n11\r\n",
+    );
+    send(&mut stream, &[b"SET", b"a", b"1234"], b"+OK\r\n");
+    send(&mut stream, &[b"SET", b"b", b"1234"], b"+OK\r\n");
+    send(
+        &mut stream,
+        &[b"CONFIG", b"SET", b"maxmemory", b"5"],
+        b"+OK\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"CONFIG", b"GET", b"maxmemory"],
+        b"*2\r\n$9\r\nmaxmemory\r\n$1\r\n5\r\n",
+    );
+    let memory = info(&mut stream, b"memory");
+    let payload = memory
+        .lines()
+        .find_map(|line| line.strip_prefix("rillcache_payload_bytes:"))
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    assert!(payload <= 5, "{memory}");
+    send(&mut stream, &[b"SET", b"c", b"1234"], b"+OK\r\n");
+    send(
+        &mut stream,
+        &[b"CONFIG", b"SET", b"maxmemory", b"0"],
+        b"-ERR maxmemory must be a positive payload byte budget\r\n",
+    );
+    send(
+        &mut stream,
+        &[b"CONFIG", b"SET", b"maxmemory", b"nope"],
+        b"-ERR maxmemory must be a positive payload byte budget\r\n",
+    );
+    send(&mut stream, &[b"PING"], b"+PONG\r\n");
+    server.shutdown().unwrap();
+}

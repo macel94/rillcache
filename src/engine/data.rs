@@ -553,7 +553,7 @@ impl Data {
             if let Some(bytes) = size(self) {
                 return Some(bytes);
             }
-            if !self.evict_one(key) {
+            if !self.evict_one(Some(key)) {
                 return None;
             }
         }
@@ -569,21 +569,33 @@ impl Data {
             .fold(0usize, usize::saturating_add)
     }
 
+    /// Evict down to `maximum` using the active policy. A noeviction or volatile
+    /// policy can stop above the budget when no eligible key remains.
+    pub fn enforce_budget(&mut self, maximum: usize) {
+        while self.payload_bytes > maximum {
+            if !self.evict_one(None) {
+                break;
+            }
+        }
+    }
+
     /// Choose and remove one bounded candidate. Returns false when no eligible
     /// key exists, so a volatile policy can still fail without deleting persistent
     /// data. LRU is approximate mutation recency, not read recency.
-    fn evict_one(&mut self, target: &[u8]) -> bool {
+    fn evict_one(&mut self, target: Option<&[u8]>) -> bool {
         let volatile = self.eviction.volatile();
         let random = matches!(
             self.eviction,
             EvictionPolicy::AllKeysRandom | EvictionPolicy::VolatileRandom
         );
+        let selectable = |data: &Self, key: &Vec<u8>| {
+            target.is_none_or(|target| key.as_slice() != target)
+                && (!volatile || data.entries[key].expires.is_some())
+        };
         let count = self
             .entries
             .keys()
-            .filter(|key| {
-                key.as_slice() != target && (!volatile || self.entries[*key].expires.is_some())
-            })
+            .filter(|key| selectable(self, key))
             .count();
         if count == 0 {
             return false;
@@ -593,15 +605,13 @@ impl Data {
             let target_index = self.eviction_seq as usize % count;
             self.entries
                 .keys()
-                .filter(|key| {
-                    key.as_slice() != target && (!volatile || self.entries[*key].expires.is_some())
-                })
+                .filter(|key| selectable(self, key))
                 .nth(target_index)
                 .cloned()
         } else {
             let mut best: Option<(&[u8], i128)> = None;
             for (key, entry) in &self.entries {
-                if key.as_slice() == target || (volatile && entry.expires.is_none()) {
+                if target == Some(key.as_slice()) || (volatile && entry.expires.is_none()) {
                     continue;
                 }
                 let rank = match self.eviction {

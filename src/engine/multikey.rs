@@ -114,7 +114,7 @@ impl Store {
             };
             payload = next;
         }
-        if payload > self.max_payload_bytes {
+        if payload > self.payload_limit() {
             output.extend_from_slice(OOM);
             return;
         }
@@ -254,7 +254,7 @@ impl Store {
             };
             payload = next;
         }
-        if payload > self.max_payload_bytes {
+        if payload > self.payload_limit() {
             output.extend_from_slice(OOM);
             return true;
         }

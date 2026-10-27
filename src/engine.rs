@@ -103,7 +103,7 @@ pub struct Stats {
 
 pub struct Store {
     data: RwLock<Data>,
-    max_payload_bytes: usize,
+    max_payload_bytes: std::sync::atomic::AtomicUsize,
     error_dialect: ErrorDialect,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
@@ -175,7 +175,7 @@ impl Store {
     ) -> Self {
         Self {
             data: RwLock::new(Data::default()),
-            max_payload_bytes,
+            max_payload_bytes: std::sync::atomic::AtomicUsize::new(max_payload_bytes),
             error_dialect: ErrorDialect::default(),
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
@@ -768,6 +768,22 @@ impl Store {
             .as_ref()
             .and_then(|journal| journal.lock().ok())
             .map(|journal| journal.policy())
+    }
+
+    /// Current payload-budget limit in key and value bytes.
+    pub(super) fn payload_limit(&self) -> usize {
+        self.max_payload_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Change the payload budget and evict down to it using the active policy.
+    /// A noeviction or volatile policy may leave the store above the new budget;
+    /// subsequent admissions then fail rather than deleting ineligible keys.
+    pub fn set_payload_limit(&self, limit: usize) -> bool {
+        self.max_payload_bytes.store(limit, Ordering::Relaxed);
+        self.data.write().is_ok_and(|mut data| {
+            data.enforce_budget(limit);
+            true
+        })
     }
 
     pub fn eviction_policy(&self) -> EvictionPolicy {

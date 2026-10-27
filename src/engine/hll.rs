@@ -273,7 +273,7 @@ impl Store {
             return;
         }
         let bytes = hll.serialize();
-        let Some(payload) = data.reserve(key, bytes.len(), previous, self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes.len(), previous, self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -360,7 +360,7 @@ impl Store {
             destination,
             bytes.len(),
             previous,
-            self.max_payload_bytes,
+            self.payload_limit(),
             now,
         ) else {
             out.extend_from_slice(OOM);
