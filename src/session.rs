@@ -10,9 +10,10 @@ use std::sync::mpsc::SyncSender;
 use std::time::{Duration, Instant};
 
 use crate::engine::{
-    Access, AclError, Action, AuthError, PopOutcome, Store, StreamId, TransactionOutcome,
-    WatchState, XReadOutcome, ZSetPopOutcome, blocking_reply, blocking_zpop_reply,
-    parse_bzmpop_timeout, parse_mpop, parse_xread, xread_reply,
+    Access, AclError, Action, AuthError, ListPopOutcome, PopOutcome, Store, StreamId,
+    TransactionOutcome, WatchState, XReadOutcome, ZSetPopOutcome, blocking_lmpop_reply,
+    blocking_reply, blocking_zpop_reply, parse_bzmpop_timeout, parse_list_mpop, parse_mpop,
+    parse_xread, xread_reply,
 };
 use crate::protocol::encode_bulk;
 
@@ -57,6 +58,7 @@ struct Blocked {
 #[derive(Clone, Debug)]
 enum BlockedKind {
     List { left: bool },
+    ListMulti { left: bool, count: usize },
     ZSet { max: bool, count: usize },
     XRead { starts: Vec<StreamId>, count: usize },
 }
@@ -228,6 +230,10 @@ impl Session {
         if command.eq_ignore_ascii_case(b"BLPOP") || command.eq_ignore_ascii_case(b"BRPOP") {
             let left = command.eq_ignore_ascii_case(b"BLPOP");
             self.blocking(store, &arguments[1..], left, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"BLMPOP") {
+            self.blocking_lmpop(store, &arguments[1..], output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"BZMPOP") {
@@ -940,6 +946,51 @@ impl Session {
         });
     }
 
+    fn blocking_lmpop(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() < 4 {
+            arity("blmpop", output);
+            return;
+        }
+        let timeout = match parse_bzmpop_timeout(arguments[0]) {
+            Ok(timeout) => timeout,
+            Err(error) => {
+                output.extend_from_slice(error);
+                return;
+            }
+        };
+        let options = match parse_list_mpop(arguments, 1) {
+            Ok(options) => options,
+            Err(error) => {
+                output.extend_from_slice(error);
+                return;
+            }
+        };
+        match store.blocking_lmpop(&options.keys, options.left, options.count) {
+            ListPopOutcome::Empty => {}
+            outcome => {
+                blocking_lmpop_reply(outcome, output);
+                return;
+            }
+        }
+        let deadline = if timeout == 0.0 {
+            None
+        } else {
+            let Some(duration) = Duration::try_from_secs_f64(timeout).ok() else {
+                output.extend_from_slice(b"-ERR timeout is out of range\r\n");
+                return;
+            };
+            Instant::now().checked_add(duration)
+        };
+        self.blocked = Some(Blocked {
+            keys: options.keys.iter().map(|key| key.to_vec()).collect(),
+            deadline,
+            kind: BlockedKind::ListMulti {
+                left: options.left,
+                count: options.count,
+            },
+        });
+    }
+
     fn blocking_zpop(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         if arguments.len() < 4 {
             arity("bzmpop", output);
@@ -1045,6 +1096,15 @@ impl Session {
                     true
                 }
             },
+            BlockedKind::ListMulti { left, count } => {
+                match store.blocking_lmpop(&keys, left, count) {
+                    ListPopOutcome::Empty => false,
+                    outcome => {
+                        blocking_lmpop_reply(outcome, &mut reply);
+                        true
+                    }
+                }
+            }
             BlockedKind::ZSet { max, count } => match store.blocking_zpop(&keys, max, count) {
                 ZSetPopOutcome::Empty => false,
                 outcome => {

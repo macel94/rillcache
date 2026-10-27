@@ -33,6 +33,7 @@ const COMMANDS: &[Command] = &[
     cmd("bitfield_ro", -2, &["readonly"], 1, 1, 1),
     cmd("bitop", -4, &["write", "denyoom"], 1, -1, 1),
     cmd("bitpos", -3, &["readonly"], 1, 1, 1),
+    cmd("blmpop", -5, &["write"], 3, -1, 1),
     cmd("blpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
     cmd("brpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
     cmd("bzmpop", -5, &["write", "noscript", "blocking"], 0, 0, 0),
@@ -429,6 +430,18 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
             }
         }
         return keys;
+    }
+    if name.eq_ignore_ascii_case(b"BLMPOP") {
+        let Some(count) = args
+            .get(2)
+            .and_then(|raw| std::str::from_utf8(raw).ok())
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|count| *count > 0)
+        else {
+            return Vec::new();
+        };
+        let end = 3usize.saturating_add(count).min(args.len());
+        return args[3..end].to_vec();
     }
     // Counted-key sorted-set algebra keeps its key list after `numkeys`, with
     // the destination preceding it for the *STORE variants.

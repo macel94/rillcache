@@ -827,7 +827,7 @@ fn event_for(
         "lrem" => ("lrem", NotifyCategory::List),
         "lmove" => ("lmove", NotifyCategory::List),
         "rpoplpush" => ("rpoplpush", NotifyCategory::List),
-        "lmpop" => ("lmpop", NotifyCategory::List),
+        "blmpop" | "lmpop" => ("lmpop", NotifyCategory::List),
         "sadd" => ("sadd", NotifyCategory::Set),
         "srem" => ("srem", NotifyCategory::Set),
         "spop" => ("spop", NotifyCategory::Set),

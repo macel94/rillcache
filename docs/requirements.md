@@ -89,6 +89,7 @@ reason to couple all future commands into a single large story.
 | S59 | As a stream consumer, I can wait for new entries on one or more streams so that tailing clients do not have to poll. | S | R233–R236; BLOCK parsing/timeout/wakeup/$/multi-key/MULTI and all-mode wire tests |
 | S60 | As a list user, I can locate repeated elements and pop across several list keys so that queue and feed operations do not require client loops. | S | R237–R240; LPOS rank/count/maxlen, LMPOP order/COUNT, errors and all-mode wire tests |
 | S61 | As an operator or client, I can read the server wall clock and the actual storage encoding of a key without fabricated memory or LFU metrics. | XS | R241–R244; TIME shape, encodings, missing/unsupported cases and all-mode wire tests |
+| S63 | As a list consumer, I can wait for elements across several lists so that queue workers do not poll empty keys. | S | R249–R252; BLMPOP timeout/wakeup/COUNT/MULTI/WATCH and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1018,6 +1019,33 @@ reason to couple all future commands into a single large story.
   unsupported cases, help, malformed subcommands, MULTI and all worker modes.
   Allocator/RSS, LFU, radix-tree and true read-idle statistics remain documented
   as unsupported.
+
+### Blocking list multi-pop (S63)
+
+- **R249 (event-driven):** `BLMPOP timeout numkeys key [key ...] LEFT|RIGHT
+  [COUNT count]` shall parse a non-negative finite float-seconds timeout, a
+  positive counted key list, exactly one direction and at most one positive
+  COUNT before key access. Zero timeout shall wait indefinitely; NaN/negative/
+  out-of-range timeouts, malformed keys/counts/directions/options shall return
+  bounded errors.
+- **R250 (event-driven):** If a listed list already has elements, BLMPOP shall
+  immediately perform LMPOP selection: pop from the first live non-empty list in
+  argument order, return `[key, [element, ...]]` in head-to-tail LEFT or
+  tail-to-head RIGHT order, delete emptied lists and preserve remaining TTL and
+  payload accounting. A wrong-type key before a candidate shall fail without a
+  pop. Missing keys shall be skipped.
+- **R251 (state-driven):** Otherwise the connection shall wait using the bounded
+  polling model without holding the store lock. A positive timeout shall produce
+  a null array when it expires; append wakeups, disconnect, shutdown and RESET
+  shall clear blocked state. Inside `MULTI`, BLMPOP shall validate the timeout but
+  execute the non-blocking LMPOP form once at `EXEC`; WATCH conflicts shall abort
+  without pops.
+- **R252 (unwanted behavior):** Invalid timeout/numkeys/count/direction/options,
+  wrong types and empty results shall return bounded errors or a null array
+  without partial pops. ACL key patterns shall cover the counted key list before
+  blocking. Tests shall cover immediate/wake/timeout paths, MIN/MAX-equivalent
+  LEFT/RIGHT order, COUNT, TTL, delete-on-empty, MULTI/WATCH, notification,
+  disconnect behavior and all worker modes.
 
 ### Development and delivery
 
