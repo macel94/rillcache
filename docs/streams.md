@@ -11,8 +11,14 @@ owned value/tree after checking NX rejection and final payload admission.
 
 ## Supported commands
 
-- `XADD key id|* field value [field value ...]`: explicit ordered `ms-seq` IDs
-  and generated IDs. IDs must be strictly greater than the stream's last ID.
+- `XADD key [NOMKSTREAM] [MAXLEN|MINID [~|=] threshold [LIMIT count]] id|*
+  field value [field value ...]`: explicit ordered `ms-seq` IDs and generated
+  IDs. IDs must be strictly greater than the stream's last ID. `NOMKSTREAM`
+  returns null instead of creating a missing key. `MAXLEN`/`MINID` trim after the
+  append using the same exact/approximate and LIMIT rules as XTRIM. The append's
+  ID is returned even when the new entry is immediately trimmed; an admission
+  failure leaves the previous stream intact. XADD trim publishes the `xadd`
+  event only; use XTRIM when an `xtrim` event is required.
 - `XDEL key id [id ...]`, `XLEN key`.
 - `XGROUP CREATE key group id|$ [MKSTREAM]`, `SETID`, `DESTROY`, `CREATECONSUMER`
   and `DELCONSUMER`.
@@ -59,8 +65,8 @@ owned value/tree after checking NX rejection and final payload admission.
 ## Limits
 
 This is not Redis Streams feature completeness. Blocking `XREAD`/`XREADGROUP`,
-history reads from a consumer's pending list, `XADD` trim options, `XSETID`,
-replication and durable pending/consumer restoration are unsupported. XTRIM's
+history reads from a consumer's pending list, `XSETID`, replication and durable
+pending/consumer restoration are unsupported. XTRIM's
 `~` mode removes an exact number of entries up to the LIMIT/default bound rather
 than Redis's listpack-node granularity, so it never leaves more entries than the
 bound but may remove fewer than a native approximate trim. `XREAD` declares no static key positions, so ACL key
