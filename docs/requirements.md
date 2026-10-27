@@ -108,6 +108,7 @@ reason to couple all future commands into a single large story.
 | S78 | As an operator, I can configure automatic journal compaction thresholds so that an append-only file does not grow without bound between manual rewrites. | S | R306–R309; config/defaults/growth/baseline/replay and all-mode wire tests |
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
+| S82 | As an operator, I can see the configured connection limit in `INFO clients` so capacity tooling does not have to guess it. | XS | R319–R320; configured/default maxclients, INFO all and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 
 ## EARS acceptance requirements
@@ -1479,6 +1480,16 @@ and the offline upstream harness tests.
   clearing `expired_subkeys` without changing live `subexpiry`, and every worker
   mode. Documentation shall retain that field expiry is lazy, not actively
   scanned, and that neither value is an RSS or payload-accounting measurement.
+
+### Configured connection limit visibility (S82)
+
+- **R319 (event-driven):** When `INFO clients` or `INFO all` is requested, the
+  server shall report `maxclients` equal to the configured maximum connection
+  limit, alongside `connected_clients` and `cluster_connections:0`.
+- **R320 (ubiquitous):** Tests shall cover a custom and the default limit in
+  every worker mode and `INFO all` inclusion. Documentation shall retain that the
+  field reports configuration, not current capacity, blocked clients, per-client
+  file descriptors or a cross-process view.
 
 ### Development and delivery
 

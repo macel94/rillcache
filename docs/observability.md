@@ -23,8 +23,8 @@ bounded, process-local timing as described below.
 hash keys with at least one field deadline). `expired_subkeys` resets with
 `CONFIG RESETSTAT`; `subexpiry` is live state and is not a counter.
 
-`INFO clients` reports `connected_clients` (the process-local registry size) and
-`cluster_connections:0`. `CLIENT LIST` exposes per-connection address/name/user/
+`INFO clients` reports `connected_clients` (the process-local registry size),
+`cluster_connections:0` and `maxclients` (the configured connection limit). `CLIENT LIST` exposes per-connection address/name/user/
 RESP/subscription metadata.
 
 `INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`. `evicted_keys` resets with
