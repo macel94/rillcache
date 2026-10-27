@@ -122,6 +122,7 @@ reason to couple all future commands into a single large story.
 | S97 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R362–R364; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
 | S98 | As an operator, I can inspect truthful payload accounting and a bounded diagnosis through `MEMORY STATS`/`DOCTOR` so I do not infer RSS or allocator health. | XS | R365–R367; fields/high-water/limit, doctor states, HELP and all-mode wire tests |
 | S99 | As a transaction user, I can queue `PUBLISH` and `SPUBLISH` so `EXEC` matches Redis and messages are delivered once at execution time. | XS | R368–R370; queue/no-early-delivery, fan-out/counts, ACL and all-mode wire tests |
+| S101 | As an operator, I can terminate TLS 1.3 in front of the RESP server with a vetted standard-library implementation so that traffic crossing an untrusted network is encrypted without adding Rust dependencies or OpenSSL. | S | R374–R377; TLS 1.3-only, RESP proxy, no HTTP ALPN, mTLS, invalid config and sidecar tests |
 | S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 | S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
 | S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
@@ -1914,6 +1915,28 @@ and the offline upstream harness tests.
   every worker mode. Documentation shall retain that this is a process-local
   registry view with no fd/idle/buffer/memory metadata or cross-process claim.
 
+### TLS 1.3 sidecar (S101)
+
+- **R374 (event-driven):** The Go standard-library sidecar shall terminate TLS
+  only at version 1.3, reject TLS 1.2 and older handshakes, and proxy RESP bytes
+  bidirectionally to the configured plaintext backend. It shall not offer HTTP/2,
+  HTTP/3 or any ALPN protocol because Redis clients speak RESP, not HTTP.
+- **R375 (state-driven):** While a certificate and private key are configured, the
+  sidecar shall serve TLS with that chain; an optional client-CA file shall require
+  and verify client certificates. It shall enforce positive connection, handshake
+  and backend-dial bounds, close excess connections, and handle SIGINT/SIGTERM by
+  stopping accepts, draining active proxies up to the shutdown deadline, then
+  force-closing leftovers.
+- **R376 (unwanted behavior):** Missing/invalid certificate material, invalid CA
+  bundles, non-positive limits or invalid durations shall fail startup with a
+  bounded error. The sidecar shall use no OpenSSL, cgo or external Go modules, and
+  the Rust server dependency/safety policy shall remain unchanged.
+- **R377 (ubiquitous):** Tests shall cover a TLS 1.3 RESP echo, TLS 1.2 rejection,
+  absence of HTTP ALPN, required client-certificate authentication, configuration
+  validation and graceful shutdown documentation. Documentation shall retain the
+  absence of native Rust TLS, SNI/hot reload, backend authentication, proxy-aware
+  client addresses and any durability/HA claim.
+
 ### Development and delivery
 
 - **R30 (event-driven):** When `make check` is run, the project shall check formatting,
@@ -2336,10 +2359,11 @@ Not implemented or implied by the completed increments:
 1. Validate HELLO/CLIENT session negotiation against real pinned redis-cli and
    language clients; add command discovery and multiple databases only as separate
    compatible increments.
-2. First-argument command rules, brute-force controls, a persistent audit path and
-   a safe transport-security deployment boundary; then AOF
-   rewrite/compaction, RDB interoperability, backup/restore drills and disk-fault
-   recovery beyond the current append-only restart path.
+2. First-argument command rules, brute-force controls and a persistent audit path.
+   The Go TLS 1.3 sidecar provides the current transport-encryption boundary;
+   native Rust TLS, SNI/hot reload and independent security review remain separate.
+   Durability completeness, AOF rewrite/RDB, backup/restore drills and disk-fault
+   recovery are explicitly deferred for this phase.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and
    clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe

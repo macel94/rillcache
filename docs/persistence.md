@@ -1,5 +1,11 @@
 # Append-only persistence and recovery
 
+> **Current scope:** durability completeness is explicitly deferred. The journal
+> remains implemented and tested as best-effort, but there is no RDB, checksum,
+> background/incremental rewrite, crash/ENOSPC/soak validation, backup drill,
+> point-in-time recovery or signal-driven drain. Do not treat it as a durable
+> system of record.
+
 Rillcache can persist supported keyspace mutations to an append-only command log.
 This is a real recovery path with explicit failure semantics, but it is **not** a
 complete Redis durability implementation: there is no RDB format, no
