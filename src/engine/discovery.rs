@@ -131,7 +131,9 @@ const COMMANDS: &[Command] = &[
     cmd("lindex", 3, &["readonly"], 1, 1, 1),
     cmd("linsert", 5, &["write", "denyoom"], 1, 1, 1),
     cmd("llen", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("lmpop", -4, &["write"], 2, -1, 1),
     cmd("lpop", -2, &["write", "fast"], 1, 1, 1),
+    cmd("lpos", -3, &["readonly"], 1, 1, 1),
     cmd("lpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("lpushx", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("lrange", 4, &["readonly"], 1, 1, 1),
@@ -570,7 +572,9 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "geosearchstore" => "geo",
         "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
         "blpop" | "brpop" | "lindex" | "linsert" | "llen" | "lpop" | "lpush" | "lpushx"
-        | "lrange" | "lrem" | "lset" | "ltrim" | "rpop" | "rpush" | "rpushx" => "list",
+        | "lrange" | "lrem" | "lset" | "ltrim" | "lmpop" | "lpos" | "rpop" | "rpush" | "rpushx" => {
+            "list"
+        }
         "sadd" | "scard" | "sdiff" | "sdiffstore" | "sinter" | "sintercard" | "sinterstore"
         | "sismember" | "smembers" | "smismember" | "smove" | "spop" | "srandmember" | "srem"
         | "sscan" | "sunion" | "sunionstore" => "set",

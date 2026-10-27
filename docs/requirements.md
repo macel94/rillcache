@@ -87,6 +87,7 @@ reason to couple all future commands into a single large story.
 | S57 | As a stream operator, I can align a stream's last ID and retention counters after restore so that producers and groups resume without ID conflicts. | S | R225–R228; last-id/entries-added/max-deleted validation, XINFO, WATCH and all-mode wire tests |
 | S58 | As a stream consumer, I can re-read my owned pending deliveries from a chosen ID so that recovery workflows can inspect and replay unacknowledged work. | S | R229–R232; history IDs/deleted entries/delivery updates/errors and all-mode wire tests |
 | S59 | As a stream consumer, I can wait for new entries on one or more streams so that tailing clients do not have to poll. | S | R233–R236; BLOCK parsing/timeout/wakeup/$/multi-key/MULTI and all-mode wire tests |
+| S60 | As a list user, I can locate repeated elements and pop across several list keys so that queue and feed operations do not require client loops. | S | R237–R240; LPOS rank/count/maxlen, LMPOP order/COUNT, errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -971,6 +972,29 @@ reason to couple all future commands into a single large story.
   waits, wake-on-append, `$` capture, multi-key wake selection, COUNT, timeout
   nulls, MULTI non-blocking behavior, wrong types, malformed BLOCK/IDs/STREAMS and
   all worker modes. Blocking `XREADGROUP` and multi-stream history shall remain
+
+### List position and multi-key pop (S60)
+
+- **R237 (event-driven):** `LPOS key element [RANK rank] [COUNT count]
+  [MAXLEN maxlen]` shall search lists forward for positive ranks and backward for
+  negative ranks, reject rank zero and negative COUNT/MAXLEN, and limit examined
+  elements when MAXLEN is positive. Without COUNT it shall return the zero-based
+  index or a null bulk; with COUNT it shall return an index array, with COUNT 0
+  meaning all matches.
+- **R238 (event-driven):** `LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT count]`
+  shall require a positive counted key list and COUNT, choose the first live
+  non-empty list in argument order, reject a wrong-type key encountered before a
+  candidate, and return `[key, [element, ...]]` in pop order (head-to-tail for
+  LEFT, tail-to-head for RIGHT).
+- **R239 (event-driven):** LMPOP shall cap pops at the list length and COUNT,
+  delete emptied lists, preserve remaining TTL and payload accounting, touch keys
+  for WATCH/journal capture and publish an `lmpop` event on mutation. A missing
+  or exhausted key set shall return a null array.
+- **R240 (unwanted behavior):** Invalid rank/COUNT/MAXLEN/numkeys/direction/extra
+  options, wrong types and missing keys shall return bounded errors, nulls or
+  empty arrays without partial pops. Tests shall cover rank/count/maxlen
+  combinations, binary elements, LEFT/RIGHT order, COUNT bounds, TTL, MULTI,
+  WATCH, notifications and all worker modes. Blocking `BLMPOP` remains
   documented as unsupported.
 
 ### Development and delivery
@@ -1314,7 +1338,8 @@ and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT/
 BITCOUNT/BITPOS/BITOP/BITFIELD/BITFIELD_RO; LCS (LEN/IDX/WITHMATCHLEN/
 MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store
-commands, score/rank/lex ranges, range storage, random members, sorted-set
+commands, LPOS/LMPOP list position/multi-pop, score/rank/lex ranges, range storage,
+random members, sorted-set
 algebra/cardinality/multi-pop, blocking multi-pop, pops, bounded
 `BLPOP`/`BRPOP`, stream `XSETID` metadata control and consumer history reads
 documented

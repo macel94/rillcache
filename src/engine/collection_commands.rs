@@ -32,6 +32,13 @@ impl Store {
         {
             return true;
         }
+        if command
+            .first()
+            .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'l'))
+            && self.execute_list_extended(args, out)
+        {
+            return true;
+        }
         if command.eq_ignore_ascii_case(b"HSETNX") {
             self.hash_setnx(args, out);
         } else if command.eq_ignore_ascii_case(b"HDEL") {
@@ -1183,6 +1190,265 @@ impl Store {
 }
 
 impl Store {
+    fn execute_list_extended(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
+        let command = args.first().expect("nonempty command");
+        if command.eq_ignore_ascii_case(b"LPOS") {
+            if args.len() < 3 {
+                arity("lpos", out);
+            } else {
+                self.list_position(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"LMPOP") {
+            if args.len() < 4 {
+                arity("lmpop", out);
+            } else {
+                self.list_mpop(args, out);
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn list_position(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let mut rank = 1i64;
+        let mut count = None;
+        let mut maxlen = 0i64;
+        let mut index = 3;
+        while index < args.len() {
+            if args[index].eq_ignore_ascii_case(b"RANK") && index + 1 < args.len() {
+                let Some(value) = parse_i64(args[index + 1]) else {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                };
+                if value == 0 {
+                    out.extend_from_slice(
+                        b"-ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list\r\n",
+                    );
+                    return;
+                }
+                rank = value;
+                index += 2;
+            } else if args[index].eq_ignore_ascii_case(b"COUNT") && index + 1 < args.len() {
+                let Some(value) = parse_i64(args[index + 1]) else {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                };
+                if value < 0 {
+                    out.extend_from_slice(b"-ERR COUNT can't be negative\r\n");
+                    return;
+                }
+                count = Some(usize::try_from(value).unwrap_or(usize::MAX));
+                index += 2;
+            } else if args[index].eq_ignore_ascii_case(b"MAXLEN") && index + 1 < args.len() {
+                let Some(value) = parse_i64(args[index + 1]) else {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                };
+                if value < 0 {
+                    out.extend_from_slice(b"-ERR MAXLEN can't be negative\r\n");
+                    return;
+                }
+                maxlen = value;
+                index += 2;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let values = match data.entries.get(args[1]) {
+            None => None,
+            Some(entry) => match entry.collection.as_ref().and_then(Collection::list_items) {
+                Some(values) => Some(values),
+                None => {
+                    wrong_type(out);
+                    return;
+                }
+            },
+        };
+        let Some(values) = values else {
+            if count.is_some() {
+                out.extend_from_slice(b"*0\r\n");
+            } else {
+                encode_bulk(None, out);
+            }
+            return;
+        };
+        let matches = if count == Some(0) {
+            usize::MAX
+        } else {
+            count.unwrap_or(1)
+        };
+        let mut seen = 0i64;
+        let mut result = Vec::new();
+        if rank > 0 {
+            for (position, value) in values.iter().enumerate() {
+                if maxlen > 0 && position as i64 >= maxlen {
+                    break;
+                }
+                if *value != args[2] {
+                    continue;
+                }
+                seen += 1;
+                if seen >= rank {
+                    if count.is_none() {
+                        integer(position as i64, out);
+                        return;
+                    }
+                    result.push(position);
+                    if result.len() >= matches {
+                        break;
+                    }
+                }
+            }
+        } else {
+            for (offset, position) in (0..values.len()).rev().enumerate() {
+                if maxlen > 0 && offset as i64 >= maxlen {
+                    break;
+                }
+                if values[position] != args[2] {
+                    continue;
+                }
+                seen += 1;
+                if -seen <= rank {
+                    if count.is_none() {
+                        integer(position as i64, out);
+                        return;
+                    }
+                    result.push(position);
+                    if result.len() >= matches {
+                        break;
+                    }
+                }
+            }
+        }
+        if count.is_none() {
+            encode_bulk(None, out);
+            return;
+        }
+        write!(out, "*{}\r\n", result.len()).expect("Vec write");
+        for position in result {
+            integer(position as i64, out);
+        }
+    }
+
+    fn list_mpop(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(numkeys) = parse_i64(args[1]).filter(|value| *value > 0) else {
+            out.extend_from_slice(b"-ERR numkeys should be greater than 0\r\n");
+            return;
+        };
+        let Ok(numkeys) = usize::try_from(numkeys) else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let Some(where_index) = numkeys.checked_add(2) else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let Some(where_token) = args.get(where_index) else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let left = if where_token.eq_ignore_ascii_case(b"LEFT") {
+            true
+        } else if where_token.eq_ignore_ascii_case(b"RIGHT") {
+            false
+        } else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        };
+        let mut count = 1usize;
+        let mut count_set = false;
+        let mut index = where_index + 1;
+        while index < args.len() {
+            if !count_set && args[index].eq_ignore_ascii_case(b"COUNT") && index + 1 < args.len() {
+                let Some(value) = parse_i64(args[index + 1]).filter(|value| *value > 0) else {
+                    out.extend_from_slice(b"-ERR count should be greater than 0\r\n");
+                    return;
+                };
+                count = usize::try_from(value).unwrap_or(usize::MAX);
+                count_set = true;
+                index += 2;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        for key in &args[2..where_index] {
+            let mut list = match owned_list(&mut data, key, now) {
+                Ok(Some(list)) => list,
+                Ok(None) => continue,
+                Err(()) => {
+                    wrong_type(out);
+                    return;
+                }
+            };
+            if list.is_empty() {
+                continue;
+            }
+            let entry = data.entries.get(*key).expect("list exists");
+            let expires = entry.expires;
+            let previous = entry.payload_len();
+            let take = count.min(list.len());
+            let mut values = Vec::with_capacity(take);
+            for _ in 0..take {
+                let value = if left {
+                    list.pop_front().expect("nonempty list")
+                } else {
+                    list.pop_back().expect("nonempty list")
+                };
+                values.push(value);
+            }
+            let encoded = if list.is_empty() {
+                None
+            } else {
+                let Ok(config) = self.collection_config.read() else {
+                    internal_error(out);
+                    return;
+                };
+                Some(encode_list(list, config.list_max_listpack_size))
+            };
+            write!(out, "*2\r\n").expect("Vec write");
+            encode_bulk(Some(key), out);
+            write!(out, "*{take}\r\n").expect("Vec write");
+            for value in values {
+                encode_bulk(Some(&value), out);
+            }
+            match encoded {
+                Some(encoded) => {
+                    let Some(payload) = data.reserve(
+                        key,
+                        encoded.payload_len(),
+                        Some(previous),
+                        self.max_payload_bytes,
+                        now,
+                    ) else {
+                        out.clear();
+                        out.extend_from_slice(OOM);
+                        return;
+                    };
+                    data.put_collection(key, encoded, expires, payload, now);
+                }
+                None => {
+                    data.remove(key);
+                }
+            }
+            return;
+        }
+        out.extend_from_slice(b"*-1\r\n");
+    }
+
     fn list_index(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let Ok(mut data) = self.data.write() else {
             internal_error(out);
@@ -1975,6 +2241,23 @@ impl Store {
                 encode_bulk(members.get(index).map(Vec::as_slice), out);
             }
         }
+    }
+}
+
+fn owned_list(
+    data: &mut Data,
+    key: &[u8],
+    now: i64,
+) -> Result<Option<std::collections::VecDeque<Vec<u8>>>, ()> {
+    data.expire_key(key, now);
+    match data.entries.get(key) {
+        None => Ok(None),
+        Some(entry) => entry
+            .collection
+            .as_ref()
+            .and_then(Collection::list_values)
+            .map(Some)
+            .ok_or(()),
     }
 }
 
