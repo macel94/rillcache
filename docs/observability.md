@@ -102,6 +102,27 @@ worker threads; they are diagnostic, not a transaction ledger or billing source.
 Expiration counts are exact for removals observed by this process but never include
 keys that merely crossed their deadline and were not yet reaped/lazily removed.
 
+## INFO persistence
+
+`INFO persistence` (and `INFO all`) reports only measured append-only journal
+state:
+
+```text
+# Persistence
+loading:0
+aof_enabled:1
+aof_rewrite_in_progress:0
+aof_last_bgrewrite_status:ok
+aof_last_write_status:ok
+aof_current_size:1234
+```
+
+With persistence disabled only `loading:0` and `aof_enabled:0` are returned.
+`aof_last_write_status` reflects the journal's latched failure state and
+`aof_last_bgrewrite_status` the last synchronous `BGREWRITEAOF`, so
+`aof_rewrite_in_progress` is always `0`. RDB, background-rewrite progress,
+backlog, bio and fork fields are omitted because they are not measured.
+
 ## Deliberate gaps
 
 - No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.

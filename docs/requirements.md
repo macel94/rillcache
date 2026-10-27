@@ -106,6 +106,7 @@ reason to couple all future commands into a single large story.
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
+| S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1419,6 +1420,25 @@ and the offline upstream harness tests.
   worker mode. Documentation shall retain the absence of replication, PSYNC,
   replica management, Sentinel, cluster routing, failover and mixed-version
   interoperability.
+
+### Truthful persistence status (S80)
+
+- **R313 (event-driven):** When `INFO persistence` or `INFO all` is requested, the
+  server shall return a `# Persistence` block with `loading:0` and `aof_enabled`.
+  While the journal is enabled it shall also report `aof_rewrite_in_progress:0`,
+  the last rewrite and write statuses and the current file size; while disabled
+  it shall report only `aof_enabled:0`. It shall omit RDB, backlog, bio and other
+  unmeasured persistence fields rather than fabricating them.
+- **R314 (state-driven):** The reported write status shall reflect the journal's
+  latched failure state, the rewrite status shall reflect the last completed
+  synchronous `BGREWRITEAOF`, and the size shall come from the open journal file.
+  Because rewrites are synchronous, `aof_rewrite_in_progress` shall remain `0`
+  and no asynchronous progress claim shall be made.
+- **R315 (ubiquitous):** Tests shall cover disabled and enabled servers, the
+  measured field set, nonempty size after a write, status after rewrite, `INFO
+  all` inclusion and every worker mode. Documentation shall retain the absence
+  of RDB, asynchronous/background rewrite, checksum, encryption, ENOSPC and
+  crash-recovery guarantees.
 
 ### Development and delivery
 

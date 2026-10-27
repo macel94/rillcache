@@ -784,6 +784,7 @@ impl Store {
                     | b"stats"
                     | b"clients"
                     | b"replication"
+                    | b"persistence"
                     | b"default"
                     | b"all"
             ) {
@@ -837,6 +838,34 @@ impl Store {
                     stats.pubsub_channels,
                     stats.pubsub_patterns
                 );
+            }
+            if matches!(section.as_slice(), b"persistence" | b"all") {
+                let persistence = self.persistence_status();
+                let _ = write!(
+                    text,
+                    "# Persistence\r\nloading:0\r\naof_enabled:{}",
+                    u8::from(persistence.aof_enabled)
+                );
+                if persistence.aof_enabled {
+                    let _ = write!(
+                        text,
+                        "\r\naof_rewrite_in_progress:0\r\naof_last_bgrewrite_status:{}\r\naof_last_write_status:{}",
+                        if persistence.rewrite_failed {
+                            "err"
+                        } else {
+                            "ok"
+                        },
+                        if persistence.write_failed {
+                            "err"
+                        } else {
+                            "ok"
+                        },
+                    );
+                    if let Some(size) = persistence.current_size {
+                        let _ = write!(text, "\r\naof_current_size:{size}");
+                    }
+                }
+                text.push('\r');
             }
             if matches!(section.as_slice(), b"replication" | b"all") {
                 text.push_str(
