@@ -39,11 +39,25 @@ The reconciliation is bounded to at most 1,000 open PRs in a pass. Eligible
 candidates are every open PR targeting this repository's `main` with a
 same-repository head and a well-formed base/head identity. Draft state and a
 missing auto-merge request are deliberately **not** eligibility gates: the user
-asked for every open PR branch to stay current. A fork, closed PR, non-main
+asked for every open PR branch to stay current, and the serialized queue below
+keeps them all in scope across successive passes. A fork, closed PR, non-main
 target, malformed identity or ambiguous duplicate branch/head is reported and
 never updated. The updater does not promote a draft, add or revoke auto-merge,
 or alter reviews, labels, comments, branch protection, merge strategy,
 required-check configuration, or main.
+
+The queue is **serialized**: a pass inspects candidates in ascending PR-number
+order and performs **at most one successful branch refresh**. A refreshed head is
+a new candidate identity that must run both required checks again, so refreshing
+every stale PR in one pass would stampede the gate. A conflict, timeout, identity
+race, failed gate or API error on the current candidate is recorded as failed
+evidence and the pass continues to the next candidate; the first successful
+refresh (draft or ready) ends the pass. Every PR behind that point is
+reported as `deferred` in the run summary and per-PR artifact - never silently
+omitted - and keeps its stale branch until a later pass advances the queue (main
+push, hourly schedule, required-workflow completion, or manual main dispatch).
+Already-current and already-ahead PRs are still inspected and have their exact
+required checks reconciled, but they do not consume the refresh slot.
 
 Staleness is measured against **current main**, not the PR's last-synced base
 snapshot: GitHub reports `pr.base.sha` as the base at the PR's last sync, which
@@ -57,7 +71,9 @@ interval and accepts a candidate only after observing the new head and confirmin
 it contains the frozen main. A conflict, timeout, identity race or API error is
 surfaced in the run summary and per-PR artifact; no attempt is made to resolve
 conflicts or overwrite a worker's newer head. Draft PRs get their branch
-refreshed but defer the expensive required checks until they are ready to merge.
+refreshed but defer the expensive required checks until they are ready to merge;
+that refresh still uses the pass's single refresh slot because it creates a new
+head.
 
 For the exact candidate, the updater discovers runs by workflow path, event,
 branch and the workflow run's own immutable `head_sha`. GitHub's nested
@@ -86,8 +102,11 @@ The privileged job has only the contents, pull-request and Actions permissions
 needed for the GitHub branch-update and workflow-dispatch APIs. One repository-
 wide Actions concurrency group has no active-run cancellation and allows up to
 100 pending runs. Correctness does not depend on event ordering: each run lists
-current PRs and reconciles observed GitHub state. Every run writes a summary and
-retains machine-readable per-PR outcomes as an Actions artifact for 90 days.
+current PRs and reconciles observed GitHub state, and each run advances the
+serialized queue by at most one branch refresh, so the single concurrency group
+also guarantees at most one branch-changing pass at a time. Every run writes a
+summary and retains machine-readable per-PR outcomes (schema 2, including
+`refreshed` and `deferred` markers) as an Actions artifact for 90 days.
 Actions workflow runs and exact check identities are the durable evidence used
 for recovery; no runner-local file is authoritative.
 
@@ -127,7 +146,10 @@ and 90-day artifact retention. GitHub's workflow-run/check history is the source
 of truth for previously submitted required checks. If the API accepts an
 asynchronous update or dispatch but its result is not yet visible, the run
 reports a pending/uncertain outcome; the schedule and later workflow events
-reconcile again from current GitHub state. A persistent conflict, failed gate,
+reconcile again from current GitHub state. Each pass performs at most one
+successful branch refresh, so a large stale queue is drained one PR at a time
+instead of rebasing and re-gating every open PR at once; deferred PRs stay
+visible in the summary/artifact. A persistent conflict, failed gate,
 missing exact check identity or race requires inspection by the PR owner; the
 automation does not retry failed gates, resolve conflicts, or bypass protection.
 

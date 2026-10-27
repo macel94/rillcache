@@ -39,7 +39,9 @@ class FakeAPI:
         self.checks = {}
         self.calls = []
         self.update_result = "update"
+        self.update_results = {}
         self.update_error = None
+        self.update_errors = {}
         self.dispatch_error = None
         # (workflow, ref) -> blob sha override; default means branch matches main.
         self.workflow_blobs = {}
@@ -61,12 +63,14 @@ class FakeAPI:
         if path.startswith(f"repos/{mod.REPO}/pulls?"):
             return [self.prs[n] for n in sorted(self.prs)]
         if path.startswith(f"repos/{mod.REPO}/pulls/") and path.endswith("/update-branch"):
+            number = int(path.split("/")[-2])
+            if number in self.update_errors:
+                raise self.update_errors[number]
             if self.update_error:
                 raise self.update_error
-            number = int(path.split("/")[-2])
             if body != {"expected_head_sha": self.prs[number]["head"]["sha"]}:
                 raise AssertionError("branch update lacked its frozen expected head")
-            if self.update_result == "update":
+            if self.update_results.get(number, self.update_result) == "update":
                 self.prs[number]["head"]["sha"] = C
                 self.prs[number]["base"]["sha"] = self.main
                 self.current.add((self.main, C))
@@ -394,16 +398,96 @@ class UpdaterTests(unittest.TestCase):
         })
         self.assertEqual(self.updater.process(p)["status"], "checks_dispatched")
 
-    def test_every_open_same_repo_main_pr_is_reconciled(self):
-        self.api = FakeAPI([pull(2, head=B), pull(1, head=B, opted=False), pull(3, head=B, draft=True)])
+    def test_a_pass_refreshes_only_one_stale_branch_and_defers_the_rest(self):
+        # Several stale PRs are queued; a rebase stampede would run every gate.
+        self.api = FakeAPI([pull(3, head=B), pull(1, head=B, opted=False), pull(2, head=B)])
         self.updater = mod.Updater(self.api, sleep=lambda _: None, update_wait=0)
         outcomes = self.updater.reconcile()
         self.assertEqual([x["number"] for x in outcomes], [1, 2, 3])
-        self.assertEqual(
-            [x["status"] for x in outcomes],
-            ["checks_dispatched", "checks_dispatched", "draft_updated"],
-        )
-        self.assertEqual(sum(c[0] == "PUT" for c in self.api.calls), 3)
+        self.assertEqual([x["status"] for x in outcomes], ["checks_dispatched", "deferred", "deferred"])
+        puts = [call for call in self.api.calls if call[0] == "PUT"]
+        self.assertEqual(len(puts), 1)
+        self.assertTrue(puts[0][1].endswith("/pulls/1/update-branch"))
+        self.assertEqual(puts[0][2], {"expected_head_sha": B})
+        self.assertTrue(outcomes[0]["refreshed"])
+        # Only the refreshed candidate's required workflows are dispatched.
+        self.assertEqual([call[2]["ref"] for call in self.api.calls if call[0] == "POST"], ["feature/1", "feature/1"])
+        for deferred in outcomes[1:]:
+            self.assertIn("PR #1", deferred["detail"])
+            self.assertEqual(deferred["head"], B)
+            self.assertNotIn("refreshed", deferred)
+
+    def test_a_draft_refresh_consumes_the_single_refresh_slot(self):
+        # A draft refresh still creates a new head/check identity, so it counts.
+        self.api = FakeAPI([pull(1, head=B, draft=True), pull(2, head=B), pull(3, head=B)])
+        self.updater = mod.Updater(self.api, sleep=lambda _: None, update_wait=0)
+        outcomes = self.updater.reconcile()
+        self.assertEqual([x["status"] for x in outcomes], ["draft_updated", "deferred", "deferred"])
+        self.assertEqual(sum(call[0] == "PUT" for call in self.api.calls), 1)
+        self.assertFalse(any(call[0] == "POST" for call in self.api.calls))
+
+    def test_conflict_on_the_first_candidate_is_recorded_and_the_next_candidate_is_attempted(self):
+        self.api = FakeAPI([pull(1, head=B), pull(2, head=B), pull(3, head=B)])
+        self.api.update_errors[1] = mod.ApiError(422, "conflict")
+        self.updater = mod.Updater(self.api, sleep=lambda _: None, update_wait=0)
+        outcomes = self.updater.reconcile()
+        self.assertEqual([x["status"] for x in outcomes],
+                         ["conflict_or_race", "checks_dispatched", "deferred"])
+        self.assertNotIn("refreshed", outcomes[0])
+        self.assertIn("conflict", outcomes[0]["error"])
+        self.assertTrue(outcomes[1]["refreshed"])
+        puts = [call[1] for call in self.api.calls if call[0] == "PUT"]
+        self.assertEqual([path.rsplit("/", 2)[-2] for path in puts], ["1", "2"])
+        self.assertEqual([call[2]["ref"] for call in self.api.calls if call[0] == "POST"], ["feature/2", "feature/2"])
+
+    def test_timeout_or_uncertain_update_does_not_consume_the_refresh_slot(self):
+        for failure in ("pending", "uncertain"):
+            with self.subTest(failure=failure):
+                self.api = FakeAPI([pull(1, head=B), pull(2, head=B), pull(3, head=B)])
+                if failure == "pending":
+                    self.api.update_results[1] = "pending"
+                else:
+                    self.api.update_errors[1] = mod.ApiError(None, "network failure")
+                self.updater = mod.Updater(self.api, sleep=lambda _: None, update_wait=0)
+                outcomes = self.updater.reconcile()
+                self.assertEqual(outcomes[0]["status"], "update_pending" if failure == "pending" else "update_uncertain")
+                self.assertNotIn("refreshed", outcomes[0])
+                self.assertEqual(outcomes[1]["status"], "checks_dispatched")
+                self.assertTrue(outcomes[1]["refreshed"])
+                self.assertEqual([item["status"] for item in outcomes[2:]], ["deferred"])
+
+    def test_already_current_prs_are_inspected_without_consuming_the_refresh_slot(self):
+        self.api = FakeAPI([pull(1, head=C), pull(2, head=B), pull(3, head=B)])
+        self.api.main = D
+        self.api.current.add((D, C))
+        self.updater = mod.Updater(self.api, sleep=lambda _: None, update_wait=0)
+        outcomes = self.updater.reconcile()
+        # The current PR is reconciled (checks only) and does not use the slot.
+        self.assertEqual(outcomes[0]["status"], "checks_dispatched")
+        self.assertNotIn("refreshed", outcomes[0])
+        self.assertEqual(outcomes[1]["status"], "checks_dispatched")
+        self.assertTrue(outcomes[1]["refreshed"])
+        self.assertEqual(outcomes[2]["status"], "deferred")
+        puts = [call[1] for call in self.api.calls if call[0] == "PUT"]
+        self.assertEqual([path.rsplit("/", 2)[-2] for path in puts], ["2"])
+
+    def test_deferred_prs_are_visible_in_the_artifact_and_run_summary(self):
+        self.api = FakeAPI([pull(1, head=B), pull(2, head=B), pull(3, head=B)])
+        self.updater = mod.Updater(self.api, sleep=lambda _: None, update_wait=0)
+        outcomes = self.updater.reconcile()
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "outcomes.json"
+            summary = Path(tmp) / "summary.md"
+            with patch.dict(os.environ, {"PR_UPDATE_OUTCOMES": str(artifact),
+                                         "GITHUB_STEP_SUMMARY": str(summary), "GITHUB_RUN_ID": "5"}):
+                mod.write_reports(outcomes)
+            data = json.loads(artifact.read_text())
+            self.assertEqual([item["status"] for item in data["pull_requests"]],
+                             ["checks_dispatched", "deferred", "deferred"])
+            text = summary.read_text()
+            self.assertIn("Refreshed this pass: #1", text)
+            self.assertIn("Deferred to a later pass: 2 (#2, #3)", text)
+            self.assertIn("| deferred |", text)
 
     def test_workflow_failure_is_not_retried_and_new_source_head_is_a_new_identity(self):
         p = pull(base=A, head=C)
