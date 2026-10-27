@@ -252,6 +252,14 @@ const COMMANDS: &[Command] = &[
         0,
         0,
     ),
+    cmd(
+        "role",
+        1,
+        &["admin", "noscript", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
     cmd("rpop", -2, &["write", "fast"], 1, 1, 1),
     cmd("rpoplpush", 3, &["write", "denyoom"], 1, 2, 1),
     cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
@@ -650,6 +658,7 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
                 | "function"
                 | "keys"
                 | "latency"
+                | "role"
                 | "script"
                 | "shutdown"
                 | "slowlog"
@@ -760,6 +769,14 @@ impl Store {
         if name.eq_ignore_ascii_case(b"COMMAND") {
             command(arguments, output);
             true
+        } else if name.eq_ignore_ascii_case(b"ROLE") {
+            if arguments.len() != 1 {
+                super::arity("role", output);
+            } else {
+                // Standalone master with no replication stream or replicas.
+                output.extend_from_slice(b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n");
+            }
+            true
         } else if name.eq_ignore_ascii_case(b"INFO") {
             self.info(arguments, output);
             true
@@ -803,6 +820,8 @@ impl Store {
                     | b"stats"
                     | b"clients"
                     | b"commandstats"
+                    | b"replication"
+                    | b"persistence"
                     | b"default"
                     | b"all"
             ) {
@@ -871,6 +890,39 @@ impl Store {
                         stat.failed_calls
                     );
                 }
+            }
+            if matches!(section.as_slice(), b"persistence" | b"all") {
+                let persistence = self.persistence_status();
+                let _ = write!(
+                    text,
+                    "# Persistence\r\nloading:0\r\naof_enabled:{}",
+                    u8::from(persistence.aof_enabled)
+                );
+                if persistence.aof_enabled {
+                    let _ = write!(
+                        text,
+                        "\r\naof_rewrite_in_progress:0\r\naof_last_bgrewrite_status:{}\r\naof_last_write_status:{}",
+                        if persistence.rewrite_failed {
+                            "err"
+                        } else {
+                            "ok"
+                        },
+                        if persistence.write_failed {
+                            "err"
+                        } else {
+                            "ok"
+                        },
+                    );
+                    if let Some(size) = persistence.current_size {
+                        let _ = write!(text, "\r\naof_current_size:{size}");
+                    }
+                }
+                text.push('\r');
+            }
+            if matches!(section.as_slice(), b"replication" | b"all") {
+                text.push_str(
+                    "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_failover_state:no-failover\r\nmaster_repl_offset:0\r\n",
+                );
             }
         }
         encode_bulk(Some(text.as_bytes()), output);
@@ -1015,6 +1067,14 @@ mod tests {
         let index = command_index(b"ping").unwrap();
         assert_eq!(command_name_at(index), Some("ping"));
         assert!(command_count() > index);
+    }
+
+    #[test]
+    fn role_reports_admin_fast_and_dangerous_categories() {
+        for category in [b"admin".as_slice(), b"fast", b"dangerous"] {
+            assert!(category_matches(b"role", &[b"ROLE"], category));
+        }
+        assert!(!category_matches(b"role", &[b"ROLE"], b"write"));
     }
 
     #[test]

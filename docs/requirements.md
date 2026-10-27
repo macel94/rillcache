@@ -106,6 +106,8 @@ reason to couple all future commands into a single large story.
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
 | S78 | As an operator, I can opt into bounded per-command calls/time/error statistics without paying disabled-observer timing and metadata costs. | S | R306–R309; opt-in/reset/MULTI/error, lazy SLOWLOG capture and all-mode tests |
+| S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
+| S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1435,6 +1437,44 @@ and the offline upstream harness tests.
   partial output. Tests shall cover pattern/category/module filters, `@` prefixes,
   unknown categories, syntax failures and all worker modes. No module metadata or
   Redis extended command docs are implied.
+
+### Truthful standalone replication status (S79)
+
+- **R310 (event-driven):** When `ROLE` is received, the server shall return the
+  three-element master array `["master", 0, []]` because no replication stream or
+  replicas exist, reject extra arguments with the normal arity error, and expose
+  the documented `@admin`/`@fast`/`@dangerous` ACL categories. It shall not claim
+  PSYNC, replica acknowledgement or failover support.
+- **R311 (event-driven):** When `INFO replication` or `INFO all` is requested,
+  the server shall return a `# Replication` block with `role:master`,
+  `connected_slaves:0`, `master_failover_state:no-failover` and
+  `master_repl_offset:0`. It shall omit `master_replid`, replica rows, link
+  status and backlog fields rather than fabricating them, and `INFO` without
+  arguments shall keep its existing sections.
+- **R312 (ubiquitous):** Tests shall cover the exact `ROLE` shape, arity failure,
+  replication fields, `INFO all` inclusion, ACL category metadata and every
+  worker mode. Documentation shall retain the absence of replication, PSYNC,
+  replica management, Sentinel, cluster routing, failover and mixed-version
+  interoperability.
+
+### Truthful persistence status (S80)
+
+- **R313 (event-driven):** When `INFO persistence` or `INFO all` is requested, the
+  server shall return a `# Persistence` block with `loading:0` and `aof_enabled`.
+  While the journal is enabled it shall also report `aof_rewrite_in_progress:0`,
+  the last rewrite and write statuses and the current file size; while disabled
+  it shall report only `aof_enabled:0`. It shall omit RDB, backlog, bio and other
+  unmeasured persistence fields rather than fabricating them.
+- **R314 (state-driven):** The reported write status shall reflect the journal's
+  latched failure state, the rewrite status shall reflect the last completed
+  synchronous `BGREWRITEAOF`, and the size shall come from the open journal file.
+  Because rewrites are synchronous, `aof_rewrite_in_progress` shall remain `0`
+  and no asynchronous progress claim shall be made.
+- **R315 (ubiquitous):** Tests shall cover disabled and enabled servers, the
+  measured field set, nonempty size after a write, status after rewrite, `INFO
+  all` inclusion and every worker mode. Documentation shall retain the absence
+  of RDB, asynchronous/background rewrite, checksum, encryption, ENOSPC and
+  crash-recovery guarantees.
 
 ### Development and delivery
 
