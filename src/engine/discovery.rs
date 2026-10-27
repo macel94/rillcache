@@ -35,6 +35,7 @@ const COMMANDS: &[Command] = &[
     cmd("bitpos", -3, &["readonly"], 1, 1, 1),
     cmd("blpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
     cmd("brpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
+    cmd("bzmpop", -5, &["write", "noscript", "blocking"], 0, 0, 0),
     cmd(
         "client",
         -2,
@@ -379,12 +380,17 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         || name.eq_ignore_ascii_case(b"ZINTER")
         || name.eq_ignore_ascii_case(b"ZDIFF")
         || name.eq_ignore_ascii_case(b"ZINTERCARD")
-        || name.eq_ignore_ascii_case(b"ZMPOP");
+        || name.eq_ignore_ascii_case(b"ZMPOP")
+        || name.eq_ignore_ascii_case(b"BZMPOP");
     let store_zset = name.eq_ignore_ascii_case(b"ZUNIONSTORE")
         || name.eq_ignore_ascii_case(b"ZINTERSTORE")
         || name.eq_ignore_ascii_case(b"ZDIFFSTORE");
     if counted_zset || store_zset {
-        let numkeys_index = if store_zset { 2 } else { 1 };
+        let numkeys_index = if store_zset || name.eq_ignore_ascii_case(b"BZMPOP") {
+            2
+        } else {
+            1
+        };
         let Some(count) = args
             .get(numkeys_index)
             .and_then(|raw| std::str::from_utf8(raw).ok())
@@ -494,11 +500,11 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "sscan" | "sunion" | "sunionstore" => "set",
         "hdel" | "hexists" | "hget" | "hgetall" | "hincrby" | "hincrbyfloat" | "hkeys" | "hlen"
         | "hmget" | "hscan" | "hset" | "hsetnx" | "hstrlen" | "hvals" => "hash",
-        "zadd" | "zcard" | "zcount" | "zincrby" | "zlexcount" | "zpopmax" | "zpopmin" | "zdiff"
-        | "zdiffstore" | "zinter" | "zintercard" | "zinterstore" | "zrandmember" | "zrange"
-        | "zrangebyscore" | "zrangestore" | "zrank" | "zrem" | "zremrangebylex"
-        | "zremrangebyrank" | "zremrangebyscore" | "zrevrange" | "zrevrangebyscore"
-        | "zrevrank" | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
+        "bzmpop" | "zadd" | "zcard" | "zcount" | "zincrby" | "zlexcount" | "zpopmax"
+        | "zpopmin" | "zdiff" | "zdiffstore" | "zinter" | "zintercard" | "zinterstore"
+        | "zrandmember" | "zrange" | "zrangebyscore" | "zrangestore" | "zrank" | "zrem"
+        | "zremrangebylex" | "zremrangebyrank" | "zremrangebyscore" | "zrevrange"
+        | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
         "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
         | "xread" | "xreadgroup" | "xrevrange" => "stream",
         "auth" | "client" | "hello" | "quit" | "reset" | "select" => "connection",
@@ -742,6 +748,7 @@ mod tests {
             ("zdiff", "zset"),
             ("zdiffstore", "zset"),
             ("zintercard", "zset"),
+            ("bzmpop", "zset"),
             ("pfadd", "hyperloglog"),
             ("pfcount", "hyperloglog"),
             ("pfmerge", "hyperloglog"),
@@ -809,6 +816,14 @@ mod tests {
         );
         assert!(key_arguments(b"ZUNION", &[b"ZUNION", b"0", b"a"]).is_empty());
         assert!(key_arguments(b"ZUNIONSTORE", &[b"ZUNIONSTORE", b"d", b"x", b"a"]).is_empty());
+        assert_eq!(
+            key_arguments(
+                b"BZMPOP",
+                &[b"BZMPOP", b"0", b"2", b"a", b"b", b"MIN", b"COUNT", b"1"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert!(key_arguments(b"BZMPOP", &[b"BZMPOP", b"0", b"0", b"a"]).is_empty());
     }
 
     #[test]

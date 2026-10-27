@@ -6,6 +6,7 @@
 //! guarantee or a server push notification.
 
 use super::Store;
+use super::collection_commands::ZSetPopOutcome;
 use super::collections::encode_list;
 use super::data::Collection;
 use super::notify::Category as NotifyCategory;
@@ -93,6 +94,50 @@ impl Store {
                     if left { "lpop" } else { "rpop" },
                     key,
                     NotifyCategory::List,
+                );
+            }
+        }
+        outcome
+    }
+}
+
+impl Store {
+    /// Pop from the first ready sorted set under the normal transaction/journal
+    /// gate, matching one BZMPOP attempt.
+    pub(crate) fn blocking_zpop(&self, keys: &[&[u8]], max: bool, count: usize) -> ZSetPopOutcome {
+        if self.journal.is_some() {
+            let Ok(_gate) = self.transaction_gate.write() else {
+                return ZSetPopOutcome::JournalError;
+            };
+            self.blocking_zpop_gated(keys, max, count)
+        } else {
+            let Ok(_gate) = self.transaction_gate.read() else {
+                return ZSetPopOutcome::JournalError;
+            };
+            self.blocking_zpop_gated(keys, max, count)
+        }
+    }
+
+    fn blocking_zpop_gated(&self, keys: &[&[u8]], max: bool, count: usize) -> ZSetPopOutcome {
+        let marks = self.journal_marks();
+        let outcome = {
+            let Ok(mut data) = self.data.write() else {
+                return ZSetPopOutcome::JournalError;
+            };
+            let now = self.now(&data);
+            self.zset_pop_in_data(&mut data, keys, max, count, now)
+        };
+        if matches!(outcome, ZSetPopOutcome::Popped { .. }) {
+            let mut output = Vec::new();
+            self.commit_journal(marks, &[], &mut output, 0);
+            if output.first() == Some(&b'-') {
+                return ZSetPopOutcome::JournalError;
+            }
+            if let ZSetPopOutcome::Popped { key, .. } = &outcome {
+                self.notify_event(
+                    if max { "zpopmax" } else { "zpopmin" },
+                    key,
+                    NotifyCategory::Zset,
                 );
             }
         }

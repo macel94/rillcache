@@ -80,6 +80,7 @@ reason to couple all future commands into a single large story.
 | S50 | As a sorted-set user, I can query and store rank, score and lex ranges with reversal, limits and random member selection so that leaderboard and index workflows use one type. | M | R197–R200; range/store/lex/random, errors and all-mode wire tests |
 | S51 | As a sorted-set user, I can combine multiple sets with weights and aggregation into results or destinations and count intersections so that rankings can be derived without client-side merging. | M | R201–R204; union/inter/diff/weights/aggregate/store/cardinality, errors, ACL and all-mode wire tests |
 | S52 | As a sorted-set user, I can atomically pop lowest or highest members across several keys so that priority queues span multiple shards without client loops. | XS | R205–R208; key order, MIN/MAX, COUNT, TTL/WATCH and all-mode wire tests |
+| S53 | As a sorted-set user, I can wait for members across several sorted sets so that consumers do not have to poll empty priority queues. | S | R209–R212; blocking timeout/wakeup, MIN/MAX/COUNT, TTL/WATCH, ACL and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -781,7 +782,34 @@ reason to couple all future commands into a single large story.
   wrong types and negative or zero counts shall return bounded errors without
   partial pops. Tests shall cover first-key selection, MIN/MAX, COUNT, missing
   keys, emptied keys, TTL, MULTI, WATCH, notifications, errors and all worker
-  modes. Blocking `BZMPOP` shall remain documented as unsupported.
+  modes. Blocking `BZMPOP` is delivered separately in S53.
+
+### Blocking sorted-set multi-pop (S53)
+
+- **R209 (event-driven):** `BZMPOP timeout numkeys key [key ...] MIN|MAX
+  [COUNT count]` shall parse the float-seconds timeout before key access, reject
+  NaN/negative/out-of-range timeouts with the documented errors, require a
+  positive counted key list and exactly one direction, and accept at most one
+  positive `COUNT`. Timeout zero shall wait indefinitely.
+- **R210 (event-driven):** On success it shall pop from the first live non-empty
+  sorted-set key in argument order, return `[key, [[member, score], ...]]` with up
+  to `COUNT` score-then-member ordered members, delete the key when emptied,
+  preserve remaining TTL and payload accounting, commit journal state, and publish
+  a `zpopmin`/`zpopmax` event matching the direction. A wrong-type key before a
+  candidate shall fail without popping; missing keys shall be skipped and later
+  keys re-checked when blocked.
+- **R211 (state-driven):** While no listed key is ready, the connection shall wait
+  using the existing bounded polling model without holding the store lock. A
+  positive timeout shall produce a null array when it expires; disconnect,
+  shutdown or RESET shall clear the blocked state. Inside `MULTI`, `BZMPOP` shall
+  execute as its non-blocking multi-pop equivalent at `EXEC` while still
+  validating the timeout, and `WATCH` conflicts shall abort `EXEC` without pops.
+- **R212 (unwanted behavior):** Invalid timeout/numkeys/direction/COUNT/options,
+  wrong types and empty results shall return documented bounded errors or a null
+  array without partial pops. ACL key patterns shall cover the counted key list
+  before blocking. Tests shall cover immediate pops, MIN/MAX, COUNT, key order,
+  timeout nulls, wake-on-write, TTL, delete-on-empty, MULTI/WATCH, notifications,
+  ACL, errors and all worker modes.
 
 ### Development and delivery
 
@@ -1125,7 +1153,8 @@ BITCOUNT/BITPOS/BITOP/BITFIELD/BITFIELD_RO; LCS (LEN/IDX/WITHMATCHLEN/
 MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store
 commands, score/rank/lex ranges, range storage, random members, sorted-set
-algebra/cardinality/multi-pop, pops and bounded `BLPOP`/`BRPOP` documented
+algebra/cardinality/multi-pop, blocking multi-pop, pops and bounded
+`BLPOP`/`BRPOP` documented
 in [typed collections](collections.md); geospatial sorted sets (`GEOADD`,
 `GEOPOS`, `GEODIST`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`) documented in
 [geospatial limits](geospatial.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor
