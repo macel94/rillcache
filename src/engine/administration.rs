@@ -5,6 +5,12 @@ impl Store {
         let Some(command) = args.first() else {
             return false;
         };
+        if command.first().is_some_and(|byte| {
+            byte.eq_ignore_ascii_case(&b't') || byte.eq_ignore_ascii_case(&b'o')
+        }) && self.execute_introspection(args, out)
+        {
+            return true;
+        }
         if command.eq_ignore_ascii_case(b"FLUSHDB") || command.eq_ignore_ascii_case(b"FLUSHALL") {
             if args.len() > 2 || args.get(1).is_some_and(|arg| !flush_mode(arg)) {
                 out.extend_from_slice(b"-ERR syntax error\r\n");

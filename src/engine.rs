@@ -22,6 +22,7 @@ mod discovery;
 mod eviction;
 mod geo;
 mod hll;
+mod introspection;
 mod journal;
 mod keyspace;
 mod multikey;

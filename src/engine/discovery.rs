@@ -153,6 +153,7 @@ const COMMANDS: &[Command] = &[
         0,
         0,
     ),
+    cmd("object", -2, &["readonly"], 2, 2, 1),
     cmd("persist", 2, &["write", "fast"], 1, 1, 1),
     cmd("pexpire", -3, &["write", "fast"], 1, 1, 1),
     cmd("pexpireat", -3, &["write", "fast"], 1, 1, 1),
@@ -271,6 +272,7 @@ const COMMANDS: &[Command] = &[
         0,
         0,
     ),
+    cmd("time", 1, &["readonly", "fast"], 0, 0, 0),
     cmd("touch", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("type", 2, &["readonly", "fast"], 1, 1, 1),
@@ -591,7 +593,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "spublish" | "ssubscribe"
         | "subscribe" | "sunsubscribe" | "unsubscribe" => "pubsub",
-        "sort" | "sort_ro" => "generic",
+        "object" | "time" | "sort" | "sort_ro" => "generic",
         "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
         | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
         | "pexpiretime" | "pttl" | "randomkey" | "rename" | "renamenx" | "touch" | "ttl"
