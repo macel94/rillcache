@@ -181,6 +181,28 @@ impl Store {
             } else {
                 pattern.eq_ignore_ascii_case(b"slowlog-log-slower-than")
             };
+            let wants_auto_aof_percentage = if wildcard {
+                glob_match(&folded_pattern, b"auto-aof-rewrite-percentage")
+            } else {
+                pattern.eq_ignore_ascii_case(b"auto-aof-rewrite-percentage")
+            };
+            let wants_auto_aof_min_size = if wildcard {
+                glob_match(&folded_pattern, b"auto-aof-rewrite-min-size")
+            } else {
+                pattern.eq_ignore_ascii_case(b"auto-aof-rewrite-min-size")
+            };
+            if wants_auto_aof_percentage {
+                matches.push((
+                    b"auto-aof-rewrite-percentage",
+                    self.auto_aof_rewrite_percentage().to_string(),
+                ));
+            }
+            if wants_auto_aof_min_size {
+                matches.push((
+                    b"auto-aof-rewrite-min-size",
+                    self.auto_aof_rewrite_min_size().to_string(),
+                ));
+            }
             let wants_latency_threshold = if wildcard {
                 glob_match(&folded_pattern, b"latency-monitor-threshold")
             } else {
@@ -269,6 +291,8 @@ impl Store {
         let mut slowlog_threshold = None;
         let mut slowlog_max_len = None;
         let mut latency_threshold = None;
+        let mut auto_aof_percentage = None;
+        let mut auto_aof_min_size = None;
         for pair in args[2..].as_chunks::<2>().0 {
             if pair[0].eq_ignore_ascii_case(b"notify-keyspace-events") {
                 let Some(parsed) = super::NotifyFlags::parse(pair[1]) else {
@@ -316,6 +340,24 @@ impl Store {
                     return;
                 };
                 slowlog_max_len = Some(value);
+            } else if pair[0].eq_ignore_ascii_case(b"auto-aof-rewrite-percentage") {
+                let Some(value) = std::str::from_utf8(pair[1])
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                else {
+                    out.extend_from_slice(b"-ERR invalid auto-aof-rewrite-percentage\r\n");
+                    return;
+                };
+                auto_aof_percentage = Some(value);
+            } else if pair[0].eq_ignore_ascii_case(b"auto-aof-rewrite-min-size") {
+                let Some(value) = std::str::from_utf8(pair[1])
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                else {
+                    out.extend_from_slice(b"-ERR invalid auto-aof-rewrite-min-size\r\n");
+                    return;
+                };
+                auto_aof_min_size = Some(value);
             } else if pair[0].eq_ignore_ascii_case(b"requirepass") {
                 if pair[1].len() > 1024 {
                     out.extend_from_slice(b"-ERR requirepass must be at most 1024 bytes\r\n");
@@ -348,6 +390,12 @@ impl Store {
         }
         if let Some(value) = slowlog_max_len {
             self.set_slowlog_max_len(value);
+        }
+        if let Some(value) = auto_aof_percentage {
+            self.set_auto_aof_rewrite_percentage(value);
+        }
+        if let Some(value) = auto_aof_min_size {
+            self.set_auto_aof_rewrite_min_size(value);
         }
         if let Some(value) = latency_threshold {
             self.set_latency_threshold_ms(value);
@@ -466,7 +514,7 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*38\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*42\r\n"));
     }
 
     #[test]
@@ -524,6 +572,46 @@ mod tests {
             run(
                 &store,
                 &[b"CONFIG", b"SET", b"hash-max-listpack-entries", b"-1"]
+            )
+            .starts_with(b"-ERR")
+        );
+    }
+    #[test]
+    fn auto_aof_rewrite_config_roundtrips_and_validates() {
+        let store = Store::new(1024);
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"auto-aof-rewrite-percentage"]),
+            b"*2\r\n$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"CONFIG",
+                    b"SET",
+                    b"auto-aof-rewrite-percentage",
+                    b"0",
+                    b"auto-aof-rewrite-min-size",
+                    b"4096"
+                ]
+            ),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"auto-aof-rewrite-min-size"]),
+            b"*2\r\n$25\r\nauto-aof-rewrite-min-size\r\n$4\r\n4096\r\n"
+        );
+        assert!(
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"auto-aof-rewrite-percentage", b"-1"]
+            )
+            .starts_with(b"-ERR")
+        );
+        assert!(
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"auto-aof-rewrite-min-size", b"x"]
             )
             .starts_with(b"-ERR")
         );
