@@ -139,6 +139,9 @@ const COMMANDS: &[Command] = &[
     cmd("pexpire", -3, &["write", "fast"], 1, 1, 1),
     cmd("pexpireat", -3, &["write", "fast"], 1, 1, 1),
     cmd("pexpiretime", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("pfadd", -2, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("pfcount", -2, &["readonly"], 1, -1, 1),
+    cmd("pfmerge", -2, &["write", "denyoom"], 1, -1, 1),
     cmd("ping", -1, &["fast"], 0, 0, 0),
     cmd("psetex", 4, &["write", "denyoom"], 1, 1, 1),
     cmd(
@@ -381,9 +384,8 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
         b"connection" => group == Some("connection"),
         b"pubsub" => group == Some("pubsub"),
         b"transaction" => group == Some("transaction"),
-        b"keyspace" | b"string" | b"list" | b"set" | b"hash" | b"zset" | b"stream" | b"bitmap" => {
-            group == Some(std::str::from_utf8(category).unwrap_or(""))
-        }
+        b"keyspace" | b"string" | b"list" | b"set" | b"hash" | b"zset" | b"stream" | b"bitmap"
+        | b"hyperloglog" => group == Some(std::str::from_utf8(category).unwrap_or("")),
         _ => false,
     }
 }
@@ -396,6 +398,7 @@ fn command_group(name: &str) -> Option<&'static str> {
             "string"
         }
         "getbit" | "setbit" => "bitmap",
+        "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
         "blpop" | "brpop" | "lindex" | "linsert" | "llen" | "lpop" | "lpush" | "lpushx"
         | "lrange" | "lrem" | "lset" | "ltrim" | "rpop" | "rpush" | "rpushx" => "list",
         "sadd" | "scard" | "sdiff" | "sdiffstore" | "sinter" | "sintercard" | "sinterstore"
@@ -639,6 +642,9 @@ mod tests {
             ("smove", "set"),
             ("zrangebyscore", "zset"),
             ("zpopmin", "zset"),
+            ("pfadd", "hyperloglog"),
+            ("pfcount", "hyperloglog"),
+            ("pfmerge", "hyperloglog"),
         ] {
             assert_eq!(command_group(name), Some(category));
         }

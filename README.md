@@ -71,6 +71,12 @@ See [typed collections](docs/collections.md).
 metadata and administrative connection controls; `INFO clients` reports the
 registry size. See [client sessions](docs/client-sessions.md).
 
+`PFADD`/`PFCOUNT`/`PFMERGE` provide bounded HyperLogLog cardinality estimates
+with exact small-cardinality hashes and a dense 2^14-register sketch after 4,096
+elements. Values remain ordinary string keys for expiry, keyspace and journal
+handling; the private payload is not Redis's HLL encoding. See
+[HyperLogLog limits](docs/hyperloglog.md).
+
 Bounded `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` queue supported data
 commands and execute them under one store-wide gate, with expiry-aware optimistic
 invalidation, RESP2/RESP3 replies and a documented fail-closed version bound. See
