@@ -109,7 +109,7 @@ reason to couple all future commands into a single large story.
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
-| S82 | As an operator, I can opt into bounded per-command calls/time/error statistics without paying disabled-observer timing and metadata costs. | S | R319–R322; opt-in/reset/MULTI/error, lazy SLOWLOG capture and all-mode tests |
+| S-CS | As an operator, I can opt into bounded per-command calls/time/error statistics without paying disabled-observer timing and metadata costs. | S | R-CS1–R-CS4; opt-in/reset/MULTI/error, lazy SLOWLOG capture and all-mode tests |
 
 ## EARS acceptance requirements
 
@@ -1380,9 +1380,9 @@ and the offline upstream harness tests.
   rejection, caller close, all worker modes, journal durability across restart,
   and documentation of the remaining absence of a portable SIGTERM handler.
 
-### Per-command statistics (S82)
+### Per-command statistics (S-CS)
 
-- **R319 (event-driven):** While `commandstats-enabled` is `yes` (default `no`,
+- **R-CS1 (event-driven):** While `commandstats-enabled` is `yes` (default `no`,
   set through `CONFIG SET commandstats-enabled yes|no` and read through `CONFIG
   GET`), `INFO commandstats` or `INFO all` shall return a RESP bulk string with a
   `# Commandstats` section and one
@@ -1395,8 +1395,10 @@ and the offline upstream harness tests.
   Existing counters shall remain readable while disabled; a disabled-to-enabled
   transition shall clear them before recording the enabling command. With all
   observers disabled, ordinary dispatch shall create no instrumentation timer;
-  CONFIG may retain timing because it can enable an observer during dispatch.
-- **R320 (state-driven):** While recording, `calls` shall count client
+  CONFIG outside MULTI and EXEC may retain timing because they can enable
+  commandstats directly or through a queued CONFIG during dispatch. The enabling
+  EXEC shall be counted once, not its individually queued commands.
+- **R-CS2 (state-driven):** While recording, `calls` shall count client
   dispatches (including failed and rejected calls, `INFO` and `CONFIG RESETSTAT`,
   but not direct embedded `Store::execute` or individually queued `MULTI`
   commands), `usec` shall accumulate measured dispatch time, `failed_calls` shall
@@ -1404,10 +1406,10 @@ and the offline upstream harness tests.
   rejected with `NOAUTH`/`NOPERM`. Blocking wait time shall be excluded and
   documented as a deliberate difference from `SLOWLOG`. Subcommands shall share
   their top-level command name.
-- **R321 (event-driven):** When `CONFIG RESETSTAT` succeeds, it shall zero every
+- **R-CS3 (event-driven):** When `CONFIG RESETSTAT` succeeds, it shall zero every
   per-command counter together with the existing process counters without deleting
   data or subscriptions; the reset command itself may be counted afterwards.
-- **R322 (ubiquitous):** Tests shall cover default-disabled behavior, the
+- **R-CS4 (ubiquitous):** Tests shall cover default-disabled behavior, the
   `CONFIG GET/SET commandstats-enabled` contract, calls, aggregate time shape,
   failed-call classification, authentication/ACL rejection classification,
   unknown-command exclusion, `INFO all` inclusion, reset clearing and every worker

@@ -313,15 +313,6 @@ impl Store {
     /// Dispatch without the transaction gate; only `EXEC` may call this while
     /// holding the gate's write side.
     pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        if self.execute_collection_config(arguments, output)
-            || self.execute_admin(arguments, output)
-            || self.execute_scan(arguments, output)
-            || self.execute_discovery(arguments, output)
-            || self.execute_multikey(arguments, output)
-            || self.execute_streams(arguments, output)
-        {
-            return Action::Continue;
-        }
         let Some(command) = arguments.first() else {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
@@ -355,6 +346,14 @@ impl Store {
             } else {
                 arity("echo", output);
             }
+        } else if self.execute_collection_config(arguments, output)
+            || self.execute_admin(arguments, output)
+            || self.execute_scan(arguments, output)
+            || self.execute_discovery(arguments, output)
+            || self.execute_multikey(arguments, output)
+            || self.execute_streams(arguments, output)
+        {
+            return Action::Continue;
         } else if command.eq_ignore_ascii_case(b"QUIT") {
             if arguments.len() == 1 {
                 output.extend_from_slice(b"+OK\r\n");

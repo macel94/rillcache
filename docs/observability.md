@@ -46,7 +46,15 @@ re-enable. Disabled commandstats performs no lookup, counter update or extra
 elapsed-clock read; ordinary commands need no instrumentation timer when all
 observers are disabled. A client-pause query also checks the existing atomic
 zero-deadline sentinel before sampling wall time; nonzero pause states retain
-their existing deadline/mode and concurrency behavior.
+their existing deadline/mode and concurrency behavior. CONFIG outside MULTI and
+EXEC retain timing when needed to observe a commandstats enable during their own
+dispatch, including a queued CONFIG applied by EXEC. That enabling EXEC counts
+once; its individually queued commands do not.
+
+Basic PING/GET/SET/ECHO dispatch precedes unrelated extension probes. The session
+shortcut applies only after authentication/ACL and subscriber checks and outside
+MULTI; RESP2 subscriber PING and RESP3 framing retain their original paths. This
+is targeted dispatch work reduction, not an all-command performance claim.
 
 - `calls` counts dispatches through a client `Session`; direct embedded
   `Store::execute` calls and commands executed inside `MULTI` are not counted
@@ -185,3 +193,6 @@ lazy expiration counting. `tests/commandstats.rs` verifies per-command calls,
 failed/rejected classification, unknown-command exclusion, `INFO all` inclusion
 and `CONFIG RESETSTAT` clearing in every worker mode. Both parse `INFO` as a real
 RESP bulk reply rather than asserting on an implementation string alone.
+`tests/commandstats_exec.rs` covers enabling from a queued CONFIG with every
+observer initially disabled. `tests/core_dispatch.rs` guards authentication,
+ACLs, MULTI queueing, RESP3 binary/null framing and subscriber PING distinctions.
