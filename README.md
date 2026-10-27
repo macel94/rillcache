@@ -58,10 +58,11 @@ strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, protocol `SHUTDOWN`,
 `CONFIG GET`/`RESETSTAT`, `INFO` (including process-local connection/command/
 key/field-expiration/pub-sub statistics and opt-in aggregate per-command
 `commandstats` via `CONFIG SET commandstats-enabled yes`), bounded `SLOWLOG`
-command timing, bounded `LATENCY` event series, and logical `MEMORY USAGE`.
-`CONFIG SET` supports collection thresholds, `requirepass`, `maxmemory-policy`,
-slow-log threshold/length and automatic journal-compaction thresholds;
-script/function execution is not implemented.
+command timing, bounded `LATENCY` event series and logical
+`MEMORY USAGE`/`STATS`/`DOCTOR` payload reporting. `CONFIG SET` supports
+collection thresholds, `requirepass`, `maxmemory`, `maxclients`,
+`maxmemory-policy`, slow-log threshold/length, runtime `appendfsync` and automatic
+journal-compaction thresholds; script/function execution is not implemented.
 Memory usage is an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
 [multi-key string limits](docs/multikey-strings.md). The startup option

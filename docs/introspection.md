@@ -45,10 +45,47 @@ OBJECT HELP
 ACL discovery maps both commands to the generic/read categories; `OBJECT` checks
 the key argument at position 2 for key-pattern rules.
 
+## MEMORY
+
+```text
+MEMORY USAGE key
+MEMORY STATS
+MEMORY DOCTOR
+MEMORY HELP
+```
+
+`MEMORY USAGE key` returns the deterministic logical entry-size estimate used by
+the store: a fixed header, the key length and the payload length. It is not RSS
+or allocator data.
+
+`MEMORY STATS` returns a flat RESP2 map with these measured fields:
+
+- `peak.allocated`: process-lifetime high-water payload bytes, retained across
+  deletes, `FLUSHALL` and `CONFIG RESETSTAT`;
+- `total.allocated` and `dataset.bytes`: current key-plus-value payload bytes;
+- `keys.count`: live keys (logically expired keys are excluded);
+- `dataset.percentage`: current payload as a percentage of the configured
+  payload limit;
+- `rillcache.payload.limit_bytes`: the live `maxmemory` byte budget;
+- `rillcache.payload.scope`: `key_and_value_bytes_not_RSS`.
+
+Byte fields are payload currently held and can still include an expired entry
+awaiting lazy reclamation, so `dataset.bytes` and `keys.count` measure different
+things. There are no allocator active/resident, fragmentation, RSS, Lua or
+replication-buffer fields; they are omitted rather than reported as zero.
+
+`MEMORY DOCTOR` returns a bounded plain-text report derived from the same
+snapshot. It distinguishes an empty payload, high pressure at or above 90% with
+`noeviction`, pressure at or above 75%, and a healthy state, and always states
+that the report is payload accounting rather than RSS or allocator health.
+`MEMORY HELP` lists the supported subcommands.
+
 ## Limits
 
 TIME is a wall-clock observation, not a latency/CPU measurement. OBJECT reports
 Rillcache's own representation names and does not expose allocator, RSS, radix
 tree or shared-reference statistics. LFU frequency, true per-key read-idle time
 and Redis-internal encoding labels remain unsupported and are reported as errors
-or documented differences rather than fabricated values.
+or documented differences rather than fabricated values. MEMORY reports payload
+accounting only; it is not an RSS, allocator-fragmentation, background-eviction or
+production memory-admission claim.

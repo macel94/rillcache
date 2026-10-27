@@ -172,6 +172,14 @@ impl Store {
                     self.eviction_policy().name().to_string(),
                 ));
             }
+            let wants_maxmemory = if wildcard {
+                glob_match(&folded_pattern, b"maxmemory")
+            } else {
+                pattern.eq_ignore_ascii_case(b"maxmemory")
+            };
+            if wants_maxmemory {
+                matches.push((b"maxmemory", self.payload_limit().to_string()));
+            }
             let wants_notify = if wildcard {
                 glob_match(&folded_pattern, b"notify-keyspace-events")
             } else {
@@ -249,6 +257,14 @@ impl Store {
             };
             if wants_appendfsync {
                 matches.push((b"appendfsync", aof.policy.as_str().to_string()));
+            }
+            let wants_maxclients = if wildcard {
+                glob_match(&folded_pattern, b"maxclients")
+            } else {
+                pattern.eq_ignore_ascii_case(b"maxclients")
+            };
+            if wants_maxclients {
+                matches.push((b"maxclients", self.max_clients().to_string()));
             }
             let wants_latency_threshold = if wildcard {
                 glob_match(&folded_pattern, b"latency-monitor-threshold")
@@ -334,6 +350,7 @@ impl Store {
         let mut candidate = *config;
         let mut password: Option<Option<Vec<u8>>> = None;
         let mut policy = None;
+        let mut maxmemory = None;
         let mut notify = None;
         let mut slowlog_threshold = None;
         let mut slowlog_max_len = None;
@@ -342,6 +359,7 @@ impl Store {
         let mut auto_aof_percentage = None;
         let mut auto_aof_min_size = None;
         let mut appendfsync = None;
+        let mut maxclients = None;
         for pair in args[2..].as_chunks::<2>().0 {
             if pair[0].eq_ignore_ascii_case(b"notify-keyspace-events") {
                 let Some(parsed) = super::NotifyFlags::parse(pair[1]) else {
@@ -358,6 +376,19 @@ impl Store {
                     return;
                 };
                 policy = Some(parsed);
+            } else if pair[0].eq_ignore_ascii_case(b"maxmemory") {
+                let Some(value) = std::str::from_utf8(pair[1])
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .and_then(|value| usize::try_from(value).ok())
+                    .filter(|value| *value > 0)
+                else {
+                    out.extend_from_slice(
+                        b"-ERR maxmemory must be a positive payload byte budget\r\n",
+                    );
+                    return;
+                };
+                maxmemory = Some(value);
             } else if pair[0].eq_ignore_ascii_case(b"slowlog-log-slower-than") {
                 let Some(value) = std::str::from_utf8(pair[1])
                     .ok()
@@ -429,6 +460,16 @@ impl Store {
                     return;
                 };
                 appendfsync = Some(parsed);
+            } else if pair[0].eq_ignore_ascii_case(b"maxclients") {
+                let Some(value) = std::str::from_utf8(pair[1])
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+                else {
+                    out.extend_from_slice(b"-ERR invalid maxclients\r\n");
+                    return;
+                };
+                maxclients = Some(value);
             } else if pair[0].eq_ignore_ascii_case(b"appendonly")
                 || pair[0].eq_ignore_ascii_case(b"appendfilename")
             {
@@ -460,6 +501,12 @@ impl Store {
             super::internal_error(out);
             return;
         }
+        if let Some(limit) = maxmemory
+            && !self.set_payload_limit(limit)
+        {
+            super::internal_error(out);
+            return;
+        }
         if let Some(notify) = notify {
             self.set_notify_flags(notify);
         }
@@ -480,6 +527,9 @@ impl Store {
         {
             out.extend_from_slice(b"-ERR appendfsync update failed\r\n");
             return;
+        }
+        if let Some(value) = maxclients {
+            self.set_max_clients(value);
         }
         if let Some(value) = latency_threshold {
             self.set_latency_threshold_ms(value);
@@ -583,6 +633,63 @@ mod tests {
     }
 
     #[test]
+    fn runtime_maxmemory_is_visible_and_evicts_to_the_new_budget() {
+        let store = Store::new(64);
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"maxmemory"]),
+            b"*2\r\n$9\r\nmaxmemory\r\n$2\r\n64\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"maxmemory-policy", b"allkeys-random"]
+            ),
+            b"+OK\r\n"
+        );
+        let mut out = Vec::new();
+        store.execute(&[b"SET", b"k1", b"vvvv"], &mut out);
+        assert_eq!(out, b"+OK\r\n");
+        out.clear();
+        store.execute(&[b"SET", b"k2", b"vvvv"], &mut out);
+        assert_eq!(out, b"+OK\r\n");
+        assert!(store.data.read().unwrap().payload_bytes > 8);
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"SET", b"maxmemory", b"8"]),
+            b"+OK\r\n"
+        );
+        assert!(store.data.read().unwrap().payload_bytes <= 8);
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"maxmemory"]),
+            b"*2\r\n$9\r\nmaxmemory\r\n$1\r\n8\r\n"
+        );
+
+        assert!(run(&store, &[b"CONFIG", b"SET", b"maxmemory", b"0"]).starts_with(b"-ERR"));
+        assert!(run(&store, &[b"CONFIG", b"SET", b"maxmemory", b"nope"]).starts_with(b"-ERR"));
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"CONFIG",
+                    b"SET",
+                    b"maxmemory-policy",
+                    b"volatile-ttl",
+                    b"maxmemory",
+                    b"0"
+                ]
+            ),
+            b"-ERR maxmemory must be a positive payload byte budget\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"maxmemory-policy"]),
+            b"*2\r\n$16\r\nmaxmemory-policy\r\n$14\r\nallkeys-random\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"maxmemory"]),
+            b"*2\r\n$9\r\nmaxmemory\r\n$1\r\n8\r\n"
+        );
+    }
+
+    #[test]
     fn config_get_matches_legacy_aliases_and_deduplicates_patterns() {
         let store = Store::new(100);
         assert_eq!(
@@ -601,7 +708,7 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*50\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*54\r\n"));
     }
 
     #[test]
@@ -757,6 +864,35 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"appendfsync"]),
             b"*2\r\n$11\r\nappendfsync\r\n$6\r\nalways\r\n"
         );
+    }
+
+    #[test]
+    fn runtime_maxclients_roundtrips_and_rejects_invalid_values() {
+        let store = Store::new(1024);
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"maxclients"]),
+            b"*2\r\n$10\r\nmaxclients\r\n$3\r\n128\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"max*"]),
+            b"*6\r\n$10\r\nmaxclients\r\n$3\r\n128\r\n$9\r\nmaxmemory\r\n$4\r\n1024\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"SET", b"maxclients", b"2"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"maxclients"]),
+            b"*2\r\n$10\r\nmaxclients\r\n$1\r\n2\r\n"
+        );
+        for value in [&b"0"[..], b"-1", b"x", b""] {
+            assert!(
+                run(&store, &[b"CONFIG", b"SET", b"maxclients", value])
+                    .starts_with(b"-ERR invalid maxclients"),
+                "{value:?}"
+            );
+            assert_eq!(store.max_clients(), 2);
+        }
     }
 
     #[test]

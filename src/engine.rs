@@ -28,6 +28,7 @@ mod introspection;
 mod journal;
 mod keyspace;
 mod latency;
+mod monitor;
 mod multikey;
 mod notify;
 mod options;
@@ -122,7 +123,7 @@ pub struct Stats {
 
 pub struct Store {
     data: RwLock<Data>,
-    max_payload_bytes: usize,
+    max_payload_bytes: std::sync::atomic::AtomicUsize,
     error_dialect: ErrorDialect,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
@@ -134,6 +135,8 @@ pub struct Store {
     journal_limits: Limits,
     pubsub: RwLock<pubsub::PubSub>,
     clients: RwLock<std::collections::BTreeMap<u64, clients::ClientRecord>>,
+    monitors: RwLock<std::collections::BTreeMap<u64, std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    monitor_count: std::sync::atomic::AtomicUsize,
     notifications: std::sync::atomic::AtomicU32,
     acl_log: RwLock<std::collections::VecDeque<acl_log::AclLogEntry>>,
     connections_received: std::sync::atomic::AtomicU64,
@@ -194,7 +197,7 @@ impl Store {
     ) -> Self {
         Self {
             data: RwLock::new(Data::default()),
-            max_payload_bytes,
+            max_payload_bytes: std::sync::atomic::AtomicUsize::new(max_payload_bytes),
             error_dialect: ErrorDialect::default(),
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
@@ -206,6 +209,8 @@ impl Store {
             journal_limits: Limits::default(),
             pubsub: RwLock::new(pubsub::PubSub::default()),
             clients: RwLock::new(std::collections::BTreeMap::new()),
+            monitors: RwLock::new(std::collections::BTreeMap::new()),
+            monitor_count: std::sync::atomic::AtomicUsize::new(0),
             notifications: std::sync::atomic::AtomicU32::new(0),
             acl_log: RwLock::new(std::collections::VecDeque::new()),
             connections_received: std::sync::atomic::AtomicU64::new(0),
@@ -324,38 +329,68 @@ impl Store {
     /// Dispatch without the transaction gate; only `EXEC` may call this while
     /// holding the gate's write side.
     pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        // Ordinary data commands bypass unrelated specialized module dispatch.
+        if let Some(command) = arguments.first() {
+            if command.eq_ignore_ascii_case(b"PING") {
+                match arguments.len() {
+                    1 => output.extend_from_slice(b"+PONG\r\n"),
+                    2 => encode_bulk(Some(arguments[1]), output),
+                    _ => arity("ping", output),
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"GET") {
+                if arguments.len() != 2 {
+                    arity("get", output);
+                } else {
+                    self.get(arguments[1], output);
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"SET") {
+                if arguments.len() < 3 {
+                    arity("set", output);
+                } else {
+                    match SetOptions::parse(&arguments[3..], false) {
+                        Ok(options) => {
+                            self.set(arguments[1], arguments[2], options, "set", false, output)
+                        }
+                        Err(error) => output.extend_from_slice(error),
+                    }
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"ECHO") {
+                if arguments.len() == 2 {
+                    encode_bulk(Some(arguments[1]), output);
+                } else {
+                    arity("echo", output);
+                }
+                return Action::Continue;
+            }
+        }
         let Some(command) = arguments.first() else {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
-        if command.eq_ignore_ascii_case(b"PING") {
-            match arguments.len() {
-                1 => output.extend_from_slice(b"+PONG\r\n"),
-                2 => encode_bulk(Some(arguments[1]), output),
-                _ => arity("ping", output),
-            }
-        } else if command.eq_ignore_ascii_case(b"GET") {
-            if arguments.len() != 2 {
-                arity("get", output);
+        if command.eq_ignore_ascii_case(b"PUBLISH") {
+            if arguments.len() != 3 {
+                arity("publish", output);
             } else {
-                self.get(arguments[1], output);
+                integer(
+                    i64::try_from(self.publish(arguments[1], arguments[2])).unwrap_or(i64::MAX),
+                    output,
+                );
             }
-        } else if command.eq_ignore_ascii_case(b"SET") {
-            if arguments.len() < 3 {
-                arity("set", output);
+        } else if command.eq_ignore_ascii_case(b"SPUBLISH") {
+            if arguments.len() != 3 {
+                arity("spublish", output);
             } else {
-                match SetOptions::parse(&arguments[3..], false) {
-                    Ok(options) => {
-                        self.set(arguments[1], arguments[2], options, "set", false, output)
-                    }
-                    Err(error) => output.extend_from_slice(error),
-                }
-            }
-        } else if command.eq_ignore_ascii_case(b"ECHO") {
-            if arguments.len() == 2 {
-                encode_bulk(Some(arguments[1]), output);
-            } else {
-                arity("echo", output);
+                integer(
+                    i64::try_from(self.publish_shard(arguments[1], arguments[2]))
+                        .unwrap_or(i64::MAX),
+                    output,
+                );
             }
         } else if self.execute_collection_config(arguments, output)
             || self.execute_admin(arguments, output)
@@ -862,6 +897,22 @@ impl Store {
             .map(|journal| journal.policy())
     }
 
+    /// Current payload-budget limit in key and value bytes.
+    pub(super) fn payload_limit(&self) -> usize {
+        self.max_payload_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Change the payload budget and evict down to it using the active policy.
+    /// A noeviction or volatile policy may leave the store above the new budget;
+    /// subsequent admissions then fail rather than deleting ineligible keys.
+    pub fn set_payload_limit(&self, limit: usize) -> bool {
+        self.max_payload_bytes.store(limit, Ordering::Relaxed);
+        self.data.write().is_ok_and(|mut data| {
+            data.enforce_budget(limit);
+            true
+        })
+    }
+
     pub fn eviction_policy(&self) -> EvictionPolicy {
         self.data
             .read()
@@ -870,8 +921,10 @@ impl Store {
 
     pub fn set_notify_flags(&self, flags: NotifyFlags) {
         // Events queued while a class was disabled are stale for delivery.
+        let collect = self.journal.is_some() || flags.bits() != 0;
         if let Ok(mut data) = self.data.write() {
             data.clear_lifecycle();
+            data.set_collect_events(collect);
         }
         self.notifications.store(flags.bits(), Ordering::Release);
     }
@@ -882,6 +935,45 @@ impl Store {
 
     pub fn notifications_enabled(&self) -> bool {
         self.notifications.load(Ordering::Acquire) != 0
+    }
+
+    /// Register a MONITOR stream. Re-registering the same connection replaces
+    /// its sender; the stream is bounded and uses the pubsub queue capacity.
+    pub fn add_monitor(&self, id: u64, sender: std::sync::mpsc::SyncSender<Vec<u8>>) -> bool {
+        let Ok(mut monitors) = self.monitors.write() else {
+            return false;
+        };
+        monitors.insert(id, sender);
+        self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+        true
+    }
+
+    pub fn remove_monitor(&self, id: u64) {
+        let Ok(mut monitors) = self.monitors.write() else {
+            return;
+        };
+        if monitors.remove(&id).is_some() {
+            self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+        }
+    }
+
+    /// Stream one received command to every monitor except its source. A full
+    /// monitor queue drops this line rather than blocking the command path.
+    pub fn monitor_command(&self, source: u64, arguments: &[&[u8]]) {
+        if self.monitor_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let address = self.client_address(source).unwrap_or_else(|| "?:0".into());
+        let line = monitor::line(&address, arguments);
+        let Ok(monitors) = self.monitors.read() else {
+            return;
+        };
+        for (id, sender) in monitors.iter() {
+            if *id == source {
+                continue;
+            }
+            let _ = sender.try_send(line.clone());
+        }
     }
 
     pub fn pubsub_queue_capacity() -> usize {

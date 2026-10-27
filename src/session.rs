@@ -44,6 +44,7 @@ pub struct Session {
     watched: WatchState,
     authenticated_user: Option<Vec<u8>>,
     pubsub_sender: Option<SyncSender<Vec<u8>>>,
+    monitoring: bool,
     pubsub_channels: BTreeSet<Vec<u8>>,
     pubsub_patterns: BTreeSet<Vec<u8>>,
     pubsub_shard_channels: BTreeSet<Vec<u8>>,
@@ -86,6 +87,9 @@ enum BlockedKind {
     ZSetSingle {
         max: bool,
     },
+    WaitAof {
+        local: u64,
+    },
     XRead {
         starts: Vec<StreamId>,
         count: usize,
@@ -122,6 +126,7 @@ impl Session {
             watched: WatchState::default(),
             authenticated_user: None,
             pubsub_sender: None,
+            monitoring: false,
             pubsub_channels: BTreeSet::new(),
             pubsub_patterns: BTreeSet::new(),
             pubsub_shard_channels: BTreeSet::new(),
@@ -252,6 +257,7 @@ impl Session {
             return Action::Continue;
         };
         store.record_command();
+        store.monitor_command(self.id, arguments);
         if command.eq_ignore_ascii_case(b"RESET") {
             return self.reset(store, arguments, output);
         }
@@ -361,6 +367,14 @@ impl Session {
             self.blocked = None;
         } else if self.multi.is_some() {
             self.queue(arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"MONITOR") {
+            self.monitor(store, arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"WAITAOF") {
+            self.waitaof(store, arguments, output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"SHUTDOWN") {
@@ -899,6 +913,10 @@ impl Session {
 
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    pub fn is_monitoring(&self) -> bool {
+        self.monitoring
     }
 
     pub fn is_subscribed(&self) -> bool {
@@ -1482,6 +1500,14 @@ impl Session {
                     true
                 }
             },
+            BlockedKind::WaitAof { local } => {
+                if expired {
+                    let _ = write!(reply, "*2\r\n:{local}\r\n:0\r\n");
+                    true
+                } else {
+                    false
+                }
+            }
             BlockedKind::XRead { starts, count } => match store.xread_once(&keys, &starts, count) {
                 Some(XReadOutcome::Empty) | None => false,
                 Some(outcome) => {
@@ -1774,6 +1800,7 @@ impl Session {
 
     fn client_list(&self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let mut type_filter = None;
+        let mut absent_type = false;
         let mut ids: Option<Vec<u64>> = None;
         let mut index = 0;
         while index < arguments.len() {
@@ -1786,6 +1813,12 @@ impl Session {
                     type_filter = Some(false);
                 } else if value.eq_ignore_ascii_case(b"pubsub") {
                     type_filter = Some(true);
+                } else if value.eq_ignore_ascii_case(b"master")
+                    || value.eq_ignore_ascii_case(b"replica")
+                    || value.eq_ignore_ascii_case(b"slave")
+                {
+                    // Standalone servers have no master/replica clients.
+                    absent_type = true;
                 } else {
                     output.extend_from_slice(b"-ERR unknown client type\r\n");
                     return;
@@ -1807,7 +1840,11 @@ impl Session {
                 return;
             }
         }
-        let snapshots = store.client_snapshots(type_filter);
+        let snapshots = if absent_type {
+            Vec::new()
+        } else {
+            store.client_snapshots(type_filter)
+        };
         let mut text = String::new();
         for snapshot in snapshots {
             if ids.as_ref().is_some_and(|ids| !ids.contains(&snapshot.id)) {
@@ -1865,6 +1902,8 @@ impl Session {
         let mut laddr_filter: Option<Vec<u8>> = None;
         let mut id_filter = None;
         let mut type_filter = None;
+        let mut absent_type = false;
+        let mut skip_caller = true;
         let mut user_filter: Option<Vec<u8>> = None;
         let mut max_age = None;
         if legacy {
@@ -1891,6 +1930,11 @@ impl Session {
                         type_filter = Some(false);
                     } else if value.eq_ignore_ascii_case(b"pubsub") {
                         type_filter = Some(true);
+                    } else if value.eq_ignore_ascii_case(b"master")
+                        || value.eq_ignore_ascii_case(b"replica")
+                        || value.eq_ignore_ascii_case(b"slave")
+                    {
+                        absent_type = true;
                     } else {
                         output.extend_from_slice(b"-ERR unknown client type\r\n");
                         return;
@@ -1907,9 +1951,12 @@ impl Session {
                     };
                     max_age = Some(age);
                 } else if arguments[index].eq_ignore_ascii_case(b"SKIPME") {
-                    if !value.eq_ignore_ascii_case(b"yes") {
-                        output
-                            .extend_from_slice(b"-ERR CLIENT KILL SKIPME no is not supported\r\n");
+                    if value.eq_ignore_ascii_case(b"yes") {
+                        skip_caller = true;
+                    } else if value.eq_ignore_ascii_case(b"no") {
+                        skip_caller = false;
+                    } else {
+                        output.extend_from_slice(b"-ERR syntax error\r\n");
                         return;
                     }
                 } else {
@@ -1920,7 +1967,12 @@ impl Session {
             }
         }
         let mut ids = Vec::new();
-        for snapshot in store.client_snapshots(type_filter) {
+        let snapshots = if absent_type {
+            Vec::new()
+        } else {
+            store.client_snapshots(type_filter)
+        };
+        for snapshot in snapshots {
             if id_filter.is_some_and(|id| snapshot.id != id) {
                 continue;
             }
@@ -1947,7 +1999,7 @@ impl Session {
             }
             ids.push(snapshot.id);
         }
-        let killed = store.client_kill_ids(&ids, self.id);
+        let killed = store.client_kill_ids(&ids, if skip_caller { self.id } else { 0 });
         if legacy {
             if killed == 0 {
                 output.extend_from_slice(b"-ERR No such client\r\n");
@@ -1960,6 +2012,72 @@ impl Session {
     }
 
     /// Disconnect-equivalent server-side context reset (Redis RESET).
+    fn waitaof(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() != 4 {
+            arity("waitaof", output);
+            return;
+        }
+        let parse = |raw: &[u8]| {
+            std::str::from_utf8(raw)
+                .ok()
+                .and_then(|text| text.parse::<i64>().ok())
+        };
+        let (Some(numlocal), Some(numreplicas), Some(timeout)) = (
+            parse(arguments[1]),
+            parse(arguments[2]),
+            parse(arguments[3]),
+        ) else {
+            output.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+            return;
+        };
+        if timeout < 0 {
+            output.extend_from_slice(b"-ERR timeout can't be negative\r\n");
+            return;
+        }
+        let (local, _) = match store.waitaof_probe(numlocal, numreplicas) {
+            Ok(result) => result,
+            Err(error) => {
+                output.extend_from_slice(error);
+                return;
+            }
+        };
+        if numreplicas == 0 {
+            let _ = write!(output, "*2\r\n:{local}\r\n:0\r\n");
+            return;
+        }
+        let deadline = if timeout == 0 {
+            None
+        } else {
+            let millis = u64::try_from(timeout).unwrap_or(u64::MAX);
+            Instant::now().checked_add(Duration::from_millis(millis))
+        };
+        self.blocked = Some(Blocked {
+            slowlog: None,
+            keys: Vec::new(),
+            deadline,
+            kind: BlockedKind::WaitAof { local },
+        });
+    }
+
+    fn monitor(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() != 1 {
+            arity("monitor", output);
+            return;
+        }
+        if !self.monitoring {
+            let Some(sender) = self.pubsub_sender.clone() else {
+                output.extend_from_slice(b"-ERR MONITOR is unavailable for this connection\r\n");
+                return;
+            };
+            if !store.add_monitor(self.id, sender) {
+                output.extend_from_slice(b"-ERR internal store error\r\n");
+                return;
+            }
+            self.monitoring = true;
+        }
+        output.extend_from_slice(b"+OK\r\n");
+    }
+
     fn reset(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
         if arguments.len() != 1 {
             arity("reset", output);
@@ -1968,6 +2086,8 @@ impl Session {
         self.multi = None;
         self.watched = WatchState::default();
         self.blocked = None;
+        self.monitoring = false;
+        store.remove_monitor(self.id);
         for channel in std::mem::take(&mut self.pubsub_channels) {
             store.pubsub_unsubscribe(false, &channel, self.id);
         }
@@ -2011,7 +2131,6 @@ fn is_session_command(command: &[u8]) -> bool {
         b"CLIENT",
         b"HELLO",
         b"PSUBSCRIBE",
-        b"PUBLISH",
         b"PUBSUB",
         b"PUNSUBSCRIBE",
         b"SELECT",
@@ -2753,7 +2872,7 @@ x\r\n"
                     b"third"
                 ]
             ),
-            b"-ERR CONFIG SET option is unsupported or invalid\r\n"
+            b"-ERR maxmemory must be a positive payload byte budget\r\n"
         );
         assert_eq!(
             call(&mut admin, &store, &[b"AUTH", b"third"]),
@@ -3046,6 +3165,52 @@ x\r\n"
         );
         assert!(!subscriber.is_subscribed());
         store.pubsub_remove_client(subscriber.id());
+    }
+
+    #[test]
+    fn publish_and_spublish_are_queued_and_delivered_at_exec() {
+        let store = Store::new(1024);
+        let mut normal = Session::new();
+        let (normal_sender, normal_receiver) = std::sync::mpsc::sync_channel(8);
+        normal.set_pubsub_sender(normal_sender);
+        assert_eq!(
+            call(&mut normal, &store, &[b"SUBSCRIBE", b"normal"]),
+            b"*3\r\n$9\r\nsubscribe\r\n$6\r\nnormal\r\n:1\r\n"
+        );
+        let mut shard = Session::new();
+        let (shard_sender, shard_receiver) = std::sync::mpsc::sync_channel(8);
+        shard.set_pubsub_sender(shard_sender);
+        assert_eq!(
+            call(&mut shard, &store, &[b"SSUBSCRIBE", b"shard"]),
+            b"*3\r\n$10\r\nssubscribe\r\n$5\r\nshard\r\n:1\r\n"
+        );
+
+        let mut publisher = Session::new();
+        assert_eq!(call(&mut publisher, &store, &[b"MULTI"]), b"+OK\r\n");
+        assert_eq!(
+            call(&mut publisher, &store, &[b"PUBLISH", b"normal", b"hello"]),
+            b"+QUEUED\r\n"
+        );
+        assert_eq!(
+            call(&mut publisher, &store, &[b"SPUBLISH", b"shard", b"hello"]),
+            b"+QUEUED\r\n"
+        );
+        assert!(normal_receiver.try_recv().is_err());
+        assert!(shard_receiver.try_recv().is_err());
+        assert_eq!(
+            call(&mut publisher, &store, &[b"EXEC"]),
+            b"*2\r\n:1\r\n:1\r\n"
+        );
+        assert_eq!(
+            normal_receiver.try_recv().unwrap(),
+            b"*3\r\n$7\r\nmessage\r\n$6\r\nnormal\r\n$5\r\nhello\r\n"
+        );
+        assert_eq!(
+            shard_receiver.try_recv().unwrap(),
+            b"*3\r\n$8\r\nsmessage\r\n$5\r\nshard\r\n$5\r\nhello\r\n"
+        );
+        store.pubsub_remove_client(normal.id());
+        store.pubsub_remove_client(shard.id());
     }
 
     #[test]

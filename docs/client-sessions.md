@@ -26,20 +26,32 @@ credentials are configured. `ACL WHOAMI`, `ACL GETUSER` and the other supported
 ACL subcommands expose and enforce the current policy. See
 [security](security.md) for the actual boundary and remaining gaps.
 
-`CLIENT LIST [TYPE normal|pubsub] [ID id ...]` returns one newline-delimited
+`CLIENT LIST [TYPE normal|pubsub|master|replica|slave] [ID id ...]` returns one newline-delimited
 key=value record per registered connection with `id`, peer `addr`, local
 `laddr`, `name`, `age`, `flags` (N/P), `db=0`, live `sub`/`psub` counts,
 negotiated `resp`, `user`, `lib-name` and `lib-ver`. It intentionally omits fields this server does not
 measure (fd, idle, command, buffers, memory, redirection, network totals) rather
 than inventing values. `CLIENT KILL` uses filters intersecting with each other:
-`ID <id>`, `ADDR <ip:port>`, `LADDR <ip:port>`, `TYPE normal|pubsub`,
-`USER <name>` and `MAXAGE <milliseconds>` (matching connections at least that
-old), with
-`SKIPME yes` only (default); `SKIPME no` returns an explicit unsupported error.
-The legacy single-address form returns `+OK`/`No such client`, while filtered
-forms return the killed count. The calling connection is always skipped, and a
-killed socket is shut down immediately. `INFO clients` reports
+`ID <id>`, `ADDR <ip:port>`, `LADDR <ip:port>`,
+`TYPE normal|pubsub|master|replica|slave`, `USER <name>` and `MAXAGE
+<milliseconds>` (matching connections at least that old), with `SKIPME yes`
+(default) or `SKIPME no`. Standalone servers have no master/replica clients, so
+those types match nothing. `SKIPME yes` always skips the caller; `SKIPME no` may
+kill the caller, in which case its socket closes and the reply can race with the
+close. The legacy single-address form returns `+OK`/`No such client`, while
+filtered forms return the killed count. A killed socket is shut down
+immediately. `INFO clients` reports
 `connected_clients`, `cluster_connections:0` and the configured `maxclients`.
+
+`CONFIG GET maxclients` reports the live connection limit and `CONFIG SET
+maxclients <positive-integer>` changes it at runtime in both thread-per-client
+and fixed-worker modes. Lowering the limit below the current admitted count does
+not close existing clients; new sockets receive `ERR max number of clients
+reached` and increment `rejected_connections` until capacity is available.
+Raising the limit admits new connections without a restart. Zero, negative,
+empty and non-integer values are rejected without changing the limit. The value
+is a connection count, not a file-descriptor, memory or cross-process capacity
+guarantee.
 
 `CLIENT PAUSE timeout [WRITE|ALL]` temporarily defers new client commands for
 `timeout` milliseconds; the default mode is `ALL`. Under `WRITE`, read-only

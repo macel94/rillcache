@@ -125,6 +125,7 @@ impl Store {
     }
 
     pub fn unregister_client(&self, id: u64) {
+        self.remove_monitor(id);
         if let Ok(mut clients) = self.clients.write() {
             clients.remove(&id);
         }

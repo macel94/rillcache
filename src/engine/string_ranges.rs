@@ -78,7 +78,7 @@ impl Store {
             output.extend_from_slice(RANGE_LIMIT);
             return;
         };
-        let Some(payload) = data.reserve(key, length, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, length, previous, self.payload_limit(), now) else {
             output.extend_from_slice(OOM);
             return;
         };
@@ -198,7 +198,7 @@ impl Store {
             return;
         };
         let length = old_len.max(end);
-        let Some(payload) = data.reserve(key, length, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, length, previous, self.payload_limit(), now) else {
             output.extend_from_slice(OOM);
             return;
         };

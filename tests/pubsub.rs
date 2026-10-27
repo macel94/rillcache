@@ -58,12 +58,59 @@ fn message(channel: &[u8], payload: &[u8]) -> Vec<u8> {
     output
 }
 
+fn smessage(channel: &[u8], payload: &[u8]) -> Vec<u8> {
+    let mut output = b"*3\r\n$8\r\nsmessage\r\n".to_vec();
+    bulk(channel, &mut output);
+    bulk(payload, &mut output);
+    output
+}
+
 fn pmessage(pattern: &[u8], channel: &[u8], payload: &[u8]) -> Vec<u8> {
     let mut output = b"*4\r\n$8\r\npmessage\r\n".to_vec();
     bulk(pattern, &mut output);
     bulk(channel, &mut output);
     bulk(payload, &mut output);
     output
+}
+
+#[test]
+fn publish_and_spublish_execute_from_multi_and_deliver_at_exec() {
+    let server = start();
+    let mut normal = connect(&server);
+    let mut shard = connect(&server);
+    let mut publisher = connect(&server);
+    send(
+        &mut normal,
+        &[b"SUBSCRIBE", b"normal"],
+        b"*3\r\n$9\r\nsubscribe\r\n$6\r\nnormal\r\n:1\r\n",
+    );
+    send(
+        &mut shard,
+        &[b"SSUBSCRIBE", b"shard"],
+        b"*3\r\n$10\r\nssubscribe\r\n$5\r\nshard\r\n:1\r\n",
+    );
+    send(&mut publisher, &[b"MULTI"], b"+OK\r\n");
+    send(
+        &mut publisher,
+        &[b"PUBLISH", b"normal", b"hello"],
+        b"+QUEUED\r\n",
+    );
+    send(
+        &mut publisher,
+        &[b"SPUBLISH", b"shard", b"hello"],
+        b"+QUEUED\r\n",
+    );
+    send(&mut publisher, &[b"EXEC"], b"*2\r\n:1\r\n:1\r\n");
+
+    let expected = message(b"normal", b"hello");
+    let mut actual = vec![0; expected.len()];
+    normal.read_exact(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    let expected = smessage(b"shard", b"hello");
+    let mut actual = vec![0; expected.len()];
+    shard.read_exact(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    server.shutdown().unwrap();
 }
 
 #[test]
