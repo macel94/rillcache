@@ -30,7 +30,9 @@ impl Store {
         if (command
             .first()
             .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'z'))
-            || command.eq_ignore_ascii_case(b"BZMPOP"))
+            || command.eq_ignore_ascii_case(b"BZMPOP")
+            || command.eq_ignore_ascii_case(b"BZPOPMAX")
+            || command.eq_ignore_ascii_case(b"BZPOPMIN"))
             && self.execute_zset_extended(args, out)
         {
             return true;
@@ -275,6 +277,32 @@ impl Store {
             || command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE")
         {
             self.zset_range_by_score(args, command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE"), out);
+        } else if command.eq_ignore_ascii_case(b"ZRANGEBYLEX")
+            || command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX")
+        {
+            if args.len() < 4 {
+                arity(
+                    if command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX") {
+                        "zrevrangebylex"
+                    } else {
+                        "zrangebylex"
+                    },
+                    out,
+                );
+            } else {
+                let reverse = command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX");
+                let mut rebuilt = Vec::with_capacity(args.len() + 2);
+                rebuilt.push(b"ZRANGE".as_slice());
+                rebuilt.push(args[1]);
+                rebuilt.push(args[2]);
+                rebuilt.push(args[3]);
+                rebuilt.push(b"BYLEX");
+                if reverse {
+                    rebuilt.push(b"REV");
+                }
+                rebuilt.extend_from_slice(&args[4..]);
+                self.zset_range(&rebuilt, false, out);
+            }
         } else if command.eq_ignore_ascii_case(b"ZREMRANGEBYRANK")
             || command.eq_ignore_ascii_case(b"ZREMRANGEBYSCORE")
         {
@@ -1173,6 +1201,22 @@ pub(crate) fn zset_pop_reply(outcome: ZSetPopOutcome, out: &mut Vec<u8>) {
                 encode_bulk(Some(member), out);
                 encode_bulk(Some(&score_bytes(*score)), out);
             }
+        }
+        ZSetPopOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
+        ZSetPopOutcome::WrongType => wrong_type(out),
+        ZSetPopOutcome::Oom => out.extend_from_slice(OOM),
+        ZSetPopOutcome::JournalError => out.extend_from_slice(b"-ERR append-only write failed\r\n"),
+    }
+}
+
+pub(crate) fn zset_pop_single_reply(outcome: ZSetPopOutcome, out: &mut Vec<u8>) {
+    match outcome {
+        ZSetPopOutcome::Popped { key, items } => {
+            let (member, score) = items.first().expect("single pop returns one item");
+            out.extend_from_slice(b"*3\r\n");
+            encode_bulk(Some(&key), out);
+            encode_bulk(Some(member), out);
+            encode_bulk(Some(&score_bytes(*score)), out);
         }
         ZSetPopOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
         ZSetPopOutcome::WrongType => wrong_type(out),
@@ -4027,10 +4071,34 @@ impl Store {
                     Err(error) => out.extend_from_slice(error),
                 }
             }
+        } else if command.eq_ignore_ascii_case(b"BZPOPMIN")
+            || command.eq_ignore_ascii_case(b"BZPOPMAX")
+        {
+            let max = command.eq_ignore_ascii_case(b"BZPOPMAX");
+            let name = if max { "bzpopmax" } else { "bzpopmin" };
+            if args.len() < 3 {
+                arity(name, out);
+            } else {
+                match parse_bzmpop_timeout(args[args.len() - 1]) {
+                    Ok(_) => self.zset_pop_single(args, max, out),
+                    Err(error) => out.extend_from_slice(error),
+                }
+            }
         } else {
             return false;
         }
         true
+    }
+
+    fn zset_pop_single(&self, args: &[&[u8]], max: bool, out: &mut Vec<u8>) {
+        let keys = &args[1..args.len() - 1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let outcome = self.zset_pop_in_data(&mut data, keys, max, 1, now);
+        zset_pop_single_reply(outcome, out);
     }
 
     fn zset_mpop(&self, args: &[&[u8]], numkeys_index: usize, out: &mut Vec<u8>) {
