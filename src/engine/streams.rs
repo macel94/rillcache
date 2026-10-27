@@ -1454,6 +1454,14 @@ impl Store {
             out.extend_from_slice(b"-ERR unsupported XGROUP subcommand\r\n")
         }
     }
+    fn no_group(out: &mut Vec<u8>, key: &[u8], group: &[u8]) {
+        out.extend_from_slice(b"-NOGROUP No such key '");
+        out.extend_from_slice(key);
+        out.extend_from_slice(b"' or consumer group '");
+        out.extend_from_slice(group);
+        out.extend_from_slice(b"' in XREADGROUP with GROUP option\r\n");
+    }
+
     fn xreadgroup(&self, a: &[&[u8]], out: &mut Vec<u8>) {
         if a.len() < 7 || !a[1].eq_ignore_ascii_case(b"GROUP") {
             out.extend_from_slice(b"-ERR syntax error\r\n");
@@ -1482,12 +1490,22 @@ impl Store {
             return;
         }
         let key = a[i + 1];
-        if a[i + 2] != b">" {
+        let history = if a[i + 2] == b">" {
+            None
+        } else if a[i + 2] == b"$" {
             out.extend_from_slice(
-                b"-ERR history reads are not supported by this bounded subset\r\n",
+                b"-ERR The $ ID is meaningless in the context of XREADGROUP: you want to read the history of this consumer by specifying a proper ID, or use the > ID to get new messages. The $ ID would just return an empty result set.\r\n",
             );
             return;
-        }
+        } else {
+            match id(a[i + 2]) {
+                Some(value) => Some(value),
+                None => {
+                    id_error(out);
+                    return;
+                }
+            }
+        };
         let Ok(mut data) = self.data.write() else {
             internal_error(out);
             return;
@@ -1495,7 +1513,7 @@ impl Store {
         let now = self.clock.now_ms().max(0);
         data.expire_key(key, now);
         let Some(e) = data.entries.get_mut(key) else {
-            out.extend_from_slice(b"-NOGROUP No such key or consumer group\r\n");
+            Self::no_group(out, key, group);
             return;
         };
         let Some(s) = e.stream.as_mut() else {
@@ -1505,9 +1523,59 @@ impl Store {
             return;
         };
         let Some(g) = s.groups.get_mut(group) else {
-            out.extend_from_slice(b"-NOGROUP No such consumer group\r\n");
+            Self::no_group(out, key, group);
             return;
         };
+        if let Some(start) = history {
+            let con = g
+                .consumers
+                .entry(consumer.to_vec())
+                .or_insert_with(|| Consumer {
+                    seen_at: now,
+                    pending: Default::default(),
+                });
+            con.seen_at = now;
+            let ids: Vec<StreamId> = con
+                .pending
+                .range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
+                .map(|(id, _)| *id)
+                .take(count)
+                .collect();
+            for id in &ids {
+                if let Some(pending) = con.pending.get_mut(id) {
+                    pending.deliveries = pending.deliveries.saturating_add(1);
+                    pending.delivered_at = now;
+                }
+                if let Some(pending) = g.pending.get_mut(id) {
+                    pending.deliveries = pending.deliveries.saturating_add(1);
+                    pending.delivered_at = now;
+                }
+            }
+            let replies: Vec<(StreamId, Option<StreamEntry>)> = ids
+                .into_iter()
+                .map(|id| (id, s.entries.get(&id).cloned()))
+                .collect();
+            data.touch(key);
+            array(1, out);
+            array(2, out);
+            encode_bulk(Some(key), out);
+            array(replies.len(), out);
+            for (id, entry) in replies {
+                array(2, out);
+                encode_bulk(Some(&id_text(id)), out);
+                match entry {
+                    Some(entry) => {
+                        array(entry.fields.len() * 2, out);
+                        for (field, value) in entry.fields {
+                            encode_bulk(Some(&field), out);
+                            encode_bulk(Some(&value), out);
+                        }
+                    }
+                    None => out.extend_from_slice(b"*-1\r\n"),
+                }
+            }
+            return;
+        }
         let entries = s
             .entries
             .range((
