@@ -307,6 +307,64 @@ fn concurrent_hash_fnx_writers_have_exactly_one_winner() {
 }
 
 #[test]
+fn combined_hash_commands_preserve_subkey_expiry_observability() {
+    let clock = Arc::new(TestClock(AtomicI64::new(100)));
+    let store = Store::with_clock(64, clock.clone());
+    assert_eq!(
+        call(
+            &store,
+            &[
+                b"HSETEX", b"h", b"PX", b"10", b"FIELDS", b"2", b"a", b"1", b"b", b"2"
+            ]
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        call(
+            &store,
+            &[b"HSETEX", b"h", b"KEEPTTL", b"FIELDS", b"1", b"a", b"3"]
+        ),
+        b":1\r\n"
+    );
+    clock.0.store(110, Ordering::Relaxed);
+    assert_eq!(
+        call(&store, &[b"HGETEX", b"h", b"FIELDS", b"1", b"a"]),
+        b"*1\r\n$-1\r\n"
+    );
+    assert_eq!(store.stats().expired_subkeys, 2);
+    payload_is(&store, 0);
+    assert_eq!(
+        call(
+            &store,
+            &[b"HSETEX", b"h", b"PX", b"100", b"FIELDS", b"1", b"a", b"4"]
+        ),
+        b":1\r\n"
+    );
+    let before = call(&store, &[b"INFO", b"keyspace"]);
+    assert!(
+        before
+            .windows(b"subexpiry=1".len())
+            .any(|window| window == b"subexpiry=1")
+    );
+    assert_eq!(
+        call(
+            &store,
+            &[b"HGETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a"]
+        ),
+        b"*1\r\n$1\r\n4\r\n"
+    );
+    let after = call(&store, &[b"INFO", b"keyspace"]);
+    assert!(
+        after
+            .windows(b"subexpiry=0".len())
+            .any(|window| window == b"subexpiry=0")
+    );
+    assert_eq!(store.stats().expired_subkeys, 2);
+    assert_eq!(call(&store, &[b"CONFIG", b"RESETSTAT"]), b"+OK\r\n");
+    assert_eq!(store.stats().expired_subkeys, 0);
+}
+
+#[test]
 fn combined_hash_deadlines_enforce_the_verified_redis_ceiling() {
     let store = fixed_store(64);
     let maximum = ((1i64 << 48) - 1) >> 2;

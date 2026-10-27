@@ -55,7 +55,7 @@ Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
 strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, protocol `SHUTDOWN`, `CONFIG GET`/`RESETSTAT`,
-`INFO` (including process-local connection/command/expiration/pub-sub statistics),
+`INFO` (including process-local connection/command/key/field-expiration/pub-sub statistics),
 bounded `SLOWLOG` command timing, bounded `LATENCY` event series, and logical `MEMORY USAGE`. `CONFIG SET`
 supports collection thresholds, `requirepass`, `maxmemory-policy` and slow-log
 threshold/length; script/function execution is not implemented.
@@ -95,6 +95,10 @@ require all-key ACL access. See [SORT limits](docs/sort.md).
 Collection writes preserve expiry metadata where Redis does, delete empty keys,
 and stage the complete value before payload admission. See
 [typed collections](docs/collections.md).
+
+`ROLE` and `INFO replication` report the truthful standalone master state with
+zero replicas and no fabricated replid or replica rows; replication itself is
+not implemented. See [replication status](docs/replication.md).
 
 `CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL/PAUSE/UNPAUSE` expose bounded per-connection
 metadata and administrative connection controls; `INFO clients` reports the

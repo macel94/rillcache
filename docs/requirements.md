@@ -106,6 +106,10 @@ reason to couple all future commands into a single large story.
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
 | S83 | As a hash user, I can atomically read or set counted fields together with their expiry so that conditional writes and TTL updates do not race separate commands. | S | R324–R327; duplicate/binary/due-deadline/OOM/bounds/concurrency, journal, transaction and all-mode wire tests |
+| S78 | As an operator, I can configure automatic journal compaction thresholds so that an append-only file does not grow without bound between manual rewrites. | S | R306–R309; config/defaults/growth/baseline/replay and all-mode wire tests |
+| S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
+| S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
+| S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1426,6 +1430,82 @@ and the offline upstream harness tests.
   key/field TTL interactions, discovery/ACL, WATCH/MULTI, persistence and all worker
   modes. No active field-expiry scan, exhaustive vendor event parity, RSS ceiling,
   eviction rollback, replication or full hash-command compatibility is implied.
+
+### Truthful standalone replication status (S79)
+
+- **R310 (event-driven):** When `ROLE` is received, the server shall return the
+  three-element master array `["master", 0, []]` because no replication stream or
+  replicas exist, reject extra arguments with the normal arity error, and expose
+  the documented `@admin`/`@fast`/`@dangerous` ACL categories. It shall not claim
+  PSYNC, replica acknowledgement or failover support.
+- **R311 (event-driven):** When `INFO replication` or `INFO all` is requested,
+  the server shall return a `# Replication` block with `role:master`,
+  `connected_slaves:0`, `master_failover_state:no-failover` and
+  `master_repl_offset:0`. It shall omit `master_replid`, replica rows, link
+  status and backlog fields rather than fabricating them, and `INFO` without
+  arguments shall keep its existing sections.
+- **R312 (ubiquitous):** Tests shall cover the exact `ROLE` shape, arity failure,
+  replication fields, `INFO all` inclusion, ACL category metadata and every
+  worker mode. Documentation shall retain the absence of replication, PSYNC,
+  replica management, Sentinel, cluster routing, failover and mixed-version
+  interoperability.
+
+### Automatic journal compaction (S78)
+
+- **R306 (event-driven):** `CONFIG GET/SET auto-aof-rewrite-percentage` and
+  `auto-aof-rewrite-min-size` shall expose and atomically update the thresholds.
+  Percentage shall default to 100 and disable automatic rewrites at 0; minimum
+  size shall default to 64 MiB. Negative/non-integer values and unsupported
+  options shall fail without changing configuration.
+- **R307 (state-driven):** While a journal is enabled and the percentage is
+  non-zero, the maintenance loop shall compare the open file size with the size
+  recorded at open/last rewrite and trigger compaction once both the minimum size
+  and configured growth percentage are met. Disabled journals or unmet thresholds
+  shall perform no rewrite and add no command-path overhead beyond the periodic
+  maintenance check.
+- **R308 (event-driven):** A triggered rewrite shall use the existing synchronous
+  full-state compaction under the transaction gate, reset the baseline to the new
+  file size, keep the previous journal intact on failure, and preserve replayable
+  data/TTLs across restart. It shall not claim fork-based background or incremental
+  rewrite behavior.
+- **R309 (ubiquitous):** Tests shall cover defaults, `CONFIG GET/SET` round trips
+  and validation, growth/baseline triggering, no-op thresholds/disabled journals,
+  maintenance-triggered compaction, restart replay and all worker modes.
+  Documentation shall retain the absence of background/incremental rewrite,
+  checksums, encryption and crash-consistency guarantees.
+
+### Truthful persistence status (S80)
+
+- **R313 (event-driven):** When `INFO persistence` or `INFO all` is requested, the
+  server shall return a `# Persistence` block with `loading:0` and `aof_enabled`.
+  While the journal is enabled it shall also report `aof_rewrite_in_progress:0`,
+  the last rewrite and write statuses and the current file size; while disabled
+  it shall report only `aof_enabled:0`. It shall omit RDB, backlog, bio and other
+  unmeasured persistence fields rather than fabricating them.
+- **R314 (state-driven):** The reported write status shall reflect the journal's
+  latched failure state, the rewrite status shall reflect the last completed
+  synchronous `BGREWRITEAOF`, and the size shall come from the open journal file.
+  Because rewrites are synchronous, `aof_rewrite_in_progress` shall remain `0`
+  and no asynchronous progress claim shall be made.
+- **R315 (ubiquitous):** Tests shall cover disabled and enabled servers, the
+  measured field set, nonempty size after a write, status after rewrite, `INFO
+  all` inclusion and every worker mode. Documentation shall retain the absence
+  of RDB, asynchronous/background rewrite, checksum, encryption, ENOSPC and
+  crash-recovery guarantees.
+
+### Sub-key expiry observability (S81)
+
+- **R316 (event-driven):** When `INFO keyspace` or `INFO all` is requested, the
+  server shall include `subexpiry` in the `db0` line, counting live hash keys
+  with at least one unexpired field deadline.
+- **R317 (event-driven):** When `INFO stats` or `INFO all` is requested, the
+  server shall include `expired_subkeys`, counting hash fields removed by lazy
+  per-field TTL expiry since startup or the last `CONFIG RESETSTAT`.
+- **R318 (ubiquitous):** Tests shall cover lazy field expiry updating both
+  values, a live field deadline keeping `subexpiry` set, `CONFIG RESETSTAT`
+  clearing `expired_subkeys` without changing live `subexpiry`, and every worker
+  mode. Documentation shall retain that field expiry is lazy, not actively
+  scanned, and that neither value is an RSS or payload-accounting measurement.
 
 ### Development and delivery
 

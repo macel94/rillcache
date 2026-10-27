@@ -107,17 +107,29 @@ than silently converted into success.
 transaction gate while encoding the snapshot, writing a mode-0600 temporary file
 in the journal directory, fsyncing it, atomically renaming it over the journal and
 reopening it. Command service pauses for the duration. There is no fork, copy-on-
-write page sharing, incremental rewrite, automatic size trigger or background
-progress reporting.
+write page sharing, incremental rewrite or background progress reporting.
 
 A successful `+OK` means the old log has been atomically replaced with a complete
 snapshot that includes every mutation committed before the rewrite. A crash during
 the temporary write leaves the previous log intact; a failure returns an error and
 the journal retains its prior contents/position unless the rename already
 completed. Concurrent appends cannot race the replacement because the same gate
-serializes commands. Rewriting a disabled journal returns a visible error. Operators
-must schedule rewrites during acceptable pauses and size the file between runs;
-there is no automatic rewrite policy.
+serializes commands. Rewriting a disabled journal returns a visible error.
+
+Automatic rewrite thresholds are configurable at runtime:
+
+```text
+CONFIG SET auto-aof-rewrite-percentage 100 auto-aof-rewrite-min-size 67108864
+```
+
+`auto-aof-rewrite-percentage` defaults to `100` and `0` disables automatic
+rewrites. `auto-aof-rewrite-min-size` defaults to 64 MiB. The maintenance loop
+checks the open journal about every 100 ms and triggers the same synchronous
+snapshot rewrite once the file is at least the minimum size and has grown by the
+configured percentage over the size recorded at the last rewrite. A successful
+rewrite resets that baseline. These rewrites still pause command service under the
+transaction gate; there is no fork, background progress or incremental rewrite
+claim.
 
 ## Recovery
 
@@ -148,9 +160,8 @@ it as volatile across restart and do not use this subset as a durable work queue
 
 ## Deliberate gaps
 
-- No RDB import/export, background/incremental AOF rewrite, automatic rewrite
-  thresholds, manifest/multi-part AOF, checksums, encryption at rest or replication
-  of the log. `BGREWRITEAOF` is a blocking full-state compaction, not Redis's
+- No RDB import/export, background/incremental AOF rewrite, manifest/multi-part
+  AOF, checksums, encryption at rest or replication of the log. `BGREWRITEAOF` is a blocking full-state compaction, not Redis's
   fork-based background rewrite.
 - No graceful signal-driven drain; see [container delivery](containers.md).
 - No multi-process file locking, shared-filesystem guarantees or crash-consistency
@@ -168,6 +179,9 @@ recovery is implemented and tested.
 Unit tests cover strings, binary data, lists, sets, hashes, sorted sets, streams,
 groups, absolute TTL restoration, rejected non-mutating commands, transactions,
 concurrent writers, flush records, partial-tail truncation, mid-file corruption and
-rewrite compaction. Wire tests restart real servers in all worker modes, verify data
-and TTLs survive, compact a live log with `BGREWRITEAOF`, recover a truncated tail,
-persist `FLUSHALL`, and reject corrupt logs at bind time.
+rewrite compaction. Automatic rewrite tests cross configured growth thresholds,
+verify compaction and that the baseline resets, and replay the compacted file.
+Wire tests restart real servers in all worker modes, verify data and TTLs survive,
+compact a live log with `BGREWRITEAOF`, exercise maintenance-triggered automatic
+rewrite, recover a truncated tail, persist `FLUSHALL`, and reject corrupt logs at
+bind time.

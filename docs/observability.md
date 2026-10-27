@@ -14,9 +14,14 @@ bounded, process-local timing as described below.
 | `total_commands_processed` | Client command dispatches admitted to `Session::execute`; includes session/pub-sub/admin commands and `INFO` itself |
 | `rejected_connections` | Accepted sockets closed with `ERR max number of clients reached` |
 | `expired_keys` | Live keys removed by lazy expiration or the bounded maintenance reaper |
+| `expired_subkeys` | Hash fields removed by lazy per-field TTL expiry (Redis 7.4 `expired_subkeys`) |
 | `evicted_keys` | Keys removed by an enabled payload-budget eviction policy |
 | `pubsub_channels` | Distinct channels with at least one live subscription |
 | `pubsub_patterns` | Total pattern subscriptions (not distinct patterns) |
+
+`INFO keyspace` reports `keys`, `expires` and `subexpiry` (the number of live
+hash keys with at least one field deadline). `expired_subkeys` resets with
+`CONFIG RESETSTAT`; `subexpiry` is live state and is not a counter.
 
 `INFO clients` reports `connected_clients` (the process-local registry size) and
 `cluster_connections:0`. `CLIENT LIST` exposes per-connection address/name/user/
@@ -101,6 +106,27 @@ Counters are relaxed atomics and may be observed slightly asynchronously across
 worker threads; they are diagnostic, not a transaction ledger or billing source.
 Expiration counts are exact for removals observed by this process but never include
 keys that merely crossed their deadline and were not yet reaped/lazily removed.
+
+## INFO persistence
+
+`INFO persistence` (and `INFO all`) reports only measured append-only journal
+state:
+
+```text
+# Persistence
+loading:0
+aof_enabled:1
+aof_rewrite_in_progress:0
+aof_last_bgrewrite_status:ok
+aof_last_write_status:ok
+aof_current_size:1234
+```
+
+With persistence disabled only `loading:0` and `aof_enabled:0` are returned.
+`aof_last_write_status` reflects the journal's latched failure state and
+`aof_last_bgrewrite_status` the last synchronous `BGREWRITEAOF`, so
+`aof_rewrite_in_progress` is always `0`. RDB, background-rewrite progress,
+backlog, bio and fork fields are omitted because they are not measured.
 
 ## Deliberate gaps
 

@@ -109,9 +109,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":223\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":224\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*223\r\n*6\r\n$3\r\nacl\r\n"));
+        assert!(all_info.starts_with(b"*224\r\n*6\r\n$3\r\nacl\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"MSETEX", b"DIGEST", b"DELIFEQ"]),
             b"*3\r\n*6\r\n$6\r\nmsetex\r\n:-4\r\n*2\r\n+write\r\n+denyoom\r\n:2\r\n:-1\r\n:2\r\n*6\r\n$6\r\ndigest\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*6\r\n$7\r\ndelifeq\r\n:3\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:1\r\n:1\r\n"
@@ -252,6 +252,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"rename",
             b"renamenx",
             b"reset",
+            b"role",
             b"rpop",
             b"rpoplpush",
             b"rpush",
@@ -381,7 +382,7 @@ fn info_reports_payload_and_live_keyspace_and_rejects_unknown_sections() {
         assert!(
             std::str::from_utf8(&keyspace)
                 .unwrap()
-                .contains("db0:keys=1,expires=0\r\n")
+                .contains("db0:keys=1,expires=0,subexpiry=0\r\n")
         );
         assert_eq!(
             request(&mut client, &[b"INFO", b"anything\0SECRET"]),

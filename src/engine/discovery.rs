@@ -252,6 +252,14 @@ const COMMANDS: &[Command] = &[
         0,
         0,
     ),
+    cmd(
+        "role",
+        1,
+        &["admin", "noscript", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
     cmd("rpop", -2, &["write", "fast"], 1, 1, 1),
     cmd("rpoplpush", 3, &["write", "denyoom"], 1, 2, 1),
     cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
@@ -616,6 +624,7 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
                 | "function"
                 | "keys"
                 | "latency"
+                | "role"
                 | "script"
                 | "shutdown"
                 | "slowlog"
@@ -726,6 +735,14 @@ impl Store {
         if name.eq_ignore_ascii_case(b"COMMAND") {
             command(arguments, output);
             true
+        } else if name.eq_ignore_ascii_case(b"ROLE") {
+            if arguments.len() != 1 {
+                super::arity("role", output);
+            } else {
+                // Standalone master with no replication stream or replicas.
+                output.extend_from_slice(b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n");
+            }
+            true
         } else if name.eq_ignore_ascii_case(b"INFO") {
             self.info(arguments, output);
             true
@@ -758,12 +775,25 @@ impl Store {
             .values()
             .filter(|entry| entry.alive(now) && entry.expires.is_some())
             .count();
+        let subexpiry_keys = data
+            .entries
+            .values()
+            .filter(|entry| entry.alive(now) && !entry.field_ttl.is_empty())
+            .count();
         let mut text = String::new();
         for (index, section) in sections.iter().enumerate() {
             let section = section.to_ascii_lowercase();
             if !matches!(
                 section.as_slice(),
-                b"server" | b"memory" | b"keyspace" | b"stats" | b"clients" | b"default" | b"all"
+                b"server"
+                    | b"memory"
+                    | b"keyspace"
+                    | b"stats"
+                    | b"clients"
+                    | b"replication"
+                    | b"persistence"
+                    | b"default"
+                    | b"all"
             ) {
                 output.extend_from_slice(b"-ERR unsupported INFO section\r\n");
                 return;
@@ -792,7 +822,7 @@ impl Store {
             if matches!(section.as_slice(), b"keyspace" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys}\r"
+                    "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys},subexpiry={subexpiry_keys}\r",
                 );
             }
             if matches!(section.as_slice(), b"clients" | b"default" | b"all") {
@@ -806,14 +836,48 @@ impl Store {
                 let stats = self.stats();
                 let _ = writeln!(
                     text,
-                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r",
+                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nexpired_subkeys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r",
                     stats.total_connections_received,
                     stats.total_commands_processed,
                     stats.rejected_connections,
                     stats.expired_keys,
+                    stats.expired_subkeys,
                     stats.evicted_keys,
                     stats.pubsub_channels,
                     stats.pubsub_patterns
+                );
+            }
+            if matches!(section.as_slice(), b"persistence" | b"all") {
+                let persistence = self.persistence_status();
+                let _ = write!(
+                    text,
+                    "# Persistence\r\nloading:0\r\naof_enabled:{}",
+                    u8::from(persistence.aof_enabled)
+                );
+                if persistence.aof_enabled {
+                    let _ = write!(
+                        text,
+                        "\r\naof_rewrite_in_progress:0\r\naof_last_bgrewrite_status:{}\r\naof_last_write_status:{}",
+                        if persistence.rewrite_failed {
+                            "err"
+                        } else {
+                            "ok"
+                        },
+                        if persistence.write_failed {
+                            "err"
+                        } else {
+                            "ok"
+                        },
+                    );
+                    if let Some(size) = persistence.current_size {
+                        let _ = write!(text, "\r\naof_current_size:{size}");
+                    }
+                }
+                text.push('\r');
+            }
+            if matches!(section.as_slice(), b"replication" | b"all") {
+                text.push_str(
+                    "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_failover_state:no-failover\r\nmaster_repl_offset:0\r\n",
                 );
             }
         }
@@ -949,6 +1013,14 @@ fn write_array_len(length: usize, output: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_reports_admin_fast_and_dangerous_categories() {
+        for category in [b"admin".as_slice(), b"fast", b"dangerous"] {
+            assert!(category_matches(b"role", &[b"ROLE"], category));
+        }
+        assert!(!category_matches(b"role", &[b"ROLE"], b"write"));
+    }
 
     #[test]
     fn collection_mutation_commands_have_real_acl_categories() {
