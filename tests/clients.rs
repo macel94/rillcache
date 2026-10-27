@@ -215,3 +215,44 @@ fn client_kill_removes_connections_and_protects_the_caller() {
     assert!(clients.contains("connected_clients:1"), "{clients}");
     server.shutdown().unwrap();
 }
+
+#[test]
+fn client_kill_maxage_removes_only_old_connections() {
+    let server = start();
+    let mut admin = connect(&server);
+    let admin_id = client_id(&mut admin);
+    let mut old_one = connect(&server);
+    let old_one_id = client_id(&mut old_one);
+    let mut old_two = connect(&server);
+    let old_two_id = client_id(&mut old_two);
+    // Use the sleep itself as the threshold. The old clients are always at
+    // least that old, while the young client would need to wait two seconds
+    // before the KILL is dispatched to become eligible under load.
+    std::thread::sleep(Duration::from_secs(2));
+    let mut young = connect(&server);
+    let young_id = client_id(&mut young);
+
+    send(
+        &mut admin,
+        &[b"CLIENT", b"KILL", b"MAXAGE", b"2000"],
+        b":2\r\n",
+    );
+    let mut finished = Vec::new();
+    let _ = old_one.read_to_end(&mut finished);
+    let mut finished = Vec::new();
+    let _ = old_two.read_to_end(&mut finished);
+    send(&mut young, &[b"PING"], b"+PONG\r\n");
+
+    let list = client_list(&mut admin, &[]);
+    assert!(list.contains(&format!("id={admin_id} ")), "{list}");
+    assert!(list.contains(&format!("id={young_id} ")), "{list}");
+    assert!(!list.contains(&format!("id={old_one_id} ")), "{list}");
+    assert!(!list.contains(&format!("id={old_two_id} ")), "{list}");
+
+    send(
+        &mut admin,
+        &[b"CLIENT", b"KILL", b"MAXAGE", b"nope"],
+        b"-ERR invalid client MAXAGE\r\n",
+    );
+    server.shutdown().unwrap();
+}

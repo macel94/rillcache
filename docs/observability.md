@@ -1,10 +1,20 @@
 # Statistics and INFO observability
 
 Rillcache exposes a deliberately small set of server counters through
-`INFO stats` (also included by `INFO` and `INFO all`) and a bounded per-command
-table through `INFO commandstats`. Values are process-local and reset on restart.
-There is no Prometheus endpoint, latency histogram or replication statistics.
+`INFO stats` (also included by `INFO` and `INFO all`), a bounded per-command
+table through `INFO commandstats`, and bounded reply-code counts through
+`INFO errorstats`. Values are process-local and reset on restart. There is no
+Prometheus endpoint, latency histogram or replication traffic statistics.
 `SLOWLOG` and `LATENCY` provide bounded, process-local timing as described below.
+
+## Error statistics
+
+`INFO errorstats` (and `INFO all`) returns a `# Errorstats` block with one
+`errorstat_<CODE>:count` line per error code seen at command dispatch, such as
+`ERR`, `WRONGTYPE`, `NOAUTH` or `NOPERM`. Codes are the bounded first token of the
+error reply (at most 32 bytes), the table is capped at 64 distinct codes, and
+`CONFIG RESETSTAT` clears it with the other counters. Protocol-level framing
+errors are not command replies and are not counted.
 
 ## Fields
 
@@ -19,12 +29,13 @@ There is no Prometheus endpoint, latency histogram or replication statistics.
 | `pubsub_channels` | Distinct channels with at least one live subscription |
 | `pubsub_patterns` | Total pattern subscriptions (not distinct patterns) |
 
-`INFO keyspace` reports `keys`, `expires` and `subexpiry` (the number of live
-hash keys with at least one field deadline). `expired_subkeys` resets with
+`INFO keyspace` reports `keys`, `expires`, `avg_ttl` (exact mean remaining
+milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
+(the number of live hash keys with at least one field deadline). `expired_subkeys` resets with
 `CONFIG RESETSTAT`; `subexpiry` is live state and is not a counter.
 
-`INFO clients` reports `connected_clients` (the process-local registry size) and
-`cluster_connections:0`. `CLIENT LIST` exposes per-connection address/name/user/
+`INFO clients` reports `connected_clients` (the process-local registry size),
+`cluster_connections:0` and `maxclients` (the configured connection limit). `CLIENT LIST` exposes per-connection address/name/user/
 RESP/subscription metadata.
 
 `INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`. `evicted_keys` resets with
@@ -181,6 +192,8 @@ backlog, bio and fork fields are omitted because they are not measured.
   no histogram or tail-latency distribution.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.
+- Error statistics are a bounded per-code count, not a full error log or message
+  history.
 - No persistence/ACL/auth telemetry. Journal replay and rewrite durations are not
   reported. A future observability increment must preserve the same no-fabrication
   rule instead of filling Redis-shaped fields with guesses.
@@ -191,8 +204,10 @@ backlog, bio and fork fields are omitted because they are not measured.
 counts across two clients, reset behavior, maximum-client rejection visibility and
 lazy expiration counting. `tests/commandstats.rs` verifies per-command calls,
 failed/rejected classification, unknown-command exclusion, `INFO all` inclusion
-and `CONFIG RESETSTAT` clearing in every worker mode. Both parse `INFO` as a real
-RESP bulk reply rather than asserting on an implementation string alone.
-`tests/commandstats_exec.rs` covers enabling from a queued CONFIG with every
-observer initially disabled. `tests/core_dispatch.rs` guards authentication,
-ACLs, MULTI queueing, RESP3 binary/null framing and subscriber PING distinctions.
+and `CONFIG RESETSTAT` clearing in every worker mode. `tests/errorstats.rs`
+verifies per-code counts, `INFO all` inclusion and reset clearing. These wire
+tests parse INFO replies as real RESP bulk values rather than asserting on
+implementation strings alone. `tests/commandstats_exec.rs` covers enabling from
+a queued CONFIG with every observer initially disabled. `tests/core_dispatch.rs`
+guards authentication, ACLs, MULTI queueing, RESP3 binary/null framing and
+subscriber PING distinctions.

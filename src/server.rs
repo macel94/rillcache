@@ -269,6 +269,12 @@ impl Server {
             Store::with_auth(config.max_data_bytes, auth)
         }
         .with_error_dialect(config.error_dialect);
+        store.set_aof_config(
+            config.appendonly,
+            &config.appendfilename,
+            config.appendfsync,
+        );
+        store.set_max_clients(config.max_clients);
         store.set_eviction_policy(config.maxmemory_policy);
         store.set_notify_flags(config.notify_keyspace_events);
         let listener = TcpListener::bind(config.bind_addr)?;

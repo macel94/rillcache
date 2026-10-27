@@ -84,7 +84,8 @@ than a native neighbour index. See [geospatial limits](docs/geospatial.md).
 Binary-safe lists, sets, hashes and sorted sets support creation, mutation,
 removal, bounded random selection (`SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`),
 HGETDEL atomic field reads/removal, per-field hash TTL controls
-(`HEXPIRE`/`HPEXPIRE`/`*AT`, `HTTL`/`HPTTL`, `*EXPIRETIME`, `HPERSIST`), set
+(`HEXPIRE`/`HPEXPIRE`/`*AT`, `HTTL`/`HPTTL`, `*EXPIRETIME`, `HPERSIST`),
+combined `HSETEX`/`HGETEX` field writes/reads with FNX/FXX and TTL clauses, set
 algebra/store commands, list position and
 multi-key pop (LPOS/LMPOP/BLMPOP), atomic and blocking list moves
 (LMOVE/RPOPLPUSH/BLMOVE/BRPOPLPUSH), score ranges and rank/range inspection. Sorted sets add unified `ZRANGE` score/lex/reverse/limit
@@ -102,7 +103,8 @@ and stage the complete value before payload admission. See
 zero replicas and no fabricated replid or replica rows; replication itself is
 not implemented. See [replication status](docs/replication.md).
 
-`CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL/PAUSE/UNPAUSE` expose bounded per-connection
+`CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL` (with `MAXAGE` age filtering)
+`/PAUSE/UNPAUSE` expose bounded per-connection
 metadata and administrative connection controls; `INFO clients` reports the
 registry size. `TIME` returns wall-clock seconds/microseconds and `OBJECT
 ENCODING`/`REFCOUNT`/`HELP` expose actual storage representations and ownership;
@@ -167,8 +169,9 @@ Access control starts with a single operator password for the `default` user
 multi-user ACL file (`--aclfile`) with hashed passwords, ordered
 command/category rules, declared-key patterns and atomic `ACL SAVE`/`LOAD`.
 `NOAUTH`/`NOPERM` are checked before store access and apply to live connections.
-ACL selectors, persistent/centralized audit, brute-force controls and native TLS
-remain separate security gates; channel patterns are enforced for pub/sub.
+Persistent/centralized audit, brute-force controls and native TLS remain separate
+security gates; ACL selectors group command/key/channel rules and channel patterns
+are enforced for pub/sub.
 `ACL GENPASS`, `ACL DRYRUN` and a bounded process-local `ACL LOG` support
 credential operations and policy debugging. See
 [security](docs/security.md).
@@ -183,7 +186,7 @@ This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata,
 `SELECT 0`, disconnect-equivalent `RESET`, `CLIENT LIST`/`KILL` and honest client
 statistics; single-password and multi-user ACL authentication are implemented.
-ACL selectors/audit controls, native TLS, brute-force protection, RDB/background-AOF
+Audit controls, native TLS, brute-force protection, RDB/background-AOF
 interoperability, backup/restore drills, scripts/functions, sharded pub/sub,
 keyspace notifications, replication, clustering, and real client-library
 interoperability remain production blockers. RESP3 replies are limited to the current command

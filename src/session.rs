@@ -129,6 +129,7 @@ impl Session {
     /// Dispatch connection commands locally and all data commands through the
     /// stable public RESP2 Store API, adapting only this session's reply.
     pub fn execute(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        let start = output.len();
         if self.paused.is_none() && self.command_paused(store, arguments) {
             self.paused = Some(PausedCommand {
                 arguments: arguments.iter().map(|argument| argument.to_vec()).collect(),
@@ -175,6 +176,9 @@ impl Session {
                     self.record_slowlog(store, arguments, started);
                 }
             }
+        }
+        if output.get(start) == Some(&b'-') {
+            store.record_error(&output[start..]);
         }
         action
     }
@@ -738,7 +742,16 @@ impl Session {
                 encode_bulk(Some(b"channels"), output);
                 encode_bulk(Some(details.channels.as_bytes()), output);
                 encode_bulk(Some(b"selectors"), output);
-                output.extend_from_slice(b"*0\r\n");
+                write!(output, "*{}\r\n", details.selectors.len()).expect("Vec write");
+                for (commands, keys, channels) in details.selectors {
+                    output.extend_from_slice(b"*6\r\n");
+                    encode_bulk(Some(b"commands"), output);
+                    encode_bulk(Some(commands.as_bytes()), output);
+                    encode_bulk(Some(b"keys"), output);
+                    encode_bulk(Some(keys.as_bytes()), output);
+                    encode_bulk(Some(b"channels"), output);
+                    encode_bulk(Some(channels.as_bytes()), output);
+                }
             } else {
                 output.extend_from_slice(b"$-1\r\n");
             }
@@ -1787,6 +1800,7 @@ impl Session {
         let mut id_filter = None;
         let mut type_filter = None;
         let mut user_filter: Option<Vec<u8>> = None;
+        let mut max_age = None;
         if legacy {
             addr_filter = Some(arguments[0].to_vec());
         } else {
@@ -1815,6 +1829,15 @@ impl Session {
                     }
                 } else if arguments[index].eq_ignore_ascii_case(b"USER") {
                     user_filter = Some(value.to_vec());
+                } else if arguments[index].eq_ignore_ascii_case(b"MAXAGE") {
+                    let Some(age) = std::str::from_utf8(value)
+                        .ok()
+                        .and_then(|value| value.parse::<u64>().ok())
+                    else {
+                        output.extend_from_slice(b"-ERR invalid client MAXAGE\r\n");
+                        return;
+                    };
+                    max_age = Some(age);
                 } else if arguments[index].eq_ignore_ascii_case(b"SKIPME") {
                     if !value.eq_ignore_ascii_case(b"yes") {
                         output
@@ -1843,6 +1866,9 @@ impl Session {
                 .as_deref()
                 .is_some_and(|user| snapshot.user.as_slice() != user)
             {
+                continue;
+            }
+            if max_age.is_some_and(|age| snapshot.age_ms < age) {
                 continue;
             }
             ids.push(snapshot.id);

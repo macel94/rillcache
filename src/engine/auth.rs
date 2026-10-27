@@ -28,6 +28,14 @@ enum Rule {
     Command(Vec<u8>, Option<Vec<u8>>, bool),
 }
 
+/// One Redis 7 selector: an independent command/key/channel rule set.
+#[derive(Clone, Debug, Default)]
+struct Selector {
+    rules: Vec<Rule>,
+    keys: Vec<Vec<u8>>,
+    channels: Vec<Vec<u8>>,
+}
+
 #[derive(Clone, Debug)]
 struct User {
     enabled: bool,
@@ -36,6 +44,7 @@ struct User {
     rules: Vec<Rule>,
     keys: Vec<Vec<u8>>,
     channels: Vec<Vec<u8>>,
+    selectors: Vec<Selector>,
 }
 
 impl Default for User {
@@ -49,100 +58,128 @@ impl Default for User {
             rules: Vec::new(),
             keys: Vec::new(),
             channels: Vec::new(),
+            selectors: Vec::new(),
         }
     }
 }
 
-impl User {
-    fn allows_command(&self, arguments: &[&[u8]]) -> bool {
-        let Some(command) = arguments.first() else {
-            return false;
-        };
-        let subcommand = arguments.get(1);
-        let mut allowed = false;
-        for rule in &self.rules {
-            let matches = match rule {
-                Rule::All(_) => true,
-                Rule::Category(category, _) => {
-                    discovery::category_matches(command, arguments, category)
-                }
-                Rule::Command(name, sub, _) => {
-                    command.eq_ignore_ascii_case(name)
-                        && sub.as_ref().is_none_or(|expected| {
-                            subcommand.is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
-                        })
-                }
-            };
-            if matches {
-                allowed = match rule {
-                    Rule::All(value) | Rule::Category(_, value) | Rule::Command(_, _, value) => {
-                        *value
-                    }
-                };
+fn rules_allow(rules: &[Rule], arguments: &[&[u8]]) -> bool {
+    let Some(command) = arguments.first() else {
+        return false;
+    };
+    let subcommand = arguments.get(1);
+    let mut allowed = false;
+    for rule in rules {
+        let matches = match rule {
+            Rule::All(_) => true,
+            Rule::Category(category, _) => {
+                discovery::category_matches(command, arguments, category)
             }
+            Rule::Command(name, sub, _) => {
+                command.eq_ignore_ascii_case(name)
+                    && sub.as_ref().is_none_or(|expected| {
+                        subcommand.is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+                    })
+            }
+        };
+        if matches {
+            allowed = match rule {
+                Rule::All(value) | Rule::Category(_, value) | Rule::Command(_, _, value) => *value,
+            };
         }
-        allowed
+    }
+    allowed
+}
+
+fn patterns_allow(patterns: &[Vec<u8>], value: &[u8]) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| super::keyspace::glob_match(pattern, value))
+}
+
+fn key_patterns_string(keys: &[Vec<u8>]) -> String {
+    keys.iter()
+        .map(|pattern| format!("~{}", String::from_utf8_lossy(pattern)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn channel_patterns_string(channels: &[Vec<u8>]) -> String {
+    channels
+        .iter()
+        .map(|pattern| format!("&{}", String::from_utf8_lossy(pattern)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn selector_line(selector: &Selector) -> String {
+    let mut parts = Vec::new();
+    if !selector.rules.is_empty() {
+        parts.push(rules_text(&selector.rules));
+    }
+    if !selector.keys.is_empty() {
+        parts.push(key_patterns_string(&selector.keys));
+    }
+    if !selector.channels.is_empty() {
+        parts.push(channel_patterns_string(&selector.channels));
+    }
+    format!("({})", parts.join(" "))
+}
+
+fn rules_text(rules: &[Rule]) -> String {
+    if rules.is_empty() {
+        return "-@all".into();
+    }
+    rules
+        .iter()
+        .map(|rule| match rule {
+            Rule::All(true) => "+@all".to_string(),
+            Rule::All(false) => "-@all".to_string(),
+            Rule::Category(name, allow) => {
+                format!(
+                    "{}@{}",
+                    if *allow { "+" } else { "-" },
+                    String::from_utf8_lossy(name)
+                )
+            }
+            Rule::Command(name, sub, allow) => {
+                let mut text = format!(
+                    "{}{}",
+                    if *allow { "+" } else { "-" },
+                    String::from_utf8_lossy(name)
+                );
+                if let Some(sub) = sub {
+                    text.push('|');
+                    text.push_str(&String::from_utf8_lossy(sub));
+                }
+                text
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+impl User {
+    #[cfg(test)]
+    fn allows_command(&self, arguments: &[&[u8]]) -> bool {
+        rules_allow(&self.rules, arguments)
     }
 
+    #[cfg(test)]
     fn allows_key(&self, key: &[u8]) -> bool {
-        self.keys
-            .iter()
-            .any(|pattern| super::keyspace::glob_match(pattern, key))
-    }
-
-    fn allows_channel(&self, channel: &[u8]) -> bool {
-        self.channels
-            .iter()
-            .any(|pattern| super::keyspace::glob_match(pattern, channel))
+        patterns_allow(&self.keys, key)
     }
 
     fn rules_string(&self) -> String {
-        if self.rules.is_empty() {
-            return "-@all".into();
-        }
-        self.rules
-            .iter()
-            .map(|rule| match rule {
-                Rule::All(true) => "+@all".to_string(),
-                Rule::All(false) => "-@all".to_string(),
-                Rule::Category(name, allow) => {
-                    format!(
-                        "{}@{}",
-                        if *allow { "+" } else { "-" },
-                        String::from_utf8_lossy(name)
-                    )
-                }
-                Rule::Command(name, sub, allow) => {
-                    let mut text = format!(
-                        "{}{}",
-                        if *allow { "+" } else { "-" },
-                        String::from_utf8_lossy(name)
-                    );
-                    if let Some(sub) = sub {
-                        text.push('|');
-                        text.push_str(&String::from_utf8_lossy(sub));
-                    }
-                    text
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+        rules_text(&self.rules)
     }
 
     fn keys_string(&self) -> String {
-        self.keys
-            .iter()
-            .map(|pattern| format!("~{}", String::from_utf8_lossy(pattern)))
-            .collect::<Vec<_>>()
-            .join(" ")
+        key_patterns_string(&self.keys)
     }
 
     fn channels_string(&self) -> String {
-        self.channels
-            .iter()
-            .map(|pattern| format!("&{}", String::from_utf8_lossy(pattern)))
-            .collect::<Vec<_>>()
-            .join(" ")
+        channel_patterns_string(&self.channels)
     }
 
     fn password_string(&self) -> String {
@@ -166,7 +203,7 @@ impl User {
     }
 
     fn acl_line(&self, name: &str) -> String {
-        format!(
+        let mut line = format!(
             "user {} {} {} {} {} {}",
             name,
             if self.enabled { "on" } else { "off" },
@@ -182,7 +219,12 @@ impl User {
                 self.channels_string()
             },
             self.rules_string()
-        )
+        );
+        for selector in &self.selectors {
+            line.push(' ');
+            line.push_str(&selector_line(selector));
+        }
+        line
     }
 }
 
@@ -199,6 +241,8 @@ pub struct UserDetails {
     pub commands: String,
     pub keys: String,
     pub channels: String,
+    /// `(commands, keys, channels)` text for each selector.
+    pub selectors: Vec<(String, String, String)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,6 +283,52 @@ impl Default for Auth {
     fn default() -> Self {
         Self::from_password(None)
     }
+}
+
+fn ruleset_access(
+    rules: &[Rule],
+    keys: &[Vec<u8>],
+    channels: &[Vec<u8>],
+    arguments: &[&[u8]],
+) -> Access {
+    if !rules_allow(rules, arguments) {
+        return Access::DeniedCommand;
+    }
+    let Some(command) = arguments.first() else {
+        return Access::Allowed;
+    };
+    let all_keys = keys.len() == 1 && keys[0] == b"*";
+    if (command.eq_ignore_ascii_case(b"SORT") || command.eq_ignore_ascii_case(b"SORT_RO"))
+        && sort_uses_dynamic_keys(arguments)
+        && !all_keys
+    {
+        return Access::DeniedKey(b"BY/GET".to_vec());
+    }
+    for key in discovery::key_arguments(command, arguments) {
+        if !patterns_allow(keys, key) {
+            return Access::DeniedKey(key.to_vec());
+        }
+    }
+    let channel_arguments: &[&[u8]] =
+        if command.eq_ignore_ascii_case(b"PUBLISH") || command.eq_ignore_ascii_case(b"SPUBLISH") {
+            &arguments[1..arguments.len().min(2)]
+        } else if command.eq_ignore_ascii_case(b"SUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"UNSUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"PSUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"PUNSUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"SSUBSCRIBE")
+            || command.eq_ignore_ascii_case(b"SUNSUBSCRIBE")
+        {
+            &arguments[1..]
+        } else {
+            &[]
+        };
+    for channel in channel_arguments {
+        if !patterns_allow(channels, channel) {
+            return Access::DeniedChannel(channel.to_vec());
+        }
+    }
+    Access::Allowed
 }
 
 impl Auth {
@@ -420,45 +510,47 @@ impl Auth {
         {
             return Access::Allowed;
         }
-        if !user.allows_command(arguments) {
-            return Access::DeniedCommand;
-        }
-        let Some(command) = arguments.first() else {
+        let root = ruleset_access(&user.rules, &user.keys, &user.channels, arguments);
+        if root == Access::Allowed {
             return Access::Allowed;
-        };
-        let all_keys = user.keys.len() == 1 && user.keys[0] == b"*";
-        if (command.eq_ignore_ascii_case(b"SORT") || command.eq_ignore_ascii_case(b"SORT_RO"))
-            && sort_uses_dynamic_keys(arguments)
-            && !all_keys
-        {
-            return Access::DeniedKey(b"BY/GET".to_vec());
         }
-        for key in discovery::key_arguments(command, arguments) {
-            if !user.allows_key(key) {
-                return Access::DeniedKey(key.to_vec());
+        let mut command_allowed = root != Access::DeniedCommand;
+        let mut key_denial = match &root {
+            Access::DeniedKey(key) => Some(key.clone()),
+            _ => None,
+        };
+        let mut channel_denial = match &root {
+            Access::DeniedChannel(channel) => Some(channel.clone()),
+            _ => None,
+        };
+        for selector in &user.selectors {
+            match ruleset_access(
+                &selector.rules,
+                &selector.keys,
+                &selector.channels,
+                arguments,
+            ) {
+                Access::Allowed => return Access::Allowed,
+                Access::DeniedCommand | Access::NoAuth => {}
+                Access::DeniedKey(key) => {
+                    command_allowed = true;
+                    key_denial.get_or_insert(key);
+                }
+                Access::DeniedChannel(channel) => {
+                    command_allowed = true;
+                    channel_denial.get_or_insert(channel);
+                }
             }
         }
-        let channels: &[&[u8]] = if command.eq_ignore_ascii_case(b"PUBLISH")
-            || command.eq_ignore_ascii_case(b"SPUBLISH")
-        {
-            &arguments[1..arguments.len().min(2)]
-        } else if command.eq_ignore_ascii_case(b"SUBSCRIBE")
-            || command.eq_ignore_ascii_case(b"UNSUBSCRIBE")
-            || command.eq_ignore_ascii_case(b"PSUBSCRIBE")
-            || command.eq_ignore_ascii_case(b"PUNSUBSCRIBE")
-            || command.eq_ignore_ascii_case(b"SSUBSCRIBE")
-            || command.eq_ignore_ascii_case(b"SUNSUBSCRIBE")
-        {
-            &arguments[1..]
+        if !command_allowed {
+            Access::DeniedCommand
+        } else if let Some(key) = key_denial {
+            Access::DeniedKey(key)
+        } else if let Some(channel) = channel_denial {
+            Access::DeniedChannel(channel)
         } else {
-            &[]
-        };
-        for channel in channels {
-            if !user.allows_channel(channel) {
-                return Access::DeniedChannel(channel.to_vec());
-            }
+            Access::DeniedCommand
         }
-        Access::Allowed
     }
 
     pub fn user_names(&self) -> Vec<Vec<u8>> {
@@ -499,6 +591,21 @@ impl Auth {
             commands: user.rules_string(),
             keys: user.keys_string(),
             channels: user.channels_string(),
+            selectors: user
+                .selectors
+                .iter()
+                .map(|selector| {
+                    (
+                        if selector.rules.is_empty() {
+                            String::new()
+                        } else {
+                            rules_text(&selector.rules)
+                        },
+                        key_patterns_string(&selector.keys),
+                        channel_patterns_string(&selector.channels),
+                    )
+                })
+                .collect(),
         })
     }
 
@@ -545,8 +652,9 @@ impl Auth {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let mut tokens = line.split_ascii_whitespace();
-            if tokens.next() != Some("user") {
+            let tokens = acl_tokens(line).ok_or(AclError::Syntax)?;
+            let mut tokens = tokens.iter();
+            if tokens.next().map(String::as_str) != Some("user") {
                 return Err(AclError::Syntax);
             }
             let Some(name) = tokens.next() else {
@@ -564,10 +672,7 @@ impl Auth {
                 if token.len() > MAX_RULE_BYTES || user.rules.len() >= MAX_RULES {
                     return Err(AclError::TooLarge);
                 }
-                apply_rule(user, token.as_bytes()).map_err(|error| match error {
-                    AclError::Syntax => AclError::Syntax,
-                    other => other,
-                })?;
+                apply_rule(user, token.as_bytes())?;
             }
         }
         if !users
@@ -631,6 +736,39 @@ impl Auth {
     pub fn restricted(&self) -> bool {
         !self.open()
     }
+}
+
+/// Split an ACL-file line into tokens, keeping a parenthesized selector
+/// (which may contain spaces) as one token.
+fn acl_tokens(line: &str) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0u32;
+    for ch in line.chars() {
+        match ch {
+            '(' => {
+                depth = depth.checked_add(1)?;
+                current.push(ch);
+            }
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                current.push(ch);
+            }
+            ch if ch.is_ascii_whitespace() && depth == 0 => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            ch => current.push(ch),
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    Some(tokens)
 }
 
 fn valid_name(name: &[u8]) -> bool {
@@ -742,6 +880,90 @@ fn apply_rule(user: &mut User, rule: &[u8]) -> Result<(), AclError> {
         }
         if !user.channels.iter().any(|existing| existing == pattern) {
             user.channels.push(pattern.to_vec());
+        }
+    } else if rule.eq_ignore_ascii_case(b"clearselectors") {
+        user.selectors.clear();
+    } else if rule.first() == Some(&b'(') && rule.last() == Some(&b')') {
+        if user.selectors.len() >= MAX_RULES {
+            return Err(AclError::TooLarge);
+        }
+        let mut selector = Selector::default();
+        for token in rule[1..rule.len() - 1]
+            .split(|byte| byte.is_ascii_whitespace())
+            .filter(|token| !token.is_empty())
+        {
+            if token.len() > MAX_RULE_BYTES {
+                return Err(AclError::TooLarge);
+            }
+            apply_selector_rule(&mut selector, token)?;
+        }
+        user.selectors.push(selector);
+    } else {
+        return Err(AclError::UnknownRule);
+    }
+    Ok(())
+}
+
+fn apply_selector_rule(selector: &mut Selector, rule: &[u8]) -> Result<(), AclError> {
+    if rule.eq_ignore_ascii_case(b"allkeys") {
+        selector.keys = vec![b"*".to_vec()];
+    } else if rule.eq_ignore_ascii_case(b"resetkeys") {
+        selector.keys.clear();
+    } else if rule.eq_ignore_ascii_case(b"allchannels") {
+        selector.channels = vec![b"*".to_vec()];
+    } else if rule.eq_ignore_ascii_case(b"resetchannels") {
+        selector.channels.clear();
+    } else if let Some(category) = rule.strip_prefix(b"+@") {
+        if !discovery::CATEGORIES
+            .iter()
+            .any(|known| category.eq_ignore_ascii_case(known.as_bytes()))
+        {
+            return Err(AclError::UnknownCategory);
+        }
+        if selector.rules.len() >= MAX_RULES {
+            return Err(AclError::TooLarge);
+        }
+        selector
+            .rules
+            .push(Rule::Category(category.to_ascii_lowercase(), true));
+    } else if let Some(category) = rule.strip_prefix(b"-@") {
+        if !discovery::CATEGORIES
+            .iter()
+            .any(|known| category.eq_ignore_ascii_case(known.as_bytes()))
+        {
+            return Err(AclError::UnknownCategory);
+        }
+        if selector.rules.len() >= MAX_RULES {
+            return Err(AclError::TooLarge);
+        }
+        selector
+            .rules
+            .push(Rule::Category(category.to_ascii_lowercase(), false));
+    } else if let Some(command) = rule.strip_prefix(b"+") {
+        if selector.rules.len() >= MAX_RULES {
+            return Err(AclError::TooLarge);
+        }
+        let (name, subcommand) = split_command(command)?;
+        selector.rules.push(Rule::Command(name, subcommand, true));
+    } else if let Some(command) = rule.strip_prefix(b"-") {
+        if selector.rules.len() >= MAX_RULES {
+            return Err(AclError::TooLarge);
+        }
+        let (name, subcommand) = split_command(command)?;
+        selector.rules.push(Rule::Command(name, subcommand, false));
+    } else if let Some(pattern) = rule.strip_prefix(b"~") {
+        if pattern.len() > MAX_PATTERN_BYTES || selector.keys.len() >= MAX_PATTERNS {
+            return Err(AclError::TooLarge);
+        }
+        if !selector.keys.iter().any(|existing| existing == pattern) {
+            selector.keys.push(pattern.to_vec());
+        }
+    } else if let Some(pattern) = rule.strip_prefix(b"&") {
+        if pattern.len() > MAX_PATTERN_BYTES || selector.channels.len() >= MAX_PATTERNS {
+            return Err(AclError::TooLarge);
+        }
+        if !selector.channels.iter().any(|existing| existing == pattern) {
+            selector.channels.push(pattern.to_vec());
         }
     } else {
         return Err(AclError::UnknownRule);
@@ -928,6 +1150,32 @@ mod tests {
         assert_eq!(
             auth.authorize(Some(b"default"), &[b"GET", b"k"]),
             Access::Allowed
+        );
+    }
+
+    #[test]
+    fn selectors_parse_clear_and_remain_atomic() {
+        let mut auth = Auth::from_password(None);
+        auth.setuser(b"s", &[b"on", b"nopass", b"(+get ~a*)", b"(+set ~b*)"])
+            .unwrap();
+        {
+            let user = auth.users.get(b"s".as_slice()).unwrap();
+            assert_eq!(user.selectors.len(), 2);
+            assert_eq!(user.selectors[0].rules.len(), 1);
+            assert_eq!(user.selectors[1].keys, [b"b*".to_vec()]);
+        }
+        assert_eq!(
+            auth.setuser(b"s", &[b"(+get on)"]),
+            Err(AclError::UnknownRule)
+        );
+        assert_eq!(auth.users.get(b"s".as_slice()).unwrap().selectors.len(), 2);
+        auth.setuser(b"s", &[b"clearselectors"]).unwrap();
+        assert!(
+            auth.users
+                .get(b"s".as_slice())
+                .unwrap()
+                .selectors
+                .is_empty()
         );
     }
 

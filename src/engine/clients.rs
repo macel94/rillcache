@@ -28,6 +28,7 @@ pub struct ClientSnapshot {
     pub resp3: bool,
     pub user: Vec<u8>,
     pub age_seconds: u64,
+    pub age_ms: u64,
     pub sub: usize,
     pub psub: usize,
 }
@@ -164,6 +165,7 @@ impl Store {
                 resp3: record.resp3,
                 user: record.user.clone().unwrap_or_else(|| b"default".to_vec()),
                 age_seconds: record.created.elapsed().as_secs(),
+                age_ms: u64::try_from(record.created.elapsed().as_millis()).unwrap_or(u64::MAX),
                 sub,
                 psub,
             });

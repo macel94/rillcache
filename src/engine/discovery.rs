@@ -129,6 +129,7 @@ const COMMANDS: &[Command] = &[
     cmd("hget", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("hgetall", 2, &["readonly"], 1, 1, 1),
     cmd("hgetdel", -5, &["write", "fast"], 1, 1, 1),
+    cmd("hgetex", -5, &["write", "fast"], 1, 1, 1),
     cmd(
         "hello",
         -1,
@@ -150,6 +151,7 @@ const COMMANDS: &[Command] = &[
     cmd("hrandfield", -2, &["readonly"], 1, 1, 1),
     cmd("hscan", -3, &["readonly", "slow"], 1, 1, 1),
     cmd("hset", -4, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("hsetex", -6, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("hsetnx", 4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("hstrlen", 3, &["readonly", "fast"], 1, 1, 1),
     cmd("httl", -5, &["readonly", "fast"], 1, 1, 1),
@@ -707,9 +709,9 @@ fn command_group(name: &str) -> Option<&'static str> {
         "sadd" | "scard" | "sdiff" | "sdiffstore" | "sinter" | "sintercard" | "sinterstore"
         | "sismember" | "smembers" | "smismember" | "smove" | "spop" | "srandmember" | "srem"
         | "sscan" | "sunion" | "sunionstore" => "set",
-        "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hincrby" | "hincrbyfloat"
-        | "hkeys" | "hlen" | "hmget" | "hrandfield" | "hscan" | "hset" | "hsetnx" | "hstrlen"
-        | "hvals" => "hash",
+        "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hgetex" | "hincrby"
+        | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hrandfield" | "hscan" | "hset"
+        | "hsetex" | "hsetnx" | "hstrlen" | "hvals" => "hash",
         "bzmpop" | "zadd" | "zcard" | "zcount" | "zincrby" | "zlexcount" | "zpopmax"
         | "zpopmin" | "zdiff" | "zdiffstore" | "zinter" | "zintercard" | "zinterstore"
         | "zrandmember" | "zrange" | "zrangebyscore" | "zrangestore" | "zrank" | "zrem"
@@ -787,7 +789,14 @@ impl Store {
 
     fn info(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let sections: &[&[u8]] = match arguments {
-            [_] => &[b"server", b"memory", b"keyspace", b"stats", b"clients"],
+            [_] => &[
+                b"server",
+                b"memory",
+                b"keyspace",
+                b"stats",
+                b"clients",
+                b"errorstats",
+            ],
             [_, section] => &[*section],
             _ => {
                 output.extend_from_slice(b"-ERR wrong number of arguments for 'info' command\r\n");
@@ -814,6 +823,20 @@ impl Store {
             .values()
             .filter(|entry| entry.alive(now) && !entry.field_ttl.is_empty())
             .count();
+        let (ttl_sum, ttl_count) = data
+            .entries
+            .values()
+            .filter_map(|entry| {
+                entry
+                    .alive(now)
+                    .then_some(entry.expires)
+                    .flatten()
+                    .map(|deadline| u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0))
+            })
+            .fold((0u64, 0u64), |(sum, count), ttl| {
+                (sum.saturating_add(ttl), count + 1)
+            });
+        let avg_ttl = ttl_sum.checked_div(ttl_count).unwrap_or(0);
         let mut text = String::new();
         for (index, section) in sections.iter().enumerate() {
             let section = section.to_ascii_lowercase();
@@ -827,6 +850,7 @@ impl Store {
                     | b"commandstats"
                     | b"replication"
                     | b"persistence"
+                    | b"errorstats"
                     | b"default"
                     | b"all"
             ) {
@@ -857,14 +881,15 @@ impl Store {
             if matches!(section.as_slice(), b"keyspace" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys},subexpiry={subexpiry_keys}\r",
+                    "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys},avg_ttl={avg_ttl},subexpiry={subexpiry_keys}\r",
                 );
             }
             if matches!(section.as_slice(), b"clients" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Clients\r\nconnected_clients:{}\r\ncluster_connections:0\r",
-                    self.connected_clients()
+                    "# Clients\r\nconnected_clients:{}\r\ncluster_connections:0\r\nmaxclients:{}\r",
+                    self.connected_clients(),
+                    self.max_clients()
                 );
             }
             if matches!(section.as_slice(), b"stats" | b"default" | b"all") {
@@ -924,6 +949,17 @@ impl Store {
                     }
                 }
                 text.push('\r');
+            }
+            if matches!(section.as_slice(), b"errorstats" | b"all") {
+                text.push_str("# Errorstats\r\n");
+                for (code, count) in self.error_stats() {
+                    let _ = write!(
+                        text,
+                        "errorstat_{}:{}\r\n",
+                        String::from_utf8_lossy(&code),
+                        count
+                    );
+                }
             }
             if matches!(section.as_slice(), b"replication" | b"all") {
                 text.push_str(
