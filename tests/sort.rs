@@ -186,15 +186,68 @@ fn sort_and_sort_ro_work_in_all_modes() {
             &[b"SORT", b"bad", b"ALPHA"],
             b"*2\r\n$1\r\n1\r\n$1\r\nx\r\n",
         );
+        command(&mut stream, &[b"RPUSH", b"nums", b"2", b"1"], b":2\r\n");
+        command(&mut stream, &[b"SET", b"w_1", b"10"], b"+OK\r\n");
+        command(&mut stream, &[b"SET", b"w_2", b"5"], b"+OK\r\n");
         command(
             &mut stream,
-            &[b"SORT", b"list", b"BY", b"weight_*"],
-            b"-ERR BY and GET options are not supported by this bounded SORT subset\r\n",
+            &[b"SORT", b"nums", b"BY", b"w_*"],
+            b"*2\r\n$1\r\n2\r\n$1\r\n1\r\n",
         );
         command(
             &mut stream,
-            &[b"SORT", b"list", b"GET", b"#"],
-            b"-ERR BY and GET options are not supported by this bounded SORT subset\r\n",
+            &[
+                b"SORT", b"nums", b"BY", b"w_*", b"GET", b"#", b"GET", b"w_*",
+            ],
+            b"*4\r\n$1\r\n2\r\n$1\r\n5\r\n$1\r\n1\r\n$2\r\n10\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"BY", b"missing_*"],
+            b"*2\r\n$1\r\n1\r\n$1\r\n2\r\n",
+        );
+        command(&mut stream, &[b"HSET", b"h_1", b"w", b"30"], b":1\r\n");
+        command(&mut stream, &[b"HSET", b"h_2", b"w", b"10"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"BY", b"h_*->w"],
+            b"*2\r\n$1\r\n2\r\n$1\r\n1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"BY", b"nosort"],
+            b"*2\r\n$1\r\n2\r\n$1\r\n1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"BY", b"nosort", b"DESC"],
+            b"*2\r\n$1\r\n1\r\n$1\r\n2\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"BY", b"w_*", b"ALPHA"],
+            b"*2\r\n$1\r\n1\r\n$1\r\n2\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SORT_RO", b"nums", b"GET", b"missing_*"],
+            b"*2\r\n$-1\r\n$-1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"GET", b"missing_*", b"STORE", b"getout"],
+            b":2\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"LRANGE", b"getout", b"0", b"-1"],
+            b"*2\r\n$0\r\n\r\n$0\r\n\r\n",
+        );
+        command(&mut stream, &[b"SET", b"bad_w_1", b"notnum"], b"+OK\r\n");
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"BY", b"bad_w_*"],
+            b"-ERR One or more scores can't be converted into double\r\n",
         );
         command(
             &mut stream,

@@ -90,6 +90,7 @@ reason to couple all future commands into a single large story.
 | S60 | As a list user, I can locate repeated elements and pop across several list keys so that queue and feed operations do not require client loops. | S | R237–R240; LPOS rank/count/maxlen, LMPOP order/COUNT, errors and all-mode wire tests |
 | S61 | As an operator or client, I can read the server wall clock and the actual storage encoding of a key without fabricated memory or LFU metrics. | XS | R241–R244; TIME shape, encodings, missing/unsupported cases and all-mode wire tests |
 | S63 | As a list consumer, I can wait for elements across several lists so that queue workers do not poll empty keys. | S | R249–R252; BLMPOP timeout/wakeup/COUNT/MULTI/WATCH and all-mode wire tests |
+| S64 | As a collection user, I can sort by derived weights and project joined string/hash values so that ordered views match existing application keys. | S | R253–R256; BY/GET substitution/weights/ACL/errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1046,6 +1047,30 @@ reason to couple all future commands into a single large story.
   blocking. Tests shall cover immediate/wake/timeout paths, MIN/MAX-equivalent
   LEFT/RIGHT order, COUNT, TTL, delete-on-empty, MULTI/WATCH, notification,
   disconnect behavior and all worker modes.
+
+### SORT dynamic weights and projections (S64)
+
+- **R253 (event-driven):** `SORT`/`SORT_RO` shall accept `BY pattern` and one or
+  more `GET pattern` options before or after other supported options, validate
+  their arguments before key access, and reject STORE on SORT_RO.
+- **R254 (event-driven):** `BY` with `*` shall substitute the first occurrence per
+  source element, support a non-empty `->field` hash dereference, and use the
+  resulting value as numeric or ALPHA weight. Missing/wrong-type weight keys
+  shall contribute zero/empty, while present non-numeric numeric weights shall
+  return the conversion error. A `BY` pattern without `*` shall disable sorting
+  and use deterministic native list/zset order, reversed by DESC.
+- **R255 (event-driven):** `GET` shall substitute each selected element, support
+  `GET #`, and return null for missing/wrong-type references in reply mode or an
+  empty string when storing. Multiple GET patterns shall multiply output length.
+  Because BY/GET patterns derive key names, restricted ACL users without all-key
+  access shall be denied before any derived lookup; constant BY patterns remain
+  allowed with source-key access.
+- **R256 (unwanted behavior):** Invalid/missing pattern arguments, malformed
+  numeric weights, wrong types, missing keys and OOM shall return bounded errors
+  or documented null/empty values without partial destination writes. Tests shall
+  cover string/hash weights, missing and invalid weights, constant BY, ALPHA,
+  multiple GETs, store projections, ACL denial/allkeys, TTL/OOM, MULTI/WATCH and
+  all worker modes. Cluster routing and durable indexes remain unsupported.
 
 ### Development and delivery
 

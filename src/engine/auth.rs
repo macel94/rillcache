@@ -426,6 +426,13 @@ impl Auth {
         let Some(command) = arguments.first() else {
             return Access::Allowed;
         };
+        let all_keys = user.keys.len() == 1 && user.keys[0] == b"*";
+        if (command.eq_ignore_ascii_case(b"SORT") || command.eq_ignore_ascii_case(b"SORT_RO"))
+            && sort_uses_dynamic_keys(arguments)
+            && !all_keys
+        {
+            return Access::DeniedKey(b"BY/GET".to_vec());
+        }
         for key in discovery::key_arguments(command, arguments) {
             if !user.allows_key(key) {
                 return Access::DeniedKey(key.to_vec());
@@ -759,6 +766,22 @@ fn split_command(command: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), AclError>
     Ok((name.as_bytes().to_vec(), subcommand.map(<[u8]>::to_vec)))
 }
 
+fn sort_uses_dynamic_keys(arguments: &[&[u8]]) -> bool {
+    let mut index = 2;
+    while index < arguments.len() {
+        if arguments[index].eq_ignore_ascii_case(b"BY") {
+            return arguments
+                .get(index + 1)
+                .is_some_and(|pattern| pattern.contains(&b'*'));
+        }
+        if arguments[index].eq_ignore_ascii_case(b"GET") {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -828,6 +851,52 @@ mod tests {
         );
         assert_eq!(
             auth.authorize(Some(b"blocked"), &[b"EXISTS", b"k"]),
+            Access::Allowed
+        );
+    }
+
+    #[test]
+    fn sort_dynamic_patterns_require_all_key_access() {
+        let mut auth = Auth::from_password(None);
+        auth.setuser(
+            b"restricted",
+            &[
+                b"on",
+                b"nopass",
+                b"~src",
+                b"resetchannels",
+                b"-@all",
+                b"+sort",
+                b"+sort_ro",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            auth.authorize(Some(b"restricted"), &[b"SORT", b"src", b"BY", b"weight_*"]),
+            Access::DeniedKey(b"BY/GET".to_vec())
+        );
+        assert_eq!(
+            auth.authorize(Some(b"restricted"), &[b"SORT_RO", b"src", b"GET", b"#"]),
+            Access::DeniedKey(b"BY/GET".to_vec())
+        );
+        assert_eq!(
+            auth.authorize(Some(b"restricted"), &[b"SORT", b"src", b"BY", b"nosort"]),
+            Access::Allowed
+        );
+        auth.setuser(
+            b"allkeys",
+            &[
+                b"on",
+                b"nopass",
+                b"allkeys",
+                b"resetchannels",
+                b"-@all",
+                b"+sort",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            auth.authorize(Some(b"allkeys"), &[b"SORT", b"src", b"GET", b"#"]),
             Access::Allowed
         );
     }
