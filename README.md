@@ -79,7 +79,10 @@ removal, bounded random selection, set algebra/store commands, score ranges and
 rank/range inspection. Sorted sets add unified `ZRANGE` score/lex/reverse/limit
 selection, `ZRANGESTORE`, `ZLEXCOUNT`, `ZREMRANGEBYLEX`, `ZRANDMEMBER` and
 weighted union/intersection/difference algebra with store and cardinality
-variants plus multi-key `ZMPOP` (blocking `BZMPOP` remains absent).
+variants plus multi-key `ZMPOP` (blocking `BZMPOP` remains absent). `SORT`/
+`SORT_RO` order lists, sets and sorted sets with `ASC`/`DESC`, `ALPHA`, `LIMIT`
+and atomic `STORE`; dynamic `BY`/`GET` patterns remain unsupported. See
+[SORT limits](docs/sort.md).
 Collection writes preserve expiry metadata where Redis does, delete empty keys,
 and stage the complete value before payload admission. See
 [typed collections](docs/collections.md).

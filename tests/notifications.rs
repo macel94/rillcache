@@ -703,3 +703,47 @@ fn bzmpop_emits_direction_specific_pop_events() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn sort_store_emits_sortstore_and_deletion_events() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(&mut writer, &[b"RPUSH", b"l", b"2", b"1"], b":2\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:rpush",
+            b"l"
+        ])
+    );
+    send(&mut writer, &[b"SORT", b"l", b"STORE", b"out"], b":2\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:sortstore",
+            b"out"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"SORT", b"missing", b"STORE", b"out"],
+        b":0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:del",
+            b"out"
+        ])
+    );
+    server.shutdown().unwrap();
+}

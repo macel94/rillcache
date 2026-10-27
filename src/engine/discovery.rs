@@ -227,6 +227,8 @@ const COMMANDS: &[Command] = &[
     cmd("smembers", 2, &["readonly"], 1, 1, 1),
     cmd("smismember", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("smove", 4, &["write", "fast"], 1, 2, 1),
+    cmd("sort", -2, &["write", "denyoom"], 1, 1, 1),
+    cmd("sort_ro", -2, &["readonly"], 1, 1, 1),
     cmd("spop", -2, &["write", "fast"], 1, 1, 1),
     cmd(
         "spublish",
@@ -405,6 +407,24 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         }
         return keys;
     }
+    // SORT has a fixed source plus a STORE destination that may appear anywhere
+    // among its options. BY/GET dynamic patterns are intentionally unsupported.
+    if name.eq_ignore_ascii_case(b"SORT") || name.eq_ignore_ascii_case(b"SORT_RO") {
+        let mut keys = Vec::new();
+        if let Some(source) = args.get(1) {
+            keys.push(*source);
+        }
+        let mut index = 2;
+        while index < args.len() {
+            if args[index].eq_ignore_ascii_case(b"STORE") && index + 1 < args.len() {
+                keys.push(args[index + 1]);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        }
+        return keys;
+    }
     // Counted-key sorted-set algebra keeps its key list after `numkeys`, with
     // the destination preceding it for the *STORE variants.
     let counted_zset = name.eq_ignore_ascii_case(b"ZUNION")
@@ -464,6 +484,7 @@ pub(super) const CATEGORIES: &[&str] = &[
     "connection",
     "dangerous",
     "fast",
+    "generic",
     "geo",
     "hash",
     "keyspace",
@@ -501,13 +522,27 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
         b"slow" => !has("fast"),
         b"dangerous" => matches!(
             name,
-            "acl" | "config" | "flushall" | "flushdb" | "function" | "keys" | "script"
+            "acl"
+                | "config"
+                | "flushall"
+                | "flushdb"
+                | "function"
+                | "keys"
+                | "script"
+                | "sort"
+                | "sort_ro"
         ),
         b"connection" => group == Some("connection"),
         b"pubsub" => group == Some("pubsub"),
         b"transaction" => group == Some("transaction"),
-        b"keyspace" | b"string" | b"list" | b"set" | b"hash" | b"zset" | b"stream" | b"bitmap"
-        | b"hyperloglog" | b"geo" => group == Some(std::str::from_utf8(category).unwrap_or("")),
+        b"generic" => group == Some("generic"),
+        b"string" | b"hash" | b"stream" | b"bitmap" | b"hyperloglog" | b"geo" => {
+            group == Some(std::str::from_utf8(category).unwrap_or(""))
+        }
+        b"list" | b"set" | b"zset" => {
+            group == Some(std::str::from_utf8(category).unwrap_or(""))
+                || matches!(name, "sort" | "sort_ro")
+        }
         _ => false,
     }
 }
@@ -551,6 +586,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "spublish" | "ssubscribe"
         | "subscribe" | "sunsubscribe" | "unsubscribe" => "pubsub",
+        "sort" | "sort_ro" => "generic",
         "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
         | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
         | "pexpiretime" | "pttl" | "randomkey" | "rename" | "renamenx" | "touch" | "ttl"
@@ -868,6 +904,17 @@ mod tests {
             vec![b"a".as_slice(), b"b".as_slice()]
         );
         assert!(key_arguments(b"BZMPOP", &[b"BZMPOP", b"0", b"0", b"a"]).is_empty());
+        assert_eq!(
+            key_arguments(
+                b"SORT",
+                &[b"SORT", b"src", b"LIMIT", b"0", b"1", b"STORE", b"dest"]
+            ),
+            vec![b"src".as_slice(), b"dest".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"SORT_RO", &[b"SORT_RO", b"src", b"ALPHA"]),
+            vec![b"src".as_slice()]
+        );
         assert_eq!(
             key_arguments(
                 b"GEORADIUS",

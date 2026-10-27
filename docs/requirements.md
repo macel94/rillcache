@@ -83,6 +83,7 @@ reason to couple all future commands into a single large story.
 | S53 | As a sorted-set user, I can wait for members across several sorted sets so that consumers do not have to poll empty priority queues. | S | R209–R212; blocking timeout/wakeup, MIN/MAX/COUNT, TTL/WATCH, ACL and all-mode wire tests |
 | S54 | As a stream producer, I can append with explicit retention and skip creating a missing stream so that hot streams stay bounded without a separate trim call. | S | R213–R216; XADD trim/NOMKSTREAM/errors/TTL/WATCH and all-mode wire tests |
 | S55 | As a legacy geospatial client, I can use the GEORADIUS command family without rewriting clients to GEOSEARCH so existing radius and store workflows keep working. | M | R217–R220; aliases/RO/store/storedist/options, ACL and all-mode wire tests |
+| S56 | As a collection user, I can sort list, set and sorted-set values with limits and optionally store the result so that ordered projections do not require client-side work. | S | R221–R224; numeric/alpha/limit/store/RO/errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -863,6 +864,30 @@ reason to couple all future commands into a single large story.
   before any destination write. Tests shall cover both origins, every option
   combination, RO variants, store/storedist and last-wins behavior, TTL, missing
   keys/members, wrong types, ACL, discovery metadata and all worker modes.
+
+### Bounded collection sorting (S56)
+
+- **R221 (event-driven):** `SORT key [ASC|DESC] [ALPHA] [LIMIT offset count]
+  [STORE destination]` and `SORT_RO ...` shall accept list, set and sorted-set
+  sources, reject other types, parse every option before key access, and return
+  an empty array for a missing source. Numeric mode shall reject non-double/NaN
+  elements with the documented error; `ALPHA` shall compare raw bytes.
+- **R222 (event-driven):** Sorting shall apply ASC/DESC, deterministic
+  member-byte tie-breaking and post-sort LIMIT clamping (negative offset to zero,
+  negative count as unbounded). `SORT_RO` shall reject `STORE`; `BY` and `GET`
+  patterns shall be rejected explicitly rather than ignored.
+- **R223 (event-driven):** `STORE destination` shall write the selected values as
+  a list, replace any destination type, clear its TTL, return the count, delete
+  the destination for an empty result and support source==destination from the
+  pre-command source snapshot. A wrong-type source or payload OOM shall leave the
+  destination unchanged and publish `sortstore`/`del` notifications only on
+  successful mutation.
+- **R224 (ubiquitous):** ACL key extraction shall cover the source and STORE
+  destination, discovery shall expose truthful `SORT`/`SORT_RO` metadata and the
+  documented categories, and tests shall cover numeric/alpha/ASC/DESC/LIMIT,
+  list/set/zset sources, missing/empty/self/overwrite/TTL/OOM/wrong-type cases,
+  SORT_RO, BY/GET rejection, MULTI, WATCH, notifications and all worker modes.
+  Dynamic BY/GET patterns remain documented as unsupported.
 
 ### Development and delivery
 

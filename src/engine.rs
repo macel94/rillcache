@@ -30,6 +30,7 @@ mod options;
 mod pubsub;
 mod scan;
 mod sha256;
+mod sort;
 mod streams;
 mod string_algorithms;
 mod string_ranges;
@@ -409,6 +410,7 @@ impl Store {
             && !self.execute_string_ranges(arguments, output)
             && !self.execute_bitfield(arguments, output)
             && !self.execute_geo(arguments, output)
+            && !self.execute_sort(arguments, output)
             && !self.execute_string_algorithms(arguments, output)
             && !self.execute_hll(arguments, output)
             && !self.execute_collection_commands(arguments, output)
