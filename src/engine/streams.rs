@@ -156,21 +156,32 @@ pub(crate) fn xread_reply(outcome: XReadOutcome, out: &mut Vec<u8>) {
     }
 }
 
+#[derive(Clone)]
+pub(crate) enum XReadGroupStart {
+    New,
+    History(StreamId),
+}
+
 pub(crate) struct XReadGroupOptions<'a> {
     pub count: usize,
     pub block: Option<u64>,
     pub noack: bool,
-    pub key: &'a [u8],
     pub group: &'a [u8],
     pub consumer: &'a [u8],
-    pub history: Option<StreamId>,
+    pub keys: Vec<&'a [u8]>,
+    pub starts: Vec<XReadGroupStart>,
 }
 
+type XReadGroupReplies = Vec<(Vec<u8>, Vec<(StreamId, Option<StreamEntry>)>)>;
+
 pub(crate) enum XReadGroupOutcome {
-    Ready(Vec<u8>),
+    Ready {
+        reply: Vec<u8>,
+        delivered: Vec<Vec<u8>>,
+    },
     Empty,
     WrongType,
-    NoGroup,
+    NoGroup(Vec<u8>),
     JournalError,
 }
 
@@ -213,46 +224,47 @@ pub(crate) fn parse_xreadgroup<'a>(a: &[&'a [u8]]) -> Result<XReadGroupOptions<'
             return Err(b"-ERR syntax error\r\n");
         }
     }
-    if i + 3 != a.len() || !a[i].eq_ignore_ascii_case(b"STREAMS") {
+    if i >= a.len() || !a[i].eq_ignore_ascii_case(b"STREAMS") {
+        return Err(b"-ERR syntax error\r\n");
+    }
+    let remaining = &a[i + 1..];
+    if remaining.is_empty() || !remaining.len().is_multiple_of(2) {
         return Err(b"-ERR Unbalanced 'XREADGROUP' STREAMS list\r\n");
     }
-    let key = a[i + 1];
-    let history = if a[i + 2] == b">" {
-        None
-    } else if a[i + 2] == b"$" {
-        return Err(b"-ERR The $ ID is meaningless in the context of XREADGROUP: you want to read the history of this consumer by specifying a proper ID, or use the > ID to get new messages. The $ ID would just return an empty result set.\r\n");
-    } else {
-        match id(a[i + 2]) {
-            Some(value) => Some(value),
-            None => {
+    let split = remaining.len() / 2;
+    let keys = remaining[..split].to_vec();
+    let mut starts = Vec::with_capacity(split);
+    for raw in &remaining[split..] {
+        if *raw == b">" {
+            starts.push(XReadGroupStart::New);
+        } else if *raw == b"$" {
+            return Err(b"-ERR The $ ID is meaningless in the context of XREADGROUP: you want to read the history of this consumer by specifying a proper ID, or use the > ID to get new messages. The $ ID would just return an empty result set.\r\n");
+        } else {
+            let Some(value) = id(raw) else {
                 return Err(b"-ERR Invalid stream ID specified as stream command argument\r\n");
-            }
+            };
+            starts.push(XReadGroupStart::History(value));
         }
-    };
+    }
     Ok(XReadGroupOptions {
         count,
         block,
         noack,
-        key,
         group,
         consumer,
-        history,
+        keys,
+        starts,
     })
 }
 
-pub(crate) fn xreadgroup_reply(
-    outcome: XReadGroupOutcome,
-    key: &[u8],
-    group: &[u8],
-    out: &mut Vec<u8>,
-) {
+pub(crate) fn xreadgroup_reply(outcome: XReadGroupOutcome, group: &[u8], out: &mut Vec<u8>) {
     match outcome {
-        XReadGroupOutcome::Ready(reply) => out.extend_from_slice(&reply),
+        XReadGroupOutcome::Ready { reply, .. } => out.extend_from_slice(&reply),
         XReadGroupOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
         XReadGroupOutcome::WrongType => out.extend_from_slice(
             b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
         ),
-        XReadGroupOutcome::NoGroup => write_no_group(out, key, group),
+        XReadGroupOutcome::NoGroup(key) => write_no_group(out, &key, group),
         XReadGroupOutcome::JournalError => {
             out.extend_from_slice(b"-ERR append-only write failed\r\n")
         }
@@ -1663,146 +1675,142 @@ impl Store {
                 return;
             }
         };
-        let outcome = if options.history.is_some() {
-            self.xreadgroup_history(&options)
-        } else {
-            self.xreadgroup_new(&options)
-        };
-        xreadgroup_reply(outcome, options.key, options.group, out);
+        let outcome = self.xreadgroup_multi(&options);
+        xreadgroup_reply(outcome, options.group, out);
     }
 
-    pub(crate) fn xreadgroup_new(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
+    pub(crate) fn xreadgroup_multi(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
         let Ok(mut data) = self.data.write() else {
             return XReadGroupOutcome::JournalError;
         };
         let now = self.clock.now_ms().max(0);
-        data.expire_key(options.key, now);
-        let Some(e) = data.entries.get_mut(options.key) else {
-            return XReadGroupOutcome::NoGroup;
-        };
-        let Some(s) = e.stream.as_mut() else {
-            return XReadGroupOutcome::WrongType;
-        };
-        let Some(g) = s.groups.get_mut(options.group) else {
-            return XReadGroupOutcome::NoGroup;
-        };
-        let entries = s
-            .entries
-            .range((
-                std::ops::Bound::Excluded(g.last_delivered),
-                std::ops::Bound::Unbounded,
-            ))
-            .take(options.count)
-            .map(|(id, e)| (*id, e.clone()))
-            .collect::<Vec<_>>();
-        if entries.is_empty() {
-            return XReadGroupOutcome::Empty;
-        }
-        let con = g
-            .consumers
-            .entry(options.consumer.to_vec())
-            .or_insert_with(|| Consumer {
-                seen_at: now,
-                pending: Default::default(),
-            });
-        con.seen_at = now;
-        for (id, _) in &entries {
-            g.last_delivered = *id;
-            if !options.noack {
-                let p = Pending {
-                    consumer: options.consumer.to_vec(),
-                    deliveries: 1,
-                    delivered_at: now,
-                };
-                g.pending.insert(*id, p.clone());
-                con.pending.insert(*id, p);
+        for key in &options.keys {
+            data.expire_key(key, now);
+            let Some(entry) = data.entries.get(*key) else {
+                return XReadGroupOutcome::NoGroup(key.to_vec());
+            };
+            let Some(stream) = entry.stream.as_ref() else {
+                return XReadGroupOutcome::WrongType;
+            };
+            if !stream.groups.contains_key(options.group) {
+                return XReadGroupOutcome::NoGroup(key.to_vec());
             }
         }
-        data.touch(options.key);
-        let mut out = Vec::new();
-        array(1, &mut out);
-        array(2, &mut out);
-        encode_bulk(Some(options.key), &mut out);
-        array(entries.len(), &mut out);
-        for (id, e) in entries {
-            array(2, &mut out);
-            encode_bulk(Some(&id_text(id)), &mut out);
-            array(e.fields.len() * 2, &mut out);
-            for (f, v) in e.fields {
-                encode_bulk(Some(&f), &mut out);
-                encode_bulk(Some(&v), &mut out)
-            }
-        }
-        XReadGroupOutcome::Ready(out)
-    }
-
-    pub(crate) fn xreadgroup_history(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
-        let Some(start) = options.history else {
-            return XReadGroupOutcome::Empty;
-        };
-        let Ok(mut data) = self.data.write() else {
-            return XReadGroupOutcome::JournalError;
-        };
-        let now = self.clock.now_ms().max(0);
-        data.expire_key(options.key, now);
-        let Some(e) = data.entries.get_mut(options.key) else {
-            return XReadGroupOutcome::NoGroup;
-        };
-        let Some(s) = e.stream.as_mut() else {
-            return XReadGroupOutcome::WrongType;
-        };
-        let Some(g) = s.groups.get_mut(options.group) else {
-            return XReadGroupOutcome::NoGroup;
-        };
-        let con = g
-            .consumers
-            .entry(options.consumer.to_vec())
-            .or_insert_with(|| Consumer {
-                seen_at: now,
-                pending: Default::default(),
-            });
-        con.seen_at = now;
-        let ids: Vec<StreamId> = con
-            .pending
-            .range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
-            .map(|(id, _)| *id)
-            .take(options.count)
-            .collect();
-        for id in &ids {
-            if let Some(pending) = con.pending.get_mut(id) {
-                pending.deliveries = pending.deliveries.saturating_add(1);
-                pending.delivered_at = now;
-            }
-            if let Some(pending) = g.pending.get_mut(id) {
-                pending.deliveries = pending.deliveries.saturating_add(1);
-                pending.delivered_at = now;
-            }
-        }
-        let replies: Vec<(StreamId, Option<StreamEntry>)> = ids
-            .into_iter()
-            .map(|id| (id, s.entries.get(&id).cloned()))
-            .collect();
-        data.touch(options.key);
-        let mut out = Vec::new();
-        array(1, &mut out);
-        array(2, &mut out);
-        encode_bulk(Some(options.key), &mut out);
-        array(replies.len(), &mut out);
-        for (id, entry) in replies {
-            array(2, &mut out);
-            encode_bulk(Some(&id_text(id)), &mut out);
-            match entry {
-                Some(entry) => {
-                    array(entry.fields.len() * 2, &mut out);
-                    for (field, value) in entry.fields {
-                        encode_bulk(Some(&field), &mut out);
-                        encode_bulk(Some(&value), &mut out);
+        let mut replies: XReadGroupReplies = Vec::new();
+        let mut delivered = Vec::new();
+        for (key, start) in options.keys.iter().zip(&options.starts) {
+            let entry = data.entries.get_mut(*key).expect("validated stream key");
+            let stream = entry.stream.as_mut().expect("validated stream type");
+            let group = stream
+                .groups
+                .get_mut(options.group)
+                .expect("validated group");
+            match start {
+                XReadGroupStart::New => {
+                    let entries: Vec<(StreamId, StreamEntry)> = stream
+                        .entries
+                        .range((
+                            std::ops::Bound::Excluded(group.last_delivered),
+                            std::ops::Bound::Unbounded,
+                        ))
+                        .take(options.count)
+                        .map(|(id, entry)| (*id, entry.clone()))
+                        .collect();
+                    if entries.is_empty() {
+                        continue;
                     }
+                    let consumer = group
+                        .consumers
+                        .entry(options.consumer.to_vec())
+                        .or_insert_with(|| Consumer {
+                            seen_at: now,
+                            pending: Default::default(),
+                        });
+                    consumer.seen_at = now;
+                    for (id, _) in &entries {
+                        group.last_delivered = *id;
+                        if !options.noack {
+                            let pending = Pending {
+                                consumer: options.consumer.to_vec(),
+                                deliveries: 1,
+                                delivered_at: now,
+                            };
+                            group.pending.insert(*id, pending.clone());
+                            consumer.pending.insert(*id, pending);
+                        }
+                    }
+                    delivered.push(key.to_vec());
+                    replies.push((
+                        key.to_vec(),
+                        entries
+                            .into_iter()
+                            .map(|(id, entry)| (id, Some(entry)))
+                            .collect(),
+                    ));
                 }
-                None => out.extend_from_slice(b"*-1\r\n"),
+                XReadGroupStart::History(start) => {
+                    let consumer = group
+                        .consumers
+                        .entry(options.consumer.to_vec())
+                        .or_insert_with(|| Consumer {
+                            seen_at: now,
+                            pending: Default::default(),
+                        });
+                    consumer.seen_at = now;
+                    let ids: Vec<StreamId> = consumer
+                        .pending
+                        .range((
+                            std::ops::Bound::Excluded(*start),
+                            std::ops::Bound::Unbounded,
+                        ))
+                        .map(|(id, _)| *id)
+                        .take(options.count)
+                        .collect();
+                    for id in &ids {
+                        if let Some(pending) = consumer.pending.get_mut(id) {
+                            pending.deliveries = pending.deliveries.saturating_add(1);
+                            pending.delivered_at = now;
+                        }
+                        if let Some(pending) = group.pending.get_mut(id) {
+                            pending.deliveries = pending.deliveries.saturating_add(1);
+                            pending.delivered_at = now;
+                        }
+                    }
+                    replies.push((
+                        key.to_vec(),
+                        ids.into_iter()
+                            .map(|id| (id, stream.entries.get(&id).cloned()))
+                            .collect(),
+                    ));
+                }
+            }
+            data.touch(key);
+        }
+        if replies.is_empty() {
+            return XReadGroupOutcome::Empty;
+        }
+        let mut reply = Vec::new();
+        array(replies.len(), &mut reply);
+        for (key, entries) in replies {
+            array(2, &mut reply);
+            encode_bulk(Some(&key), &mut reply);
+            array(entries.len(), &mut reply);
+            for (id, entry) in entries {
+                array(2, &mut reply);
+                encode_bulk(Some(&id_text(id)), &mut reply);
+                match entry {
+                    Some(entry) => {
+                        array(entry.fields.len() * 2, &mut reply);
+                        for (field, value) in entry.fields {
+                            encode_bulk(Some(&field), &mut reply);
+                            encode_bulk(Some(&value), &mut reply);
+                        }
+                    }
+                    None => reply.extend_from_slice(b"*-1\r\n"),
+                }
             }
         }
-        XReadGroupOutcome::Ready(out)
+        XReadGroupOutcome::Ready { reply, delivered }
     }
 
     pub(crate) fn blocking_xreadgroup(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
@@ -1821,14 +1829,18 @@ impl Store {
 
     fn blocking_xreadgroup_gated(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
         let marks = self.journal_marks();
-        let outcome = self.xreadgroup_new(options);
-        if matches!(outcome, XReadGroupOutcome::Ready(_)) {
+        let outcome = self.xreadgroup_multi(options);
+        if let XReadGroupOutcome::Ready { delivered, .. } = &outcome
+            && !delivered.is_empty()
+        {
             let mut output = Vec::new();
             self.commit_journal(marks, &[], &mut output, 0);
             if output.first() == Some(&b'-') {
                 return XReadGroupOutcome::JournalError;
             }
-            self.notify_event("xreadgroup", options.key, NotifyCategory::Stream);
+            for key in delivered {
+                self.notify_event("xreadgroup", key, NotifyCategory::Stream);
+            }
         }
         outcome
     }
