@@ -192,9 +192,9 @@ fn pending_ack_range_and_read_cover_consumer_group_lifecycle() {
     assert_eq!(
         send(
             &mut stream,
-            &[b"XREAD", b"BLOCK", b"0", b"STREAMS", b"s", b"$"]
+            &[b"XREAD", b"BLOCK", b"5", b"STREAMS", b"s", b"$"]
         ),
-        b"-ERR blocking XREAD is not supported\r\n"
+        b"*-1\r\n"
     );
 
     assert_eq!(

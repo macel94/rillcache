@@ -65,9 +65,13 @@ owned value/tree after checking NX rejection and final payload admission.
   inclusive `-`/`+` bounds, consumer filtering and idle filtering.
 - `XRANGE key start end [COUNT n]` / `XREVRANGE key end start [COUNT n]` with
   inclusive IDs, `-`/`+`, incomplete-ID expansion and bounded results.
-- `XREAD [COUNT n] STREAMS key [key ...] id [id ...]` non-blocking reads over one
-  or more streams; `$` resolves to the last generated ID at command time. Blocking
-  reads are rejected explicitly.
+- `XREAD [COUNT n] [BLOCK ms] STREAMS key [key ...] id [id ...]` reads over one
+  or more streams. `$` resolves to the last generated ID at command time; with
+  `BLOCK`, that resolution is captured once when blocking starts. A positive BLOCK
+  timeout returns a null array on expiry, `0` waits indefinitely, and appends to
+  any listed stream wake the read using the normal XREAD reply shape. The blocked
+  connection uses the same bounded 10 ms polling model as list/zset blocking.
+  Inside `MULTI`, BLOCK runs one non-blocking read at `EXEC`.
 - `XINFO STREAM key` and `XINFO STREAM key FULL` return actual stream entries,
   group cursors, consumers and pending records in bounded RESP2 arrays, including
   `last-generated-id`, `entries-added` and `max-deleted-entry-id`.
@@ -76,7 +80,7 @@ owned value/tree after checking NX rejection and final payload admission.
 
 ## Limits
 
-This is not Redis Streams feature completeness. Blocking `XREAD`/`XREADGROUP`,
+This is not Redis Streams feature completeness. Blocking `XREADGROUP`,
 multi-stream history reads, replication and durable pending/consumer restoration
 are unsupported. History reads cover one stream per command. `XSETID` metadata is
 journaled, but pending owners/delivery counters remain volatile. XTRIM's

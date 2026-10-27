@@ -62,6 +62,99 @@ fn id_error(out: &mut Vec<u8>) {
     out.extend_from_slice(b"-ERR Invalid stream ID specified as stream command argument\r\n");
 }
 
+pub(crate) struct XReadOptions<'a> {
+    pub count: usize,
+    pub block: Option<u64>,
+    pub keys: Vec<&'a [u8]>,
+    pub starts: Vec<Option<StreamId>>,
+}
+
+pub(crate) type XReadReplies = Vec<(Vec<u8>, Vec<(StreamId, StreamEntry)>)>;
+
+pub(crate) enum XReadOutcome {
+    Entries(XReadReplies),
+    Empty,
+    WrongType,
+}
+
+pub(crate) fn parse_xread<'a>(a: &[&'a [u8]]) -> Result<XReadOptions<'a>, &'static [u8]> {
+    let mut count = usize::MAX;
+    let mut block = None;
+    let mut index = 1;
+    while index < a.len() && !a[index].eq_ignore_ascii_case(b"STREAMS") {
+        if a[index].eq_ignore_ascii_case(b"COUNT") {
+            let Some(raw) = a.get(index + 1) else {
+                return Err(b"-ERR syntax error\r\n");
+            };
+            let Some(parsed) = parse_i64(raw).filter(|value| *value > 0) else {
+                return Err(b"-ERR value is not an integer or out of range\r\n");
+            };
+            count = usize::try_from(parsed).unwrap_or(usize::MAX);
+            index += 2;
+        } else if a[index].eq_ignore_ascii_case(b"BLOCK") {
+            let Some(raw) = a.get(index + 1) else {
+                return Err(b"-ERR syntax error\r\n");
+            };
+            let Some(value) = parse_i64(raw) else {
+                return Err(b"-ERR timeout is not an integer or out of range\r\n");
+            };
+            if value < 0 {
+                return Err(b"-ERR timeout is negative\r\n");
+            }
+            block = Some(value as u64);
+            index += 2;
+        } else {
+            return Err(b"-ERR syntax error\r\n");
+        }
+    }
+    if index >= a.len() || !a[index].eq_ignore_ascii_case(b"STREAMS") {
+        return Err(b"-ERR syntax error\r\n");
+    }
+    let remaining = &a[index + 1..];
+    if remaining.is_empty() || !remaining.len().is_multiple_of(2) {
+        return Err(b"-ERR Unbalanced 'XREAD' STREAMS list\r\n");
+    }
+    let split = remaining.len() / 2;
+    let keys = remaining[..split].to_vec();
+    let mut starts = Vec::with_capacity(split);
+    for raw in &remaining[split..] {
+        if *raw == b"$" {
+            starts.push(None);
+        } else {
+            let Some(id) = id(raw) else {
+                return Err(b"-ERR Invalid stream ID specified as stream command argument\r\n");
+            };
+            starts.push(Some(id));
+        }
+    }
+    Ok(XReadOptions {
+        count,
+        block,
+        keys,
+        starts,
+    })
+}
+
+pub(crate) fn xread_reply(outcome: XReadOutcome, out: &mut Vec<u8>) {
+    match outcome {
+        XReadOutcome::Entries(replies) => {
+            array(replies.len(), out);
+            for (key, entries) in replies {
+                array(2, out);
+                encode_bulk(Some(&key), out);
+                array(entries.len(), out);
+                for (id, entry) in &entries {
+                    reply_entry(*id, entry, out);
+                }
+            }
+        }
+        XReadOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
+        XReadOutcome::WrongType => out.extend_from_slice(
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        ),
+    }
+}
+
 impl Store {
     pub(super) fn execute_streams(&self, a: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(cmd) = a.first() else { return false };
@@ -683,94 +776,98 @@ impl Store {
     }
 
     fn xread(&self, a: &[&[u8]], out: &mut Vec<u8>) {
-        let mut count = usize::MAX;
-        let mut index = 1;
-        while index < a.len() && !a[index].eq_ignore_ascii_case(b"STREAMS") {
-            if a[index].eq_ignore_ascii_case(b"COUNT") {
-                let Some(raw) = a.get(index + 1) else {
-                    out.extend_from_slice(b"-ERR syntax error\r\n");
-                    return;
-                };
-                let Some(parsed) = parse_i64(raw).filter(|value| *value > 0) else {
-                    out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
-                    return;
-                };
-                count = usize::try_from(parsed).unwrap_or(usize::MAX);
-                index += 2;
-            } else if a[index].eq_ignore_ascii_case(b"BLOCK") {
-                out.extend_from_slice(b"-ERR blocking XREAD is not supported\r\n");
-                return;
-            } else {
-                out.extend_from_slice(b"-ERR syntax error\r\n");
+        let options = match parse_xread(a) {
+            Ok(options) => options,
+            Err(error) => {
+                out.extend_from_slice(error);
                 return;
             }
-        }
-        if index >= a.len() || !a[index].eq_ignore_ascii_case(b"STREAMS") {
-            out.extend_from_slice(b"-ERR syntax error\r\n");
-            return;
-        }
-        let remaining = &a[index + 1..];
-        if remaining.is_empty() || !remaining.len().is_multiple_of(2) {
-            out.extend_from_slice(b"-ERR Unbalanced 'XREAD' STREAMS list\r\n");
-            return;
-        }
-        let streams = remaining.len() / 2;
-        let keys = &remaining[..streams];
-        let starts = &remaining[streams..];
-        let mut parsed_ids = Vec::with_capacity(streams);
-        for (_key, raw) in keys.iter().zip(starts) {
-            if *raw == b"$" {
-                parsed_ids.push(None);
-            } else {
-                let Some(id) = id(raw) else {
-                    id_error(out);
-                    return;
-                };
-                parsed_ids.push(Some(id));
-            }
-        }
-        let Ok(mut data) = self.data.write() else {
+        };
+        let Some((_starts, outcome)) = self.xread_start(&options) else {
             internal_error(out);
             return;
         };
+        xread_reply(outcome, out);
+    }
+
+    pub(crate) fn xread_start(
+        &self,
+        options: &XReadOptions<'_>,
+    ) -> Option<(Vec<StreamId>, XReadOutcome)> {
+        let Ok(mut data) = self.data.write() else {
+            return None;
+        };
+        let now = self.now(&data);
+        let mut starts = Vec::with_capacity(options.keys.len());
+        let mut replies = Vec::new();
+        for (key, requested) in options.keys.iter().zip(&options.starts) {
+            data.expire_key(key, now);
+            let Some(entry) = data.entries.get(*key) else {
+                starts.push(StreamId::default());
+                continue;
+            };
+            let Some(stream) = entry.stream.as_ref() else {
+                return Some((Vec::new(), XReadOutcome::WrongType));
+            };
+            let start = requested.unwrap_or(stream.last_generated);
+            starts.push(start);
+            let selected: Vec<(StreamId, StreamEntry)> = stream
+                .entries
+                .range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
+                .take(options.count)
+                .map(|(id, entry)| (*id, entry.clone()))
+                .collect();
+            if !selected.is_empty() {
+                replies.push((key.to_vec(), selected));
+            }
+        }
+        Some((
+            starts,
+            if replies.is_empty() {
+                XReadOutcome::Empty
+            } else {
+                XReadOutcome::Entries(replies)
+            },
+        ))
+    }
+
+    pub(crate) fn xread_once(
+        &self,
+        keys: &[&[u8]],
+        starts: &[StreamId],
+        count: usize,
+    ) -> Option<XReadOutcome> {
+        let Ok(mut data) = self.data.write() else {
+            return None;
+        };
         let now = self.now(&data);
         let mut replies = Vec::new();
-        for ((key, _raw), start) in keys.iter().zip(starts).zip(parsed_ids) {
+        for (key, start) in keys.iter().zip(starts) {
             data.expire_key(key, now);
             let Some(entry) = data.entries.get(*key) else {
                 continue;
             };
             let Some(stream) = entry.stream.as_ref() else {
-                out.extend_from_slice(
-                    b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-                );
-                return;
+                return Some(XReadOutcome::WrongType);
             };
-            let start = start.unwrap_or(stream.last_generated);
             let selected: Vec<(StreamId, StreamEntry)> = stream
                 .entries
-                .range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
+                .range((
+                    std::ops::Bound::Excluded(*start),
+                    std::ops::Bound::Unbounded,
+                ))
                 .take(count)
                 .map(|(id, entry)| (*id, entry.clone()))
                 .collect();
-            if selected.is_empty() {
-                continue;
-            }
-            replies.push((*key, selected));
-        }
-        if replies.is_empty() {
-            out.extend_from_slice(b"*-1\r\n");
-            return;
-        }
-        array(replies.len(), out);
-        for (key, entries) in replies {
-            array(2, out);
-            encode_bulk(Some(key), out);
-            array(entries.len(), out);
-            for (id, entry) in &entries {
-                reply_entry(*id, entry, out);
+            if !selected.is_empty() {
+                replies.push((key.to_vec(), selected));
             }
         }
+        Some(if replies.is_empty() {
+            XReadOutcome::Empty
+        } else {
+            XReadOutcome::Entries(replies)
+        })
     }
 
     fn xclaim(&self, a: &[&[u8]], out: &mut Vec<u8>) {

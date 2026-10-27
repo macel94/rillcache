@@ -86,6 +86,7 @@ reason to couple all future commands into a single large story.
 | S56 | As a collection user, I can sort list, set and sorted-set values with limits and optionally store the result so that ordered projections do not require client-side work. | S | R221–R224; numeric/alpha/limit/store/RO/errors and all-mode wire tests |
 | S57 | As a stream operator, I can align a stream's last ID and retention counters after restore so that producers and groups resume without ID conflicts. | S | R225–R228; last-id/entries-added/max-deleted validation, XINFO, WATCH and all-mode wire tests |
 | S58 | As a stream consumer, I can re-read my owned pending deliveries from a chosen ID so that recovery workflows can inspect and replay unacknowledged work. | S | R229–R232; history IDs/deleted entries/delivery updates/errors and all-mode wire tests |
+| S59 | As a stream consumer, I can wait for new entries on one or more streams so that tailing clients do not have to poll. | S | R233–R236; BLOCK parsing/timeout/wakeup/$/multi-key/MULTI and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -837,8 +838,8 @@ reason to couple all future commands into a single large story.
 - **R216 (unwanted behavior):** Tests shall cover exact/approximate MAXLEN and
   MINID, `=`/`~`, LIMIT bounds, NOMKSTREAM on missing/existing keys, TTL,
   wrong types, malformed options/IDs, MULTI, WATCH, OOM and all worker modes.
-  XADD trim shall publish the `xadd` event only; blocking reads and history reads
-  shall remain documented as unsupported.
+  XADD trim shall publish the `xadd` event only; blocking `XREADGROUP` and
+  multi-stream history shall remain documented as unsupported.
 
 ### Legacy geospatial radius aliases (S55)
 
@@ -947,6 +948,30 @@ reason to couple all future commands into a single large story.
   errors, WATCH conflicts and all worker modes. Blocking XREAD/XREADGROUP,
   multi-stream history and durable pending restoration shall remain documented as
   unsupported.
+
+### Blocking stream reads (S59)
+
+- **R233 (event-driven):** `XREAD [COUNT n] [BLOCK ms] STREAMS key [key ...]
+  id [id ...]` shall accept an integer millisecond BLOCK value, use zero for an
+  indefinite wait, reject negative/non-integer/out-of-range values and syntax
+  errors before stream access, and let a later duplicate option win. Existing
+  COUNT, `$`, explicit-ID, multi-key and unbalanced-list validation shall remain.
+- **R234 (event-driven):** A blocking read shall return immediately when any
+  listed stream already has entries above its start. Otherwise the connection
+  shall wait using the existing bounded polling model; `$` shall be resolved once
+  at block time to each live last-generated ID, and appends to any listed stream
+  shall wake the read with the same RESP array shape as non-blocking XREAD.
+  Positive timeouts shall return a null array; expiry, missing keys, wrong types
+  and disconnect/shutdown shall not leak blocked state.
+- **R235 (state-driven):** Inside `MULTI`, `BLOCK` shall execute the non-blocking
+  read once at `EXEC` without waiting. Blocking reads shall not mutate data or
+  journal state, shall not hold the store lock while waiting, and shall remain
+  at-most-once observations of live entries rather than durable subscriptions.
+- **R236 (ubiquitous):** Tests shall cover immediate reads, indefinite and finite
+  waits, wake-on-append, `$` capture, multi-key wake selection, COUNT, timeout
+  nulls, MULTI non-blocking behavior, wrong types, malformed BLOCK/IDs/STREAMS and
+  all worker modes. Blocking `XREADGROUP` and multi-stream history shall remain
+  documented as unsupported.
 
 ### Development and delivery
 
@@ -1311,9 +1336,9 @@ case-insensitive. Option tokens must match completely; NULs/prefixes are rejecte
 A bounded stream subset supports XADD with NOMKSTREAM/MAXLEN/MINID retention,
 XDEL, XLEN, XGROUP CREATE/SETID/DESTROY/
 CREATECONSUMER/DELCONSUMER, XREADGROUP GROUP with COUNT/NOACK for new entries on
-one stream, XACK, XPENDING summary/extended, XRANGE/XREVRANGE, non-blocking XREAD
-over multiple streams, XCLAIM/XAUTOCLAIM, XTRIM, and XINFO STREAM (with FULL)/
-GROUPS/CONSUMERS. See [stream limits](streams.md). All types share expiry, payload
+one stream with new-entry and history reads, XACK, XPENDING summary/extended,
+XRANGE/XREVRANGE, non-blocking and blocking XREAD over multiple streams,
+XCLAIM/XAUTOCLAIM, XTRIM, XSETID, and XINFO STREAM (with FULL)/GROUPS/CONSUMERS. See [stream limits](streams.md). All types share expiry, payload
 accounting, TYPE, RENAME and deep same-database COPY; byte-oriented KEYS and
 RANDOMKEY inspect that same keyspace. See [keyspace limits](keyspace.md).
 CONFIG GET/SET collection thresholds select actual collection representations;

@@ -10,8 +10,9 @@ use std::sync::mpsc::SyncSender;
 use std::time::{Duration, Instant};
 
 use crate::engine::{
-    Access, AclError, Action, AuthError, PopOutcome, Store, TransactionOutcome, WatchState,
-    ZSetPopOutcome, blocking_reply, blocking_zpop_reply, parse_bzmpop_timeout, parse_mpop,
+    Access, AclError, Action, AuthError, PopOutcome, Store, StreamId, TransactionOutcome,
+    WatchState, XReadOutcome, ZSetPopOutcome, blocking_reply, blocking_zpop_reply,
+    parse_bzmpop_timeout, parse_mpop, parse_xread, xread_reply,
 };
 use crate::protocol::encode_bulk;
 
@@ -53,10 +54,11 @@ struct Blocked {
     kind: BlockedKind,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum BlockedKind {
     List { left: bool },
     ZSet { max: bool, count: usize },
+    XRead { starts: Vec<StreamId>, count: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,6 +232,10 @@ impl Session {
         }
         if command.eq_ignore_ascii_case(b"BZMPOP") {
             self.blocking_zpop(store, &arguments[1..], output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"XREAD") {
+            self.xread(store, arguments, output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"PUBLISH") {
@@ -979,6 +985,44 @@ impl Session {
         });
     }
 
+    fn xread(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        let options = match parse_xread(arguments) {
+            Ok(options) => options,
+            Err(error) => {
+                output.extend_from_slice(error);
+                return;
+            }
+        };
+        let Some((starts, outcome)) = store.xread_start(&options) else {
+            output.extend_from_slice(b"-ERR internal store error\r\n");
+            return;
+        };
+        let Some(block) = options.block else {
+            xread_reply(outcome, output);
+            return;
+        };
+        match outcome {
+            XReadOutcome::Empty => {}
+            outcome => {
+                xread_reply(outcome, output);
+                return;
+            }
+        }
+        let deadline = if block == 0 {
+            None
+        } else {
+            Instant::now().checked_add(Duration::from_millis(block))
+        };
+        self.blocked = Some(Blocked {
+            keys: options.keys.iter().map(|key| key.to_vec()).collect(),
+            deadline,
+            kind: BlockedKind::XRead {
+                starts,
+                count: options.count,
+            },
+        });
+    }
+
     pub fn is_blocked(&self) -> bool {
         self.blocked.is_some()
     }
@@ -988,7 +1032,7 @@ impl Session {
     pub fn poll_blocked(&mut self, store: &Store) -> Option<Vec<u8>> {
         let blocked = self.blocked.as_ref()?;
         let keys: Vec<&[u8]> = blocked.keys.iter().map(Vec::as_slice).collect();
-        let kind = blocked.kind;
+        let kind = blocked.kind.clone();
         let expired = blocked
             .deadline
             .is_some_and(|deadline| Instant::now() >= deadline);
@@ -1005,6 +1049,13 @@ impl Session {
                 ZSetPopOutcome::Empty => false,
                 outcome => {
                     blocking_zpop_reply(outcome, &mut reply);
+                    true
+                }
+            },
+            BlockedKind::XRead { starts, count } => match store.xread_once(&keys, &starts, count) {
+                Some(XReadOutcome::Empty) | None => false,
+                Some(outcome) => {
+                    xread_reply(outcome, &mut reply);
                     true
                 }
             },
