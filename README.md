@@ -108,7 +108,7 @@ A bounded stream subset supports `XADD`/`XDEL`/`XLEN`, consumer groups
 `XCLAIM`/`XAUTOCLAIM`, `XRANGE`/`XREVRANGE`, `XTRIM`, XADD
 `NOMKSTREAM`/`MAXLEN`/`MINID` trimming, blocking/non-blocking multi-stream
 `XREAD`, `XSETID`, and `XINFO STREAM` (with `FULL`)/`GROUPS`/`CONSUMERS`. Pending
-delivery state is volatile across restart; multi-stream history remains absent.
+delivery state is volatile across restart.
 See [stream limits](docs/streams.md).
 
 Bounded `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` queue supported data
