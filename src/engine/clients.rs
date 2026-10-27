@@ -2,6 +2,7 @@
 
 use super::Store;
 use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 #[derive(Debug)]
@@ -31,7 +32,54 @@ pub struct ClientSnapshot {
     pub psub: usize,
 }
 
+const PAUSE_WRITE_ONLY: u64 = 1 << 63;
+
 impl Store {
+    /// Pause client command processing until `timeout_ms` milliseconds from the
+    /// current clock. A later deadline wins; an ALL pause is not downgraded by a
+    /// later WRITE pause. The deadline and mode live in one atomic word so a
+    /// command observes one coherent pause decision.
+    pub(crate) fn pause_clients(&self, timeout_ms: i64, writes_only: bool) {
+        let now = u64::try_from(self.clock.now_ms().max(0)).unwrap_or(0);
+        let end = now.saturating_add(u64::try_from(timeout_ms).unwrap_or(0));
+        let mut current = self.client_pause.load(Ordering::Relaxed);
+        loop {
+            let deadline = current & !PAUSE_WRITE_ONLY;
+            let active = deadline > now;
+            let mode = if writes_only && (!active || current & PAUSE_WRITE_ONLY != 0) {
+                PAUSE_WRITE_ONLY
+            } else {
+                0
+            };
+            let deadline = if active && deadline > end {
+                deadline
+            } else {
+                end
+            };
+            let candidate = deadline | mode;
+            match self.client_pause.compare_exchange_weak(
+                current,
+                candidate,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub(crate) fn unpause_clients(&self) {
+        self.client_pause.store(0, Ordering::Relaxed);
+    }
+
+    /// Returns `Some(writes_only)` while a pause is active.
+    pub(crate) fn client_pause_mode(&self) -> Option<bool> {
+        let now = u64::try_from(self.clock.now_ms().max(0)).unwrap_or(0);
+        let current = self.client_pause.load(Ordering::Relaxed);
+        (current & !PAUSE_WRITE_ONLY > now).then_some(current & PAUSE_WRITE_ONLY != 0)
+    }
+
     pub(crate) fn client_address(&self, id: u64) -> Option<String> {
         self.clients
             .read()
@@ -154,5 +202,31 @@ impl Store {
         self.pubsub
             .read()
             .map_or((0, 0), |pubsub| pubsub.counts_for(id))
+    }
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+
+    #[test]
+    fn pause_deadline_mode_and_unpause_are_coherent() {
+        let store = Store::new(1024);
+        assert_eq!(store.client_pause_mode(), None);
+        store.pause_clients(30, true);
+        assert_eq!(store.client_pause_mode(), Some(true));
+        store.pause_clients(1000, false);
+        assert_eq!(store.client_pause_mode(), Some(false));
+        store.pause_clients(1000, true);
+        assert_eq!(store.client_pause_mode(), Some(false));
+        store.unpause_clients();
+        assert_eq!(store.client_pause_mode(), None);
+        store.pause_clients(0, false);
+        assert_eq!(store.client_pause_mode(), None);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        store.pause_clients(10, true);
+        assert_eq!(store.client_pause_mode(), Some(true));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert_eq!(store.client_pause_mode(), None);
     }
 }

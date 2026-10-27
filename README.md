@@ -90,7 +90,7 @@ Collection writes preserve expiry metadata where Redis does, delete empty keys,
 and stage the complete value before payload admission. See
 [typed collections](docs/collections.md).
 
-`CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL` expose bounded per-connection
+`CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL/PAUSE/UNPAUSE` expose bounded per-connection
 metadata and administrative connection controls; `INFO clients` reports the
 registry size. `TIME` returns wall-clock seconds/microseconds and `OBJECT
 ENCODING`/`REFCOUNT`/`HELP` expose actual storage representations and ownership;

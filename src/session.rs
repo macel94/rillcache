@@ -13,8 +13,8 @@ use crate::engine::{
     Access, AclError, Action, AuthError, ListMoveOutcome, ListPopOutcome, PopOutcome, Store,
     StreamId, TransactionOutcome, WatchState, XReadGroupOptions, XReadGroupOutcome,
     XReadGroupStart, XReadOutcome, ZSetPopOutcome, blocking_lmpop_reply, blocking_reply,
-    blocking_zpop_reply, list_move_reply, parse_bzmpop_timeout, parse_list_mpop, parse_mpop,
-    parse_side, parse_xread, parse_xreadgroup, xread_reply, xreadgroup_reply,
+    blocking_zpop_reply, is_write_command, list_move_reply, parse_bzmpop_timeout, parse_list_mpop,
+    parse_mpop, parse_side, parse_xread, parse_xreadgroup, xread_reply, xreadgroup_reply,
 };
 use crate::protocol::encode_bulk;
 
@@ -47,6 +47,12 @@ pub struct Session {
     pubsub_patterns: BTreeSet<Vec<u8>>,
     pubsub_shard_channels: BTreeSet<Vec<u8>>,
     blocked: Option<Blocked>,
+    paused: Option<PausedCommand>,
+}
+
+#[derive(Debug)]
+struct PausedCommand {
+    arguments: Vec<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -116,12 +122,19 @@ impl Session {
             pubsub_patterns: BTreeSet::new(),
             pubsub_shard_channels: BTreeSet::new(),
             blocked: None,
+            paused: None,
         }
     }
 
     /// Dispatch connection commands locally and all data commands through the
     /// stable public RESP2 Store API, adapting only this session's reply.
     pub fn execute(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        if self.paused.is_none() && self.command_paused(store, arguments) {
+            self.paused = Some(PausedCommand {
+                arguments: arguments.iter().map(|argument| argument.to_vec()).collect(),
+            });
+            return Action::Continue;
+        }
         let tracked = arguments.first().is_some_and(|command| {
             let queued = self.multi.is_some() && !command.eq_ignore_ascii_case(b"EXEC");
             !queued && store.slowlog_enabled()
@@ -153,6 +166,48 @@ impl Session {
             &store.client_address(self.id).unwrap_or_default(),
             self.name.as_deref().unwrap_or_default(),
         );
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.is_some()
+    }
+
+    /// Execute the single command deferred by CLIENT PAUSE once the pause no
+    /// longer applies. Returns `None` while the connection must stay paused.
+    pub fn poll_paused(&mut self, store: &Store) -> Option<(Vec<u8>, Action)> {
+        self.paused.as_ref()?;
+        let waiting = {
+            let paused = self.paused.as_ref()?;
+            let arguments: Vec<&[u8]> = paused.arguments.iter().map(Vec::as_slice).collect();
+            self.command_paused(store, &arguments)
+        };
+        if waiting {
+            return None;
+        }
+        let paused = self.paused.take()?;
+        let arguments: Vec<&[u8]> = paused.arguments.iter().map(Vec::as_slice).collect();
+        let mut output = Vec::new();
+        let action = self.execute(store, &arguments, &mut output);
+        Some((output, action))
+    }
+
+    fn command_paused(&self, store: &Store, arguments: &[&[u8]]) -> bool {
+        let Some(writes_only) = store.client_pause_mode() else {
+            return false;
+        };
+        let Some(command) = arguments.first() else {
+            return false;
+        };
+        // Management commands must remain able to end or replace a pause.
+        if command.eq_ignore_ascii_case(b"CLIENT")
+            && arguments.get(1).is_some_and(|subcommand| {
+                subcommand.eq_ignore_ascii_case(b"PAUSE")
+                    || subcommand.eq_ignore_ascii_case(b"UNPAUSE")
+            })
+        {
+            return false;
+        }
+        !writes_only || command.eq_ignore_ascii_case(b"EXEC") || is_write_command(command)
     }
 
     fn execute_inner(
@@ -1531,6 +1586,40 @@ impl Session {
                 *target = Some(rest[1].to_vec());
                 output.extend_from_slice(b"+OK\r\n");
             }
+        } else if subcommand.eq_ignore_ascii_case(b"PAUSE") {
+            if rest.is_empty() || rest.len() > 2 {
+                arity("client|pause", output);
+                return;
+            }
+            let Some(timeout) = std::str::from_utf8(rest[0])
+                .ok()
+                .and_then(|text| text.parse::<i64>().ok())
+            else {
+                output.extend_from_slice(b"-ERR timeout is not an integer or out of range\r\n");
+                return;
+            };
+            if timeout < 0 {
+                output.extend_from_slice(b"-ERR timeout is negative\r\n");
+                return;
+            }
+            let writes_only = match rest.get(1) {
+                None => false,
+                Some(mode) if mode.eq_ignore_ascii_case(b"WRITE") => true,
+                Some(mode) if mode.eq_ignore_ascii_case(b"ALL") => false,
+                Some(_) => {
+                    output.extend_from_slice(b"-ERR CLIENT PAUSE mode must be WRITE or ALL\r\n");
+                    return;
+                }
+            };
+            store.pause_clients(timeout, writes_only);
+            output.extend_from_slice(b"+OK\r\n");
+        } else if subcommand.eq_ignore_ascii_case(b"UNPAUSE") {
+            if !rest.is_empty() {
+                arity("client|unpause", output);
+                return;
+            }
+            store.unpause_clients();
+            output.extend_from_slice(b"+OK\r\n");
         } else if subcommand.eq_ignore_ascii_case(b"LIST") {
             self.client_list(store, rest, output);
         } else if subcommand.eq_ignore_ascii_case(b"KILL") {

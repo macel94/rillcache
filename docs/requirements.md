@@ -98,6 +98,7 @@ reason to couple all future commands into a single large story.
 | S68 | As a list user, I can move elements between two lists atomically, including blocking until a source element exists, so that queues and worker handoff do not need read-then-write races. | S | R269–R272; LMOVE/RPOPLPUSH sides, same-key rotation, TTL/OOM, blocking wake/timeout, MULTI/WATCH and all-mode wire tests |
 | S69 | As a keyspace user, I can request deletion through the standard `UNLINK` command so that clients and libraries that prefer asynchronous deletion remain compatible. | XS | R273–R275; mixed types/duplicates/expiry/MULTI/GETKEYS/notifications and all-mode wire tests |
 | S70 | As an operator, I can inspect bounded slow-command history and tune its threshold so that latency problems can be diagnosed without log scraping or unbounded memory. | S | R276–R279; command shapes, config, truncation, redaction, blocking/MULTI and all-mode wire tests |
+| S71 | As an operator, I can pause and resume client command processing so that maintenance or failover preparation can drain traffic without dropping connections. | S | R280–R283; ALL/WRITE/timeout/unpause/pipelining/MULTI/shutdown and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1228,6 +1229,30 @@ reason to couple all future commands into a single large story.
   truncation, redaction, configuration validation and bounds, blocking duration,
   `MULTI` behavior, disabling and every worker mode. The log shall remain
   process-local, in-memory and absent from persistent storage or `INFO`.
+
+### Client command pause (S71)
+
+- **R280 (event-driven):** `CLIENT PAUSE timeout [WRITE|ALL]` shall parse a
+  non-negative integer millisecond timeout, default to `ALL`, reject negative or
+  non-integer timeouts and unknown modes, and reply `+OK`. `timeout` zero shall
+  be a no-op. A later deadline shall win, and an active `ALL` pause shall not be
+  downgraded by a later `WRITE` pause. `CLIENT UNPAUSE` shall clear the pause.
+- **R281 (state-driven):** While a pause is active, new client commands shall be
+  deferred per connection without holding the store lock and without parsing
+  later pipelined commands. Under `WRITE`, read-only commands shall continue;
+  commands with the write flag and `EXEC` shall wait. `CLIENT PAUSE` and
+  `CLIENT UNPAUSE` shall remain exempt so management remains possible. Already
+  executing or already-blocked commands, expiry/eviction and journal syncing
+  shall not be treated as paused.
+- **R282 (event-driven):** When the pause deadline expires or `CLIENT UNPAUSE`
+  runs, each deferred command shall execute once and its reply shall keep wire
+  order with following pipelined commands. Disconnect or shutdown shall drop a
+  deferred command without executing it and shall not delay joined shutdown.
+- **R283 (ubiquitous):** Tests shall cover `WRITE` read passthrough, deferred
+  writes and `ALL` reads, deadline expiry, explicit unpause, zero timeout,
+  self-pause/unpause, pipelining order, invalid arguments, disconnect/shutdown
+  behavior and every worker mode. Documentation shall retain the absence of
+  replication, expiry/eviction pausing and replica-traffic pause semantics.
 
 ### Development and delivery
 

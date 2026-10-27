@@ -19,7 +19,7 @@ metadata; it is intentionally a small subset of Redis's connection statistics.
 
 Supported connection commands are `CLIENT ID`, `CLIENT SETNAME`, `CLIENT
 GETNAME`, `CLIENT SETINFO LIB-NAME|LIB-VER`, `CLIENT INFO`, `CLIENT LIST`,
-`CLIENT KILL`, `SELECT 0` and `RESET`.
+`CLIENT KILL`, `CLIENT PAUSE`, `CLIENT UNPAUSE`, `SELECT 0` and `RESET`.
 Other database indices are rejected and never alias database zero. `AUTH` and
 `HELLO ... AUTH ...` authenticate either the `default` user or an ACL user when
 credentials are configured. `ACL WHOAMI`, `ACL GETUSER` and the other supported
@@ -38,6 +38,24 @@ The legacy single-address form returns `+OK`/`No such client`, while filtered
 forms return the killed count. The calling connection is always skipped, and a
 killed socket is shut down immediately. `INFO clients` reports
 `connected_clients` and `cluster_connections:0`.
+
+`CLIENT PAUSE timeout [WRITE|ALL]` temporarily defers new client commands for
+`timeout` milliseconds; the default mode is `ALL`. Under `WRITE`, read-only
+commands continue while commands carrying the write flag (and `EXEC`) wait.
+`timeout` must be a non-negative integer; `0` is a no-op. A later deadline wins
+and an active `ALL` pause is not downgraded by a subsequent `WRITE` pause.
+`CLIENT UNPAUSE` ends the pause immediately. Both management commands are exempt
+from the pause so an operator can always inspect or end it; the command is
+otherwise subject to the normal `CLIENT` permission.
+
+A paused connection executes at most one deferred command, stops parsing
+pipelined commands until the pause ends, and polls with the same bounded model as
+blocking commands without holding the store lock. Replies preserve wire order,
+and a disconnect or shutdown drops the deferred command and the connection.
+Commands that started before the pause, already-blocked commands, background
+expiry and eviction, and journal syncing are not paused. This is deliberately a
+client-command gate, not Redis's full pause surface (which also pauses expiry,
+eviction and replica traffic); replication does not exist here.
 
 `CLIENT LIST`/`KILL` expose addresses, names, users and live connections; they
 require the normal `CLIENT` command permission and are only appropriate for trusted
