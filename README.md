@@ -170,9 +170,11 @@ Access control starts with a single operator password for the `default` user
 multi-user ACL file (`--aclfile`) with hashed passwords, ordered
 command/category rules, declared-key patterns and atomic `ACL SAVE`/`LOAD`.
 `NOAUTH`/`NOPERM` are checked before store access and apply to live connections.
-Persistent/centralized audit, brute-force controls and native TLS remain separate
-security gates; ACL selectors group command/key/channel rules and channel patterns
-are enforced for pub/sub.
+Persistent/centralized audit, brute-force controls and native Rust TLS remain
+separate security gates; ACL selectors group command/key/channel rules and channel
+patterns are enforced for pub/sub. A Go standard-library TLS 1.3 sidecar
+([`tlsproxy`](docs/tls.md), no OpenSSL or Rust dependencies) terminates TLS for
+RESP; it intentionally does not offer HTTP/2 or HTTP/3.
 `ACL GENPASS`, `ACL DRYRUN` and a bounded process-local `ACL LOG` support
 credential operations and policy debugging. See
 [security](docs/security.md).
@@ -183,11 +185,17 @@ It is already multithreaded by default (one managed worker per client). Optional
 `--threads 1` or `--threads N` selects exactly 1..64 shared I/O/execution workers
 plus the accept/control thread; idle clients do not occupy an entire worker.
 
+**Durability completeness is explicitly deferred for the current phase.** The
+append-only journal remains available and tested, but it is best-effort: there is
+no RDB, background/incremental rewrite, checksum, crash/soak/ENOSPC validation,
+backup/restore drill or signal-driven drain, and it is not a durable system of
+record. See [production readiness](docs/production-readiness.md).
+
 This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata,
 `SELECT 0`, disconnect-equivalent `RESET`, `CLIENT LIST`/`KILL` and honest client
 statistics; single-password and multi-user ACL authentication are implemented.
-Audit controls, native TLS, brute-force protection, RDB/background-AOF
+Audit controls, native Rust TLS, brute-force protection, RDB/background-AOF
 interoperability, backup/restore drills, scripts/functions, sharded pub/sub,
 keyspace notifications, replication, clustering, and real client-library
 interoperability remain production blockers. RESP3 replies are limited to the current command
@@ -216,7 +224,8 @@ Append options normally, e.g. `--threads 4`, `--requirepass-file
 /run/secrets/rillcache`, `--aclfile /run/secrets/users.acl` or
 `--appendonly yes --dir /data` with a writable volume.
 **Experimental: optional password/ACL-file authentication and opt-in append-only
-persistence; no native TLS, RDB format, background compaction or replication.** Keep
+persistence; no native Rust TLS, RDB format, background compaction or replication.
+Optional TLS 1.3 termination is provided by the Go `tlsproxy` sidecar.** Keep
 authentication and network isolation in place for anything beyond loopback. See [container delivery](docs/containers.md)
 for resource bounds, Kubernetes networking, digest pinning, shutdown limitations
 and GitHub's one-time public-package visibility setting.

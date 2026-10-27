@@ -121,11 +121,13 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 - **No tenant isolation at the process/network level.** All users share one
   in-memory keyspace and one process. ACL permissions do not create separate
   databases, memory budgets, CPU budgets or network identities.
-- **No native TLS.** Rust's standard library exposes TCP, not TLS. The project
-  forbids external Rust dependencies and FFI, so native TLS has no implementation
-  path without an explicit dependency-policy decision. An externally operated TLS
-  terminator is a documented deployment boundary, not equivalent to Redis native
-  TLS; traffic inside that perimeter is plaintext.
+- **No native Rust TLS.** Rust's standard library exposes TCP, not TLS. The
+  project forbids external Rust dependencies and FFI, so native TLS has no
+  implementation path without an explicit dependency-policy decision. A bundled
+  Go standard-library TLS 1.3 sidecar ([`tlsproxy`](tls.md)) terminates TLS for
+  RESP without OpenSSL; it is a documented deployment boundary, and the inner hop
+  to rillcache remains plaintext. TLS 1.2 and older are rejected, and HTTP/2 or
+  HTTP/3 are not offered because Redis clients speak RESP.
 - **No brute-force protection.** There is no delay, lockout, connection budget per
   source or credential-attempt audit for either `requirepass` or ACL users. Use
   network policy/firewalling and strong, unique passwords. Do not expose the port
@@ -155,8 +157,9 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
    keep the root filesystem read-only. `ACL SAVE` needs a writable file/directory,
    so mount a dedicated writable volume only when runtime ACL mutation+save is
    required.
-3. Restrict ingress with a network policy or firewall. Prefer a TLS terminator for
-   anything crossing an untrusted network, and document that inner hops are plaintext.
+3. Restrict ingress with a network policy or firewall. Prefer the included
+   [TLS 1.3 sidecar](tls.md) or another audited terminator for anything crossing an
+   untrusted network, and document that inner hops are plaintext.
 4. Use a long random password from a secret manager, not a short human password;
    SHA-256 comparison does not make weak passwords hard to guess offline.
 5. Rotate with authenticated `CONFIG SET requirepass`, then restart clients, and
