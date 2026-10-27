@@ -378,6 +378,42 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(state, "waiting")
         self.assertFalse(any(call[0] == "POST" for call in self.api.calls))
 
+    def test_cancelled_run_is_not_failed_evidence_when_a_later_run_passed(self):
+        p = pull(head=C)
+        self.api.prs[1] = p
+        self.api.current.add((A, C))
+        self.api.workflows["ci.yml"] = [
+            self.source_run(conclusion="cancelled"),
+            self.source_run(run_id=2),
+        ]
+        self.api.checks[C] = [self.successful_check()]
+        state, detail = self.updater.ensure_workflow(p, "ci.yml", C, A)
+        self.assertEqual(state, "passed")
+        self.assertFalse(any(call[0] == "POST" for call in self.api.calls))
+
+    def test_cancelled_only_run_is_missing_evidence_and_can_be_dispatched(self):
+        p = pull(base=A, head=C)
+        self.api.prs[1] = p
+        self.api.current.add((A, C))
+        self.api.workflows["ci.yml"] = [self.source_run(conclusion="cancelled")]
+        state, detail = self.updater.ensure_workflow(p, "ci.yml", C, A)
+        self.assertEqual(state, "dispatched")
+        self.assertTrue(any(call[0] == "POST" for call in self.api.calls))
+
+    def test_genuine_failure_still_blocks_next_to_a_cancelled_run(self):
+        p = pull(head=C)
+        self.api.prs[1] = p
+        self.api.current.add((A, C))
+        self.api.workflows["ci.yml"] = [
+            self.source_run(conclusion="failure"),
+            self.source_run(run_id=2, conclusion="cancelled"),
+            self.source_run(run_id=3),
+        ]
+        self.api.checks[C] = [self.successful_check()]
+        state, detail = self.updater.ensure_workflow(p, "ci.yml", C, A)
+        self.assertEqual(state, "failed")
+        self.assertIn("no automatic retry", detail)
+
     def test_earlier_active_run_blocks_stale_refresh_after_a_later_success(self):
         p = pull(head=B)
         self.api.prs[1] = p

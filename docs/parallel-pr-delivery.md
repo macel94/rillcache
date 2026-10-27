@@ -86,7 +86,13 @@ and matching check suite for the actual run SHA. If **any** exact-head run is
 active, it waits; if **any** exact-head run failed, it reports that failure even
 when a later run succeeded and never dispatches a retry. Exact source identity
 also prevents old failures from blocking a genuinely fixed new source head.
-Failed evidence survives a main advance and cannot be erased by a base refresh. If no
+Failed evidence survives a main advance and cannot be erased by a base refresh.
+`cancelled` and `stale` runs are not verdicts: concurrency cancellation and a
+branch refresh routinely supersede an older run for the same head. They are
+ignored for the failed-evidence decision, while a genuine `failure`, `timed_out`
+or `startup_failure` run for that head remains sticky and blocks a retry. A
+cancelled run therefore cannot mask a real failure and cannot by itself block a
+valid head. If no
 matching run is observable, it first verifies that the branch's
 `.github/workflows/ci.yml` and `.github/workflows/pr-quality.yml` blobs still
 match protected `main` (a branch that rewrote a required workflow is reported as

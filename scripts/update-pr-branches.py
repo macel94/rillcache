@@ -22,6 +22,11 @@ REQUIRED = {
     "pr-quality.yml": "Valkey performance gate",
 }
 ACTIONS_APP_ID = 15368
+# A cancelled/stale run has no performance verdict. Concurrency cancellation
+# (`cancel-in-progress`) and branch refreshes routinely supersede an older run for
+# the same head; those runs must not become sticky failed evidence. Genuine
+# failure/timed_out/startup_failure conclusions remain failed evidence.
+NON_VERDICT_CONCLUSIONS = frozenset({"cancelled", "stale"})
 SHA = re.compile(r"^[0-9a-f]{40}$")
 MAX_PAGES = 10
 PAGE_SIZE = 100
@@ -182,7 +187,9 @@ class Updater:
 
     def matching_runs(self, pr: dict, workflow: str, head: str, base: str) -> list[dict]:
         runs = self.workflow_runs(workflow, pr["head"]["ref"])
-        matched = [r for r in runs if self.run_matches(r, pr, head, base, workflow)]
+        matched = [r for r in runs
+                   if r.get("conclusion") not in NON_VERDICT_CONCLUSIONS
+                   and self.run_matches(r, pr, head, base, workflow)]
         return sorted(matched, key=lambda r: (iso_time(r.get("created_at")), int(r.get("id", 0) or 0)))
 
     @staticmethod
@@ -213,7 +220,9 @@ class Updater:
 
     def runs_for_head(self, pr: dict, workflow: str, head: str) -> list[dict]:
         runs = self.workflow_runs(workflow, pr["head"]["ref"])
-        matched = [r for r in runs if self.run_mentions_head(r, pr, workflow, head)]
+        matched = [r for r in runs
+                   if r.get("conclusion") not in NON_VERDICT_CONCLUSIONS
+                   and self.run_mentions_head(r, pr, workflow, head)]
         return sorted(matched, key=lambda r: (iso_time(r.get("created_at")), int(r.get("id", 0) or 0)))
 
     def workflow_trusted(self, workflow: str, ref: str) -> tuple[bool, str]:
