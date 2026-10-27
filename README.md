@@ -103,10 +103,12 @@ commands and execute them under one store-wide gate, with expiry-aware optimisti
 invalidation, RESP2/RESP3 replies and a documented fail-closed version bound. See
 [transactions](docs/transactions.md).
 
-Channel and pattern pub/sub (`SUBSCRIBE`/`PSUBSCRIBE`/`PUBLISH`/`PUBSUB`) delivers
-bounded, at-most-once messages to live connections, with RESP3 push frames and ACL
-channel patterns. There is no sharded pub/sub, keyspace notification, persistence
-or replication of messages. See [pub/sub](docs/pubsub.md).
+Channel, pattern and sharded-channel pub/sub
+(`SUBSCRIBE`/`PSUBSCRIBE`/`SSUBSCRIBE`/`PUBLISH`/`SPUBLISH`/`PUBSUB`) delivers
+bounded, at-most-once messages to live connections, with separate normal/sharded
+namespaces, RESP3 push frames and ACL channel patterns. There is no cluster
+hash-slot routing, keyspace notification integration, persistence or replication
+of messages. See [pub/sub](docs/pubsub.md).
 
 Keyspace/keyevent notifications publish changed-key events to normal pub/sub
 channels under `K`/`E` and `g$lshzt`/`A` flags, with runtime `CONFIG SET`

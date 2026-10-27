@@ -88,7 +88,7 @@ fn reset_clears_pubsub_transactions_protocol_and_authentication() {
     send(
         &mut stream,
         &[b"GET", b"k"],
-        b"-ERR Can't execute 'get': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT are allowed in this context\r\n",
+        b"-ERR Can't execute 'get': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n",
     );
     send(&mut stream, &[b"RESET"], b"+RESET\r\n");
     send(

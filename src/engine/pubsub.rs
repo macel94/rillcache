@@ -20,6 +20,7 @@ struct Subscriber {
 pub(super) struct PubSub {
     channels: HashMap<Vec<u8>, Vec<Subscriber>>,
     patterns: HashMap<Vec<u8>, Vec<Subscriber>>,
+    shard_channels: HashMap<Vec<u8>, Vec<Subscriber>>,
 }
 
 impl PubSub {
@@ -45,6 +46,18 @@ impl PubSub {
         entry.push(Subscriber { id, sender, resp3 });
     }
 
+    pub(super) fn subscribe_shard(
+        &mut self,
+        name: &[u8],
+        id: u64,
+        sender: SyncSender<Vec<u8>>,
+        resp3: bool,
+    ) {
+        let entry = self.shard_channels.entry(name.to_vec()).or_default();
+        entry.retain(|subscriber| subscriber.id != id);
+        entry.push(Subscriber { id, sender, resp3 });
+    }
+
     pub(super) fn unsubscribe(&mut self, pattern: bool, name: &[u8], id: u64) -> bool {
         let table = if pattern {
             &mut self.patterns
@@ -63,8 +76,25 @@ impl PubSub {
         removed
     }
 
+    pub(super) fn unsubscribe_shard(&mut self, name: &[u8], id: u64) -> bool {
+        let Some(entry) = self.shard_channels.get_mut(name) else {
+            return false;
+        };
+        let before = entry.len();
+        entry.retain(|subscriber| subscriber.id != id);
+        let removed = entry.len() != before;
+        if entry.is_empty() {
+            self.shard_channels.remove(name);
+        }
+        removed
+    }
+
     pub(super) fn remove_client(&mut self, id: u64) {
-        for table in [&mut self.channels, &mut self.patterns] {
+        for table in [
+            &mut self.channels,
+            &mut self.patterns,
+            &mut self.shard_channels,
+        ] {
             table.retain(|_, subscribers| {
                 subscribers.retain(|subscriber| subscriber.id != id);
                 !subscribers.is_empty()
@@ -73,7 +103,11 @@ impl PubSub {
     }
 
     pub(super) fn set_resp3(&mut self, id: u64, resp3: bool) {
-        for table in [&mut self.channels, &mut self.patterns] {
+        for table in [
+            &mut self.channels,
+            &mut self.patterns,
+            &mut self.shard_channels,
+        ] {
             for subscribers in table.values_mut() {
                 for subscriber in subscribers {
                     if subscriber.id == id {
@@ -126,6 +160,50 @@ impl PubSub {
         delivered
     }
 
+    pub(super) fn publish_shard(&mut self, channel: &[u8], message: &[u8]) -> usize {
+        let mut delivered = 0;
+        for (name, subscribers) in self.shard_channels.iter_mut() {
+            if name.as_slice() != channel {
+                continue;
+            }
+            subscribers.retain(|subscriber| {
+                let frame = shard_message_frame(subscriber.resp3, channel, message);
+                if subscriber.sender.try_send(frame).is_ok() {
+                    delivered += 1;
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        self.shard_channels
+            .retain(|_, subscribers| !subscribers.is_empty());
+        delivered
+    }
+
+    pub(super) fn shard_channel_names(&self, pattern: Option<&[u8]>) -> Vec<Vec<u8>> {
+        let mut names: Vec<Vec<u8>> = self
+            .shard_channels
+            .keys()
+            .filter(|name| pattern.is_none_or(|pattern| super::keyspace::glob_match(pattern, name)))
+            .cloned()
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    pub(super) fn shard_numsub(&self, channels: &[&[u8]]) -> Vec<(Vec<u8>, usize)> {
+        channels
+            .iter()
+            .map(|channel| {
+                (
+                    channel.to_vec(),
+                    self.shard_channels.get(*channel).map_or(0, Vec::len),
+                )
+            })
+            .collect()
+    }
+
     pub(super) fn channel_names(&self, pattern: Option<&[u8]>) -> Vec<Vec<u8>> {
         let mut names: Vec<Vec<u8>> = self
             .channels
@@ -157,6 +235,7 @@ impl PubSub {
         let channels = self
             .channels
             .values()
+            .chain(self.shard_channels.values())
             .filter(|subscribers| subscribers.iter().any(|subscriber| subscriber.id == id))
             .count();
         let patterns = self
@@ -168,8 +247,18 @@ impl PubSub {
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.channels.is_empty() && self.patterns.is_empty()
+        self.channels.is_empty() && self.patterns.is_empty() && self.shard_channels.is_empty()
     }
+}
+
+fn shard_message_frame(resp3: bool, channel: &[u8], message: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(32 + channel.len() + message.len());
+    output.push(if resp3 { b'>' } else { b'*' });
+    output.extend_from_slice(b"3\r\n");
+    super::encode_bulk(Some(b"smessage"), &mut output);
+    super::encode_bulk(Some(channel), &mut output);
+    super::encode_bulk(Some(message), &mut output);
+    output
 }
 
 fn message_frame(

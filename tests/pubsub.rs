@@ -166,7 +166,7 @@ fn resp2_subscriber_mode_rejects_data_commands_but_allows_ping_and_quit() {
     send(
         &mut subscriber,
         &[b"GET", b"k"],
-        b"-ERR Can't execute 'get': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT are allowed in this context\r\n",
+        b"-ERR Can't execute 'get': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n",
     );
     send(
         &mut subscriber,

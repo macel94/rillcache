@@ -584,6 +584,42 @@ impl Store {
             .write()
             .is_ok_and(|mut pubsub| pubsub.unsubscribe(pattern, name, id))
     }
+    pub fn pubsub_subscribe_shard(
+        &self,
+        name: &[u8],
+        id: u64,
+        sender: std::sync::mpsc::SyncSender<Vec<u8>>,
+        resp3: bool,
+    ) -> bool {
+        self.pubsub.write().is_ok_and(|mut pubsub| {
+            pubsub.subscribe_shard(name, id, sender, resp3);
+            true
+        })
+    }
+
+    pub fn pubsub_unsubscribe_shard(&self, name: &[u8], id: u64) -> bool {
+        self.pubsub
+            .write()
+            .is_ok_and(|mut pubsub| pubsub.unsubscribe_shard(name, id))
+    }
+
+    pub fn publish_shard(&self, channel: &[u8], message: &[u8]) -> usize {
+        self.pubsub
+            .write()
+            .map_or(0, |mut pubsub| pubsub.publish_shard(channel, message))
+    }
+
+    pub fn pubsub_shard_channels(&self, pattern: Option<&[u8]>) -> Vec<Vec<u8>> {
+        self.pubsub
+            .read()
+            .map_or_else(|_| Vec::new(), |pubsub| pubsub.shard_channel_names(pattern))
+    }
+
+    pub fn pubsub_shard_numsub(&self, channels: &[&[u8]]) -> Vec<(Vec<u8>, usize)> {
+        self.pubsub
+            .read()
+            .map_or_else(|_| Vec::new(), |pubsub| pubsub.shard_numsub(channels))
+    }
 
     pub fn pubsub_remove_client(&self, id: u64) {
         if let Ok(mut pubsub) = self.pubsub.write() {
