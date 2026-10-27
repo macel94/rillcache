@@ -400,3 +400,89 @@ fn unsupported_command_options_are_rejected_without_reflecting_input() {
         server.shutdown().unwrap();
     }
 }
+
+#[test]
+fn command_getkeys_reuses_acl_key_specs() {
+    for mode in [None, Some(1), Some(4)] {
+        let server = start(mode);
+        let mut client = connect(&server);
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYS", b"GET", b"k"]),
+            b"*1\r\n$1\r\nk\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"GETKEYS", b"MSET", b"a", b"1", b"b", b"2"]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND", b"GETKEYS", b"SORT", b"src", b"LIMIT", b"0", b"1", b"STORE",
+                    b"out",
+                ]
+            ),
+            b"*2\r\n$3\r\nsrc\r\n$3\r\nout\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND", b"GETKEYS", b"ZUNION", b"2", b"a", b"b", b"WEIGHTS", b"1", b"2",
+                ]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND", b"GETKEYS", b"BLMPOP", b"0", b"2", b"a", b"b", b"LEFT"
+                ]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND",
+                    b"GETKEYS",
+                    b"GEORADIUS",
+                    b"geo",
+                    b"0",
+                    b"0",
+                    b"1",
+                    b"km",
+                    b"STORE",
+                    b"dest",
+                ]
+            ),
+            b"*2\r\n$3\r\ngeo\r\n$4\r\ndest\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYS", b"KEYS", b"*"]),
+            b"-ERR The command has no key arguments\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYS", b"COMMAND"]),
+            b"-ERR The command has no key arguments\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYS", b"BOGUS"]),
+            b"-ERR Invalid command specified\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYS", b"GET"]),
+            b"-ERR Invalid number of arguments specified for command\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYS"]),
+            b"-ERR wrong number of arguments for 'command|getkeys' command\r\n"
+        );
+        server.shutdown().unwrap();
+    }
+}

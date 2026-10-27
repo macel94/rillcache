@@ -93,6 +93,7 @@ reason to couple all future commands into a single large story.
 | S63 | As a list consumer, I can wait for elements across several lists so that queue workers do not poll empty keys. | S | R249–R252; BLMPOP timeout/wakeup/COUNT/MULTI/WATCH and all-mode wire tests |
 | S64 | As a collection user, I can sort by derived weights and project joined string/hash values so that ordered views match existing application keys. | S | R253–R256; BY/GET substitution/weights/ACL/errors and all-mode wire tests |
 | S65 | As a hash user, I can sample fields and atomically read-and-remove fields so that random selection and cleanup do not require multiple round trips. | XS | R257–R260; HRANDFIELD/HGETDEL shapes, TTL/WATCH/errors and all-mode wire tests |
+| S66 | As a client or operator, I can ask the server which arguments are keys for a command so that routing and ACL tooling do not duplicate command metadata. | XS | R261–R264; static/counted/store extraction, errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1118,6 +1119,22 @@ reason to couple all future commands into a single large story.
   bounded errors without partial mutation. Tests shall cover random single/count/
   negative/WITHVALUES shapes, missing keys, TTL/empty deletion, WATCH/MULTI,
   notifications and all worker modes. Hash-field expiration remains unsupported.
+
+### Command key introspection (S66)
+
+- **R261 (event-driven):** `COMMAND GETKEYS <command> [args ...]` shall resolve the
+  command case-insensitively, validate its advertised arity, and return the
+  declared key arguments or the documented invalid-command/arity/no-key errors.
+- **R262 (event-driven):** Key extraction shall reuse the ACL key-spec logic,
+  including multi-key ranges, counted key lists, STORE destinations, legacy
+  GEORADIUS destinations and sorted-set source/destination rules.
+- **R263 (event-driven):** Commands with no declared keys and dynamic lists that
+  cannot be extracted from the supplied arguments shall return bounded errors
+  rather than fabricating keys. BY/GET-derived SORT keys and dynamic XREAD keys
+  remain outside static extraction and are documented as such.
+- **R264 (ubiquitous):** Tests shall cover string, multi-key, counted, STORE,
+  GEORADIUS and no-key commands, invalid command/arity and all worker modes.
+  COMMAND GETKEYS does not change keyspace state or bypass ACL enforcement.
 
 ### Development and delivery
 

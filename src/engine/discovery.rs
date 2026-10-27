@@ -796,6 +796,39 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
                 }
             }
         }
+    } else if sub.eq_ignore_ascii_case(b"GETKEYS") {
+        if arguments.len() < 3 {
+            output.extend_from_slice(
+                b"-ERR wrong number of arguments for 'command|getkeys' command\r\n",
+            );
+            return;
+        }
+        let target = &arguments[2..];
+        let Some(item) = COMMANDS
+            .iter()
+            .find(|item| target[0].eq_ignore_ascii_case(item.name.as_bytes()))
+        else {
+            output.extend_from_slice(b"-ERR Invalid command specified\r\n");
+            return;
+        };
+        let length = target.len() as i64;
+        if (item.arity > 0 && length != item.arity) || (item.arity < 0 && length < -item.arity) {
+            output.extend_from_slice(b"-ERR Invalid number of arguments specified for command\r\n");
+            return;
+        }
+        let keys = key_arguments(target[0], target);
+        if keys.is_empty() {
+            if item.first_key <= 0 {
+                output.extend_from_slice(b"-ERR The command has no key arguments\r\n");
+            } else {
+                output.extend_from_slice(b"-ERR Invalid arguments specified for command\r\n");
+            }
+            return;
+        }
+        write_array_len(keys.len(), output);
+        for key in keys {
+            encode_bulk(Some(key), output);
+        }
     } else {
         output.extend_from_slice(b"-ERR unsupported COMMAND subcommand\r\n");
     }
