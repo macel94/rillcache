@@ -120,6 +120,7 @@ reason to couple all future commands into a single large story.
 | S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
 | S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
 | S92 | As an operator or compatibility tool, I can probe RDB, replication and multi-database commands and receive explicit standalone responses instead of misleading unknown-command errors. | XS | R347–R349; truthful LASTSAVE, explicit SAVE/BGSAVE/replica/database boundaries, data preservation and all-mode wire tests |
+| S93 | As an operator debugging a live instance, I can stream received commands with bounded output and redacted credentials without letting a slow monitor stall normal command service. | S | R350–R352; line format/bounds, redaction, RESET/QUIT cleanup, slow-reader behavior and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1610,6 +1611,27 @@ and the offline upstream harness tests.
   cover every boundary response, syntax/arity variants, data preservation and
   every worker mode. Documentation shall retain the absence of RDB persistence,
   replication/failover, multiple databases, scripts and cluster routing.
+
+### Bounded MONITOR stream (S93)
+
+- **R350 (event-driven):** `MONITOR` with no arguments shall return `+OK`,
+  register the caller for the process-local command stream and stream commands
+  from other connections. Wrong arity shall return the standard arity error, and
+  the monitor's own commands shall not be echoed back to it. `RESET`, `QUIT` and
+  disconnect shall remove the registration.
+- **R351 (event-driven):** Each monitor line shall be a simple string shaped as
+  `+<seconds>.<microseconds> [0 <peer-address>] "<command>" "<argument>" ...`,
+  escaping backslash, quotes and control bytes. Arguments shall be capped at 128
+  bytes and lines at 4 KiB. Delivery shall use a bounded queue with best-effort
+  drops for slow readers so a monitor can never block command execution.
+  `AUTH`, `HELLO ... AUTH`, `ACL SETUSER` credential rules and `CONFIG SET
+  requirepass` values shall be redacted before formatting.
+- **R352 (ubiquitous):** MONITOR shall be an admin/dangerous command, shall
+  return an explicit error when queued inside `MULTI` because it cannot change
+  session mode during `EXEC`, and all-mode tests shall cover streaming, redaction,
+  RESET, arity, slow-reader service and every worker mode. Documentation shall
+  retain that the stream is process-local, not persisted, not replayed,
+  best-effort under backpressure and not a complete audit trail.
 
 ### Error reply statistics (S84)
 
