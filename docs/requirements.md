@@ -73,6 +73,7 @@ reason to couple all future commands into a single large story.
 | S43 | As a stream consumer, I can range-read entries, inspect and acknowledge pending deliveries, and read multiple streams without blocking so that consumer groups are usable beyond one read. | S | R169–R172; ack/pending/range/read/group lifecycle and all-mode wire tests |
 | S44 | As a bitmap user, I can read and atomically update signed or unsigned bit fields of arbitrary width with wrap, saturate or fail overflow behavior. | S | R173–R176; field/offset/overflow/RO/OOM/WRONGTYPE and all-mode wire tests |
 | S45 | As a location application, I can store points, inspect their coordinates, distance and geohash, and search by radius or box so that proximity queries do not require a separate index. | M | R177–R180; encoding, distance format, search/store atomicity, errors and all-mode wire tests |
+| S46 | As a stream consumer-group operator, I can recover, reassign and inspect pending deliveries so that stalled consumers can be replaced without losing acknowledged work. | S | R181–R184; claim/autoclaim/introspection, errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -603,6 +604,32 @@ reason to couple all future commands into a single large story.
   covered by unit and all-mode wire tests. Legacy `GEORADIUS*` commands, native
   neighbour indexes and RDB interchange shall remain documented as unsupported.
 
+### Stream claiming and consumer introspection (S46)
+
+- **R181 (event-driven):** When `XCLAIM key group consumer min-idle-time id [id ...]`
+  runs, it shall claim existing pending IDs only when their idle time meets the
+  threshold, transfer ownership and update delivery time/count, prune pending IDs
+  whose stream entry no longer exists, and return claimed entries in argument
+  order. `FORCE` shall create pending state for existing entries; `JUSTID`,
+  `IDLE`, `TIME`, `RETRYCOUNT` and `LASTID` shall apply as documented without
+  changing entry payloads.
+- **R182 (event-driven):** `XAUTOCLAIM key group consumer min-idle-time start
+  [COUNT count] [JUSTID]` shall scan at most a bounded multiple of `COUNT`
+  pending entries from `start`, claim eligible entries, prune message-less
+  pending IDs, and return exactly `[next-start-id, claimed, deleted]` with
+  `JUSTID` selecting ID-only claimed rows. `COUNT` shall be positive.
+- **R183 (event-driven):** `XINFO GROUPS key` / `XINFO CONSUMERS key group` shall
+  return bounded RESP2 maps for group name/consumer count/pending count/
+  last-delivered-id/`entries-read` (null)/`lag` and consumer name/pending count/
+  `idle`/`inactive`, with missing-key, missing-group and wrong-type errors.
+- **R184 (unwanted behavior):** If a claim command has malformed minimum-idle/
+  start/ID/option/COUNT input or a missing/wrong-type key/group, it shall return
+  one bounded error without partial transfer. Successful claims shall touch the
+  stream for WATCH/journal capture, publish `xclaim`/`xautoclaim` notifications,
+  preserve payload accounting and TTL, keep pending metadata process-local, and
+  be covered by unit and all-mode wire tests. Trimming, `XSETID`, blocking and
+  history reads shall remain documented as unsupported.
+
 ### Development and delivery
 
 - **R30 (event-driven):** When `make check` is run, the project shall check formatting,
@@ -963,7 +990,8 @@ case-insensitive. Option tokens must match completely; NULs/prefixes are rejecte
 A bounded stream subset supports XADD, XDEL, XLEN, XGROUP CREATE/SETID/DESTROY/
 CREATECONSUMER/DELCONSUMER, XREADGROUP GROUP with COUNT/NOACK for new entries on
 one stream, XACK, XPENDING summary/extended, XRANGE/XREVRANGE, non-blocking XREAD
-over multiple streams, and XINFO STREAM (with FULL). See [stream limits](streams.md). All types share expiry, payload
+over multiple streams, XCLAIM/XAUTOCLAIM, and XINFO STREAM (with FULL)/GROUPS/
+CONSUMERS. See [stream limits](streams.md). All types share expiry, payload
 accounting, TYPE, RENAME and deep same-database COPY; byte-oriented KEYS and
 RANDOMKEY inspect that same keyspace. See [keyspace limits](keyspace.md).
 CONFIG GET/SET collection thresholds select actual collection representations;

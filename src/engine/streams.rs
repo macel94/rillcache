@@ -71,6 +71,10 @@ impl Store {
             self.xdel(a, out);
         } else if cmd.eq_ignore_ascii_case(b"XACK") {
             self.xack(a, out);
+        } else if cmd.eq_ignore_ascii_case(b"XCLAIM") {
+            self.xclaim(a, out);
+        } else if cmd.eq_ignore_ascii_case(b"XAUTOCLAIM") {
+            self.xautoclaim(a, out);
         } else if cmd.eq_ignore_ascii_case(b"XLEN") {
             self.xlen(a, out);
         } else if cmd.eq_ignore_ascii_case(b"XPENDING") {
@@ -587,6 +591,327 @@ impl Store {
         }
     }
 
+    fn xclaim(&self, a: &[&[u8]], out: &mut Vec<u8>) {
+        if a.len() < 6 {
+            arity("xclaim", out);
+            return;
+        }
+        let Some(min_idle) = parse_i64(a[4]) else {
+            out.extend_from_slice(b"-ERR Invalid min-idle-time argument for XCLAIM\r\n");
+            return;
+        };
+        let min_idle = min_idle.max(0);
+        let now = self.clock.now_ms().max(0);
+        let mut ids = Vec::new();
+        let mut index = 5;
+        while index < a.len() {
+            let Some(value) = id(a[index]) else {
+                break;
+            };
+            ids.push(value);
+            index += 1;
+        }
+        let mut delivery = None;
+        let mut retry = None;
+        let mut force = false;
+        let mut justid = false;
+        let mut last_id = StreamId::default();
+        while index < a.len() {
+            let token = a[index];
+            if token.eq_ignore_ascii_case(b"FORCE") {
+                force = true;
+                index += 1;
+            } else if token.eq_ignore_ascii_case(b"JUSTID") {
+                justid = true;
+                index += 1;
+            } else if token.eq_ignore_ascii_case(b"IDLE") && index + 1 < a.len() {
+                let Some(value) = parse_i64(a[index + 1]) else {
+                    out.extend_from_slice(b"-ERR Invalid IDLE option argument for XCLAIM\r\n");
+                    return;
+                };
+                delivery = Some(now.saturating_sub(value));
+                index += 2;
+            } else if token.eq_ignore_ascii_case(b"TIME") && index + 1 < a.len() {
+                let Some(value) = parse_i64(a[index + 1]) else {
+                    out.extend_from_slice(b"-ERR Invalid TIME option argument for XCLAIM\r\n");
+                    return;
+                };
+                delivery = Some(value);
+                index += 2;
+            } else if token.eq_ignore_ascii_case(b"RETRYCOUNT") && index + 1 < a.len() {
+                let Some(value) = parse_i64(a[index + 1]) else {
+                    out.extend_from_slice(
+                        b"-ERR Invalid RETRYCOUNT option argument for XCLAIM\r\n",
+                    );
+                    return;
+                };
+                retry = (value >= 0).then_some(value as u64);
+                index += 2;
+            } else if token.eq_ignore_ascii_case(b"LASTID") && index + 1 < a.len() {
+                let Some(value) = id(a[index + 1]) else {
+                    id_error(out);
+                    return;
+                };
+                last_id = value;
+                index += 2;
+            } else {
+                out.extend_from_slice(b"-ERR Unrecognized XCLAIM option '");
+                out.extend_from_slice(token);
+                out.extend_from_slice(b"'\r\n");
+                return;
+            }
+        }
+        let delivery = delivery
+            .map(|value| if value < 0 || value > now { now } else { value })
+            .unwrap_or(now);
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        data.expire_key(a[1], now);
+        let Some(entry) = data.entries.get_mut(a[1]) else {
+            out.extend_from_slice(b"-NOGROUP No such key or consumer group\r\n");
+            return;
+        };
+        let Some(stream) = entry.stream.as_mut() else {
+            out.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        };
+        let Some(group) = stream.groups.get_mut(a[2]) else {
+            out.extend_from_slice(b"-NOGROUP No such consumer group\r\n");
+            return;
+        };
+        group
+            .consumers
+            .entry(a[3].to_vec())
+            .or_insert_with(|| Consumer {
+                seen_at: now,
+                pending: Default::default(),
+            })
+            .seen_at = now;
+        let mut changed = false;
+        if last_id > group.last_delivered {
+            group.last_delivered = last_id;
+            changed = true;
+        }
+        let mut replies = Vec::new();
+        for id in ids {
+            let Some(current) = stream.entries.get(&id).cloned() else {
+                if let Some(pending) = group.pending.remove(&id) {
+                    if let Some(consumer) = group.consumers.get_mut(&pending.consumer) {
+                        consumer.pending.remove(&id);
+                    }
+                    changed = true;
+                }
+                continue;
+            };
+            let previous = group.pending.get(&id).cloned();
+            if let Some(pending) = &previous {
+                if min_idle > 0 && now.saturating_sub(pending.delivered_at) < min_idle {
+                    continue;
+                }
+            } else if !force {
+                continue;
+            }
+            let old_deliveries = previous.as_ref().map_or(0, |pending| pending.deliveries);
+            let deliveries = retry.unwrap_or_else(|| {
+                if justid {
+                    old_deliveries
+                } else {
+                    old_deliveries.saturating_add(1)
+                }
+            });
+            if let Some(pending) = &previous
+                && pending.consumer != a[3]
+                && let Some(consumer) = group.consumers.get_mut(&pending.consumer)
+            {
+                consumer.pending.remove(&id);
+            }
+            let pending = Pending {
+                consumer: a[3].to_vec(),
+                deliveries,
+                delivered_at: delivery,
+            };
+            group.pending.insert(id, pending.clone());
+            let consumer = group
+                .consumers
+                .entry(a[3].to_vec())
+                .or_insert_with(|| Consumer {
+                    seen_at: now,
+                    pending: Default::default(),
+                });
+            consumer.seen_at = now;
+            consumer.pending.insert(id, pending);
+            replies.push((id, current));
+            changed = true;
+        }
+        array(replies.len(), out);
+        for (id, entry) in replies {
+            if justid {
+                encode_bulk(Some(&id_text(id)), out);
+            } else {
+                reply_entry(id, &entry, out);
+            }
+        }
+        if changed {
+            data.touch(a[1]);
+        }
+    }
+
+    fn xautoclaim(&self, a: &[&[u8]], out: &mut Vec<u8>) {
+        if a.len() < 6 {
+            arity("xautoclaim", out);
+            return;
+        }
+        let Some(min_idle) = parse_i64(a[4]) else {
+            out.extend_from_slice(b"-ERR Invalid min-idle-time argument for XAUTOCLAIM\r\n");
+            return;
+        };
+        let min_idle = min_idle.max(0);
+        let Some(start) = bound_id(a[5], true) else {
+            id_error(out);
+            return;
+        };
+        let mut count = 100usize;
+        let mut justid = false;
+        let mut index = 6;
+        while index < a.len() {
+            let token = a[index];
+            if token.eq_ignore_ascii_case(b"COUNT") && index + 1 < a.len() {
+                let Some(value) = parse_i64(a[index + 1]).filter(|value| *value > 0) else {
+                    out.extend_from_slice(b"-ERR COUNT must be > 0\r\n");
+                    return;
+                };
+                count = usize::try_from(value).unwrap_or(usize::MAX);
+                index += 2;
+            } else if token.eq_ignore_ascii_case(b"JUSTID") {
+                justid = true;
+                index += 1;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        let now = self.clock.now_ms().max(0);
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        data.expire_key(a[1], now);
+        let Some(entry) = data.entries.get_mut(a[1]) else {
+            out.extend_from_slice(b"-NOGROUP No such key or consumer group\r\n");
+            return;
+        };
+        let Some(stream) = entry.stream.as_mut() else {
+            out.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        };
+        let Some(group) = stream.groups.get_mut(a[2]) else {
+            out.extend_from_slice(b"-NOGROUP No such consumer group\r\n");
+            return;
+        };
+        group
+            .consumers
+            .entry(a[3].to_vec())
+            .or_insert_with(|| Consumer {
+                seen_at: now,
+                pending: Default::default(),
+            })
+            .seen_at = now;
+        let attempts = count.saturating_mul(10).min(group.pending.len());
+        let candidates: Vec<(StreamId, Pending)> = group
+            .pending
+            .range((std::ops::Bound::Included(start), std::ops::Bound::Unbounded))
+            .take(attempts)
+            .map(|(id, pending)| (*id, pending.clone()))
+            .collect();
+        let mut remaining = count;
+        let mut last_examined = None;
+        let mut replies = Vec::new();
+        let mut deleted = Vec::new();
+        let mut changed = false;
+        for (id, pending) in candidates {
+            last_examined = Some(id);
+            let Some(current) = stream.entries.get(&id).cloned() else {
+                group.pending.remove(&id);
+                if let Some(consumer) = group.consumers.get_mut(&pending.consumer) {
+                    consumer.pending.remove(&id);
+                }
+                deleted.push(id);
+                changed = true;
+                remaining = remaining.saturating_sub(1);
+                if remaining == 0 {
+                    break;
+                }
+                continue;
+            };
+            if min_idle > 0 && now.saturating_sub(pending.delivered_at) < min_idle {
+                continue;
+            }
+            if pending.consumer != a[3]
+                && let Some(consumer) = group.consumers.get_mut(&pending.consumer)
+            {
+                consumer.pending.remove(&id);
+            }
+            let deliveries = if justid {
+                pending.deliveries
+            } else {
+                pending.deliveries.saturating_add(1)
+            };
+            let updated = Pending {
+                consumer: a[3].to_vec(),
+                deliveries,
+                delivered_at: now,
+            };
+            group.pending.insert(id, updated.clone());
+            let consumer = group
+                .consumers
+                .entry(a[3].to_vec())
+                .or_insert_with(|| Consumer {
+                    seen_at: now,
+                    pending: Default::default(),
+                });
+            consumer.seen_at = now;
+            consumer.pending.insert(id, updated);
+            replies.push((id, current));
+            changed = true;
+            remaining = remaining.saturating_sub(1);
+            if remaining == 0 {
+                break;
+            }
+        }
+        let cursor = last_examined
+            .and_then(|id| {
+                group
+                    .pending
+                    .range((std::ops::Bound::Excluded(id), std::ops::Bound::Unbounded))
+                    .next()
+                    .map(|(id, _)| *id)
+            })
+            .unwrap_or_default();
+        array(3, out);
+        encode_bulk(Some(&id_text(cursor)), out);
+        array(replies.len(), out);
+        for (id, entry) in replies {
+            if justid {
+                encode_bulk(Some(&id_text(id)), out);
+            } else {
+                reply_entry(id, &entry, out);
+            }
+        }
+        array(deleted.len(), out);
+        for id in deleted {
+            encode_bulk(Some(&id_text(id)), out);
+        }
+        if changed {
+            data.touch(a[1]);
+        }
+    }
+
     fn xgroup(&self, a: &[&[u8]], out: &mut Vec<u8>) {
         if a.len() < 2 {
             arity("xgroup", out);
@@ -901,8 +1226,107 @@ impl Store {
             }
         }
     }
+    fn xinfo_groups(&self, a: &[&[u8]], out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(a[2], now);
+        let Some(entry) = data.entries.get(a[2]) else {
+            out.extend_from_slice(b"-ERR no such key\r\n");
+            return;
+        };
+        let Some(stream) = entry.stream.as_ref() else {
+            out.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        };
+        array(stream.groups.len(), out);
+        for (name, group) in &stream.groups {
+            array(12, out);
+            encode_bulk(Some(b"name"), out);
+            encode_bulk(Some(name), out);
+            encode_bulk(Some(b"consumers"), out);
+            integer(group.consumers.len() as i64, out);
+            encode_bulk(Some(b"pending"), out);
+            integer(group.pending.len() as i64, out);
+            encode_bulk(Some(b"last-delivered-id"), out);
+            encode_bulk(Some(&id_text(group.last_delivered)), out);
+            encode_bulk(Some(b"entries-read"), out);
+            encode_bulk(None, out);
+            encode_bulk(Some(b"lag"), out);
+            integer(
+                stream
+                    .entries
+                    .range((
+                        std::ops::Bound::Excluded(group.last_delivered),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .count() as i64,
+                out,
+            );
+        }
+    }
+
+    fn xinfo_consumers(&self, a: &[&[u8]], out: &mut Vec<u8>) {
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(a[2], now);
+        let Some(entry) = data.entries.get(a[2]) else {
+            out.extend_from_slice(b"-ERR no such key\r\n");
+            return;
+        };
+        let Some(stream) = entry.stream.as_ref() else {
+            out.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        };
+        let Some(group) = stream.groups.get(a[3]) else {
+            out.extend_from_slice(b"-NOGROUP No such consumer group\r\n");
+            return;
+        };
+        array(group.consumers.len(), out);
+        for (name, consumer) in &group.consumers {
+            array(8, out);
+            encode_bulk(Some(b"name"), out);
+            encode_bulk(Some(name), out);
+            encode_bulk(Some(b"pending"), out);
+            integer(consumer.pending.len() as i64, out);
+            encode_bulk(Some(b"idle"), out);
+            integer(now.saturating_sub(consumer.seen_at).max(0), out);
+            encode_bulk(Some(b"inactive"), out);
+            integer(now.saturating_sub(consumer.seen_at).max(0), out);
+        }
+    }
+
     fn xinfo(&self, a: &[&[u8]], out: &mut Vec<u8>) {
-        if a.len() < 3 || !a[1].eq_ignore_ascii_case(b"STREAM") {
+        if a.len() < 2 {
+            arity("xinfo", out);
+            return;
+        }
+        if a[1].eq_ignore_ascii_case(b"GROUPS") {
+            if a.len() != 3 {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+            } else {
+                self.xinfo_groups(a, out);
+            }
+            return;
+        }
+        if a[1].eq_ignore_ascii_case(b"CONSUMERS") {
+            if a.len() != 4 {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+            } else {
+                self.xinfo_consumers(a, out);
+            }
+            return;
+        }
+        if !a[1].eq_ignore_ascii_case(b"STREAM") {
             out.extend_from_slice(b"-ERR syntax error\r\n");
             return;
         }

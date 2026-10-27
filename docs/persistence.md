@@ -136,9 +136,9 @@ do not edit a live file.
 
 Stream entries, last IDs and consumer-group IDs are rebuilt. Consumer objects and
 pending-entry-list metadata (delivery counts, owners, timestamps) are **not**
-reconstructed because the currently supported command subset has no
-`XGROUP CREATECONSUMER`/`XCLAIM` equivalent. Treat pending delivery state as
-volatile across restart; do not use this subset as a durable work queue.
+reconstructed because the journal records entries and group cursors only.
+`XACK`/`XCLAIM`/`XAUTOCLAIM` operate on that process-memory pending state; treat
+it as volatile across restart and do not use this subset as a durable work queue.
 
 ## Deliberate gaps
 
