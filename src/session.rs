@@ -1758,6 +1758,7 @@ impl Session {
         let mut id_filter = None;
         let mut type_filter = None;
         let mut user_filter: Option<Vec<u8>> = None;
+        let mut max_age = None;
         if legacy {
             addr_filter = Some(arguments[0].to_vec());
         } else {
@@ -1786,6 +1787,15 @@ impl Session {
                     }
                 } else if arguments[index].eq_ignore_ascii_case(b"USER") {
                     user_filter = Some(value.to_vec());
+                } else if arguments[index].eq_ignore_ascii_case(b"MAXAGE") {
+                    let Some(age) = std::str::from_utf8(value)
+                        .ok()
+                        .and_then(|value| value.parse::<u64>().ok())
+                    else {
+                        output.extend_from_slice(b"-ERR invalid client MAXAGE\r\n");
+                        return;
+                    };
+                    max_age = Some(age);
                 } else if arguments[index].eq_ignore_ascii_case(b"SKIPME") {
                     if !value.eq_ignore_ascii_case(b"yes") {
                         output
@@ -1814,6 +1824,9 @@ impl Session {
                 .as_deref()
                 .is_some_and(|user| snapshot.user.as_slice() != user)
             {
+                continue;
+            }
+            if max_age.is_some_and(|age| snapshot.age_ms < age) {
                 continue;
             }
             ids.push(snapshot.id);

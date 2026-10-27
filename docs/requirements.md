@@ -109,6 +109,7 @@ reason to couple all future commands into a single large story.
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
 | S82 | As an operator, I can see the configured connection limit in `INFO clients` so capacity tooling does not have to guess it. | XS | R319–R320; configured/default maxclients, INFO all and all-mode wire tests |
+| S83 | As an operator, I can kill connections by minimum age so stale or leaky clients can be reaped without knowing their IDs. | XS | R321–R322; MAXAGE matching, invalid values, caller protection and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 
 ## EARS acceptance requirements
@@ -1490,6 +1491,17 @@ and the offline upstream harness tests.
   every worker mode and `INFO all` inclusion. Documentation shall retain that the
   field reports configuration, not current capacity, blocked clients, per-client
   file descriptors or a cross-process view.
+
+### Client kill by age (S83)
+
+- **R321 (event-driven):** When `CLIENT KILL MAXAGE <milliseconds>` receives a
+  non-negative integer, the server shall kill matching connections whose age is
+  at least that value, intersecting the filter with `ID`/`ADDR`/`TYPE`/`USER`
+  filters, returning the killed count and always skipping the caller.
+- **R322 (ubiquitous):** Tests shall cover old connections being killed, a young
+  connection surviving, caller protection, invalid `MAXAGE` values, the
+  unchanged legacy form and every worker mode. Documentation shall retain the
+  absence of `SKIPME no`, fd/idle/blocked metadata and a cross-process view.
 
 ### Development and delivery
 

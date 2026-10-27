@@ -99,7 +99,8 @@ and stage the complete value before payload admission. See
 zero replicas and no fabricated replid or replica rows; replication itself is
 not implemented. See [replication status](docs/replication.md).
 
-`CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL/PAUSE/UNPAUSE` expose bounded per-connection
+`CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL` (with `MAXAGE` age filtering)
+`/PAUSE/UNPAUSE` expose bounded per-connection
 metadata and administrative connection controls; `INFO clients` reports the
 registry size. `TIME` returns wall-clock seconds/microseconds and `OBJECT
 ENCODING`/`REFCOUNT`/`HELP` expose actual storage representations and ownership;
