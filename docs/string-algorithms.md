@@ -1,9 +1,9 @@
 # Bitmap, LCS, and floating-point string operations
 
 This increment implements `SETBIT`, `GETBIT`, `BITCOUNT`, `BITPOS`, `BITOP`
-(`AND`/`OR`/`XOR`/`NOT`), `LCS` (`LEN`, `IDX`, `WITHMATCHLEN`, and
-`MINMATCHLEN`), and `INCRBYFLOAT`. `SUBSTR` is supported as the legacy alias of
-`GETRANGE`.
+(`AND`/`OR`/`XOR`/`NOT`), `BITFIELD`/`BITFIELD_RO`, `LCS` (`LEN`, `IDX`,
+`WITHMATCHLEN`, and `MINMATCHLEN`), and `INCRBYFLOAT`. `SUBSTR` is supported as
+the legacy alias of `GETRANGE`.
 
 - Bitmap bits are numbered most-significant-bit first within each byte. Reads of
   missing/out-of-range bytes return zero; writes atomically zero-fill gaps, retain
@@ -18,6 +18,15 @@ This increment implements `SETBIT`, `GETBIT`, `BITCOUNT`, `BITPOS`, `BITOP`
   the right side of a nonempty existing string as zero-padded; a missing key returns
   `0` for bit `0` and `-1` for bit `1`. Argument grammar, integer parsing and
   `BYTE`/`BIT` validation happen before key access.
+- `BITFIELD key [GET type offset] [SET type offset value] [INCRBY type offset
+  increment] [OVERFLOW WRAP|SAT|FAIL]` executes signed `i1`..`i64` and unsigned
+  `u1`..`u63` fields left-to-right. Offsets are bit positions or `#n` field
+  multiples; `SET` returns the previous field value and `INCRBY` the new value.
+  `OVERFLOW` applies to following writes: `WRAP` is the default, `SAT` clamps and
+  `FAIL` returns a null element without writing. Missing bytes read as zero and
+  writes zero-fill gaps. `BITFIELD_RO` accepts only `GET` (and `OVERFLOW`) and
+  returns the documented error for writes. All subcommands are parsed before key
+  access; the final value is payload-admitted and published once.
 - `BITOP AND|OR|XOR destination source [source ...]` combines the longest source
   with missing/short positions treated as zero; `NOT` requires exactly one source.
   An empty result deletes the destination. The destination is replaced as a string,
@@ -42,8 +51,8 @@ operations, BYTE/BIT and negative ranges, padding/empty/missing behavior, alias
 and empty-result `BITOP`, TTL clearing, wrong types, bounded writes, malformed
 arguments, finite-result rejection, LCS LEN/IDX framing, and the SUBSTR alias in
 per-client, one-worker and four-worker modes. This is not full Redis compatibility:
-`BITFIELD`/`BITFIELD_RO`, allocator exhaustion behavior and cross-platform
-long-double formatting differ from native implementations, and the explicit LCS
+allocator exhaustion behavior and cross-platform long-double formatting differ from
+native implementations, and the explicit LCS
 budget is stricter than Redis's configured transient-memory bound.
 
 Reference research: the pinned Redis 8.10.2 and Valkey 9.1.2 Tcl cases
@@ -54,5 +63,7 @@ Reference research: the pinned Redis 8.10.2 and Valkey 9.1.2 Tcl cases
 [BITCOUNT](https://redis.io/docs/latest/commands/bitcount/),
 [BITPOS](https://redis.io/docs/latest/commands/bitpos/),
 [BITOP](https://redis.io/docs/latest/commands/bitop/),
+[BITFIELD](https://redis.io/docs/latest/commands/bitfield/),
+[BITFIELD_RO](https://redis.io/docs/latest/commands/bitfield_ro/),
 [LCS](https://redis.io/docs/latest/commands/lcs/),
 [INCRBYFLOAT](https://redis.io/docs/latest/commands/incrbyfloat/).

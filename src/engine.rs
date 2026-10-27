@@ -10,6 +10,7 @@ use crate::protocol::{Limits, encode_bulk};
 mod acl_log;
 mod administration;
 mod auth;
+mod bitfield;
 mod blocking;
 mod clients;
 mod collection_commands;
@@ -374,6 +375,7 @@ impl Store {
             self.increment(arguments, name, output);
         } else if !self.execute_keyspace(arguments, output)
             && !self.execute_string_ranges(arguments, output)
+            && !self.execute_bitfield(arguments, output)
             && !self.execute_string_algorithms(arguments, output)
             && !self.execute_hll(arguments, output)
             && !self.execute_collection_commands(arguments, output)
