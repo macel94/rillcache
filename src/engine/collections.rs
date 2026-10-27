@@ -207,7 +207,7 @@ impl Store {
             Collection::Set(set)
         };
         let previous = current.map(Entry::payload_len);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -305,7 +305,7 @@ impl Store {
             Collection::Hash(hash)
         };
         let previous = current.map(Entry::payload_len);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -422,7 +422,7 @@ impl Store {
             Collection::ZSet(zset)
         };
         let previous = current.map(Entry::payload_len);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -577,7 +577,7 @@ impl Store {
         };
         let encoded = encode_list(list, config.list_max_listpack_size);
         let previous = current.map(Entry::payload_len);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };

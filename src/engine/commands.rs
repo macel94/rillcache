@@ -272,7 +272,7 @@ impl Store {
             return;
         }
         let previous = existing.map(Entry::payload_len);
-        let Some(payload) = data.reserve(key, value.len(), previous, self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, value.len(), previous, self.payload_limit(), now)
         else {
             output.extend_from_slice(OOM);
             return;
@@ -511,7 +511,7 @@ impl Store {
             arguments[1],
             encoded.len(),
             previous,
-            self.max_payload_bytes,
+            self.payload_limit(),
             now,
         ) else {
             output.extend_from_slice(OOM);

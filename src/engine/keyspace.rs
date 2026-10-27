@@ -165,7 +165,7 @@ impl Store {
             destination,
             source_payload,
             previous,
-            self.max_payload_bytes,
+            self.payload_limit(),
             now,
         ) else {
             output.extend_from_slice(options::OOM);
@@ -304,7 +304,7 @@ impl Store {
             .and_then(|remaining| remaining.checked_sub(destination_bytes))
             .and_then(|remaining| remaining.checked_add(destination.len()))
             .and_then(|remaining| remaining.checked_add(entry.payload_len()))
-            .filter(|bytes| *bytes <= self.max_payload_bytes)
+            .filter(|bytes| *bytes <= self.payload_limit())
         else {
             output.extend_from_slice(options::OOM);
             return;

@@ -2844,7 +2844,7 @@ x\r\n"
                     b"third"
                 ]
             ),
-            b"-ERR CONFIG SET option is unsupported or invalid\r\n"
+            b"-ERR maxmemory must be a positive payload byte budget\r\n"
         );
         assert_eq!(
             call(&mut admin, &store, &[b"AUTH", b"third"]),

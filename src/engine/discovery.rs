@@ -914,7 +914,7 @@ impl Store {
                     text,
                     "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
                     data.payload_bytes,
-                    self.max_payload_bytes,
+                    self.payload_limit(),
                     self.eviction_policy().name(),
                     self.notify_flags().as_string()
                 );
