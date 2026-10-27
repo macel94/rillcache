@@ -46,7 +46,21 @@ impl Store {
         {
             return true;
         }
-        if command.eq_ignore_ascii_case(b"HSETNX") {
+        if command.eq_ignore_ascii_case(b"HPEXPIRE")
+            || command.eq_ignore_ascii_case(b"HEXPIRE")
+            || command.eq_ignore_ascii_case(b"HPEXPIREAT")
+            || command.eq_ignore_ascii_case(b"HEXPIREAT")
+        {
+            self.hash_expire(args, out);
+        } else if command.eq_ignore_ascii_case(b"HPTTL")
+            || command.eq_ignore_ascii_case(b"HTTL")
+            || command.eq_ignore_ascii_case(b"HPEXPIRETIME")
+            || command.eq_ignore_ascii_case(b"HEXPIRETIME")
+        {
+            self.hash_ttl(args, out);
+        } else if command.eq_ignore_ascii_case(b"HPERSIST") {
+            self.hash_persist(args, out);
+        } else if command.eq_ignore_ascii_case(b"HSETNX") {
             self.hash_setnx(args, out);
         } else if command.eq_ignore_ascii_case(b"HDEL") {
             if args.len() < 3 {
@@ -297,6 +311,10 @@ impl Store {
         }
         true
     }
+}
+
+fn array(length: usize, out: &mut Vec<u8>) {
+    write!(out, "*{length}\r\n").expect("Vec write");
 }
 
 fn normalize_score(score: f64) -> f64 {
@@ -1125,6 +1143,7 @@ impl Store {
             }
         }
         if deleted > 0 {
+            data.remove_field_ttls(key, &args[4..]);
             if hash.is_empty() {
                 data.remove(key);
             } else {
@@ -1154,6 +1173,283 @@ impl Store {
 }
 
 impl Store {
+    fn hash_expire(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let name = if args
+            .first()
+            .is_some_and(|c| c.eq_ignore_ascii_case(b"HPEXPIRE"))
+        {
+            "hpexpire"
+        } else if args
+            .first()
+            .is_some_and(|c| c.eq_ignore_ascii_case(b"HEXPIRE"))
+        {
+            "hexpire"
+        } else if args
+            .first()
+            .is_some_and(|c| c.eq_ignore_ascii_case(b"HPEXPIREAT"))
+        {
+            "hpexpireat"
+        } else {
+            "hexpireat"
+        };
+        let command = args.first().expect("nonempty command");
+        let seconds =
+            command.eq_ignore_ascii_case(b"HEXPIRE") || command.eq_ignore_ascii_case(b"HEXPIREAT");
+        let absolute = command.eq_ignore_ascii_case(b"HPEXPIREAT")
+            || command.eq_ignore_ascii_case(b"HEXPIREAT");
+        if args.len() < 6 {
+            arity(name, out);
+            return;
+        }
+        let Some(value) = parse_i64(args[2]) else {
+            out.extend_from_slice(NOT_INTEGER);
+            return;
+        };
+        if value < 0 {
+            out.extend_from_slice(b"-ERR invalid expire time, must be >= 0\r\n");
+            return;
+        }
+        let condition = if args[3].eq_ignore_ascii_case(b"NX") {
+            Some(b'N')
+        } else if args[3].eq_ignore_ascii_case(b"XX") {
+            Some(b'X')
+        } else if args[3].eq_ignore_ascii_case(b"GT") {
+            Some(b'G')
+        } else if args[3].eq_ignore_ascii_case(b"LT") {
+            Some(b'L')
+        } else {
+            None
+        };
+        let fields_index = if condition.is_some() { 4 } else { 3 };
+        if !args
+            .get(fields_index)
+            .is_some_and(|token| token.eq_ignore_ascii_case(b"FIELDS"))
+        {
+            out.extend_from_slice(
+                b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n",
+            );
+            return;
+        }
+        let Some(count) = parse_i64(args[fields_index + 1]).filter(|count| *count > 0) else {
+            out.extend_from_slice(b"-ERR Parameter `numFields` should be greater than 0\r\n");
+            return;
+        };
+        let Ok(count) = usize::try_from(count) else {
+            out.extend_from_slice(b"-ERR Parameter `numFields` should be greater than 0\r\n");
+            return;
+        };
+        let fields_start = fields_index + 2;
+        if fields_start + count != args.len() {
+            out.extend_from_slice(
+                b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+            );
+            return;
+        }
+        let fields = &args[fields_start..];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.clock.now_ms().max(0);
+        data.expire_key(args[1], now);
+        let Some(entry) = data.entries.get(args[1]) else {
+            array(fields.len(), out);
+            for _ in fields {
+                integer(-2, out);
+            }
+            return;
+        };
+        if !entry.collection.as_ref().is_some_and(Collection::is_hash) {
+            wrong_type(out);
+            return;
+        }
+        let Some(scaled) = value.checked_mul(if seconds { 1000 } else { 1 }) else {
+            out.extend_from_slice(b"-ERR invalid expire time, must be >= 0\r\n");
+            return;
+        };
+        let Some(deadline) = (if absolute {
+            Some(scaled)
+        } else {
+            now.checked_add(scaled)
+        }) else {
+            out.extend_from_slice(b"-ERR invalid expire time, must be >= 0\r\n");
+            return;
+        };
+        array(fields.len(), out);
+        let mut updates = Vec::new();
+        for field in fields {
+            let exists = data.entries[args[1]]
+                .collection
+                .as_ref()
+                .and_then(|collection| collection.hash_get(field))
+                .is_some_and(|_| true);
+            if !exists {
+                integer(-2, out);
+                continue;
+            }
+            let current = data.entries[args[1]].field_ttl.get(*field).copied();
+            let apply = match condition {
+                Some(b'N') => current.is_none(),
+                Some(b'X') => current.is_some(),
+                Some(b'G') => current.is_some_and(|current| deadline > current),
+                Some(b'L') => current.is_none_or(|current| deadline < current),
+                _ => true,
+            };
+            if !apply {
+                integer(0, out);
+                continue;
+            }
+            updates.push((*field, deadline));
+            integer(1, out);
+        }
+        let key = args[1];
+        for (field, deadline) in updates {
+            data.set_field_ttl(key, field, deadline);
+        }
+        data.touch(key);
+    }
+
+    fn hash_ttl(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let command = args.first().expect("nonempty command");
+        let name = if command.eq_ignore_ascii_case(b"HPTTL") {
+            "hpttl"
+        } else if command.eq_ignore_ascii_case(b"HTTL") {
+            "httl"
+        } else if command.eq_ignore_ascii_case(b"HPEXPIRETIME") {
+            "hpexpiretime"
+        } else {
+            "hexpiretime"
+        };
+        let seconds =
+            command.eq_ignore_ascii_case(b"HTTL") || command.eq_ignore_ascii_case(b"HEXPIRETIME");
+        let absolute = command.eq_ignore_ascii_case(b"HPEXPIRETIME")
+            || command.eq_ignore_ascii_case(b"HEXPIRETIME");
+        if args.len() < 5 || !args[2].eq_ignore_ascii_case(b"FIELDS") {
+            arity(name, out);
+            return;
+        }
+        let Some(count) = parse_i64(args[3]).filter(|count| *count > 0) else {
+            out.extend_from_slice(b"-ERR Number of fields must be a positive integer\r\n");
+            return;
+        };
+        let Ok(count) = usize::try_from(count) else {
+            out.extend_from_slice(b"-ERR Number of fields must be a positive integer\r\n");
+            return;
+        };
+        if 4 + count != args.len() {
+            out.extend_from_slice(
+                b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+            );
+            return;
+        }
+        let fields = &args[4..];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.clock.now_ms().max(0);
+        data.expire_key(args[1], now);
+        let Some(entry) = data.entries.get(args[1]) else {
+            array(fields.len(), out);
+            for _ in fields {
+                integer(-2, out);
+            }
+            return;
+        };
+        if !entry.collection.as_ref().is_some_and(Collection::is_hash) {
+            wrong_type(out);
+            return;
+        }
+        array(fields.len(), out);
+        for field in fields {
+            let exists = data.entries[args[1]]
+                .collection
+                .as_ref()
+                .and_then(|collection| collection.hash_get(field))
+                .is_some_and(|_| true);
+            if !exists {
+                integer(-2, out);
+                continue;
+            }
+            let Some(deadline) = data.entries[args[1]].field_ttl.get(*field).copied() else {
+                integer(-1, out);
+                continue;
+            };
+            let value = if absolute {
+                deadline
+            } else {
+                (deadline - now).max(0)
+            };
+            integer(
+                if seconds {
+                    value.saturating_add(999) / 1000
+                } else {
+                    value
+                },
+                out,
+            );
+        }
+    }
+
+    fn hash_persist(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        if args.len() < 5 || !args[2].eq_ignore_ascii_case(b"FIELDS") {
+            arity("hpersist", out);
+            return;
+        }
+        let Some(count) = parse_i64(args[3]).filter(|count| *count > 0) else {
+            out.extend_from_slice(b"-ERR Number of fields must be a positive integer\r\n");
+            return;
+        };
+        let Ok(count) = usize::try_from(count) else {
+            out.extend_from_slice(b"-ERR Number of fields must be a positive integer\r\n");
+            return;
+        };
+        if 4 + count != args.len() {
+            out.extend_from_slice(
+                b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+            );
+            return;
+        }
+        let fields = &args[4..];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.clock.now_ms().max(0);
+        data.expire_key(args[1], now);
+        let Some(entry) = data.entries.get(args[1]) else {
+            array(fields.len(), out);
+            for _ in fields {
+                integer(-2, out);
+            }
+            return;
+        };
+        if !entry.collection.as_ref().is_some_and(Collection::is_hash) {
+            wrong_type(out);
+            return;
+        }
+        array(fields.len(), out);
+        let mut removed = false;
+        for field in fields {
+            let exists = data.entries[args[1]]
+                .collection
+                .as_ref()
+                .and_then(|collection| collection.hash_get(field))
+                .is_some_and(|_| true);
+            if !exists {
+                integer(-2, out);
+            } else if data.persist_field(args[1], field) {
+                removed = true;
+                integer(1, out);
+            } else {
+                integer(-1, out);
+            }
+        }
+        if removed {
+            data.touch(args[1]);
+        }
+    }
+
     fn hash_setnx(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         if args.len() != 4 {
             arity("hsetnx", out);
@@ -1242,6 +1538,7 @@ impl Store {
             integer(0, out);
             return;
         }
+        data.remove_field_ttls(key, &args[2..]);
         if hash.is_empty() {
             data.remove(key);
             integer(removed, out);

@@ -38,8 +38,10 @@ distinct fields for positive counts and duplicate-capable fields for negative
 counts, adding values when requested. `HGETDEL key FIELDS numfields field
 [field ...]` returns requested values (null for missing fields), atomically
 deletes present fields, deletes an emptied hash key, and preserves remaining TTL
-and payload accounting. Hash-field expiration (`HGETEX`/`HSETEX`/`HPEXPIRE`)
-remains unsupported.
+and payload accounting. Per-field TTL controls use `HEXPIRE`/`HPEXPIRE`,
+`HEXPIREAT`/`HPEXPIREAT`, `HTTL`/`HPTTL`, `HEXPIRETIME`/`HPEXPIRETIME` and
+`HPERSIST`; field deadlines are lazy and purge on hash access. `HGETEX`/`HSETEX`
+conveniences remain unsupported.
 
 Mutation commands stage their complete replacement value and check the configured
 key/value payload budget before publishing; failed writes preserve the previous

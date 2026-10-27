@@ -305,6 +305,13 @@ impl Store {
             return;
         };
         data.put_collection(key, encoded, expires, payload, now);
+        let fields: Vec<&[u8]> = args[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| pair[0])
+            .collect();
+        data.remove_field_ttls(key, &fields);
         integer(added, out);
     }
 
