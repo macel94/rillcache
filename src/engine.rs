@@ -298,6 +298,38 @@ impl Store {
     /// Dispatch without the transaction gate; only `EXEC` may call this while
     /// holding the gate's write side.
     pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        // The three hottest data commands bypass specialized module dispatch.
+        if let Some(command) = arguments.first() {
+            if command.eq_ignore_ascii_case(b"PING") {
+                match arguments.len() {
+                    1 => output.extend_from_slice(b"+PONG\r\n"),
+                    2 => encode_bulk(Some(arguments[1]), output),
+                    _ => arity("ping", output),
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"GET") {
+                if arguments.len() != 2 {
+                    arity("get", output);
+                } else {
+                    self.get(arguments[1], output);
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"SET") {
+                if arguments.len() < 3 {
+                    arity("set", output);
+                } else {
+                    match SetOptions::parse(&arguments[3..], false) {
+                        Ok(options) => {
+                            self.set(arguments[1], arguments[2], options, "set", false, output)
+                        }
+                        Err(error) => output.extend_from_slice(error),
+                    }
+                }
+                return Action::Continue;
+            }
+        }
         if self.execute_collection_config(arguments, output)
             || self.execute_admin(arguments, output)
             || self.execute_scan(arguments, output)
@@ -311,30 +343,7 @@ impl Store {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
-        if command.eq_ignore_ascii_case(b"PING") {
-            match arguments.len() {
-                1 => output.extend_from_slice(b"+PONG\r\n"),
-                2 => encode_bulk(Some(arguments[1]), output),
-                _ => arity("ping", output),
-            }
-        } else if command.eq_ignore_ascii_case(b"GET") {
-            if arguments.len() != 2 {
-                arity("get", output);
-            } else {
-                self.get(arguments[1], output);
-            }
-        } else if command.eq_ignore_ascii_case(b"SET") {
-            if arguments.len() < 3 {
-                arity("set", output);
-            } else {
-                match SetOptions::parse(&arguments[3..], false) {
-                    Ok(options) => {
-                        self.set(arguments[1], arguments[2], options, "set", false, output)
-                    }
-                    Err(error) => output.extend_from_slice(error),
-                }
-            }
-        } else if command.eq_ignore_ascii_case(b"ECHO") {
+        if command.eq_ignore_ascii_case(b"ECHO") {
             if arguments.len() == 2 {
                 encode_bulk(Some(arguments[1]), output);
             } else {
@@ -773,8 +782,10 @@ impl Store {
 
     pub fn set_notify_flags(&self, flags: NotifyFlags) {
         // Events queued while a class was disabled are stale for delivery.
+        let collect = self.journal.is_some() || flags.bits() != 0;
         if let Ok(mut data) = self.data.write() {
             data.clear_lifecycle();
+            data.set_collect_events(collect);
         }
         self.notifications.store(flags.bits(), Ordering::Release);
     }

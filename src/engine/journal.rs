@@ -350,6 +350,9 @@ impl Store {
     pub(super) fn attach_journal(&mut self, journal: Journal) {
         self.journal_limits = journal.limits();
         self.journal = Some(std::sync::Mutex::new(journal));
+        if let Ok(mut data) = self.data.write() {
+            data.set_collect_events(true);
+        }
     }
 
     pub(super) fn journal_marks(&self) -> Option<(u64, u64)> {
