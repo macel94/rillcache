@@ -15,6 +15,7 @@ pub struct ClientRecord {
     pub(super) resp3: bool,
     pub(super) user: Option<Vec<u8>>,
     pub(super) created: Instant,
+    pub(super) blocked: std::sync::atomic::AtomicBool,
     pub(super) control: Option<TcpStream>,
 }
 
@@ -29,6 +30,7 @@ pub struct ClientSnapshot {
     pub user: Vec<u8>,
     pub age_seconds: u64,
     pub age_ms: u64,
+    pub blocked: bool,
     pub sub: usize,
     pub psub: usize,
 }
@@ -102,6 +104,7 @@ impl Store {
                     resp3: false,
                     user: None,
                     created: Instant::now(),
+                    blocked: std::sync::atomic::AtomicBool::new(false),
                     control: Some(control),
                 },
             );
@@ -159,12 +162,32 @@ impl Store {
                 user: record.user.clone().unwrap_or_else(|| b"default".to_vec()),
                 age_seconds: record.created.elapsed().as_secs(),
                 age_ms: u64::try_from(record.created.elapsed().as_millis()).unwrap_or(u64::MAX),
+                blocked: record.blocked.load(std::sync::atomic::Ordering::Relaxed),
                 sub,
                 psub,
             });
         }
         snapshots.sort_unstable_by_key(|snapshot| snapshot.id);
         snapshots
+    }
+
+    pub fn set_client_blocked(&self, id: u64, blocked: bool) {
+        if let Ok(clients) = self.clients.read()
+            && let Some(record) = clients.get(&id)
+        {
+            record
+                .blocked
+                .store(blocked, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub fn blocked_clients(&self) -> usize {
+        self.clients.read().map_or(0, |clients| {
+            clients
+                .values()
+                .filter(|record| record.blocked.load(std::sync::atomic::Ordering::Relaxed))
+                .count()
+        })
     }
 
     pub fn client_snapshot(&self, id: u64) -> Option<ClientSnapshot> {

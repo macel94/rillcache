@@ -110,6 +110,7 @@ reason to couple all future commands into a single large story.
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
 | S82 | As an operator, I can see the configured connection limit in `INFO clients` so capacity tooling does not have to guess it. | XS | R319–R320; configured/default maxclients, INFO all and all-mode wire tests |
 | S83 | As an operator, I can kill connections by minimum age so stale or leaky clients can be reaped without knowing their IDs. | XS | R321–R322; MAXAGE matching, invalid values, caller protection and all-mode wire tests |
+| S84 | As an operator, I can see how many connections are blocked and which they are so waiters and stuck workers are diagnosable. | XS | R323–R325; blocked_clients, `b` flag, wake/timeout clearing and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 
 ## EARS acceptance requirements
@@ -1502,6 +1503,19 @@ and the offline upstream harness tests.
   connection surviving, caller protection, invalid `MAXAGE` values, the
   unchanged legacy form and every worker mode. Documentation shall retain the
   absence of `SKIPME no`, fd/idle/blocked metadata and a cross-process view.
+
+### Blocked-client visibility (S84)
+
+- **R323 (event-driven):** When a connection enters a blocking command, the server
+  shall mark it blocked in the client registry; when the command completes,
+  times out or the connection resets/disconnects, the mark shall be cleared.
+- **R324 (event-driven):** `INFO clients` and `INFO all` shall report a
+  `blocked_clients` count derived from that registry state, and `CLIENT LIST`
+  shall include `b` in the flags of blocked connections alongside `N`/`P`.
+- **R325 (ubiquitous):** Tests shall cover a waiter becoming visible, wake-up
+  clearing the count, timeout/disconnect/reset clearing, `CLIENT LIST` flags and
+  every worker mode. Documentation shall retain that this is a process-local
+  registry view with no fd/idle/buffer/memory metadata or cross-process claim.
 
 ### Development and delivery
 
