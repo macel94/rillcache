@@ -55,8 +55,8 @@ pub use journal::FsyncPolicy;
 pub use notify::{Category as NotifyCategory, NotifyFlags};
 use options::{Condition, ExpiryKind, SetOptions};
 pub(crate) use streams::{
-    XReadGroupOptions, XReadGroupOutcome, XReadOutcome, parse_xread, parse_xreadgroup, xread_reply,
-    xreadgroup_reply,
+    XReadGroupOptions, XReadGroupOutcome, XReadGroupStart, XReadOutcome, parse_xread,
+    parse_xreadgroup, xread_reply, xreadgroup_reply,
 };
 pub use transaction::{TransactionOutcome, WatchState};
 

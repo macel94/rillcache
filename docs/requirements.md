@@ -94,6 +94,7 @@ reason to couple all future commands into a single large story.
 | S64 | As a collection user, I can sort by derived weights and project joined string/hash values so that ordered views match existing application keys. | S | R253–R256; BY/GET substitution/weights/ACL/errors and all-mode wire tests |
 | S65 | As a hash user, I can sample fields and atomically read-and-remove fields so that random selection and cleanup do not require multiple round trips. | XS | R257–R260; HRANDFIELD/HGETDEL shapes, TTL/WATCH/errors and all-mode wire tests |
 | S66 | As a client or operator, I can ask the server which arguments are keys for a command so that routing and ACL tooling do not duplicate command metadata. | XS | R261–R264; static/counted/store extraction, errors and all-mode wire tests |
+| S67 | As a stream consumer, I can read new or pending history entries across several group streams in one command so that sharded workloads avoid per-stream round trips. | S | R265–R268; multi-stream new/history/mixed/BLOCK/count/errors and all-mode wire tests |
 | S68 | As a list user, I can move elements between two lists atomically, including blocking until a source element exists, so that queues and worker handoff do not need read-then-write races. | S | R269–R272; LMOVE/RPOPLPUSH sides, same-key rotation, TTL/OOM, blocking wake/timeout, MULTI/WATCH and all-mode wire tests |
 
 ## EARS acceptance requirements
@@ -847,8 +848,7 @@ reason to couple all future commands into a single large story.
 - **R216 (unwanted behavior):** Tests shall cover exact/approximate MAXLEN and
   MINID, `=`/`~`, LIMIT bounds, NOMKSTREAM on missing/existing keys, TTL,
   wrong types, malformed options/IDs, MULTI, WATCH, OOM and all worker modes.
-  XADD trim shall publish the `xadd` event only; blocking `XREADGROUP` and
-  multi-stream history shall remain documented as unsupported.
+  XADD trim shall publish the `xadd` event only.
 
 ### Legacy geospatial radius aliases (S55)
 
@@ -950,13 +950,12 @@ reason to couple all future commands into a single large story.
   errors naming the requested key/group, and wrong-type keys shall return
   WRONGTYPE. History reads shall touch the stream for WATCH/journal capture and
   follow the existing `xreadgroup` notification behavior without claiming durable
-  pending state. History mode shall remain limited to one stream per command.
+  pending state. Multiple history streams are specified in S66.
 - **R232 (ubiquitous):** Tests shall cover full/partial/deleted pending history,
   ordering, COUNT, no-pending and absent-consumer behavior, delivery-count/time
   updates, unchanged group cursors, NOACK, `$`/malformed-ID/NOGROUP/WRONGTYPE
-  errors, WATCH conflicts and all worker modes. Blocking XREAD/XREADGROUP,
-  multi-stream history and durable pending restoration shall remain documented as
-  unsupported.
+  errors, WATCH conflicts and all worker modes. Durable pending restoration shall
+  remain documented as unsupported.
 
 ### Blocking stream reads (S59)
 
@@ -1138,6 +1137,31 @@ reason to couple all future commands into a single large story.
   GEORADIUS and no-key commands, invalid command/arity and all worker modes.
   COMMAND GETKEYS does not change keyspace state or bypass ACL enforcement.
 
+### Multi-stream consumer-group reads (S67)
+
+- **R265 (event-driven):** `XREADGROUP GROUP group consumer [COUNT n] [BLOCK ms]
+  [NOACK] STREAMS key [key ...] id [id ...]` shall require an even, non-empty
+  key/ID list and parse each ID independently as `>` or a history ID. `$`,
+  malformed IDs and unbalanced lists shall fail before key access; COUNT shall
+  apply per stream.
+- **R266 (event-driven):** New `>` streams shall deliver entries above their own
+  group cursor, advance cursors and add pending records unless NOACK is set.
+  History streams shall return that consumer's owned pending IDs above the given
+  ID, including the four stream shape and null fields for deleted entries, even
+  when empty. Delivery counts/times are updated for returned history records.
+  Results shall follow key argument order.
+- **R267 (state-driven):** The whole command shall validate every key type and
+  group before mutating any stream; a missing key/group or wrong type on a later
+  stream shall fail the command without earlier cursor/pending changes. Mixed
+  new/history and all-history commands shall return immediately. BLOCK shall wait
+  only when every ID is `>` and shall wake on appends to any listed stream;
+  finite timeouts return null, and `MULTI` runs one non-blocking attempt.
+- **R268 (ubiquitous):** Tests shall cover multi-stream new/new, history/history,
+  mixed reads, per-stream COUNT, NOACK, empty/deleted history, argument-order
+  replies, validation atomicity, BLOCK all-new wake/timeout, mixed BLOCK
+  immediacy, MULTI, `$`/unbalanced/missing-group/wrong-type errors, notifications
+  and all worker modes. Durable pending restoration and replication remain
+  unsupported. (feat: add multi-stream consumer-group reads)
 ### List element moves (S68)
 
 - **R269 (event-driven):** `LMOVE source destination LEFT|RIGHT LEFT|RIGHT` and
@@ -1526,7 +1550,7 @@ case-insensitive. Option tokens must match completely; NULs/prefixes are rejecte
 A bounded stream subset supports XADD with NOMKSTREAM/MAXLEN/MINID retention,
 XDEL, XLEN, XGROUP CREATE/SETID/DESTROY/
 CREATECONSUMER/DELCONSUMER, XREADGROUP GROUP with COUNT/NOACK for new entries on
-one stream with new-entry and history reads, XACK, XPENDING summary/extended,
+one or more streams with new-entry and history reads, XACK, XPENDING summary/extended,
 XRANGE/XREVRANGE, non-blocking and blocking XREAD over multiple streams,
 XCLAIM/XAUTOCLAIM, XTRIM, XSETID, blocking group reads, and XINFO STREAM (with
 FULL)/GROUPS/CONSUMERS. See [stream limits](streams.md). All types share expiry, payload

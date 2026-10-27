@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use crate::engine::{
     Access, AclError, Action, AuthError, ListMoveOutcome, ListPopOutcome, PopOutcome, Store,
-    StreamId, TransactionOutcome, WatchState, XReadGroupOptions, XReadGroupOutcome, XReadOutcome,
-    ZSetPopOutcome, blocking_lmpop_reply, blocking_reply, blocking_zpop_reply, list_move_reply,
-    parse_bzmpop_timeout, parse_list_mpop, parse_mpop, parse_side, parse_xread, parse_xreadgroup,
-    xread_reply, xreadgroup_reply,
+    StreamId, TransactionOutcome, WatchState, XReadGroupOptions, XReadGroupOutcome,
+    XReadGroupStart, XReadOutcome, ZSetPopOutcome, blocking_lmpop_reply, blocking_reply,
+    blocking_zpop_reply, list_move_reply, parse_bzmpop_timeout, parse_list_mpop, parse_mpop,
+    parse_side, parse_xread, parse_xreadgroup, xread_reply, xreadgroup_reply,
 };
 use crate::protocol::encode_bulk;
 
@@ -275,7 +275,10 @@ impl Session {
         if command.eq_ignore_ascii_case(b"XREADGROUP")
             && let Ok(options) = parse_xreadgroup(arguments)
             && options.block.is_some()
-            && options.history.is_none()
+            && options
+                .starts
+                .iter()
+                .all(|start| matches!(start, XReadGroupStart::New))
         {
             self.blocking_xreadgroup(store, &options, output);
             return Action::Continue;
@@ -1180,7 +1183,7 @@ impl Session {
         match store.blocking_xreadgroup(options) {
             XReadGroupOutcome::Empty => {}
             outcome => {
-                xreadgroup_reply(outcome, options.key, options.group, output);
+                xreadgroup_reply(outcome, options.group, output);
                 return;
             }
         }
@@ -1191,7 +1194,7 @@ impl Session {
             Instant::now().checked_add(Duration::from_millis(block))
         };
         self.blocked = Some(Blocked {
-            keys: vec![options.key.to_vec()],
+            keys: options.keys.iter().map(|key| key.to_vec()).collect(),
             deadline,
             kind: BlockedKind::XReadGroup {
                 group: options.group.to_vec(),
@@ -1269,15 +1272,15 @@ impl Session {
                     count,
                     block: None,
                     noack,
-                    key: keys[0],
                     group: &group,
                     consumer: &consumer,
-                    history: None,
+                    keys: keys.clone(),
+                    starts: vec![XReadGroupStart::New; keys.len()],
                 };
                 match store.blocking_xreadgroup(&options) {
                     XReadGroupOutcome::Empty => false,
                     outcome => {
-                        xreadgroup_reply(outcome, keys[0], &group, &mut reply);
+                        xreadgroup_reply(outcome, &group, &mut reply);
                         true
                     }
                 }
