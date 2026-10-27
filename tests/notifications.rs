@@ -910,3 +910,37 @@ fn sort_store_emits_sortstore_and_deletion_events() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn lmpop_emits_multipop_event() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(&mut writer, &[b"RPUSH", b"l", b"a", b"b"], b":2\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:rpush",
+            b"l"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"LMPOP", b"1", b"l", b"LEFT"],
+        b"*2\r\n$1\r\nl\r\n*1\r\n$1\r\na\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:lmpop",
+            b"l"
+        ])
+    );
+    server.shutdown().unwrap();
+}
