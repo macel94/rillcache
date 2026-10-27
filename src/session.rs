@@ -161,7 +161,11 @@ impl Session {
                 }
             }
         }
-        action
+        if store.shutdown_requested() {
+            Action::Close
+        } else {
+            action
+        }
     }
 
     fn record_slowlog(&self, store: &Store, arguments: &[&[u8]], started: Instant) {
@@ -558,6 +562,11 @@ impl Session {
             return;
         };
         let command = arguments[0];
+        if command.eq_ignore_ascii_case(b"SHUTDOWN") {
+            multi.dirty = true;
+            output.extend_from_slice(b"-ERR SHUTDOWN is not allowed in transactions\r\n");
+            return;
+        }
         if is_session_command(command) {
             multi.dirty = true;
             output.extend_from_slice(b"-ERR session commands are not supported inside MULTI\r\n");

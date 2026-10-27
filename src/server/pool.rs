@@ -311,7 +311,7 @@ pub(super) fn serve(
                     let mut chunk = [0; 16 * 1024];
                     let mut maintenance = Instant::now();
                     let mut polling = PollWindow::new(maintenance);
-                    while !stop.load(Ordering::Acquire) {
+                    while !stop.load(Ordering::Acquire) && !store.shutdown_requested() {
                         if reaper && maintenance.elapsed() >= Duration::from_millis(100) {
                             let _ = store.journal_sync();
                             store.purge_expired(128);
@@ -363,6 +363,10 @@ pub(super) fn serve(
         }
         let mut next = 0;
         while !stopping.load(Ordering::Acquire) {
+            if store.shutdown_requested() {
+                stopping.store(true, Ordering::Release);
+                break;
+            }
             if lanes.iter().any(|lane| lane.thread.is_finished()) {
                 if stopping.load(Ordering::Acquire) {
                     break;

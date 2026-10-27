@@ -301,6 +301,9 @@ fn latency_records_orders_and_resets_measured_commands_in_all_modes() {
             &[b"CONFIG", b"SET", b"latency-monitor-threshold", b"100000"],
             b"+OK\r\n",
         );
+        // Clear samples recorded by earlier low-threshold assertions before
+        // checking that the raised threshold suppresses the next command.
+        command(&mut stream, &[b"LATENCY", b"RESET"], b":0\r\n");
         command(
             &mut stream,
             &[b"SORT", b"sortable", b"STORE", b"sorted"],

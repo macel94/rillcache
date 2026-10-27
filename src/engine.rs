@@ -125,6 +125,7 @@ pub struct Store {
     client_pause: std::sync::atomic::AtomicU64,
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
+    shutdown_requested: AtomicBool,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -186,6 +187,7 @@ impl Store {
                 latency::DEFAULT_THRESHOLD_MS,
             ),
             latency: std::sync::RwLock::new(latency::State::default()),
+            shutdown_requested: AtomicBool::new(false),
         }
     }
     /// Select verified vendor-specific error wording before sharing the store.
@@ -197,6 +199,14 @@ impl Store {
 
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
     /// Every lookup still treats logically expired entries as absent immediately.
+    pub(crate) fn request_shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire)
+    }
+
     pub fn purge_expired(&self, limit: usize) -> usize {
         let started = self.latency_enabled().then(std::time::Instant::now);
         let Ok(_gate) = self.transaction_gate.read() else {

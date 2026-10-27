@@ -22,6 +22,10 @@ impl Store {
             }
             return true;
         }
+        if command.eq_ignore_ascii_case(b"SHUTDOWN") {
+            shutdown(self, args, out);
+            return true;
+        }
         if command.eq_ignore_ascii_case(b"CONFIG") {
             config(self, args, out);
             return true;
@@ -109,6 +113,39 @@ impl Store {
 
 fn flush_mode(arg: &[u8]) -> bool {
     arg.eq_ignore_ascii_case(b"SYNC") || arg.eq_ignore_ascii_case(b"ASYNC")
+}
+
+fn shutdown(store: &Store, args: &[&[u8]], out: &mut Vec<u8>) {
+    let mut nosave = false;
+    let mut save = false;
+    let mut abort = false;
+    for argument in &args[1..] {
+        if argument.eq_ignore_ascii_case(b"NOSAVE") {
+            nosave = true;
+        } else if argument.eq_ignore_ascii_case(b"SAVE") {
+            save = true;
+        } else if argument.eq_ignore_ascii_case(b"NOW") || argument.eq_ignore_ascii_case(b"FORCE") {
+            // Shutdown is immediate in this server; these modifiers are no-ops.
+        } else if argument.eq_ignore_ascii_case(b"ABORT") {
+            abort = true;
+        } else {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+    }
+    if (abort && (nosave || save || args.len() > 2)) || (nosave && save) {
+        out.extend_from_slice(b"-ERR syntax error\r\n");
+        return;
+    }
+    if abort {
+        out.extend_from_slice(b"-ERR No shutdown in progress.\r\n");
+        return;
+    }
+    if store.journal_flush().is_err() {
+        out.extend_from_slice(b"-ERR append-only journal sync failed\r\n");
+        return;
+    }
+    store.request_shutdown();
 }
 
 fn config(store: &Store, args: &[&[u8]], out: &mut Vec<u8>) {
