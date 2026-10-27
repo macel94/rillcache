@@ -25,7 +25,12 @@ owned value/tree after checking NX rejection and final payload admission.
 - `XREADGROUP GROUP group consumer [COUNT n] [NOACK] STREAMS key >` for a
   single stream and new entries. COUNT is per stream. A normal delivery updates
   the consumer and group pending-entry state; NOACK advances the group without
-  adding pending entries.
+  adding pending entries. A non-`>` ID selects that consumer's pending history
+  with IDs greater than the supplied ID in ascending order: present entries carry
+  their fields, deleted pending IDs return a null fields array, and an empty range
+  returns the stream key with no entries. History creates a missing consumer and
+  increments delivery counts/times for returned pending records without advancing
+  the group cursor; `NOACK` does not suppress those updates. `$` is rejected.
 - `XACK key group id [id ...]` removes owned pending entries from the group and
   consumer and returns the acknowledged count.
 - `XCLAIM key group consumer min-idle-time id [id ...] [IDLE ms] [TIME ms]
@@ -72,9 +77,9 @@ owned value/tree after checking NX rejection and final payload admission.
 ## Limits
 
 This is not Redis Streams feature completeness. Blocking `XREAD`/`XREADGROUP`,
-history reads from a consumer's pending list, replication and durable
-pending/consumer restoration are unsupported. `XSETID` metadata is journaled, but
-pending owners/delivery counters remain volatile. XTRIM's
+multi-stream history reads, replication and durable pending/consumer restoration
+are unsupported. History reads cover one stream per command. `XSETID` metadata is
+journaled, but pending owners/delivery counters remain volatile. XTRIM's
 `~` mode removes an exact number of entries up to the LIMIT/default bound rather
 than Redis's listpack-node granularity, so it never leaves more entries than the
 bound but may remove fewer than a native approximate trim. `XREAD` declares no static key positions, so ACL key

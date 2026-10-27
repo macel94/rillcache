@@ -85,6 +85,7 @@ reason to couple all future commands into a single large story.
 | S55 | As a legacy geospatial client, I can use the GEORADIUS command family without rewriting clients to GEOSEARCH so existing radius and store workflows keep working. | M | R217–R220; aliases/RO/store/storedist/options, ACL and all-mode wire tests |
 | S56 | As a collection user, I can sort list, set and sorted-set values with limits and optionally store the result so that ordered projections do not require client-side work. | S | R221–R224; numeric/alpha/limit/store/RO/errors and all-mode wire tests |
 | S57 | As a stream operator, I can align a stream's last ID and retention counters after restore so that producers and groups resume without ID conflicts. | S | R225–R228; last-id/entries-added/max-deleted validation, XINFO, WATCH and all-mode wire tests |
+| S58 | As a stream consumer, I can re-read my owned pending deliveries from a chosen ID so that recovery workflows can inspect and replay unacknowledged work. | S | R229–R232; history IDs/deleted entries/delivery updates/errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -919,6 +920,34 @@ reason to couple all future commands into a single large story.
   ordering, XDEL/trim counter updates, MULTI, WATCH conflicts, restart replay and
   all worker modes.
 
+### Stream consumer history reads (S58)
+
+- **R229 (event-driven):** `XREADGROUP GROUP group consumer [COUNT n] [NOACK]
+  STREAMS key id` shall treat `>` as a new-entry read but any other ID as a
+  history read of that consumer's pending entries. `$` shall return the documented
+  "meaningless" error, malformed IDs shall fail before key access, and `COUNT`
+  shall cap the returned pending range while `NOACK` shall not suppress history
+  metadata updates.
+- **R230 (event-driven):** A history read shall return `[key, entries]` for the
+  single supported stream, selecting pending entries owned by that consumer with
+  IDs greater than the requested ID in ascending order. Present entries shall
+  include their fields, deleted pending IDs shall return a null fields array, and
+  an empty result shall still return the key with an empty entries array. The
+  consumer shall be created when absent, and each returned pending record shall
+  increment its delivery count and advance its delivery time while leaving the
+  group's last-delivered ID unchanged.
+- **R231 (unwanted behavior):** Missing keys/groups shall return bounded NOGROUP
+  errors naming the requested key/group, and wrong-type keys shall return
+  WRONGTYPE. History reads shall touch the stream for WATCH/journal capture and
+  follow the existing `xreadgroup` notification behavior without claiming durable
+  pending state. History mode shall remain limited to one stream per command.
+- **R232 (ubiquitous):** Tests shall cover full/partial/deleted pending history,
+  ordering, COUNT, no-pending and absent-consumer behavior, delivery-count/time
+  updates, unchanged group cursors, NOACK, `$`/malformed-ID/NOGROUP/WRONGTYPE
+  errors, WATCH conflicts and all worker modes. Blocking XREAD/XREADGROUP,
+  multi-stream history and durable pending restoration shall remain documented as
+  unsupported.
+
 ### Development and delivery
 
 - **R30 (event-driven):** When `make check` is run, the project shall check formatting,
@@ -1262,7 +1291,8 @@ MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store
 commands, score/rank/lex ranges, range storage, random members, sorted-set
 algebra/cardinality/multi-pop, blocking multi-pop, pops, bounded
-`BLPOP`/`BRPOP` and stream `XSETID` metadata control documented
+`BLPOP`/`BRPOP`, stream `XSETID` metadata control and consumer history reads
+documented
 in [typed collections](collections.md); geospatial sorted sets (`GEOADD`,
 `GEOPOS`, `GEODIST`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`) documented in
 [geospatial limits](geospatial.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor
