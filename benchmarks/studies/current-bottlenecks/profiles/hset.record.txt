@@ -1,0 +1,2 @@
+[ perf record: Woken up 84 times to write data ]
+[ perf record: Captured and wrote 20.542 MB /tmp/rillcache-bottlenecks-20261027/profiles/hset.data (2520 samples) ]

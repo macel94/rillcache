@@ -1,5 +1,12 @@
 # Profile-guided benchmark studies
 
+## Current-source bottlenecks: `f33b44c` (2026-10-27/28)
+
+[Measured collection and administrative-query scaling](current-bottlenecks/README.md):
+84 reply-checked component samples across seven workloads/four sizes, flat PING/HGET
+controls, five separately instrumented CPU profiles, reproducible diagnostics and
+complete spreads/tails/loss disclosure. No server optimization or TCP gain is claimed.
+
 ## Client I/O handoffs: `6cea8cc` → `0157177`
 
 [Latest measured results, design and limits](client-handoffs/README.md): the

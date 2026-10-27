@@ -1,0 +1,7 @@
+[ perf record: Woken up 47 times to write data ]
+Warning:
+Processed 4980 events and lost 28 chunks!
+
+Check IO/CPU overload!
+
+[ perf record: Captured and wrote 12.005 MB /tmp/rillcache-bottlenecks-20261027/profiles/scard.data (1470 samples) ]
