@@ -97,13 +97,87 @@ impl Store {
         true
     }
     fn xadd(&self, a: &[&[u8]], out: &mut Vec<u8>) {
-        if a.len() < 5 || a.len() % 2 != 1 {
+        let mut index = 2;
+        let mut nomkstream = false;
+        let mut strategy = None;
+        let mut approximate = false;
+        let mut limit = None;
+        while index < a.len() {
+            let token = a[index];
+            if token.eq_ignore_ascii_case(b"NOMKSTREAM") {
+                nomkstream = true;
+                index += 1;
+            } else if token.eq_ignore_ascii_case(b"MAXLEN") || token.eq_ignore_ascii_case(b"MINID")
+            {
+                if strategy.is_some() {
+                    out.extend_from_slice(
+                        b"-ERR syntax error, MAXLEN and MINID options at the same time are not compatible\r\n",
+                    );
+                    return;
+                }
+                let maxlen = token.eq_ignore_ascii_case(b"MAXLEN");
+                index += 1;
+                approximate = false;
+                if index < a.len() && (a[index] == b"~" || a[index] == b"=") {
+                    approximate = a[index] == b"~";
+                    index += 1;
+                }
+                let Some(raw) = a.get(index) else {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                };
+                if maxlen {
+                    let Some(value) = parse_i64(raw) else {
+                        out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                        return;
+                    };
+                    if value < 0 {
+                        out.extend_from_slice(b"-ERR The MAXLEN argument must be >= 0.\r\n");
+                        return;
+                    }
+                    strategy = Some(AddTrim::MaxLen(value as u64));
+                } else {
+                    let Some(value) = id(raw) else {
+                        id_error(out);
+                        return;
+                    };
+                    strategy = Some(AddTrim::MinId(value));
+                }
+                index += 1;
+            } else if token.eq_ignore_ascii_case(b"LIMIT") && index + 1 < a.len() {
+                let Some(value) = parse_i64(a[index + 1]) else {
+                    out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                    return;
+                };
+                if value < 0 {
+                    out.extend_from_slice(b"-ERR The LIMIT argument must be >= 0.\r\n");
+                    return;
+                }
+                limit = Some(usize::try_from(value).unwrap_or(usize::MAX));
+                index += 2;
+            } else {
+                break;
+            }
+        }
+        if limit.is_some() && strategy.is_none() {
+            out.extend_from_slice(
+                b"-ERR syntax error, LIMIT cannot be used without specifying a trimming strategy\r\n",
+            );
+            return;
+        }
+        if limit.is_some() && !approximate {
+            out.extend_from_slice(
+                b"-ERR syntax error, LIMIT cannot be used without the special ~ option\r\n",
+            );
+            return;
+        }
+        if a.len() < index + 3 || !(a.len() - index - 1).is_multiple_of(2) {
             arity("xadd", out);
             return;
         }
-        let explicit = a[2] != b"*";
+        let explicit = a[index] != b"*";
         let requested = if explicit {
-            match id(a[2]) {
+            match id(a[index]) {
                 Some(v) => Some(v),
                 None => {
                     id_error(out);
@@ -113,7 +187,8 @@ impl Store {
         } else {
             None
         };
-        let fields = a[3..]
+        index += 1;
+        let fields = a[index..]
             .as_chunks::<2>()
             .0
             .iter()
@@ -134,6 +209,10 @@ impl Store {
             out.extend_from_slice(
                 b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
             );
+            return;
+        }
+        if nomkstream && !data.entries.contains_key(a[1]) {
+            encode_bulk(None, out);
             return;
         }
         let existing_expiry = data.entries.get(a[1]).and_then(|e| e.expires);
@@ -162,6 +241,18 @@ impl Store {
         }
         stream.entries.insert(next, StreamEntry { fields });
         stream.last_generated = next;
+        if let Some(strategy) = &strategy {
+            let cap = if approximate {
+                match limit {
+                    Some(0) => None,
+                    Some(value) => Some(value),
+                    None => Some(10000),
+                }
+            } else {
+                None
+            };
+            trim_stream(&mut stream, strategy, cap);
+        }
         let Some(stream_bytes) = stream.payload_bytes() else {
             out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
             return;
@@ -1606,6 +1697,42 @@ impl Store {
         }
     }
 }
+enum AddTrim {
+    MaxLen(u64),
+    MinId(StreamId),
+}
+
+fn trim_stream(stream: &mut Stream, strategy: &AddTrim, cap: Option<usize>) -> usize {
+    let mut remove = Vec::new();
+    match strategy {
+        AddTrim::MaxLen(maxlen) => {
+            let mut length = stream.entries.len();
+            for id in stream.entries.keys() {
+                if length as u64 <= *maxlen || cap.is_some_and(|cap| remove.len() >= cap) {
+                    break;
+                }
+                remove.push(*id);
+                length -= 1;
+            }
+        }
+        AddTrim::MinId(minid) => {
+            for id in stream.entries.keys() {
+                if id >= minid || cap.is_some_and(|cap| remove.len() >= cap) {
+                    break;
+                }
+                remove.push(*id);
+            }
+        }
+    }
+    let mut deleted = 0;
+    for id in remove {
+        if stream.entries.remove(&id).is_some() {
+            deleted += 1;
+        }
+    }
+    deleted
+}
+
 fn reply_entry(id: StreamId, e: &StreamEntry, out: &mut Vec<u8>) {
     array(2, out);
     encode_bulk(Some(&id_text(id)), out);

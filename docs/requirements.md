@@ -81,6 +81,7 @@ reason to couple all future commands into a single large story.
 | S51 | As a sorted-set user, I can combine multiple sets with weights and aggregation into results or destinations and count intersections so that rankings can be derived without client-side merging. | M | R201–R204; union/inter/diff/weights/aggregate/store/cardinality, errors, ACL and all-mode wire tests |
 | S52 | As a sorted-set user, I can atomically pop lowest or highest members across several keys so that priority queues span multiple shards without client loops. | XS | R205–R208; key order, MIN/MAX, COUNT, TTL/WATCH and all-mode wire tests |
 | S53 | As a sorted-set user, I can wait for members across several sorted sets so that consumers do not have to poll empty priority queues. | S | R209–R212; blocking timeout/wakeup, MIN/MAX/COUNT, TTL/WATCH, ACL and all-mode wire tests |
+| S54 | As a stream producer, I can append with explicit retention and skip creating a missing stream so that hot streams stay bounded without a separate trim call. | S | R213–R216; XADD trim/NOMKSTREAM/errors/TTL/WATCH and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -730,8 +731,7 @@ reason to couple all future commands into a single large story.
   documented empty, null or bounded errors without partial writes. Tests shall
   cover rank/score/lex ranges, `REV`, `LIMIT`, `WITHSCORES` combinations,
   `ZRANGESTORE` self/empty/TTL/OOM cases, lex count/removal, random counts,
-  WATCH and all worker modes. Blocking `BZMPOP` remains documented as
-  unsupported.
+  WATCH and all worker modes. Blocking `BZMPOP` is delivered separately in S53.
 
 ### Sorted-set algebra (S51)
 
@@ -810,6 +810,27 @@ reason to couple all future commands into a single large story.
   before blocking. Tests shall cover immediate pops, MIN/MAX, COUNT, key order,
   timeout nulls, wake-on-write, TTL, delete-on-empty, MULTI/WATCH, notifications,
   ACL, errors and all worker modes.
+
+### Stream append retention and NOMKSTREAM (S54)
+
+- **R213 (event-driven):** `XADD key [NOMKSTREAM]
+  [MAXLEN|MINID [~|=] threshold [LIMIT count]] id|* field value ...` shall parse
+  the options before key access, reject conflicting/negative/invalid trim or ID
+  arguments, and require at least one field/value pair after the ID.
+- **R214 (event-driven):** `NOMKSTREAM` shall return a null bulk reply when the
+  key does not exist and shall not create a stream. Existing streams shall append
+  normally.
+- **R215 (event-driven):** After appending, `MAXLEN`/`MINID` shall remove entries
+  with the same exact or bounded approximate rules as XTRIM, including `LIMIT`
+  only with `~`, return the newly generated/explicit ID, preserve TTL and exact
+  payload accounting, and leave the previous stream unchanged on parse,
+  wrong-type or payload-admission failure. An emptied retained stream may remain
+  as an existing zero-length stream key.
+- **R216 (unwanted behavior):** Tests shall cover exact/approximate MAXLEN and
+  MINID, `=`/`~`, LIMIT bounds, NOMKSTREAM on missing/existing keys, TTL,
+  wrong types, malformed options/IDs, MULTI, WATCH, OOM and all worker modes.
+  XADD trim shall publish the `xadd` event only; `XSETID`, blocking reads and
+  history reads shall remain documented as unsupported.
 
 ### Development and delivery
 
@@ -1170,7 +1191,8 @@ for grammar,
 clocks, rounding, integer limits, resource bounds, queue isolation and atomic
 error behavior. Conditions are atomic and
 case-insensitive. Option tokens must match completely; NULs/prefixes are rejected.
-A bounded stream subset supports XADD, XDEL, XLEN, XGROUP CREATE/SETID/DESTROY/
+A bounded stream subset supports XADD with NOMKSTREAM/MAXLEN/MINID retention,
+XDEL, XLEN, XGROUP CREATE/SETID/DESTROY/
 CREATECONSUMER/DELCONSUMER, XREADGROUP GROUP with COUNT/NOACK for new entries on
 one stream, XACK, XPENDING summary/extended, XRANGE/XREVRANGE, non-blocking XREAD
 over multiple streams, XCLAIM/XAUTOCLAIM, XTRIM, and XINFO STREAM (with FULL)/
