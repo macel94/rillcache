@@ -1,11 +1,12 @@
 # Statistics and INFO observability
 
 Rillcache exposes a deliberately small set of server counters through
-`INFO stats` (also included by `INFO` and `INFO all`). Values are process-local
-and reset on restart. There is no Prometheus endpoint, latency histogram,
-per-command table or replication statistics. `INFO errorstats` reports bounded
-per-error-code command reply counts. `SLOWLOG` and `LATENCY` provide
-bounded, process-local timing as described below.
+`INFO stats` (also included by `INFO` and `INFO all`), a bounded per-command
+table through `INFO commandstats`, and bounded reply-code counts through
+`INFO errorstats`. Values are process-local and reset on restart. There is no
+Prometheus endpoint, latency histogram or replication traffic statistics.
+`SLOWLOG` and `LATENCY` provide bounded, process-local timing as described below.
+`MONITOR` provides a bounded live command stream for debugging.
 
 ## Error statistics
 
@@ -35,11 +36,52 @@ milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
 `CONFIG RESETSTAT`; `subexpiry` is live state and is not a counter.
 
 `INFO clients` reports `connected_clients` (the process-local registry size),
-`cluster_connections:0` and `maxclients` (the configured connection limit). `CLIENT LIST` exposes per-connection address/name/user/
+`cluster_connections:0` and `maxclients` (the live connection limit, changeable
+through `CONFIG SET maxclients`). `CLIENT LIST` exposes per-connection address/name/user/
 RESP/subscription metadata.
 
 `INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`. `evicted_keys` resets with
 `CONFIG RESETSTAT`; the policy itself does not.
+
+## INFO commandstats
+
+`INFO commandstats` (and the commandstats block of `INFO all`) lists only
+commands with at least one recorded network dispatch. Each line uses the Redis
+shape `cmdstat_<name>:calls=<n>,usec=<n>,usec_per_call=<n>,rejected_calls=<n>,failed_calls=<n>`.
+
+Recording is **opt-in** because the merge gate requires the default dispatch path
+to stay free of the per-command lookup and atomic updates. `CONFIG SET
+commandstats-enabled yes` starts recording (default `no`); `CONFIG GET
+commandstats-enabled` reports the live setting. Enabling begins from an empty
+table on each disabled-to-enabled transition; setting `yes` while already enabled
+does not reset it. Disabling keeps the existing counters readable until reset or
+re-enable. Disabled commandstats performs no lookup, counter update or extra
+elapsed-clock read; ordinary commands need no instrumentation timer when all
+observers are disabled. A client-pause query also checks the existing atomic
+zero-deadline sentinel before sampling wall time; nonzero pause states retain
+their existing deadline/mode and concurrency behavior. CONFIG outside MULTI and
+EXEC retain timing when needed to observe a commandstats enable during their own
+dispatch, including a queued CONFIG applied by EXEC. That enabling EXEC counts
+once; its individually queued commands do not.
+
+Basic PING/GET/SET/ECHO dispatch precedes unrelated extension probes. The session
+shortcut applies only after authentication/ACL and subscriber checks and outside
+MULTI; RESP2 subscriber PING and RESP3 framing retain their original paths. This
+is targeted dispatch work reduction, not an all-command performance claim.
+
+- `calls` counts dispatches through a client `Session`; direct embedded
+  `Store::execute` calls and commands executed inside `MULTI` are not counted
+  separately. `EXEC` is counted once.
+- `usec` is measured around client dispatch. Blocking wait time is excluded: a
+  blocked command is accounted when it blocks, unlike `SLOWLOG`, which records
+  the full wait. A blocked command that disconnects before completion keeps its
+  call count but contributes only pre-block time.
+- `failed_calls` counts replies whose top-level RESP frame is an error.
+  `rejected_calls` counts the subset rejected with `NOAUTH` or `NOPERM`.
+- Unknown commands are not tracked. Subcommands share their top-level command
+  name. `INFO commandstats` does not include its own in-progress call.
+- Counters are relaxed atomics and may be observed slightly asynchronously
+  across worker threads. They are diagnostic, not a billing ledger.
 
 `INFO server`, `memory` and `keyspace` remain available. Memory fields are the
 logical key/value payload and expiry counts, not allocator or RSS measurements;
@@ -60,6 +102,8 @@ is `[id, unix_seconds, duration_us, argv, client_address, client_name]`.
 and the default maximum length is 128 entries. A negative threshold disables
 recording; a zero maximum length clears and disables recording. The maximum length
 is bounded at 1,000,000 entries, and lowering it trims the log immediately.
+Client address/name lookup and cloning happen only after a measured command
+passes the duration threshold, not for every fast command.
 
 Retention is deliberately bounded independently of request size: at most 32
 arguments are kept, with the last slot replaced by
@@ -73,6 +117,22 @@ not logged separately; `EXEC` is logged as one entry whose duration covers the
 batch. This differs from Redis's per-queued-command entries and is intentional
 for this session-level implementation. The log is in-memory, process-local and
 not included in `INFO` or persisted across restart.
+
+## MONITOR
+
+`MONITOR` registers the calling connection for a process-local stream of commands
+received from other clients. Each line is a simple string shaped as
+`+<seconds>.<microseconds> [0 <peer-address>] "command" "argument" ...`; quotes,
+backslashes and control bytes are escaped. Arguments are capped at 128 bytes and
+lines at 4 KiB. The stream uses the same bounded queue capacity as pub/sub, so a
+slow monitor drops lines instead of blocking command execution; it is
+best-effort and not a durable or complete audit trail.
+
+Credentials are redacted before formatting: `AUTH` shows `AUTH (redacted)`,
+`HELLO ... AUTH ...` hides the password, `ACL SETUSER` hides `>`, `<`, `#` and
+`!` credential rules, and `CONFIG SET requirepass` hides the value. `RESET` or a
+disconnect leaves monitor mode. MONITOR is an admin/dangerous command and cannot
+be queued inside `MULTI`.
 
 ## LATENCY
 
@@ -108,8 +168,8 @@ counts `MULTI`, each queued command and `EXEC` as separate dispatches. A rejecte
 command still counts as processed; it does not increment data-specific counters.
 Health-check PING probes are ordinary connections and commands.
 
-`CONFIG RESETSTAT` zeroes the connection, command, rejected, expired, evicted and
-pub/sub counters. It does not delete data, clear subscriptions, reset the keyspace or reset
+`CONFIG RESETSTAT` zeroes the connection, command, rejected, expired, evicted,
+pub/sub and per-command counters. It does not delete data, clear subscriptions, reset the keyspace or reset
 payload accounting. Because the reset command itself is counted before dispatch,
 the next `INFO` typically reports `total_commands_processed:1` (the `INFO` command).
 
@@ -144,9 +204,10 @@ backlog, bio and fork fields are omitted because they are not measured.
 - No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.
 - No per-client fd/idle/command/buffer/memory/network fields, blocked-client count
   or cross-process client view. `INFO clients` intentionally omits those fields.
-- No `INFO commandstats` or `latencystats`, latency histograms, CPU/RSS
-  accounting, network-byte counters or per-database stats. `LATENCY` exposes
-  only the two measured event series listed above.
+- No `INFO latencystats`, latency histograms/percentiles, CPU/RSS accounting,
+  network-byte counters or per-database stats. `LATENCY` exposes only the two
+  measured event series listed above, and command timing is aggregate only with
+  no histogram or tail-latency distribution.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.
 - Error statistics are a bounded per-code count, not a full error log or message
@@ -159,6 +220,12 @@ backlog, bio and fork fields are omitted because they are not measured.
 
 `tests/observability.rs` runs in all worker modes and verifies connection/command
 counts across two clients, reset behavior, maximum-client rejection visibility and
-lazy expiration counting, and `tests/errorstats.rs` verifies per-code counts,
-`INFO all` inclusion and `CONFIG RESETSTAT` clearing. Tests parse INFO replies as
-real RESP bulk values rather than asserting on implementation strings alone.
+lazy expiration counting. `tests/commandstats.rs` verifies per-command calls,
+failed/rejected classification, unknown-command exclusion, `INFO all` inclusion
+and `CONFIG RESETSTAT` clearing in every worker mode. `tests/errorstats.rs`
+verifies per-code counts, `INFO all` inclusion and reset clearing. These wire
+tests parse INFO replies as real RESP bulk values rather than asserting on
+implementation strings alone. `tests/commandstats_exec.rs` covers enabling from
+a queued CONFIG with every observer initially disabled. `tests/core_dispatch.rs`
+guards authentication, ACLs, MULTI queueing, RESP3 binary/null framing and
+subscriber PING distinctions.

@@ -54,11 +54,15 @@ Bounded RESP2 and Redis inline-command TCP server, with binary-safe `PING`,
 `DEL`, `UNLINK`, `EXISTS`, `QUIT`;
 TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
-strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, protocol `SHUTDOWN`, `CONFIG GET`/`RESETSTAT`,
-`INFO` (including process-local connection/command/key/field-expiration/pub-sub statistics),
-bounded `SLOWLOG` command timing, bounded `LATENCY` event series, and logical `MEMORY USAGE`. `CONFIG SET`
-supports collection thresholds, `requirepass`, `maxmemory-policy` and slow-log
-threshold/length; script/function execution is not implemented.
+strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, protocol `SHUTDOWN`,
+`CONFIG GET`/`RESETSTAT`, `INFO` (including process-local connection/command/
+key/field-expiration/pub-sub statistics and opt-in aggregate per-command
+`commandstats` via `CONFIG SET commandstats-enabled yes`), bounded `SLOWLOG`
+command timing, bounded `LATENCY` event series and logical
+`MEMORY USAGE`/`STATS`/`DOCTOR` payload reporting. `CONFIG SET` supports
+collection thresholds, `requirepass`, `maxmemory`, `maxclients`,
+`maxmemory-policy`, slow-log threshold/length, runtime `appendfsync` and automatic
+journal-compaction thresholds; script/function execution is not implemented.
 Memory usage is an entry-size estimate, not allocator/RSS data.
 See [string semantics](docs/strings.md) and
 [multi-key string limits](docs/multikey-strings.md). The startup option
@@ -154,8 +158,10 @@ RESP-command journal of changed-key final states with absolute TTLs, supports
 `always`/`everysec`/`no` fsync policies, replays before listening, truncates only
 an incomplete tail, fails startup on mid-file corruption and syncs joined shutdown.
 `BGREWRITEAOF` performs a synchronous, full-state compacting rewrite (it briefly
-holds the exclusive gate). There is no RDB format, background/incremental rewrite,
-automatic compaction, stream-pending recovery or backup drill yet. See
+holds the exclusive gate). `auto-aof-rewrite-percentage` and
+`auto-aof-rewrite-min-size` configure maintenance-triggered use of that same
+synchronous compaction. There is no RDB format, background/incremental rewrite,
+stream-pending recovery or backup drill yet. See
 [persistence](docs/persistence.md).
 
 Access control starts with a single operator password for the `default` user

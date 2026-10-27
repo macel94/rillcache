@@ -2,8 +2,10 @@
 
 use super::Store;
 use crate::protocol::encode_bulk;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Write as _;
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy)]
 struct Command {
@@ -29,6 +31,14 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("bgrewriteaof", 1, &["admin", "dangerous", "slow"], 0, 0, 0),
+    cmd(
+        "bgsave",
+        -1,
+        &["admin", "noscript", "no_async_loading"],
+        0,
+        0,
+        0,
+    ),
     cmd("bitcount", -2, &["readonly"], 1, 1, 1),
     cmd("bitfield", -2, &["write", "denyoom"], 1, 1, 1),
     cmd("bitfield_ro", -2, &["readonly"], 1, 1, 1),
@@ -54,6 +64,8 @@ const COMMANDS: &[Command] = &[
         1,
     ),
     cmd("bzmpop", -5, &["write", "noscript", "blocking"], 0, 0, 0),
+    cmd("bzpopmax", -3, &["write", "blocking", "fast"], 1, -2, 1),
+    cmd("bzpopmin", -3, &["write", "blocking", "fast"], 1, -2, 1),
     cmd(
         "client",
         -2,
@@ -100,6 +112,7 @@ const COMMANDS: &[Command] = &[
     cmd("expire", -3, &["write", "fast"], 1, 1, 1),
     cmd("expireat", -3, &["write", "fast"], 1, 1, 1),
     cmd("expiretime", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("failover", -1, &["admin", "noscript", "stale"], 0, 0, 0),
     cmd("flushall", -1, &["write", "slow"], 0, 0, 0),
     cmd("flushdb", -1, &["write", "slow"], 0, 0, 0),
     cmd("function", -2, &["write", "admin"], 0, 0, 0),
@@ -141,6 +154,7 @@ const COMMANDS: &[Command] = &[
     cmd("hkeys", 2, &["readonly"], 1, 1, 1),
     cmd("hlen", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("hmget", -3, &["readonly", "fast"], 1, 1, 1),
+    cmd("hmset", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("hpersist", -5, &["write", "fast"], 1, 1, 1),
     cmd("hpexpire", -6, &["write", "fast"], 1, 1, 1),
     cmd("hpexpireat", -6, &["write", "fast"], 1, 1, 1),
@@ -159,6 +173,7 @@ const COMMANDS: &[Command] = &[
     cmd("incrbyfloat", 3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
     cmd("keys", 2, &["readonly"], 0, 0, 0),
+    cmd("lastsave", 1, &["loading", "stale", "fast"], 0, 0, 0),
     cmd(
         "latency",
         -2,
@@ -184,8 +199,17 @@ const COMMANDS: &[Command] = &[
     cmd("memory", -2, &["readonly", "slow"], 0, 0, 0),
     cmd("mget", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("module", -2, &[], 0, 0, 0),
+    cmd(
+        "monitor",
+        1,
+        &["admin", "noscript", "loading", "stale"],
+        0,
+        0,
+        0,
+    ),
     cmd("mset", -3, &["write", "denyoom"], 1, -1, 2),
     cmd("msetex", -4, &["write", "denyoom"], 2, -1, 2),
+    cmd("move", 3, &["write", "fast"], 1, 1, 1),
     cmd("msetnx", -3, &["write", "denyoom"], 1, -1, 2),
     cmd(
         "multi",
@@ -205,6 +229,14 @@ const COMMANDS: &[Command] = &[
     cmd("pfmerge", -2, &["write", "denyoom"], 1, -1, 1),
     cmd("ping", -1, &["fast"], 0, 0, 0),
     cmd("psetex", 4, &["write", "denyoom"], 1, 1, 1),
+    cmd(
+        "psync",
+        -3,
+        &["admin", "noscript", "no_async_loading", "no_multi"],
+        0,
+        0,
+        0,
+    ),
     cmd(
         "psubscribe",
         -2,
@@ -243,6 +275,22 @@ const COMMANDS: &[Command] = &[
     cmd("readonly", 1, &["fast"], 0, 0, 0),
     cmd("readwrite", 1, &["fast"], 0, 0, 0),
     cmd("rename", 3, &["write"], 1, 2, 1),
+    cmd(
+        "replicaof",
+        3,
+        &["admin", "noscript", "stale", "no_async_loading"],
+        0,
+        0,
+        0,
+    ),
+    cmd(
+        "replconf",
+        -1,
+        &["admin", "noscript", "loading", "stale", "allow_busy"],
+        0,
+        0,
+        0,
+    ),
     cmd("renamenx", 3, &["write", "fast"], 1, 2, 1),
     cmd(
         "reset",
@@ -265,6 +313,14 @@ const COMMANDS: &[Command] = &[
     cmd("rpush", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("rpushx", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("sadd", -3, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd(
+        "save",
+        1,
+        &["admin", "noscript", "no_async_loading", "no_multi"],
+        0,
+        0,
+        0,
+    ),
     cmd("scan", -2, &["readonly", "slow"], 0, 0, 0),
     cmd("scard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("script", -2, &["admin"], 0, 0, 0),
@@ -292,6 +348,14 @@ const COMMANDS: &[Command] = &[
         "slowlog",
         -2,
         &["admin", "noscript", "loading", "stale", "slow"],
+        0,
+        0,
+        0,
+    ),
+    cmd(
+        "slaveof",
+        3,
+        &["admin", "noscript", "stale", "no_async_loading"],
         0,
         0,
         0,
@@ -331,6 +395,15 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("substr", 4, &["readonly"], 1, 1, 1),
+    cmd("swapdb", 3, &["write", "fast"], 0, 0, 0),
+    cmd(
+        "sync",
+        1,
+        &["admin", "noscript", "no_async_loading", "no_multi"],
+        0,
+        0,
+        0,
+    ),
     cmd("sunion", -2, &["readonly"], 1, -1, 1),
     cmd("sunionstore", -3, &["write", "denyoom"], 1, -1, 1),
     cmd(
@@ -363,6 +436,7 @@ const COMMANDS: &[Command] = &[
         0,
     ),
     cmd("wait", 3, &["blocking"], 0, 0, 0),
+    cmd("waitaof", 4, &["blocking"], 0, 0, 0),
     cmd(
         "watch",
         -2,
@@ -397,10 +471,12 @@ const COMMANDS: &[Command] = &[
     cmd("zinterstore", -4, &["write", "denyoom"], 1, 1, 1),
     cmd("zlexcount", 4, &["readonly", "fast"], 1, 1, 1),
     cmd("zmpop", -4, &["write"], 2, -1, 1),
+    cmd("zmscore", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("zpopmax", -2, &["write", "fast"], 1, 1, 1),
     cmd("zpopmin", -2, &["write", "fast"], 1, 1, 1),
     cmd("zrandmember", -2, &["readonly"], 1, 1, 1),
     cmd("zrange", -4, &["readonly"], 1, 1, 1),
+    cmd("zrangebylex", -4, &["readonly"], 1, 1, 1),
     cmd("zrangebyscore", -4, &["readonly"], 1, 1, 1),
     cmd("zrangestore", -5, &["write", "denyoom"], 1, 2, 1),
     cmd("zrank", -3, &["readonly", "fast"], 1, 1, 1),
@@ -409,6 +485,7 @@ const COMMANDS: &[Command] = &[
     cmd("zremrangebyrank", 4, &["write"], 1, 1, 1),
     cmd("zremrangebyscore", 4, &["write"], 1, 1, 1),
     cmd("zrevrange", -4, &["readonly"], 1, 1, 1),
+    cmd("zrevrangebylex", -4, &["readonly"], 1, 1, 1),
     cmd("zrevrangebyscore", -4, &["readonly"], 1, 1, 1),
     cmd("zrevrank", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("zscan", -3, &["readonly", "slow"], 1, 1, 1),
@@ -416,6 +493,40 @@ const COMMANDS: &[Command] = &[
     cmd("zunion", -3, &["readonly"], 0, 0, 0),
     cmd("zunionstore", -4, &["write", "denyoom"], 1, 1, 1),
 ];
+
+pub(super) const fn command_count() -> usize {
+    COMMANDS.len()
+}
+
+pub(super) fn command_name_at(index: usize) -> Option<&'static str> {
+    COMMANDS.get(index).map(|command| command.name)
+}
+
+static COMMAND_LOOKUP: OnceLock<HashMap<&'static str, usize>> = OnceLock::new();
+
+/// Registry index for per-command statistics. Names are normalized in a stack
+/// buffer and looked up in a one-time map so the command hot path does not scan
+/// the whole table.
+pub(super) fn command_index(name: &[u8]) -> Option<usize> {
+    if name.len() > 32 {
+        return None;
+    }
+    let mut lower = [0u8; 32];
+    for (slot, byte) in lower.iter_mut().zip(name) {
+        *slot = byte.to_ascii_lowercase();
+    }
+    let name = std::str::from_utf8(&lower[..name.len()]).ok()?;
+    COMMAND_LOOKUP
+        .get_or_init(|| {
+            COMMANDS
+                .iter()
+                .enumerate()
+                .map(|(index, command)| (command.name, index))
+                .collect()
+        })
+        .get(name)
+        .copied()
+}
 
 /// Arity from the published command table; `None` means unsupported.
 pub(super) fn command_arity(name: &[u8]) -> Option<i64> {
@@ -457,8 +568,8 @@ impl KeyAccess {
 }
 
 /// Declared key arguments for ACL key-pattern enforcement. Commands with no
-/// static key spec (`KEYS`, `DBSIZE`, `FLUSH*`, `XREADGROUP`) return no keys;
-/// this matches Redis's key-spec behavior and is documented as not a sandbox.
+/// static key spec (`KEYS`, `DBSIZE`, `FLUSH*`) return no keys. Dynamic
+/// `XREAD`/`XREADGROUP` stream keys are extracted from their STREAMS blocks.
 pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u8]> {
     let Some(command) = COMMANDS
         .iter()
@@ -509,7 +620,7 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
             return Vec::new();
         };
         let values = &args[streams + 1..];
-        if values.is_empty() || values.len() % 2 != 0 {
+        if values.is_empty() || !values.len().is_multiple_of(2) {
             return Vec::new();
         }
         return values[..values.len() / 2].to_vec();
@@ -825,6 +936,7 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
                 | "function"
                 | "keys"
                 | "latency"
+                | "monitor"
                 | "role"
                 | "script"
                 | "shutdown"
@@ -875,12 +987,13 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "sismember" | "smembers" | "smismember" | "smove" | "spop" | "srandmember" | "srem"
         | "sscan" | "sunion" | "sunionstore" => "set",
         "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hgetex" | "hincrby"
-        | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hrandfield" | "hscan" | "hset"
-        | "hsetex" | "hsetnx" | "hstrlen" | "hvals" => "hash",
-        "bzmpop" | "zadd" | "zcard" | "zcount" | "zincrby" | "zlexcount" | "zpopmax"
-        | "zpopmin" | "zdiff" | "zdiffstore" | "zinter" | "zintercard" | "zinterstore"
-        | "zrandmember" | "zrange" | "zrangebyscore" | "zrangestore" | "zrank" | "zrem"
-        | "zremrangebylex" | "zremrangebyrank" | "zremrangebyscore" | "zrevrange"
+        | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hmset" | "hrandfield" | "hscan"
+        | "hset" | "hsetex" | "hsetnx" | "hstrlen" | "hvals" => "hash",
+        "bzmpop" | "bzpopmax" | "bzpopmin" | "zadd" | "zcard" | "zcount" | "zincrby"
+        | "zlexcount" | "zmscore" | "zpopmax" | "zpopmin" | "zdiff" | "zdiffstore" | "zinter"
+        | "zintercard" | "zinterstore" | "zrandmember" | "zrange" | "zrangebylex"
+        | "zrangebyscore" | "zrangestore" | "zrank" | "zrem" | "zremrangebylex"
+        | "zremrangebyrank" | "zremrangebyscore" | "zrevrange" | "zrevrangebylex"
         | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
         "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
         | "xread" | "xreadgroup" | "xrevrange" | "xsetid" | "xtrim" => "stream",
@@ -889,11 +1002,12 @@ fn command_group(name: &str) -> Option<&'static str> {
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "spublish" | "ssubscribe"
         | "subscribe" | "sunsubscribe" | "unsubscribe" => "pubsub",
-        "object" | "time" | "sort" | "sort_ro" => "generic",
+        "object" | "time" | "sort" | "sort_ro" | "bgsave" | "failover" | "lastsave" | "psync"
+        | "replicaof" | "replconf" | "save" | "slaveof" | "sync" => "generic",
         "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
         | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
         | "pexpiretime" | "pttl" | "randomkey" | "rename" | "renamenx" | "touch" | "ttl"
-        | "type" | "unlink" | "scan" => "keyspace",
+        | "type" | "unlink" | "scan" | "move" | "swapdb" => "keyspace",
         _ => return None,
     })
 }
@@ -1012,6 +1126,7 @@ impl Store {
                     | b"keyspace"
                     | b"stats"
                     | b"clients"
+                    | b"commandstats"
                     | b"replication"
                     | b"persistence"
                     | b"errorstats"
@@ -1037,7 +1152,7 @@ impl Store {
                     text,
                     "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
                     data.payload_bytes,
-                    self.max_payload_bytes,
+                    self.payload_limit(),
                     self.eviction_policy().name(),
                     self.notify_flags().as_string()
                 );
@@ -1070,6 +1185,21 @@ impl Store {
                     stats.pubsub_channels,
                     stats.pubsub_patterns
                 );
+            }
+            if matches!(section.as_slice(), b"commandstats" | b"all") {
+                text.push_str("# Commandstats\r\n");
+                for stat in self.command_statistics() {
+                    let _ = writeln!(
+                        text,
+                        "cmdstat_{}:calls={},usec={},usec_per_call={},rejected_calls={},failed_calls={}\r",
+                        stat.name,
+                        stat.calls,
+                        stat.usec,
+                        stat.usec / stat.calls,
+                        stat.rejected_calls,
+                        stat.failed_calls
+                    );
+                }
             }
             if matches!(section.as_slice(), b"persistence" | b"all") {
                 let persistence = self.persistence_status();
@@ -1250,6 +1380,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn command_registry_lookup_is_case_insensitive() {
+        assert_eq!(command_index(b"GET"), command_index(b"get"));
+        assert!(command_index(b"GET").is_some());
+        assert!(command_index(b"not-a-command").is_none());
+        assert!(command_index(&[b'x'; 33]).is_none());
+        let index = command_index(b"ping").unwrap();
+        assert_eq!(command_name_at(index), Some("ping"));
+        assert!(command_count() > index);
+    }
+
+    #[test]
     fn role_reports_admin_fast_and_dangerous_categories() {
         for category in [b"admin".as_slice(), b"fast", b"dangerous"] {
             assert!(category_matches(b"role", &[b"ROLE"], category));
@@ -1358,6 +1499,14 @@ mod tests {
             vec![b"a".as_slice(), b"b".as_slice()]
         );
         assert!(key_arguments(b"BZMPOP", &[b"BZMPOP", b"0", b"0", b"a"]).is_empty());
+        assert_eq!(
+            key_arguments(b"BZPOPMIN", &[b"BZPOPMIN", b"a", b"b", b"0"]),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"BZPOPMAX", &[b"BZPOPMAX", b"a", b"0.5"]),
+            vec![b"a".as_slice()]
+        );
         assert_eq!(
             key_arguments(
                 b"SORT",

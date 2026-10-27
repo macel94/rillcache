@@ -75,40 +75,168 @@ impl Store {
     }
 
     fn memory(&self, args: &[&[u8]], out: &mut Vec<u8>) {
-        if !args
-            .get(1)
-            .is_some_and(|sub| sub.eq_ignore_ascii_case(b"USAGE"))
-        {
+        let Some(subcommand) = args.get(1) else {
             out.extend_from_slice(b"-ERR unsupported MEMORY subcommand\r\n");
             return;
+        };
+        if subcommand.eq_ignore_ascii_case(b"USAGE") {
+            if args.len() != 3 {
+                arity("memory|usage", out);
+                return;
+            }
+            let Ok(mut data) = self.data.write() else {
+                internal_error(out);
+                return;
+            };
+            let now = self.now(&data);
+            data.expire_key(args[2], now);
+            if let Some(entry) = data.entries.get(args[2]) {
+                // Deterministic logical estimate, not allocator/RSS data.
+                let header = if usize::BITS == 64 { 16usize } else { 12usize };
+                let value_bytes = Some(entry.payload_len());
+                if let Some(size) = value_bytes.and_then(|value_bytes| {
+                    header
+                        .checked_add(args[2].len())
+                        .and_then(|n| n.checked_add(value_bytes))
+                }) {
+                    let _ = write!(out, ":{size}\r\n");
+                } else {
+                    out.extend_from_slice(b"-ERR memory size overflow\r\n");
+                }
+            } else {
+                out.extend_from_slice(b"$-1\r\n");
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"STATS") {
+            if args.len() != 2 {
+                arity("memory|stats", out);
+                return;
+            }
+            self.memory_stats(out);
+        } else if subcommand.eq_ignore_ascii_case(b"DOCTOR") {
+            if args.len() != 2 {
+                arity("memory|doctor", out);
+                return;
+            }
+            self.memory_doctor(out);
+        } else if subcommand.eq_ignore_ascii_case(b"HELP") {
+            if args.len() != 2 {
+                arity("memory|help", out);
+                return;
+            }
+            const HELP: &[&[u8]] = &[
+                b"DOCTOR",
+                b"    Return a human-readable payload report.",
+                b"HELP",
+                b"    Show this help.",
+                b"STATS",
+                b"    Return payload accounting metrics.",
+                b"USAGE <key>",
+                b"    Estimate the payload bytes used by a key.",
+            ];
+            let _ = write!(out, "*{}\r\n", HELP.len());
+            for line in HELP {
+                encode_bulk(Some(line), out);
+            }
+        } else {
+            out.extend_from_slice(b"-ERR unsupported MEMORY subcommand\r\n");
         }
-        if args.len() != 3 {
-            arity("memory|usage", out);
-            return;
+    }
+
+    fn memory_snapshot(&self) -> Option<MemorySnapshot> {
+        let data = self.data.read().ok()?;
+        let now = self.now(&data);
+        let mut keys = 0usize;
+        let mut expires = 0usize;
+        for entry in data.entries.values() {
+            if entry.alive(now) {
+                keys += 1;
+                if entry.expires.is_some() {
+                    expires += 1;
+                }
+            }
         }
-        let Ok(mut data) = self.data.write() else {
+        Some(MemorySnapshot {
+            payload: data.payload_bytes,
+            peak: data.peak_payload_bytes(),
+            keys,
+            expires,
+            limit: self.payload_limit(),
+            policy: data.eviction,
+        })
+    }
+
+    fn memory_stats(&self, out: &mut Vec<u8>) {
+        let Some(snapshot) = self.memory_snapshot() else {
             internal_error(out);
             return;
         };
-        let now = self.now(&data);
-        data.expire_key(args[2], now);
-        if let Some(entry) = data.entries.get(args[2]) {
-            // Deterministic logical estimate, not allocator/RSS data.
-            let header = if usize::BITS == 64 { 16usize } else { 12usize };
-            let value_bytes = Some(entry.payload_len());
-            if let Some(size) = value_bytes.and_then(|value_bytes| {
-                header
-                    .checked_add(args[2].len())
-                    .and_then(|n| n.checked_add(value_bytes))
-            }) {
-                let _ = write!(out, ":{size}\r\n");
-            } else {
-                out.extend_from_slice(b"-ERR memory size overflow\r\n");
-            }
-        } else {
-            out.extend_from_slice(b"$-1\r\n");
-        }
+        let percentage = memory_percentage(snapshot.payload, snapshot.limit);
+        let _ = write!(out, "*14\r\n");
+        encode_bulk(Some(b"peak.allocated"), out);
+        let _ = write!(out, ":{}\r\n", snapshot.peak);
+        encode_bulk(Some(b"total.allocated"), out);
+        let _ = write!(out, ":{}\r\n", snapshot.payload);
+        encode_bulk(Some(b"keys.count"), out);
+        let _ = write!(out, ":{}\r\n", snapshot.keys);
+        encode_bulk(Some(b"dataset.bytes"), out);
+        let _ = write!(out, ":{}\r\n", snapshot.payload);
+        encode_bulk(Some(b"dataset.percentage"), out);
+        encode_bulk(Some(format!("{percentage:.2}").as_bytes()), out);
+        encode_bulk(Some(b"rillcache.payload.limit_bytes"), out);
+        let _ = write!(out, ":{}\r\n", snapshot.limit);
+        encode_bulk(Some(b"rillcache.payload.scope"), out);
+        encode_bulk(Some(MEMORY_SCOPE), out);
     }
+
+    fn memory_doctor(&self, out: &mut Vec<u8>) {
+        let Some(snapshot) = self.memory_snapshot() else {
+            internal_error(out);
+            return;
+        };
+        let percentage = memory_percentage(snapshot.payload, snapshot.limit);
+        let text = if snapshot.keys == 0 && snapshot.payload == 0 {
+            format!(
+                "Rillcache payload is empty: 0 bytes across 0 live keys. {}",
+                MEMORY_SCOPE_SENTENCE
+            )
+        } else if percentage >= 90.0 && snapshot.policy == EvictionPolicy::NoEviction {
+            format!(
+                "Payload pressure is high: {} bytes across {} live keys ({percentage:.1}% of the {} byte limit) with noeviction; new writes may fail with OOM. {}",
+                snapshot.payload, snapshot.keys, snapshot.limit, MEMORY_SCOPE_SENTENCE
+            )
+        } else if percentage >= 75.0 {
+            format!(
+                "Payload is using {:.1} of the {} byte limit across {} live keys. Monitor growth; {}",
+                percentage, snapshot.limit, snapshot.keys, MEMORY_SCOPE_SENTENCE
+            )
+        } else {
+            format!(
+                "Payload is using {:.1} of the {} byte limit across {} live keys ({} with a deadline); no payload pressure detected. {}",
+                percentage, snapshot.limit, snapshot.keys, snapshot.expires, MEMORY_SCOPE_SENTENCE
+            )
+        };
+        encode_bulk(Some(text.as_bytes()), out);
+    }
+}
+
+struct MemorySnapshot {
+    payload: usize,
+    peak: usize,
+    keys: usize,
+    expires: usize,
+    limit: usize,
+    policy: EvictionPolicy,
+}
+
+const MEMORY_SCOPE: &[u8] = b"key_and_value_bytes_not_RSS";
+const MEMORY_SCOPE_SENTENCE: &str =
+    "This report uses key and value payload accounting, not RSS or allocator metrics.";
+
+fn memory_percentage(payload: usize, limit: usize) -> f64 {
+    if limit == 0 {
+        return 0.0;
+    }
+    payload as f64 * 100.0 / limit as f64
 }
 
 fn flush_mode(arg: &[u8]) -> bool {
@@ -265,5 +393,53 @@ mod tests {
             run(&store, &[b"MEMORY", b"USAGE", b"key", b"SAMPLES", b"0"]),
             b"-ERR wrong number of arguments for 'memory|usage' command\r\n"
         );
+    }
+
+    #[test]
+    fn memory_stats_and_doctor_report_payload_high_water() {
+        let store = Store::new(100);
+        let empty = run(&store, &[b"MEMORY", b"DOCTOR"]);
+        assert!(
+            empty
+                .windows(b"payload is empty".len())
+                .any(|part| part == b"payload is empty")
+        );
+        let empty_stats = run(&store, &[b"MEMORY", b"STATS"]);
+        for field in [
+            b"peak.allocated".as_slice(),
+            b"total.allocated",
+            b"keys.count",
+            b"dataset.bytes",
+            b"dataset.percentage",
+            b"rillcache.payload.limit_bytes",
+            b"rillcache.payload.scope",
+        ] {
+            assert!(
+                empty_stats.windows(field.len()).any(|part| part == field),
+                "missing {field:?}"
+            );
+        }
+        let value = vec![b'v'; 90];
+        assert_eq!(run(&store, &[b"SET", b"key", &value]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"DEL", b"key"]), b":1\r\n");
+        {
+            let data = store.data.read().unwrap();
+            assert_eq!(data.payload_bytes, 0);
+            assert!(data.peak_payload_bytes() > 0);
+        }
+        let stats = run(&store, &[b"MEMORY", b"STATS"]);
+        let text = String::from_utf8_lossy(&stats);
+        assert!(text.contains("$14\r\npeak.allocated\r\n:"), "{text}");
+        assert!(text.contains("$15\r\ntotal.allocated\r\n:0\r\n"), "{text}");
+        assert!(text.contains("key_and_value_bytes_not_RSS"), "{text}");
+
+        assert_eq!(run(&store, &[b"SET", b"key", &value]), b"+OK\r\n");
+        let doctor = run(&store, &[b"MEMORY", b"DOCTOR"]);
+        let text = String::from_utf8_lossy(&doctor);
+        assert!(text.contains("Payload pressure is high"), "{text}");
+        assert!(text.contains("not RSS"), "{text}");
+        let help = run(&store, &[b"MEMORY", b"HELP"]);
+        assert!(help.windows(b"STATS".len()).any(|part| part == b"STATS"));
+        assert!(run(&store, &[b"MEMORY", b"STATS", b"extra"]).starts_with(b"-ERR"));
     }
 }

@@ -121,7 +121,7 @@ impl Store {
         let shift = 7 - (offset % 8) as u8;
         let old_bit = (old >> shift) & 1;
         let new_len = previous.unwrap_or(0).max(length);
-        let Some(payload) = data.reserve(args[1], new_len, previous, self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(args[1], new_len, previous, self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -193,7 +193,7 @@ impl Store {
             args[1],
             formatted.len(),
             previous,
-            self.max_payload_bytes,
+            self.payload_limit(),
             now,
         ) else {
             out.extend_from_slice(OOM);
@@ -723,7 +723,7 @@ impl Store {
             destination,
             result.len(),
             previous,
-            self.max_payload_bytes,
+            self.payload_limit(),
             now,
         ) else {
             out.extend_from_slice(OOM);

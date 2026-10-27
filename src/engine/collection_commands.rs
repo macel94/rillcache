@@ -30,7 +30,9 @@ impl Store {
         if (command
             .first()
             .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'z'))
-            || command.eq_ignore_ascii_case(b"BZMPOP"))
+            || command.eq_ignore_ascii_case(b"BZMPOP")
+            || command.eq_ignore_ascii_case(b"BZPOPMAX")
+            || command.eq_ignore_ascii_case(b"BZPOPMIN"))
             && self.execute_zset_extended(args, out)
         {
             return true;
@@ -275,6 +277,32 @@ impl Store {
             || command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE")
         {
             self.zset_range_by_score(args, command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE"), out);
+        } else if command.eq_ignore_ascii_case(b"ZRANGEBYLEX")
+            || command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX")
+        {
+            if args.len() < 4 {
+                arity(
+                    if command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX") {
+                        "zrevrangebylex"
+                    } else {
+                        "zrangebylex"
+                    },
+                    out,
+                );
+            } else {
+                let reverse = command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX");
+                let mut rebuilt = Vec::with_capacity(args.len() + 2);
+                rebuilt.push(b"ZRANGE".as_slice());
+                rebuilt.push(args[1]);
+                rebuilt.push(args[2]);
+                rebuilt.push(args[3]);
+                rebuilt.push(b"BYLEX");
+                if reverse {
+                    rebuilt.push(b"REV");
+                }
+                rebuilt.extend_from_slice(&args[4..]);
+                self.zset_range(&rebuilt, false, out);
+            }
         } else if command.eq_ignore_ascii_case(b"ZREMRANGEBYRANK")
             || command.eq_ignore_ascii_case(b"ZREMRANGEBYSCORE")
         {
@@ -1181,6 +1209,22 @@ pub(crate) fn zset_pop_reply(outcome: ZSetPopOutcome, out: &mut Vec<u8>) {
     }
 }
 
+pub(crate) fn zset_pop_single_reply(outcome: ZSetPopOutcome, out: &mut Vec<u8>) {
+    match outcome {
+        ZSetPopOutcome::Popped { key, items } => {
+            let (member, score) = items.first().expect("single pop returns one item");
+            out.extend_from_slice(b"*3\r\n");
+            encode_bulk(Some(&key), out);
+            encode_bulk(Some(member), out);
+            encode_bulk(Some(&score_bytes(*score)), out);
+        }
+        ZSetPopOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
+        ZSetPopOutcome::WrongType => wrong_type(out),
+        ZSetPopOutcome::Oom => out.extend_from_slice(OOM),
+        ZSetPopOutcome::JournalError => out.extend_from_slice(b"-ERR append-only write failed\r\n"),
+    }
+}
+
 fn ordered_zset(items: Vec<(&[u8], f64)>, reverse: bool) -> Vec<(Vec<u8>, f64)> {
     let mut ordered: Vec<(Vec<u8>, f64)> = items
         .into_iter()
@@ -1389,7 +1433,7 @@ impl Store {
                 };
                 let encoded = encode_hash(hash, &config);
                 let Some(payload) =
-                    data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+                    data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
                 else {
                     out.extend_from_slice(OOM);
                     return;
@@ -1765,7 +1809,7 @@ impl Store {
         };
         let encoded = encode_hash(hash, &config);
         let previous = current.map(Entry::payload_len);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -1912,7 +1956,7 @@ impl Store {
         };
         let encoded = encode_hash(hash, &config);
         let previous = current.map(Entry::payload_len);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -1971,7 +2015,7 @@ impl Store {
             return;
         };
         let encoded = encode_hash(hash, &config);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2077,7 +2121,7 @@ impl Store {
             return;
         };
         let encoded = encode_hash(hash, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -2134,7 +2178,7 @@ impl Store {
             return;
         };
         let encoded = encode_hash(hash, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -2463,7 +2507,7 @@ impl Store {
                     key,
                     encoded.payload_len(),
                     Some(previous),
-                    self.max_payload_bytes,
+                    self.payload_limit(),
                     now,
                 ) else {
                     return ListPopOutcome::Oom;
@@ -2572,7 +2616,7 @@ impl Store {
                 })
                 .and_then(|bytes| bytes.checked_add(destination_bytes))
         };
-        let Some(new_payload) = new_payload.filter(|bytes| *bytes <= self.max_payload_bytes) else {
+        let Some(new_payload) = new_payload.filter(|bytes| *bytes <= self.payload_limit()) else {
             return ListMoveOutcome::Oom;
         };
         let Ok(config) = self.collection_config.read() else {
@@ -2693,7 +2737,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(list, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2764,7 +2808,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(result, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2806,7 +2850,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(list, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2867,7 +2911,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(result, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2915,7 +2959,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(list, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2987,7 +3031,7 @@ impl Store {
             return;
         };
         let encoded = encode_set(set, &config);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -3099,7 +3143,7 @@ impl Store {
             };
             total = next;
         }
-        if total > self.max_payload_bytes {
+        if total > self.payload_limit() {
             out.extend_from_slice(OOM);
             return;
         }
@@ -3253,7 +3297,7 @@ impl Store {
             };
             total = next;
         }
-        if total > self.max_payload_bytes {
+        if total > self.payload_limit() {
             out.extend_from_slice(OOM);
             return;
         }
@@ -3590,7 +3634,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -3644,7 +3688,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -3689,7 +3733,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -4027,10 +4071,34 @@ impl Store {
                     Err(error) => out.extend_from_slice(error),
                 }
             }
+        } else if command.eq_ignore_ascii_case(b"BZPOPMIN")
+            || command.eq_ignore_ascii_case(b"BZPOPMAX")
+        {
+            let max = command.eq_ignore_ascii_case(b"BZPOPMAX");
+            let name = if max { "bzpopmax" } else { "bzpopmin" };
+            if args.len() < 3 {
+                arity(name, out);
+            } else {
+                match parse_bzmpop_timeout(args[args.len() - 1]) {
+                    Ok(_) => self.zset_pop_single(args, max, out),
+                    Err(error) => out.extend_from_slice(error),
+                }
+            }
         } else {
             return false;
         }
         true
+    }
+
+    fn zset_pop_single(&self, args: &[&[u8]], max: bool, out: &mut Vec<u8>) {
+        let keys = &args[1..args.len() - 1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let outcome = self.zset_pop_in_data(&mut data, keys, max, 1, now);
+        zset_pop_single_reply(outcome, out);
     }
 
     fn zset_mpop(&self, args: &[&[u8]], numkeys_index: usize, out: &mut Vec<u8>) {
@@ -4095,7 +4163,7 @@ impl Store {
                         key,
                         encoded.payload_len(),
                         Some(previous),
-                        self.max_payload_bytes,
+                        self.payload_limit(),
                         now,
                     ) else {
                         return ZSetPopOutcome::Oom;
@@ -4251,7 +4319,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -4411,7 +4479,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(destination, bytes, previous, self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(destination, bytes, previous, self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -4556,7 +4624,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -4737,7 +4805,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;

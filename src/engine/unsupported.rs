@@ -8,9 +8,14 @@
 use super::options::NOT_INTEGER;
 use super::{Store, arity, integer};
 use crate::protocol::encode_bulk;
+use std::io::Write as _;
 
 const CLUSTER_DISABLED: &[u8] = b"-ERR This instance has cluster support disabled\r\n";
 const MODULE_DISABLED: &[u8] = b"-ERR MODULE loading is not supported by this server\r\n";
+const RDB_DISABLED: &[u8] = b"-ERR RDB persistence is not supported by this server\r\n";
+const REPLICATION_DISABLED: &[u8] =
+    b"-ERR replication is not supported by this standalone server\r\n";
+const MULTI_DB_DISABLED: &[u8] = b"-ERR this server supports only database 0\r\n";
 
 impl Store {
     pub(super) fn execute_unsupported(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
@@ -72,6 +77,105 @@ impl Store {
                     // No replicas are configured; no acknowledgement can succeed.
                     integer(0, out);
                 }
+            }
+        } else if command.eq_ignore_ascii_case(b"WAITAOF") {
+            // Queue-time blocking commands execute without blocking inside EXEC.
+            if args.len() != 4 {
+                arity("waitaof", out);
+            } else {
+                let parse = |raw: &[u8]| {
+                    std::str::from_utf8(raw)
+                        .ok()
+                        .and_then(|text| text.parse::<i64>().ok())
+                };
+                let (Some(numlocal), Some(numreplicas), Some(timeout)) =
+                    (parse(args[1]), parse(args[2]), parse(args[3]))
+                else {
+                    out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                    return true;
+                };
+                if timeout < 0 {
+                    out.extend_from_slice(b"-ERR timeout can't be negative\r\n");
+                } else {
+                    match self.waitaof_probe(numlocal, numreplicas) {
+                        Ok((local, replicas)) => {
+                            let _ = write!(out, "*2\r\n:{local}\r\n:{replicas}\r\n");
+                        }
+                        Err(error) => out.extend_from_slice(error),
+                    }
+                }
+            }
+        } else if command.eq_ignore_ascii_case(b"MONITOR") {
+            // Top-level MONITOR is handled by the session; this path only sees a
+            // queued copy executed by EXEC, which cannot change session mode.
+            out.extend_from_slice(b"-ERR MONITOR is not allowed inside MULTI\r\n");
+        } else if command.eq_ignore_ascii_case(b"LASTSAVE") {
+            if args.len() != 1 {
+                arity("lastsave", out);
+            } else {
+                // No RDB save has ever completed because RDB persistence is absent.
+                integer(0, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"SAVE") {
+            if args.len() != 1 {
+                arity("save", out);
+            } else {
+                out.extend_from_slice(RDB_DISABLED);
+            }
+        } else if command.eq_ignore_ascii_case(b"BGSAVE") {
+            if args.len() == 1 || (args.len() == 2 && args[1].eq_ignore_ascii_case(b"SCHEDULE")) {
+                out.extend_from_slice(RDB_DISABLED);
+            } else if args.len() == 2 {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+            } else {
+                arity("bgsave", out);
+            }
+        } else if command.eq_ignore_ascii_case(b"REPLICAOF")
+            || command.eq_ignore_ascii_case(b"SLAVEOF")
+        {
+            let name = if command.eq_ignore_ascii_case(b"REPLICAOF") {
+                "replicaof"
+            } else {
+                "slaveof"
+            };
+            if args.len() != 3 {
+                arity(name, out);
+            } else if args[1].eq_ignore_ascii_case(b"NO") && args[2].eq_ignore_ascii_case(b"ONE") {
+                // This server is always a standalone master, so promotion is a no-op.
+                out.extend_from_slice(b"+OK\r\n");
+            } else {
+                out.extend_from_slice(REPLICATION_DISABLED);
+            }
+        } else if command.eq_ignore_ascii_case(b"PSYNC") {
+            if args.len() < 3 {
+                arity("psync", out);
+            } else {
+                out.extend_from_slice(REPLICATION_DISABLED);
+            }
+        } else if command.eq_ignore_ascii_case(b"SYNC") {
+            if args.len() != 1 {
+                arity("sync", out);
+            } else {
+                out.extend_from_slice(REPLICATION_DISABLED);
+            }
+        } else if command.eq_ignore_ascii_case(b"REPLCONF") {
+            if args.len() < 2 {
+                arity("replconf", out);
+            } else {
+                out.extend_from_slice(REPLICATION_DISABLED);
+            }
+        } else if command.eq_ignore_ascii_case(b"FAILOVER") {
+            out.extend_from_slice(REPLICATION_DISABLED);
+        } else if command.eq_ignore_ascii_case(b"MOVE") || command.eq_ignore_ascii_case(b"SWAPDB") {
+            let name = if command.eq_ignore_ascii_case(b"MOVE") {
+                "move"
+            } else {
+                "swapdb"
+            };
+            if args.len() != 3 {
+                arity(name, out);
+            } else {
+                out.extend_from_slice(MULTI_DB_DISABLED);
             }
         } else if command.eq_ignore_ascii_case(b"READONLY")
             || command.eq_ignore_ascii_case(b"READWRITE")

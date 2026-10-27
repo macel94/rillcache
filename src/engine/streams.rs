@@ -470,13 +470,9 @@ impl Store {
             return;
         };
         let previous = data.entries.get(a[1]).map(|e| e.payload_len);
-        let Some(payload) = data.reserve(
-            a[1],
-            stream_bytes,
-            previous,
-            self.max_payload_bytes,
-            current,
-        ) else {
+        let Some(payload) =
+            data.reserve(a[1], stream_bytes, previous, self.payload_limit(), current)
+        else {
             out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
             return;
         };
@@ -1519,7 +1515,7 @@ impl Store {
                 a[2],
                 stream.payload_bytes().unwrap_or(0),
                 previous,
-                self.max_payload_bytes,
+                self.payload_limit(),
                 now,
             ) else {
                 out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");

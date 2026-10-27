@@ -73,8 +73,7 @@ impl Store {
         &self,
         arguments: &[&[u8]],
         elapsed: Duration,
-        client_addr: &str,
-        client_name: &[u8],
+        metadata: impl FnOnce() -> (String, Vec<u8>),
     ) {
         let threshold = self.slowlog_threshold_us();
         let max_len = self.slowlog_max_len();
@@ -85,13 +84,16 @@ impl Store {
         if duration_us < threshold {
             return;
         }
+        // Client lookup/name cloning is cold-path work: never do it for the
+        // overwhelmingly common below-threshold command or a disabled logger.
+        let (client_addr, client_name) = metadata();
         let entry = SlowlogEntry {
             id: self.slowlog_next_id.fetch_add(1, Ordering::Relaxed),
             timestamp: self.clock.now_ms().div_euclid(1000),
             duration_us,
             argv: capture_arguments(arguments),
-            client_addr: client_addr.to_owned(),
-            client_name: client_name.to_vec(),
+            client_addr,
+            client_name,
         };
         let Ok(mut entries) = self.slowlog.write() else {
             return;
@@ -338,22 +340,46 @@ mod tests {
     }
 
     #[test]
+    fn rejected_samples_never_capture_client_metadata() {
+        let store = Store::new(1024);
+        let captured = std::cell::Cell::new(0);
+        let metadata = || {
+            captured.set(captured.get() + 1);
+            ("127.0.0.1:1234".into(), b"client".to_vec())
+        };
+        store.set_slowlog_threshold_us(100);
+        store.slowlog_push(&[b"PING"], Duration::from_micros(99), metadata);
+        assert_eq!(captured.get(), 0);
+        store.slowlog_push(&[b"PING"], Duration::from_micros(100), metadata);
+        assert_eq!(captured.get(), 1);
+        let entries = store.slowlog.read().unwrap();
+        assert_eq!(entries.front().unwrap().client_addr, "127.0.0.1:1234");
+        assert_eq!(entries.front().unwrap().client_name, b"client");
+        drop(entries);
+        store.set_slowlog_threshold_us(-1);
+        store.slowlog_push(&[b"PING"], Duration::from_secs(1), metadata);
+        store.set_slowlog_threshold_us(0);
+        store.set_slowlog_max_len(0);
+        store.slowlog_push(&[b"PING"], Duration::from_secs(1), metadata);
+        assert_eq!(captured.get(), 1);
+    }
+
+    #[test]
     fn threshold_and_max_len_bound_the_retained_entries() {
         let store = Store::new(1024);
         store.set_slowlog_threshold_us(0);
         store.set_slowlog_max_len(2);
         for index in 0..4 {
             let command = format!("CMD{index}");
-            store.slowlog_push(
-                &[command.as_bytes()],
-                Duration::from_micros(10),
-                "127.0.0.1:1",
-                b"",
-            );
+            store.slowlog_push(&[command.as_bytes()], Duration::from_micros(10), || {
+                ("127.0.0.1:1".into(), Vec::new())
+            });
         }
         assert_eq!(store.slowlog_len(), 2);
         store.set_slowlog_threshold_us(-1);
-        store.slowlog_push(&[b"CMD"], Duration::from_millis(1), "127.0.0.1:1", b"");
+        store.slowlog_push(&[b"CMD"], Duration::from_millis(1), || {
+            ("127.0.0.1:1".into(), Vec::new())
+        });
         assert_eq!(store.slowlog_len(), 2);
         store.set_slowlog_max_len(0);
         assert_eq!(store.slowlog_len(), 0);

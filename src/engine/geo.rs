@@ -520,7 +520,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(destination, bytes, previous, self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(destination, bytes, previous, self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;

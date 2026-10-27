@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::protocol::{Limits, encode_bulk};
 mod acl_log;
@@ -28,6 +28,7 @@ mod introspection;
 mod journal;
 mod keyspace;
 mod latency;
+mod monitor;
 mod multikey;
 mod notify;
 mod options;
@@ -50,7 +51,7 @@ pub use clients::ClientSnapshot;
 pub(crate) use collection_commands::{
     ListMoveOutcome, ListPopOutcome, ZSetPopOutcome, list_move_reply,
     list_pop_reply as blocking_lmpop_reply, parse_bzmpop_timeout, parse_list_mpop, parse_mpop,
-    parse_side, zset_pop_reply as blocking_zpop_reply,
+    parse_side, zset_pop_reply as blocking_zpop_reply, zset_pop_single_reply,
 };
 use collection_config::CollectionConfig;
 use data::Data;
@@ -88,6 +89,26 @@ impl Clock for SystemClock {
     }
 }
 
+/// Per-command counters exposed through `INFO commandstats`. Each slot maps to
+/// one registered command and is updated with relaxed atomics so recording does
+/// not serialize independent worker threads.
+#[derive(Default)]
+pub(super) struct CommandStat {
+    calls: std::sync::atomic::AtomicU64,
+    usec: std::sync::atomic::AtomicU64,
+    rejected_calls: std::sync::atomic::AtomicU64,
+    failed_calls: std::sync::atomic::AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CommandStatValues {
+    pub name: &'static str,
+    pub calls: u64,
+    pub usec: u64,
+    pub rejected_calls: u64,
+    pub failed_calls: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Stats {
     pub total_connections_received: u64,
@@ -102,7 +123,7 @@ pub struct Stats {
 
 pub struct Store {
     data: RwLock<Data>,
-    max_payload_bytes: usize,
+    max_payload_bytes: std::sync::atomic::AtomicUsize,
     error_dialect: ErrorDialect,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
@@ -114,6 +135,8 @@ pub struct Store {
     journal_limits: Limits,
     pubsub: RwLock<pubsub::PubSub>,
     clients: RwLock<std::collections::BTreeMap<u64, clients::ClientRecord>>,
+    monitors: RwLock<std::collections::BTreeMap<u64, std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    monitor_count: std::sync::atomic::AtomicUsize,
     notifications: std::sync::atomic::AtomicU32,
     acl_log: RwLock<std::collections::VecDeque<acl_log::AclLogEntry>>,
     connections_received: std::sync::atomic::AtomicU64,
@@ -132,6 +155,8 @@ pub struct Store {
     aof_config: RwLock<journal::AofConfig>,
     error_stats: RwLock<std::collections::BTreeMap<Vec<u8>, u64>>,
     shutdown_requested: AtomicBool,
+    commandstats_enabled: AtomicBool,
+    command_stats: Vec<CommandStat>,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -172,7 +197,7 @@ impl Store {
     ) -> Self {
         Self {
             data: RwLock::new(Data::default()),
-            max_payload_bytes,
+            max_payload_bytes: std::sync::atomic::AtomicUsize::new(max_payload_bytes),
             error_dialect: ErrorDialect::default(),
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
@@ -184,6 +209,8 @@ impl Store {
             journal_limits: Limits::default(),
             pubsub: RwLock::new(pubsub::PubSub::default()),
             clients: RwLock::new(std::collections::BTreeMap::new()),
+            monitors: RwLock::new(std::collections::BTreeMap::new()),
+            monitor_count: std::sync::atomic::AtomicUsize::new(0),
             notifications: std::sync::atomic::AtomicU32::new(0),
             acl_log: RwLock::new(std::collections::VecDeque::new()),
             connections_received: std::sync::atomic::AtomicU64::new(0),
@@ -204,6 +231,10 @@ impl Store {
             aof_config: RwLock::new(journal::AofConfig::default()),
             error_stats: RwLock::new(std::collections::BTreeMap::new()),
             shutdown_requested: AtomicBool::new(false),
+            commandstats_enabled: AtomicBool::new(false),
+            command_stats: (0..discovery::command_count())
+                .map(|_| CommandStat::default())
+                .collect(),
         }
     }
     /// Select verified vendor-specific error wording before sharing the store.
@@ -298,7 +329,70 @@ impl Store {
     /// Dispatch without the transaction gate; only `EXEC` may call this while
     /// holding the gate's write side.
     pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        if self.execute_collection_config(arguments, output)
+        // Ordinary data commands bypass unrelated specialized module dispatch.
+        if let Some(command) = arguments.first() {
+            if command.eq_ignore_ascii_case(b"PING") {
+                match arguments.len() {
+                    1 => output.extend_from_slice(b"+PONG\r\n"),
+                    2 => encode_bulk(Some(arguments[1]), output),
+                    _ => arity("ping", output),
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"GET") {
+                if arguments.len() != 2 {
+                    arity("get", output);
+                } else {
+                    self.get(arguments[1], output);
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"SET") {
+                if arguments.len() < 3 {
+                    arity("set", output);
+                } else {
+                    match SetOptions::parse(&arguments[3..], false) {
+                        Ok(options) => {
+                            self.set(arguments[1], arguments[2], options, "set", false, output)
+                        }
+                        Err(error) => output.extend_from_slice(error),
+                    }
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"ECHO") {
+                if arguments.len() == 2 {
+                    encode_bulk(Some(arguments[1]), output);
+                } else {
+                    arity("echo", output);
+                }
+                return Action::Continue;
+            }
+        }
+        let Some(command) = arguments.first() else {
+            output.extend_from_slice(b"-ERR empty command\r\n");
+            return Action::Continue;
+        };
+        if command.eq_ignore_ascii_case(b"PUBLISH") {
+            if arguments.len() != 3 {
+                arity("publish", output);
+            } else {
+                integer(
+                    i64::try_from(self.publish(arguments[1], arguments[2])).unwrap_or(i64::MAX),
+                    output,
+                );
+            }
+        } else if command.eq_ignore_ascii_case(b"SPUBLISH") {
+            if arguments.len() != 3 {
+                arity("spublish", output);
+            } else {
+                integer(
+                    i64::try_from(self.publish_shard(arguments[1], arguments[2]))
+                        .unwrap_or(i64::MAX),
+                    output,
+                );
+            }
+        } else if self.execute_collection_config(arguments, output)
             || self.execute_admin(arguments, output)
             || self.execute_scan(arguments, output)
             || self.execute_discovery(arguments, output)
@@ -306,40 +400,6 @@ impl Store {
             || self.execute_streams(arguments, output)
         {
             return Action::Continue;
-        }
-        let Some(command) = arguments.first() else {
-            output.extend_from_slice(b"-ERR empty command\r\n");
-            return Action::Continue;
-        };
-        if command.eq_ignore_ascii_case(b"PING") {
-            match arguments.len() {
-                1 => output.extend_from_slice(b"+PONG\r\n"),
-                2 => encode_bulk(Some(arguments[1]), output),
-                _ => arity("ping", output),
-            }
-        } else if command.eq_ignore_ascii_case(b"GET") {
-            if arguments.len() != 2 {
-                arity("get", output);
-            } else {
-                self.get(arguments[1], output);
-            }
-        } else if command.eq_ignore_ascii_case(b"SET") {
-            if arguments.len() < 3 {
-                arity("set", output);
-            } else {
-                match SetOptions::parse(&arguments[3..], false) {
-                    Ok(options) => {
-                        self.set(arguments[1], arguments[2], options, "set", false, output)
-                    }
-                    Err(error) => output.extend_from_slice(error),
-                }
-            }
-        } else if command.eq_ignore_ascii_case(b"ECHO") {
-            if arguments.len() == 2 {
-                encode_bulk(Some(arguments[1]), output);
-            } else {
-                arity("echo", output);
-            }
         } else if command.eq_ignore_ascii_case(b"QUIT") {
             if arguments.len() == 1 {
                 output.extend_from_slice(b"+OK\r\n");
@@ -618,6 +678,77 @@ impl Store {
         self.commands_processed.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record one network command dispatch. `reply` is only the bytes produced
+    /// by this call, so a leading `-` identifies a failed call and NOAUTH/NOPERM
+    /// identify authentication/authorization rejections.
+    pub(crate) fn record_command_stats(
+        &self,
+        command: Option<&[u8]>,
+        elapsed: Duration,
+        reply: &[u8],
+    ) {
+        if !self.commandstats_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(command) = command else {
+            return;
+        };
+        let Some(stat) =
+            discovery::command_index(command).and_then(|index| self.command_stats.get(index))
+        else {
+            return;
+        };
+        stat.calls.fetch_add(1, Ordering::Relaxed);
+        stat.usec.fetch_add(
+            u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        if reply.starts_with(b"-") {
+            stat.failed_calls.fetch_add(1, Ordering::Relaxed);
+        }
+        if reply.starts_with(b"-NOAUTH") || reply.starts_with(b"-NOPERM") {
+            stat.rejected_calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn commandstats_enabled(&self) -> bool {
+        self.commandstats_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_commandstats_enabled(&self, enabled: bool) {
+        let previous = self.commandstats_enabled.swap(enabled, Ordering::Relaxed);
+        if enabled && !previous {
+            self.reset_command_statistics();
+        }
+    }
+
+    fn reset_command_statistics(&self) {
+        for stat in &self.command_stats {
+            stat.calls.store(0, Ordering::Relaxed);
+            stat.usec.store(0, Ordering::Relaxed);
+            stat.rejected_calls.store(0, Ordering::Relaxed);
+            stat.failed_calls.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Snapshot only commands with at least one recorded call, in registry order.
+    pub(super) fn command_statistics(&self) -> Vec<CommandStatValues> {
+        self.command_stats
+            .iter()
+            .enumerate()
+            .filter_map(|(index, stat)| {
+                let calls = stat.calls.load(Ordering::Relaxed);
+                (calls > 0).then(|| CommandStatValues {
+                    name: discovery::command_name_at(index).unwrap_or("unknown"),
+                    calls,
+                    usec: stat.usec.load(Ordering::Relaxed),
+                    rejected_calls: stat.rejected_calls.load(Ordering::Relaxed),
+                    failed_calls: stat.failed_calls.load(Ordering::Relaxed),
+                })
+            })
+            .collect()
+    }
+
     pub fn stats(&self) -> Stats {
         let (expired_keys, expired_subkeys, evicted_keys, pubsub_channels, pubsub_patterns) = {
             let (expired, subkeys, evicted) = self.data.read().map_or((0, 0, 0), |data| {
@@ -681,6 +812,7 @@ impl Store {
         self.connections_received.store(0, Ordering::Relaxed);
         self.commands_processed.store(0, Ordering::Relaxed);
         self.rejected_connections.store(0, Ordering::Relaxed);
+        self.reset_command_statistics();
         self.data.write().is_ok_and(|mut data| {
             data.expired_keys = 0;
             data.expired_subkeys = 0;
@@ -765,6 +897,22 @@ impl Store {
             .map(|journal| journal.policy())
     }
 
+    /// Current payload-budget limit in key and value bytes.
+    pub(super) fn payload_limit(&self) -> usize {
+        self.max_payload_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Change the payload budget and evict down to it using the active policy.
+    /// A noeviction or volatile policy may leave the store above the new budget;
+    /// subsequent admissions then fail rather than deleting ineligible keys.
+    pub fn set_payload_limit(&self, limit: usize) -> bool {
+        self.max_payload_bytes.store(limit, Ordering::Relaxed);
+        self.data.write().is_ok_and(|mut data| {
+            data.enforce_budget(limit);
+            true
+        })
+    }
+
     pub fn eviction_policy(&self) -> EvictionPolicy {
         self.data
             .read()
@@ -773,8 +921,10 @@ impl Store {
 
     pub fn set_notify_flags(&self, flags: NotifyFlags) {
         // Events queued while a class was disabled are stale for delivery.
+        let collect = self.journal.is_some() || flags.bits() != 0;
         if let Ok(mut data) = self.data.write() {
             data.clear_lifecycle();
+            data.set_collect_events(collect);
         }
         self.notifications.store(flags.bits(), Ordering::Release);
     }
@@ -785,6 +935,45 @@ impl Store {
 
     pub fn notifications_enabled(&self) -> bool {
         self.notifications.load(Ordering::Acquire) != 0
+    }
+
+    /// Register a MONITOR stream. Re-registering the same connection replaces
+    /// its sender; the stream is bounded and uses the pubsub queue capacity.
+    pub fn add_monitor(&self, id: u64, sender: std::sync::mpsc::SyncSender<Vec<u8>>) -> bool {
+        let Ok(mut monitors) = self.monitors.write() else {
+            return false;
+        };
+        monitors.insert(id, sender);
+        self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+        true
+    }
+
+    pub fn remove_monitor(&self, id: u64) {
+        let Ok(mut monitors) = self.monitors.write() else {
+            return;
+        };
+        if monitors.remove(&id).is_some() {
+            self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+        }
+    }
+
+    /// Stream one received command to every monitor except its source. A full
+    /// monitor queue drops this line rather than blocking the command path.
+    pub fn monitor_command(&self, source: u64, arguments: &[&[u8]]) {
+        if self.monitor_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let address = self.client_address(source).unwrap_or_else(|| "?:0".into());
+        let line = monitor::line(&address, arguments);
+        let Ok(monitors) = self.monitors.read() else {
+            return;
+        };
+        for (id, sender) in monitors.iter() {
+            if *id == source {
+                continue;
+            }
+            let _ = sender.try_send(line.clone());
+        }
     }
 
     pub fn pubsub_queue_capacity() -> usize {

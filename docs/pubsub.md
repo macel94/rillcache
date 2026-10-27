@@ -72,8 +72,9 @@ ERR Can't execute '<cmd>': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT 
 In RESP3, normal commands remain available and message/confirmation frames use
 push type. `RESET` is allowed from RESP2 subscriber mode and unsubscribes
 everything while returning the connection to RESP2; otherwise unsubscribe or
-reconnect to leave subscriber mode. Connection-local commands are not queued
-inside `MULTI`; pub/sub commands are rejected there.
+reconnect to leave subscriber mode. Subscription and `PUBSUB` introspection
+commands are not queued inside `MULTI`; `PUBLISH`/`SPUBLISH` are queued as
+ordinary commands and deliver once when `EXEC` runs.
 
 ## ACL channels
 
