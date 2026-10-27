@@ -75,7 +75,8 @@ options and atomic store destinations. Searches use a bounded linear scan rather
 than a native neighbour index. See [geospatial limits](docs/geospatial.md).
 
 Binary-safe lists, sets, hashes and sorted sets support creation, mutation,
-removal, bounded random selection, set algebra/store commands, list position and
+removal, bounded random selection (`SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`),
+HGETDEL atomic field reads/removal, set algebra/store commands, list position and
 multi-key pop (LPOS/LMPOP/BLMPOP), score ranges and rank/range inspection. Sorted sets add unified `ZRANGE` score/lex/reverse/limit
 selection, `ZRANGESTORE`, `ZLEXCOUNT`, `ZREMRANGEBYLEX`, `ZRANDMEMBER` and
 weighted union/intersection/difference algebra with store and cardinality

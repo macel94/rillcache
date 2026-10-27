@@ -769,6 +769,17 @@ fn event_for(
     now: i64,
 ) -> Option<(&'static str, NotifyCategory)> {
     let name = std::str::from_utf8(command).ok()?.to_ascii_lowercase();
+    if name == "hgetdel" {
+        let stored = data
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.collection.as_ref().is_some_and(Collection::is_hash));
+        return Some(if stored {
+            ("hdel", NotifyCategory::Hash)
+        } else {
+            ("del", NotifyCategory::Generic)
+        });
+    }
     let category = match name.as_str() {
         "del" | "delex" | "delifeq" => return Some(("del", NotifyCategory::Generic)),
         "expire" | "pexpire" | "expireat" | "pexpireat" => {
