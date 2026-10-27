@@ -7,7 +7,7 @@
 
 use super::collection_config::CollectionConfig;
 use super::data::{Collection, Data, Entry};
-use super::options::{NOT_INTEGER, OOM, parse_integer};
+use super::options::{NOT_INTEGER, OOM, SYNTAX, parse_integer};
 use super::{Store, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -323,6 +323,100 @@ enum RangeMode {
     Rank,
     Score,
     Lex,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZSetOp {
+    Union,
+    Inter,
+    Diff,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Aggregate {
+    Sum,
+    Min,
+    Max,
+}
+
+fn nan_zero(score: f64) -> f64 {
+    normalize_score(if score.is_nan() { 0.0 } else { score })
+}
+
+fn parse_zset_numkeys(raw: &[u8], name: &str, out: &mut Vec<u8>) -> Option<usize> {
+    let Some(value) = parse_i64(raw) else {
+        out.extend_from_slice(NOT_INTEGER);
+        return None;
+    };
+    if value < 1 {
+        write!(
+            out,
+            "-ERR at least 1 input key is needed for '{name}' command\r\n"
+        )
+        .expect("Vec write");
+        return None;
+    }
+    match usize::try_from(value) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            out.extend_from_slice(NOT_INTEGER);
+            None
+        }
+    }
+}
+
+fn parse_zset_algebra_options(
+    args: &[&[u8]],
+    start: usize,
+    count: usize,
+    operation: ZSetOp,
+    store: bool,
+    out: &mut Vec<u8>,
+) -> Option<(Vec<f64>, Aggregate, bool)> {
+    let mut weights = vec![1.0f64; count];
+    let mut aggregate = Aggregate::Sum;
+    let mut with_scores = false;
+    let mut index = start;
+    while index < args.len() {
+        let token = args[index];
+        if token.eq_ignore_ascii_case(b"WEIGHTS") && operation != ZSetOp::Diff {
+            if index + count + 1 > args.len() {
+                out.extend_from_slice(SYNTAX);
+                return None;
+            }
+            for (offset, weight) in weights.iter_mut().enumerate() {
+                let Some(parsed) = parse_score(args[index + 1 + offset]) else {
+                    out.extend_from_slice(b"-ERR weight value is not a float\r\n");
+                    return None;
+                };
+                *weight = parsed;
+            }
+            index += count + 1;
+        } else if token.eq_ignore_ascii_case(b"AGGREGATE") && operation != ZSetOp::Diff {
+            let Some(value) = args.get(index + 1) else {
+                out.extend_from_slice(SYNTAX);
+                return None;
+            };
+            aggregate = if value.eq_ignore_ascii_case(b"SUM") {
+                Aggregate::Sum
+            } else if value.eq_ignore_ascii_case(b"MIN") {
+                Aggregate::Min
+            } else if value.eq_ignore_ascii_case(b"MAX") {
+                Aggregate::Max
+            } else {
+                out.extend_from_slice(SYNTAX);
+                return None;
+            };
+            index += 2;
+        } else if token.eq_ignore_ascii_case(b"WITHSCORES") && !store {
+            with_scores = true;
+            index += 1;
+        } else {
+            out.extend_from_slice(SYNTAX);
+            return None;
+        }
+    }
+    Some((weights, aggregate, with_scores))
 }
 
 enum LexBound<'a> {
@@ -2326,6 +2420,37 @@ impl Store {
             } else {
                 self.zset_random_member(args, out);
             }
+        } else if command.eq_ignore_ascii_case(b"ZUNION")
+            || command.eq_ignore_ascii_case(b"ZUNIONSTORE")
+            || command.eq_ignore_ascii_case(b"ZINTER")
+            || command.eq_ignore_ascii_case(b"ZINTERSTORE")
+            || command.eq_ignore_ascii_case(b"ZDIFF")
+            || command.eq_ignore_ascii_case(b"ZDIFFSTORE")
+        {
+            let (name, operation, store) = if command.eq_ignore_ascii_case(b"ZUNION") {
+                ("zunion", ZSetOp::Union, false)
+            } else if command.eq_ignore_ascii_case(b"ZUNIONSTORE") {
+                ("zunionstore", ZSetOp::Union, true)
+            } else if command.eq_ignore_ascii_case(b"ZINTER") {
+                ("zinter", ZSetOp::Inter, false)
+            } else if command.eq_ignore_ascii_case(b"ZINTERSTORE") {
+                ("zinterstore", ZSetOp::Inter, true)
+            } else if command.eq_ignore_ascii_case(b"ZDIFF") {
+                ("zdiff", ZSetOp::Diff, false)
+            } else {
+                ("zdiffstore", ZSetOp::Diff, true)
+            };
+            if args.len() < if store { 4 } else { 3 } {
+                arity(name, out);
+            } else {
+                self.zset_algebra(args, name, operation, store, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZINTERCARD") {
+            if args.len() < 3 {
+                arity("zintercard", out);
+            } else {
+                self.zset_intercard(args, out);
+            }
         } else {
             return false;
         }
@@ -2475,6 +2600,232 @@ impl Store {
         };
         data.put_collection(key, encoded, None, payload, now);
         integer(count as i64, out);
+    }
+
+    fn zset_algebra(
+        &self,
+        args: &[&[u8]],
+        name: &str,
+        operation: ZSetOp,
+        store: bool,
+        out: &mut Vec<u8>,
+    ) {
+        let (destination, numkeys_index) = if store { (Some(args[1]), 2) } else { (None, 1) };
+        let Some(count) = parse_zset_numkeys(args[numkeys_index], name, out) else {
+            return;
+        };
+        let keys_start = numkeys_index + 1;
+        let Some(keys_end) = keys_start.checked_add(count) else {
+            out.extend_from_slice(SYNTAX);
+            return;
+        };
+        if keys_end > args.len() {
+            out.extend_from_slice(SYNTAX);
+            return;
+        }
+        let Some((weights, aggregate, with_scores)) =
+            parse_zset_algebra_options(args, keys_end, count, operation, store, out)
+        else {
+            return;
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut sets = Vec::with_capacity(count);
+        for key in &args[keys_start..keys_end] {
+            match owned_zset(&mut data, key, now) {
+                Ok(set) => sets.push(set.unwrap_or_default()),
+                Err(()) => {
+                    wrong_type(out);
+                    return;
+                }
+            }
+        }
+        let result: HashMap<Vec<u8>, f64> = match operation {
+            ZSetOp::Union => {
+                let mut result: HashMap<Vec<u8>, f64> = HashMap::new();
+                for (set, weight) in sets.iter().zip(weights.iter()) {
+                    for (member, score) in set {
+                        let weighted = nan_zero(score * weight);
+                        match result.entry(member.clone()) {
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                entry.insert(weighted);
+                            }
+                            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                let value = *entry.get();
+                                *entry.get_mut() = nan_zero(match aggregate {
+                                    Aggregate::Sum => value + weighted,
+                                    Aggregate::Min => f64::min(value, weighted),
+                                    Aggregate::Max => f64::max(value, weighted),
+                                });
+                            }
+                        }
+                    }
+                }
+                result
+            }
+            ZSetOp::Inter => {
+                let mut result: HashMap<Vec<u8>, f64> = HashMap::new();
+                if let Some((first, rest)) = sets.split_first() {
+                    for (member, score) in first {
+                        result.insert(member.clone(), nan_zero(score * weights[0]));
+                    }
+                    for (set, weight) in rest.iter().zip(weights.iter().skip(1)) {
+                        if result.is_empty() {
+                            break;
+                        }
+                        result.retain(|member, current| {
+                            let Some(score) = set.get(member) else {
+                                return false;
+                            };
+                            let weighted = nan_zero(score * weight);
+                            *current = nan_zero(match aggregate {
+                                Aggregate::Sum => *current + weighted,
+                                Aggregate::Min => f64::min(*current, weighted),
+                                Aggregate::Max => f64::max(*current, weighted),
+                            });
+                            true
+                        });
+                    }
+                }
+                result
+            }
+            ZSetOp::Diff => {
+                let mut result: HashMap<Vec<u8>, f64> = HashMap::new();
+                if let Some((first, rest)) = sets.split_first() {
+                    for (member, score) in first {
+                        result.insert(member.clone(), *score);
+                    }
+                    for set in rest {
+                        if result.is_empty() {
+                            break;
+                        }
+                        result.retain(|member, _| !set.contains_key(member));
+                    }
+                }
+                result
+            }
+        };
+        let ordered = ordered_zset(
+            result
+                .iter()
+                .map(|(member, score)| (member.as_slice(), *score))
+                .collect(),
+            false,
+        );
+        if !store {
+            write!(
+                out,
+                "*{}\r\n",
+                ordered.len() * (1 + usize::from(with_scores))
+            )
+            .expect("Vec write");
+            for (member, score) in ordered {
+                encode_bulk(Some(&member), out);
+                if with_scores {
+                    encode_bulk(Some(&score_bytes(score)), out);
+                }
+            }
+            return;
+        }
+        let destination = destination.expect("store destination");
+        data.expire_key(destination, now);
+        if ordered.is_empty() {
+            data.remove(destination);
+            integer(0, out);
+            return;
+        }
+        if ordered.len() > MAX_ELEMENTS {
+            out.extend_from_slice(OOM);
+            return;
+        }
+        let mut zset = HashMap::with_capacity(ordered.len());
+        let mut bytes = 0usize;
+        for (member, score) in ordered {
+            bytes = bytes.saturating_add(member.len());
+            zset.insert(member, score);
+        }
+        let count = zset.len();
+        let previous = data.entries.get(destination).map(Entry::payload_len);
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_zset(zset, &config);
+        let Some(payload) = data.reserve(destination, bytes, previous, self.max_payload_bytes, now)
+        else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(destination, encoded, None, payload, now);
+        integer(count as i64, out);
+    }
+
+    fn zset_intercard(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(count) = parse_zset_numkeys(args[1], "zintercard", out) else {
+            return;
+        };
+        let keys_start = 2usize;
+        let Some(keys_end) = keys_start.checked_add(count) else {
+            out.extend_from_slice(SYNTAX);
+            return;
+        };
+        if keys_end > args.len() {
+            out.extend_from_slice(SYNTAX);
+            return;
+        }
+        let mut limit = 0usize;
+        let mut index = keys_end;
+        while index < args.len() {
+            if args[index].eq_ignore_ascii_case(b"LIMIT") && index + 1 < args.len() {
+                let Some(value) = parse_i64(args[index + 1]) else {
+                    out.extend_from_slice(b"-ERR LIMIT can't be negative\r\n");
+                    return;
+                };
+                if value < 0 {
+                    out.extend_from_slice(b"-ERR LIMIT can't be negative\r\n");
+                    return;
+                }
+                limit = usize::try_from(value).unwrap_or(usize::MAX);
+                index += 2;
+            } else {
+                out.extend_from_slice(SYNTAX);
+                return;
+            }
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut sets = Vec::with_capacity(count);
+        for key in &args[keys_start..keys_end] {
+            match owned_zset(&mut data, key, now) {
+                Ok(set) => sets.push(set.unwrap_or_default()),
+                Err(()) => {
+                    wrong_type(out);
+                    return;
+                }
+            }
+        }
+        let mut members: BTreeSet<Vec<u8>> = sets
+            .first()
+            .map(|set| set.keys().cloned().collect())
+            .unwrap_or_default();
+        for set in &sets[1..] {
+            if members.is_empty() {
+                break;
+            }
+            members.retain(|member| set.contains_key(member));
+        }
+        let cardinality = if limit == 0 {
+            members.len()
+        } else {
+            members.len().min(limit)
+        };
+        integer(cardinality as i64, out);
     }
 
     fn zset_lex_count(&self, args: &[&[u8]], out: &mut Vec<u8>) {
