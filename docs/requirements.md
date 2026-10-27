@@ -69,6 +69,7 @@ reason to couple all future commands into a single large story.
 | S39 | As a cache user, I can add elements to approximate cardinality sketches, estimate the union of several sketches and merge them, without storing every member. | S | R153–R156; exact small counts, dense tolerance, TTL/merge/error atomicity and all-mode wire tests |
 | S40 | As a service, I can subscribe to keyspace/keyevent notifications so that cache invalidation and audit tooling do not need to poll the keyspace. | S | R157–R160; flag/category frames, MULTI/blocking, runtime toggle, ACL and all-mode wire tests |
 | S41 | As an administrator, I can generate secure ACL passwords, dry-run a user's permissions and inspect a bounded denial log so that credential operations and policy debugging are explicit. | XS | R161–R164; GENPASS source/bounds, DRYRUN, LOG aggregation/reset and all-mode wire tests |
+| S42 | As a bitmap user, I can count, locate and combine bits over binary strings with byte/bit ranges and atomic destinations. | S | R165–R168; range/padding/alias/TTL/OOM/WRONGTYPE and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -495,6 +496,31 @@ reason to couple all future commands into a single large story.
   command/noauth aggregation, reset and bounded counts. Documentation shall retain
   the absence of persistent/replicated/centralized audit, rate limiting, token/
   timeout metadata and exhaustive security-event coverage.
+### Bitmap algorithms (S42)
+
+- **R165 (event-driven):** When `BITCOUNT key [start end [BYTE|BIT]]` receives a
+  live string, it shall count set bits in the inclusive normalized range, using
+  byte or bit length for negative indexes and clamping, and return `0` for missing
+  keys or empty/reversed ranges. Argument counts, integers and unit tokens shall be
+  validated before key access.
+- **R166 (event-driven):** When `BITPOS key bit [start [end [BYTE|BIT]]]` receives
+  bit `0`/`1`, it shall return the first matching MSB-first position or `-1`.
+  Without an explicit end, a clear-bit search over a nonempty existing string shall
+  treat the right side as zero-padded; a missing key shall return `0` for bit `0`
+  and `-1` for bit `1`. Explicit ranges, negative indexes and unit boundaries shall
+  be normalized without overflow.
+- **R167 (event-driven):** When `BITOP AND|OR|XOR destination source [source ...]`
+  or `BITOP NOT destination source` runs, it shall combine the longest source with
+  missing/short bytes as zero, require one source for `NOT`, read aliased sources
+  from their pre-command values, delete the destination for an empty result, clear
+  destination TTL on replacement and return the result byte length.
+- **R168 (unwanted behavior):** If a bitmap command has malformed arguments, an
+  invalid bit/unit, a wrong-type source or destination admission failure, then it
+  shall return one bounded error without partially changing any key. Successful
+  mutations shall use exact payload accounting, journal/WATCH versions and atomic
+  publication; tests shall cover BYTE/BIT and negative ranges, padding, empty keys,
+  aliases, destination TTL, wrong type and all execution modes.
+
 
 ### Development and delivery
 
@@ -833,8 +859,9 @@ fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction;
 payload-budget eviction policies (`noeviction`, allkeys/volatile random/LRU and
 volatile TTL); keyspace/keyevent notifications for supported mutation classes;
 ACL GENPASS/DRYRUN and a bounded denial log; Redis DIGEST/DELEX
-and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT; LCS
-(LEN/IDX/WITHMATCHLEN/MINMATCHLEN); lists, sets, hashes and sorted sets with
+and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT/
+BITCOUNT/BITPOS/BITOP; LCS (LEN/IDX/WITHMATCHLEN/MINMATCHLEN); lists, sets,
+hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store
 commands, score/rank ranges, pops and bounded blocking `BLPOP`/`BRPOP` documented
 in [typed collections](collections.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor

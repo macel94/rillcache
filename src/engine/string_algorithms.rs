@@ -26,6 +26,16 @@ impl Store {
             } else {
                 self.getbit(args, out)
             }
+        } else if command.eq_ignore_ascii_case(b"BITCOUNT") {
+            if args.len() < 2 {
+                arity("bitcount", out)
+            } else {
+                self.bitcount(args, out)
+            }
+        } else if command.eq_ignore_ascii_case(b"BITPOS") {
+            self.bitpos(args, out)
+        } else if command.eq_ignore_ascii_case(b"BITOP") {
+            self.bitop(args, out)
         } else if command.eq_ignore_ascii_case(b"INCRBYFLOAT") {
             if args.len() != 3 {
                 arity("incrbyfloat", out)
@@ -351,5 +361,375 @@ impl Store {
             "$3\r\nlen\r\n:{}\r\n",
             table[a.len() * width + b.len()]
         );
+    }
+}
+
+const BIT_POS_ERROR: &[u8] = b"-ERR The bit argument must be 1 or 0.\r\n";
+const BITOP_NOT_ERROR: &[u8] = b"-ERR BITOP NOT must be called with a single source key.\r\n";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BitUnit {
+    Byte,
+    Bit,
+}
+
+fn parse_bit_unit(raw: &[u8]) -> Option<BitUnit> {
+    if raw.eq_ignore_ascii_case(b"BYTE") {
+        Some(BitUnit::Byte)
+    } else if raw.eq_ignore_ascii_case(b"BIT") {
+        Some(BitUnit::Bit)
+    } else {
+        None
+    }
+}
+
+fn normalize_bit_range(start: i64, end: i64, length: usize) -> Option<(usize, usize)> {
+    if length == 0 {
+        return None;
+    }
+    let length = length as i128;
+    let mut start = if start < 0 {
+        length + start as i128
+    } else {
+        start as i128
+    };
+    let mut end = if end < 0 {
+        length + end as i128
+    } else {
+        end as i128
+    };
+    start = start.max(0);
+    end = end.min(length - 1);
+    if start > end || start >= length || end < 0 {
+        None
+    } else {
+        Some((start as usize, end as usize))
+    }
+}
+
+fn count_bits(bytes: &[u8], start_bit: usize, end_bit: usize) -> u64 {
+    let first = start_bit / 8;
+    let last = end_bit / 8;
+    if first >= bytes.len() {
+        return 0;
+    }
+    let last = last.min(bytes.len() - 1);
+    if first == last {
+        let from = start_bit % 8;
+        let to = end_bit % 8;
+        let mask = (0xffu8 >> from) & (0xffu8 << (7 - to));
+        return u64::from((bytes[first] & mask).count_ones());
+    }
+    let mut total = u64::from((bytes[first] & (0xffu8 >> (start_bit % 8))).count_ones());
+    total += bytes[first + 1..last]
+        .iter()
+        .map(|byte| u64::from(byte.count_ones()))
+        .sum::<u64>();
+    total += u64::from((bytes[last] & (0xffu8 << (7 - (end_bit % 8)))).count_ones());
+    total
+}
+
+fn find_bit(bytes: &[u8], bit: u8, start_bit: usize, end_bit: usize) -> Option<usize> {
+    let first = start_bit / 8;
+    let last = (end_bit / 8).min(bytes.len().checked_sub(1)?);
+    if first > last {
+        return None;
+    }
+    for (byte_index, byte) in bytes.iter().enumerate().take(last + 1).skip(first) {
+        let from = if byte_index == first {
+            start_bit % 8
+        } else {
+            0
+        };
+        let to = if byte_index == last { end_bit % 8 } else { 7 };
+        let byte = *byte;
+        for offset in from..=to {
+            let value = (byte >> (7 - offset)) & 1;
+            if value == bit {
+                return Some(byte_index * 8 + offset);
+            }
+        }
+    }
+    None
+}
+
+impl Store {
+    fn bitcount(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let (start, end, unit) = match args.len() {
+            2 => (None, None, BitUnit::Byte),
+            4 | 5 => {
+                let (Some(start), Some(end)) = (parse_integer(args[2]), parse_integer(args[3]))
+                else {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                };
+                let unit = if args.len() == 5 {
+                    let Some(unit) = parse_bit_unit(args[4]) else {
+                        out.extend_from_slice(b"-ERR syntax error\r\n");
+                        return;
+                    };
+                    unit
+                } else {
+                    BitUnit::Byte
+                };
+                (Some(start), Some(end), unit)
+            }
+            _ => {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let bytes = match data.entries.get(args[1]) {
+            None => {
+                integer(0, out);
+                return;
+            }
+            Some(entry) if entry.is_string() => entry.value.as_slice(),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let (Some(start), Some(end)) = (start, end) else {
+            let count: u64 = bytes.iter().map(|byte| u64::from(byte.count_ones())).sum();
+            integer(count as i64, out);
+            return;
+        };
+        let length = if unit == BitUnit::Byte {
+            bytes.len()
+        } else {
+            bytes.len().saturating_mul(8)
+        };
+        let Some((start, end)) = normalize_bit_range(start, end, length) else {
+            integer(0, out);
+            return;
+        };
+        let count = if unit == BitUnit::Byte {
+            bytes[start..=end]
+                .iter()
+                .map(|byte| u64::from(byte.count_ones()))
+                .sum::<u64>()
+        } else {
+            count_bits(bytes, start, end)
+        };
+        integer(count as i64, out);
+    }
+
+    fn bitpos(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        if args.len() < 3 {
+            arity("bitpos", out);
+            return;
+        }
+        if args.len() > 6 {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+        let bit = match parse_integer(args[2]) {
+            Some(0) => 0,
+            Some(1) => 1,
+            Some(_) => {
+                out.extend_from_slice(BIT_POS_ERROR);
+                return;
+            }
+            None => {
+                out.extend_from_slice(NOT_INTEGER);
+                return;
+            }
+        };
+        let (start, end, unit) = match args.len() {
+            3 => (None, None, BitUnit::Byte),
+            4 => {
+                let Some(start) = parse_integer(args[3]) else {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                };
+                (Some(start), None, BitUnit::Byte)
+            }
+            5 | 6 => {
+                let (Some(start), Some(end)) = (parse_integer(args[3]), parse_integer(args[4]))
+                else {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                };
+                let unit = if args.len() == 6 {
+                    let Some(unit) = parse_bit_unit(args[5]) else {
+                        out.extend_from_slice(b"-ERR syntax error\r\n");
+                        return;
+                    };
+                    unit
+                } else {
+                    BitUnit::Byte
+                };
+                (Some(start), Some(end), unit)
+            }
+            _ => unreachable!(),
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let bytes = match data.entries.get(args[1]) {
+            None => {
+                integer(if bit == 0 { 0 } else { -1 }, out);
+                return;
+            }
+            Some(entry) if entry.is_string() => entry.value.as_slice(),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let units = if unit == BitUnit::Byte {
+            bytes.len()
+        } else {
+            bytes.len().saturating_mul(8)
+        };
+        if units == 0 {
+            integer(-1, out);
+            return;
+        }
+        let start_unit = match start {
+            None => 0,
+            Some(start) => {
+                if start < 0 {
+                    (units as i128 + start as i128).max(0) as usize
+                } else if start as u128 >= units as u128 {
+                    integer(-1, out);
+                    return;
+                } else {
+                    start as usize
+                }
+            }
+        };
+        if start_unit >= units {
+            integer(-1, out);
+            return;
+        }
+        let (end_unit, explicit_end) = match end {
+            None => (units - 1, false),
+            Some(end) => {
+                let end = if end < 0 {
+                    (units as i128 + end as i128).max(0) as usize
+                } else {
+                    (end as u128).min((units - 1) as u128) as usize
+                };
+                if end < start_unit {
+                    integer(-1, out);
+                    return;
+                }
+                (end, true)
+            }
+        };
+        let (start_bit, end_bit) = if unit == BitUnit::Byte {
+            (start_unit * 8, end_unit * 8 + 7)
+        } else {
+            (start_unit, end_unit)
+        };
+        match find_bit(bytes, bit, start_bit, end_bit) {
+            Some(position) => integer(position as i64, out),
+            None if bit == 0 && !explicit_end => integer(bytes.len().saturating_mul(8) as i64, out),
+            None => integer(-1, out),
+        }
+    }
+
+    fn bitop(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        if args.len() < 4 {
+            arity("bitop", out);
+            return;
+        }
+        let operation = args[1];
+        let not = operation.eq_ignore_ascii_case(b"NOT");
+        if !not
+            && !operation.eq_ignore_ascii_case(b"AND")
+            && !operation.eq_ignore_ascii_case(b"OR")
+            && !operation.eq_ignore_ascii_case(b"XOR")
+        {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+        if not && args.len() != 4 {
+            out.extend_from_slice(BITOP_NOT_ERROR);
+            return;
+        }
+        let destination = args[2];
+        let sources = &args[3..];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(destination, now);
+        for source in sources {
+            data.expire_key(source, now);
+        }
+        let mut values = Vec::with_capacity(sources.len());
+        for source in sources {
+            match data.entries.get(*source) {
+                None => values.push(None),
+                Some(entry) if entry.is_string() => values.push(Some(entry.value.as_slice())),
+                Some(_) => {
+                    wrong_type(out);
+                    return;
+                }
+            }
+        }
+        let result = if not {
+            let source = values[0].unwrap_or(&[]);
+            source.iter().map(|byte| !byte).collect::<Vec<u8>>()
+        } else {
+            let length = values
+                .iter()
+                .map(|value| value.map_or(0, <[u8]>::len))
+                .max()
+                .unwrap_or(0);
+            let and = operation.eq_ignore_ascii_case(b"AND");
+            let mut result = Vec::with_capacity(length);
+            for index in 0..length {
+                let mut byte = if and { 0xff } else { 0 };
+                for value in &values {
+                    let source = value
+                        .and_then(|value| value.get(index).copied())
+                        .unwrap_or(0);
+                    if and {
+                        byte &= source;
+                    } else if operation.eq_ignore_ascii_case(b"OR") {
+                        byte |= source;
+                    } else {
+                        byte ^= source;
+                    }
+                }
+                result.push(byte);
+            }
+            result
+        };
+        if result.is_empty() {
+            data.remove(destination);
+            integer(0, out);
+            return;
+        }
+        let previous = data
+            .entries
+            .get(destination)
+            .map(|entry| entry.payload_len());
+        let Some(payload) = data.reserve(
+            destination,
+            result.len(),
+            previous,
+            self.max_payload_bytes,
+            now,
+        ) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put(destination, &result, None, payload, now);
+        integer(result.len() as i64, out);
     }
 }
