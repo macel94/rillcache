@@ -27,6 +27,7 @@ mod hll;
 mod introspection;
 mod journal;
 mod keyspace;
+mod latency;
 mod multikey;
 mod notify;
 mod options;
@@ -122,6 +123,8 @@ pub struct Store {
     slowlog_threshold_us: std::sync::atomic::AtomicI64,
     slowlog_max_len: std::sync::atomic::AtomicUsize,
     client_pause: std::sync::atomic::AtomicU64,
+    latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
+    latency: std::sync::RwLock<latency::State>,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -179,6 +182,10 @@ impl Store {
             slowlog_threshold_us: std::sync::atomic::AtomicI64::new(slowlog::DEFAULT_THRESHOLD_US),
             slowlog_max_len: std::sync::atomic::AtomicUsize::new(slowlog::DEFAULT_MAX_LEN),
             client_pause: std::sync::atomic::AtomicU64::new(0),
+            latency_monitor_threshold_ms: std::sync::atomic::AtomicU64::new(
+                latency::DEFAULT_THRESHOLD_MS,
+            ),
+            latency: std::sync::RwLock::new(latency::State::default()),
         }
     }
     /// Select verified vendor-specific error wording before sharing the store.
@@ -191,6 +198,7 @@ impl Store {
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
     /// Every lookup still treats logically expired entries as absent immediately.
     pub fn purge_expired(&self, limit: usize) -> usize {
+        let started = self.latency_enabled().then(std::time::Instant::now);
         let Ok(_gate) = self.transaction_gate.read() else {
             return 0;
         };
@@ -204,6 +212,9 @@ impl Store {
         };
         for key in expired {
             self.notify_event("expired", &key, NotifyCategory::Expired);
+        }
+        if let Some(started) = started {
+            self.record_expire_latency(started.elapsed());
         }
         count
     }

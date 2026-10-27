@@ -56,7 +56,7 @@ TTL/PTTL, expiry inspection/update/removal, SET/GET aliases and atomic
 `INCR`/`DECR`/`INCRBY`/`DECRBY`; atomic single-database `FLUSHDB`/`FLUSHALL`,
 strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
 `INFO` (including process-local connection/command/expiration/pub-sub statistics),
-bounded `SLOWLOG` command timing, and logical `MEMORY USAGE`. `CONFIG SET`
+bounded `SLOWLOG` command timing, bounded `LATENCY` event series, and logical `MEMORY USAGE`. `CONFIG SET`
 supports collection thresholds, `requirepass`, `maxmemory-policy` and slow-log
 threshold/length; script/function execution is not implemented.
 Memory usage is an entry-size estimate, not allocator/RSS data.
