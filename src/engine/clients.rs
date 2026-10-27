@@ -9,6 +9,7 @@ use std::time::Instant;
 pub struct ClientRecord {
     pub(super) id: u64,
     pub(super) addr: String,
+    pub(super) laddr: String,
     pub(super) name: Option<Vec<u8>>,
     pub(super) library_name: Option<Vec<u8>>,
     pub(super) library_version: Option<Vec<u8>>,
@@ -22,6 +23,7 @@ pub struct ClientRecord {
 pub struct ClientSnapshot {
     pub id: u64,
     pub addr: String,
+    pub laddr: String,
     pub name: Option<Vec<u8>>,
     pub library_name: Option<Vec<u8>>,
     pub library_version: Option<Vec<u8>>,
@@ -96,13 +98,20 @@ impl Store {
             .map(|client| client.addr.clone())
     }
 
-    pub fn register_client(&self, id: u64, addr: SocketAddr, control: TcpStream) {
+    pub fn register_client(
+        &self,
+        id: u64,
+        addr: SocketAddr,
+        laddr: SocketAddr,
+        control: TcpStream,
+    ) {
         if let Ok(mut clients) = self.clients.write() {
             clients.insert(
                 id,
                 ClientRecord {
                     id,
                     addr: addr.to_string(),
+                    laddr: laddr.to_string(),
                     name: None,
                     library_name: None,
                     library_version: None,
@@ -159,6 +168,7 @@ impl Store {
             snapshots.push(ClientSnapshot {
                 id: record.id,
                 addr: record.addr.clone(),
+                laddr: record.laddr.clone(),
                 name: record.name.clone(),
                 library_name: record.library_name.clone(),
                 library_version: record.library_version.clone(),

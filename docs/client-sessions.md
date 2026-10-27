@@ -27,13 +27,14 @@ ACL subcommands expose and enforce the current policy. See
 [security](security.md) for the actual boundary and remaining gaps.
 
 `CLIENT LIST [TYPE normal|pubsub] [ID id ...]` returns one newline-delimited
-key=value record per registered connection with `id`, `addr`, `name`, `age`,
-`flags` (N/P), `db=0`, live `sub`/`psub` counts, negotiated `resp`, `user`,
-`lib-name` and `lib-ver`. It intentionally omits fields this server does not
+key=value record per registered connection with `id`, peer `addr`, local
+`laddr`, `name`, `age`, `flags` (N/P), `db=0`, live `sub`/`psub` counts,
+negotiated `resp`, `user`, `lib-name` and `lib-ver`. It intentionally omits fields this server does not
 measure (fd, idle, command, buffers, memory, redirection, network totals) rather
 than inventing values. `CLIENT KILL` uses filters intersecting with each other:
-`ID <id>`, `ADDR <ip:port>`, `TYPE normal|pubsub`, `USER <name>` and
-`MAXAGE <milliseconds>` (matching connections at least that old), with
+`ID <id>`, `ADDR <ip:port>`, `LADDR <ip:port>`, `TYPE normal|pubsub`,
+`USER <name>` and `MAXAGE <milliseconds>` (matching connections at least that
+old), with
 `SKIPME yes` only (default); `SKIPME no` returns an explicit unsupported error.
 The legacy single-address form returns `+OK`/`No such client`, while filtered
 forms return the killed count. The calling connection is always skipped, and a

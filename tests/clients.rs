@@ -138,6 +138,10 @@ fn client_list_reports_names_metadata_and_pubsub_state() {
     assert!(all.contains("lib-name=test-lib"), "{all}");
     assert!(all.contains("lib-ver=9.9"), "{all}");
     assert!(all.contains("addr=127.0.0.1:"), "{all}");
+    assert!(
+        all.contains(&format!("laddr={}", server.local_addr())),
+        "{all}"
+    );
     let only = client_list(&mut admin, &[b"ID", worker_id.to_string().as_bytes()]);
     assert!(only.contains(&format!("id={worker_id} ")));
     assert_eq!(only.lines().count(), 1);
@@ -207,6 +211,13 @@ fn client_kill_removes_connections_and_protects_the_caller() {
         b":0\r\n",
     );
 
+    send(&mut admin, &[b"CLIENT", b"INFO"], b"");
+    let own = String::from_utf8(bulk(&mut admin)).unwrap();
+    assert!(
+        own.contains(&format!("laddr={}", server.local_addr())),
+        "{own}"
+    );
+
     let info = client_list(&mut admin, &[]);
     assert!(info.contains(&format!("id={admin_id} ")), "{info}");
     assert_eq!(info.lines().count(), 1);
@@ -254,5 +265,46 @@ fn client_kill_maxage_removes_only_old_connections() {
         &[b"CLIENT", b"KILL", b"MAXAGE", b"nope"],
         b"-ERR invalid client MAXAGE\r\n",
     );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn client_kill_filters_by_local_address() {
+    let server = start();
+    let mut admin = connect(&server);
+    let mut victim = connect(&server);
+    let victim_id = client_id(&mut victim);
+    let local = server.local_addr().to_string();
+
+    let list = client_list(&mut admin, &[]);
+    assert!(list.contains(&format!("laddr={local}")), "{list}");
+
+    send(
+        &mut admin,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"LADDR",
+            b"127.0.0.1:1",
+            b"ID",
+            victim_id.to_string().as_bytes(),
+        ],
+        b":0\r\n",
+    );
+    send(
+        &mut admin,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"LADDR",
+            local.as_bytes(),
+            b"ID",
+            victim_id.to_string().as_bytes(),
+        ],
+        b":1\r\n",
+    );
+    let mut finished = Vec::new();
+    let _ = victim.read_to_end(&mut finished);
+    send(&mut admin, &[b"PING"], b"+PONG\r\n");
     server.shutdown().unwrap();
 }
