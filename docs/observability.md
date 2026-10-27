@@ -5,7 +5,8 @@ Rillcache exposes a deliberately small set of server counters through
 and reset on restart. There is no Prometheus endpoint, latency histogram,
 per-command table or replication statistics. `INFO errorstats` reports bounded
 per-error-code command reply counts. `SLOWLOG` and `LATENCY` provide
-bounded, process-local timing as described below.
+bounded, process-local timing as described below. `MONITOR` provides a bounded
+live command stream for debugging.
 
 ## Error statistics
 
@@ -73,6 +74,22 @@ not logged separately; `EXEC` is logged as one entry whose duration covers the
 batch. This differs from Redis's per-queued-command entries and is intentional
 for this session-level implementation. The log is in-memory, process-local and
 not included in `INFO` or persisted across restart.
+
+## MONITOR
+
+`MONITOR` registers the calling connection for a process-local stream of commands
+received from other clients. Each line is a simple string shaped as
+`+<seconds>.<microseconds> [0 <peer-address>] "command" "argument" ...`; quotes,
+backslashes and control bytes are escaped. Arguments are capped at 128 bytes and
+lines at 4 KiB. The stream uses the same bounded queue capacity as pub/sub, so a
+slow monitor drops lines instead of blocking command execution; it is
+best-effort and not a durable or complete audit trail.
+
+Credentials are redacted before formatting: `AUTH` shows `AUTH (redacted)`,
+`HELLO ... AUTH ...` hides the password, `ACL SETUSER` hides `>`, `<`, `#` and
+`!` credential rules, and `CONFIG SET requirepass` hides the value. `RESET` or a
+disconnect leaves monitor mode. MONITOR is an admin/dangerous command and cannot
+be queued inside `MULTI`.
 
 ## LATENCY
 

@@ -505,7 +505,10 @@ fn serve_client(
         loop {
             // Subscribers poll their bounded message queue and the socket. The short
             // read timeout is a delivery-latency bound, not a busy-poll guarantee.
-            let polling = session.is_subscribed() || session.is_blocked() || session.is_paused();
+            let polling = session.is_subscribed()
+                || session.is_monitoring()
+                || session.is_blocked()
+                || session.is_paused();
             if polling != subscriber_timeout {
                 stream.set_read_timeout(Some(if polling {
                     Duration::from_millis(10)
@@ -639,7 +642,10 @@ fn serve_client(
                 }
             }
             let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
-            let polling = session.is_subscribed() || session.is_blocked() || session.is_paused();
+            let polling = session.is_subscribed()
+                || session.is_monitoring()
+                || session.is_blocked()
+                || session.is_paused();
             if polling != subscriber_timeout {
                 stream.set_read_timeout(Some(if polling {
                     Duration::from_millis(10)
@@ -666,6 +672,7 @@ fn serve_client(
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                     ) && (session.is_subscribed()
+                        || session.is_monitoring()
                         || session.is_blocked()
                         || session.is_paused()) =>
                 {

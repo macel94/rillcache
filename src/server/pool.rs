@@ -142,7 +142,7 @@ impl Client {
         // Like blocking I/O, service already-ready input/output before declaring
         // inactivity; scheduler delay must not discard buffered commands.
         let mut progress = self.flush()?;
-        if self.session.is_subscribed() {
+        if self.session.is_subscribed() || self.session.is_monitoring() {
             let mut pushed = 0;
             while pushed < 64 {
                 match self.pubsub.try_recv() {

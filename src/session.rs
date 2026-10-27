@@ -44,6 +44,7 @@ pub struct Session {
     watched: WatchState,
     authenticated_user: Option<Vec<u8>>,
     pubsub_sender: Option<SyncSender<Vec<u8>>>,
+    monitoring: bool,
     pubsub_channels: BTreeSet<Vec<u8>>,
     pubsub_patterns: BTreeSet<Vec<u8>>,
     pubsub_shard_channels: BTreeSet<Vec<u8>>,
@@ -122,6 +123,7 @@ impl Session {
             watched: WatchState::default(),
             authenticated_user: None,
             pubsub_sender: None,
+            monitoring: false,
             pubsub_channels: BTreeSet::new(),
             pubsub_patterns: BTreeSet::new(),
             pubsub_shard_channels: BTreeSet::new(),
@@ -237,6 +239,7 @@ impl Session {
             return Action::Continue;
         };
         store.record_command();
+        store.monitor_command(self.id, arguments);
         if command.eq_ignore_ascii_case(b"RESET") {
             return self.reset(store, arguments, output);
         }
@@ -336,6 +339,10 @@ impl Session {
             self.blocked = None;
         } else if self.multi.is_some() {
             self.queue(arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"MONITOR") {
+            self.monitor(store, arguments, output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"SHUTDOWN") {
@@ -870,6 +877,10 @@ impl Session {
 
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    pub fn is_monitoring(&self) -> bool {
+        self.monitoring
     }
 
     pub fn is_subscribed(&self) -> bool {
@@ -1931,6 +1942,25 @@ impl Session {
     }
 
     /// Disconnect-equivalent server-side context reset (Redis RESET).
+    fn monitor(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+        if arguments.len() != 1 {
+            arity("monitor", output);
+            return;
+        }
+        if !self.monitoring {
+            let Some(sender) = self.pubsub_sender.clone() else {
+                output.extend_from_slice(b"-ERR MONITOR is unavailable for this connection\r\n");
+                return;
+            };
+            if !store.add_monitor(self.id, sender) {
+                output.extend_from_slice(b"-ERR internal store error\r\n");
+                return;
+            }
+            self.monitoring = true;
+        }
+        output.extend_from_slice(b"+OK\r\n");
+    }
+
     fn reset(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
         if arguments.len() != 1 {
             arity("reset", output);
@@ -1939,6 +1969,8 @@ impl Session {
         self.multi = None;
         self.watched = WatchState::default();
         self.blocked = None;
+        self.monitoring = false;
+        store.remove_monitor(self.id);
         for channel in std::mem::take(&mut self.pubsub_channels) {
             store.pubsub_unsubscribe(false, &channel, self.id);
         }

@@ -197,6 +197,14 @@ const COMMANDS: &[Command] = &[
     cmd("memory", -2, &["readonly", "slow"], 0, 0, 0),
     cmd("mget", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("module", -2, &[], 0, 0, 0),
+    cmd(
+        "monitor",
+        1,
+        &["admin", "noscript", "loading", "stale"],
+        0,
+        0,
+        0,
+    ),
     cmd("mset", -3, &["write", "denyoom"], 1, -1, 2),
     cmd("msetex", -4, &["write", "denyoom"], 2, -1, 2),
     cmd("move", 3, &["write", "fast"], 1, 1, 1),
@@ -690,6 +698,7 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
                 | "function"
                 | "keys"
                 | "latency"
+                | "monitor"
                 | "role"
                 | "script"
                 | "shutdown"

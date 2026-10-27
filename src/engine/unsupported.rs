@@ -77,6 +77,10 @@ impl Store {
                     integer(0, out);
                 }
             }
+        } else if command.eq_ignore_ascii_case(b"MONITOR") {
+            // Top-level MONITOR is handled by the session; this path only sees a
+            // queued copy executed by EXEC, which cannot change session mode.
+            out.extend_from_slice(b"-ERR MONITOR is not allowed inside MULTI\r\n");
         } else if command.eq_ignore_ascii_case(b"LASTSAVE") {
             if args.len() != 1 {
                 arity("lastsave", out);
