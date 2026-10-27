@@ -301,14 +301,25 @@ impl Data {
     /// full-state journal snapshot instead of allowing a missed key.
     pub fn touch(&mut self, key: &[u8]) {
         self.version_seq = self.version_seq.wrapping_add(1);
-        if self.versions.len() >= MAX_TRACKED_VERSIONS && !self.versions.contains_key(key) {
-            self.versions.clear();
-            self.epoch = self.epoch.wrapping_add(1);
+        if let Some(version) = self.versions.get_mut(key) {
+            *version = self.version_seq;
+        } else {
+            if self.versions.len() >= MAX_TRACKED_VERSIONS {
+                self.versions.clear();
+                self.epoch = self.epoch.wrapping_add(1);
+            }
+            self.versions.insert(key.to_vec(), self.version_seq);
         }
-        self.versions.insert(key.to_vec(), self.version_seq);
+        // Once a full snapshot is required, per-key history is discarded by
+        // changes_since. Keep WATCH versions above current without allocating
+        // events that cannot be consumed; snapshot consumption resumes logging.
+        if self.journal_overflow {
+            return;
+        }
         if self.journal_events.len() >= MAX_JOURNAL_EVENTS {
             self.journal_events.clear();
             self.journal_overflow = true;
+            return;
         }
         self.journal_events
             .push_back((self.version_seq, key.to_vec()));
@@ -774,6 +785,51 @@ impl Data {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overflowed_mutation_history_retains_only_the_full_snapshot_marker() {
+        let mut data = Data::default();
+        for index in 0..=MAX_JOURNAL_EVENTS {
+            data.touch(&index.to_le_bytes());
+        }
+        data.put(b"live", b"new", None, 7, 0);
+        assert!(data.journal_overflow);
+        assert!(
+            data.journal_events.is_empty(),
+            "per-key events are unusable while a full snapshot is pending"
+        );
+        let sequence = data.journal_seq();
+        assert_eq!(data.changes_since(0), (vec![b"live".to_vec()], true));
+        assert!(!data.journal_overflow);
+        data.put(b"live", b"next", None, 8, 0);
+        assert_eq!(data.version(b"live"), Some(sequence + 1));
+        assert_eq!(
+            data.changes_since(sequence),
+            (vec![b"live".to_vec()], false)
+        );
+        assert_eq!(data.entries[b"live".as_slice()].value, b"next");
+        assert_eq!(data.payload_bytes, 8);
+    }
+
+    #[test]
+    fn existing_version_at_capacity_updates_without_invalidating_other_watches() {
+        let mut data = Data::default();
+        for index in 0..MAX_TRACKED_VERSIONS {
+            data.touch(&index.to_le_bytes());
+        }
+        let epoch = data.epoch();
+        let key = 0usize.to_le_bytes();
+        let other = 1usize.to_le_bytes();
+        let other_version = data.version(&other);
+        data.touch(&key);
+        assert_eq!(data.epoch(), epoch);
+        assert_eq!(data.versions.len(), MAX_TRACKED_VERSIONS);
+        assert_eq!(data.version(&key), Some(data.journal_seq()));
+        assert_eq!(data.version(&other), other_version);
+        data.touch(b"a genuinely new key");
+        assert_eq!(data.epoch(), epoch + 1);
+        assert_eq!(data.versions.len(), 1);
+    }
 
     #[test]
     fn lifecycle_queues_are_bounded_and_clearable() {
