@@ -18,8 +18,9 @@ Redis behavior.
 - Sets: `SADD`, `SREM`, `SMEMBERS`, `SCARD`, `SISMEMBER`, `SMISMEMBER`,
   `SMOVE`, `SINTER`, `SUNION`, `SDIFF`, `SINTERCARD`, `SINTERSTORE`,
   `SUNIONSTORE`, `SDIFFSTORE`, `SPOP`, `SRANDMEMBER`.
-- Hashes: `HSET`, `HSETNX`, `HGET`, `HMGET`, `HGETALL`, `HDEL`, `HEXISTS`,
-  `HLEN`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`.
+- Hashes: `HSET`, `HSETNX`, `HGET`, `HMGET`, `HGETALL`, `HDEL`, `HGETDEL`,
+  `HEXISTS`, `HLEN`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`,
+  `HRANDFIELD`.
 - Sorted sets: `ZADD` with `NX`, `XX`, `GT`, `LT`, `CH` and `INCR`, `ZREM`,
   `ZINCRBY`, `ZSCORE`, `ZCARD`, `ZCOUNT`, `ZRANGE` (rank, score or lex with
   `BYSCORE`/`BYLEX`, `REV`, `LIMIT` and `WITHSCORES`), `ZREVRANGE`,
@@ -30,6 +31,14 @@ Redis behavior.
   `ZINTERCARD` and `ZMPOP`. Geospatial
 `GEOADD`/`GEOSEARCH`/`GEOSEARCHSTORE` use the same sorted-set representation and
 publish `zadd`/`geosearchstore` events; see [geospatial limits](geospatial.md).
+
+`HRANDFIELD key [count [WITHVALUES]]` returns a random field or, with count,
+distinct fields for positive counts and duplicate-capable fields for negative
+counts, adding values when requested. `HGETDEL key FIELDS numfields field
+[field ...]` returns requested values (null for missing fields), atomically
+deletes present fields, deletes an emptied hash key, and preserves remaining TTL
+and payload accounting. Hash-field expiration (`HGETEX`/`HSETEX`/`HPEXPIRE`)
+remains unsupported.
 
 Mutation commands stage their complete replacement value and check the configured
 key/value payload budget before publishing; failed writes preserve the previous

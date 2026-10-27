@@ -1061,3 +1061,55 @@ fn blocking_xreadgroup_emits_delivery_event() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn hgetdel_emits_hash_and_deletion_events() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(
+        &mut writer,
+        &[b"HSET", b"h", b"a", b"1", b"b", b"2"],
+        b":2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hset",
+            b"h"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"HGETDEL", b"h", b"FIELDS", b"1", b"a"],
+        b"*1\r\n$1\r\n1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hdel",
+            b"h"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"HGETDEL", b"h", b"FIELDS", b"1", b"b"],
+        b"*1\r\n$1\r\n2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:del",
+            b"h"
+        ])
+    );
+    server.shutdown().unwrap();
+}

@@ -92,6 +92,7 @@ reason to couple all future commands into a single large story.
 | S62 | As a stream group consumer, I can wait for new deliveries without polling empty streams so that workers can consume as producers append. | S | R245–R248; BLOCK group/timeout/wakeup/NOACK/history/MULTI and all-mode wire tests |
 | S63 | As a list consumer, I can wait for elements across several lists so that queue workers do not poll empty keys. | S | R249–R252; BLMPOP timeout/wakeup/COUNT/MULTI/WATCH and all-mode wire tests |
 | S64 | As a collection user, I can sort by derived weights and project joined string/hash values so that ordered views match existing application keys. | S | R253–R256; BY/GET substitution/weights/ACL/errors and all-mode wire tests |
+| S65 | As a hash user, I can sample fields and atomically read-and-remove fields so that random selection and cleanup do not require multiple round trips. | XS | R257–R260; HRANDFIELD/HGETDEL shapes, TTL/WATCH/errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1095,7 +1096,28 @@ reason to couple all future commands into a single large story.
   indefinite waits, wake-on-append, NOACK, cursor/pending updates, history with
   BLOCK, MULTI non-blocking behavior, missing/wrong-type errors, malformed
   BLOCK/IDs/STREAMS, notification direction and all worker modes. Multi-stream
-  history and replication/durable pending remain unsupported. (feat: add blocking XREADGROUP deliveries)
+  history and replication/durable pending remain unsupported.
+
+### Hash random fields and atomic get-delete (S65)
+
+- **R257 (event-driven):** `HRANDFIELD key [count [WITHVALUES]]` shall return one
+  random field without count, distinct fields for positive counts, up to
+  `abs(count)` duplicate-capable fields for negative counts, and flat field/value
+  pairs with WITHVALUES. Missing keys and zero counts shall return empty/null
+  shapes as documented; wrong types and malformed counts/options shall fail.
+- **R258 (event-driven):** `HGETDEL key FIELDS numfields field [field ...]` shall
+  require the FIELDS token, a positive numfields exactly matching the supplied
+  fields, and return one value-or-null per field while atomically deleting
+  present fields.
+- **R259 (event-driven):** HGETDEL shall preserve remaining TTL and payload
+  accounting, delete an emptied hash key, leave missing keys null-filled, and
+  touch the key for WATCH/journal capture. Successful deletions shall publish
+  `hdel`, or `del` when the hash becomes empty.
+- **R260 (unwanted behavior):** Invalid/missing FIELDS, non-positive/mismatched
+  numfields, wrong types, malformed random counts and options shall return
+  bounded errors without partial mutation. Tests shall cover random single/count/
+  negative/WITHVALUES shapes, missing keys, TTL/empty deletion, WATCH/MULTI,
+  notifications and all worker modes. Hash-field expiration remains unsupported.
 
 ### Development and delivery
 

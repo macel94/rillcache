@@ -38,6 +38,13 @@ impl Store {
         {
             return true;
         }
+        if command
+            .first()
+            .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'h'))
+            && self.execute_hash_extended(args, out)
+        {
+            return true;
+        }
         if command.eq_ignore_ascii_case(b"HSETNX") {
             self.hash_setnx(args, out);
         } else if command.eq_ignore_ascii_case(b"HDEL") {
@@ -915,6 +922,200 @@ fn ordered_zset(items: Vec<(&[u8], f64)>, reverse: bool) -> Vec<(Vec<u8>, f64)> 
         ordered.reverse();
     }
     ordered
+}
+
+impl Store {
+    fn execute_hash_extended(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
+        let command = args.first().expect("nonempty command");
+        if command.eq_ignore_ascii_case(b"HRANDFIELD") {
+            if !(2..=4).contains(&args.len()) {
+                arity("hrandfield", out);
+            } else {
+                self.hash_random_field(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HGETDEL") {
+            if args.len() < 5 {
+                arity("hgetdel", out);
+            } else {
+                self.hash_getdel(args, out);
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn hash_random_field(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let with_values = args.len() == 4 && args[3].eq_ignore_ascii_case(b"WITHVALUES");
+        if args.len() == 4 && !with_values {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+        let count = if args.len() >= 3 {
+            let Some(value) = parse_i64(args[2]) else {
+                out.extend_from_slice(NOT_INTEGER);
+                return;
+            };
+            Some(value)
+        } else {
+            None
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let items = match data.entries.get(args[1]) {
+            None => None,
+            Some(entry) => match entry.collection.as_ref().and_then(Collection::hash_items) {
+                Some(items) => Some(
+                    items
+                        .into_iter()
+                        .map(|(field, value)| (field.to_vec(), value.to_vec()))
+                        .collect::<Vec<_>>(),
+                ),
+                None => {
+                    wrong_type(out);
+                    return;
+                }
+            },
+        };
+        let Some(items) = items else {
+            if count.is_some() {
+                out.extend_from_slice(b"*0\r\n");
+            } else {
+                encode_bulk(None, out);
+            }
+            return;
+        };
+        let Some(count) = count else {
+            let index = random_index(items.len());
+            encode_bulk(items.get(index).map(|(field, _)| field.as_slice()), out);
+            return;
+        };
+        if count == 0 || items.is_empty() {
+            out.extend_from_slice(b"*0\r\n");
+            return;
+        }
+        let limit = usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX);
+        if count > 0 {
+            let mut pool = items;
+            let take = limit.min(pool.len());
+            for index in 0..take {
+                let swap = index + random_index(pool.len() - index);
+                pool.swap(index, swap);
+            }
+            write!(out, "*{}\r\n", take * if with_values { 2 } else { 1 }).expect("Vec write");
+            for (field, value) in pool.iter().take(take) {
+                encode_bulk(Some(field), out);
+                if with_values {
+                    encode_bulk(Some(value), out);
+                }
+            }
+        } else {
+            let take = limit.min(MAX_ELEMENTS);
+            write!(out, "*{}\r\n", take * if with_values { 2 } else { 1 }).expect("Vec write");
+            for _ in 0..take {
+                let index = random_index(items.len());
+                let (field, value) = &items[index];
+                encode_bulk(Some(field), out);
+                if with_values {
+                    encode_bulk(Some(value), out);
+                }
+            }
+        }
+    }
+
+    fn hash_getdel(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        if !args[2].eq_ignore_ascii_case(b"FIELDS") {
+            out.extend_from_slice(
+                b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n",
+            );
+            return;
+        }
+        let Some(numfields) = parse_i64(args[3]).filter(|value| *value > 0) else {
+            out.extend_from_slice(b"-ERR Number of fields must be a positive integer\r\n");
+            return;
+        };
+        let Ok(numfields) = usize::try_from(numfields) else {
+            out.extend_from_slice(
+                b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+            );
+            return;
+        };
+        if numfields != args.len() - 4 {
+            out.extend_from_slice(
+                b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+            );
+            return;
+        }
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(key, now);
+        let Some(entry) = data.entries.get(key) else {
+            write!(out, "*{numfields}\r\n").expect("Vec write");
+            for _ in 0..numfields {
+                encode_bulk(None, out);
+            }
+            return;
+        };
+        let Some(collection) = entry.collection.as_ref() else {
+            wrong_type(out);
+            return;
+        };
+        let Some(items) = collection.hash_items() else {
+            wrong_type(out);
+            return;
+        };
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = items
+            .into_iter()
+            .map(|(field, value)| (field.to_vec(), value.to_vec()))
+            .collect();
+        let mut values = Vec::with_capacity(numfields);
+        let mut deleted = 0usize;
+        for field in &args[4..] {
+            match hash.remove(*field) {
+                Some(value) => {
+                    deleted += 1;
+                    values.push(Some(value));
+                }
+                None => values.push(None),
+            }
+        }
+        if deleted > 0 {
+            if hash.is_empty() {
+                data.remove(key);
+            } else {
+                let bytes = hash
+                    .iter()
+                    .map(|(field, value)| field.len() + value.len())
+                    .sum::<usize>();
+                let Ok(config) = self.collection_config.read() else {
+                    internal_error(out);
+                    return;
+                };
+                let encoded = encode_hash(hash, &config);
+                let Some(payload) =
+                    data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+                else {
+                    out.extend_from_slice(OOM);
+                    return;
+                };
+                data.put_collection(key, encoded, expires, payload, now);
+            }
+        }
+        write!(out, "*{numfields}\r\n").expect("Vec write");
+        for value in values {
+            encode_bulk(value.as_deref(), out);
+        }
+    }
 }
 
 impl Store {
