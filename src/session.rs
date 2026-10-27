@@ -15,6 +15,7 @@ use crate::engine::{
     XReadGroupStart, XReadOutcome, ZSetPopOutcome, blocking_lmpop_reply, blocking_reply,
     blocking_zpop_reply, is_write_command, list_move_reply, parse_bzmpop_timeout, parse_list_mpop,
     parse_mpop, parse_side, parse_xread, parse_xreadgroup, xread_reply, xreadgroup_reply,
+    zset_pop_single_reply,
 };
 use crate::protocol::encode_bulk;
 
@@ -81,6 +82,9 @@ enum BlockedKind {
     ZSet {
         max: bool,
         count: usize,
+    },
+    ZSetSingle {
+        max: bool,
     },
     XRead {
         starts: Vec<StreamId>,
@@ -377,6 +381,11 @@ impl Session {
         }
         if command.eq_ignore_ascii_case(b"BLMOVE") || command.eq_ignore_ascii_case(b"BRPOPLPUSH") {
             self.blocking_list_move(store, arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"BZPOPMIN") || command.eq_ignore_ascii_case(b"BZPOPMAX") {
+            let max = command.eq_ignore_ascii_case(b"BZPOPMAX");
+            self.blocking_zset_single(store, &arguments[1..], max, output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"BZMPOP") {
@@ -1269,6 +1278,53 @@ impl Session {
         });
     }
 
+    fn blocking_zset_single(
+        &mut self,
+        store: &Store,
+        arguments: &[&[u8]],
+        max: bool,
+        output: &mut Vec<u8>,
+    ) {
+        let name = if max { "bzpopmax" } else { "bzpopmin" };
+        let Some((timeout_argument, keys)) = arguments.split_last() else {
+            arity(name, output);
+            return;
+        };
+        if keys.is_empty() {
+            arity(name, output);
+            return;
+        }
+        let timeout = match parse_bzmpop_timeout(timeout_argument) {
+            Ok(timeout) => timeout,
+            Err(error) => {
+                output.extend_from_slice(error);
+                return;
+            }
+        };
+        match store.blocking_zpop(keys, max, 1) {
+            ZSetPopOutcome::Empty => {}
+            outcome => {
+                zset_pop_single_reply(outcome, output);
+                return;
+            }
+        }
+        let deadline = if timeout == 0.0 {
+            None
+        } else {
+            let Some(duration) = Duration::try_from_secs_f64(timeout).ok() else {
+                output.extend_from_slice(b"-ERR timeout is out of range\r\n");
+                return;
+            };
+            Instant::now().checked_add(duration)
+        };
+        self.blocked = Some(Blocked {
+            slowlog: None,
+            keys: keys.iter().map(|key| key.to_vec()).collect(),
+            deadline,
+            kind: BlockedKind::ZSetSingle { max },
+        });
+    }
+
     fn xread(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let options = match parse_xread(arguments) {
             Ok(options) => options,
@@ -1387,6 +1443,13 @@ impl Session {
                 ZSetPopOutcome::Empty => false,
                 outcome => {
                     blocking_zpop_reply(outcome, &mut reply);
+                    true
+                }
+            },
+            BlockedKind::ZSetSingle { max } => match store.blocking_zpop(&keys, max, 1) {
+                ZSetPopOutcome::Empty => false,
+                outcome => {
+                    zset_pop_single_reply(outcome, &mut reply);
                     true
                 }
             },

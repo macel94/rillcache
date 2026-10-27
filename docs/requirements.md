@@ -119,6 +119,7 @@ reason to couple all future commands into a single large story.
 | S91 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R344–R346; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
 | S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 | S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
+| S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1567,8 +1568,30 @@ and the offline upstream harness tests.
 - **R343 (ubiquitous):** All-mode tests shall cover `HMSET` replies and field/TTL
   effects, `ZMSCORE` order/nulls/missing keys, both lex aliases with bounds and
   `LIMIT`, wrong types and arity errors, and every worker mode. Documentation
-  shall retain unsupported scripting, RDB/RESTORE, blocking sorted-set
-  `BZPOPMIN`/`BZPOPMAX`, multiple databases and replication.
+  shall retain unsupported scripting, RDB/RESTORE, multiple databases and
+  replication.
+
+### Blocking sorted-set pops (S91)
+
+- **R344 (event-driven):** `BZPOPMIN key [key ...] timeout` and
+  `BZPOPMAX key [key ...] timeout` shall inspect keys in argument order, pop one
+  member from the first live sorted set and reply `[key, member, score]`. They
+  shall preserve the key TTL, reject wrong value types, arity, negative,
+  non-numeric and out-of-range timeouts, and never treat the trailing timeout as
+  a key for ACL or discovery purposes. A zero timeout shall block without a
+  deadline; an expired wait shall return a null array.
+- **R345 (state-driven):** While a client is blocked in `BZPOPMIN`/`BZPOPMAX`,
+  server-side writes (including `ZADD` from other connections) shall wake it with
+  the popped member, bounded by the existing polling cadence. Popped keys shall
+  emit the canonical `zpopmin`/`zpopmax` journal event and notification. Inside
+  `MULTI`, these commands shall execute without blocking and return the null
+  array when no key is ready; `WATCH` conflicts shall still abort the
+  transaction.
+- **R346 (ubiquitous):** All-mode tests shall cover immediate ordered pops,
+  minimum/maximum selection, TTL preservation, timeout and wake behavior,
+  wrong-type and invalid-timeout errors, non-blocking transaction execution,
+  watch aborts and every worker mode. Documentation shall retain unsupported
+  scripting, RDB/RESTORE, multiple databases, replication and cluster routing.
 
 ### Error reply statistics (S84)
 

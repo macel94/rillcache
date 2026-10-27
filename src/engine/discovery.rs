@@ -54,6 +54,8 @@ const COMMANDS: &[Command] = &[
         1,
     ),
     cmd("bzmpop", -5, &["write", "noscript", "blocking"], 0, 0, 0),
+    cmd("bzpopmax", -3, &["write", "blocking", "fast"], 1, -2, 1),
+    cmd("bzpopmin", -3, &["write", "blocking", "fast"], 1, -2, 1),
     cmd(
         "client",
         -2,
@@ -680,12 +682,12 @@ fn command_group(name: &str) -> Option<&'static str> {
         "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hgetex" | "hincrby"
         | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hmset" | "hrandfield" | "hscan"
         | "hset" | "hsetex" | "hsetnx" | "hstrlen" | "hvals" => "hash",
-        "bzmpop" | "zadd" | "zcard" | "zcount" | "zincrby" | "zlexcount" | "zpopmax"
-        | "zpopmin" | "zdiff" | "zdiffstore" | "zinter" | "zintercard" | "zinterstore"
-        | "zmscore" | "zrandmember" | "zrange" | "zrangebylex" | "zrangebyscore"
-        | "zrangestore" | "zrank" | "zrem" | "zremrangebylex" | "zremrangebyrank"
-        | "zremrangebyscore" | "zrevrange" | "zrevrangebylex" | "zrevrangebyscore" | "zrevrank"
-        | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
+        "bzmpop" | "bzpopmax" | "bzpopmin" | "zadd" | "zcard" | "zcount" | "zincrby"
+        | "zlexcount" | "zmscore" | "zpopmax" | "zpopmin" | "zdiff" | "zdiffstore" | "zinter"
+        | "zintercard" | "zinterstore" | "zrandmember" | "zrange" | "zrangebylex"
+        | "zrangebyscore" | "zrangestore" | "zrank" | "zrem" | "zremrangebylex"
+        | "zremrangebyrank" | "zremrangebyscore" | "zrevrange" | "zrevrangebylex"
+        | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
         "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
         | "xread" | "xreadgroup" | "xrevrange" | "xsetid" | "xtrim" => "stream",
         "asking" | "auth" | "client" | "hello" | "quit" | "readonly" | "readwrite" | "reset"
@@ -1162,6 +1164,14 @@ mod tests {
             vec![b"a".as_slice(), b"b".as_slice()]
         );
         assert!(key_arguments(b"BZMPOP", &[b"BZMPOP", b"0", b"0", b"a"]).is_empty());
+        assert_eq!(
+            key_arguments(b"BZPOPMIN", &[b"BZPOPMIN", b"a", b"b", b"0"]),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"BZPOPMAX", &[b"BZPOPMAX", b"a", b"0.5"]),
+            vec![b"a".as_slice()]
+        );
         assert_eq!(
             key_arguments(
                 b"SORT",
