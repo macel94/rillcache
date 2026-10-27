@@ -336,6 +336,7 @@ impl Server {
                 if maintenance.elapsed() >= Duration::from_millis(100) {
                     let _ = store.journal_sync();
                     store.purge_expired(128);
+                    store.auto_rewrite_if_due();
                     maintenance = Instant::now();
                 }
                 let mut index = 0;

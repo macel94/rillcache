@@ -46,6 +46,8 @@ pub(super) struct Journal {
     last_sync: Instant,
     failed: bool,
     last_rewrite_failed: bool,
+    size: u64,
+    rewrite_base: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +80,7 @@ impl Journal {
             .create(true)
             .truncate(false)
             .open(path)?;
+        let size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
         Ok(Self {
             file,
             path: path.to_path_buf(),
@@ -87,6 +90,8 @@ impl Journal {
             last_sync: Instant::now(),
             failed: false,
             last_rewrite_failed: false,
+            size,
+            rewrite_base: size,
         })
     }
 
@@ -149,6 +154,12 @@ impl Journal {
             self.file.set_len(good_total)?;
         }
         self.file.seek(SeekFrom::End(0))?;
+        self.size = self
+            .file
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        self.rewrite_base = self.size;
         Ok(())
     }
 
@@ -161,6 +172,7 @@ impl Journal {
             return Err(error);
         }
         self.dirty = true;
+        self.size = self.size.saturating_add(bytes.len() as u64);
         if self.policy == FsyncPolicy::Always {
             if let Err(error) = self.file.sync_data() {
                 self.failed = true;
@@ -172,6 +184,15 @@ impl Journal {
             self.dirty = false;
         }
         Ok(())
+    }
+
+    /// Whether the current log has grown enough to justify a synchronous rewrite.
+    fn auto_rewrite_due(&self, percentage: u64, min_size: u64) -> bool {
+        if percentage == 0 || self.size < min_size {
+            return false;
+        }
+        let growth = self.size.saturating_sub(self.rewrite_base);
+        u128::from(growth) * 100 >= u128::from(self.rewrite_base) * u128::from(percentage)
     }
 
     fn sync_if_due(&mut self) -> io::Result<()> {
@@ -250,8 +271,14 @@ impl Journal {
             Ok(records.len() as u64)
         })();
         self.last_rewrite_failed = result.is_err();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
+        match &result {
+            Ok(size) => {
+                self.size = *size;
+                self.rewrite_base = *size;
+            }
+            Err(_) => {
+                let _ = fs::remove_file(&temporary);
+            }
         }
         result
     }
@@ -438,6 +465,33 @@ impl Store {
 
     /// Rewrite the journal as a complete state snapshot. The caller must already
     /// hold the exclusive transaction gate (the journal-enabled execute path).
+    pub fn auto_rewrite_if_due(&self) -> bool {
+        let percentage = self.auto_aof_rewrite_percentage();
+        if percentage == 0 {
+            return false;
+        }
+        let min_size = self.auto_aof_rewrite_min_size();
+        let Some(journal) = self.journal.as_ref() else {
+            return false;
+        };
+        let due = journal
+            .lock()
+            .is_ok_and(|journal| journal.auto_rewrite_due(percentage, min_size));
+        if !due {
+            return false;
+        }
+        let Ok(_gate) = self.transaction_gate.write() else {
+            return false;
+        };
+        let due = journal
+            .lock()
+            .is_ok_and(|journal| journal.auto_rewrite_due(percentage, min_size));
+        if !due {
+            return false;
+        }
+        self.rewrite_journal().is_ok()
+    }
+
     pub(super) fn rewrite_journal(&self) -> Result<u64, ()> {
         let Some(journal) = self.journal.as_ref() else {
             return Err(());
