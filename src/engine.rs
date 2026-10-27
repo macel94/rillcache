@@ -28,6 +28,7 @@ mod introspection;
 mod journal;
 mod keyspace;
 mod latency;
+mod monitor;
 mod multikey;
 mod notify;
 mod options;
@@ -50,7 +51,7 @@ pub use clients::ClientSnapshot;
 pub(crate) use collection_commands::{
     ListMoveOutcome, ListPopOutcome, ZSetPopOutcome, list_move_reply,
     list_pop_reply as blocking_lmpop_reply, parse_bzmpop_timeout, parse_list_mpop, parse_mpop,
-    parse_side, zset_pop_reply as blocking_zpop_reply,
+    parse_side, zset_pop_reply as blocking_zpop_reply, zset_pop_single_reply,
 };
 use collection_config::CollectionConfig;
 use data::Data;
@@ -102,7 +103,7 @@ pub struct Stats {
 
 pub struct Store {
     data: RwLock<Data>,
-    max_payload_bytes: usize,
+    max_payload_bytes: std::sync::atomic::AtomicUsize,
     error_dialect: ErrorDialect,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
@@ -114,6 +115,8 @@ pub struct Store {
     journal_limits: Limits,
     pubsub: RwLock<pubsub::PubSub>,
     clients: RwLock<std::collections::BTreeMap<u64, clients::ClientRecord>>,
+    monitors: RwLock<std::collections::BTreeMap<u64, std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    monitor_count: std::sync::atomic::AtomicUsize,
     notifications: std::sync::atomic::AtomicU32,
     acl_log: RwLock<std::collections::VecDeque<acl_log::AclLogEntry>>,
     connections_received: std::sync::atomic::AtomicU64,
@@ -129,6 +132,8 @@ pub struct Store {
     latency: std::sync::RwLock<latency::State>,
     auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64,
     auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64,
+    aof_config: RwLock<journal::AofConfig>,
+    error_stats: RwLock<std::collections::BTreeMap<Vec<u8>, u64>>,
     shutdown_requested: AtomicBool,
 }
 impl Store {
@@ -155,6 +160,11 @@ impl Store {
         let mut journal = journal::Journal::open(path, policy, limits)?;
         journal.replay(&store)?;
         store.attach_journal(journal);
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("appendonly.aof");
+        store.set_aof_config(true, filename, policy);
         Ok(store)
     }
 
@@ -165,7 +175,7 @@ impl Store {
     ) -> Self {
         Self {
             data: RwLock::new(Data::default()),
-            max_payload_bytes,
+            max_payload_bytes: std::sync::atomic::AtomicUsize::new(max_payload_bytes),
             error_dialect: ErrorDialect::default(),
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
@@ -177,6 +187,8 @@ impl Store {
             journal_limits: Limits::default(),
             pubsub: RwLock::new(pubsub::PubSub::default()),
             clients: RwLock::new(std::collections::BTreeMap::new()),
+            monitors: RwLock::new(std::collections::BTreeMap::new()),
+            monitor_count: std::sync::atomic::AtomicUsize::new(0),
             notifications: std::sync::atomic::AtomicU32::new(0),
             acl_log: RwLock::new(std::collections::VecDeque::new()),
             connections_received: std::sync::atomic::AtomicU64::new(0),
@@ -194,6 +206,8 @@ impl Store {
             latency: std::sync::RwLock::new(latency::State::default()),
             auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64::new(100),
             auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64::new(64 * 1024 * 1024),
+            aof_config: RwLock::new(journal::AofConfig::default()),
+            error_stats: RwLock::new(std::collections::BTreeMap::new()),
             shutdown_requested: AtomicBool::new(false),
         }
     }
@@ -289,6 +303,38 @@ impl Store {
     /// Dispatch without the transaction gate; only `EXEC` may call this while
     /// holding the gate's write side.
     pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        // The three hottest data commands bypass specialized module dispatch.
+        if let Some(command) = arguments.first() {
+            if command.eq_ignore_ascii_case(b"PING") {
+                match arguments.len() {
+                    1 => output.extend_from_slice(b"+PONG\r\n"),
+                    2 => encode_bulk(Some(arguments[1]), output),
+                    _ => arity("ping", output),
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"GET") {
+                if arguments.len() != 2 {
+                    arity("get", output);
+                } else {
+                    self.get(arguments[1], output);
+                }
+                return Action::Continue;
+            }
+            if command.eq_ignore_ascii_case(b"SET") {
+                if arguments.len() < 3 {
+                    arity("set", output);
+                } else {
+                    match SetOptions::parse(&arguments[3..], false) {
+                        Ok(options) => {
+                            self.set(arguments[1], arguments[2], options, "set", false, output)
+                        }
+                        Err(error) => output.extend_from_slice(error),
+                    }
+                }
+                return Action::Continue;
+            }
+        }
         if self.execute_collection_config(arguments, output)
             || self.execute_admin(arguments, output)
             || self.execute_scan(arguments, output)
@@ -302,28 +348,24 @@ impl Store {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
-        if command.eq_ignore_ascii_case(b"PING") {
-            match arguments.len() {
-                1 => output.extend_from_slice(b"+PONG\r\n"),
-                2 => encode_bulk(Some(arguments[1]), output),
-                _ => arity("ping", output),
-            }
-        } else if command.eq_ignore_ascii_case(b"GET") {
-            if arguments.len() != 2 {
-                arity("get", output);
+        if command.eq_ignore_ascii_case(b"PUBLISH") {
+            if arguments.len() != 3 {
+                arity("publish", output);
             } else {
-                self.get(arguments[1], output);
+                integer(
+                    i64::try_from(self.publish(arguments[1], arguments[2])).unwrap_or(i64::MAX),
+                    output,
+                );
             }
-        } else if command.eq_ignore_ascii_case(b"SET") {
-            if arguments.len() < 3 {
-                arity("set", output);
+        } else if command.eq_ignore_ascii_case(b"SPUBLISH") {
+            if arguments.len() != 3 {
+                arity("spublish", output);
             } else {
-                match SetOptions::parse(&arguments[3..], false) {
-                    Ok(options) => {
-                        self.set(arguments[1], arguments[2], options, "set", false, output)
-                    }
-                    Err(error) => output.extend_from_slice(error),
-                }
+                integer(
+                    i64::try_from(self.publish_shard(arguments[1], arguments[2]))
+                        .unwrap_or(i64::MAX),
+                    output,
+                );
             }
         } else if command.eq_ignore_ascii_case(b"ECHO") {
             if arguments.len() == 2 {
@@ -631,7 +673,44 @@ impl Store {
         }
     }
 
+    pub(crate) fn record_error(&self, reply: &[u8]) {
+        let Some(body) = reply.strip_prefix(b"-") else {
+            return;
+        };
+        let end = body
+            .iter()
+            .position(|byte| matches!(*byte, b' ' | b'\r' | b'\n'))
+            .unwrap_or(body.len())
+            .min(32);
+        if end == 0 {
+            return;
+        }
+        let code = body[..end].to_vec();
+        if let Ok(mut stats) = self.error_stats.write() {
+            if let Some(count) = stats.get_mut(&code) {
+                *count = count.saturating_add(1);
+            } else if stats.len() < 64 {
+                stats.insert(code, 1);
+            }
+        }
+    }
+
+    pub(crate) fn error_stats(&self) -> Vec<(Vec<u8>, u64)> {
+        self.error_stats
+            .read()
+            .map(|stats| {
+                stats
+                    .iter()
+                    .map(|(code, count)| (code.clone(), *count))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn reset_stats(&self) -> bool {
+        if let Ok(mut stats) = self.error_stats.write() {
+            stats.clear();
+        }
         self.connections_received.store(0, Ordering::Relaxed);
         self.commands_processed.store(0, Ordering::Relaxed);
         self.rejected_connections.store(0, Ordering::Relaxed);
@@ -678,6 +757,63 @@ impl Store {
             .store(value, std::sync::atomic::Ordering::Release);
     }
 
+    pub(crate) fn aof_config(&self) -> Option<journal::AofConfig> {
+        self.aof_config.read().ok().map(|config| config.clone())
+    }
+
+    pub(crate) fn set_aof_config(
+        &self,
+        appendonly: bool,
+        appendfilename: &str,
+        policy: FsyncPolicy,
+    ) -> bool {
+        self.aof_config.write().is_ok_and(|mut config| {
+            config.appendonly = appendonly;
+            config.appendfilename = appendfilename.to_string();
+            config.policy = policy;
+            true
+        })
+    }
+
+    pub(crate) fn set_aof_policy(&self, policy: FsyncPolicy) -> std::io::Result<()> {
+        if let Some(journal) = self.journal.as_ref() {
+            let mut journal = journal
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
+            journal.set_policy(policy)?;
+        }
+        let mut config = self
+            .aof_config
+            .write()
+            .map_err(|_| std::io::Error::other("poisoned AOF configuration lock"))?;
+        config.policy = policy;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn journal_policy(&self) -> Option<FsyncPolicy> {
+        self.journal
+            .as_ref()
+            .and_then(|journal| journal.lock().ok())
+            .map(|journal| journal.policy())
+    }
+
+    /// Current payload-budget limit in key and value bytes.
+    pub(super) fn payload_limit(&self) -> usize {
+        self.max_payload_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Change the payload budget and evict down to it using the active policy.
+    /// A noeviction or volatile policy may leave the store above the new budget;
+    /// subsequent admissions then fail rather than deleting ineligible keys.
+    pub fn set_payload_limit(&self, limit: usize) -> bool {
+        self.max_payload_bytes.store(limit, Ordering::Relaxed);
+        self.data.write().is_ok_and(|mut data| {
+            data.enforce_budget(limit);
+            true
+        })
+    }
+
     pub fn eviction_policy(&self) -> EvictionPolicy {
         self.data
             .read()
@@ -686,8 +822,10 @@ impl Store {
 
     pub fn set_notify_flags(&self, flags: NotifyFlags) {
         // Events queued while a class was disabled are stale for delivery.
+        let collect = self.journal.is_some() || flags.bits() != 0;
         if let Ok(mut data) = self.data.write() {
             data.clear_lifecycle();
+            data.set_collect_events(collect);
         }
         self.notifications.store(flags.bits(), Ordering::Release);
     }
@@ -698,6 +836,45 @@ impl Store {
 
     pub fn notifications_enabled(&self) -> bool {
         self.notifications.load(Ordering::Acquire) != 0
+    }
+
+    /// Register a MONITOR stream. Re-registering the same connection replaces
+    /// its sender; the stream is bounded and uses the pubsub queue capacity.
+    pub fn add_monitor(&self, id: u64, sender: std::sync::mpsc::SyncSender<Vec<u8>>) -> bool {
+        let Ok(mut monitors) = self.monitors.write() else {
+            return false;
+        };
+        monitors.insert(id, sender);
+        self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+        true
+    }
+
+    pub fn remove_monitor(&self, id: u64) {
+        let Ok(mut monitors) = self.monitors.write() else {
+            return;
+        };
+        if monitors.remove(&id).is_some() {
+            self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+        }
+    }
+
+    /// Stream one received command to every monitor except its source. A full
+    /// monitor queue drops this line rather than blocking the command path.
+    pub fn monitor_command(&self, source: u64, arguments: &[&[u8]]) {
+        if self.monitor_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let address = self.client_address(source).unwrap_or_else(|| "?:0".into());
+        let line = monitor::line(&address, arguments);
+        let Ok(monitors) = self.monitors.read() else {
+            return;
+        };
+        for (id, sender) in monitors.iter() {
+            if *id == source {
+                continue;
+            }
+            let _ = sender.try_send(line.clone());
+        }
     }
 
     pub fn pubsub_queue_capacity() -> usize {

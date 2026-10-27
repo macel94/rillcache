@@ -233,3 +233,112 @@ fn acl_denial_keeps_pipelines_ordered_and_quit_available() {
     assert_eq!(read_to_end(&mut stream), expected);
     server.shutdown().unwrap();
 }
+
+fn read_frame(stream: &mut TcpStream, depth: usize) -> Vec<u8> {
+    assert!(depth <= 8);
+    let mut output = Vec::new();
+    let mut prefix = [0u8];
+    stream.read_exact(&mut prefix).unwrap();
+    output.push(prefix[0]);
+    let mut line = Vec::new();
+    loop {
+        let mut byte = [0u8];
+        stream.read_exact(&mut byte).unwrap();
+        if byte[0] == b'\n' {
+            assert_eq!(line.pop(), Some(b'\r'));
+            output.extend_from_slice(&line);
+            output.extend_from_slice(b"\r\n");
+            break;
+        }
+        line.push(byte[0]);
+    }
+    match prefix[0] {
+        b'$' => {
+            let length = std::str::from_utf8(&line).unwrap().parse::<i64>().unwrap();
+            if length >= 0 {
+                let mut body = vec![0; length as usize + 2];
+                stream.read_exact(&mut body).unwrap();
+                output.extend_from_slice(&body);
+            }
+        }
+        b'*' => {
+            let count = std::str::from_utf8(&line).unwrap().parse::<i64>().unwrap();
+            for _ in 0..count.max(0) {
+                output.extend_from_slice(&read_frame(stream, depth + 1));
+            }
+        }
+        _ => {}
+    }
+    output
+}
+
+fn request(stream: &mut TcpStream, arguments: &[&[u8]]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    encode_request(arguments, &mut bytes);
+    stream.write_all(&bytes).unwrap();
+    read_frame(stream, 0)
+}
+
+#[test]
+fn acl_selectors_authorize_independent_key_scopes_and_round_trip() {
+    let path = temp_name("selectors");
+    std::fs::write(&path, b"user default on nopass ~* &* +@all\n").unwrap();
+    let config = Config {
+        aclfile: Some(path.clone()),
+        ..Config::default()
+    };
+
+    {
+        let server = start(config.clone());
+        let mut admin = connect(&server);
+        send(
+            &mut admin,
+            &[
+                b"ACL",
+                b"SETUSER",
+                b"alice",
+                b"on",
+                b">secret",
+                b"-@all",
+                b"+get",
+                b"allkeys",
+                b"(+set ~app:*)",
+            ],
+            b"+OK\r\n",
+        );
+        let list = String::from_utf8(request(&mut admin, &[b"ACL", b"LIST"])).unwrap();
+        assert!(list.contains("(+set ~app:*)"), "{list}");
+        let details =
+            String::from_utf8(request(&mut admin, &[b"ACL", b"GETUSER", b"alice"])).unwrap();
+        assert!(details.contains("selectors"), "{details}");
+        assert!(details.contains("+set"), "{details}");
+        assert!(details.contains("~app:*"), "{details}");
+        send(&mut admin, &[b"ACL", b"SAVE"], b"+OK\r\n");
+
+        let mut alice = connect(&server);
+        send(&mut alice, &[b"AUTH", b"alice", b"secret"], b"+OK\r\n");
+        send(&mut alice, &[b"SET", b"app:1", b"v"], b"+OK\r\n");
+        send(&mut alice, &[b"GET", b"app:1"], b"$1\r\nv\r\n");
+        send(&mut alice, &[b"GET", b"other"], b"$-1\r\n");
+        send(
+            &mut alice,
+            &[b"SET", b"other", b"v"],
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+        );
+        server.shutdown().unwrap();
+    }
+
+    {
+        let server = start(config);
+        let mut alice = connect(&server);
+        send(&mut alice, &[b"AUTH", b"alice", b"secret"], b"+OK\r\n");
+        send(&mut alice, &[b"SET", b"app:2", b"v"], b"+OK\r\n");
+        send(
+            &mut alice,
+            &[b"SET", b"other", b"v"],
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+        );
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_file(&path);
+}

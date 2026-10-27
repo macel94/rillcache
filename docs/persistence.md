@@ -2,9 +2,9 @@
 
 Rillcache can persist supported keyspace mutations to an append-only command log.
 This is a real recovery path with explicit failure semantics, but it is **not** a
-complete Redis durability implementation: there is no RDB format, no AOF rewrite
-or compaction, no multi-process log ownership, no redis.conf integration, and
-stream consumer-group pending state is not restored.
+complete Redis durability implementation: there is no RDB format, no
+background/forked AOF rewrite, no multi-process log ownership, no redis.conf
+integration, and stream consumer-group pending state is not restored.
 
 ## Configuration
 
@@ -28,6 +28,39 @@ write and truncate it at startup. Pointing two server processes at the same file
 is unsupported and can corrupt or interleave histories; use one owner per file.
 The scratch container's root filesystem is read-only, so mount a writable volume
 at `/data` and add `--appendonly yes --dir /data` when persistence is required.
+
+## Runtime configuration visibility
+
+`CONFIG GET appendonly appendfilename appendfsync` (and `CONFIG GET *`) reports
+the configured append-only mode, journal basename and live fsync policy:
+
+```text
+CONFIG GET append*
+1) "appendfilename"
+2) "appendonly.aof"
+3) "appendfsync"
+4) "everysec"
+5) "appendonly"
+6) "no"
+```
+
+`appendfsync` is the only journal setting that can change at runtime:
+
+```text
+CONFIG SET appendfsync always
+CONFIG SET appendfsync everysec
+CONFIG SET appendfsync no
+```
+
+The update applies to the open journal immediately and affects subsequent
+appends. Switching away from `no` first syncs records that were previously only
+written to the operating system, so the stronger policy covers acknowledged
+writes already in the file; a sync failure leaves the journal failed and returns
+an error. `appendonly` and `appendfilename` are startup-only and reject
+`CONFIG SET` with a visible error. There is no `redis.conf` reload and no
+runtime `appendonly yes`/`no` toggle: restart with the desired flags to open,
+close or rename the journal. When append-only persistence is disabled the
+reported policy is still updated, but it has no effect because no journal exists.
 
 ## Format
 
@@ -82,6 +115,11 @@ process; replay uses the same local clock rules.
 - `no`: records are written to the OS but never explicitly fsynced. Only an orderly
   shutdown (or the OS) provides durability.
 
+The policy can be changed with `CONFIG SET appendfsync` as described above. A
+policy change is not a durability guarantee for writes made before the change:
+the strongest statement is that records acknowledged under `always` were synced
+before their replies, while `everysec` and `no` retain their documented windows.
+
 On orderly shutdown, joined workers drop the store and the journal's `Drop`
 performs a final sync/flush. The `SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE]` command
 forces that flush before stopping the accept loop and joining workers, so clients
@@ -106,7 +144,8 @@ than silently converted into success.
 **synchronous** despite the Redis-compatible name: it holds the exclusive
 transaction gate while encoding the snapshot, writing a mode-0600 temporary file
 in the journal directory, fsyncing it, atomically renaming it over the journal and
-reopening it. Command service pauses for the duration. There is no fork, copy-on-
+reopening it at the snapshot end so the next append follows the snapshot instead
+of overwriting it. Command service pauses for the duration. There is no fork, copy-on-
 write page sharing, incremental rewrite or background progress reporting.
 
 A successful `+OK` means the old log has been atomically replaced with a complete

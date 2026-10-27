@@ -247,6 +247,7 @@ const MAX_JOURNAL_EVENTS: usize = 65_536;
 pub(super) struct Data {
     pub entries: HashMap<Vec<u8>, Entry>,
     pub payload_bytes: usize,
+    peak_payload_bytes: usize,
     pub expirations: BTreeSet<(i64, Vec<u8>)>,
     pub(super) versions: HashMap<Vec<u8>, u64>,
     version_seq: u64,
@@ -254,6 +255,7 @@ pub(super) struct Data {
     flush_seq: u64,
     journal_events: VecDeque<(u64, Vec<u8>)>,
     journal_overflow: bool,
+    collect_events: bool,
     expired_events: VecDeque<Vec<u8>>,
     evicted_events: VecDeque<Vec<u8>>,
     pub(in crate::engine) expired_keys: u64,
@@ -300,18 +302,32 @@ impl Data {
     /// optional append-only journal. The event log is bounded; overflow forces a
     /// full-state journal snapshot instead of allowing a missed key.
     pub fn touch(&mut self, key: &[u8]) {
+        self.peak_payload_bytes = self.peak_payload_bytes.max(self.payload_bytes);
         self.version_seq = self.version_seq.wrapping_add(1);
         if self.versions.len() >= MAX_TRACKED_VERSIONS && !self.versions.contains_key(key) {
             self.versions.clear();
             self.epoch = self.epoch.wrapping_add(1);
         }
         self.versions.insert(key.to_vec(), self.version_seq);
+        // Mutation history is only consumed by persistence and keyspace
+        // notifications. Keeping WATCH versions above does not require it.
+        if !self.collect_events {
+            return;
+        }
         if self.journal_events.len() >= MAX_JOURNAL_EVENTS {
             self.journal_events.clear();
             self.journal_overflow = true;
         }
         self.journal_events
             .push_back((self.version_seq, key.to_vec()));
+    }
+
+    pub(super) fn set_collect_events(&mut self, collect: bool) {
+        self.collect_events = collect;
+        if !collect {
+            self.journal_events.clear();
+            self.journal_overflow = false;
+        }
     }
 
     pub(super) fn journal_seq(&self) -> u64 {
@@ -366,6 +382,10 @@ impl Data {
         self.expired_events.clear();
         self.evicted_events.clear();
         self.field_ttls = 0;
+    }
+
+    pub(super) fn peak_payload_bytes(&self) -> usize {
+        self.peak_payload_bytes
     }
 
     pub fn remove(&mut self, key: &[u8]) -> Option<Entry> {
@@ -424,10 +444,14 @@ impl Data {
             self.remove(key);
             return;
         }
-        if let Some(collection) = entry.collection.as_ref() {
-            let bytes = collection.payload_len();
-            self.payload_bytes = self.payload_bytes - entry.payload_len + bytes;
+        let previous = entry.payload_len;
+        let bytes = entry
+            .collection
+            .as_ref()
+            .map(|collection| collection.payload_len());
+        if let Some(bytes) = bytes {
             entry.payload_len = bytes;
+            self.payload_bytes = self.payload_bytes - previous + bytes;
         }
         self.touch(key);
     }
@@ -553,7 +577,7 @@ impl Data {
             if let Some(bytes) = size(self) {
                 return Some(bytes);
             }
-            if !self.evict_one(key) {
+            if !self.evict_one(Some(key)) {
                 return None;
             }
         }
@@ -569,21 +593,33 @@ impl Data {
             .fold(0usize, usize::saturating_add)
     }
 
+    /// Evict down to `maximum` using the active policy. A noeviction or volatile
+    /// policy can stop above the budget when no eligible key remains.
+    pub fn enforce_budget(&mut self, maximum: usize) {
+        while self.payload_bytes > maximum {
+            if !self.evict_one(None) {
+                break;
+            }
+        }
+    }
+
     /// Choose and remove one bounded candidate. Returns false when no eligible
     /// key exists, so a volatile policy can still fail without deleting persistent
     /// data. LRU is approximate mutation recency, not read recency.
-    fn evict_one(&mut self, target: &[u8]) -> bool {
+    fn evict_one(&mut self, target: Option<&[u8]>) -> bool {
         let volatile = self.eviction.volatile();
         let random = matches!(
             self.eviction,
             EvictionPolicy::AllKeysRandom | EvictionPolicy::VolatileRandom
         );
+        let selectable = |data: &Self, key: &Vec<u8>| {
+            target.is_none_or(|target| key.as_slice() != target)
+                && (!volatile || data.entries[key].expires.is_some())
+        };
         let count = self
             .entries
             .keys()
-            .filter(|key| {
-                key.as_slice() != target && (!volatile || self.entries[*key].expires.is_some())
-            })
+            .filter(|key| selectable(self, key))
             .count();
         if count == 0 {
             return false;
@@ -593,15 +629,13 @@ impl Data {
             let target_index = self.eviction_seq as usize % count;
             self.entries
                 .keys()
-                .filter(|key| {
-                    key.as_slice() != target && (!volatile || self.entries[*key].expires.is_some())
-                })
+                .filter(|key| selectable(self, key))
                 .nth(target_index)
                 .cloned()
         } else {
             let mut best: Option<(&[u8], i128)> = None;
             for (key, entry) in &self.entries {
-                if key.as_slice() == target || (volatile && entry.expires.is_none()) {
+                if target == Some(key.as_slice()) || (volatile && entry.expires.is_none()) {
                     continue;
                 }
                 let rank = match self.eviction {
@@ -774,6 +808,41 @@ impl Data {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutation_history_is_opt_in_and_cleared_when_disabled() {
+        let mut data = Data::default();
+        data.put(b"k", b"v", None, 0, 0);
+        assert!(data.journal_events.is_empty());
+        assert_eq!(data.changes_since(0), (Vec::new(), false));
+
+        data.set_collect_events(true);
+        data.put(b"k", b"v2", None, 0, 0);
+        assert_eq!(data.changes_since(0), (vec![b"k".to_vec()], false));
+
+        data.set_collect_events(false);
+        assert!(data.journal_events.is_empty());
+        assert!(!data.journal_overflow);
+        data.put(b"k", b"v3", None, 0, 0);
+        assert_eq!(data.changes_since(0), (Vec::new(), false));
+    }
+
+    #[test]
+    fn peak_payload_tracks_the_high_water_mark() {
+        let mut data = Data::default();
+        data.put(b"k", b"value", None, 6, 0);
+        let peak = data.peak_payload_bytes();
+        assert_eq!(peak, data.payload_bytes);
+        data.remove(b"k");
+        assert_eq!(data.payload_bytes, 0);
+        assert_eq!(data.peak_payload_bytes(), peak);
+        data.put(b"small", b"v", None, 6, 0);
+        assert_eq!(data.payload_bytes, 6);
+        assert_eq!(data.peak_payload_bytes(), peak);
+        data.flush();
+        assert_eq!(data.payload_bytes, 0);
+        assert_eq!(data.peak_payload_bytes(), peak);
+    }
 
     #[test]
     fn lifecycle_queues_are_bounded_and_clearable() {

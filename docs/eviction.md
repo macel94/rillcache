@@ -18,8 +18,13 @@ make the process memory-safe or provide an RSS limit.
 
 `CONFIG GET maxmemory-policy` reports the live policy and authenticated
 `CONFIG SET maxmemory-policy <name>` changes it atomically with other supported
-`CONFIG SET` pairs. `INFO memory` includes `maxmemory_policy`; `INFO stats`
-reports `evicted_keys`, which `CONFIG RESETSTAT` zeroes.
+`CONFIG SET` pairs. `CONFIG GET maxmemory` reports the current key/value payload
+budget and `CONFIG SET maxmemory <positive bytes>` lowers or raises it at runtime;
+a lower budget evicts eligible keys immediately, while a policy that cannot evict
+enough leaves the store above budget and rejects later writes with OOM. Zero
+(unlimited) is rejected to preserve bounded operation. `INFO memory` includes
+`maxmemory_policy`; `INFO stats` reports `evicted_keys`, which `CONFIG RESETSTAT`
+zeroes.
 
 ## Admission sequence
 
@@ -59,10 +64,10 @@ or asynchronous deleter.
 
 ## Deliberate gaps
 
-- No true RSS/allocator accounting, `maxmemory` bytes runtime setting, memory
-  fragmentation control, active defragmentation, object-size sampling, LFU,
-  eviction pools, replica-aware eviction or durable/replayed eviction
-  notifications. An `evicted` keyspace event is published at-most-once to current
+- No true RSS/allocator accounting, memory fragmentation control, active
+  defragmentation, object-size sampling, LFU, eviction pools, replica-aware
+  eviction or durable/replayed eviction notifications. The runtime `maxmemory`
+  value is the payload byte budget described above, not an RSS limit. An `evicted` keyspace event is published at-most-once to current
   subscribers when the `e` class is enabled.
 - Eviction is process-local; replicated/cluster policies and persistence of
   eviction policy are absent. The CLI policy must be supplied again after restart;

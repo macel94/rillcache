@@ -3,8 +3,19 @@
 Rillcache exposes a deliberately small set of server counters through
 `INFO stats` (also included by `INFO` and `INFO all`). Values are process-local
 and reset on restart. There is no Prometheus endpoint, latency histogram,
-per-command table or replication statistics. `SLOWLOG` and `LATENCY` provide
-bounded, process-local timing as described below.
+per-command table or replication statistics. `INFO errorstats` reports bounded
+per-error-code command reply counts. `SLOWLOG` and `LATENCY` provide
+bounded, process-local timing as described below. `MONITOR` provides a bounded
+live command stream for debugging.
+
+## Error statistics
+
+`INFO errorstats` (and `INFO all`) returns a `# Errorstats` block with one
+`errorstat_<CODE>:count` line per error code seen at command dispatch, such as
+`ERR`, `WRONGTYPE`, `NOAUTH` or `NOPERM`. Codes are the bounded first token of the
+error reply (at most 32 bytes), the table is capped at 64 distinct codes, and
+`CONFIG RESETSTAT` clears it with the other counters. Protocol-level framing
+errors are not command replies and are not counted.
 
 ## Fields
 
@@ -19,12 +30,14 @@ bounded, process-local timing as described below.
 | `pubsub_channels` | Distinct channels with at least one live subscription |
 | `pubsub_patterns` | Total pattern subscriptions (not distinct patterns) |
 
-`INFO keyspace` reports `keys`, `expires` and `subexpiry` (the number of live
-hash keys with at least one field deadline). `expired_subkeys` resets with
+`INFO keyspace` reports `keys`, `expires`, `avg_ttl` (exact mean remaining
+milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
+(the number of live hash keys with at least one field deadline). `expired_subkeys` resets with
 `CONFIG RESETSTAT`; `subexpiry` is live state and is not a counter.
 
 `INFO clients` reports `connected_clients` (the process-local registry size),
-`cluster_connections:0` and `maxclients` (the configured connection limit). `CLIENT LIST` exposes per-connection address/name/user/
+`cluster_connections:0` and `maxclients` (the live connection limit, changeable
+through `CONFIG SET maxclients`). `CLIENT LIST` exposes per-connection address/name/user/
 RESP/subscription metadata.
 
 `INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`. `evicted_keys` resets with
@@ -62,6 +75,22 @@ not logged separately; `EXEC` is logged as one entry whose duration covers the
 batch. This differs from Redis's per-queued-command entries and is intentional
 for this session-level implementation. The log is in-memory, process-local and
 not included in `INFO` or persisted across restart.
+
+## MONITOR
+
+`MONITOR` registers the calling connection for a process-local stream of commands
+received from other clients. Each line is a simple string shaped as
+`+<seconds>.<microseconds> [0 <peer-address>] "command" "argument" ...`; quotes,
+backslashes and control bytes are escaped. Arguments are capped at 128 bytes and
+lines at 4 KiB. The stream uses the same bounded queue capacity as pub/sub, so a
+slow monitor drops lines instead of blocking command execution; it is
+best-effort and not a durable or complete audit trail.
+
+Credentials are redacted before formatting: `AUTH` shows `AUTH (redacted)`,
+`HELLO ... AUTH ...` hides the password, `ACL SETUSER` hides `>`, `<`, `#` and
+`!` credential rules, and `CONFIG SET requirepass` hides the value. `RESET` or a
+disconnect leaves monitor mode. MONITOR is an admin/dangerous command and cannot
+be queued inside `MULTI`.
 
 ## LATENCY
 
@@ -138,6 +167,8 @@ backlog, bio and fork fields are omitted because they are not measured.
   only the two measured event series listed above.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.
+- Error statistics are a bounded per-code count, not a full error log or message
+  history.
 - No persistence/ACL/auth telemetry. Journal replay and rewrite durations are not
   reported. A future observability increment must preserve the same no-fabrication
   rule instead of filling Redis-shaped fields with guesses.
@@ -146,5 +177,6 @@ backlog, bio and fork fields are omitted because they are not measured.
 
 `tests/observability.rs` runs in all worker modes and verifies connection/command
 counts across two clients, reset behavior, maximum-client rejection visibility and
-lazy expiration counting. It parses `INFO stats` as a real RESP bulk reply rather
-than asserting on an implementation string alone.
+lazy expiration counting, and `tests/errorstats.rs` verifies per-code counts,
+`INFO all` inclusion and `CONFIG RESETSTAT` clearing. Tests parse INFO replies as
+real RESP bulk values rather than asserting on implementation strings alone.

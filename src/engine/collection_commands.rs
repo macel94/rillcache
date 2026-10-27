@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_ELEMENTS: usize = 1_000_000;
+const MAX_HGETEX_REPLY_BYTES: usize = 2 * 1024 * 1024;
+// Redis's HFE_MAX_ABS_TIME_MSEC = EB_EXPIRE_TIME_MAX >> 2.
+const MAX_HASH_FIELD_DEADLINE_MS: i64 = ((1i64 << 48) - 1) >> 2;
 static RANDOM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 impl Store {
@@ -27,7 +30,9 @@ impl Store {
         if (command
             .first()
             .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'z'))
-            || command.eq_ignore_ascii_case(b"BZMPOP"))
+            || command.eq_ignore_ascii_case(b"BZMPOP")
+            || command.eq_ignore_ascii_case(b"BZPOPMAX")
+            || command.eq_ignore_ascii_case(b"BZPOPMIN"))
             && self.execute_zset_extended(args, out)
         {
             return true;
@@ -272,6 +277,32 @@ impl Store {
             || command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE")
         {
             self.zset_range_by_score(args, command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE"), out);
+        } else if command.eq_ignore_ascii_case(b"ZRANGEBYLEX")
+            || command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX")
+        {
+            if args.len() < 4 {
+                arity(
+                    if command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX") {
+                        "zrevrangebylex"
+                    } else {
+                        "zrangebylex"
+                    },
+                    out,
+                );
+            } else {
+                let reverse = command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX");
+                let mut rebuilt = Vec::with_capacity(args.len() + 2);
+                rebuilt.push(b"ZRANGE".as_slice());
+                rebuilt.push(args[1]);
+                rebuilt.push(args[2]);
+                rebuilt.push(args[3]);
+                rebuilt.push(b"BYLEX");
+                if reverse {
+                    rebuilt.push(b"REV");
+                }
+                rebuilt.extend_from_slice(&args[4..]);
+                self.zset_range(&rebuilt, false, out);
+            }
         } else if command.eq_ignore_ascii_case(b"ZREMRANGEBYRANK")
             || command.eq_ignore_ascii_case(b"ZREMRANGEBYSCORE")
         {
@@ -335,6 +366,223 @@ fn parse_i64(bytes: &[u8]) -> Option<i64> {
     let text = std::str::from_utf8(bytes).ok()?;
     let value = text.parse::<i64>().ok()?;
     (value.to_string().as_bytes() == bytes).then_some(value)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldTtlMode {
+    /// No TTL option: HSETEX clears the written fields' TTLs; HGETEX leaves them.
+    Default,
+    Keep,
+    Persist,
+    Ex,
+    Px,
+    ExAt,
+    PxAt,
+}
+
+impl FieldTtlMode {
+    fn needs_value(self) -> bool {
+        matches!(self, Self::Ex | Self::Px | Self::ExAt | Self::PxAt)
+    }
+
+    fn absolute(self) -> bool {
+        matches!(self, Self::ExAt | Self::PxAt)
+    }
+}
+
+fn field_ttl_mode(token: &[u8], allow_keep: bool, allow_persist: bool) -> Option<FieldTtlMode> {
+    let matches = |candidate: &[u8]| token.eq_ignore_ascii_case(candidate);
+    if matches(b"EX") {
+        Some(FieldTtlMode::Ex)
+    } else if matches(b"PX") {
+        Some(FieldTtlMode::Px)
+    } else if matches(b"EXAT") {
+        Some(FieldTtlMode::ExAt)
+    } else if matches(b"PXAT") {
+        Some(FieldTtlMode::PxAt)
+    } else if matches(b"KEEPTTL") && allow_keep {
+        Some(FieldTtlMode::Keep)
+    } else if matches(b"PERSIST") && allow_persist {
+        Some(FieldTtlMode::Persist)
+    } else {
+        None
+    }
+}
+
+struct HashFieldOptions {
+    /// `Some(true)` for FNX, `Some(false)` for FXX.
+    condition: Option<bool>,
+    ttl: FieldTtlMode,
+    ttl_value: Option<i64>,
+    fields_start: usize,
+    field_count: usize,
+}
+
+/// Parse the optional condition/TTL clause shared by HSETEX and HGETEX. The
+/// order is flexible, but each condition and TTL option may appear only once.
+fn parse_hash_field_options(
+    args: &[&[u8]],
+    allow_condition: bool,
+    allow_keep: bool,
+    allow_persist: bool,
+    out: &mut Vec<u8>,
+) -> Option<HashFieldOptions> {
+    let mut index = 2;
+    let mut condition = None;
+    let mut ttl = FieldTtlMode::Default;
+    let mut ttl_value = None;
+    let mut condition_seen = false;
+    let mut ttl_seen = false;
+    let mut fields = None;
+    while let Some(token) = args.get(index) {
+        if token.eq_ignore_ascii_case(b"FIELDS") {
+            if fields.is_some() {
+                out.extend_from_slice(b"-ERR FIELDS keyword specified multiple times\r\n");
+                return None;
+            }
+            let (count, start) = parse_hash_fields_block(args, index, allow_condition, out)?;
+            fields = Some((count, start));
+            index = start + count * if allow_condition { 2 } else { 1 };
+            continue;
+        }
+        if allow_condition
+            && (token.eq_ignore_ascii_case(b"FNX") || token.eq_ignore_ascii_case(b"FXX"))
+        {
+            if condition_seen {
+                out.extend_from_slice(
+                    b"-ERR Only one of FXX or FNX arguments can be specified\r\n",
+                );
+                return None;
+            }
+            condition_seen = true;
+            condition = Some(token.eq_ignore_ascii_case(b"FNX"));
+            index += 1;
+            continue;
+        }
+        let Some(mode) = field_ttl_mode(token, allow_keep, allow_persist) else {
+            // Never reflect untrusted control bytes in a RESP error line.
+            out.extend_from_slice(if token.eq_ignore_ascii_case(b"PERSIST") {
+                b"-ERR unknown argument: PERSIST\r\n"
+            } else if token.eq_ignore_ascii_case(b"KEEPTTL") {
+                b"-ERR unknown argument: KEEPTTL\r\n"
+            } else {
+                b"-ERR unknown argument\r\n"
+            });
+            return None;
+        };
+        if ttl_seen {
+            out.extend_from_slice(if allow_persist {
+                b"-ERR Only one of EX, PX, EXAT, PXAT or PERSIST arguments can be specified\r\n"
+            } else {
+                b"-ERR Only one of EX, PX, EXAT, PXAT or KEEPTTL arguments can be specified\r\n"
+            });
+            return None;
+        }
+        ttl_seen = true;
+        ttl = mode;
+        index += 1;
+        if mode.needs_value() {
+            let Some(raw) = args.get(index) else {
+                out.extend_from_slice(b"-ERR missing expire time argument\r\n");
+                return None;
+            };
+            let Some(value) = parse_i64(raw) else {
+                out.extend_from_slice(NOT_INTEGER);
+                return None;
+            };
+            if value < 0 {
+                out.extend_from_slice(b"-ERR invalid expire time, must be >= 0\r\n");
+                return None;
+            }
+            if let Some(value) =
+                value.checked_mul(if mode == FieldTtlMode::Ex || mode == FieldTtlMode::ExAt {
+                    1000
+                } else {
+                    1
+                })
+            {
+                ttl_value = Some(value);
+            } else {
+                hash_field_expire_error(args[0], out);
+                return None;
+            }
+            index += 1;
+        }
+    }
+    let Some((field_count, fields_start)) = fields else {
+        out.extend_from_slice(b"-ERR missing FIELDS argument\r\n");
+        return None;
+    };
+    Some(HashFieldOptions {
+        condition,
+        ttl,
+        ttl_value,
+        fields_start,
+        field_count,
+    })
+}
+
+/// Parse the mandatory `FIELDS numfields ...` block and return its length and
+/// start offset. `pairs` selects field/value pairs (HSETEX) over fields only.
+fn parse_hash_fields_block(
+    args: &[&[u8]],
+    index: usize,
+    pairs: bool,
+    out: &mut Vec<u8>,
+) -> Option<(usize, usize)> {
+    if !args
+        .get(index)
+        .is_some_and(|token| token.eq_ignore_ascii_case(b"FIELDS"))
+    {
+        out.extend_from_slice(
+            b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n",
+        );
+        return None;
+    }
+    let Some(raw) = args.get(index + 1) else {
+        arity(if pairs { "hsetex" } else { "hgetex" }, out);
+        return None;
+    };
+    let Some(count) = parse_i64(raw).filter(|count| (1..=i64::from(i32::MAX)).contains(count))
+    else {
+        out.extend_from_slice(b"-ERR invalid number of fields\r\n");
+        return None;
+    };
+    let Ok(count) = usize::try_from(count) else {
+        out.extend_from_slice(b"-ERR invalid number of fields\r\n");
+        return None;
+    };
+    let start = index + 2;
+    let needed = if pairs {
+        count.checked_mul(2)
+    } else {
+        Some(count)
+    };
+    if needed
+        .and_then(|needed| start.checked_add(needed))
+        .is_none_or(|end| end > args.len())
+    {
+        out.extend_from_slice(b"-ERR wrong number of arguments\r\n");
+        return None;
+    }
+    Some((count, start))
+}
+
+fn resolve_field_deadline(mode: FieldTtlMode, value: i64, now: i64) -> Option<i64> {
+    let deadline = if mode.absolute() {
+        value
+    } else {
+        now.checked_add(value)?
+    };
+    (deadline <= MAX_HASH_FIELD_DEADLINE_MS).then_some(deadline)
+}
+
+fn hash_field_expire_error(command: &[u8], out: &mut Vec<u8>) {
+    out.extend_from_slice(if command.eq_ignore_ascii_case(b"HSETEX") {
+        b"-ERR invalid expire time in 'hsetex' command\r\n"
+    } else {
+        b"-ERR invalid expire time in 'hgetex' command\r\n"
+    });
 }
 
 fn parse_score_bound(bytes: &[u8]) -> Option<(f64, bool)> {
@@ -961,6 +1209,22 @@ pub(crate) fn zset_pop_reply(outcome: ZSetPopOutcome, out: &mut Vec<u8>) {
     }
 }
 
+pub(crate) fn zset_pop_single_reply(outcome: ZSetPopOutcome, out: &mut Vec<u8>) {
+    match outcome {
+        ZSetPopOutcome::Popped { key, items } => {
+            let (member, score) = items.first().expect("single pop returns one item");
+            out.extend_from_slice(b"*3\r\n");
+            encode_bulk(Some(&key), out);
+            encode_bulk(Some(member), out);
+            encode_bulk(Some(&score_bytes(*score)), out);
+        }
+        ZSetPopOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
+        ZSetPopOutcome::WrongType => wrong_type(out),
+        ZSetPopOutcome::Oom => out.extend_from_slice(OOM),
+        ZSetPopOutcome::JournalError => out.extend_from_slice(b"-ERR append-only write failed\r\n"),
+    }
+}
+
 fn ordered_zset(items: Vec<(&[u8], f64)>, reverse: bool) -> Vec<(Vec<u8>, f64)> {
     let mut ordered: Vec<(Vec<u8>, f64)> = items
         .into_iter()
@@ -991,6 +1255,18 @@ impl Store {
                 arity("hgetdel", out);
             } else {
                 self.hash_getdel(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HSETEX") {
+            if args.len() < 6 {
+                arity("hsetex", out);
+            } else {
+                self.hash_setex(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"HGETEX") {
+            if args.len() < 5 {
+                arity("hgetex", out);
+            } else {
+                self.hash_getex(args, out);
             }
         } else {
             return false;
@@ -1157,7 +1433,7 @@ impl Store {
                 };
                 let encoded = encode_hash(hash, &config);
                 let Some(payload) =
-                    data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+                    data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
                 else {
                     out.extend_from_slice(OOM);
                     return;
@@ -1450,6 +1726,192 @@ impl Store {
         }
     }
 
+    fn hash_setex(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(options) = parse_hash_field_options(args, true, true, false, out) else {
+            return;
+        };
+        let start = options.fields_start;
+        let key = args[1];
+        let pairs = args[start..start + options.field_count * 2]
+            .as_chunks::<2>()
+            .0;
+        let fields: Vec<&[u8]> = pairs.iter().map(|pair| pair[0]).collect();
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.clock.now_ms().max(0);
+        data.expire_key(key, now);
+        let deadline = if options.ttl.needs_value() {
+            let Some(deadline) = resolve_field_deadline(
+                options.ttl,
+                options.ttl_value.expect("TTL option parsed with a value"),
+                now,
+            ) else {
+                hash_field_expire_error(args[0], out);
+                return;
+            };
+            Some(deadline)
+        } else {
+            None
+        };
+        let current = data.entries.get(key);
+        if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_hash))
+        {
+            wrong_type(out);
+            return;
+        }
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = current
+            .and_then(|entry| entry.collection.as_ref().and_then(Collection::hash_items))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(field, value)| (field.to_vec(), value.to_vec()))
+            .collect();
+        let condition_met = match options.condition {
+            None => true,
+            Some(true) => !fields.iter().any(|field| hash.contains_key(*field)),
+            Some(false) => fields.iter().all(|field| hash.contains_key(*field)),
+        };
+        if !condition_met {
+            integer(0, out);
+            return;
+        }
+        let deleting = deadline.is_some_and(|deadline| deadline <= now);
+        if deleting {
+            // Due writes delete the requested fields without retaining or
+            // reserving their supplied values, including duplicate fields.
+            for field in &fields {
+                hash.remove(*field);
+            }
+        } else {
+            for pair in pairs {
+                hash.insert(pair[0].to_vec(), pair[1].to_vec());
+            }
+        }
+        if hash.is_empty() {
+            data.remove(key);
+            data.touch(key);
+            integer(1, out);
+            return;
+        }
+        if hash.len() > MAX_ELEMENTS {
+            out.extend_from_slice(OOM);
+            return;
+        }
+        let expires = current.and_then(|entry| entry.expires);
+        let bytes = hash
+            .iter()
+            .map(|(field, value)| field.len() + value.len())
+            .sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_hash(hash, &config);
+        let previous = current.map(Entry::payload_len);
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        match options.ttl {
+            FieldTtlMode::Default => data.remove_field_ttls(key, &fields),
+            FieldTtlMode::Keep => {}
+            _ if deleting => data.remove_field_ttls(key, &fields),
+            _ => {
+                let deadline = deadline.expect("deadline resolved for TTL option");
+                for field in fields {
+                    data.set_field_ttl(key, field, deadline);
+                }
+            }
+        }
+        integer(1, out);
+    }
+
+    fn hash_getex(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some(options) = parse_hash_field_options(args, false, false, true, out) else {
+            return;
+        };
+        let count = options.field_count;
+        let fields = &args[options.fields_start..options.fields_start + count];
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.clock.now_ms().max(0);
+        data.expire_key(key, now);
+        let deadline = if options.ttl.needs_value() {
+            let Some(deadline) = resolve_field_deadline(
+                options.ttl,
+                options.ttl_value.expect("TTL option parsed with a value"),
+                now,
+            ) else {
+                hash_field_expire_error(args[0], out);
+                return;
+            };
+            Some(deadline)
+        } else {
+            None
+        };
+        let entry = data.entries.get(key);
+        if entry.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_hash)) {
+            wrong_type(out);
+            return;
+        }
+        let collection = entry.and_then(|entry| entry.collection.as_ref());
+        let deleting = deadline.is_some_and(|deadline| deadline <= now);
+        let mut present = BTreeSet::<&[u8]>::new();
+        let mut reply = Vec::new();
+        array(count, &mut reply);
+        for field in fields {
+            let value = if deleting && present.contains(*field) {
+                None
+            } else {
+                collection.and_then(|collection| collection.hash_get(field))
+            };
+            let bytes = value.map_or(5, |value| {
+                value
+                    .len()
+                    .saturating_add(value.len().to_string().len())
+                    .saturating_add(5)
+            });
+            if bytes > MAX_HGETEX_REPLY_BYTES.saturating_sub(reply.len()) {
+                out.extend_from_slice(b"-ERR HGETEX reply exceeds configured limit\r\n");
+                return;
+            }
+            encode_bulk(value, &mut reply);
+            if value.is_some() {
+                present.insert(*field);
+            }
+        }
+        // Admission and complete reply construction precede every live TTL
+        // change. A due duplicate sees null after its first occurrence.
+        let mut changed = false;
+        match options.ttl {
+            FieldTtlMode::Persist => {
+                for field in present {
+                    changed |= data.persist_field(key, field);
+                }
+            }
+            FieldTtlMode::Default | FieldTtlMode::Keep => {}
+            _ => {
+                let deadline = deadline.expect("deadline resolved for TTL option");
+                for field in present {
+                    data.set_field_ttl(key, field, deadline);
+                    changed = true;
+                }
+                if deleting {
+                    data.expire_key(key, now);
+                }
+            }
+        }
+        if changed {
+            data.touch(key);
+        }
+        out.extend_from_slice(&reply);
+    }
+
     fn hash_setnx(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         if args.len() != 4 {
             arity("hsetnx", out);
@@ -1494,7 +1956,7 @@ impl Store {
         };
         let encoded = encode_hash(hash, &config);
         let previous = current.map(Entry::payload_len);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -1553,7 +2015,7 @@ impl Store {
             return;
         };
         let encoded = encode_hash(hash, &config);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -1659,7 +2121,7 @@ impl Store {
             return;
         };
         let encoded = encode_hash(hash, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -1716,7 +2178,7 @@ impl Store {
             return;
         };
         let encoded = encode_hash(hash, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -2045,7 +2507,7 @@ impl Store {
                     key,
                     encoded.payload_len(),
                     Some(previous),
-                    self.max_payload_bytes,
+                    self.payload_limit(),
                     now,
                 ) else {
                     return ListPopOutcome::Oom;
@@ -2154,7 +2616,7 @@ impl Store {
                 })
                 .and_then(|bytes| bytes.checked_add(destination_bytes))
         };
-        let Some(new_payload) = new_payload.filter(|bytes| *bytes <= self.max_payload_bytes) else {
+        let Some(new_payload) = new_payload.filter(|bytes| *bytes <= self.payload_limit()) else {
             return ListMoveOutcome::Oom;
         };
         let Ok(config) = self.collection_config.read() else {
@@ -2275,7 +2737,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(list, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2346,7 +2808,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(result, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2388,7 +2850,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(list, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2449,7 +2911,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(result, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2497,7 +2959,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(list, config.list_max_listpack_size);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2569,7 +3031,7 @@ impl Store {
             return;
         };
         let encoded = encode_set(set, &config);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -2681,7 +3143,7 @@ impl Store {
             };
             total = next;
         }
-        if total > self.max_payload_bytes {
+        if total > self.payload_limit() {
             out.extend_from_slice(OOM);
             return;
         }
@@ -2835,7 +3297,7 @@ impl Store {
             };
             total = next;
         }
-        if total > self.max_payload_bytes {
+        if total > self.payload_limit() {
             out.extend_from_slice(OOM);
             return;
         }
@@ -3172,7 +3634,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -3226,7 +3688,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -3271,7 +3733,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -3609,10 +4071,34 @@ impl Store {
                     Err(error) => out.extend_from_slice(error),
                 }
             }
+        } else if command.eq_ignore_ascii_case(b"BZPOPMIN")
+            || command.eq_ignore_ascii_case(b"BZPOPMAX")
+        {
+            let max = command.eq_ignore_ascii_case(b"BZPOPMAX");
+            let name = if max { "bzpopmax" } else { "bzpopmin" };
+            if args.len() < 3 {
+                arity(name, out);
+            } else {
+                match parse_bzmpop_timeout(args[args.len() - 1]) {
+                    Ok(_) => self.zset_pop_single(args, max, out),
+                    Err(error) => out.extend_from_slice(error),
+                }
+            }
         } else {
             return false;
         }
         true
+    }
+
+    fn zset_pop_single(&self, args: &[&[u8]], max: bool, out: &mut Vec<u8>) {
+        let keys = &args[1..args.len() - 1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let outcome = self.zset_pop_in_data(&mut data, keys, max, 1, now);
+        zset_pop_single_reply(outcome, out);
     }
 
     fn zset_mpop(&self, args: &[&[u8]], numkeys_index: usize, out: &mut Vec<u8>) {
@@ -3677,7 +4163,7 @@ impl Store {
                         key,
                         encoded.payload_len(),
                         Some(previous),
-                        self.max_payload_bytes,
+                        self.payload_limit(),
                         now,
                     ) else {
                         return ZSetPopOutcome::Oom;
@@ -3833,7 +4319,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -3993,7 +4479,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(destination, bytes, previous, self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(destination, bytes, previous, self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -4138,7 +4624,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+        let Some(payload) = data.reserve(key, bytes, previous, self.payload_limit(), now) else {
             out.extend_from_slice(OOM);
             return;
         };
@@ -4319,7 +4805,7 @@ impl Store {
             return;
         };
         let encoded = encode_zset(zset, &config);
-        let Some(payload) = data.reserve(key, bytes, Some(previous), self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(key, bytes, Some(previous), self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
             return;
@@ -4421,6 +4907,69 @@ mod tests {
         let mut out = Vec::new();
         store.execute(args, &mut out);
         out
+    }
+
+    #[test]
+    fn combined_hash_commands_cover_conditions_and_ttls() {
+        let store = Store::new(4096);
+        assert_eq!(
+            run(&store, &[b"HSETEX", b"h", b"FIELDS", b"1", b"a", b"1"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"HSETEX", b"h", b"FNX", b"FIELDS", b"2", b"a", b"x", b"b", b"2",
+                ],
+            ),
+            b":0\r\n"
+        );
+        assert_eq!(run(&store, &[b"HGET", b"h", b"a"]), b"$1\r\n1\r\n");
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"HSETEX", b"h", b"FXX", b"FIELDS", b"2", b"a", b"3", b"b", b"4"
+                ]
+            ),
+            b":0\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"HSETEX", b"h", b"FIELDS", b"1", b"b", b"4"]),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"HSETEX", b"h", b"FXX", b"FIELDS", b"2", b"a", b"3", b"b", b"5"
+                ]
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"HGETEX", b"h", b"FIELDS", b"2", b"a", b"missing"]
+            ),
+            b"*2\r\n$1\r\n3\r\n$-1\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"HGETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a"]
+            ),
+            b"*1\r\n$1\r\n3\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"HSETEX", b"h", b"FNX", b"FXX", b"FIELDS", b"1", b"a", b"9"]
+            ),
+            b"-ERR Only one of FXX or FNX arguments can be specified\r\n"
+        );
+        assert_eq!(run(&store, &[b"HGET", b"h", b"a"]), b"$1\r\n3\r\n");
     }
 
     #[test]

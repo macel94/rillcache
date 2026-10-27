@@ -374,8 +374,7 @@ impl Store {
             }
         }
         if changed {
-            let Some(payload) =
-                data.reserve(key, bytes.len(), previous, self.max_payload_bytes, now)
+            let Some(payload) = data.reserve(key, bytes.len(), previous, self.payload_limit(), now)
             else {
                 output.extend_from_slice(OOM);
                 return true;

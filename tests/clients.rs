@@ -138,6 +138,10 @@ fn client_list_reports_names_metadata_and_pubsub_state() {
     assert!(all.contains("lib-name=test-lib"), "{all}");
     assert!(all.contains("lib-ver=9.9"), "{all}");
     assert!(all.contains("addr=127.0.0.1:"), "{all}");
+    assert!(
+        all.contains(&format!("laddr={}", server.local_addr())),
+        "{all}"
+    );
     let only = client_list(&mut admin, &[b"ID", worker_id.to_string().as_bytes()]);
     assert!(only.contains(&format!("id={worker_id} ")));
     assert_eq!(only.lines().count(), 1);
@@ -176,8 +180,13 @@ fn client_kill_removes_connections_and_protects_the_caller() {
     send(&mut admin, &[b"PING"], b"+PONG\r\n");
     send(
         &mut admin,
-        &[b"CLIENT", b"KILL", b"SKIPME", b"no"],
-        b"-ERR CLIENT KILL SKIPME no is not supported\r\n",
+        &[b"CLIENT", b"KILL", b"SKIPME", b"no", b"ID", b"999999999"],
+        b":0\r\n",
+    );
+    send(
+        &mut admin,
+        &[b"CLIENT", b"KILL", b"SKIPME", b"maybe"],
+        b"-ERR syntax error\r\n",
     );
     send(
         &mut admin,
@@ -207,6 +216,13 @@ fn client_kill_removes_connections_and_protects_the_caller() {
         b":0\r\n",
     );
 
+    send(&mut admin, &[b"CLIENT", b"INFO"], b"");
+    let own = String::from_utf8(bulk(&mut admin)).unwrap();
+    assert!(
+        own.contains(&format!("laddr={}", server.local_addr())),
+        "{own}"
+    );
+
     let info = client_list(&mut admin, &[]);
     assert!(info.contains(&format!("id={admin_id} ")), "{info}");
     assert_eq!(info.lines().count(), 1);
@@ -225,13 +241,16 @@ fn client_kill_maxage_removes_only_old_connections() {
     let old_one_id = client_id(&mut old_one);
     let mut old_two = connect(&server);
     let old_two_id = client_id(&mut old_two);
-    std::thread::sleep(Duration::from_millis(150));
+    // Use the sleep itself as the threshold. The old clients are always at
+    // least that old, while the young client would need to wait two seconds
+    // before the KILL is dispatched to become eligible under load.
+    std::thread::sleep(Duration::from_secs(2));
     let mut young = connect(&server);
     let young_id = client_id(&mut young);
 
     send(
         &mut admin,
-        &[b"CLIENT", b"KILL", b"MAXAGE", b"100"],
+        &[b"CLIENT", b"KILL", b"MAXAGE", b"2000"],
         b":2\r\n",
     );
     let mut finished = Vec::new();
@@ -251,5 +270,117 @@ fn client_kill_maxage_removes_only_old_connections() {
         &[b"CLIENT", b"KILL", b"MAXAGE", b"nope"],
         b"-ERR invalid client MAXAGE\r\n",
     );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn client_kill_filters_by_local_address() {
+    let server = start();
+    let mut admin = connect(&server);
+    let mut victim = connect(&server);
+    let victim_id = client_id(&mut victim);
+    let local = server.local_addr().to_string();
+
+    let list = client_list(&mut admin, &[]);
+    assert!(list.contains(&format!("laddr={local}")), "{list}");
+
+    send(
+        &mut admin,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"LADDR",
+            b"127.0.0.1:1",
+            b"ID",
+            victim_id.to_string().as_bytes(),
+        ],
+        b":0\r\n",
+    );
+    send(
+        &mut admin,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"LADDR",
+            local.as_bytes(),
+            b"ID",
+            victim_id.to_string().as_bytes(),
+        ],
+        b":1\r\n",
+    );
+    let mut finished = Vec::new();
+    let _ = victim.read_to_end(&mut finished);
+    send(&mut admin, &[b"PING"], b"+PONG\r\n");
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn client_kill_skipme_no_can_kill_the_caller_and_absent_types_are_empty() {
+    let server = start();
+    let mut admin = connect(&server);
+    let admin_id = client_id(&mut admin);
+    let mut witness = connect(&server);
+    let witness_id = client_id(&mut witness);
+
+    let list = client_list(&mut admin, &[b"TYPE", b"master"]);
+    assert!(list.is_empty(), "{list}");
+    let list = client_list(&mut admin, &[b"TYPE", b"replica"]);
+    assert!(list.is_empty(), "{list}");
+    let list = client_list(&mut admin, &[b"TYPE", b"slave"]);
+    assert!(list.is_empty(), "{list}");
+    send(
+        &mut admin,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"TYPE",
+            b"replica",
+            b"ID",
+            witness_id.to_string().as_bytes(),
+        ],
+        b":0\r\n",
+    );
+    send(&mut witness, &[b"PING"], b"+PONG\r\n");
+
+    // SKIPME no with a non-caller target behaves like the default.
+    send(
+        &mut admin,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"SKIPME",
+            b"no",
+            b"ID",
+            witness_id.to_string().as_bytes(),
+        ],
+        b":1\r\n",
+    );
+    let mut finished = Vec::new();
+    let _ = witness.read_to_end(&mut finished);
+
+    // Killing the caller closes its socket; the reply may race with the close.
+    let mut victim = connect(&server);
+    let victim_id = client_id(&mut victim);
+    let mut killer = connect(&server);
+    let killer_id = client_id(&mut killer);
+    send(
+        &mut killer,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"SKIPME",
+            b"no",
+            b"ID",
+            killer_id.to_string().as_bytes(),
+        ],
+        b"",
+    );
+    let mut reply = vec![0; 4];
+    let _ = killer.read(&mut reply);
+    let list = client_list(&mut victim, &[]);
+    assert!(!list.contains(&format!("id={killer_id} ")), "{list}");
+    assert!(list.contains(&format!("id={victim_id} ")), "{list}");
+    assert!(list.contains(&format!("id={admin_id} ")), "{list}");
+    send(&mut victim, &[b"PING"], b"+PONG\r\n");
     server.shutdown().unwrap();
 }

@@ -105,13 +105,29 @@ reason to couple all future commands into a single large story.
 | S75 | As an operator, I can request a durable protocol-level stop so that maintenance can flush acknowledged journal writes and join workers without relying on signals. | S | R296–R299; flags/errors/ABORT/MULTI/persistence/all-mode shutdown tests |
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
+| S-HC | As a hash user, I can atomically read or set counted fields together with their expiry so that conditional writes and TTL updates do not race separate commands. | S | R-HC1–R-HC4; duplicate/binary/due-deadline/OOM/bounds/concurrency, journal, transaction and all-mode wire tests |
 | S78 | As an operator, I can configure automatic journal compaction thresholds so that an append-only file does not grow without bound between manual rewrites. | S | R306–R309; config/defaults/growth/baseline/replay and all-mode wire tests |
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
 | S82 | As an operator, I can see the configured connection limit in `INFO clients` so capacity tooling does not have to guess it. | XS | R319–R320; configured/default maxclients, INFO all and all-mode wire tests |
 | S83 | As an operator, I can kill connections by minimum age so stale or leaky clients can be reaped without knowing their IDs. | XS | R321–R322; MAXAGE matching, invalid values, caller protection and all-mode wire tests |
-| S84 | As an operator, I can see how many connections are blocked and which they are so waiters and stuck workers are diagnosable. | XS | R323–R325; blocked_clients, `b` flag, wake/timeout clearing and all-mode wire tests |
+| S100 | As an operator, I can see how many connections are blocked and which they are so waiters and stuck workers are diagnosable. | XS | R371–R373; blocked_clients, `b` flag, wake/timeout clearing and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
+| S84 | As an operator, I can inspect bounded per-error-code command reply counts so that repeated failures are visible without scraping client logs. | XS | R323–R325; counts/reset/INFO all/all-mode wire tests |
+| S85 | As an operator, I can see the average remaining TTL of expiring keys in `INFO keyspace` so cache freshness is visible without per-key scans. | XS | R326–R327; mean TTL, empty/expired state and all-mode wire tests |
+| S86 | As an ACL administrator, I can define independent command/key scopes per user so one login can read broadly while writing only a key namespace. | S | R328–R331; selector parsing, authorization, listing, ACL-file round-trip and all-mode wire tests |
+| S87 | As an operator, I can inspect the journal mode and change the fsync policy at runtime so durability tuning does not require a restart. | XS | R332–R334; startup values, live policy switch/replay, read-only mode/filename and all-mode wire tests |
+| S97 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R362–R364; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
+| S98 | As an operator, I can inspect truthful payload accounting and a bounded diagnosis through `MEMORY STATS`/`DOCTOR` so I do not infer RSS or allocator health. | XS | R365–R367; fields/high-water/limit, doctor states, HELP and all-mode wire tests |
+| S99 | As a transaction user, I can queue `PUBLISH` and `SPUBLISH` so `EXEC` matches Redis and messages are delivered once at execution time. | XS | R368–R370; queue/no-early-delivery, fan-out/counts, ACL and all-mode wire tests |
+| S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
+| S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
+| S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
+| S92 | As an operator or compatibility tool, I can probe RDB, replication and multi-database commands and receive explicit standalone responses instead of misleading unknown-command errors. | XS | R347–R349; truthful LASTSAVE, explicit SAVE/BGSAVE/replica/database boundaries, data preservation and all-mode wire tests |
+| S93 | As an operator debugging a live instance, I can stream received commands with bounded output and redacted credentials without letting a slow monitor stall normal command service. | S | R350–R352; line format/bounds, redaction, RESET/QUIT cleanup, slow-reader behavior and all-mode wire tests |
+| S94 | As a durability-sensitive client, I can wait for the local AOF to fsync my preceding writes and get the actual acknowledgement counts even when no replicas exist. | S | R353–R355; local/no-AOF results, absent-replica timeout, transaction non-blocking behavior and all-mode wire tests |
+| S95 | As a client operator, I can query and kill the Redis client types (including absent master/replica types) and optionally include my own connection so client-management tooling matches Redis semantics. | XS | R356–R358; absent-type empty results, SKIPME yes/no, self-kill race and all-mode wire tests |
+| S96 | As an operator, I can read and change the payload byte budget at runtime so capacity can be reduced or raised without restarting the server. | S | R359–R361; visible maxmemory, policy-driven eviction, atomic validation and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -279,9 +295,9 @@ and the offline upstream harness tests.
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
-  Documentation shall retain the missing selectors, audit/log/dry-run/gen-pass,
-  channel enforcement, rate limiting, native TLS, key-spec-blind commands and
-  process-level tenant-isolation boundaries.
+  Documentation shall retain the missing `%R~`/`%W~` key modes, first-argument
+  rules, subcommand categories, persistent audit, rate limiting, native TLS,
+  key-spec-blind commands and process-level tenant-isolation boundaries.
 
 ### Append-only persistence (S29)
 
@@ -356,15 +372,17 @@ and the offline upstream harness tests.
 - **R129 (event-driven):** When `BGREWRITEAOF` is received on an enabled journal,
   the server shall encode a complete current-state snapshot (`FLUSHALL` plus every
   live key with absolute TTLs), write a mode-0600 temporary file in the journal
-  directory, fsync it, atomically rename it over the journal and reopen it.
+  directory, fsync it, atomically rename it over the journal and reopen it
+  positioned at the snapshot end for subsequent appends.
 - **R130 (state-driven):** While the rewrite runs, the server shall hold the
   exclusive transaction gate so no mutation can be lost or appended to the replaced
   file; command service may pause for the synchronous rewrite. A failed write/sync/
-  rename shall retain the previous journal and return a visible error.
+  rename shall retain the previous journal and return a visible error. The
+  reopened handle shall append after the snapshot rather than at offset zero.
 - **R131 (unwanted behavior):** If the journal is disabled or the rewrite cannot be
   completed, then the command shall return a bounded error without claiming
   compaction. Tests shall cover a compacted live log, replay after rewrite, disabled
-  journals, failure atomicity and all execution modes. Documentation shall not call
+  journals, failure atomicity, append-after-rewrite replay and all execution modes. Documentation shall not call
   this background, incremental or automatically scheduled.
 
 ### Connection reset (S33)
@@ -473,18 +491,19 @@ and the offline upstream harness tests.
 ### Client registry and administrative kill (S38)
 
 - **R149 (event-driven):** When a connection is accepted, the server shall register
-  its ID, peer address, creation time and control handle; it shall update name,
+  its ID, peer and local addresses, creation time and control handle; it shall update name,
   library, protocol and authenticated user after CLIENT/HELLO/AUTH/RESET and remove
   the record on close. The registry shall be bounded by `max_clients` and process-local.
-- **R150 (event-driven):** When `CLIENT LIST [TYPE normal|pubsub] [ID id ...]` is
+- **R150 (event-driven):** When `CLIENT LIST [TYPE normal|pubsub|master|replica|slave] [ID id ...]` is
   received, the server shall return newline-delimited records for matching
-  connections with ID, address, name, age, N/P flags, db, live channel/pattern
+  connections with ID, peer and local addresses, name, age, N/P flags, db, live channel/pattern
   counts, RESP mode, user and library metadata, omitting fields it does not measure.
 - **R151 (event-driven):** When `CLIENT KILL` receives intersecting `ID`, `ADDR`,
-  `TYPE normal|pubsub`, `USER` and `SKIPME yes` filters, the server shall shut down
-  matching non-caller sockets and return the count; the legacy address form shall
-  return `+OK`/`No such client`. The caller shall always be skipped, and `SKIPME no`
-  shall return an explicit unsupported error.
+  `LADDR`, `TYPE normal|pubsub|master|replica|slave`, `USER` and `SKIPME yes|no`
+  filters, the server shall shut down matching sockets and return the count,
+  skipping the caller by default. Absent master/replica types shall match nothing.
+  `SKIPME no` may kill the caller; its socket closes and the reply may race with
+  that close. The legacy address form shall return `+OK`/`No such client`.
 - **R152 (ubiquitous):** `INFO clients` shall report the current registry size with
   no fabricated cluster/blocked counts. All-mode tests shall cover metadata,
   RESP3/pubsub visibility, ID/TYPE filters, self protection, ID/address/legacy kills,
@@ -1198,7 +1217,7 @@ and the offline upstream harness tests.
   replies, validation atomicity, BLOCK all-new wake/timeout, mixed BLOCK
   immediacy, MULTI, `$`/unbalanced/missing-group/wrong-type errors, notifications
   and all worker modes. Durable pending restoration and replication remain
-  unsupported. (feat: add multi-stream consumer-group reads)
+  unsupported.
 ### List element moves (S68)
 
 - **R269 (event-driven):** `LMOVE source destination LEFT|RIGHT LEFT|RIGHT` and
@@ -1283,13 +1302,13 @@ and the offline upstream harness tests.
   FIELDS/count/options, negative times and unsupported conditions shall return
   bounded Redis-shaped errors or per-field `-2`/`-1` values without partial
   writes. Field expiry is lazy rather than actively scanned, publishes no
-  per-field notification (matching standalone Redis), and HGETEX/HSETEX remain
-  separately documented as unsupported.
+  per-field notification. Combined HGETEX/HSETEX value/TTL operations are
+  specified separately by S-HC; this is not a full vendor notification claim.
 - **R283 (ubiquitous):** Tests shall cover conditional expire/GT/LT/NX/XX,
   remaining/absolute TTL forms, past-deadline lazy removal, key deletion, HSET/
   HINCRBY/HDEL/HGETDEL TTL interactions, missing/wrong-type/error cases, journal
   restart and all worker modes. Field-TTL bookkeeping remains excluded from the
-  key/value payload accounting claim and carries no active-expiry or RSS claim. (feat: add per-field hash expiration controls)
+  key/value payload accounting claim and carries no active-expiry or RSS claim.
 
 ### Client command pause (S72)
 
@@ -1407,6 +1426,32 @@ and the offline upstream harness tests.
   unknown categories, syntax failures and all worker modes. No module metadata or
   Redis extended command docs are implied.
 
+### Combined hash field values and expiry (S-HC)
+
+- **R-HC1 (event-driven):** When HSETEX receives a valid counted field/value block,
+  it shall atomically apply all pairs (last duplicate wins), return one on success
+  or zero when FNX/FXX fails against the original live fields, preserve the key
+  TTL, clear written field TTLs by default, and support KEEPTTL or one explicit
+  EX/PX/EXAT/PXAT deadline. A due deadline shall remove targeted fields without
+  reserving discarded values; removing the final field shall delete the key.
+- **R-HC2 (event-driven):** When HGETEX receives a valid counted field block, it
+  shall return binary values/nulls in argument order, preserve TTLs by default,
+  and apply PERSIST or one explicit deadline to existing fields only. A due
+  deadline shall remove each field after its first returned value, so a later
+  duplicate shall return null. Missing keys shall not be created.
+- **R-HC3 (unwanted behavior):** If options/counts/times/types are invalid, final
+  payload admission fails, or a complete HGETEX RESP reply exceeds 2 MiB including
+  duplicates and framing, it shall return one bounded error with no partial reply
+  or live value/TTL mutation. Counts shall be positive signed-32-bit values;
+  deadlines shall not exceed Redis's verified `(2^48 - 1) >> 2` milliseconds.
+  Options may precede or follow the counted FIELDS block; duplicate clauses and
+  unsupported options shall be rejected without reflecting arbitrary bytes.
+- **R-HC4 (ubiquitous):** Tests shall cover due/zero/equal deadlines with injected
+  clocks, repeated/binary fields, FNX races, OOM and reply-size atomicity, errors,
+  key/field TTL interactions, discovery/ACL, WATCH/MULTI, persistence and all worker
+  modes. No active field-expiry scan, exhaustive vendor event parity, RSS ceiling,
+  eviction rollback, replication or full hash-command compatibility is implied.
+
 ### Truthful standalone replication status (S79)
 
 - **R310 (event-driven):** When `ROLE` is received, the server shall return the
@@ -1502,17 +1547,295 @@ and the offline upstream harness tests.
 - **R322 (ubiquitous):** Tests shall cover old connections being killed, a young
   connection surviving, caller protection, invalid `MAXAGE` values, the
   unchanged legacy form and every worker mode. Documentation shall retain the
-  absence of `SKIPME no`, fd/idle/blocked metadata and a cross-process view.
+  absence of fd/idle/buffer/memory metadata and a cross-process view.
 
-### Blocked-client visibility (S84)
+### Client kill by local address (S89)
 
-- **R323 (event-driven):** When a connection enters a blocking command, the server
-  shall mark it blocked in the client registry; when the command completes,
-  times out or the connection resets/disconnects, the mark shall be cleared.
-- **R324 (event-driven):** `INFO clients` and `INFO all` shall report a
+- **R339 (event-driven):** When a connection is accepted, the server shall record
+  both its peer and local socket addresses. `CLIENT LIST` and `CLIENT INFO` shall
+  expose the local address as `laddr=<ip:port>` without fabricating unmeasured
+  fields.
+- **R340 (event-driven):** When `CLIENT KILL LADDR <ip:port>` receives a valid
+  address string, the server shall intersect it with the other supported filters,
+  shut down matching non-caller sockets and return the killed count. All-mode
+  tests shall cover matching and non-matching local addresses, CLIENT LIST/INFO
+  exposure, combined filters, caller protection and the unchanged legacy form.
+
+### Legacy hash and sorted-set commands (S90)
+
+- **R341 (event-driven):** `HMSET key field value [field value ...]` shall write
+  fields exactly like `HSET`, including TTL clearing, payload admission, journal
+  and notification behavior, but return `+OK` instead of the added-field count.
+  `ZMSCORE key member [member ...]` shall return one score bulk string per
+  requested member, a null bulk string for a missing member or key, and preserve
+  argument order; both shall reject wrong arity and wrong value types.
+- **R342 (event-driven):** `ZRANGEBYLEX key min max [LIMIT offset count]` and
+  `ZREVRANGEBYLEX key max min [LIMIT offset count]` shall accept Redis lex bounds
+  and return member arrays in ascending/reverse lexical order. They shall reject
+  `WITHSCORES`, invalid bounds and negative arity exactly like the equivalent
+  `ZRANGE ... BYLEX [REV]` forms they reuse.
+- **R343 (ubiquitous):** All-mode tests shall cover `HMSET` replies and field/TTL
+  effects, `ZMSCORE` order/nulls/missing keys, both lex aliases with bounds and
+  `LIMIT`, wrong types and arity errors, and every worker mode. Documentation
+  shall retain unsupported scripting, RDB/RESTORE, multiple databases and
+  replication.
+
+### Blocking sorted-set pops (S91)
+
+- **R344 (event-driven):** `BZPOPMIN key [key ...] timeout` and
+  `BZPOPMAX key [key ...] timeout` shall inspect keys in argument order, pop one
+  member from the first live sorted set and reply `[key, member, score]`. They
+  shall preserve the key TTL, reject wrong value types, arity, negative,
+  non-numeric and out-of-range timeouts, and never treat the trailing timeout as
+  a key for ACL or discovery purposes. A zero timeout shall block without a
+  deadline; an expired wait shall return a null array.
+- **R345 (state-driven):** While a client is blocked in `BZPOPMIN`/`BZPOPMAX`,
+  server-side writes (including `ZADD` from other connections) shall wake it with
+  the popped member, bounded by the existing polling cadence. Popped keys shall
+  emit the canonical `zpopmin`/`zpopmax` journal event and notification. Inside
+  `MULTI`, these commands shall execute without blocking and return the null
+  array when no key is ready; `WATCH` conflicts shall still abort the
+  transaction.
+- **R346 (ubiquitous):** All-mode tests shall cover immediate ordered pops,
+  minimum/maximum selection, TTL preservation, timeout and wake behavior,
+  wrong-type and invalid-timeout errors, non-blocking transaction execution,
+  watch aborts and every worker mode. Documentation shall retain unsupported
+  scripting, RDB/RESTORE, multiple databases, replication and cluster routing.
+
+### Explicit RDB, replication and database boundaries (S92)
+
+- **R347 (event-driven):** `LASTSAVE` shall return `0` because no successful RDB
+  save exists. `SAVE` shall reject with an explicit RDB-unsupported error;
+  `BGSAVE` shall accept the documented `SCHEDULE` token syntactically and reject
+  with the same error, while malformed extra tokens and wrong arity shall keep
+  their syntax/arity errors. None shall mutate data or claim a successful save.
+- **R348 (event-driven):** `REPLICAOF NO ONE` and `SLAVEOF NO ONE` shall return
+  `+OK` because the server is already a standalone master. A host/port form,
+  `PSYNC`, `SYNC`, `REPLCONF` and `FAILOVER` shall return an explicit
+  replication-unsupported error rather than an unknown-command error, with arity
+  checks preserved.
+- **R349 (ubiquitous):** `MOVE` and `SWAPDB` shall return an explicit
+  database-0-only error and leave existing keys readable. All-mode tests shall
+  cover every boundary response, syntax/arity variants, data preservation and
+  every worker mode. Documentation shall retain the absence of RDB persistence,
+  replication/failover, multiple databases, scripts and cluster routing.
+
+### Bounded MONITOR stream (S93)
+
+- **R350 (event-driven):** `MONITOR` with no arguments shall return `+OK`,
+  register the caller for the process-local command stream and stream commands
+  from other connections. Wrong arity shall return the standard arity error, and
+  the monitor's own commands shall not be echoed back to it. `RESET`, `QUIT` and
+  disconnect shall remove the registration.
+- **R351 (event-driven):** Each monitor line shall be a simple string shaped as
+  `+<seconds>.<microseconds> [0 <peer-address>] "<command>" "<argument>" ...`,
+  escaping backslash, quotes and control bytes. Arguments shall be capped at 128
+  bytes and lines at 4 KiB. Delivery shall use a bounded queue with best-effort
+  drops for slow readers so a monitor can never block command execution.
+  `AUTH`, `HELLO ... AUTH`, `ACL SETUSER` credential rules and `CONFIG SET
+  requirepass` values shall be redacted before formatting.
+- **R352 (ubiquitous):** MONITOR shall be an admin/dangerous command, shall
+  return an explicit error when queued inside `MULTI` because it cannot change
+  session mode during `EXEC`, and all-mode tests shall cover streaming, redaction,
+  RESET, arity, slow-reader service and every worker mode. Documentation shall
+  retain that the stream is process-local, not persisted, not replayed,
+  best-effort under backpressure and not a complete audit trail.
+
+### WAITAOF durability acknowledgements (S94)
+
+- **R353 (event-driven):** `WAITAOF numlocal numreplicas timeout` shall validate
+  `numlocal` (0 or 1), non-negative `numreplicas` and non-negative millisecond
+  timeout. With AOF enabled it shall fsync the local journal and report
+  `[1, 0]`; without AOF it shall report local `0` when `numlocal` is 0 and return
+  the documented AOF-disabled error when `numlocal` is 1. Invalid integers shall
+  return the standard integer error.
+- **R354 (state-driven):** While `numreplicas` is greater than zero and no
+  replicas exist, the command shall remain blocked until the timeout and then
+  return the actual `[local, 0]` counts, or block indefinitely when the timeout
+  is 0. Inside `MULTI`/`EXEC` it shall not block and shall return the current
+  counts immediately.
+- **R355 (ubiquitous):** All-mode tests shall cover both AOF states, argument and
+  arity errors, absent-replica timeout duration, transaction non-blocking
+  behavior and every worker mode. Documentation shall retain that this is a
+  local-journal acknowledgement only, not replication, failover, RDB or a
+  strong-consistency guarantee.
+
+### Client types and SKIPME (S95)
+
+- **R356 (event-driven):** `CLIENT LIST TYPE` shall accept `normal`, `pubsub`,
+  `master`, `replica` and `slave`. Because this standalone server has no
+  replication clients, the latter three shall return an empty result; unknown
+  types shall retain the explicit error.
+- **R357 (event-driven):** `CLIENT KILL TYPE` shall accept the same five values,
+  with absent types intersecting to zero kills. `SKIPME yes` shall remain the
+  default and always protect the caller; `SKIPME no` shall allow the caller to be
+  killed, closing its socket even though the reply may race with the close.
+  Unknown `SKIPME` values shall return a syntax error.
+- **R358 (ubiquitous):** All-mode tests shall cover absent-type list/kill
+  emptiness, `SKIPME no` targeting another client, caller self-kill and its
+  cleanup, invalid filters, the unchanged legacy form and every worker mode.
+  Documentation shall retain the absence of fd/idle/buffer/memory metadata and
+  a cross-process view.
+
+### Runtime payload budget (S96)
+
+- **R359 (event-driven):** `CONFIG GET maxmemory` (including pattern and
+  wildcard matches) shall report the current positive payload byte budget, and
+  `CONFIG SET maxmemory <positive integer>` shall update it atomically with other
+  valid `CONFIG SET` pairs. Invalid, negative, non-numeric or zero values shall
+  return an explicit error and leave both the budget and other pairs unchanged.
+- **R360 (state-driven):** Applying a lower budget shall evict keys down to it
+  using the active policy, with `allkeys` and eligible `volatile` candidates only.
+  When the policy cannot evict enough (`noeviction`, or volatile without TTL
+  keys), the server shall remain above the new budget and refuse later
+  over-budget admissions with OOM rather than deleting ineligible keys. Raising
+  the budget shall take effect immediately for later admissions.
+- **R361 (ubiquitous):** All-mode tests shall cover visibility, lowering with
+  eviction, invalid/zero values, atomic rejection with another pair and every
+  worker mode. Documentation shall retain that this is a key/value payload budget,
+  not RSS/allocator memory, and that zero (unlimited) is deliberately rejected
+  to preserve bounded operation.
+
+### Error reply statistics (S84)
+
+- **R323 (event-driven):** `INFO errorstats` and `INFO all` shall return a
+  `# Errorstats` block with one `errorstat_<CODE>:<count>` line per observed
+  command error code. The code shall be the bounded first token of the error reply
+  (maximum 32 bytes), and unknown/empty codes shall not be recorded.
+- **R324 (state-driven):** Counts shall increment once per error reply emitted for
+  a dispatched command, be process-local, and be cleared by `CONFIG RESETSTAT`
+  together with the other statistics. The table shall be bounded to 64 distinct
+  codes; protocol framing errors are not command replies and are excluded.
+- **R325 (ubiquitous):** Tests shall cover empty stats, multiple codes and counts,
+  `INFO all` inclusion, reset clearing and all worker modes. This is a bounded
+  count table, not an error log, message history, durable audit or replication
+  statistic.
+
+### Keyspace average TTL (S85)
+
+- **R326 (event-driven):** When `INFO keyspace` or `INFO all` is requested, the
+  server shall include `avg_ttl` in the `db0` line: the exact integer mean of
+  remaining milliseconds for live keys with a deadline, or `0` when no live key
+  has a deadline.
+- **R327 (ubiquitous):** Tests shall cover the empty state, mixed expiring and
+  persistent keys, post-deletion reset to zero and every worker mode.
+  Documentation shall retain that this is an exact mean over live key deadlines,
+  not Redis's sampled estimate, and not an RSS or payload measurement.
+
+### ACL selectors (S86)
+
+- **R328 (event-driven):** `ACL SETUSER` shall accept one or more parenthesized
+  selector groups containing command (`+cmd`/`-cmd`), category (`+@cat`/`-@cat`),
+  key (`~`) and channel (`&`) rules, plus `allkeys`/`resetkeys`,
+  `allchannels`/`resetchannels`. `clearselectors` shall remove all selectors and
+  `reset` shall clear them with the rest of the user. Invalid or oversized
+  groups shall reject the whole `SETUSER` atomically.
+- **R329 (state-driven):** While authorizing a command, the server shall allow it
+  when the root rules or any selector permits the command, its declared keys and
+  its channel arguments as one set; a selector that permits the command but not
+  its keys or channels shall not grant it. Dynamic `SORT` BY/GET keys shall
+  require all-keys in the matching set, and denials shall report command, key or
+  channel consistently.
+- **R330 (event-driven):** `ACL LIST` shall render selectors as parenthesized
+  groups and `ACL GETUSER` shall expose a `selectors` array of commands/keys/
+  channels maps. `ACL SAVE`/`LOAD` shall round-trip selector groups with spaces
+  intact and preserve the documented bounds.
+- **R331 (ubiquitous):** Tests shall cover root/selector alternatives, key-scoped
+  writes with broad reads, `clearselectors`/`reset`, atomic rejection, LIST/
+  GETUSER exposure, ACL-file restart round-trips and every worker mode.
+  Documentation shall retain the absence of `%R~`/`%W~` key modes, first-argument
+  rules, nested selectors, subcommand categories, rate limiting, persistent audit
+  and native TLS.
+
+### Journal configuration visibility and runtime fsync (S87)
+
+- **R332 (event-driven):** `CONFIG GET appendonly`, `appendfilename` and
+  `appendfsync` (including wildcard patterns and `*`) shall report the configured
+  append-only mode, the journal basename and the live fsync policy as `yes`/`no`,
+  the exact basename and `always`/`everysec`/`no`. `appendonly` and
+  `appendfilename` shall remain startup-only: `CONFIG SET` for either shall return
+  a visible error without changing configuration. `CONFIG SET appendfsync` shall
+  accept the three valid policies and reject other values.
+- **R333 (state-driven):** Changing `appendfsync` shall update the open journal so
+  subsequent appends obey the new policy. Leaving `no` shall first sync records
+  that were previously only handed to the operating system; a sync failure shall
+  leave the journal failed and return an error. With append-only disabled the
+  configured policy shall still be reported and updated, without enabling
+  persistence or affecting a future process that chooses its own startup options.
+- **R334 (ubiquitous):** Tests shall cover default and configured startup values,
+  live updates, invalid and startup-only rejection, switching away from `no`,
+  restart replay and every worker mode. Documentation shall retain that
+  `appendonly` cannot be toggled at runtime, there is no configuration-file
+  reload, and changing the fsync policy changes the durability/latency trade-off
+  rather than providing a crash-proof guarantee.
+
+### Runtime connection limit (S97)
+
+- **R362 (event-driven):** `CONFIG GET maxclients` (including wildcard and `*`
+  results) shall report the live maximum connection count. `CONFIG SET maxclients
+  <positive-integer>` shall update that limit atomically with the other valid
+  `CONFIG SET` pairs. Zero, negative, empty and non-integer values shall return a
+  bounded error and leave the limit unchanged.
+- **R363 (state-driven):** Both the thread-per-client and fixed-worker accept
+  paths shall enforce the live limit rather than the startup snapshot. Lowering
+  the limit below the current admitted count shall not close existing clients;
+  new sockets shall receive `ERR max number of clients reached` and increment
+  `rejected_connections` until capacity is available. Raising the limit shall
+  admit new connections without a restart.
+- **R364 (ubiquitous):** Tests shall cover the default and wildcard reporting,
+  live admission in every worker mode, lowering and raising, invalid values,
+  existing-client survival and `INFO clients` reflecting the live value.
+  Documentation shall retain that this is a connection count, not a
+  file-descriptor, memory or cross-process capacity guarantee.
+
+### Payload memory reporting (S98)
+
+- **R365 (event-driven):** `MEMORY STATS` shall return a flat RESP2 map containing
+  `peak.allocated`, `total.allocated`, `keys.count`, `dataset.bytes`,
+  `dataset.percentage`, `rillcache.payload.limit_bytes` and
+  `rillcache.payload.scope`. The peak shall be the process-lifetime payload
+  high-water mark and shall survive deletes, flush and `CONFIG RESETSTAT`;
+  `keys.count` shall count live keys, while byte fields report currently held
+  key-plus-value payload. Extra arguments shall return a bounded arity error.
+- **R366 (event-driven):** `MEMORY DOCTOR` shall return a bounded plain-text
+  report derived from the same snapshot, distinguishing an empty payload, high
+  pressure at or above 90% with `noeviction`, pressure at or above 75%, and a
+  healthy state. It shall always identify the report as payload accounting, not
+  RSS or allocator health. `MEMORY HELP` shall list the supported subcommands and
+  `MEMORY USAGE` shall retain its existing logical estimate.
+- **R367 (ubiquitous):** Tests shall cover the empty and populated fields, peak
+  retention after deletion, limit changes, the pressure and empty doctor states,
+  HELP, arity and every worker mode. Documentation shall retain the absence of
+  RSS, allocator active/resident, fragmentation, replication-buffer and
+  background-eviction measurements.
+
+### Published messages in transactions (S99)
+
+- **R368 (event-driven):** Inside `MULTI`, valid `PUBLISH channel message` and
+  `SPUBLISH channel message` commands shall return `+QUEUED` and deliver nothing
+  at queue time. `EXEC` shall publish each command once in queue order through
+  the existing normal or sharded fan-out and append its delivered-subscriber
+  count as the corresponding array element.
+- **R369 (unwanted behavior):** Wrong arity shall dirty the transaction and
+  produce `EXECABORT` without publishing. ACL command/channel checks shall run
+  again before `EXEC`; a denial shall abort the transaction before any queued
+  message is published.
+- **R370 (ubiquitous):** Tests shall cover queued normal and sharded messages,
+  no early delivery, EXEC reply order/counts, subscriber delivery and every
+  worker mode. Documentation shall retain that subscription commands, `PUBSUB`
+  introspection and blocking pops remain rejected inside `MULTI`, and that
+  delivery is process-local and at-most-once rather than durable.
+
+### Blocked-client visibility (S100)
+
+- **R371 (event-driven):** When a connection enters any supported blocking
+  command, the server shall mark it blocked in the client registry; when the
+  command completes, times out or the connection resets/disconnects, the mark
+  shall be cleared.
+- **R372 (event-driven):** `INFO clients` and `INFO all` shall report a
   `blocked_clients` count derived from that registry state, and `CLIENT LIST`
   shall include `b` in the flags of blocked connections alongside `N`/`P`.
-- **R325 (ubiquitous):** Tests shall cover a waiter becoming visible, wake-up
+- **R373 (ubiquitous):** Tests shall cover a waiter becoming visible, wake-up
   clearing the count, timeout/disconnect/reset clearing, `CLIENT LIST` flags and
   every worker mode. Documentation shall retain that this is a process-local
   registry view with no fd/idle/buffer/memory metadata or cross-process claim.
@@ -1921,7 +2244,7 @@ error frames. Conservative defaults remain smaller than Redis limits.
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
 1..=1024-byte password (via flag or file; ACL files add hashed users),
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload and a 2 MiB
-maximum MGET RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
+maximum MGET or HGETEX RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
 request bounds up to 512 MiB (bulk must fit within frame); larger requests remain
 finite and grow buffers only as bytes arrive. Compatibility-only upstream runs
 match native and candidate at 8 MiB bulk and 16 MiB frame; MGET remains capped at
@@ -1937,8 +2260,8 @@ Not implemented or implied by the completed increments:
 1. Validate HELLO/CLIENT session negotiation against real pinned redis-cli and
    language clients; add command discovery and multiple databases only as separate
    compatible increments.
-2. ACL selectors and channel enforcement (with pub/sub), brute-force controls, an
-   audit path and a safe transport-security deployment boundary; then AOF
+2. `%R~/`%W~` selector key modes, first-argument rules, brute-force controls, a
+   persistent audit path and a safe transport-security deployment boundary; then AOF
    rewrite/compaction, RDB interoperability, backup/restore drills and disk-fault
    recovery beyond the current append-only restart path.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and

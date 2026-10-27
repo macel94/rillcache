@@ -28,11 +28,37 @@ pub enum FsyncPolicy {
 
 impl FsyncPolicy {
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
+        match value.to_ascii_lowercase().as_str() {
             "always" => Some(Self::Always),
             "everysec" => Some(Self::EverySec),
             "no" => Some(Self::No),
             _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::EverySec => "everysec",
+            Self::No => "no",
+        }
+    }
+}
+
+/// Startup journal mode plus the fsync policy that can be changed at runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AofConfig {
+    pub appendonly: bool,
+    pub appendfilename: String,
+    pub policy: FsyncPolicy,
+}
+
+impl Default for AofConfig {
+    fn default() -> Self {
+        Self {
+            appendonly: false,
+            appendfilename: "appendonly.aof".to_string(),
+            policy: FsyncPolicy::EverySec,
         }
     }
 }
@@ -263,7 +289,10 @@ impl Journal {
             if let Ok(directory) = fs::File::open(directory) {
                 let _ = directory.sync_all();
             }
-            let replacement = OpenOptions::new().read(true).write(true).open(&self.path)?;
+            let mut replacement = OpenOptions::new().read(true).write(true).open(&self.path)?;
+            // The replacement handle starts at offset zero; the next append must
+            // land after the snapshot instead of overwriting it.
+            replacement.seek(SeekFrom::End(0))?;
             self.file = replacement;
             self.dirty = false;
             self.failed = false;
@@ -291,6 +320,24 @@ impl Journal {
             rewrite_failed: self.last_rewrite_failed,
         }
     }
+
+    #[cfg(test)]
+    pub(super) fn policy(&self) -> FsyncPolicy {
+        self.policy
+    }
+
+    /// Apply a new runtime fsync policy. Leaving `no` first syncs writes that
+    /// were previously only handed to the operating system, so the stronger
+    /// policy takes effect for records already acknowledged under the old one.
+    pub(super) fn set_policy(&mut self, policy: FsyncPolicy) -> io::Result<()> {
+        if self.policy != policy {
+            if self.policy == FsyncPolicy::No && policy != FsyncPolicy::No {
+                self.sync_all()?;
+            }
+            self.policy = policy;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Journal {
@@ -303,6 +350,9 @@ impl Store {
     pub(super) fn attach_journal(&mut self, journal: Journal) {
         self.journal_limits = journal.limits();
         self.journal = Some(std::sync::Mutex::new(journal));
+        if let Ok(mut data) = self.data.write() {
+            data.set_collect_events(true);
+        }
     }
 
     pub(super) fn journal_marks(&self) -> Option<(u64, u64)> {
@@ -550,6 +600,34 @@ impl Store {
             return Err(io::Error::other("poisoned journal lock"));
         };
         journal.sync_if_due()
+    }
+
+    /// Validate WAITAOF arguments and synchronously fsync the local journal when
+    /// the AOF is enabled. Returns `(local acknowledgements, replica
+    /// acknowledgements)`; this standalone server never has replicas.
+    pub(crate) fn waitaof_probe(
+        &self,
+        numlocal: i64,
+        numreplicas: i64,
+    ) -> Result<(u64, u64), &'static [u8]> {
+        if !(0..=1).contains(&numlocal) {
+            return Err(b"-ERR numlocal can't be greater than 1\r\n");
+        }
+        if numreplicas < 0 {
+            return Err(b"-ERR numreplicas can't be negative\r\n");
+        }
+        let enabled = self.aof_config().is_some_and(|config| config.appendonly);
+        if numlocal > 0 && !enabled {
+            return Err(
+                b"-ERR WAITAOF cannot be used when numlocal is set to 1 but the AOF is not enabled.\r\n",
+            );
+        }
+        if !enabled {
+            return Ok((0, 0));
+        }
+        self.journal_flush()
+            .map_err(|_| &b"-ERR append-only journal sync failed\r\n"[..])?;
+        Ok((1, 0))
     }
 
     /// Force a durable flush before process shutdown, regardless of fsync policy.
@@ -824,6 +902,10 @@ fn notification_events(
     if command.eq_ignore_ascii_case(b"MSETEX") {
         return msetex_notification_events(data, arguments, keys, flags, reply);
     }
+    let hsetex = command.eq_ignore_ascii_case(b"HSETEX");
+    if hsetex && reply != b":1\r\n" {
+        return Vec::new();
+    }
     if let Some((from_left, to_left)) = list_move_sides(command, arguments) {
         if !reply.starts_with(b"$") || reply == b"$-1\r\n" {
             return Vec::new();
@@ -840,6 +922,11 @@ fn notification_events(
     }
     let mut events = Vec::new();
     for key in keys {
+        // Admission/lazy expiry can change unrelated keys even when HSETEX
+        // succeeds. Only its supplied target can receive its write event.
+        if hsetex && arguments.get(1).copied() != Some(key.as_slice()) {
+            continue;
+        }
         if data.was_evicted(key) {
             continue;
         }
@@ -1053,7 +1140,7 @@ fn event_for(
         "sinterstore" => ("sinterstore", NotifyCategory::Set),
         "sunionstore" => ("sunionstore", NotifyCategory::Set),
         "sdiffstore" => ("sdiffstore", NotifyCategory::Set),
-        "hset" | "hsetnx" | "hmset" => ("hset", NotifyCategory::Hash),
+        "hset" | "hsetnx" | "hmset" | "hsetex" => ("hset", NotifyCategory::Hash),
         "hdel" => ("hdel", NotifyCategory::Hash),
         "hincrby" => ("hincrby", NotifyCategory::Hash),
         "hincrbyfloat" => ("hincrbyfloat", NotifyCategory::Hash),
@@ -1088,8 +1175,8 @@ fn event_for(
                 ("del", NotifyCategory::Generic)
             });
         }
-        "zpopmin" => ("zpopmin", NotifyCategory::Zset),
-        "zpopmax" => ("zpopmax", NotifyCategory::Zset),
+        "zpopmin" | "bzpopmin" => ("zpopmin", NotifyCategory::Zset),
+        "zpopmax" | "bzpopmax" => ("zpopmax", NotifyCategory::Zset),
         "zmpop" | "bzmpop" => {
             let numkeys_index = if name == "bzmpop" { 2 } else { 1 };
             let numkeys = arguments

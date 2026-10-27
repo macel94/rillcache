@@ -115,36 +115,89 @@ fn blocked_count(stream: &mut TcpStream) -> usize {
         .unwrap()
 }
 
-#[test]
-fn blocked_clients_are_visible_while_waiting_in_all_modes() {
-    for workers in [None, Some(1), Some(4)] {
-        let server = start(workers);
-        let mut admin = connect(&server);
-        let mut worker = connect(&server);
-
-        send(&mut worker, &[b"BLPOP", b"queue", b"5"]);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while blocked_count(&mut admin) != 1 {
-            assert!(Instant::now() < deadline, "worker never showed as blocked");
-            std::thread::sleep(Duration::from_millis(10));
+fn wait_until_blocked(stream: &mut TcpStream, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if blocked_count(stream) == expected {
+            return;
         }
-        let list = bulk_text(&mut admin, &[b"CLIENT", b"LIST"]);
-        assert!(list.contains("flags=bN"), "{list}");
-
-        command(&mut admin, &[b"LPUSH", b"queue", b"value"], b":1\r\n");
-        assert_eq!(
-            read_frame(&mut worker, 0),
-            b"*2\r\n$5\r\nqueue\r\n$5\r\nvalue\r\n"
+        assert!(
+            Instant::now() < deadline,
+            "blocked count did not reach {expected}"
         );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while blocked_count(&mut admin) != 0 {
-            assert!(Instant::now() < deadline, "worker stayed blocked");
-            std::thread::sleep(Duration::from_millis(10));
+fn wait_until_unregistered(stream: &mut TcpStream, id: u64) {
+    let id = id.to_string();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let clients = bulk_text(stream, &[b"CLIENT", b"LIST", b"ID", id.as_bytes()]);
+        if clients.is_empty() {
+            return;
         }
-        let all = bulk_text(&mut admin, &[b"INFO", b"all"]);
-        assert!(all.contains("blocked_clients:0\r\n"), "{all}");
+        assert!(
+            Instant::now() < deadline,
+            "disconnected client remained registered"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
 
-        server.shutdown().unwrap();
+fn run_all_cases(workers: Option<usize>) {
+    let server = start(workers);
+    let mut admin = connect(&server);
+
+    // A blocked waiter is visible in both INFO and CLIENT LIST, then disappears
+    // from the count as soon as its blocking command is satisfied.
+    let mut waking = connect(&server);
+    send(&mut waking, &[b"BLPOP", b"wake-queue", b"5"]);
+    wait_until_blocked(&mut admin, 1);
+    let clients = bulk_text(&mut admin, &[b"CLIENT", b"LIST"]);
+    assert!(clients.contains("flags=bN"), "{clients}");
+    let all = bulk_text(&mut admin, &[b"INFO", b"all"]);
+    assert!(all.contains("blocked_clients:1\r\n"), "{all}");
+    command(&mut admin, &[b"LPUSH", b"wake-queue", b"value"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut waking, 0),
+        b"*2\r\n$10\r\nwake-queue\r\n$5\r\nvalue\r\n"
+    );
+    wait_until_blocked(&mut admin, 0);
+
+    // Timeout completes the command and clears its client flag/count.
+    let mut timing_out = connect(&server);
+    send(&mut timing_out, &[b"BLPOP", b"timeout-queue", b"0.05"]);
+    wait_until_blocked(&mut admin, 1);
+    assert_eq!(read_frame(&mut timing_out, 0), b"*-1\r\n");
+    wait_until_blocked(&mut admin, 0);
+
+    // Disconnecting while blocked removes the registry record, so it cannot
+    // contribute to INFO even though no command reply can be sent.
+    let mut disconnecting = connect(&server);
+    send(&mut disconnecting, &[b"BLPOP", b"disconnect-queue", b"5"]);
+    wait_until_blocked(&mut admin, 1);
+    let id_reply = bulk_text(&mut admin, &[b"CLIENT", b"LIST"]);
+    let id = id_reply
+        .lines()
+        .find(|line| line.contains("flags=bN"))
+        .and_then(|line| {
+            line.split_whitespace()
+                .find_map(|field| field.strip_prefix("id="))
+        })
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    drop(disconnecting);
+    wait_until_unregistered(&mut admin, id);
+    wait_until_blocked(&mut admin, 0);
+
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn blocked_clients_are_visible_and_cleared_in_all_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        run_all_cases(workers);
     }
 }
