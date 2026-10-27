@@ -79,6 +79,7 @@ reason to couple all future commands into a single large story.
 | S49 | As a cache operator, I can observe expired and evicted keys through keyspace notifications so invalidation tooling can react to lifecycle removal as well as explicit mutations. | S | R193–R196; flag validation, lazy/reaped expiry, eviction policy, bounded queues and all-mode wire tests |
 | S50 | As a sorted-set user, I can query and store rank, score and lex ranges with reversal, limits and random member selection so that leaderboard and index workflows use one type. | M | R197–R200; range/store/lex/random, errors and all-mode wire tests |
 | S51 | As a sorted-set user, I can combine multiple sets with weights and aggregation into results or destinations and count intersections so that rankings can be derived without client-side merging. | M | R201–R204; union/inter/diff/weights/aggregate/store/cardinality, errors, ACL and all-mode wire tests |
+| S52 | As a sorted-set user, I can atomically pop lowest or highest members across several keys so that priority queues span multiple shards without client loops. | XS | R205–R208; key order, MIN/MAX, COUNT, TTL/WATCH and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -728,7 +729,7 @@ reason to couple all future commands into a single large story.
   documented empty, null or bounded errors without partial writes. Tests shall
   cover rank/score/lex ranges, `REV`, `LIMIT`, `WITHSCORES` combinations,
   `ZRANGESTORE` self/empty/TTL/OOM cases, lex count/removal, random counts,
-  WATCH and all worker modes. `ZMPOP`/`BZMPOP` remain documented as
+  WATCH and all worker modes. Blocking `BZMPOP` remains documented as
   unsupported.
 
 ### Sorted-set algebra (S51)
@@ -760,6 +761,27 @@ reason to couple all future commands into a single large story.
   Tests shall cover union/intersection/difference with weights and every
   aggregation, missing keys, destination replacement/TTL/self/empty/OOM cases,
   NaN handling, cardinality limits, errors and all worker modes.
+
+### Sorted-set multi-pop (S52)
+
+- **R205 (event-driven):** `ZMPOP numkeys key [key ...] MIN|MAX [COUNT count]`
+  shall require a positive counted key list, choose the first live non-empty
+  sorted-set key in argument order, reject a wrong-type key encountered before a
+  candidate, and parse `MIN`/`MAX` plus at most one positive `COUNT` before key
+  access.
+- **R206 (event-driven):** On success it shall return
+  `[key, [[member, score], ...]]` with up to COUNT score-then-member ordered
+  members, delete the key when emptied, preserve remaining TTL and payload
+  accounting, and touch the key for WATCH/journal capture with a `zpopmin` or
+  `zpopmax` notification matching the direction.
+- **R207 (event-driven):** If no listed key has a non-empty sorted set, it shall
+  return a null array without creating keys. Missing keys in the list shall be
+  skipped, and a key appearing again after being emptied shall not be recreated.
+- **R208 (unwanted behavior):** Invalid numkeys/COUNT/direction/extra options,
+  wrong types and negative or zero counts shall return bounded errors without
+  partial pops. Tests shall cover first-key selection, MIN/MAX, COUNT, missing
+  keys, emptied keys, TTL, MULTI, WATCH, notifications, errors and all worker
+  modes. Blocking `BZMPOP` shall remain documented as unsupported.
 
 ### Development and delivery
 
@@ -1102,8 +1124,8 @@ and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT/
 BITCOUNT/BITPOS/BITOP/BITFIELD/BITFIELD_RO; LCS (LEN/IDX/WITHMATCHLEN/
 MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store
-commands, score/rank/lex ranges, range storage, random members, pops and bounded
-blocking `BLPOP`/`BRPOP` documented
+commands, score/rank/lex ranges, range storage, random members, sorted-set
+algebra/cardinality/multi-pop, pops and bounded `BLPOP`/`BRPOP` documented
 in [typed collections](collections.md); geospatial sorted sets (`GEOADD`,
 `GEOPOS`, `GEODIST`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`) documented in
 [geospatial limits](geospatial.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor

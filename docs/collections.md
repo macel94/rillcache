@@ -25,8 +25,8 @@ Redis behavior.
   `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANGESTORE`, `ZLEXCOUNT`,
   `ZRANDMEMBER`, `ZRANK`, `ZREVRANK`, `ZREMRANGEBYRANK`,
   `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, `ZPOPMIN`, `ZPOPMAX`, `ZUNION`,
-  `ZUNIONSTORE`, `ZINTER`, `ZINTERSTORE`, `ZDIFF`, `ZDIFFSTORE` and
-  `ZINTERCARD`. Geospatial
+  `ZUNIONSTORE`, `ZINTER`, `ZINTERSTORE`, `ZDIFF`, `ZDIFFSTORE`,
+  `ZINTERCARD` and `ZMPOP`. Geospatial
 `GEOADD`/`GEOSEARCH`/`GEOSEARCHSTORE` use the same sorted-set representation and
 publish `zadd`/`geosearchstore` events; see [geospatial limits](geospatial.md).
 
@@ -50,7 +50,10 @@ algebra accepts per-key weights and `SUM`/`MIN`/`MAX` aggregation for union and
 intersection; a NaN intermediate or aggregate score becomes zero, matching Redis.
 `ZDIFF` preserves first-set scores, `ZINTERCARD` caps with `LIMIT`, and store
 variants replace the destination atomically, clear its TTL and delete it when the
-result is empty. `SPOP`, `SRANDMEMBER`, `ZRANDMEMBER` and `ZPOPMIN`/`ZPOPMAX` use
+result is empty. `ZMPOP numkeys key [key ...] MIN|MAX [COUNT count]` pops from the
+first non-empty key, returns `[key, [[member, score], ...]]`, deletes emptied keys
+and preserves remaining TTL; blocking `BZMPOP` is unsupported. `SPOP`,
+`SRANDMEMBER`, `ZRANDMEMBER` and `ZPOPMIN`/`ZPOPMAX` use
 bounded local randomness;
 Redis does not promise a particular random member. Negative `ZRANDMEMBER` counts
 request duplicates and are capped by the collection element limit.
