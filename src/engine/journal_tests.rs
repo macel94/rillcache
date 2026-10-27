@@ -28,6 +28,102 @@ fn run(store: &Store, arguments: &[&[u8]]) -> Vec<u8> {
 }
 
 #[test]
+fn msetex_reaping_does_not_publish_false_write_events_on_rejection_or_oom() {
+    use crate::engine::{Clock, NotifyFlags};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    struct TestClock(AtomicI64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let clock = Arc::new(TestClock(AtomicI64::new(100)));
+    let store = Store::with_clock(12, clock.clone());
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    assert_eq!(run(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+    assert_eq!(run(&store, &[b"SET", b"s", b"v", b"PX", b"1"]), b"+OK\r\n");
+    while receiver.try_recv().is_ok() {}
+
+    for (arguments, expected) in [
+        (
+            vec![b"MSETEX".as_slice(), b"1", b"k", b"new", b"NX", b"EX", b"1"],
+            b":0\r\n".as_slice(),
+        ),
+        (
+            vec![
+                b"MSETEX".as_slice(),
+                b"1",
+                b"missing",
+                b"new",
+                b"XX",
+                b"EX",
+                b"1",
+            ],
+            b":0\r\n".as_slice(),
+        ),
+        (
+            vec![
+                b"MSETEX".as_slice(),
+                b"1",
+                b"k",
+                b"too-large-value",
+                b"EX",
+                b"1",
+            ],
+            b"-OOM configured payload limit exceeded\r\n".as_slice(),
+        ),
+    ] {
+        clock.0.fetch_add(2, Ordering::SeqCst);
+        assert_eq!(run(&store, &arguments), expected);
+        let mut expired = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:expired",
+                b"s",
+            ],
+            &mut expired,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), expired);
+        assert!(
+            receiver.try_recv().is_err(),
+            "rejected MSETEX must not emit set/expire"
+        );
+        assert_eq!(run(&store, &[b"GET", b"k"]), b"$1\r\nv\r\n");
+        assert_eq!(run(&store, &[b"SET", b"s", b"v", b"PX", b"1"]), b"+OK\r\n");
+        while receiver.try_recv().is_ok() {}
+    }
+    clock.0.fetch_add(2, Ordering::SeqCst);
+    assert_eq!(
+        run(&store, &[b"MSETEX", b"1", b"k", b"new", b"PX", b"100"]),
+        b":1\r\n"
+    );
+    for (event, key) in [
+        (b"expired".as_slice(), b"s".as_slice()),
+        (b"set", b"k"),
+        (b"expire", b"k"),
+    ] {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut expected = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, key],
+            &mut expected,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), expected);
+    }
+    assert!(
+        receiver.try_recv().is_err(),
+        "unrelated reaped key has no set event"
+    );
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()

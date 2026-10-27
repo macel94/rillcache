@@ -60,6 +60,16 @@ snapshots deliberately do not emit keyless or per-key events, so consumers must
 not rely on notifications as an exhaustive audit or cache-coherence guarantee.
 No event is queued for offline subscribers or replayed after reconnect.
 
+For successful `MSETEX` writes, notifications follow the supplied key/value pair
+order, including repeated keys: each pair emits `set` (`$` class), immediately
+followed by `expire` (`g` class) when EX/PX/EXAT/PXAT assigns a deadline.
+KEEPTTL and writes without an expiry emit only `set`. Class and K/E flags filter
+these events independently. Rejected NX/XX, malformed arguments and payload OOM
+emit no write events, even when that command reaps unrelated expired keys;
+those removals can still emit their separate `expired` lifecycle events.
+This does not change the existing past-deadline storage/removal boundary or make
+notification delivery durable.
+
 Expiration and eviction use the separate `expired` and `evicted` event names
 (payload/key pair shaped like every other event) and are enabled by `x` and `e`
 respectively. `expired` is emitted when a key is logically removed on lookup or
@@ -109,6 +119,7 @@ relative to other connections is therefore not a global happens-before guarantee
 Unit tests cover flag parsing/round-trip, `A` expansion and rejection of
 unsupported classes, plus injected-clock lazy/reaped expiry and eviction
 publication. All-mode wire tests cover keyspace/keyevent frames, category
-filtering, runtime enable/disable, `MSET`/`MULTI`, hash/list/set/zset/stream/HLL
+filtering, runtime enable/disable, `MSET`/`MULTI`, ordered MSETEX set/expire
+pairs, duplicate/binary keys, KEEPTTL and rejected writes, hash/list/set/zset/stream/HLL
 events, expire, rename, eviction/`expired` classes, blocking-pop events, binary
 channels and `CONFIG`/`INFO` exposure.

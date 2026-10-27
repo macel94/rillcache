@@ -477,7 +477,10 @@ reason to couple all future commands into a single large story.
   `K` and the category are enabled and one `__keyevent@0__:<event>` message with
   the key if `E` and the category are enabled. Non-mutating/rejected commands shall
   publish nothing; MULTI shall publish per queued command and blocking pops shall
-  publish on success.
+  publish on success. Successful MSETEX writes shall publish `set` followed by
+  `expire` for explicit expiry in supplied pair order, including duplicate keys;
+  KEEPTTL shall publish no new `expire`, and rejected/OOM writes shall publish no
+  write events even if unrelated expired keys are reaped.
 - **R159 (unwanted behavior):** If notifications are disabled, a category is not
   selected, a subscriber lacks ACL channel permission, or a command is unknown/
   non-mutating, then no notification event shall be emitted or delivered to that

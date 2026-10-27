@@ -113,6 +113,169 @@ fn subscribe(stream: &mut TcpStream, kind: &[u8], pattern: &[u8]) {
     );
 }
 
+fn expect_msetex_events(subscriber: &mut TcpStream, keys: &[&[u8]], expiry: bool) {
+    for key in keys {
+        let mut channel = b"__keyspace@0__:".to_vec();
+        channel.extend_from_slice(key);
+        let events: &[&[u8]] = if expiry {
+            &[b"set", b"expire"]
+        } else {
+            &[b"set"]
+        };
+        for event in events {
+            assert_eq!(
+                read_frame(subscriber),
+                frame(&[b"pmessage", b"__keyspace@*", &channel, event])
+            );
+        }
+    }
+}
+
+#[test]
+fn msetex_emits_set_then_expire_for_each_key_in_argument_order() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyspace@*");
+    let mut writer = connect(&server);
+    for (option, deadline) in [
+        (b"EX".as_slice(), b"3600".as_slice()),
+        (b"PX", b"3600000"),
+        (b"EXAT", b"4000000000"),
+        (b"PXAT", b"4000000000000"),
+    ] {
+        send(
+            &mut writer,
+            &[
+                b"mSeTeX", b"2", b"z", b"one", b"a", b"two", option, deadline,
+            ],
+            b":1\r\n",
+        );
+        expect_msetex_events(&mut subscriber, &[b"z", b"a"], true);
+    }
+    // A confirmation on the same subscription connection is an ordered barrier:
+    // an unexpected extra notification would be read before it.
+    send(
+        &mut subscriber,
+        &[b"PING", b"done"],
+        &frame(&[b"pong", b"done"]),
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn msetex_duplicate_binary_keys_keep_events_but_keepttl_adds_no_expire() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyspace@*");
+    let mut writer = connect(&server);
+    let binary = b"z\0\xff";
+    send(
+        &mut writer,
+        &[
+            b"MSETEX", b"3", binary, b"first", b"a", b"v", binary, b"last", b"PX", b"3600000",
+        ],
+        b":1\r\n",
+    );
+    expect_msetex_events(&mut subscriber, &[binary, b"a", binary], true);
+    send(&mut writer, &[b"GET", binary], b"$4\r\nlast\r\n");
+    send(
+        &mut writer,
+        &[
+            b"MSETEX", b"2", binary, b"new", b"a", b"v", b"XX", b"KEEPTTL",
+        ],
+        b":1\r\n",
+    );
+    expect_msetex_events(&mut subscriber, &[binary, b"a"], false);
+    send(
+        &mut writer,
+        &[b"MSETEX", b"2", b"a", b"v", binary, b"new"],
+        b":1\r\n",
+    );
+    expect_msetex_events(&mut subscriber, &[b"a", binary], false);
+    send(&mut writer, &[b"PTTL", binary], b":-1\r\n");
+    send(
+        &mut subscriber,
+        &[b"PING", b"done"],
+        &frame(&[b"pong", b"done"]),
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn msetex_filters_categories_and_rejections_and_preserves_multi_order() {
+    let server = start(NotifyFlags::parse(b"KEg").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+    send(
+        &mut writer,
+        &[b"MSETEX", b"2", b"z", b"one", b"a", b"two", b"EX", b"3600"],
+        b":1\r\n",
+    );
+    for key in [b"z", b"a"] {
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:expire",
+                key
+            ])
+        );
+    }
+    send(
+        &mut writer,
+        &[b"MSETEX", b"1", b"z", b"bad", b"NX", b"EX", b"3600"],
+        b":0\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"MSETEX", b"1", b"missing", b"bad", b"XX", b"EX", b"3600"],
+        b":0\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"MSETEX", b"1", b"z", b"bad", b"EX", b"0"],
+        b"-ERR invalid expire time in 'msetex' command\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"MSETEX", b"2", b"z", b"bad"],
+        b"-ERR syntax error\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"CONFIG", b"SET", b"notify-keyspace-events", b"E$"],
+        b"+OK\r\n",
+    );
+    send(&mut writer, &[b"MULTI"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[
+            b"MSETEX", b"2", b"z", b"one", b"a", b"two", b"PX", b"3600000",
+        ],
+        b"+QUEUED\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"MSETEX", b"1", b"z", b"three"],
+        b"+QUEUED\r\n",
+    );
+    send(&mut writer, &[b"EXEC"], b"*2\r\n:1\r\n:1\r\n");
+    for key in [b"z", b"a", b"z"] {
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[b"pmessage", b"__keyevent@0__:*", b"__keyevent@0__:set", key])
+        );
+    }
+    send(
+        &mut subscriber,
+        &[b"PING", b"done"],
+        &frame(&[b"pong", b"done"]),
+    );
+    server.shutdown().unwrap();
+}
+
 #[test]
 fn keyspace_and_keyevent_notifications_follow_flags_and_categories() {
     let server = start(NotifyFlags::parse(b"KEA").unwrap());
