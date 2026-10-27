@@ -115,7 +115,8 @@ reason to couple all future commands into a single large story.
 | S84 | As an operator, I can inspect bounded per-error-code command reply counts so that repeated failures are visible without scraping client logs. | XS | R323–R325; counts/reset/INFO all/all-mode wire tests |
 | S85 | As an operator, I can see the average remaining TTL of expiring keys in `INFO keyspace` so cache freshness is visible without per-key scans. | XS | R326–R327; mean TTL, empty/expired state and all-mode wire tests |
 | S86 | As an ACL administrator, I can define independent command/key scopes per user so one login can read broadly while writing only a key namespace. | S | R328–R331; selector parsing, authorization, listing, ACL-file round-trip and all-mode wire tests |
-| S88 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R336–R337; local-address metadata, filtered kills and all-mode wire tests |
+| S87 | As an operator, I can inspect the journal mode and change the fsync policy at runtime so durability tuning does not require a restart. | XS | R332–R334; startup values, live policy switch/replay, read-only mode/filename and all-mode wire tests |
+| S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1204,7 +1205,7 @@ and the offline upstream harness tests.
   replies, validation atomicity, BLOCK all-new wake/timeout, mixed BLOCK
   immediacy, MULTI, `$`/unbalanced/missing-group/wrong-type errors, notifications
   and all worker modes. Durable pending restoration and replication remain
-  unsupported. (feat: add multi-stream consumer-group reads)
+  unsupported.
 ### List element moves (S68)
 
 - **R269 (event-driven):** `LMOVE source destination LEFT|RIGHT LEFT|RIGHT` and
@@ -1295,7 +1296,7 @@ and the offline upstream harness tests.
   remaining/absolute TTL forms, past-deadline lazy removal, key deletion, HSET/
   HINCRBY/HDEL/HGETDEL TTL interactions, missing/wrong-type/error cases, journal
   restart and all worker modes. Field-TTL bookkeeping remains excluded from the
-  key/value payload accounting claim and carries no active-expiry or RSS claim. (feat: add per-field hash expiration controls)
+  key/value payload accounting claim and carries no active-expiry or RSS claim.
 
 ### Client command pause (S72)
 
@@ -1536,13 +1537,13 @@ and the offline upstream harness tests.
   unchanged legacy form and every worker mode. Documentation shall retain the
   absence of `SKIPME no`, fd/idle/blocked metadata and a cross-process view.
 
-### Client kill by local address (S88)
+### Client kill by local address (S89)
 
-- **R336 (event-driven):** When a connection is accepted, the server shall record
+- **R339 (event-driven):** When a connection is accepted, the server shall record
   both its peer and local socket addresses. `CLIENT LIST` and `CLIENT INFO` shall
   expose the local address as `laddr=<ip:port>` without fabricating unmeasured
   fields.
-- **R337 (event-driven):** When `CLIENT KILL LADDR <ip:port>` receives a valid
+- **R340 (event-driven):** When `CLIENT KILL LADDR <ip:port>` receives a valid
   address string, the server shall intersect it with the other supported filters,
   shut down matching non-caller sockets and return the killed count. All-mode
   tests shall cover matching and non-matching local addresses, CLIENT LIST/INFO
@@ -1561,7 +1562,7 @@ and the offline upstream harness tests.
 - **R325 (ubiquitous):** Tests shall cover empty stats, multiple codes and counts,
   `INFO all` inclusion, reset clearing and all worker modes. This is a bounded
   count table, not an error log, message history, durable audit or replication
-  statistic. (feat: add bounded error reply statistics)
+  statistic.
 
 ### Keyspace average TTL (S85)
 
@@ -1598,6 +1599,28 @@ and the offline upstream harness tests.
   Documentation shall retain the absence of `%R~`/`%W~` key modes, first-argument
   rules, nested selectors, subcommand categories, rate limiting, persistent audit
   and native TLS.
+
+### Journal configuration visibility and runtime fsync (S87)
+
+- **R332 (event-driven):** `CONFIG GET appendonly`, `appendfilename` and
+  `appendfsync` (including wildcard patterns and `*`) shall report the configured
+  append-only mode, the journal basename and the live fsync policy as `yes`/`no`,
+  the exact basename and `always`/`everysec`/`no`. `appendonly` and
+  `appendfilename` shall remain startup-only: `CONFIG SET` for either shall return
+  a visible error without changing configuration. `CONFIG SET appendfsync` shall
+  accept the three valid policies and reject other values.
+- **R333 (state-driven):** Changing `appendfsync` shall update the open journal so
+  subsequent appends obey the new policy. Leaving `no` shall first sync records
+  that were previously only handed to the operating system; a sync failure shall
+  leave the journal failed and return an error. With append-only disabled the
+  configured policy shall still be reported and updated, without enabling
+  persistence or affecting a future process that chooses its own startup options.
+- **R334 (ubiquitous):** Tests shall cover default and configured startup values,
+  live updates, invalid and startup-only rejection, switching away from `no`,
+  restart replay and every worker mode. Documentation shall retain that
+  `appendonly` cannot be toggled at runtime, there is no configuration-file
+  reload, and changing the fsync policy changes the durability/latency trade-off
+  rather than providing a crash-proof guarantee.
 
 ### Development and delivery
 
