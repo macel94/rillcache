@@ -176,6 +176,22 @@ impl Store {
             if wants_notify {
                 matches.push((b"notify-keyspace-events", self.notify_flags().as_string()));
             }
+            let wants_commandstats = if wildcard {
+                glob_match(&folded_pattern, b"commandstats-enabled")
+            } else {
+                pattern.eq_ignore_ascii_case(b"commandstats-enabled")
+            };
+            if wants_commandstats {
+                matches.push((
+                    b"commandstats-enabled",
+                    if self.commandstats_enabled() {
+                        "yes"
+                    } else {
+                        "no"
+                    }
+                    .to_string(),
+                ));
+            }
             let wants_slowlog_threshold = if wildcard {
                 glob_match(&folded_pattern, b"slowlog-log-slower-than")
             } else {
@@ -268,6 +284,7 @@ impl Store {
         let mut notify = None;
         let mut slowlog_threshold = None;
         let mut slowlog_max_len = None;
+        let mut commandstats = None;
         let mut latency_threshold = None;
         for pair in args[2..].as_chunks::<2>().0 {
             if pair[0].eq_ignore_ascii_case(b"notify-keyspace-events") {
@@ -316,6 +333,19 @@ impl Store {
                     return;
                 };
                 slowlog_max_len = Some(value);
+            } else if pair[0].eq_ignore_ascii_case(b"commandstats-enabled") {
+                let enabled = if pair[1].eq_ignore_ascii_case(b"yes") {
+                    Some(true)
+                } else if pair[1].eq_ignore_ascii_case(b"no") {
+                    Some(false)
+                } else {
+                    None
+                };
+                let Some(enabled) = enabled else {
+                    out.extend_from_slice(b"-ERR commandstats-enabled must be yes or no\r\n");
+                    return;
+                };
+                commandstats = Some(enabled);
             } else if pair[0].eq_ignore_ascii_case(b"requirepass") {
                 if pair[1].len() > 1024 {
                     out.extend_from_slice(b"-ERR requirepass must be at most 1024 bytes\r\n");
@@ -351,6 +381,9 @@ impl Store {
         }
         if let Some(value) = latency_threshold {
             self.set_latency_threshold_ms(value);
+        }
+        if let Some(enabled) = commandstats {
+            self.set_commandstats_enabled(enabled);
         }
         out.extend_from_slice(b"+OK\r\n");
     }
@@ -466,7 +499,7 @@ mod tests {
             run(&store, &[b"CONFIG", b"GET", b"list-max-*", b"list-max-ziplist-size"]),
             b"*4\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n"
         );
-        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*38\r\n"));
+        assert!(run(&store, &[b"CONFIG", b"GET", b"*"]).starts_with(b"*40\r\n"));
     }
 
     #[test]

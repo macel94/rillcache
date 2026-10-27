@@ -61,7 +61,8 @@ bounded `SLOWLOG` command timing, bounded `LATENCY` event series, and logical `M
 =======
 strict empty-registry `SCRIPT FLUSH`/`FUNCTION FLUSH`, `CONFIG GET`/`RESETSTAT`,
 `INFO` (including process-local connection/command/expiration/pub-sub statistics
-and aggregate per-command `commandstats`), bounded `SLOWLOG` command timing,
+and opt-in aggregate per-command `commandstats` via `CONFIG SET
+commandstats-enabled yes`), bounded `SLOWLOG` command timing,
 bounded `LATENCY` event series, and logical `MEMORY USAGE`. `CONFIG SET`
 >>>>>>> 92375b7 (feat: add per-command INFO commandstats observability)
 supports collection thresholds, `requirepass`, `maxmemory-policy` and slow-log

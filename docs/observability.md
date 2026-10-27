@@ -31,6 +31,12 @@ RESP/subscription metadata.
 commands with at least one recorded network dispatch. Each line uses the Redis
 shape `cmdstat_<name>:calls=<n>,usec=<n>,usec_per_call=<n>,rejected_calls=<n>,failed_calls=<n>`.
 
+Recording is **opt-in** because the merge gate requires the default dispatch path
+to stay free of the per-command lookup and atomic updates. `CONFIG SET
+commandstats-enabled yes` starts recording (default `no`); `CONFIG GET
+commandstats-enabled` reports the live setting. Enabling begins from an empty
+table, and disabling keeps the existing counters readable until the next reset.
+
 - `calls` counts dispatches through a client `Session`; direct embedded
   `Store::execute` calls and commands executed inside `MULTI` are not counted
   separately. `EXEC` is counted once.

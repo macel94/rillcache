@@ -146,6 +146,7 @@ pub struct Store {
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
     shutdown_requested: AtomicBool,
+    commandstats_enabled: AtomicBool,
     command_stats: Vec<CommandStat>,
 }
 impl Store {
@@ -209,6 +210,7 @@ impl Store {
             ),
             latency: std::sync::RwLock::new(latency::State::default()),
             shutdown_requested: AtomicBool::new(false),
+            commandstats_enabled: AtomicBool::new(false),
             command_stats: (0..discovery::command_count())
                 .map(|_| CommandStat::default())
                 .collect(),
@@ -635,6 +637,9 @@ impl Store {
         elapsed: Duration,
         reply: &[u8],
     ) {
+        if !self.commandstats_enabled.load(Ordering::Relaxed) {
+            return;
+        }
         let Some(command) = command else {
             return;
         };
@@ -654,6 +659,14 @@ impl Store {
         if reply.starts_with(b"-NOAUTH") || reply.starts_with(b"-NOPERM") {
             stat.rejected_calls.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    pub fn commandstats_enabled(&self) -> bool {
+        self.commandstats_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_commandstats_enabled(&self, enabled: bool) {
+        self.commandstats_enabled.store(enabled, Ordering::Relaxed);
     }
 
     /// Snapshot only commands with at least one recorded call, in registry order.
