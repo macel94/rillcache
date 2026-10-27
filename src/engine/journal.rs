@@ -604,6 +604,20 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
                 }
             }
         }
+        for (field, deadline) in &entry.field_ttl {
+            let deadline = deadline.to_string();
+            encode_request(
+                &[
+                    b"HPEXPIREAT",
+                    key,
+                    deadline.as_bytes(),
+                    b"FIELDS",
+                    b"1",
+                    field,
+                ],
+                output,
+            );
+        }
     } else if let Some(stream) = &entry.stream {
         let mut last_entry = None;
         for (id, record) in &stream.entries {

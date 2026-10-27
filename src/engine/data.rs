@@ -79,6 +79,24 @@ impl Collection {
         }
     }
 
+    pub fn remove_hash_field(&mut self, field: &[u8]) {
+        match self {
+            Self::Hash(values) => {
+                values.remove(field);
+            }
+            Self::HashPack(values) => values.retain(|(name, _)| name.as_slice() != field),
+            _ => {}
+        }
+    }
+
+    pub fn hash_is_empty(&self) -> bool {
+        match self {
+            Self::Hash(values) => values.is_empty(),
+            Self::HashPack(values) => values.is_empty(),
+            _ => false,
+        }
+    }
+
     pub fn hash_get(&self, field: &[u8]) -> Option<&[u8]> {
         match self {
             Self::Hash(values) => values.get(field).map(Vec::as_slice),
@@ -189,6 +207,7 @@ pub(super) struct Entry {
     pub stream: Option<Stream>,
     pub payload_len: usize,
     pub expires: Option<i64>,
+    pub field_ttl: BTreeMap<Vec<u8>, i64>,
     pub last_access: u64,
 }
 
@@ -199,6 +218,7 @@ impl PartialEq for Entry {
             && self.stream == other.stream
             && self.payload_len == other.payload_len
             && self.expires == other.expires
+            && self.field_ttl == other.field_ttl
     }
 }
 impl Entry {
@@ -239,6 +259,7 @@ pub(super) struct Data {
     pub(in crate::engine) expired_keys: u64,
     pub(in crate::engine) evicted_keys: u64,
     pub(in crate::engine) eviction: EvictionPolicy,
+    pub field_ttls: usize,
     eviction_seq: u64,
     access_seq: u64,
 }
@@ -336,10 +357,12 @@ impl Data {
         self.journal_overflow = false;
         self.expired_events.clear();
         self.evicted_events.clear();
+        self.field_ttls = 0;
     }
 
     pub fn remove(&mut self, key: &[u8]) -> Option<Entry> {
         let (key, entry) = self.entries.remove_entry(key)?;
+        self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
         self.touch(&key);
         self.payload_bytes -= key.len() + entry.payload_len;
         if let Some(at) = entry.expires {
@@ -349,15 +372,82 @@ impl Data {
     }
 
     pub fn expire_key(&mut self, key: &[u8], now: i64) {
-        // The index is exact: no expirations means no key can be expired.
-        if self.expirations.is_empty() {
-            return;
+        if self.field_ttls != 0 {
+            self.expire_hash_fields(key, now);
         }
         if self.entries.get(key).is_some_and(|entry| !entry.alive(now)) {
             self.remove(key);
             push_lifecycle(&mut self.expired_events, key);
             self.expired_keys = self.expired_keys.saturating_add(1);
         }
+    }
+
+    fn expire_hash_fields(&mut self, key: &[u8], now: i64) {
+        let Some(entry) = self.entries.get_mut(key) else {
+            return;
+        };
+        if entry.field_ttl.is_empty() {
+            return;
+        }
+        let expired: Vec<Vec<u8>> = entry
+            .field_ttl
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(field, _)| field.clone())
+            .collect();
+        if expired.is_empty() {
+            return;
+        }
+        for field in &expired {
+            entry.field_ttl.remove(field);
+            if let Some(collection) = entry.collection.as_mut() {
+                collection.remove_hash_field(field);
+            }
+        }
+        self.field_ttls = self.field_ttls.saturating_sub(expired.len());
+        let remove_key = entry
+            .collection
+            .as_ref()
+            .is_some_and(|collection| collection.is_hash() && collection.hash_is_empty());
+        if remove_key {
+            self.remove(key);
+            return;
+        }
+        if let Some(collection) = entry.collection.as_ref() {
+            let bytes = collection.payload_len();
+            self.payload_bytes = self.payload_bytes - entry.payload_len + bytes;
+            entry.payload_len = bytes;
+        }
+        self.touch(key);
+    }
+
+    pub fn remove_field_ttls(&mut self, key: &[u8], fields: &[&[u8]]) {
+        if let Some(entry) = self.entries.get_mut(key) {
+            for field in fields {
+                if entry.field_ttl.remove(*field).is_some() {
+                    self.field_ttls = self.field_ttls.saturating_sub(1);
+                }
+            }
+        }
+    }
+
+    pub fn set_field_ttl(&mut self, key: &[u8], field: &[u8], deadline: i64) {
+        if let Some(entry) = self.entries.get_mut(key)
+            && entry.field_ttl.insert(field.to_vec(), deadline).is_none()
+        {
+            self.field_ttls = self.field_ttls.saturating_add(1);
+        }
+    }
+
+    pub fn persist_field(&mut self, key: &[u8], field: &[u8]) -> bool {
+        let removed = self
+            .entries
+            .get_mut(key)
+            .is_some_and(|entry| entry.field_ttl.remove(field).is_some());
+        if removed {
+            self.field_ttls = self.field_ttls.saturating_sub(1);
+        }
+        removed
     }
 
     pub fn reap(&mut self, now: i64, limit: usize) -> usize {
@@ -557,6 +647,7 @@ impl Data {
                     stream: None,
                     payload_len: value.len(),
                     expires,
+                    field_ttl: Default::default(),
                     last_access: access,
                 },
             );
@@ -577,6 +668,7 @@ impl Data {
         if let Some(at) = entry.expires {
             self.expirations.insert((at, key.to_vec()));
         }
+        self.field_ttls = self.field_ttls.saturating_add(entry.field_ttl.len());
         self.entries.insert(key.to_vec(), entry);
         self.payload_bytes = payload;
         self.touch(key);
@@ -596,9 +688,14 @@ impl Data {
         if let Some(entry) = self.entries.get_mut(key) {
             entry.last_access = access;
             entry.value.clear();
+            let hash = collection.is_hash();
             entry.collection = Some(collection);
             entry.stream = None;
             entry.payload_len = collection_bytes;
+            if !hash {
+                self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
+                entry.field_ttl.clear();
+            }
             Self::replace_expiry(&mut self.expirations, key, entry, expires);
         } else {
             self.entries.insert(
@@ -609,6 +706,7 @@ impl Data {
                     stream: None,
                     payload_len: collection_bytes,
                     expires,
+                    field_ttl: Default::default(),
                     last_access: access,
                 },
             );
@@ -637,6 +735,8 @@ impl Data {
             entry.collection = None;
             entry.stream = Some(stream);
             entry.payload_len = stream_bytes;
+            self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
+            entry.field_ttl.clear();
             Self::replace_expiry(&mut self.expirations, key, entry, expires);
         } else {
             self.entries.insert(
@@ -647,6 +747,7 @@ impl Data {
                     stream: Some(stream),
                     payload_len: stream_bytes,
                     expires,
+                    field_ttl: Default::default(),
                     last_access: access,
                 },
             );
