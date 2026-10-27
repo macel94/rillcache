@@ -116,6 +116,7 @@ reason to couple all future commands into a single large story.
 | S85 | As an operator, I can see the average remaining TTL of expiring keys in `INFO keyspace` so cache freshness is visible without per-key scans. | XS | R326–R327; mean TTL, empty/expired state and all-mode wire tests |
 | S86 | As an ACL administrator, I can define independent command/key scopes per user so one login can read broadly while writing only a key namespace. | S | R328–R331; selector parsing, authorization, listing, ACL-file round-trip and all-mode wire tests |
 | S87 | As an operator, I can inspect the journal mode and change the fsync policy at runtime so durability tuning does not require a restart. | XS | R332–R334; startup values, live policy switch/replay, read-only mode/filename and all-mode wire tests |
+| S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -479,15 +480,15 @@ and the offline upstream harness tests.
 ### Client registry and administrative kill (S38)
 
 - **R149 (event-driven):** When a connection is accepted, the server shall register
-  its ID, peer address, creation time and control handle; it shall update name,
+  its ID, peer and local addresses, creation time and control handle; it shall update name,
   library, protocol and authenticated user after CLIENT/HELLO/AUTH/RESET and remove
   the record on close. The registry shall be bounded by `max_clients` and process-local.
 - **R150 (event-driven):** When `CLIENT LIST [TYPE normal|pubsub] [ID id ...]` is
   received, the server shall return newline-delimited records for matching
-  connections with ID, address, name, age, N/P flags, db, live channel/pattern
+  connections with ID, peer and local addresses, name, age, N/P flags, db, live channel/pattern
   counts, RESP mode, user and library metadata, omitting fields it does not measure.
 - **R151 (event-driven):** When `CLIENT KILL` receives intersecting `ID`, `ADDR`,
-  `TYPE normal|pubsub`, `USER` and `SKIPME yes` filters, the server shall shut down
+  `LADDR`, `TYPE normal|pubsub`, `USER` and `SKIPME yes` filters, the server shall shut down
   matching non-caller sockets and return the count; the legacy address form shall
   return `+OK`/`No such client`. The caller shall always be skipped, and `SKIPME no`
   shall return an explicit unsupported error.
@@ -1535,6 +1536,18 @@ and the offline upstream harness tests.
   connection surviving, caller protection, invalid `MAXAGE` values, the
   unchanged legacy form and every worker mode. Documentation shall retain the
   absence of `SKIPME no`, fd/idle/blocked metadata and a cross-process view.
+
+### Client kill by local address (S89)
+
+- **R339 (event-driven):** When a connection is accepted, the server shall record
+  both its peer and local socket addresses. `CLIENT LIST` and `CLIENT INFO` shall
+  expose the local address as `laddr=<ip:port>` without fabricating unmeasured
+  fields.
+- **R340 (event-driven):** When `CLIENT KILL LADDR <ip:port>` receives a valid
+  address string, the server shall intersect it with the other supported filters,
+  shut down matching non-caller sockets and return the killed count. All-mode
+  tests shall cover matching and non-matching local addresses, CLIENT LIST/INFO
+  exposure, combined filters, caller protection and the unchanged legacy form.
 
 ### Error reply statistics (S84)
 
