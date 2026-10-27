@@ -1,0 +1,1 @@
+{"scope":"in-process Store; not TCP/gate","workload":"scard","size":32768,"operations":2000,"elapsed_ns":7703215398,"handler_p50_ns":2474324,"handler_p99_ns":28758994,"handler_max_ns":261689124,"replies_validated":true}
