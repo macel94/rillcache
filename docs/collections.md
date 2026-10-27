@@ -5,7 +5,7 @@ The store supports binary-safe lists (`LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPO
 key namespace with strings and streams. Collection values live in the same key
 entry as strings and share the same expiration index, payload limit, keyspace
 commands and exclusive store lock. There is no shadow namespace. TYPE reports the
-actual type; DEL/EXISTS/TOUCH/DBSIZE/expiry/RENAME/COPY apply to all types; string,
+actual type; DEL/UNLINK/EXISTS/TOUCH/DBSIZE/expiry/RENAME/COPY apply to all types; string,
 integer and bitmap commands reject collections with WRONGTYPE. MGET returns null
 for non-string values, while MSET replaces any existing type, consistent with
 Redis behavior.

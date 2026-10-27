@@ -95,6 +95,7 @@ reason to couple all future commands into a single large story.
 | S65 | As a hash user, I can sample fields and atomically read-and-remove fields so that random selection and cleanup do not require multiple round trips. | XS | R257–R260; HRANDFIELD/HGETDEL shapes, TTL/WATCH/errors and all-mode wire tests |
 | S66 | As a client or operator, I can ask the server which arguments are keys for a command so that routing and ACL tooling do not duplicate command metadata. | XS | R261–R264; static/counted/store extraction, errors and all-mode wire tests |
 | S67 | As a stream consumer, I can read new or pending history entries across several group streams in one command so that sharded workloads avoid per-stream round trips. | S | R265–R268; multi-stream new/history/mixed/BLOCK/count/errors and all-mode wire tests |
+| S69 | As a keyspace user, I can request deletion through the standard `UNLINK` command so that clients and libraries that prefer asynchronous deletion remain compatible. | XS | R273–R275; mixed types/duplicates/expiry/MULTI/GETKEYS/notifications and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1160,6 +1161,23 @@ reason to couple all future commands into a single large story.
   immediacy, MULTI, `$`/unbalanced/missing-group/wrong-type errors, notifications
   and all worker modes. Durable pending restoration and replication remain
   unsupported. (feat: add multi-stream consumer-group reads)
+
+### UNLINK keyspace deletion (S69)
+
+- **R273 (event-driven):** `UNLINK key [key ...]` shall remove every supplied
+  existing key, treat logically expired keys as absent, count duplicate keys once
+  and return the number of removed keys. Missing arguments shall return the
+  standard `unlink` arity error.
+- **R274 (state-driven):** While this server has no background reclamation
+  thread, UNLINK shall free the removed value synchronously and shall otherwise
+  behave exactly like DEL: atomic under the store gate, journaled as a replay-safe
+  DEL plus final state, ACL-checked as a declared-key command, and notified with
+  one generic `del` event per removed key. Synchronous reclamation is documented
+  as a semantic difference from Redis's background free, not as a blocking
+  guarantee.
+- **R275 (ubiquitous):** Tests shall cover strings, lists, hashes and sorted sets,
+  duplicate and missing keys, expired keys, MULTI execution, COMMAND GETKEYS,
+  notification delivery, arity errors and every worker mode.
 
 ### Development and delivery
 

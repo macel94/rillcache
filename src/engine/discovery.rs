@@ -279,6 +279,7 @@ const COMMANDS: &[Command] = &[
     cmd("touch", -2, &["readonly", "fast"], 1, -1, 1),
     cmd("ttl", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("type", 2, &["readonly", "fast"], 1, 1, 1),
+    cmd("unlink", -2, &["write", "fast"], 1, -1, 1),
     cmd(
         "unsubscribe",
         -1,
@@ -613,7 +614,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
         | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
         | "pexpiretime" | "pttl" | "randomkey" | "rename" | "renamenx" | "touch" | "ttl"
-        | "type" | "scan" => "keyspace",
+        | "type" | "unlink" | "scan" => "keyspace",
         _ => return None,
     })
 }
