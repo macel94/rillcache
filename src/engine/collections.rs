@@ -45,11 +45,12 @@ impl Store {
             }
             return true;
         }
-        if cmd.eq_ignore_ascii_case(b"HSET") {
+        if cmd.eq_ignore_ascii_case(b"HSET") || cmd.eq_ignore_ascii_case(b"HMSET") {
+            let legacy = cmd.eq_ignore_ascii_case(b"HMSET");
             if args.len() < 4 || !(args.len() - 2).is_multiple_of(2) {
-                arity("hset", out);
+                arity(if legacy { "hmset" } else { "hset" }, out);
             } else {
-                self.hash_set(args, out);
+                self.hash_set(args, out, legacy);
             }
             return true;
         }
@@ -85,17 +86,21 @@ impl Store {
             return true;
         }
         if cmd.eq_ignore_ascii_case(b"ZSCORE")
+            || cmd.eq_ignore_ascii_case(b"ZMSCORE")
             || cmd.eq_ignore_ascii_case(b"ZCARD")
             || cmd.eq_ignore_ascii_case(b"ZRANGE")
         {
             let name = if cmd.eq_ignore_ascii_case(b"zscore") {
                 "zscore"
+            } else if cmd.eq_ignore_ascii_case(b"zmscore") {
+                "zmscore"
             } else if cmd.eq_ignore_ascii_case(b"zcard") {
                 "zcard"
             } else {
                 "zrange"
             };
             if (name == "zscore" && args.len() != 3)
+                || (name == "zmscore" && args.len() < 3)
                 || (name == "zcard" && args.len() != 2)
                 || (name == "zrange" && !(args.len() == 4 || args.len() == 5))
             {
@@ -250,7 +255,7 @@ impl Store {
         }
     }
 
-    fn hash_set(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+    fn hash_set(&self, args: &[&[u8]], out: &mut Vec<u8>, legacy: bool) {
         let key = args[1];
         let Ok(mut data) = self.data.write() else {
             internal_error(out);
@@ -312,7 +317,11 @@ impl Store {
             .map(|pair| pair[0])
             .collect();
         data.remove_field_ttls(key, &fields);
-        integer(added, out);
+        if legacy {
+            out.extend_from_slice(b"+OK\r\n");
+        } else {
+            integer(added, out);
+        }
     }
 
     fn hash_read(&self, args: &[&[u8]], name: &str, out: &mut Vec<u8>) {
@@ -445,6 +454,11 @@ impl Store {
             None => {
                 if name == "zscore" {
                     encode_bulk(None, out);
+                } else if name == "zmscore" {
+                    let _ = write!(out, "*{}\r\n", args.len() - 2);
+                    for _ in 2..args.len() {
+                        encode_bulk(None, out);
+                    }
                 } else if name == "zcard" {
                     integer(0, out);
                 } else {
@@ -471,6 +485,17 @@ impl Store {
                 .find(|(member, _)| *member == args[2])
                 .map(|(_, score)| score.to_string());
             encode_bulk(score.as_deref().map(str::as_bytes), out);
+            return;
+        }
+        if name == "zmscore" {
+            let _ = write!(out, "*{}\r\n", args.len() - 2);
+            for member in &args[2..] {
+                let score = members
+                    .iter()
+                    .find(|(candidate, _)| candidate == member)
+                    .map(|(_, score)| score.to_string());
+                encode_bulk(score.as_deref().map(str::as_bytes), out);
+            }
             return;
         }
         let mut ordered = members;
@@ -910,5 +935,60 @@ mod tests {
         );
         assert_eq!(run(&store, &[b"DEL", b"m"]), b":1\r\n");
         assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+    }
+    #[test]
+    fn legacy_hmset_zmscore_and_lex_ranges_match_redis_replies() {
+        let store = Store::new(128);
+        assert_eq!(
+            run(&store, &[b"HMSET", b"h", b"a", b"1", b"b", b"2"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(run(&store, &[b"HGET", b"h", b"a"]), b"$1\r\n1\r\n");
+        assert_eq!(run(&store, &[b"HMSET", b"h", b"a", b"3"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"HGET", b"h", b"a"]), b"$1\r\n3\r\n");
+        assert!(run(&store, &[b"HMSET", b"h", b"a"]).starts_with(b"-ERR wrong number"));
+        assert!(run(&store, &[b"HMSET", b"h", b"a", b"1", b"b"]).starts_with(b"-ERR wrong number"));
+
+        assert_eq!(
+            run(&store, &[b"ZADD", b"z", b"1", b"a", b"2.5", b"b"]),
+            b":2\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZMSCORE", b"z", b"a", b"missing", b"b"]),
+            b"*3\r\n$1\r\n1\r\n$-1\r\n$3\r\n2.5\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZMSCORE", b"missing", b"a", b"b"]),
+            b"*2\r\n$-1\r\n$-1\r\n"
+        );
+
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"ZADD", b"lex", b"0", b"a", b"0", b"b", b"0", b"c", b"0", b"d"
+                ]
+            ),
+            b":4\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZRANGEBYLEX", b"lex", b"[b", b"[c"]),
+            b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZREVRANGEBYLEX", b"lex", b"[c", b"[b"]),
+            b"*2\r\n$1\r\nc\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"ZRANGEBYLEX", b"lex", b"-", b"+", b"LIMIT", b"1", b"2"]
+            ),
+            b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZRANGEBYLEX", b"lex", b"-", b"+", b"WITHSCORES"]),
+            b"-ERR syntax error, WITHSCORES not supported in combination with BYLEX\r\n"
+        );
     }
 }
