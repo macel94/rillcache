@@ -312,7 +312,14 @@ impl Store {
                     keys
                 };
                 let events = if notified && !full {
-                    notification_events(&data, arguments, &keys, now, self.notify_flags())
+                    notification_events(
+                        &data,
+                        arguments,
+                        &keys,
+                        now,
+                        self.notify_flags(),
+                        &output[start..],
+                    )
                 } else {
                     Vec::new()
                 };
@@ -666,10 +673,14 @@ fn notification_events(
     keys: &[Vec<u8>],
     now: i64,
     flags: NotifyFlags,
+    reply: &[u8],
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let Some(command) = arguments.first() else {
         return Vec::new();
     };
+    if command.eq_ignore_ascii_case(b"MSETEX") {
+        return msetex_notification_events(data, arguments, keys, flags, reply);
+    }
     let mut events = Vec::new();
     for key in keys {
         if data.was_evicted(key) {
@@ -682,6 +693,55 @@ fn notification_events(
             continue;
         }
         events.extend(build_event(flags, event.as_bytes(), key));
+    }
+    events
+}
+
+/// Final-state journal keys are sorted/deduplicated, but MSETEX notifications
+/// follow every supplied pair (including duplicates), with set then expire.
+fn msetex_notification_events(
+    data: &Data,
+    arguments: &[&[u8]],
+    keys: &[Vec<u8>],
+    flags: NotifyFlags,
+    reply: &[u8],
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    // Reaping may change keys even when NX/XX rejects the write or admission
+    // fails. Those removals belong only to the separate lifecycle events.
+    if reply != b":1\r\n" {
+        return Vec::new();
+    }
+    let Some(pair_end) = arguments
+        .get(1)
+        .and_then(|raw| super::options::parse_integer(raw))
+        .and_then(|count| usize::try_from(count).ok())
+        .and_then(|count| count.checked_mul(2)?.checked_add(2))
+        .filter(|end| *end <= arguments.len())
+    else {
+        return Vec::new();
+    };
+    let Ok(options) = super::options::SetOptions::parse(&arguments[pair_end..], false) else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    for pair in arguments[2..pair_end].as_chunks::<2>().0 {
+        let key = pair[0];
+        // changes_since supplies sorted keys when the log has not overflowed;
+        // full/overflow snapshots never enter notification_events.
+        if keys
+            .binary_search_by(|changed| changed.as_slice().cmp(key))
+            .is_err()
+            || data.was_evicted(key)
+        {
+            continue;
+        }
+        if flags.string {
+            events.extend(build_event(flags, b"set", key));
+        }
+        // KEEPTTL retains the existing deadline but does not assign a new one.
+        if flags.generic && options.expiry.is_some() {
+            events.extend(build_event(flags, b"expire", key));
+        }
     }
     events
 }
