@@ -263,7 +263,10 @@ impl Journal {
             if let Ok(directory) = fs::File::open(directory) {
                 let _ = directory.sync_all();
             }
-            let replacement = OpenOptions::new().read(true).write(true).open(&self.path)?;
+            let mut replacement = OpenOptions::new().read(true).write(true).open(&self.path)?;
+            // The replacement handle starts at offset zero; the next append must
+            // land after the snapshot instead of overwriting it.
+            replacement.seek(SeekFrom::End(0))?;
             self.file = replacement;
             self.dirty = false;
             self.failed = false;

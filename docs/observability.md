@@ -3,8 +3,18 @@
 Rillcache exposes a deliberately small set of server counters through
 `INFO stats` (also included by `INFO` and `INFO all`). Values are process-local
 and reset on restart. There is no Prometheus endpoint, latency histogram,
-per-command table or replication statistics. `SLOWLOG` and `LATENCY` provide
+per-command table or replication statistics. `INFO errorstats` reports bounded
+per-error-code command reply counts. `SLOWLOG` and `LATENCY` provide
 bounded, process-local timing as described below.
+
+## Error statistics
+
+`INFO errorstats` (and `INFO all`) returns a `# Errorstats` block with one
+`errorstat_<CODE>:count` line per error code seen at command dispatch, such as
+`ERR`, `WRONGTYPE`, `NOAUTH` or `NOPERM`. Codes are the bounded first token of the
+error reply (at most 32 bytes), the table is capped at 64 distinct codes, and
+`CONFIG RESETSTAT` clears it with the other counters. Protocol-level framing
+errors are not command replies and are not counted.
 
 ## Fields
 
@@ -138,6 +148,8 @@ backlog, bio and fork fields are omitted because they are not measured.
   only the two measured event series listed above.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.
+- Error statistics are a bounded per-code count, not a full error log or message
+  history.
 - No persistence/ACL/auth telemetry. Journal replay and rewrite durations are not
   reported. A future observability increment must preserve the same no-fabrication
   rule instead of filling Redis-shaped fields with guesses.
@@ -146,5 +158,6 @@ backlog, bio and fork fields are omitted because they are not measured.
 
 `tests/observability.rs` runs in all worker modes and verifies connection/command
 counts across two clients, reset behavior, maximum-client rejection visibility and
-lazy expiration counting. It parses `INFO stats` as a real RESP bulk reply rather
-than asserting on an implementation string alone.
+lazy expiration counting, and `tests/errorstats.rs` verifies per-code counts,
+`INFO all` inclusion and `CONFIG RESETSTAT` clearing. Tests parse INFO replies as
+real RESP bulk values rather than asserting on implementation strings alone.

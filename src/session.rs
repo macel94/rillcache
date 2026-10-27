@@ -129,6 +129,7 @@ impl Session {
     /// Dispatch connection commands locally and all data commands through the
     /// stable public RESP2 Store API, adapting only this session's reply.
     pub fn execute(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        let start = output.len();
         if self.paused.is_none() && self.command_paused(store, arguments) {
             self.paused = Some(PausedCommand {
                 arguments: arguments.iter().map(|argument| argument.to_vec()).collect(),
@@ -160,6 +161,9 @@ impl Session {
                     self.record_slowlog(store, arguments, started);
                 }
             }
+        }
+        if output.get(start) == Some(&b'-') {
+            store.record_error(&output[start..]);
         }
         action
     }

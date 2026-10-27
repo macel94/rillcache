@@ -753,7 +753,14 @@ impl Store {
 
     fn info(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let sections: &[&[u8]] = match arguments {
-            [_] => &[b"server", b"memory", b"keyspace", b"stats", b"clients"],
+            [_] => &[
+                b"server",
+                b"memory",
+                b"keyspace",
+                b"stats",
+                b"clients",
+                b"errorstats",
+            ],
             [_, section] => &[*section],
             _ => {
                 output.extend_from_slice(b"-ERR wrong number of arguments for 'info' command\r\n");
@@ -792,6 +799,7 @@ impl Store {
                     | b"clients"
                     | b"replication"
                     | b"persistence"
+                    | b"errorstats"
                     | b"default"
                     | b"all"
             ) {
@@ -875,6 +883,17 @@ impl Store {
                     }
                 }
                 text.push('\r');
+            }
+            if matches!(section.as_slice(), b"errorstats" | b"all") {
+                text.push_str("# Errorstats\r\n");
+                for (code, count) in self.error_stats() {
+                    let _ = write!(
+                        text,
+                        "errorstat_{}:{}\r\n",
+                        String::from_utf8_lossy(&code),
+                        count
+                    );
+                }
             }
             if matches!(section.as_slice(), b"replication" | b"all") {
                 text.push_str(
