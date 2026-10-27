@@ -100,6 +100,7 @@ reason to couple all future commands into a single large story.
 | S70 | As an operator, I can inspect bounded slow-command history and tune its threshold so that latency problems can be diagnosed without log scraping or unbounded memory. | S | R276–R279; command shapes, config, truncation, redaction, blocking/MULTI and all-mode wire tests |
 | S71 | As a hash user, I can set, inspect and clear per-field TTLs so that individual hash entries can expire without deleting the whole key. | S | R280–R283; expire/ttl/expiretime/persist conditions, lazy expiry, journal and all-mode wire tests |
 | S72 | As an operator, I can pause and resume client command processing so that maintenance or failover preparation can drain traffic without dropping connections. | S | R284–R287; ALL/WRITE/timeout/unpause/pipelining/MULTI/shutdown and all-mode wire tests |
+| S74 | As a client or operator, I can detect unsupported cluster, module and replica features through explicit reply contracts instead of unknown commands or fake capabilities. | XS | R292–R295; CLUSTER/module/WAIT shapes, errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1302,6 +1303,28 @@ and the offline upstream harness tests.
   self-pause/unpause, pipelining order, invalid arguments, disconnect/shutdown
   behavior and every worker mode. Documentation shall retain the absence of
   replication, expiry/eviction pausing and replica-traffic pause semantics.
+
+### Explicit unsupported cluster, module and replica surface (S74)
+
+- **R292 (event-driven):** `CLUSTER <subcommand>` shall return the documented
+  cluster-disabled error for known subcommands, one bounded explanatory row for
+  `HELP`, and the normal arity error without a subcommand. `READONLY`,
+  `READWRITE` and `ASKING` shall return the same disabled error. No slot table,
+  node identity, redirection or migration behavior shall be fabricated.
+- **R293 (event-driven):** `MODULE LIST` shall return an empty array because no
+  modules are loadable. `MODULE HELP` shall return one bounded explanatory row;
+  `LOAD`/`LOADEX`/`UNLOAD` shall return an explicit unsupported error without
+  executing code; unknown subcommands shall return a bounded unknown-subcommand
+  error.
+- **R294 (event-driven):** `WAIT numreplicas timeout` shall validate integer
+  arguments, reject a negative timeout with the Redis timeout error, and return
+  zero without sleeping because no replicas are configured. It shall not claim
+  replication or acknowledgment semantics.
+- **R295 (ubiquitous):** Discovery metadata/categories shall expose the supported
+  command shapes truthfully. Tests shall cover cluster subcommands, help, arity,
+  module list/load/unknown, WAIT validation and zero, READONLY/READWRITE/ASKING,
+  ACL access and all worker modes. Documentation shall retain the absence of
+  cluster routing, module execution, replication and Redis-8 extension support.
 
 ### Development and delivery
 
