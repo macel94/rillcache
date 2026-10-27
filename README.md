@@ -76,9 +76,11 @@ use a bounded linear scan rather than a native neighbour index. See
 
 Binary-safe lists, sets, hashes and sorted sets support creation, mutation,
 removal, bounded random selection, set algebra/store commands, score ranges and
-rank/range inspection. Collection writes preserve expiry metadata where Redis
-does, delete empty keys, and stage the complete value before payload admission.
-See [typed collections](docs/collections.md).
+rank/range inspection. Sorted sets add unified `ZRANGE` score/lex/reverse/limit
+selection, `ZRANGESTORE`, `ZLEXCOUNT`, `ZREMRANGEBYLEX` and `ZRANDMEMBER`.
+Collection writes preserve expiry metadata where Redis does, delete empty keys,
+and stage the complete value before payload admission. See
+[typed collections](docs/collections.md).
 
 `CLIENT ID/SETNAME/GETNAME/SETINFO/INFO/LIST/KILL` expose bounded per-connection
 metadata and administrative connection controls; `INFO clients` reports the

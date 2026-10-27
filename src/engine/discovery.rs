@@ -307,12 +307,16 @@ const COMMANDS: &[Command] = &[
     cmd("zcard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("zcount", 4, &["readonly", "fast"], 1, 1, 1),
     cmd("zincrby", 4, &["write", "denyoom", "fast"], 1, 1, 1),
+    cmd("zlexcount", 4, &["readonly", "fast"], 1, 1, 1),
     cmd("zpopmax", -2, &["write", "fast"], 1, 1, 1),
     cmd("zpopmin", -2, &["write", "fast"], 1, 1, 1),
+    cmd("zrandmember", -2, &["readonly"], 1, 1, 1),
     cmd("zrange", -4, &["readonly"], 1, 1, 1),
     cmd("zrangebyscore", -4, &["readonly"], 1, 1, 1),
+    cmd("zrangestore", -5, &["write", "denyoom"], 1, 2, 1),
     cmd("zrank", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("zrem", -3, &["write", "fast"], 1, 1, 1),
+    cmd("zremrangebylex", 4, &["write"], 1, 1, 1),
     cmd("zremrangebyrank", 4, &["write"], 1, 1, 1),
     cmd("zremrangebyscore", 4, &["write"], 1, 1, 1),
     cmd("zrevrange", -4, &["readonly"], 1, 1, 1),
@@ -453,9 +457,10 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "sscan" | "sunion" | "sunionstore" => "set",
         "hdel" | "hexists" | "hget" | "hgetall" | "hincrby" | "hincrbyfloat" | "hkeys" | "hlen"
         | "hmget" | "hscan" | "hset" | "hsetnx" | "hstrlen" | "hvals" => "hash",
-        "zadd" | "zcard" | "zcount" | "zincrby" | "zpopmax" | "zpopmin" | "zrange"
-        | "zrangebyscore" | "zrank" | "zrem" | "zremrangebyrank" | "zremrangebyscore"
-        | "zrevrange" | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" => "zset",
+        "zadd" | "zcard" | "zcount" | "zincrby" | "zlexcount" | "zpopmax" | "zpopmin"
+        | "zrandmember" | "zrange" | "zrangebyscore" | "zrangestore" | "zrank" | "zrem"
+        | "zremrangebylex" | "zremrangebyrank" | "zremrangebyscore" | "zrevrange"
+        | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" => "zset",
         "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
         | "xread" | "xreadgroup" | "xrevrange" => "stream",
         "auth" | "client" | "hello" | "quit" | "reset" | "select" => "connection",
@@ -689,6 +694,8 @@ mod tests {
             ("sintercard", "set"),
             ("smove", "set"),
             ("zrangebyscore", "zset"),
+            ("zrangestore", "zset"),
+            ("zremrangebylex", "zset"),
             ("zpopmin", "zset"),
             ("pfadd", "hyperloglog"),
             ("pfcount", "hyperloglog"),

@@ -77,6 +77,7 @@ reason to couple all future commands into a single large story.
 | S47 | As a sharded-channel client, I can subscribe and publish on a namespace separate from normal channels so that shard-oriented workers do not receive unrelated broadcasts. | S | R185–R188; separate fan-out/counts, shard introspection, ACL/RESET and all-mode wire tests |
 | S48 | As a stream operator, I can bound retained history by length or minimum ID so that long-lived streams do not grow without limit. | XS | R189–R192; exact/approx/LIMIT/errors/TTL/WATCH and all-mode wire tests |
 | S49 | As a cache operator, I can observe expired and evicted keys through keyspace notifications so invalidation tooling can react to lifecycle removal as well as explicit mutations. | S | R193–R196; flag validation, lazy/reaped expiry, eviction policy, bounded queues and all-mode wire tests |
+| S50 | As a sorted-set user, I can query and store rank, score and lex ranges with reversal, limits and random member selection so that leaderboard and index workflows use one type. | M | R197–R200; range/store/lex/random, errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -702,6 +703,32 @@ reason to couple all future commands into a single large story.
   unit and all-mode wire tests for injected-clock lazy expiry, reaped expiry,
   eviction, `CONFIG` round-trip and flag/category filtering. Durable delivery,
   replay and complete-audit guarantees shall remain documented as absent.
+### Sorted-set range and selection completion (S50)
+
+- **R197 (event-driven):** `ZRANGE key start stop [BYSCORE|BYLEX] [REV]
+  [LIMIT offset count] [WITHSCORES]` shall preserve rank-mode behavior and add
+  score/lex selection with optional reversal. `LIMIT` shall be valid only with
+  `BYSCORE`/`BYLEX`; `WITHSCORES` shall be rejected with `BYLEX`; score and lex
+  bounds shall use inclusive/exclusive markers and `-`/`+` terminal bounds.
+- **R198 (event-driven):** `ZRANGESTORE destination source start stop
+  [BYSCORE|BYLEX] [REV] [LIMIT offset count]` shall apply the same selection,
+  atomically replace the destination sorted set, clear its TTL, delete it for an
+  empty selection and preserve the destination on wrong-type source or payload
+  OOM.
+- **R199 (event-driven):** `ZLEXCOUNT key min max` and
+  `ZREMRANGEBYLEX key min max` shall count/remove members in the lex range,
+  deleting the key when the set becomes empty, preserving TTL and touching the
+  stream for WATCH/journal capture. `ZRANDMEMBER key [count [WITHSCORES]]` shall
+  return one random member, up to `count` distinct members for positive counts,
+  `abs(count)` samples with replacement for negative counts (bounded by the
+  collection limit), and flat member/score pairs when `WITHSCORES` is requested.
+- **R200 (unwanted behavior):** Invalid range/mode/LIMIT/COUNT arguments,
+  malformed score or lex bounds, wrong types and missing keys shall return the
+  documented empty, null or bounded errors without partial writes. Tests shall
+  cover rank/score/lex ranges, `REV`, `LIMIT`, `WITHSCORES` combinations,
+  `ZRANGESTORE` self/empty/TTL/OOM cases, lex count/removal, random counts,
+  WATCH and all worker modes. Sorted-set algebra (`ZDIFF`/`ZUNION`/`ZINTER`/
+  `ZINTERCARD`) and `ZMPOP`/`BZMPOP` remain documented as unsupported.
 
 ### Development and delivery
 
@@ -1044,7 +1071,8 @@ and Valkey DELIFEQ; APPEND/STRLEN/GETRANGE/SETRANGE/SUBSTR; SETBIT/GETBIT/
 BITCOUNT/BITPOS/BITOP/BITFIELD/BITFIELD_RO; LCS (LEN/IDX/WITHMATCHLEN/
 MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store
-commands, score/rank ranges, pops and bounded blocking `BLPOP`/`BRPOP` documented
+commands, score/rank/lex ranges, range storage, random members, pops and bounded
+blocking `BLPOP`/`BRPOP` documented
 in [typed collections](collections.md); geospatial sorted sets (`GEOADD`,
 `GEOPOS`, `GEODIST`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`) documented in
 [geospatial limits](geospatial.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor
