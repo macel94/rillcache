@@ -103,3 +103,18 @@
   `main` (not the PR's last-synced base snapshot). Preserve protected gates and
   failed evidence. It is deployed only after its protected PR merges to `main`;
   do not describe an unmerged workflow as active.
+
+## Web search
+
+- Search with DuckDuckGo's HTML endpoint rather than the built-in search tool:
+  fetch `https://html.duckduckgo.com/html/?q=<SEARCH_QUERY>` with the
+  webpage-fetch tool and `format: markdown`. It needs no API key and no JS.
+- URL-encode the query, spaces as `+` (`?q=tailscale+web+ssh+tmux+utf8`).
+  Optional parameters: `&kl=us-en` for region, `&df=d|w|m|y` for a time filter.
+- Result links are DuckDuckGo redirects of the form
+  `//duckduckgo.com/l/?uddg=<percent-encoded-url>&rut=...`; decode `uddg` once
+  to recover the real URL, then fetch that URL if the page itself is needed.
+- Each result block already carries title, domain and snippet; prefer it over
+  opening links.
+- On an empty response, consent page or anti-bot challenge: retry once, then
+  fall back to the built-in search tool. Do not use `lite.duckduckgo.com`.
