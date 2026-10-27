@@ -119,6 +119,7 @@ reason to couple all future commands into a single large story.
 | S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 | S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
 | S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
+| S92 | As an operator or compatibility tool, I can probe RDB, replication and multi-database commands and receive explicit standalone responses instead of misleading unknown-command errors. | XS | R347–R349; truthful LASTSAVE, explicit SAVE/BGSAVE/replica/database boundaries, data preservation and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1591,6 +1592,24 @@ and the offline upstream harness tests.
   wrong-type and invalid-timeout errors, non-blocking transaction execution,
   watch aborts and every worker mode. Documentation shall retain unsupported
   scripting, RDB/RESTORE, multiple databases, replication and cluster routing.
+
+### Explicit RDB, replication and database boundaries (S92)
+
+- **R347 (event-driven):** `LASTSAVE` shall return `0` because no successful RDB
+  save exists. `SAVE` shall reject with an explicit RDB-unsupported error;
+  `BGSAVE` shall accept the documented `SCHEDULE` token syntactically and reject
+  with the same error, while malformed extra tokens and wrong arity shall keep
+  their syntax/arity errors. None shall mutate data or claim a successful save.
+- **R348 (event-driven):** `REPLICAOF NO ONE` and `SLAVEOF NO ONE` shall return
+  `+OK` because the server is already a standalone master. A host/port form,
+  `PSYNC`, `SYNC`, `REPLCONF` and `FAILOVER` shall return an explicit
+  replication-unsupported error rather than an unknown-command error, with arity
+  checks preserved.
+- **R349 (ubiquitous):** `MOVE` and `SWAPDB` shall return an explicit
+  database-0-only error and leave existing keys readable. All-mode tests shall
+  cover every boundary response, syntax/arity variants, data preservation and
+  every worker mode. Documentation shall retain the absence of RDB persistence,
+  replication/failover, multiple databases, scripts and cluster routing.
 
 ### Error reply statistics (S84)
 
