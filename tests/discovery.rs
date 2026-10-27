@@ -109,9 +109,9 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
     for mode in [None, Some(1), Some(4)] {
         let server = start(mode);
         let mut client = connect(&server);
-        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":198\r\n");
+        assert_eq!(request(&mut client, &[b"COMMAND", b"COUNT"]), b":202\r\n");
         let all_info = request(&mut client, &[b"COMMAND", b"INFO"]);
-        assert!(all_info.starts_with(b"*198\r\n*6\r\n$3\r\nacl\r\n"));
+        assert!(all_info.starts_with(b"*202\r\n*6\r\n$3\r\nacl\r\n"));
         assert_eq!(
             request(&mut client, &[b"COMMAND", b"INFO", b"MSETEX", b"DIGEST", b"DELIFEQ"]),
             b"*3\r\n*6\r\n$6\r\nmsetex\r\n:-4\r\n*2\r\n+write\r\n+denyoom\r\n:2\r\n:-1\r\n:2\r\n*6\r\n$6\r\ndigest\r\n:2\r\n*2\r\n+readonly\r\n+fast\r\n:1\r\n:1\r\n:1\r\n*6\r\n$7\r\ndelifeq\r\n:3\r\n*2\r\n+write\r\n+fast\r\n:1\r\n:1\r\n:1\r\n"
@@ -130,9 +130,11 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"bitfield_ro",
             b"bitop",
             b"bitpos",
+            b"blmove",
             b"blmpop",
             b"blpop",
             b"brpop",
+            b"brpoplpush",
             b"bzmpop",
             b"client",
             b"command",
@@ -197,6 +199,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"lindex",
             b"linsert",
             b"llen",
+            b"lmove",
             b"lmpop",
             b"lpop",
             b"lpos",
@@ -233,6 +236,7 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
             b"renamenx",
             b"reset",
             b"rpop",
+            b"rpoplpush",
             b"rpush",
             b"rpushx",
             b"sadd",

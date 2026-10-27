@@ -94,6 +94,7 @@ reason to couple all future commands into a single large story.
 | S64 | As a collection user, I can sort by derived weights and project joined string/hash values so that ordered views match existing application keys. | S | R253–R256; BY/GET substitution/weights/ACL/errors and all-mode wire tests |
 | S65 | As a hash user, I can sample fields and atomically read-and-remove fields so that random selection and cleanup do not require multiple round trips. | XS | R257–R260; HRANDFIELD/HGETDEL shapes, TTL/WATCH/errors and all-mode wire tests |
 | S66 | As a client or operator, I can ask the server which arguments are keys for a command so that routing and ACL tooling do not duplicate command metadata. | XS | R261–R264; static/counted/store extraction, errors and all-mode wire tests |
+| S68 | As a list user, I can move elements between two lists atomically, including blocking until a source element exists, so that queues and worker handoff do not need read-then-write races. | S | R269–R272; LMOVE/RPOPLPUSH sides, same-key rotation, TTL/OOM, blocking wake/timeout, MULTI/WATCH and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -379,8 +380,9 @@ reason to couple all future commands into a single large story.
   multi-key/left/right order, timeout nulls, RESP3 conversion, pipelined commands
   after unblock, idle-timeout immunity, wrong-type/float errors and shutdown.
   Documentation shall retain the absence of a condition-variable/push design,
-  strict latency SLOs, `BRPOPLPUSH`/`BLMOVE`, fairness under many blocked clients
-  and cluster/replication blocking semantics.
+  strict latency SLOs, fairness under many blocked clients and
+  cluster/replication blocking semantics; blocking `BLMOVE`/`BRPOPLPUSH` list
+  moves are specified separately by S68.
 ### Payload budget eviction (S36)
 
 - **R141 (event-driven):** When a write's final payload exceeds the configured
@@ -1135,6 +1137,30 @@ reason to couple all future commands into a single large story.
 - **R264 (ubiquitous):** Tests shall cover string, multi-key, counted, STORE,
   GEORADIUS and no-key commands, invalid command/arity and all worker modes.
   COMMAND GETKEYS does not change keyspace state or bypass ACL enforcement.
+
+### List element moves (S68)
+
+- **R269 (event-driven):** `LMOVE source destination LEFT|RIGHT LEFT|RIGHT` and
+  `RPOPLPUSH source destination` shall atomically pop the requested source side
+  and push onto the requested destination side, replying the moved element, null
+  for an absent or empty source, and WRONGTYPE without mutation for a wrong-type
+  source or destination.
+- **R270 (state-driven):** While `source` and `destination` are the same key, the
+  command shall rotate that list in place exactly once, without duplicating or
+  losing elements. Moving the last source element shall delete the source key; an
+  existing destination shall keep its TTL; a newly created destination shall have
+  no TTL; and an over-budget move shall reply OOM without changing either key.
+- **R271 (event-driven):** `BLMOVE ... timeout` and `BRPOPLPUSH ... timeout` shall
+  perform the move immediately when a live source element exists, otherwise wait
+  without holding the store lock and reply null on expiry. `0` shall wait
+  indefinitely and negative, non-float or out-of-range timeouts shall fail before
+  mutation. Inside `MULTI` both commands shall execute once, non-blockingly, at
+  `EXEC`; a conflicting `WATCH` shall abort without moving.
+- **R272 (ubiquitous):** Successful moves shall be journaled and shall emit
+  `lpush`/`rpush` on the destination, `lpop`/`rpop` on the source, and generic
+  `del` when the move empties the source. Tests shall cover all sides, same-key
+  rotation, wrong types, TTL, OOM, blocking wake/timeout, MULTI/WATCH,
+  notifications, journal replay and every worker mode.
 
 ### Development and delivery
 

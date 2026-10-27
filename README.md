@@ -77,10 +77,11 @@ than a native neighbour index. See [geospatial limits](docs/geospatial.md).
 Binary-safe lists, sets, hashes and sorted sets support creation, mutation,
 removal, bounded random selection (`SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`),
 HGETDEL atomic field reads/removal, set algebra/store commands, list position and
-multi-key pop (LPOS/LMPOP/BLMPOP), score ranges and rank/range inspection. Sorted sets add unified `ZRANGE` score/lex/reverse/limit
+multi-key pop (LPOS/LMPOP/BLMPOP), atomic and blocking list moves
+(LMOVE/RPOPLPUSH/BLMOVE/BRPOPLPUSH), score ranges and rank/range inspection. Sorted sets add unified `ZRANGE` score/lex/reverse/limit
 selection, `ZRANGESTORE`, `ZLEXCOUNT`, `ZREMRANGEBYLEX`, `ZRANDMEMBER` and
 weighted union/intersection/difference algebra with store and cardinality
-variants plus multi-key `ZMPOP` (blocking `BZMPOP` remains absent). `SORT`/
+variants plus multi-key `ZMPOP` and blocking `BZMPOP`. `SORT`/
 `SORT_RO` order lists, sets and sorted sets with `ASC`/`DESC`, `ALPHA`, `LIMIT`,
 dynamic `BY` weights, `GET` output patterns and atomic `STORE`. Dynamic patterns
 require all-key ACL access. See [SORT limits](docs/sort.md).

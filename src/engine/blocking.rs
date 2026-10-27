@@ -6,7 +6,7 @@
 //! guarantee or a server push notification.
 
 use super::Store;
-use super::collection_commands::{ListPopOutcome, ZSetPopOutcome};
+use super::collection_commands::{ListMoveOutcome, ListPopOutcome, ZSetPopOutcome};
 use super::collections::encode_list;
 use super::data::Collection;
 use super::notify::Category as NotifyCategory;
@@ -140,6 +140,62 @@ impl Store {
             }
             if let ListPopOutcome::Popped { key, .. } = &outcome {
                 self.notify_event("lmpop", key, NotifyCategory::List);
+            }
+        }
+        outcome
+    }
+
+    /// Move one element between lists under the store's normal transaction and
+    /// journal gate. Returns `Empty` when the source has no live element so the
+    /// caller can keep blocking.
+    pub(crate) fn blocking_list_move(
+        &self,
+        source: &[u8],
+        destination: &[u8],
+        from_left: bool,
+        to_left: bool,
+    ) -> ListMoveOutcome {
+        if self.journal.is_some() {
+            let Ok(_gate) = self.transaction_gate.write() else {
+                return ListMoveOutcome::JournalError;
+            };
+            self.blocking_list_move_gated(source, destination, from_left, to_left)
+        } else {
+            let Ok(_gate) = self.transaction_gate.read() else {
+                return ListMoveOutcome::JournalError;
+            };
+            self.blocking_list_move_gated(source, destination, from_left, to_left)
+        }
+    }
+
+    fn blocking_list_move_gated(
+        &self,
+        source: &[u8],
+        destination: &[u8],
+        from_left: bool,
+        to_left: bool,
+    ) -> ListMoveOutcome {
+        let marks = self.journal_marks();
+        let outcome = {
+            let Ok(mut data) = self.data.write() else {
+                return ListMoveOutcome::JournalError;
+            };
+            let now = self.now(&data);
+            self.list_move_in_data(&mut data, source, destination, from_left, to_left, now)
+        };
+        if matches!(outcome, ListMoveOutcome::Moved { .. }) {
+            let mut output = Vec::new();
+            self.commit_journal(marks, &[], &mut output, 0);
+            if output.first() == Some(&b'-') {
+                return ListMoveOutcome::JournalError;
+            }
+            if let ListMoveOutcome::Moved {
+                source,
+                source_emptied,
+                ..
+            } = &outcome
+            {
+                self.notify_list_move(source, destination, from_left, to_left, *source_emptied);
             }
         }
         outcome

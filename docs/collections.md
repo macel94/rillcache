@@ -1,7 +1,8 @@
 # Typed collections (incremental compatibility)
 
 The store supports binary-safe lists (`LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`,
-`RPOP`, `LLEN`, `LRANGE`, `BLPOP`, `BRPOP`), sets, hashes and sorted sets in one
+`RPOP`, `LMOVE`, `RPOPLPUSH`, `LLEN`, `LRANGE`, `BLPOP`, `BRPOP`, `BLMOVE`,
+`BRPOPLPUSH`), sets, hashes and sorted sets in one
 key namespace with strings and streams. Collection values live in the same key
 entry as strings and share the same expiration index, payload limit, keyspace
 commands and exclusive store lock. There is no shadow namespace. TYPE reports the
@@ -12,9 +13,9 @@ Redis behavior.
 
 ## Supported commands
 
-- Lists: `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LLEN`,
-  `LRANGE`, `LINDEX`, `LINSERT`, `LREM`, `LSET`, `LTRIM`, `LPOS`, `LMPOP`,
-  `BLPOP`, `BRPOP`, `BLMPOP`.
+- Lists: `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LMOVE`,
+  `RPOPLPUSH`, `LLEN`, `LRANGE`, `LINDEX`, `LINSERT`, `LREM`, `LSET`, `LTRIM`,
+  `LPOS`, `LMPOP`, `BLPOP`, `BRPOP`, `BLMOVE`, `BRPOPLPUSH`, `BLMPOP`.
 - Sets: `SADD`, `SREM`, `SMEMBERS`, `SCARD`, `SISMEMBER`, `SMISMEMBER`,
   `SMOVE`, `SINTER`, `SUNION`, `SDIFF`, `SINTERCARD`, `SINTERSTORE`,
   `SUNIONSTORE`, `SDIFFSTORE`, `SPOP`, `SRANDMEMBER`.
@@ -105,6 +106,34 @@ records the removal and ACL key patterns are checked before blocking. `BLPOP` an
 `BRPOP` are rejected inside `MULTI` rather than executing a non-blocking variant;
 this is a documented divergence from Redis's immediate-null EXEC behavior.
 
+### List element moves
+
+`LMOVE source destination LEFT|RIGHT LEFT|RIGHT` pops one element from the named
+side of `source` and pushes it onto the named side of `destination`, replying the
+moved value. `RPOPLPUSH source destination` is the `RIGHT` to `LEFT` shorthand.
+An absent or empty source replies null without creating the destination. A
+wrong-type source or destination replies WRONGTYPE before changing either key.
+`source` and `destination` may be the same key, in which case the list is rotated
+in place rather than duplicated. Moving the last element deletes the source key;
+a moved-into key is created without a TTL, while an existing destination keeps its
+TTL and a non-emptied source keeps its own. Payload admission is checked across
+both keys before the single atomic commit, so an over-budget move replies OOM and
+leaves both keys unchanged.
+
+`BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout` and
+`BRPOPLPUSH source destination timeout` apply the same move once a live source
+element exists. Otherwise the connection blocks with the bounded polling model
+described below and replies null on timeout; inside `MULTI` they execute once,
+non-blockingly, at `EXEC` after timeout validation. Timeout `0` waits
+indefinitely; a negative timeout, a non-float value or an out-of-range duration
+returns an error.
+
+Moves use the normal transaction/journal gate. Non-blocking moves are replayed
+from the final key state, and blocking moves commit the same journal records and
+emit Redis-compatible keyspace notifications: `lpush`/`rpush` on the destination,
+`lpop`/`rpop` on the source, and a generic `del` when the source was emptied.
+They do not emit a synthetic `lmove` event.
+
 ### Blocking sorted-set pops
 
 `BZMPOP timeout numkeys key [key ...] MIN|MAX [COUNT count]` applies the same
@@ -117,7 +146,8 @@ multi-pop equivalent at `EXEC` after timeout validation; `WATCH` conflicts abort
 `EXEC` without popping. Successful blocking and immediate pops share the journal
 gate and emit `zpopmin`/`zpopmax`.
 
-Persistence tests cover journal replay after blocking list and sorted-set pops.
+Persistence tests cover journal replay after blocking list moves, blocking list
+pops and blocking sorted-set pops.
 All-mode wire tests cover waiting for a push, multiple-key order, left/right order, timeout nulls,
 WRONGTYPE/float errors, pipelined commands after unblock, RESP3 null conversion,
 idle-timeout immunity and MULTI rejection. `BZMPOP` wire tests cover immediate
