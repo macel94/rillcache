@@ -40,6 +40,7 @@ mod streams;
 mod string_algorithms;
 mod string_ranges;
 mod transaction;
+mod unsupported;
 mod xxh3;
 pub use acl_log::AclLogEntry;
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
@@ -463,6 +464,7 @@ impl Store {
             && !self.execute_string_algorithms(arguments, output)
             && !self.execute_hll(arguments, output)
             && !self.execute_collection_commands(arguments, output)
+            && !self.execute_unsupported(arguments, output)
             && !self.execute_collections(arguments, output)
         {
             output.extend_from_slice(b"-ERR unknown command\r\n");
