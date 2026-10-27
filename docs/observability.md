@@ -29,8 +29,9 @@ errors are not command replies and are not counted.
 | `pubsub_channels` | Distinct channels with at least one live subscription |
 | `pubsub_patterns` | Total pattern subscriptions (not distinct patterns) |
 
-`INFO keyspace` reports `keys`, `expires` and `subexpiry` (the number of live
-hash keys with at least one field deadline). `expired_subkeys` resets with
+`INFO keyspace` reports `keys`, `expires`, `avg_ttl` (exact mean remaining
+milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
+(the number of live hash keys with at least one field deadline). `expired_subkeys` resets with
 `CONFIG RESETSTAT`; `subexpiry` is live state and is not a counter.
 
 `INFO clients` reports `connected_clients` (the process-local registry size),

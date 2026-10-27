@@ -113,6 +113,7 @@ reason to couple all future commands into a single large story.
 | S83 | As an operator, I can kill connections by minimum age so stale or leaky clients can be reaped without knowing their IDs. | XS | R321–R322; MAXAGE matching, invalid values, caller protection and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 | S84 | As an operator, I can inspect bounded per-error-code command reply counts so that repeated failures are visible without scraping client logs. | XS | R323–R325; counts/reset/INFO all/all-mode wire tests |
+| S85 | As an operator, I can see the average remaining TTL of expiring keys in `INFO keyspace` so cache freshness is visible without per-key scans. | XS | R326–R327; mean TTL, empty/expired state and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1547,6 +1548,17 @@ and the offline upstream harness tests.
   `INFO all` inclusion, reset clearing and all worker modes. This is a bounded
   count table, not an error log, message history, durable audit or replication
   statistic. (feat: add bounded error reply statistics)
+
+### Keyspace average TTL (S85)
+
+- **R326 (event-driven):** When `INFO keyspace` or `INFO all` is requested, the
+  server shall include `avg_ttl` in the `db0` line: the exact integer mean of
+  remaining milliseconds for live keys with a deadline, or `0` when no live key
+  has a deadline.
+- **R327 (ubiquitous):** Tests shall cover the empty state, mixed expiring and
+  persistent keys, post-deletion reset to zero and every worker mode.
+  Documentation shall retain that this is an exact mean over live key deadlines,
+  not Redis's sampled estimate, and not an RSS or payload measurement.
 
 ### Development and delivery
 

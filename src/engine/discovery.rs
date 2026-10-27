@@ -787,6 +787,20 @@ impl Store {
             .values()
             .filter(|entry| entry.alive(now) && !entry.field_ttl.is_empty())
             .count();
+        let (ttl_sum, ttl_count) = data
+            .entries
+            .values()
+            .filter_map(|entry| {
+                entry
+                    .alive(now)
+                    .then_some(entry.expires)
+                    .flatten()
+                    .map(|deadline| u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0))
+            })
+            .fold((0u64, 0u64), |(sum, count), ttl| {
+                (sum.saturating_add(ttl), count + 1)
+            });
+        let avg_ttl = ttl_sum.checked_div(ttl_count).unwrap_or(0);
         let mut text = String::new();
         for (index, section) in sections.iter().enumerate() {
             let section = section.to_ascii_lowercase();
@@ -830,7 +844,7 @@ impl Store {
             if matches!(section.as_slice(), b"keyspace" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys},subexpiry={subexpiry_keys}\r",
+                    "# Keyspace\r\ndb0:keys={live_keys},expires={expiring_keys},avg_ttl={avg_ttl},subexpiry={subexpiry_keys}\r",
                 );
             }
             if matches!(section.as_slice(), b"clients" | b"default" | b"all") {
