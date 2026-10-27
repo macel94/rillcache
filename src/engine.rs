@@ -31,6 +31,7 @@ mod options;
 mod pubsub;
 mod scan;
 mod sha256;
+mod slowlog;
 mod sort;
 mod streams;
 mod string_algorithms;
@@ -111,6 +112,10 @@ pub struct Store {
     connections_received: std::sync::atomic::AtomicU64,
     commands_processed: std::sync::atomic::AtomicU64,
     rejected_connections: std::sync::atomic::AtomicU64,
+    slowlog: std::sync::RwLock<std::collections::VecDeque<slowlog::SlowlogEntry>>,
+    slowlog_next_id: std::sync::atomic::AtomicU64,
+    slowlog_threshold_us: std::sync::atomic::AtomicI64,
+    slowlog_max_len: std::sync::atomic::AtomicUsize,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -162,6 +167,10 @@ impl Store {
             connections_received: std::sync::atomic::AtomicU64::new(0),
             commands_processed: std::sync::atomic::AtomicU64::new(0),
             rejected_connections: std::sync::atomic::AtomicU64::new(0),
+            slowlog: std::sync::RwLock::new(std::collections::VecDeque::new()),
+            slowlog_next_id: std::sync::atomic::AtomicU64::new(0),
+            slowlog_threshold_us: std::sync::atomic::AtomicI64::new(slowlog::DEFAULT_THRESHOLD_US),
+            slowlog_max_len: std::sync::atomic::AtomicUsize::new(slowlog::DEFAULT_MAX_LEN),
         }
     }
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.

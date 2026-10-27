@@ -97,6 +97,7 @@ reason to couple all future commands into a single large story.
 | S67 | As a stream consumer, I can read new or pending history entries across several group streams in one command so that sharded workloads avoid per-stream round trips. | S | R265–R268; multi-stream new/history/mixed/BLOCK/count/errors and all-mode wire tests |
 | S68 | As a list user, I can move elements between two lists atomically, including blocking until a source element exists, so that queues and worker handoff do not need read-then-write races. | S | R269–R272; LMOVE/RPOPLPUSH sides, same-key rotation, TTL/OOM, blocking wake/timeout, MULTI/WATCH and all-mode wire tests |
 | S69 | As a keyspace user, I can request deletion through the standard `UNLINK` command so that clients and libraries that prefer asynchronous deletion remain compatible. | XS | R273–R275; mixed types/duplicates/expiry/MULTI/GETKEYS/notifications and all-mode wire tests |
+| S70 | As an operator, I can inspect bounded slow-command history and tune its threshold so that latency problems can be diagnosed without log scraping or unbounded memory. | S | R276–R279; command shapes, config, truncation, redaction, blocking/MULTI and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1203,6 +1204,30 @@ reason to couple all future commands into a single large story.
 - **R275 (ubiquitous):** Tests shall cover strings, lists, hashes and sorted sets,
   duplicate and missing keys, expired keys, MULTI execution, COMMAND GETKEYS,
   notification delivery, arity errors and every worker mode.
+
+### Slow command log (S70)
+
+- **R276 (event-driven):** `SLOWLOG GET [count]`, `LEN`, `RESET` and `HELP` shall
+  return newest-first entries `[id, timestamp, duration_us, argv, client_address,
+  client_name]`, the current bounded length, an acknowledgement plus cleared
+  entries, and help text. `count` shall default to 10, accept `-1` as all,
+  `0` as empty and reject smaller or non-integer values with bounded errors.
+- **R277 (state-driven):** While `slowlog-log-slower-than` is non-negative and
+  `slowlog-max-len` is non-zero, commands whose measured duration reaches the
+  threshold shall be retained up to the configured maximum. `CONFIG GET/SET`
+  shall expose and update both values atomically; negative thresholds disable
+  recording, zero maximum length clears/disables recording, lowering the maximum
+  trims immediately, and the maximum shall be bounded at 1,000,000 entries.
+- **R278 (event-driven):** Each entry shall retain at most 32 arguments and 128
+  bytes per argument with explicit remainder markers, redact credentials supplied
+  through `AUTH`, `HELLO AUTH`, sensitive `CONFIG SET` values and
+  `ACL SETUSER`/`DELUSER`/`GETUSER`, and measure the full wait for blocking
+  commands. Queued `MULTI` commands shall not be logged separately; `EXEC` shall
+  be logged once for the batch, documented as a divergence.
+- **R279 (ubiquitous):** Tests shall cover recording, ordering, count semantics,
+  truncation, redaction, configuration validation and bounds, blocking duration,
+  `MULTI` behavior, disabling and every worker mode. The log shall remain
+  process-local, in-memory and absent from persistent storage or `INFO`.
 
 ### Development and delivery
 

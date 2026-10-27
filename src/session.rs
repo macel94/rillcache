@@ -54,6 +54,7 @@ struct Blocked {
     keys: Vec<Vec<u8>>,
     deadline: Option<Instant>,
     kind: BlockedKind,
+    slowlog: Option<(Instant, Vec<Vec<u8>>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +122,45 @@ impl Session {
     /// Dispatch connection commands locally and all data commands through the
     /// stable public RESP2 Store API, adapting only this session's reply.
     pub fn execute(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        let tracked = arguments.first().is_some_and(|command| {
+            let queued = self.multi.is_some() && !command.eq_ignore_ascii_case(b"EXEC");
+            !queued && store.slowlog_enabled()
+        });
+        let started = tracked.then(Instant::now);
+        let action = self.execute_inner(store, arguments, output);
+        if let Some(started) = started {
+            if self.blocked.is_some() {
+                if let Some(blocked) = self.blocked.as_mut() {
+                    blocked.slowlog = Some((
+                        started,
+                        arguments.iter().map(|argument| argument.to_vec()).collect(),
+                    ));
+                }
+            } else {
+                self.record_slowlog(store, arguments, started);
+            }
+        }
+        action
+    }
+
+    fn record_slowlog(&self, store: &Store, arguments: &[&[u8]], started: Instant) {
+        if !store.slowlog_enabled() {
+            return;
+        }
+        store.slowlog_push(
+            arguments,
+            started.elapsed(),
+            &store.client_address(self.id).unwrap_or_default(),
+            self.name.as_deref().unwrap_or_default(),
+        );
+    }
+
+    fn execute_inner(
+        &mut self,
+        store: &Store,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) -> Action {
         let Some(command) = arguments.first() else {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
@@ -979,6 +1019,7 @@ impl Session {
             Instant::now().checked_add(duration)
         };
         self.blocked = Some(Blocked {
+            slowlog: None,
             keys,
             deadline,
             kind: BlockedKind::List { left },
@@ -1021,6 +1062,7 @@ impl Session {
             Instant::now().checked_add(duration)
         };
         self.blocked = Some(Blocked {
+            slowlog: None,
             keys: options.keys.iter().map(|key| key.to_vec()).collect(),
             deadline,
             kind: BlockedKind::ListMulti {
@@ -1080,6 +1122,7 @@ impl Session {
             Instant::now().checked_add(duration)
         };
         self.blocked = Some(Blocked {
+            slowlog: None,
             keys: vec![source.to_vec(), destination.to_vec()],
             deadline,
             kind: BlockedKind::ListMove {
@@ -1127,6 +1170,7 @@ impl Session {
             Instant::now().checked_add(duration)
         };
         self.blocked = Some(Blocked {
+            slowlog: None,
             keys: options.keys.iter().map(|key| key.to_vec()).collect(),
             deadline,
             kind: BlockedKind::ZSet {
@@ -1165,6 +1209,7 @@ impl Session {
             Instant::now().checked_add(Duration::from_millis(block))
         };
         self.blocked = Some(Blocked {
+            slowlog: None,
             keys: options.keys.iter().map(|key| key.to_vec()).collect(),
             deadline,
             kind: BlockedKind::XRead {
@@ -1194,6 +1239,7 @@ impl Session {
             Instant::now().checked_add(Duration::from_millis(block))
         };
         self.blocked = Some(Blocked {
+            slowlog: None,
             keys: options.keys.iter().map(|key| key.to_vec()).collect(),
             deadline,
             kind: BlockedKind::XReadGroup {
@@ -1289,12 +1335,20 @@ impl Session {
         if !ready && !expired {
             return None;
         }
+        let slowlog = self
+            .blocked
+            .as_mut()
+            .and_then(|blocked| blocked.slowlog.take());
         self.blocked = None;
         if !ready {
             reply.extend_from_slice(b"*-1\r\n");
         }
         if self.protocol == Protocol::Resp3 {
             reply = convert_resp2_reply(&reply);
+        }
+        if let Some((started, arguments)) = slowlog {
+            let borrowed: Vec<&[u8]> = arguments.iter().map(Vec::as_slice).collect();
+            self.record_slowlog(store, &borrowed, started);
         }
         Some(reply)
     }
