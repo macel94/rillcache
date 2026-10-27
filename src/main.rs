@@ -304,7 +304,7 @@ mod tests {
         else {
             panic!("expected notification config");
         };
-        assert_eq!(notify.notify_keyspace_events.as_string(), "KEg$lshzt");
+        assert_eq!(notify.notify_keyspace_events.as_string(), "KEg$lshztxe");
         let Options::Run(acl) =
             options(["--aclfile", "/etc/rillcache/users.acl"].map(str::to_owned)).unwrap()
         else {

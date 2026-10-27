@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use rillcache::engine::NotifyFlags;
+use rillcache::engine::{EvictionPolicy, NotifyFlags};
 use rillcache::protocol::encode_request;
 use rillcache::{Config, Server, ServerHandle};
 
@@ -402,7 +402,6 @@ fn stream_claim_mutations_emit_claim_events() {
     );
     server.shutdown().unwrap();
 }
-
 #[test]
 fn stream_trim_emits_xtrim_events() {
     let server = start(NotifyFlags::parse(b"KEA").unwrap());
@@ -435,5 +434,73 @@ fn stream_trim_emits_xtrim_events() {
             b"s"
         ])
     );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn expired_and_evicted_flags_accept_config_and_eviction_publishes_events() {
+    let workers = match std::env::var("RILLCACHE_TEST_THREADS").as_deref() {
+        Ok("0") | Err(_) => None,
+        Ok("1") => Some(1),
+        Ok("4") => Some(4),
+        Ok(value) => panic!("invalid test worker mode {value}"),
+    };
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        worker_threads: workers,
+        max_data_bytes: 10,
+        maxmemory_policy: EvictionPolicy::AllKeysRandom,
+        notify_keyspace_events: NotifyFlags::parse(b"KEA").unwrap(),
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(&mut writer, &[b"SET", b"victim", b"123"], b"+OK\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:set",
+            b"victim"
+        ])
+    );
+    send(&mut writer, &[b"SET", b"new", b"123"], b"+OK\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:evicted",
+            b"victim"
+        ])
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:set",
+            b"new"
+        ])
+    );
+
+    send(
+        &mut writer,
+        &[b"CONFIG", b"SET", b"notify-keyspace-events", b"KEx"],
+        b"+OK\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"CONFIG", b"GET", b"notify-keyspace-events"],
+        b"",
+    );
+    let reply = read_frame(&mut writer);
+    assert_eq!(reply, frame(&[b"notify-keyspace-events", b"KEx"]));
     server.shutdown().unwrap();
 }

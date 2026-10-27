@@ -111,10 +111,10 @@ hash-slot routing, keyspace notification integration, persistence or replication
 of messages. See [pub/sub](docs/pubsub.md).
 
 Keyspace/keyevent notifications publish changed-key events to normal pub/sub
-channels under `K`/`E` and `g$lshzt`/`A` flags, with runtime `CONFIG SET`
-toggling. Expired/evicted/keymiss/new-key and `FLUSH*` event classes are explicitly
-unsupported, and delivery is at-most-once and non-persistent. See
-[keyspace notifications](docs/notifications.md).
+channels under `K`/`E` and `g$lshztxe`/`A` flags, including bounded at-most-once
+`expired`/`evicted` lifecycle events, with runtime `CONFIG SET` toggling.
+Keymiss/new-key and `FLUSH*` event classes are explicitly unsupported, and
+delivery is non-persistent. See [keyspace notifications](docs/notifications.md).
 
 Optional payload-budget eviction (`--maxmemory-policy noeviction|allkeys-random|
 allkeys-lru|volatile-random|volatile-lru|volatile-ttl`, runtime `CONFIG SET`) keeps

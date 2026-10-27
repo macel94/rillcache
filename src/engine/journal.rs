@@ -281,7 +281,7 @@ impl Store {
         if !journaled && !notified {
             return;
         }
-        let (records, events) = {
+        let (records, events, lifecycle) = {
             let Ok(mut data) = self.data.write() else {
                 if journaled {
                     output.truncate(start);
@@ -296,41 +296,52 @@ impl Store {
                 data.changes_since(sequence)
             };
             if keys.is_empty() && !full {
-                return;
+                let lifecycle = if notified {
+                    data.drain_lifecycle()
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                (Vec::new(), Vec::new(), lifecycle)
+            } else {
+                let now = self.clock.now_ms().max(0);
+                let keys = if full && journaled {
+                    let mut all: Vec<Vec<u8>> = data.entries.keys().cloned().collect();
+                    all.sort_unstable();
+                    all
+                } else {
+                    keys
+                };
+                let events = if notified && !full {
+                    notification_events(&data, arguments, &keys, now, self.notify_flags())
+                } else {
+                    Vec::new()
+                };
+                let lifecycle = if notified {
+                    data.drain_lifecycle()
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                let records = if journaled {
+                    let mut records = Vec::new();
+                    if full {
+                        encode_request(&[b"FLUSHALL"], &mut records);
+                    }
+                    let budget = self
+                        .journal_limits
+                        .max_frame_bytes
+                        .saturating_sub(4096)
+                        .clamp(1024, CHUNK_BUDGET);
+                    for key in &keys {
+                        encode_key(&data, key, now, budget, &mut records);
+                    }
+                    records
+                } else {
+                    Vec::new()
+                };
+                (records, events, lifecycle)
             }
-            let now = self.clock.now_ms().max(0);
-            let keys = if full && journaled {
-                let mut all: Vec<Vec<u8>> = data.entries.keys().cloned().collect();
-                all.sort_unstable();
-                all
-            } else {
-                keys
-            };
-            let events = if notified && !full {
-                notification_events(&data, arguments, &keys, now, self.notify_flags())
-            } else {
-                Vec::new()
-            };
-            let records = if journaled {
-                let mut records = Vec::new();
-                if full {
-                    encode_request(&[b"FLUSHALL"], &mut records);
-                }
-                let budget = self
-                    .journal_limits
-                    .max_frame_bytes
-                    .saturating_sub(4096)
-                    .clamp(1024, CHUNK_BUDGET);
-                for key in &keys {
-                    encode_key(&data, key, now, budget, &mut records);
-                }
-                records
-            } else {
-                Vec::new()
-            };
-            (records, events)
         };
-        if journaled {
+        if journaled && !records.is_empty() {
             let Some(journal) = self.journal.as_ref() else {
                 return;
             };
@@ -348,8 +359,19 @@ impl Store {
                 return;
             }
         }
+        self.publish_lifecycle(lifecycle);
         for (channel, payload) in events {
             self.publish(&channel, &payload);
+        }
+    }
+
+    fn publish_lifecycle(&self, lifecycle: (Vec<Vec<u8>>, Vec<Vec<u8>>)) {
+        let (expired, evicted) = lifecycle;
+        for key in expired {
+            self.notify_event("expired", &key, NotifyCategory::Expired);
+        }
+        for key in evicted {
+            self.notify_event("evicted", &key, NotifyCategory::Evicted);
         }
     }
 
@@ -633,6 +655,9 @@ fn notification_events(
     };
     let mut events = Vec::new();
     for key in keys {
+        if data.was_evicted(key) {
+            continue;
+        }
         let Some((event, category)) = event_for(data, command, arguments, key, now) else {
             continue;
         };

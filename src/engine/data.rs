@@ -232,13 +232,39 @@ pub(super) struct Data {
     flush_seq: u64,
     journal_events: VecDeque<(u64, Vec<u8>)>,
     journal_overflow: bool,
+    expired_events: VecDeque<Vec<u8>>,
+    evicted_events: VecDeque<Vec<u8>>,
     pub(in crate::engine) expired_keys: u64,
     pub(in crate::engine) evicted_keys: u64,
     pub(in crate::engine) eviction: EvictionPolicy,
     eviction_seq: u64,
     access_seq: u64,
 }
+const MAX_LIFECYCLE_EVENTS: usize = 1024;
+
+fn push_lifecycle(queue: &mut VecDeque<Vec<u8>>, key: &[u8]) {
+    if queue.len() >= MAX_LIFECYCLE_EVENTS {
+        queue.pop_front();
+    }
+    queue.push_back(key.to_vec());
+}
+
 impl Data {
+    /// True while a key evicted during the current command is pending publication.
+    pub(super) fn was_evicted(&self, key: &[u8]) -> bool {
+        self.evicted_events
+            .iter()
+            .any(|evicted| evicted.as_slice() == key)
+    }
+
+    /// Drain bounded lazy-expiration and eviction keys for notification delivery.
+    pub(super) fn drain_lifecycle(&mut self) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        (
+            self.expired_events.drain(..).collect(),
+            self.evicted_events.drain(..).collect(),
+        )
+    }
+
     /// Record a mutation visible to `WATCH`/`EXEC` conflict checks and to the
     /// optional append-only journal. The event log is bounded; overflow forces a
     /// full-state journal snapshot instead of allowing a missed key.
@@ -306,6 +332,8 @@ impl Data {
         self.flush_seq = self.flush_seq.wrapping_add(1);
         self.journal_events.clear();
         self.journal_overflow = false;
+        self.expired_events.clear();
+        self.evicted_events.clear();
     }
 
     pub fn remove(&mut self, key: &[u8]) -> Option<Entry> {
@@ -325,6 +353,7 @@ impl Data {
         }
         if self.entries.get(key).is_some_and(|entry| !entry.alive(now)) {
             self.remove(key);
+            push_lifecycle(&mut self.expired_events, key);
             self.expired_keys = self.expired_keys.saturating_add(1);
         }
     }
@@ -340,6 +369,7 @@ impl Data {
             }
             let (_, key) = self.expirations.pop_first().expect("checked expiry entry");
             self.remove(&key);
+            push_lifecycle(&mut self.expired_events, &key);
             self.expired_keys = self.expired_keys.saturating_add(1);
             count += 1;
         }
@@ -485,6 +515,7 @@ impl Data {
             return false;
         };
         if self.remove(&chosen).is_some() {
+            push_lifecycle(&mut self.evicted_events, &chosen);
             self.evicted_keys = self.evicted_keys.saturating_add(1);
             true
         } else {
