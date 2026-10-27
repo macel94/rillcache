@@ -129,6 +129,7 @@ pub struct Store {
     latency: std::sync::RwLock<latency::State>,
     auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64,
     auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64,
+    aof_config: RwLock<journal::AofConfig>,
     error_stats: RwLock<std::collections::BTreeMap<Vec<u8>, u64>>,
     shutdown_requested: AtomicBool,
 }
@@ -156,6 +157,11 @@ impl Store {
         let mut journal = journal::Journal::open(path, policy, limits)?;
         journal.replay(&store)?;
         store.attach_journal(journal);
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("appendonly.aof");
+        store.set_aof_config(true, filename, policy);
         Ok(store)
     }
 
@@ -195,6 +201,7 @@ impl Store {
             latency: std::sync::RwLock::new(latency::State::default()),
             auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64::new(100),
             auto_aof_rewrite_min_size: std::sync::atomic::AtomicU64::new(64 * 1024 * 1024),
+            aof_config: RwLock::new(journal::AofConfig::default()),
             error_stats: RwLock::new(std::collections::BTreeMap::new()),
             shutdown_requested: AtomicBool::new(false),
         }
@@ -715,6 +722,47 @@ impl Store {
     pub(crate) fn set_auto_aof_rewrite_min_size(&self, value: u64) {
         self.auto_aof_rewrite_min_size
             .store(value, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn aof_config(&self) -> Option<journal::AofConfig> {
+        self.aof_config.read().ok().map(|config| config.clone())
+    }
+
+    pub(crate) fn set_aof_config(
+        &self,
+        appendonly: bool,
+        appendfilename: &str,
+        policy: FsyncPolicy,
+    ) -> bool {
+        self.aof_config.write().is_ok_and(|mut config| {
+            config.appendonly = appendonly;
+            config.appendfilename = appendfilename.to_string();
+            config.policy = policy;
+            true
+        })
+    }
+
+    pub(crate) fn set_aof_policy(&self, policy: FsyncPolicy) -> std::io::Result<()> {
+        if let Some(journal) = self.journal.as_ref() {
+            let mut journal = journal
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
+            journal.set_policy(policy)?;
+        }
+        let mut config = self
+            .aof_config
+            .write()
+            .map_err(|_| std::io::Error::other("poisoned AOF configuration lock"))?;
+        config.policy = policy;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn journal_policy(&self) -> Option<FsyncPolicy> {
+        self.journal
+            .as_ref()
+            .and_then(|journal| journal.lock().ok())
+            .map(|journal| journal.policy())
     }
 
     pub fn eviction_policy(&self) -> EvictionPolicy {

@@ -136,6 +136,103 @@ fn persistence_info_reports_disabled_state_in_all_modes() {
 }
 
 #[test]
+fn config_reports_startup_journal_mode_and_rejects_startup_only_changes() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers, None);
+        let mut stream = connect(&server);
+        command(
+            &mut stream,
+            &[b"CONFIG", b"GET", b"appendonly"],
+            b"*2\r\n$10\r\nappendonly\r\n$2\r\nno\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"GET", b"appendfilename"],
+            b"*2\r\n$14\r\nappendfilename\r\n$8\r\ntest.aof\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"GET", b"appendfsync"],
+            b"*2\r\n$11\r\nappendfsync\r\n$8\r\neverysec\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"appendfsync", b"ALWAYS"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"GET", b"appendfsync"],
+            b"*2\r\n$11\r\nappendfsync\r\n$6\r\nalways\r\n",
+        );
+        let reply = {
+            let mut request = Vec::new();
+            encode_request(&[b"CONFIG", b"SET", b"appendonly", b"yes"], &mut request);
+            stream.write_all(&request).unwrap();
+            read_frame(&mut stream, 0)
+        };
+        assert!(
+            reply.starts_with(b"-ERR appendonly and appendfilename"),
+            "{reply:?}"
+        );
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn config_updates_appendfsync_on_a_live_journal_in_all_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        let dir: PathBuf = std::env::temp_dir().join(format!(
+            "rillcache-aof-config-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let server = start(workers, Some(&dir));
+            let mut stream = connect(&server);
+            command(
+                &mut stream,
+                &[b"CONFIG", b"GET", b"appendonly"],
+                b"*2\r\n$10\r\nappendonly\r\n$3\r\nyes\r\n",
+            );
+            command(
+                &mut stream,
+                &[b"CONFIG", b"GET", b"appendfilename"],
+                b"*2\r\n$14\r\nappendfilename\r\n$8\r\ntest.aof\r\n",
+            );
+            command(
+                &mut stream,
+                &[b"CONFIG", b"GET", b"appendfsync"],
+                b"*2\r\n$11\r\nappendfsync\r\n$6\r\nalways\r\n",
+            );
+            command(
+                &mut stream,
+                &[b"CONFIG", b"SET", b"appendfsync", b"no"],
+                b"+OK\r\n",
+            );
+            command(&mut stream, &[b"SET", b"k", b"v"], b"+OK\r\n");
+            command(
+                &mut stream,
+                &[b"CONFIG", b"SET", b"appendfsync", b"always"],
+                b"+OK\r\n",
+            );
+            command(&mut stream, &[b"SET", b"k", b"v2"], b"+OK\r\n");
+            command(
+                &mut stream,
+                &[b"CONFIG", b"GET", b"appendfsync"],
+                b"*2\r\n$11\r\nappendfsync\r\n$6\r\nalways\r\n",
+            );
+            server.shutdown().unwrap();
+        }
+        let server = start(Some(1), Some(&dir));
+        let mut stream = connect(&server);
+        command(&mut stream, &[b"GET", b"k"], b"$2\r\nv2\r\n");
+        server.shutdown().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+#[test]
 fn persistence_info_reports_live_journal_state_in_all_modes() {
     for workers in [None, Some(1), Some(4)] {
         let dir: PathBuf = std::env::temp_dir().join(format!(
