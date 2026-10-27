@@ -277,6 +277,32 @@ impl Store {
             || command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE")
         {
             self.zset_range_by_score(args, command.eq_ignore_ascii_case(b"ZREVRANGEBYSCORE"), out);
+        } else if command.eq_ignore_ascii_case(b"ZRANGEBYLEX")
+            || command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX")
+        {
+            if args.len() < 4 {
+                arity(
+                    if command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX") {
+                        "zrevrangebylex"
+                    } else {
+                        "zrangebylex"
+                    },
+                    out,
+                );
+            } else {
+                let reverse = command.eq_ignore_ascii_case(b"ZREVRANGEBYLEX");
+                let mut rebuilt = Vec::with_capacity(args.len() + 2);
+                rebuilt.push(b"ZRANGE".as_slice());
+                rebuilt.push(args[1]);
+                rebuilt.push(args[2]);
+                rebuilt.push(args[3]);
+                rebuilt.push(b"BYLEX");
+                if reverse {
+                    rebuilt.push(b"REV");
+                }
+                rebuilt.extend_from_slice(&args[4..]);
+                self.zset_range(&rebuilt, false, out);
+            }
         } else if command.eq_ignore_ascii_case(b"ZREMRANGEBYRANK")
             || command.eq_ignore_ascii_case(b"ZREMRANGEBYSCORE")
         {

@@ -143,6 +143,7 @@ const COMMANDS: &[Command] = &[
     cmd("hkeys", 2, &["readonly"], 1, 1, 1),
     cmd("hlen", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("hmget", -3, &["readonly", "fast"], 1, 1, 1),
+    cmd("hmset", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("hpersist", -5, &["write", "fast"], 1, 1, 1),
     cmd("hpexpire", -6, &["write", "fast"], 1, 1, 1),
     cmd("hpexpireat", -6, &["write", "fast"], 1, 1, 1),
@@ -399,10 +400,12 @@ const COMMANDS: &[Command] = &[
     cmd("zinterstore", -4, &["write", "denyoom"], 1, 1, 1),
     cmd("zlexcount", 4, &["readonly", "fast"], 1, 1, 1),
     cmd("zmpop", -4, &["write"], 2, -1, 1),
+    cmd("zmscore", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("zpopmax", -2, &["write", "fast"], 1, 1, 1),
     cmd("zpopmin", -2, &["write", "fast"], 1, 1, 1),
     cmd("zrandmember", -2, &["readonly"], 1, 1, 1),
     cmd("zrange", -4, &["readonly"], 1, 1, 1),
+    cmd("zrangebylex", -4, &["readonly"], 1, 1, 1),
     cmd("zrangebyscore", -4, &["readonly"], 1, 1, 1),
     cmd("zrangestore", -5, &["write", "denyoom"], 1, 2, 1),
     cmd("zrank", -3, &["readonly", "fast"], 1, 1, 1),
@@ -411,6 +414,7 @@ const COMMANDS: &[Command] = &[
     cmd("zremrangebyrank", 4, &["write"], 1, 1, 1),
     cmd("zremrangebyscore", 4, &["write"], 1, 1, 1),
     cmd("zrevrange", -4, &["readonly"], 1, 1, 1),
+    cmd("zrevrangebylex", -4, &["readonly"], 1, 1, 1),
     cmd("zrevrangebyscore", -4, &["readonly"], 1, 1, 1),
     cmd("zrevrank", -3, &["readonly", "fast"], 1, 1, 1),
     cmd("zscan", -3, &["readonly", "slow"], 1, 1, 1),
@@ -676,14 +680,14 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "sismember" | "smembers" | "smismember" | "smove" | "spop" | "srandmember" | "srem"
         | "sscan" | "sunion" | "sunionstore" => "set",
         "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hgetex" | "hincrby"
-        | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hrandfield" | "hscan" | "hset"
-        | "hsetex" | "hsetnx" | "hstrlen" | "hvals" => "hash",
+        | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hmset" | "hrandfield" | "hscan"
+        | "hset" | "hsetex" | "hsetnx" | "hstrlen" | "hvals" => "hash",
         "bzmpop" | "bzpopmax" | "bzpopmin" | "zadd" | "zcard" | "zcount" | "zincrby"
-        | "zlexcount" | "zpopmax" | "zpopmin" | "zdiff" | "zdiffstore" | "zinter"
-        | "zintercard" | "zinterstore" | "zrandmember" | "zrange" | "zrangebyscore"
-        | "zrangestore" | "zrank" | "zrem" | "zremrangebylex" | "zremrangebyrank"
-        | "zremrangebyscore" | "zrevrange" | "zrevrangebyscore" | "zrevrank" | "zscan"
-        | "zscore" | "zunion" | "zunionstore" => "zset",
+        | "zlexcount" | "zmscore" | "zpopmax" | "zpopmin" | "zdiff" | "zdiffstore" | "zinter"
+        | "zintercard" | "zinterstore" | "zrandmember" | "zrange" | "zrangebylex"
+        | "zrangebyscore" | "zrangestore" | "zrank" | "zrem" | "zremrangebylex"
+        | "zremrangebyrank" | "zremrangebyscore" | "zrevrange" | "zrevrangebylex"
+        | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
         "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
         | "xread" | "xreadgroup" | "xrevrange" | "xsetid" | "xtrim" => "stream",
         "asking" | "auth" | "client" | "hello" | "quit" | "readonly" | "readwrite" | "reset"
