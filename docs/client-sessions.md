@@ -92,6 +92,19 @@ become the genuine RESP3 null (`_\r\n`), including RESP2 null arrays
 RESP null frame—are preserved. RESP2 behavior and `Store::execute` remain
 unchanged.
 
+## Session module layout
+
+`src/session/mod.rs` owns the `Session` value, protocol mode, connection ID and
+the `execute` entry point. Command routing and authorization ordering live in
+`dispatch.rs`; `transaction.rs` owns MULTI/EXEC/WATCH queue state; `auth.rs`
+owns AUTH/ACL; `pubsub.rs` owns channel, pattern, shard and `MONITOR`
+subscriptions plus delivery; `blocking.rs` owns blocked-command state and
+wakeup polling; `pause.rs` owns `CLIENT PAUSE` deferral; `client.rs` owns
+`HELLO`, `CLIENT` metadata/list/kill and metadata sync; `reply.rs` owns
+RESP2-to-RESP3 conversion; and `command.rs` holds shared command
+classification and arity replies. This is an internal split only: the public
+`Session` API and wire behavior are unchanged.
+
 This is not full RESP3 or Redis compatibility. Pushes, tracking, pub/sub,
 streaming types, RESP3 booleans/maps/sets for data commands, AUTH/ACL, TLS, and
 multiple logical databases are unsupported. Redis-style inline request lines are
