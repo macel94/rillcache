@@ -314,3 +314,91 @@ fn geo_mutations_emit_zset_store_and_deletion_events() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn stream_claim_mutations_emit_claim_events() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(
+        &mut writer,
+        &[b"XADD", b"s", b"1-0", b"f", b"a"],
+        b"$3\r\n1-0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xadd",
+            b"s"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"XGROUP", b"CREATE", b"s", b"g", b"0"],
+        b"+OK\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xgroup",
+            b"s"
+        ])
+    );
+    send(
+        &mut writer,
+        &[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g",
+            b"alice",
+            b"STREAMS",
+            b"s",
+            b">",
+        ],
+        b"*1\r\n*2\r\n$1\r\ns\r\n*1\r\n*2\r\n$3\r\n1-0\r\n*2\r\n$1\r\nf\r\n$1\r\na\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xreadgroup",
+            b"s"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"XCLAIM", b"s", b"g", b"bob", b"0", b"1-0", b"JUSTID"],
+        b"*1\r\n$3\r\n1-0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xclaim",
+            b"s"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"XAUTOCLAIM", b"s", b"g", b"carol", b"0", b"0-0", b"JUSTID"],
+        b"*3\r\n$3\r\n0-0\r\n*1\r\n$3\r\n1-0\r\n*0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xautoclaim",
+            b"s"
+        ])
+    );
+    server.shutdown().unwrap();
+}

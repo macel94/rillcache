@@ -267,6 +267,8 @@ const COMMANDS: &[Command] = &[
     ),
     cmd("xack", -4, &["write", "fast"], 1, 1, 1),
     cmd("xadd", -5, &["write", "denyoom"], 1, 1, 1),
+    cmd("xautoclaim", -6, &["write", "fast"], 1, 1, 1),
+    cmd("xclaim", -6, &["write", "fast"], 1, 1, 1),
     cmd("xdel", -3, &["write"], 1, 1, 1),
     cmd("xgroup", -2, &["write"], 2, 2, 1),
     cmd("xinfo", -2, &["readonly"], 2, 2, 1),
