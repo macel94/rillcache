@@ -24,6 +24,13 @@ impl Store {
         let Some(command) = args.first() else {
             return false;
         };
+        if command
+            .first()
+            .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'z'))
+            && self.execute_zset_extended(args, out)
+        {
+            return true;
+        }
         if command.eq_ignore_ascii_case(b"HSETNX") {
             self.hash_setnx(args, out);
         } else if command.eq_ignore_ascii_case(b"HDEL") {
@@ -309,6 +316,177 @@ fn parse_score_bound(bytes: &[u8]) -> Option<(f64, bool)> {
         return Some((f64::INFINITY, inclusive));
     }
     Some((parse_score(body)?, inclusive))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RangeMode {
+    Rank,
+    Score,
+    Lex,
+}
+
+enum LexBound<'a> {
+    Min,
+    Max,
+    Value(&'a [u8], bool),
+}
+
+enum Selector<'a> {
+    Rank(i64, i64),
+    Score((f64, bool), (f64, bool)),
+    Lex(LexBound<'a>, LexBound<'a>),
+}
+
+fn parse_selector<'a>(
+    mode: RangeMode,
+    reverse: bool,
+    first: &'a [u8],
+    second: &'a [u8],
+) -> Result<Selector<'a>, &'static [u8]> {
+    Ok(match mode {
+        RangeMode::Rank => {
+            let (Some(start), Some(stop)) = (parse_i64(first), parse_i64(second)) else {
+                return Err(NOT_INTEGER);
+            };
+            Selector::Rank(start, stop)
+        }
+        RangeMode::Score => {
+            let (min, max) = if reverse {
+                (second, first)
+            } else {
+                (first, second)
+            };
+            let (Some(min), Some(max)) = (parse_score_bound(min), parse_score_bound(max)) else {
+                return Err(b"-ERR min or max is not a float\r\n");
+            };
+            Selector::Score(min, max)
+        }
+        RangeMode::Lex => {
+            let (min, max) = if reverse {
+                (second, first)
+            } else {
+                (first, second)
+            };
+            let Some((min, max)) = parse_lex_bounds(min, max) else {
+                return Err(b"-ERR min or max not valid string range item\r\n");
+            };
+            Selector::Lex(min, max)
+        }
+    })
+}
+
+fn parse_lex_bounds<'a>(min: &'a [u8], max: &'a [u8]) -> Option<(LexBound<'a>, LexBound<'a>)> {
+    Some((parse_lex_bound(min)?, parse_lex_bound(max)?))
+}
+
+fn parse_lex_bound(raw: &[u8]) -> Option<LexBound<'_>> {
+    match raw {
+        b"-" => Some(LexBound::Min),
+        b"+" => Some(LexBound::Max),
+        _ => {
+            let (&marker, value) = raw.split_first()?;
+            match marker {
+                b'[' => Some(LexBound::Value(value, true)),
+                b'(' => Some(LexBound::Value(value, false)),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn in_lex_range(member: &[u8], min: &LexBound<'_>, max: &LexBound<'_>) -> bool {
+    let above_min = match min {
+        LexBound::Min => true,
+        LexBound::Max => false,
+        LexBound::Value(value, inclusive) => {
+            if *inclusive {
+                member >= *value
+            } else {
+                member > *value
+            }
+        }
+    };
+    let below_max = match max {
+        LexBound::Min => false,
+        LexBound::Max => true,
+        LexBound::Value(value, inclusive) => {
+            if *inclusive {
+                member <= *value
+            } else {
+                member < *value
+            }
+        }
+    };
+    above_min && below_max
+}
+
+fn select_zset(
+    items: Vec<(&[u8], f64)>,
+    selector: Selector<'_>,
+    reverse: bool,
+    limit: Option<(i64, i64)>,
+) -> Vec<(Vec<u8>, f64)> {
+    let ordered = ordered_zset(items, reverse);
+    match selector {
+        Selector::Rank(start, stop) => {
+            let len = ordered.len() as i128;
+            let normalize = |index: i64| {
+                if index < 0 {
+                    (len + index as i128).max(0)
+                } else {
+                    index as i128
+                }
+            };
+            let first = normalize(start);
+            let last = if stop < 0 {
+                len + stop as i128
+            } else {
+                stop as i128
+            };
+            if first >= len || first > last {
+                return Vec::new();
+            }
+            let begin = first as usize;
+            let end = (last.min(len - 1) as usize) + 1;
+            ordered[begin..end].to_vec()
+        }
+        Selector::Score(min, max) => {
+            let mut selected: Vec<_> = ordered
+                .into_iter()
+                .filter(|(_, score)| in_score_range(*score, min, max))
+                .collect();
+            apply_limit(&mut selected, limit);
+            selected
+        }
+        Selector::Lex(min, max) => {
+            let mut selected: Vec<_> = ordered
+                .into_iter()
+                .filter(|(member, _)| in_lex_range(member, &min, &max))
+                .collect();
+            apply_limit(&mut selected, limit);
+            selected
+        }
+    }
+}
+
+fn apply_limit(items: &mut Vec<(Vec<u8>, f64)>, limit: Option<(i64, i64)>) {
+    let Some((offset, count)) = limit else {
+        return;
+    };
+    if offset < 0 {
+        items.clear();
+        return;
+    }
+    let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+    if offset >= items.len() {
+        items.clear();
+        return;
+    }
+    if count >= 0 {
+        let count = usize::try_from(count).unwrap_or(usize::MAX);
+        items.truncate(offset.saturating_add(count));
+    }
+    items.drain(..offset);
 }
 
 fn in_score_range(score: f64, min: (f64, bool), max: (f64, bool)) -> bool {
@@ -2112,6 +2290,350 @@ impl Store {
             encode_bulk(Some(member), out);
             if with_scores {
                 encode_bulk(Some(&score_bytes(*score)), out);
+            }
+        }
+    }
+
+    fn execute_zset_extended(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
+        let command = args.first().expect("nonempty command");
+        if command.eq_ignore_ascii_case(b"ZRANGE") {
+            if args.len() < 4 {
+                arity("zrange", out);
+            } else {
+                self.zset_range(args, false, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZRANGESTORE") {
+            if args.len() < 5 {
+                arity("zrangestore", out);
+            } else {
+                self.zset_range(args, true, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZLEXCOUNT") {
+            if args.len() != 4 {
+                arity("zlexcount", out);
+            } else {
+                self.zset_lex_count(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZREMRANGEBYLEX") {
+            if args.len() != 4 {
+                arity("zremrangebylex", out);
+            } else {
+                self.zset_remove_range_by_lex(args, out);
+            }
+        } else if command.eq_ignore_ascii_case(b"ZRANDMEMBER") {
+            if !(2..=4).contains(&args.len()) {
+                arity("zrandmember", out);
+            } else {
+                self.zset_random_member(args, out);
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn zset_range(&self, args: &[&[u8]], store: bool, out: &mut Vec<u8>) {
+        let mut mode = RangeMode::Rank;
+        let mut mode_set = false;
+        let mut reverse = false;
+        let mut with_scores = false;
+        let mut limit = None;
+        let mut index = if store { 5 } else { 4 };
+        while index < args.len() {
+            let token = args[index];
+            if token.eq_ignore_ascii_case(b"BYSCORE") {
+                if mode_set {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
+                mode = RangeMode::Score;
+                mode_set = true;
+                index += 1;
+            } else if token.eq_ignore_ascii_case(b"BYLEX") {
+                if mode_set {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
+                mode = RangeMode::Lex;
+                mode_set = true;
+                index += 1;
+            } else if token.eq_ignore_ascii_case(b"REV") {
+                reverse = true;
+                index += 1;
+            } else if token.eq_ignore_ascii_case(b"WITHSCORES") {
+                if store {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
+                with_scores = true;
+                index += 1;
+            } else if token.eq_ignore_ascii_case(b"LIMIT") && index + 2 < args.len() {
+                let (Some(offset), Some(count)) =
+                    (parse_i64(args[index + 1]), parse_i64(args[index + 2]))
+                else {
+                    out.extend_from_slice(NOT_INTEGER);
+                    return;
+                };
+                limit = Some((offset, count));
+                index += 3;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        if mode == RangeMode::Rank && limit.is_some() {
+            out.extend_from_slice(
+                b"-ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX\r\n",
+            );
+            return;
+        }
+        if mode == RangeMode::Lex && with_scores {
+            out.extend_from_slice(
+                b"-ERR syntax error, WITHSCORES not supported in combination with BYLEX\r\n",
+            );
+            return;
+        }
+        let (first, second) = if store {
+            (args[3], args[4])
+        } else {
+            (args[2], args[3])
+        };
+        let selector = match parse_selector(mode, reverse, first, second) {
+            Ok(selector) => selector,
+            Err(error) => {
+                out.extend_from_slice(error);
+                return;
+            }
+        };
+        let source = if store { args[2] } else { args[1] };
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(source, now);
+        let items = match data.entries.get(source) {
+            None => {
+                if store {
+                    data.expire_key(key, now);
+                    data.remove(key);
+                    integer(0, out);
+                } else {
+                    out.extend_from_slice(b"*0\r\n");
+                }
+                return;
+            }
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => entry
+                .collection
+                .as_ref()
+                .and_then(Collection::zset_items)
+                .expect("zset type checked"),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let selected = select_zset(items, selector, reverse, limit);
+        if !store {
+            write!(
+                out,
+                "*{}\r\n",
+                selected.len() * if with_scores { 2 } else { 1 }
+            )
+            .expect("Vec write");
+            for (member, score) in selected {
+                encode_bulk(Some(&member), out);
+                if with_scores {
+                    encode_bulk(Some(&score_bytes(score)), out);
+                }
+            }
+            return;
+        }
+        data.expire_key(key, now);
+        if selected.is_empty() {
+            data.remove(key);
+            integer(0, out);
+            return;
+        }
+        let mut zset = HashMap::with_capacity(selected.len());
+        let mut bytes = 0usize;
+        for (member, score) in selected {
+            bytes = bytes.saturating_add(member.len());
+            zset.insert(member, score);
+        }
+        let count = zset.len();
+        let previous = data.entries.get(key).map(|entry| entry.payload_len);
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_zset(zset, &config);
+        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, None, payload, now);
+        integer(count as i64, out);
+    }
+
+    fn zset_lex_count(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some((min, max)) = parse_lex_bounds(args[2], args[3]) else {
+            out.extend_from_slice(b"-ERR min or max not valid string range item\r\n");
+            return;
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let count = match data.entries.get(args[1]) {
+            None => 0,
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => entry
+                .collection
+                .as_ref()
+                .and_then(Collection::zset_items)
+                .expect("zset type checked")
+                .iter()
+                .filter(|(member, _)| in_lex_range(member, &min, &max))
+                .count(),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        integer(count as i64, out);
+    }
+
+    fn zset_remove_range_by_lex(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let Some((min, max)) = parse_lex_bounds(args[2], args[3]) else {
+            out.extend_from_slice(b"-ERR min or max not valid string range item\r\n");
+            return;
+        };
+        let key = args[1];
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        let mut zset = match owned_zset(&mut data, key, now) {
+            Ok(Some(zset)) => zset,
+            Ok(None) => {
+                integer(0, out);
+                return;
+            }
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let before = zset.len();
+        zset.retain(|member, _| !in_lex_range(member, &min, &max));
+        let removed = before - zset.len();
+        if removed == 0 {
+            integer(0, out);
+            return;
+        }
+        if zset.is_empty() {
+            data.remove(key);
+            integer(removed as i64, out);
+            return;
+        }
+        let expires = data.entries.get(key).and_then(|entry| entry.expires);
+        let previous = data.entries.get(key).map(|entry| entry.payload_len);
+        let bytes = zset.keys().map(Vec::len).sum::<usize>();
+        let Ok(config) = self.collection_config.read() else {
+            internal_error(out);
+            return;
+        };
+        let encoded = encode_zset(zset, &config);
+        let Some(payload) = data.reserve(key, bytes, previous, self.max_payload_bytes, now) else {
+            out.extend_from_slice(OOM);
+            return;
+        };
+        data.put_collection(key, encoded, expires, payload, now);
+        integer(removed as i64, out);
+    }
+
+    fn zset_random_member(&self, args: &[&[u8]], out: &mut Vec<u8>) {
+        let with_scores = args.len() == 4 && args[3].eq_ignore_ascii_case(b"WITHSCORES");
+        if args.len() == 4 && !with_scores {
+            out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+        let count = if args.len() >= 3 {
+            let Some(value) = parse_i64(args[2]) else {
+                out.extend_from_slice(NOT_INTEGER);
+                return;
+            };
+            Some(value)
+        } else {
+            None
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(args[1], now);
+        let items = match data.entries.get(args[1]) {
+            None => {
+                if count.is_some() {
+                    out.extend_from_slice(b"*0\r\n");
+                } else {
+                    encode_bulk(None, out);
+                }
+                return;
+            }
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => entry
+                .collection
+                .as_ref()
+                .and_then(Collection::zset_items)
+                .expect("zset type checked"),
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let members: Vec<(Vec<u8>, f64)> = items
+            .into_iter()
+            .map(|(member, score)| (member.to_vec(), score))
+            .collect();
+        let Some(count) = count else {
+            let index = random_index(members.len());
+            encode_bulk(members.get(index).map(|(member, _)| member.as_slice()), out);
+            return;
+        };
+        if count == 0 || members.is_empty() {
+            out.extend_from_slice(b"*0\r\n");
+            return;
+        }
+        let limit = usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX);
+        if count > 0 {
+            let mut pool = members;
+            let take = limit.min(pool.len());
+            for index in 0..take {
+                let swap = index + random_index(pool.len() - index);
+                pool.swap(index, swap);
+            }
+            write!(out, "*{}\r\n", take * if with_scores { 2 } else { 1 }).expect("Vec write");
+            for (member, score) in pool.iter().take(take) {
+                encode_bulk(Some(member), out);
+                if with_scores {
+                    encode_bulk(Some(&score_bytes(*score)), out);
+                }
+            }
+        } else {
+            let take = limit.min(MAX_ELEMENTS);
+            write!(out, "*{}\r\n", take * if with_scores { 2 } else { 1 }).expect("Vec write");
+            for _ in 0..take {
+                let index = random_index(members.len());
+                let (member, score) = &members[index];
+                encode_bulk(Some(member), out);
+                if with_scores {
+                    encode_bulk(Some(&score_bytes(*score)), out);
+                }
             }
         }
     }

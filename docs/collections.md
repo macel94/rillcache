@@ -20,9 +20,11 @@ Redis behavior.
 - Hashes: `HSET`, `HSETNX`, `HGET`, `HMGET`, `HGETALL`, `HDEL`, `HEXISTS`,
   `HLEN`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`.
 - Sorted sets: `ZADD` with `NX`, `XX`, `GT`, `LT`, `CH` and `INCR`, `ZREM`,
-  `ZINCRBY`, `ZSCORE`, `ZCARD`, `ZCOUNT`, `ZRANGE`, `ZREVRANGE`,
-  `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANK`, `ZREVRANK`,
-  `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE`, `ZPOPMIN`, `ZPOPMAX`. Geospatial
+  `ZINCRBY`, `ZSCORE`, `ZCARD`, `ZCOUNT`, `ZRANGE` (rank, score or lex with
+  `BYSCORE`/`BYLEX`, `REV`, `LIMIT` and `WITHSCORES`), `ZREVRANGE`,
+  `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANGESTORE`, `ZLEXCOUNT`,
+  `ZRANDMEMBER`, `ZRANK`, `ZREVRANK`, `ZREMRANGEBYRANK`,
+  `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, `ZPOPMIN`, `ZPOPMAX`. Geospatial
 `GEOADD`/`GEOSEARCH`/`GEOSEARCHSTORE` use the same sorted-set representation and
 publish `zadd`/`geosearchstore` events; see [geospatial limits](geospatial.md).
 
@@ -36,11 +38,15 @@ unbounded zero-byte-element growth. Empty collections are not retained.
 
 SMEMBERS, HGETALL, HKEYS, HVALS and set algebra replies use deterministic byte
 ordering for stable output; Redis leaves iteration order unspecified. ZRANGE,
-ZREVRANGE and score ranges sort by score then binary member. Supported sorted-set
+ZREVRANGE, score and lex ranges sort by score then binary member. `BYLEX` is
+intended for all-equal scores (as in Redis); mixed scores retain score-first
+ordering. `ZRANGESTORE` selects with the same rules, replaces the destination
+atomically, clears its TTL and deletes it for an empty selection. Supported sorted-set
 scores are IEEE-754 floating-point values, including `-inf` and `+inf`, but NaN
 is rejected. `ZADD INCR` and `ZINCRBY` reject a NaN resulting score. `SPOP`,
-`SRANDMEMBER` and `ZPOPMIN`/`ZPOPMAX` use bounded local randomness; Redis does not
-promise a particular random member.
+`SRANDMEMBER`, `ZRANDMEMBER` and `ZPOPMIN`/`ZPOPMAX` use bounded local randomness;
+Redis does not promise a particular random member. Negative `ZRANDMEMBER` counts
+request duplicates and are capped by the collection element limit.
 
 Deep COPY preserves the type, independent contents and key TTL of supported
 collections. KEYS and RANDOMKEY operate over this same keyspace; glob evaluation
