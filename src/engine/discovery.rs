@@ -302,6 +302,7 @@ const COMMANDS: &[Command] = &[
     cmd("xread", -4, &["readonly", "blocking"], 0, 0, 0),
     cmd("xreadgroup", -7, &["write"], 0, 0, 0),
     cmd("xrevrange", -4, &["readonly", "slow"], 1, 1, 1),
+    cmd("xtrim", -4, &["write"], 1, 1, 1),
     cmd("zadd", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("zcard", 2, &["readonly", "fast"], 1, 1, 1),
     cmd("zcount", 4, &["readonly", "fast"], 1, 1, 1),

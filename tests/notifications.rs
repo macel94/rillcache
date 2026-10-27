@@ -402,3 +402,38 @@ fn stream_claim_mutations_emit_claim_events() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn stream_trim_emits_xtrim_events() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    for (id, expected) in [
+        (b"1-0".as_slice(), b"$3\r\n1-0\r\n".as_slice()),
+        (b"2-0", b"$3\r\n2-0\r\n"),
+    ] {
+        send(&mut writer, &[b"XADD", b"s", id, b"f", b"v"], expected);
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:xadd",
+                b"s"
+            ])
+        );
+    }
+    send(&mut writer, &[b"XTRIM", b"s", b"MAXLEN", b"1"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xtrim",
+            b"s"
+        ])
+    );
+    server.shutdown().unwrap();
+}

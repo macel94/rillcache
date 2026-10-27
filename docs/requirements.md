@@ -75,6 +75,7 @@ reason to couple all future commands into a single large story.
 | S45 | As a location application, I can store points, inspect their coordinates, distance and geohash, and search by radius or box so that proximity queries do not require a separate index. | M | R177–R180; encoding, distance format, search/store atomicity, errors and all-mode wire tests |
 | S46 | As a stream consumer-group operator, I can recover, reassign and inspect pending deliveries so that stalled consumers can be replaced without losing acknowledged work. | S | R181–R184; claim/autoclaim/introspection, errors and all-mode wire tests |
 | S47 | As a sharded-channel client, I can subscribe and publish on a namespace separate from normal channels so that shard-oriented workers do not receive unrelated broadcasts. | S | R185–R188; separate fan-out/counts, shard introspection, ACL/RESET and all-mode wire tests |
+| S48 | As a stream operator, I can bound retained history by length or minimum ID so that long-lived streams do not grow without limit. | XS | R189–R192; exact/approx/LIMIT/errors/TTL/WATCH and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -627,8 +628,8 @@ reason to couple all future commands into a single large story.
   one bounded error without partial transfer. Successful claims shall touch the
   stream for WATCH/journal capture, publish `xclaim`/`xautoclaim` notifications,
   preserve payload accounting and TTL, keep pending metadata process-local, and
-  be covered by unit and all-mode wire tests. Trimming, `XSETID`, blocking and
-  history reads shall remain documented as unsupported.
+  be covered by unit and all-mode wire tests. `XADD` trim options, `XSETID`,
+  blocking and history reads shall remain documented as unsupported.
 
 
 ### Sharded publish/subscribe (S47)
@@ -655,6 +656,27 @@ reason to couple all future commands into a single large story.
   channels, counts, separation, introspection, subscriber-mode errors, RESP3 push
   frames and cleanup. There is no cluster hash-slot routing, persistence,
   replication or durable delivery claim.
+### Stream trimming (S48)
+
+- **R189 (event-driven):** When `XTRIM key MAXLEN|MINID [~|=] threshold
+  [LIMIT count]` runs, it shall parse the strategy, optional approximate marker
+  and LIMIT before key access, reject negative MAXLEN/LIMIT, invalid IDs,
+  conflicting strategies and LIMIT without `~` with the documented bounded
+  errors.
+- **R190 (event-driven):** Exact `MAXLEN` shall remove oldest entries until the
+  retained length is at most the threshold; exact `MINID` shall remove entries
+  with IDs below the threshold. Approximate mode shall remove at most the given
+  LIMIT (default 10,000, LIMIT 0 unbounded) and return the removed count.
+- **R191 (event-driven):** `XTRIM` shall return zero for a missing key and
+  WRONGTYPE for a non-stream key, preserve TTL and payload accounting, retain
+  pending/consumer references to removed IDs (as XDEL does), and touch the stream
+  for WATCH/journal capture and an `xtrim` keyspace event when entries are
+  removed.
+- **R192 (unwanted behavior):** Invalid or partial trimming arguments shall not
+  mutate the stream. Tests shall cover exact/approximate MAXLEN/MINID, `=` and
+  `~`, LIMIT bounds, empty and missing streams, TTL, pending retention, WATCH and
+  wrong types in unit and all-mode wire tests. `XADD` trim options, `XSETID`,
+  blocking reads and history reads shall remain documented as unsupported.
 
 ### Development and delivery
 
@@ -1016,8 +1038,8 @@ case-insensitive. Option tokens must match completely; NULs/prefixes are rejecte
 A bounded stream subset supports XADD, XDEL, XLEN, XGROUP CREATE/SETID/DESTROY/
 CREATECONSUMER/DELCONSUMER, XREADGROUP GROUP with COUNT/NOACK for new entries on
 one stream, XACK, XPENDING summary/extended, XRANGE/XREVRANGE, non-blocking XREAD
-over multiple streams, XCLAIM/XAUTOCLAIM, and XINFO STREAM (with FULL)/GROUPS/
-CONSUMERS. See [stream limits](streams.md). All types share expiry, payload
+over multiple streams, XCLAIM/XAUTOCLAIM, XTRIM, and XINFO STREAM (with FULL)/
+GROUPS/CONSUMERS. See [stream limits](streams.md). All types share expiry, payload
 accounting, TYPE, RENAME and deep same-database COPY; byte-oriented KEYS and
 RANDOMKEY inspect that same keyspace. See [keyspace limits](keyspace.md).
 CONFIG GET/SET collection thresholds select actual collection representations;

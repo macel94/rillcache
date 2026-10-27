@@ -37,6 +37,12 @@ owned value/tree after checking NX rejection and final payload admission.
 - `XINFO GROUPS key` and `XINFO CONSUMERS key group` expose group name, consumer
   count, pending count, last-delivered ID, unknown `entries-read` (null) and
   retained-entry `lag`, plus consumer name, pending count, `idle` and `inactive`.
+- `XTRIM key MAXLEN|MINID [~|=] threshold [LIMIT count]` removes oldest entries
+  until the retained length/ID threshold is met and returns the removed count.
+  Exact mode ignores no entries; approximate (`~`) mode caps work at `LIMIT`
+  (default 10,000; `LIMIT 0` means unbounded). Pending IDs whose messages are
+  trimmed remain in the PEL, as with XDEL, until XACK/XCLAIM/XAUTOCLAIM prunes
+  them.
 - `XPENDING key group` summary and
   `XPENDING key group [IDLE ms] start end count [consumer]` extended forms with
   inclusive `-`/`+` bounds, consumer filtering and idle filtering.
@@ -53,8 +59,11 @@ owned value/tree after checking NX rejection and final payload admission.
 ## Limits
 
 This is not Redis Streams feature completeness. Blocking `XREAD`/`XREADGROUP`,
-history reads from a consumer's pending list, `XTRIM`/`XADD` trim options,
-`XSETID`, replication and durable pending/consumer restoration are unsupported. `XREAD` declares no static key positions, so ACL key
+history reads from a consumer's pending list, `XADD` trim options, `XSETID`,
+replication and durable pending/consumer restoration are unsupported. XTRIM's
+`~` mode removes an exact number of entries up to the LIMIT/default bound rather
+than Redis's listpack-node granularity, so it never leaves more entries than the
+bound but may remove fewer than a native approximate trim. `XREAD` declares no static key positions, so ACL key
 patterns do not constrain its dynamic stream list; restrict the command itself.
 Unsupported stream options return errors; no blocking behavior is faked. Stream IDs are unsigned
 64-bit pairs. Generated IDs use the local Unix-millisecond clock and increment

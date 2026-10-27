@@ -81,6 +81,8 @@ impl Store {
             self.xpending(a, out);
         } else if cmd.eq_ignore_ascii_case(b"XRANGE") || cmd.eq_ignore_ascii_case(b"XREVRANGE") {
             self.xrange(a, cmd.eq_ignore_ascii_case(b"XREVRANGE"), out);
+        } else if cmd.eq_ignore_ascii_case(b"XTRIM") {
+            self.xtrim(a, out);
         } else if cmd.eq_ignore_ascii_case(b"XREAD") {
             self.xread(a, out);
         } else if cmd.eq_ignore_ascii_case(b"XGROUP") {
@@ -910,6 +912,153 @@ impl Store {
         if changed {
             data.touch(a[1]);
         }
+    }
+
+    fn xtrim(&self, a: &[&[u8]], out: &mut Vec<u8>) {
+        if a.len() < 4 {
+            arity("xtrim", out);
+            return;
+        }
+        enum Strategy {
+            MaxLen(u64),
+            MinId(StreamId),
+        }
+        let mut strategy = None;
+        let mut approximate = false;
+        let mut limit = None;
+        let mut index = 2;
+        while index < a.len() {
+            let token = a[index];
+            if token.eq_ignore_ascii_case(b"MAXLEN") || token.eq_ignore_ascii_case(b"MINID") {
+                if strategy.is_some() {
+                    out.extend_from_slice(
+                        b"-ERR syntax error, MAXLEN and MINID options at the same time are not compatible\r\n",
+                    );
+                    return;
+                }
+                let maxlen = token.eq_ignore_ascii_case(b"MAXLEN");
+                index += 1;
+                approximate = false;
+                if index < a.len() && (a[index] == b"~" || a[index] == b"=") {
+                    approximate = a[index] == b"~";
+                    index += 1;
+                }
+                let Some(raw) = a.get(index) else {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                };
+                if maxlen {
+                    let Some(value) = parse_i64(raw) else {
+                        out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                        return;
+                    };
+                    if value < 0 {
+                        out.extend_from_slice(b"-ERR The MAXLEN argument must be >= 0.\r\n");
+                        return;
+                    }
+                    strategy = Some(Strategy::MaxLen(value as u64));
+                } else {
+                    let Some(value) = id(raw) else {
+                        id_error(out);
+                        return;
+                    };
+                    strategy = Some(Strategy::MinId(value));
+                }
+                index += 1;
+            } else if token.eq_ignore_ascii_case(b"LIMIT") && index + 1 < a.len() {
+                let Some(value) = parse_i64(a[index + 1]) else {
+                    out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                    return;
+                };
+                if value < 0 {
+                    out.extend_from_slice(b"-ERR The LIMIT argument must be >= 0.\r\n");
+                    return;
+                }
+                limit = Some(usize::try_from(value).unwrap_or(usize::MAX));
+                index += 2;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        if limit.is_some() && strategy.is_none() {
+            out.extend_from_slice(
+                b"-ERR syntax error, LIMIT cannot be used without specifying a trimming strategy\r\n",
+            );
+            return;
+        }
+        if limit.is_some() && !approximate {
+            out.extend_from_slice(
+                b"-ERR syntax error, LIMIT cannot be used without the special ~ option\r\n",
+            );
+            return;
+        }
+        let Some(strategy) = strategy else {
+            out.extend_from_slice(
+                b"-ERR syntax error, XTRIM must be called with a trimming strategy\r\n",
+            );
+            return;
+        };
+        let cap = if approximate {
+            match limit {
+                Some(0) => None,
+                Some(value) => Some(value),
+                None => Some(10000),
+            }
+        } else {
+            None
+        };
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(a[1], now);
+        let Some(entry) = data.entries.get_mut(a[1]) else {
+            integer(0, out);
+            return;
+        };
+        let Some(stream) = entry.stream.as_mut() else {
+            out.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        };
+        let mut remove = Vec::new();
+        match strategy {
+            Strategy::MaxLen(maxlen) => {
+                let mut length = stream.entries.len();
+                for id in stream.entries.keys() {
+                    if length as u64 <= maxlen || cap.is_some_and(|cap| remove.len() >= cap) {
+                        break;
+                    }
+                    remove.push(*id);
+                    length -= 1;
+                }
+            }
+            Strategy::MinId(minid) => {
+                for id in stream.entries.keys() {
+                    if *id >= minid || cap.is_some_and(|cap| remove.len() >= cap) {
+                        break;
+                    }
+                    remove.push(*id);
+                }
+            }
+        }
+        let mut deleted = 0;
+        for id in remove {
+            if stream.entries.remove(&id).is_some() {
+                deleted += 1;
+            }
+        }
+        if deleted > 0 {
+            let bytes = stream.payload_bytes().unwrap_or(0);
+            let previous = entry.payload_len;
+            entry.payload_len = bytes;
+            data.payload_bytes = data.payload_bytes - previous + bytes;
+            data.touch(a[1]);
+        }
+        integer(deleted, out);
     }
 
     fn xgroup(&self, a: &[&[u8]], out: &mut Vec<u8>) {

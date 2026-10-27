@@ -93,9 +93,9 @@ handling; the private payload is not Redis's HLL encoding. See
 A bounded stream subset supports `XADD`/`XDEL`/`XLEN`, consumer groups
 (`XGROUP CREATE/SETID/DESTROY/CREATECONSUMER/DELCONSUMER`, `XREADGROUP` with
 `COUNT`/`NOACK`), `XACK`/`XPENDING`, `XCLAIM`/`XAUTOCLAIM`, `XRANGE`/`XREVRANGE`,
-non-blocking multi-stream `XREAD`, and `XINFO STREAM` (with `FULL`)/`GROUPS`/
-`CONSUMERS`. Pending delivery state is volatile across restart; blocking reads,
-history reads, trimming and `XSETID` remain absent. See
+`XTRIM`, non-blocking multi-stream `XREAD`, and `XINFO STREAM` (with `FULL`)/
+`GROUPS`/`CONSUMERS`. Pending delivery state is volatile across restart; blocking
+reads, history reads, XADD trim options and `XSETID` remain absent. See
 [stream limits](docs/streams.md).
 
 Bounded `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` queue supported data
