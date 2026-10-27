@@ -81,8 +81,9 @@ The Rust implementations are newly generated safe code, not transplanted C.
 6. **Skip unused mutation history and hot-command dispatch.** WATCH versions are
    always maintained, but per-write journal-event key copies are collected only
    while append-only persistence or keyspace notifications need them; disabling
-   both releases the bounded history immediately. `PING`, `GET` and `SET` bypass
-   the specialized module dispatch chain before their normal command path runs.
+   both releases the bounded history immediately. `PING` bypasses family routing
+   entirely, while `GET`, `SET` and `ECHO` remain the first checks in the strings
+   family entry point (see [Dispatch module layout](#dispatch-module-layout)).
    Two local core runs measured store-path medians of roughly 40 → 22–27 ns for
    PING, 106 → 93–96 ns for GET and 335 → 278–312 ns for SET against the
    pre-change tree. These are isolated shared-VM store results with visible run
@@ -92,6 +93,32 @@ Tests cover capacity shrink/retention, changed bytes, payload and expiry indexes
 OOM preservation/reaping, parser stack/fallback boundaries, fragmentation,
 execute-once behavior, decimal digit boundaries/usize::MAX, window expiry without
 rearming, concurrent writes, slow readers and shutdown in all three modes.
+
+## Dispatch module layout
+
+`src/engine.rs` keeps `Store::execute` / `execute_locked` as the entry point and
+the direct PING fast path. Every other store command routes through a family
+module in `src/engine/dispatch/`:
+
+- `strings`: the GET/SET/ECHO micro-path plus the remaining string, bitfield,
+  HyperLogLog and multi-key string commands;
+- `keyspace`: key lifecycle, expiry and keyspace-wide commands;
+- `collections`: list/hash/set/zset commands, scans, GEO and SORT;
+- `streams`: `X*` commands;
+- `pubsub`: `PUBLISH` and `SPUBLISH`;
+- `admin`: configuration, server administration, discovery and unsupported
+  command replies.
+
+Connection state remains in the session module: `MULTI`/`EXEC`/`WATCH`,
+subscriptions and blocking waits are not store-dispatch commands. `EXEC`
+replays its queued commands through `execute_locked`, so those commands use the
+normal family path.
+
+PING stays in `engine.rs` ahead of family routing, and GET/SET/ECHO are the first
+checks in the strings family. Add a new command's arm and handler to its owning
+family module, not to a central match. Mark a family entry point `#[inline]` only
+when the hot path needs it; the large string remainder deliberately stays out of
+line so it does not bloat GET/SET/ECHO.
 
 ## Evidence discipline and rejected experiments
 

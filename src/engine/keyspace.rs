@@ -467,6 +467,7 @@ fn glob_class(pattern: &[u8], start: usize, byte: u8, steps: &mut usize) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::options::{ExpiryKind, SetOptions};
     use std::sync::atomic::{AtomicI64, Ordering};
 
     struct TestClock(AtomicI64);
