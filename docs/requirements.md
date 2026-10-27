@@ -111,16 +111,18 @@ reason to couple all future commands into a single large story.
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
 | S82 | As an operator, I can see the configured connection limit in `INFO clients` so capacity tooling does not have to guess it. | XS | R319–R320; configured/default maxclients, INFO all and all-mode wire tests |
 | S83 | As an operator, I can kill connections by minimum age so stale or leaky clients can be reaped without knowing their IDs. | XS | R321–R322; MAXAGE matching, invalid values, caller protection and all-mode wire tests |
+| S100 | As an operator, I can see how many connections are blocked and which they are so waiters and stuck workers are diagnosable. | XS | R371–R373; blocked_clients, `b` flag, wake/timeout clearing and all-mode wire tests |
 | S80 | As an operator, I can read truthful append-only journal health, size and rewrite status so persistence problems are visible without guessing. | XS | R313–R315; enabled/disabled fields, size/status, rewrite and all-mode wire tests |
 | S-CS | As an operator, I can opt into bounded per-command calls/time/error statistics without paying disabled-observer timing and metadata costs. | S | R-CS1–R-CS4; opt-in/reset/MULTI/error, lazy SLOWLOG capture and all-mode tests |
 | S84 | As an operator, I can inspect bounded per-error-code command reply counts so that repeated failures are visible without scraping client logs. | XS | R323–R325; counts/reset/INFO all/all-mode wire tests |
 | S85 | As an operator, I can see the average remaining TTL of expiring keys in `INFO keyspace` so cache freshness is visible without per-key scans. | XS | R326–R327; mean TTL, empty/expired state and all-mode wire tests |
 | S86 | As an ACL administrator, I can define independent command/key scopes per user so one login can read broadly while writing only a key namespace. | S | R328–R331; selector parsing, authorization, listing, ACL-file round-trip and all-mode wire tests |
 | S87 | As an operator, I can inspect the journal mode and change the fsync policy at runtime so durability tuning does not require a restart. | XS | R332–R334; startup values, live policy switch/replay, read-only mode/filename and all-mode wire tests |
+| S88 | As an ACL administrator, I can grant read-only and write-only key namespaces so a write credential cannot exfiltrate data and a read credential cannot mutate it. | S | R335–R338; read/write parsing, per-key access checks, listing, ACL-file round-trip and all-mode wire tests |
 | S97 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R362–R364; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
 | S98 | As an operator, I can inspect truthful payload accounting and a bounded diagnosis through `MEMORY STATS`/`DOCTOR` so I do not infer RSS or allocator health. | XS | R365–R367; fields/high-water/limit, doctor states, HELP and all-mode wire tests |
 | S99 | As a transaction user, I can queue `PUBLISH` and `SPUBLISH` so `EXEC` matches Redis and messages are delivered once at execution time. | XS | R368–R370; queue/no-early-delivery, fan-out/counts, ACL and all-mode wire tests |
-| S100 | As an operator, I can terminate TLS 1.3 in front of the RESP server with a vetted standard-library implementation so that traffic crossing an untrusted network is encrypted without adding Rust dependencies or OpenSSL. | S | R371–R374; TLS 1.3-only, RESP proxy, no HTTP ALPN, mTLS, invalid config and sidecar tests |
+| S101 | As an operator, I can terminate TLS 1.3 in front of the RESP server with a vetted standard-library implementation so that traffic crossing an untrusted network is encrypted without adding Rust dependencies or OpenSSL. | S | R374–R377; TLS 1.3-only, RESP proxy, no HTTP ALPN, mTLS, invalid config and sidecar tests |
 | S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 | S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
 | S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
@@ -296,9 +298,9 @@ and the offline upstream harness tests.
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
-  Documentation shall retain the missing `%R~`/`%W~` key modes, first-argument
-  rules, subcommand categories, persistent audit, rate limiting, native TLS,
-  key-spec-blind commands and process-level tenant-isolation boundaries.
+  Documentation shall retain the missing first-argument rules, subcommand
+  categories, persistent audit, rate limiting, native TLS, key-spec-blind
+  commands and process-level tenant-isolation boundaries.
 
 ### Append-only persistence (S29)
 
@@ -1188,8 +1190,9 @@ and the offline upstream harness tests.
   GEORADIUS destinations and sorted-set source/destination rules.
 - **R263 (event-driven):** Commands with no declared keys and dynamic lists that
   cannot be extracted from the supplied arguments shall return bounded errors
-  rather than fabricating keys. BY/GET-derived SORT keys and dynamic XREAD keys
-  remain outside static extraction and are documented as such.
+  rather than fabricating keys. BY/GET-derived SORT keys remain outside static
+  extraction and are documented as such; XREAD/XREADGROUP stream keys are
+  extracted from the supplied `STREAMS` block.
 - **R264 (ubiquitous):** Tests shall cover string, multi-key, counted, STORE,
   GEORADIUS and no-key commands, invalid command/arity and all worker modes.
   COMMAND GETKEYS does not change keyspace state or bypass ACL enforcement.
@@ -1588,7 +1591,7 @@ and the offline upstream harness tests.
 - **R322 (ubiquitous):** Tests shall cover old connections being killed, a young
   connection surviving, caller protection, invalid `MAXAGE` values, the
   unchanged legacy form and every worker mode. Documentation shall retain the
-  absence of fd/idle/blocked metadata and a cross-process view.
+  absence of fd/idle/buffer/memory metadata and a cross-process view.
 
 ### Client kill by local address (S89)
 
@@ -1715,8 +1718,8 @@ and the offline upstream harness tests.
 - **R358 (ubiquitous):** All-mode tests shall cover absent-type list/kill
   emptiness, `SKIPME no` targeting another client, caller self-kill and its
   cleanup, invalid filters, the unchanged legacy form and every worker mode.
-  Documentation shall retain the absence of fd/idle/blocked metadata and a
-  cross-process view.
+  Documentation shall retain the absence of fd/idle/buffer/memory metadata and
+  a cross-process view.
 
 ### Runtime payload budget (S96)
 
@@ -1784,9 +1787,40 @@ and the offline upstream harness tests.
 - **R331 (ubiquitous):** Tests shall cover root/selector alternatives, key-scoped
   writes with broad reads, `clearselectors`/`reset`, atomic rejection, LIST/
   GETUSER exposure, ACL-file restart round-trips and every worker mode.
-  Documentation shall retain the absence of `%R~`/`%W~` key modes, first-argument
-  rules, nested selectors, subcommand categories, rate limiting, persistent audit
-  and native TLS.
+  Documentation shall retain the absence of first-argument rules, nested
+  selectors, subcommand categories, rate limiting, persistent audit and native
+  TLS.
+
+### ACL read/write key modes (S88)
+
+- **R335 (event-driven):** `ACL SETUSER`, selector groups and ACL files shall
+  accept `%R~pattern` (read), `%W~pattern` (write), `%RW~pattern` and legacy
+  `~pattern` (read-write) key rules. `allkeys` shall grant read-write `*`;
+  `resetkeys` and `reset` shall clear key patterns. Empty patterns, unknown
+  `%`-prefixed forms and oversized patterns shall reject the whole update
+  atomically.
+- **R336 (state-driven):** While authorizing a command, each declared key shall be
+  checked against the access required by its Redis key spec: read-only keys need
+  a read grant, overwrite/update keys need a write grant, and read-write keys need
+  both, which may come from different patterns. Mixed commands shall be checked
+  per key (`BITOP` destination versus sources, `COPY` source versus destination,
+  `RENAME` source versus destination, and store destinations of `SORT`,
+  `GEORADIUS*` and `*STORE`). `SORT ... STORE` and `GEORADIUS ... STORE` shall
+  require read on the source and write on the effective last-wins destination;
+  `XREAD`/`XREADGROUP` shall check each key in the dynamic `STREAMS` block, and
+  `PFCOUNT` shall require both accesses per Redis 7's RW key spec. `SET` with
+  `GET` and mutating `BITFIELD` operations shall require both accesses.
+- **R337 (event-driven):** `ACL LIST` and `ACL GETUSER` shall render read-only
+  patterns as `%R~`, write-only patterns as `%W~` and read-write patterns as `~`.
+  Adding read and write grants for the same pattern shall merge into `~`. `ACL
+  SAVE`/`LOAD` shall round-trip all modes, and `ACL DRYRUN` shall apply the same
+  key-access decisions without executing the command.
+- **R338 (ubiquitous):** Tests shall cover read-only, write-only and read-write
+  grants, per-key mixed commands, read denial for a write-only credential, write
+  denial for a read-only credential, listing, `ACL DRYRUN`, ACL-file restart
+  round-trips and every worker mode. Documentation shall retain the first-argument
+  rule, subcommand-category, dynamic-key-sandbox, persistent-audit, rate-limiting
+  and native-TLS boundaries.
 
 ### Journal configuration visibility and runtime fsync (S87)
 
@@ -1867,23 +1901,37 @@ and the offline upstream harness tests.
   introspection and blocking pops remain rejected inside `MULTI`, and that
   delivery is process-local and at-most-once rather than durable.
 
-### TLS 1.3 sidecar (S100)
+### Blocked-client visibility (S100)
 
-- **R371 (event-driven):** The Go standard-library sidecar shall terminate TLS
+- **R371 (event-driven):** When a connection enters any supported blocking
+  command, the server shall mark it blocked in the client registry; when the
+  command completes, times out or the connection resets/disconnects, the mark
+  shall be cleared.
+- **R372 (event-driven):** `INFO clients` and `INFO all` shall report a
+  `blocked_clients` count derived from that registry state, and `CLIENT LIST`
+  shall include `b` in the flags of blocked connections alongside `N`/`P`.
+- **R373 (ubiquitous):** Tests shall cover a waiter becoming visible, wake-up
+  clearing the count, timeout/disconnect/reset clearing, `CLIENT LIST` flags and
+  every worker mode. Documentation shall retain that this is a process-local
+  registry view with no fd/idle/buffer/memory metadata or cross-process claim.
+
+### TLS 1.3 sidecar (S101)
+
+- **R374 (event-driven):** The Go standard-library sidecar shall terminate TLS
   only at version 1.3, reject TLS 1.2 and older handshakes, and proxy RESP bytes
   bidirectionally to the configured plaintext backend. It shall not offer HTTP/2,
   HTTP/3 or any ALPN protocol because Redis clients speak RESP, not HTTP.
-- **R372 (state-driven):** While a certificate and private key are configured, the
+- **R375 (state-driven):** While a certificate and private key are configured, the
   sidecar shall serve TLS with that chain; an optional client-CA file shall require
   and verify client certificates. It shall enforce positive connection, handshake
   and backend-dial bounds, close excess connections, and handle SIGINT/SIGTERM by
   stopping accepts, draining active proxies up to the shutdown deadline, then
   force-closing leftovers.
-- **R373 (unwanted behavior):** Missing/invalid certificate material, invalid CA
+- **R376 (unwanted behavior):** Missing/invalid certificate material, invalid CA
   bundles, non-positive limits or invalid durations shall fail startup with a
   bounded error. The sidecar shall use no OpenSSL, cgo or external Go modules, and
   the Rust server dependency/safety policy shall remain unchanged.
-- **R374 (ubiquitous):** Tests shall cover a TLS 1.3 RESP echo, TLS 1.2 rejection,
+- **R377 (ubiquitous):** Tests shall cover a TLS 1.3 RESP echo, TLS 1.2 rejection,
   absence of HTTP ALPN, required client-certificate authentication, configuration
   validation and graceful shutdown documentation. Documentation shall retain the
   absence of native Rust TLS, SNI/hot reload, backend authentication, proxy-aware
@@ -2220,8 +2268,8 @@ EX/PX/EXAT/PXAT and IFEQ (plus Redis IFNE/IFDEQ/IFDNE); `GET`, `DEL`, `EXISTS`,
 PEXPIRETIME, EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT with NX/XX/GT/LT, PERSIST;
 INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT; MGET/MSET/MSETNX/MSETEX;
 MULTI/EXEC/DISCARD/WATCH/UNWATCH with a bounded queue, atomic batch execution
-and optimistic key invalidation; multi-user ACL users/rules, key patterns and
-atomic ACL-file save/load; opt-in RESP-command append-only persistence with
+and optimistic key invalidation; multi-user ACL users/rules, read/write key
+patterns, selectors and atomic ACL-file save/load; opt-in RESP-command append-only persistence with
 fsync policies, restart recovery and synchronous `BGREWRITEAOF` compaction;
 payload-budget eviction policies (`noeviction`, allkeys/volatile random/LRU and
 volatile TTL); keyspace/keyevent notifications for supported mutation classes;
@@ -2281,8 +2329,10 @@ indices, native TLS, RDB/AOF-rewrite compatibility, replication, clustering,
 sharded pub/sub, keyspace notifications and scripts. Cluster mode,
 multi-database, and arbitrary Redis AOF/RDB files are not accepted.
 Single-password and multi-user ACL-file authentication are supported with
-`AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors, audit
-logging, dry-run, generated passwords and channel enforcement remain absent. See
+`AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors,
+read/write key modes, `ACL LOG`/`DRYRUN`/`GENPASS` and pub/sub channel enforcement
+are implemented. First-argument command rules, subcommand-specific categories,
+persistent/centralized audit and rate limiting remain absent. See
 [security](security.md).
 Connection-local commands are rejected rather than queued inside MULTI. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
@@ -2309,12 +2359,11 @@ Not implemented or implied by the completed increments:
 1. Validate HELLO/CLIENT session negotiation against real pinned redis-cli and
    language clients; add command discovery and multiple databases only as separate
    compatible increments.
-2. `%R~`/`%W~` selector key modes, first-argument rules, brute-force controls and a
-   persistent audit path. The Go TLS 1.3 sidecar provides the current
-   transport-encryption boundary; native Rust TLS, SNI/hot reload and independent
-   security review remain separate. Durability completeness, AOF rewrite/RDB,
-   backup/restore drills and disk-fault recovery are explicitly deferred for this
-   phase.
+2. First-argument command rules, brute-force controls and a persistent audit path.
+   The Go TLS 1.3 sidecar provides the current transport-encryption boundary;
+   native Rust TLS, SNI/hot reload and independent security review remain separate.
+   Durability completeness, AOF rewrite/RDB, backup/restore drills and disk-fault
+   recovery are explicitly deferred for this phase.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and
    clustering: follow the [production-readiness plan](production-readiness.md).
    NX plus TTL alone is not a complete distributed-lock protocol; token-safe

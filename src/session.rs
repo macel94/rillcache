@@ -192,6 +192,10 @@ impl Session {
         action
     }
 
+    fn sync_blocked(&self, store: &Store) {
+        store.set_client_blocked(self.id, self.blocked.is_some());
+    }
+
     fn record_slowlog(&self, store: &Store, arguments: &[&[u8]], started: Instant) {
         if !store.slowlog_enabled() {
             return;
@@ -365,6 +369,7 @@ impl Session {
             self.pubsub_patterns.clear();
             self.pubsub_shard_channels.clear();
             self.blocked = None;
+            self.sync_blocked(store);
         } else if self.multi.is_some() {
             self.queue(arguments, output);
             return Action::Continue;
@@ -1169,6 +1174,7 @@ impl Session {
             deadline,
             kind: BlockedKind::List { left },
         });
+        self.sync_blocked(store);
     }
 
     fn blocking_lmpop(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
@@ -1215,6 +1221,7 @@ impl Session {
                 count: options.count,
             },
         });
+        self.sync_blocked(store);
     }
 
     fn blocking_list_move(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
@@ -1277,6 +1284,7 @@ impl Session {
                 to_left,
             },
         });
+        self.sync_blocked(store);
     }
 
     fn blocking_zpop(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
@@ -1323,6 +1331,7 @@ impl Session {
                 count: options.count,
             },
         });
+        self.sync_blocked(store);
     }
 
     fn blocking_zset_single(
@@ -1370,6 +1379,7 @@ impl Session {
             deadline,
             kind: BlockedKind::ZSetSingle { max },
         });
+        self.sync_blocked(store);
     }
 
     fn xread(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
@@ -1409,6 +1419,7 @@ impl Session {
                 count: options.count,
             },
         });
+        self.sync_blocked(store);
     }
 
     fn blocking_xreadgroup(
@@ -1441,6 +1452,7 @@ impl Session {
                 noack: options.noack,
             },
         });
+        self.sync_blocked(store);
     }
 
     pub fn is_blocked(&self) -> bool {
@@ -1547,6 +1559,7 @@ impl Session {
             .as_mut()
             .and_then(|blocked| blocked.slowlog.take());
         self.blocked = None;
+        self.sync_blocked(store);
         if !ready {
             reply.extend_from_slice(b"*-1\r\n");
         }
@@ -1866,11 +1879,15 @@ impl Session {
                 .map(String::from_utf8_lossy)
                 .unwrap_or_default();
             let user = String::from_utf8_lossy(&snapshot.user);
-            let flags = if snapshot.sub + snapshot.psub > 0 {
-                "P"
+            let mut flags = String::new();
+            if snapshot.blocked {
+                flags.push('b');
+            }
+            flags.push(if snapshot.sub + snapshot.psub > 0 {
+                'P'
             } else {
-                "N"
-            };
+                'N'
+            });
             use std::fmt::Write as _;
             let _ = writeln!(
                 text,
@@ -2057,6 +2074,7 @@ impl Session {
             deadline,
             kind: BlockedKind::WaitAof { local },
         });
+        self.sync_blocked(store);
     }
 
     fn monitor(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
@@ -2086,6 +2104,7 @@ impl Session {
         self.multi = None;
         self.watched = WatchState::default();
         self.blocked = None;
+        self.sync_blocked(store);
         self.monitoring = false;
         store.remove_monitor(self.id);
         for channel in std::mem::take(&mut self.pubsub_channels) {
@@ -3341,6 +3360,32 @@ x\r\n"
             call(&mut session, &store, &[b"RESET", b"extra"]),
             b"-ERR wrong number of arguments for 'reset' command\r\n"
         );
+    }
+
+    #[test]
+    fn reset_clears_the_registered_blocked_flag() {
+        let store = Store::new(1024);
+        let mut session = Session::new();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (control, _) = listener.accept().unwrap();
+        let peer_addr = control.peer_addr().unwrap();
+        let local_addr = control.local_addr().unwrap();
+        store.register_client(session.id(), peer_addr, local_addr, control);
+        drop(client);
+        session.blocked = Some(Blocked {
+            keys: vec![b"queue".to_vec()],
+            deadline: None,
+            kind: BlockedKind::List { left: true },
+            slowlog: None,
+        });
+        session.sync_blocked(&store);
+        assert_eq!(store.blocked_clients(), 1);
+
+        assert_eq!(call(&mut session, &store, &[b"RESET"]), b"+RESET\r\n");
+        assert_eq!(store.blocked_clients(), 0);
+        assert!(!store.client_snapshot(session.id()).unwrap().blocked);
+        store.unregister_client(session.id());
     }
 
     #[test]
