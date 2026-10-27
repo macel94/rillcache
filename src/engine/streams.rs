@@ -1,4 +1,5 @@
 use super::data::{Consumer, ConsumerGroup, Pending, Stream, StreamEntry, StreamId};
+use super::notify::Category as NotifyCategory;
 use super::{Store, arity, integer, internal_error};
 use crate::protocol::encode_bulk;
 use std::io::Write;
@@ -152,6 +153,109 @@ pub(crate) fn xread_reply(outcome: XReadOutcome, out: &mut Vec<u8>) {
         XReadOutcome::WrongType => out.extend_from_slice(
             b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
         ),
+    }
+}
+
+pub(crate) struct XReadGroupOptions<'a> {
+    pub count: usize,
+    pub block: Option<u64>,
+    pub noack: bool,
+    pub key: &'a [u8],
+    pub group: &'a [u8],
+    pub consumer: &'a [u8],
+    pub history: Option<StreamId>,
+}
+
+pub(crate) enum XReadGroupOutcome {
+    Ready(Vec<u8>),
+    Empty,
+    WrongType,
+    NoGroup,
+    JournalError,
+}
+
+pub(crate) fn write_no_group(out: &mut Vec<u8>, key: &[u8], group: &[u8]) {
+    out.extend_from_slice(b"-NOGROUP No such key '");
+    out.extend_from_slice(key);
+    out.extend_from_slice(b"' or consumer group '");
+    out.extend_from_slice(group);
+    out.extend_from_slice(b"' in XREADGROUP with GROUP option\r\n");
+}
+
+pub(crate) fn parse_xreadgroup<'a>(a: &[&'a [u8]]) -> Result<XReadGroupOptions<'a>, &'static [u8]> {
+    if a.len() < 7 || !a[1].eq_ignore_ascii_case(b"GROUP") {
+        return Err(b"-ERR syntax error\r\n");
+    }
+    let (group, consumer) = (a[2], a[3]);
+    let mut count = usize::MAX;
+    let mut noack = false;
+    let mut block = None;
+    let mut i = 4;
+    while i < a.len() && !a[i].eq_ignore_ascii_case(b"STREAMS") {
+        if a[i].eq_ignore_ascii_case(b"COUNT") && i + 1 < a.len() {
+            count = parse_u64(a[i + 1])
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(usize::MAX);
+            i += 2
+        } else if a[i].eq_ignore_ascii_case(b"NOACK") {
+            noack = true;
+            i += 1
+        } else if a[i].eq_ignore_ascii_case(b"BLOCK") && i + 1 < a.len() {
+            let Some(value) = parse_i64(a[i + 1]) else {
+                return Err(b"-ERR timeout is not an integer or out of range\r\n");
+            };
+            if value < 0 {
+                return Err(b"-ERR timeout is negative\r\n");
+            }
+            block = Some(value as u64);
+            i += 2
+        } else {
+            return Err(b"-ERR syntax error\r\n");
+        }
+    }
+    if i + 3 != a.len() || !a[i].eq_ignore_ascii_case(b"STREAMS") {
+        return Err(b"-ERR Unbalanced 'XREADGROUP' STREAMS list\r\n");
+    }
+    let key = a[i + 1];
+    let history = if a[i + 2] == b">" {
+        None
+    } else if a[i + 2] == b"$" {
+        return Err(b"-ERR The $ ID is meaningless in the context of XREADGROUP: you want to read the history of this consumer by specifying a proper ID, or use the > ID to get new messages. The $ ID would just return an empty result set.\r\n");
+    } else {
+        match id(a[i + 2]) {
+            Some(value) => Some(value),
+            None => {
+                return Err(b"-ERR Invalid stream ID specified as stream command argument\r\n");
+            }
+        }
+    };
+    Ok(XReadGroupOptions {
+        count,
+        block,
+        noack,
+        key,
+        group,
+        consumer,
+        history,
+    })
+}
+
+pub(crate) fn xreadgroup_reply(
+    outcome: XReadGroupOutcome,
+    key: &[u8],
+    group: &[u8],
+    out: &mut Vec<u8>,
+) {
+    match outcome {
+        XReadGroupOutcome::Ready(reply) => out.extend_from_slice(&reply),
+        XReadGroupOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
+        XReadGroupOutcome::WrongType => out.extend_from_slice(
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        ),
+        XReadGroupOutcome::NoGroup => write_no_group(out, key, group),
+        XReadGroupOutcome::JournalError => {
+            out.extend_from_slice(b"-ERR append-only write failed\r\n")
+        }
     }
 }
 
@@ -1551,144 +1655,52 @@ impl Store {
             out.extend_from_slice(b"-ERR unsupported XGROUP subcommand\r\n")
         }
     }
-    fn no_group(out: &mut Vec<u8>, key: &[u8], group: &[u8]) {
-        out.extend_from_slice(b"-NOGROUP No such key '");
-        out.extend_from_slice(key);
-        out.extend_from_slice(b"' or consumer group '");
-        out.extend_from_slice(group);
-        out.extend_from_slice(b"' in XREADGROUP with GROUP option\r\n");
-    }
-
     fn xreadgroup(&self, a: &[&[u8]], out: &mut Vec<u8>) {
-        if a.len() < 7 || !a[1].eq_ignore_ascii_case(b"GROUP") {
-            out.extend_from_slice(b"-ERR syntax error\r\n");
-            return;
-        }
-        let (group, consumer) = (a[2], a[3]);
-        let mut count = usize::MAX;
-        let mut noack = false;
-        let mut i = 4;
-        while i < a.len() && !a[i].eq_ignore_ascii_case(b"STREAMS") {
-            if a[i].eq_ignore_ascii_case(b"COUNT") && i + 1 < a.len() {
-                count = parse_u64(a[i + 1])
-                    .and_then(|n| usize::try_from(n).ok())
-                    .unwrap_or(usize::MAX);
-                i += 2
-            } else if a[i].eq_ignore_ascii_case(b"NOACK") {
-                noack = true;
-                i += 1
-            } else {
-                out.extend_from_slice(b"-ERR syntax error\r\n");
+        let options = match parse_xreadgroup(a) {
+            Ok(options) => options,
+            Err(error) => {
+                out.extend_from_slice(error);
                 return;
             }
-        }
-        if i + 3 != a.len() || !a[i].eq_ignore_ascii_case(b"STREAMS") {
-            out.extend_from_slice(b"-ERR Unbalanced 'XREADGROUP' STREAMS list\r\n");
-            return;
-        }
-        let key = a[i + 1];
-        let history = if a[i + 2] == b">" {
-            None
-        } else if a[i + 2] == b"$" {
-            out.extend_from_slice(
-                b"-ERR The $ ID is meaningless in the context of XREADGROUP: you want to read the history of this consumer by specifying a proper ID, or use the > ID to get new messages. The $ ID would just return an empty result set.\r\n",
-            );
-            return;
-        } else {
-            match id(a[i + 2]) {
-                Some(value) => Some(value),
-                None => {
-                    id_error(out);
-                    return;
-                }
-            }
         };
+        let outcome = if options.history.is_some() {
+            self.xreadgroup_history(&options)
+        } else {
+            self.xreadgroup_new(&options)
+        };
+        xreadgroup_reply(outcome, options.key, options.group, out);
+    }
+
+    pub(crate) fn xreadgroup_new(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
         let Ok(mut data) = self.data.write() else {
-            internal_error(out);
-            return;
+            return XReadGroupOutcome::JournalError;
         };
         let now = self.clock.now_ms().max(0);
-        data.expire_key(key, now);
-        let Some(e) = data.entries.get_mut(key) else {
-            Self::no_group(out, key, group);
-            return;
+        data.expire_key(options.key, now);
+        let Some(e) = data.entries.get_mut(options.key) else {
+            return XReadGroupOutcome::NoGroup;
         };
         let Some(s) = e.stream.as_mut() else {
-            out.extend_from_slice(
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            );
-            return;
+            return XReadGroupOutcome::WrongType;
         };
-        let Some(g) = s.groups.get_mut(group) else {
-            Self::no_group(out, key, group);
-            return;
+        let Some(g) = s.groups.get_mut(options.group) else {
+            return XReadGroupOutcome::NoGroup;
         };
-        if let Some(start) = history {
-            let con = g
-                .consumers
-                .entry(consumer.to_vec())
-                .or_insert_with(|| Consumer {
-                    seen_at: now,
-                    pending: Default::default(),
-                });
-            con.seen_at = now;
-            let ids: Vec<StreamId> = con
-                .pending
-                .range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
-                .map(|(id, _)| *id)
-                .take(count)
-                .collect();
-            for id in &ids {
-                if let Some(pending) = con.pending.get_mut(id) {
-                    pending.deliveries = pending.deliveries.saturating_add(1);
-                    pending.delivered_at = now;
-                }
-                if let Some(pending) = g.pending.get_mut(id) {
-                    pending.deliveries = pending.deliveries.saturating_add(1);
-                    pending.delivered_at = now;
-                }
-            }
-            let replies: Vec<(StreamId, Option<StreamEntry>)> = ids
-                .into_iter()
-                .map(|id| (id, s.entries.get(&id).cloned()))
-                .collect();
-            data.touch(key);
-            array(1, out);
-            array(2, out);
-            encode_bulk(Some(key), out);
-            array(replies.len(), out);
-            for (id, entry) in replies {
-                array(2, out);
-                encode_bulk(Some(&id_text(id)), out);
-                match entry {
-                    Some(entry) => {
-                        array(entry.fields.len() * 2, out);
-                        for (field, value) in entry.fields {
-                            encode_bulk(Some(&field), out);
-                            encode_bulk(Some(&value), out);
-                        }
-                    }
-                    None => out.extend_from_slice(b"*-1\r\n"),
-                }
-            }
-            return;
-        }
         let entries = s
             .entries
             .range((
                 std::ops::Bound::Excluded(g.last_delivered),
                 std::ops::Bound::Unbounded,
             ))
-            .take(count)
+            .take(options.count)
             .map(|(id, e)| (*id, e.clone()))
             .collect::<Vec<_>>();
         if entries.is_empty() {
-            out.extend_from_slice(b"*-1\r\n");
-            return;
+            return XReadGroupOutcome::Empty;
         }
         let con = g
             .consumers
-            .entry(consumer.to_vec())
+            .entry(options.consumer.to_vec())
             .or_insert_with(|| Consumer {
                 seen_at: now,
                 pending: Default::default(),
@@ -1696,9 +1708,9 @@ impl Store {
         con.seen_at = now;
         for (id, _) in &entries {
             g.last_delivered = *id;
-            if !noack {
+            if !options.noack {
                 let p = Pending {
-                    consumer: consumer.to_vec(),
+                    consumer: options.consumer.to_vec(),
                     deliveries: 1,
                     delivered_at: now,
                 };
@@ -1706,21 +1718,121 @@ impl Store {
                 con.pending.insert(*id, p);
             }
         }
-        data.touch(key);
-        array(1, out);
-        array(2, out);
-        encode_bulk(Some(key), out);
-        array(entries.len(), out);
+        data.touch(options.key);
+        let mut out = Vec::new();
+        array(1, &mut out);
+        array(2, &mut out);
+        encode_bulk(Some(options.key), &mut out);
+        array(entries.len(), &mut out);
         for (id, e) in entries {
-            array(2, out);
-            encode_bulk(Some(&id_text(id)), out);
-            array(e.fields.len() * 2, out);
+            array(2, &mut out);
+            encode_bulk(Some(&id_text(id)), &mut out);
+            array(e.fields.len() * 2, &mut out);
             for (f, v) in e.fields {
-                encode_bulk(Some(&f), out);
-                encode_bulk(Some(&v), out)
+                encode_bulk(Some(&f), &mut out);
+                encode_bulk(Some(&v), &mut out)
             }
         }
+        XReadGroupOutcome::Ready(out)
     }
+
+    pub(crate) fn xreadgroup_history(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
+        let Some(start) = options.history else {
+            return XReadGroupOutcome::Empty;
+        };
+        let Ok(mut data) = self.data.write() else {
+            return XReadGroupOutcome::JournalError;
+        };
+        let now = self.clock.now_ms().max(0);
+        data.expire_key(options.key, now);
+        let Some(e) = data.entries.get_mut(options.key) else {
+            return XReadGroupOutcome::NoGroup;
+        };
+        let Some(s) = e.stream.as_mut() else {
+            return XReadGroupOutcome::WrongType;
+        };
+        let Some(g) = s.groups.get_mut(options.group) else {
+            return XReadGroupOutcome::NoGroup;
+        };
+        let con = g
+            .consumers
+            .entry(options.consumer.to_vec())
+            .or_insert_with(|| Consumer {
+                seen_at: now,
+                pending: Default::default(),
+            });
+        con.seen_at = now;
+        let ids: Vec<StreamId> = con
+            .pending
+            .range((std::ops::Bound::Excluded(start), std::ops::Bound::Unbounded))
+            .map(|(id, _)| *id)
+            .take(options.count)
+            .collect();
+        for id in &ids {
+            if let Some(pending) = con.pending.get_mut(id) {
+                pending.deliveries = pending.deliveries.saturating_add(1);
+                pending.delivered_at = now;
+            }
+            if let Some(pending) = g.pending.get_mut(id) {
+                pending.deliveries = pending.deliveries.saturating_add(1);
+                pending.delivered_at = now;
+            }
+        }
+        let replies: Vec<(StreamId, Option<StreamEntry>)> = ids
+            .into_iter()
+            .map(|id| (id, s.entries.get(&id).cloned()))
+            .collect();
+        data.touch(options.key);
+        let mut out = Vec::new();
+        array(1, &mut out);
+        array(2, &mut out);
+        encode_bulk(Some(options.key), &mut out);
+        array(replies.len(), &mut out);
+        for (id, entry) in replies {
+            array(2, &mut out);
+            encode_bulk(Some(&id_text(id)), &mut out);
+            match entry {
+                Some(entry) => {
+                    array(entry.fields.len() * 2, &mut out);
+                    for (field, value) in entry.fields {
+                        encode_bulk(Some(&field), &mut out);
+                        encode_bulk(Some(&value), &mut out);
+                    }
+                }
+                None => out.extend_from_slice(b"*-1\r\n"),
+            }
+        }
+        XReadGroupOutcome::Ready(out)
+    }
+
+    pub(crate) fn blocking_xreadgroup(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
+        if self.journal.is_some() {
+            let Ok(_gate) = self.transaction_gate.write() else {
+                return XReadGroupOutcome::JournalError;
+            };
+            self.blocking_xreadgroup_gated(options)
+        } else {
+            let Ok(_gate) = self.transaction_gate.read() else {
+                return XReadGroupOutcome::JournalError;
+            };
+            self.blocking_xreadgroup_gated(options)
+        }
+    }
+
+    fn blocking_xreadgroup_gated(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
+        let marks = self.journal_marks();
+        let outcome = self.xreadgroup_new(options);
+        if matches!(outcome, XReadGroupOutcome::Ready(_)) {
+            let mut output = Vec::new();
+            self.commit_journal(marks, &[], &mut output, 0);
+            if output.first() == Some(&b'-') {
+                return XReadGroupOutcome::JournalError;
+            }
+            self.notify_event("xreadgroup", options.key, NotifyCategory::Stream);
+        }
+        outcome
+    }
+
     fn xinfo_groups(&self, a: &[&[u8]], out: &mut Vec<u8>) {
         let Ok(mut data) = self.data.write() else {
             internal_error(out);

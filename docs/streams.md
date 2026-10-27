@@ -22,8 +22,11 @@ owned value/tree after checking NX rejection and final payload admission.
 - `XDEL key id [id ...]`, `XLEN key`.
 - `XGROUP CREATE key group id|$ [MKSTREAM]`, `SETID`, `DESTROY`, `CREATECONSUMER`
   and `DELCONSUMER`.
-- `XREADGROUP GROUP group consumer [COUNT n] [NOACK] STREAMS key >` for a
-  single stream and new entries. COUNT is per stream. A normal delivery updates
+- `XREADGROUP GROUP group consumer [COUNT n] [BLOCK ms] [NOACK] STREAMS key >`
+  for a single stream and new entries. COUNT is per stream. BLOCK waits for new
+  entries with the same timeout rules as XREAD; `0` waits indefinitely and finite
+  timeouts return a null array. History IDs with BLOCK return history immediately,
+  and BLOCK runs once non-blocking inside `MULTI`. A normal delivery updates
   the consumer and group pending-entry state; NOACK advances the group without
   adding pending entries. A non-`>` ID selects that consumer's pending history
   with IDs greater than the supplied ID in ascending order: present entries carry
@@ -80,9 +83,8 @@ owned value/tree after checking NX rejection and final payload admission.
 
 ## Limits
 
-This is not Redis Streams feature completeness. Blocking `XREADGROUP`,
-multi-stream history reads, replication and durable pending/consumer restoration
-are unsupported. History reads cover one stream per command. `XSETID` metadata is
+This is not Redis Streams feature completeness. Multi-stream history reads,
+replication and durable pending/consumer restoration are unsupported. History reads cover one stream per command. `XSETID` metadata is
 journaled, but pending owners/delivery counters remain volatile. XTRIM's
 `~` mode removes an exact number of entries up to the LIMIT/default bound rather
 than Redis's listpack-node granularity, so it never leaves more entries than the

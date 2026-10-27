@@ -978,3 +978,86 @@ fn blmpop_emits_lmpop_event() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn blocking_xreadgroup_emits_delivery_event() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+    let mut blocked = connect(&server);
+
+    send(
+        &mut writer,
+        &[b"XADD", b"w", b"1-0", b"f", b"v"],
+        b"$3\r\n1-0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xadd",
+            b"w"
+        ])
+    );
+    send(
+        &mut writer,
+        &[b"XGROUP", b"CREATE", b"w", b"g", b"$"],
+        b"+OK\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xgroup",
+            b"w"
+        ])
+    );
+
+    send(
+        &mut blocked,
+        &[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g",
+            b"c",
+            b"BLOCK",
+            b"0",
+            b"STREAMS",
+            b"w",
+            b">",
+        ],
+        b"",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    send(
+        &mut writer,
+        &[b"XADD", b"w", b"2-0", b"f", b"v2"],
+        b"$3\r\n2-0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xadd",
+            b"w"
+        ])
+    );
+    assert_eq!(
+        read_frame(&mut blocked),
+        b"*1\r\n*2\r\n$1\r\nw\r\n*1\r\n*2\r\n$3\r\n2-0\r\n*2\r\n$1\r\nf\r\n$2\r\nv2\r\n"
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:xreadgroup",
+            b"w"
+        ])
+    );
+    server.shutdown().unwrap();
+}

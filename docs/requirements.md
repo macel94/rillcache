@@ -89,6 +89,7 @@ reason to couple all future commands into a single large story.
 | S59 | As a stream consumer, I can wait for new entries on one or more streams so that tailing clients do not have to poll. | S | R233–R236; BLOCK parsing/timeout/wakeup/$/multi-key/MULTI and all-mode wire tests |
 | S60 | As a list user, I can locate repeated elements and pop across several list keys so that queue and feed operations do not require client loops. | S | R237–R240; LPOS rank/count/maxlen, LMPOP order/COUNT, errors and all-mode wire tests |
 | S61 | As an operator or client, I can read the server wall clock and the actual storage encoding of a key without fabricated memory or LFU metrics. | XS | R241–R244; TIME shape, encodings, missing/unsupported cases and all-mode wire tests |
+| S62 | As a stream group consumer, I can wait for new deliveries without polling empty streams so that workers can consume as producers append. | S | R245–R248; BLOCK group/timeout/wakeup/NOACK/history/MULTI and all-mode wire tests |
 | S63 | As a list consumer, I can wait for elements across several lists so that queue workers do not poll empty keys. | S | R249–R252; BLMPOP timeout/wakeup/COUNT/MULTI/WATCH and all-mode wire tests |
 | S64 | As a collection user, I can sort by derived weights and project joined string/hash values so that ordered views match existing application keys. | S | R253–R256; BY/GET substitution/weights/ACL/errors and all-mode wire tests |
 
@@ -974,7 +975,7 @@ reason to couple all future commands into a single large story.
 - **R236 (ubiquitous):** Tests shall cover immediate reads, indefinite and finite
   waits, wake-on-append, `$` capture, multi-key wake selection, COUNT, timeout
   nulls, MULTI non-blocking behavior, wrong types, malformed BLOCK/IDs/STREAMS and
-  all worker modes. Blocking `XREADGROUP` and multi-stream history shall remain
+  all worker modes. Multi-stream history shall remain documented as unsupported.
 
 ### List position and multi-key pop (S60)
 
@@ -1071,6 +1072,30 @@ reason to couple all future commands into a single large story.
   cover string/hash weights, missing and invalid weights, constant BY, ALPHA,
   multiple GETs, store projections, ACL denial/allkeys, TTL/OOM, MULTI/WATCH and
   all worker modes. Cluster routing and durable indexes remain unsupported.
+
+### Blocking consumer-group reads (S62)
+
+- **R245 (event-driven):** `XREADGROUP GROUP group consumer [COUNT n] [BLOCK ms]
+  [NOACK] STREAMS key id` shall parse the same integer-millisecond BLOCK values as
+  XREAD, reject negative/non-integer/out-of-range options and `$` with the
+  documented errors, and apply waiting only to a `>` new-entry read. A history ID
+  with BLOCK shall return history immediately without waiting.
+- **R246 (event-driven):** When a `>` read has no new entries, a positive BLOCK
+  shall wait using the bounded polling model and return null on expiry; zero shall
+  wait indefinitely. Appends shall wake the read, deliver the normal response
+  shape, advance the group cursor, add pending entries unless NOACK is set, update
+  consumer activity, and publish the existing `xreadgroup` notification after
+  journal capture. Missing keys/groups and wrong types shall fail immediately
+  without blocking.
+- **R247 (state-driven):** Inside `MULTI`, BLOCK shall execute one non-blocking
+  `>` read at `EXEC` and never wait. Blocked connections shall not hold the store
+  lock, shall clear state on disconnect/shutdown, and shall remain bounded polling
+  observations rather than durable subscriptions.
+- **R248 (ubiquitous):** Tests shall cover immediate group reads, finite and
+  indefinite waits, wake-on-append, NOACK, cursor/pending updates, history with
+  BLOCK, MULTI non-blocking behavior, missing/wrong-type errors, malformed
+  BLOCK/IDs/STREAMS, notification direction and all worker modes. Multi-stream
+  history and replication/durable pending remain unsupported. (feat: add blocking XREADGROUP deliveries)
 
 ### Development and delivery
 
@@ -1438,7 +1463,8 @@ XDEL, XLEN, XGROUP CREATE/SETID/DESTROY/
 CREATECONSUMER/DELCONSUMER, XREADGROUP GROUP with COUNT/NOACK for new entries on
 one stream with new-entry and history reads, XACK, XPENDING summary/extended,
 XRANGE/XREVRANGE, non-blocking and blocking XREAD over multiple streams,
-XCLAIM/XAUTOCLAIM, XTRIM, XSETID, and XINFO STREAM (with FULL)/GROUPS/CONSUMERS. See [stream limits](streams.md). All types share expiry, payload
+XCLAIM/XAUTOCLAIM, XTRIM, XSETID, blocking group reads, and XINFO STREAM (with
+FULL)/GROUPS/CONSUMERS. See [stream limits](streams.md). All types share expiry, payload
 accounting, TYPE, RENAME and deep same-database COPY; byte-oriented KEYS and
 RANDOMKEY inspect that same keyspace. See [keyspace limits](keyspace.md).
 CONFIG GET/SET collection thresholds select actual collection representations;
