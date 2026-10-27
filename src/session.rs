@@ -2695,4 +2695,79 @@ x\r\n"
             b">3\r\n$8\r\nsmessage\r\n$1\r\na\r\n$1\r\nm\r\n"
         );
     }
+    #[test]
+    fn expired_and_evicted_notifications_use_injected_clock_and_eviction_policy() {
+        struct TestClock(std::sync::atomic::AtomicI64);
+        impl crate::engine::Clock for TestClock {
+            fn now_ms(&self) -> i64 {
+                self.0.load(std::sync::atomic::Ordering::SeqCst)
+            }
+        }
+        let clock = std::sync::Arc::new(TestClock(std::sync::atomic::AtomicI64::new(1000)));
+        let store = Store::with_clock(10, clock.clone());
+        store.set_notify_flags(crate::engine::NotifyFlags::parse(b"KEA").unwrap());
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        let mut subscriber = Session::new();
+        subscriber.set_pubsub_sender(sender);
+        assert_eq!(
+            call(
+                &mut subscriber,
+                &store,
+                &[b"PSUBSCRIBE", b"__keyevent@0__:*"]
+            ),
+            b"*3\r\n$10\r\npsubscribe\r\n$16\r\n__keyevent@0__:*\r\n:1\r\n"
+        );
+        let mut writer = Session::new();
+        assert_eq!(
+            call(&mut writer, &store, &[b"SET", b"k", b"v", b"PX", b"10"]),
+            b"+OK\r\n"
+        );
+        assert!(receiver.try_recv().is_ok(), "SET event");
+        clock.0.store(1011, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(call(&mut writer, &store, &[b"GET", b"k"]), b"$-1\r\n");
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            b"*4\r\n$8\r\npmessage\r\n$16\r\n__keyevent@0__:*\r\n$22\r\n__keyevent@0__:expired\r\n$1\r\nk\r\n"
+        );
+
+        store.set_eviction_policy(crate::engine::EvictionPolicy::AllKeysRandom);
+        assert_eq!(
+            call(&mut writer, &store, &[b"SET", b"victim", b"123"]),
+            b"+OK\r\n"
+        );
+        assert!(receiver.try_recv().is_ok(), "victim SET event");
+        assert_eq!(
+            call(&mut writer, &store, &[b"SET", b"new", b"123"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            b"*4\r\n$8\r\npmessage\r\n$16\r\n__keyevent@0__:*\r\n$22\r\n__keyevent@0__:evicted\r\n$6\r\nvictim\r\n"
+        );
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            b"*4\r\n$8\r\npmessage\r\n$16\r\n__keyevent@0__:*\r\n$18\r\n__keyevent@0__:set\r\n$3\r\nnew\r\n"
+        );
+
+        assert_eq!(
+            call(&mut writer, &store, &[b"SET", b"p", b"v", b"PX", b"10"]),
+            b"+OK\r\n"
+        );
+        assert!(receiver.try_recv().is_ok(), "p SET event");
+        clock.0.store(1022, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(store.purge_expired(16), 1);
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            b"*4\r\n$8\r\npmessage\r\n$16\r\n__keyevent@0__:*\r\n$22\r\n__keyevent@0__:expired\r\n$1\r\np\r\n"
+        );
+
+        store.set_eviction_policy(crate::engine::EvictionPolicy::NoEviction);
+        let reply = call(
+            &mut writer,
+            &store,
+            &[b"SET", b"big", b"01234567890123456789"],
+        );
+        assert!(reply.starts_with(b"-OOM"), "{reply:?}");
+        assert!(receiver.try_recv().is_err(), "no event for rejected write");
+    }
 }

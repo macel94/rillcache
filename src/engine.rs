@@ -158,13 +158,18 @@ impl Store {
         let Ok(_gate) = self.transaction_gate.read() else {
             return 0;
         };
-        let Ok(mut data) = self.data.try_write() else {
-            return 0;
+        let (count, expired) = {
+            let Ok(mut data) = self.data.try_write() else {
+                return 0;
+            };
+            let count = data.reap(self.clock.now_ms().max(0), limit);
+            let (expired, _) = data.drain_lifecycle();
+            (count, expired)
         };
-        if data.expirations.is_empty() {
-            return 0;
+        for key in expired {
+            self.notify_event("expired", &key, NotifyCategory::Expired);
         }
-        data.reap(self.clock.now_ms().max(0), limit)
+        count
     }
 
     /// Append exactly one reply. No store lock is held during socket I/O.
@@ -180,13 +185,36 @@ impl Store {
             let start = output.len();
             let action = self.execute_locked(arguments, output);
             self.commit_journal(marks, arguments, output, start);
+            self.publish_lifecycle_events();
             return action;
         }
         let Ok(_gate) = self.transaction_gate.read() else {
             internal_error(output);
             return Action::Continue;
         };
-        self.execute_locked(arguments, output)
+        let action = self.execute_locked(arguments, output);
+        self.publish_lifecycle_events();
+        action
+    }
+
+    fn publish_lifecycle_events(&self) {
+        let flags = self.notify_flags();
+        let (expired, evicted) = {
+            let Ok(mut data) = self.data.write() else {
+                return;
+            };
+            data.drain_lifecycle()
+        };
+        if flags.expired {
+            for key in expired {
+                self.notify_event("expired", &key, NotifyCategory::Expired);
+            }
+        }
+        if flags.evicted {
+            for key in evicted {
+                self.notify_event("evicted", &key, NotifyCategory::Evicted);
+            }
+        }
     }
 
     /// Dispatch without the transaction gate; only `EXEC` may call this while

@@ -76,6 +76,7 @@ reason to couple all future commands into a single large story.
 | S46 | As a stream consumer-group operator, I can recover, reassign and inspect pending deliveries so that stalled consumers can be replaced without losing acknowledged work. | S | R181–R184; claim/autoclaim/introspection, errors and all-mode wire tests |
 | S47 | As a sharded-channel client, I can subscribe and publish on a namespace separate from normal channels so that shard-oriented workers do not receive unrelated broadcasts. | S | R185–R188; separate fan-out/counts, shard introspection, ACL/RESET and all-mode wire tests |
 | S48 | As a stream operator, I can bound retained history by length or minimum ID so that long-lived streams do not grow without limit. | XS | R189–R192; exact/approx/LIMIT/errors/TTL/WATCH and all-mode wire tests |
+| S49 | As a cache operator, I can observe expired and evicted keys through keyspace notifications so invalidation tooling can react to lifecycle removal as well as explicit mutations. | S | R193–R196; flag validation, lazy/reaped expiry, eviction policy, bounded queues and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -459,7 +460,7 @@ reason to couple all future commands into a single large story.
 
 - **R157 (event-driven):** When `--notify-keyspace-events` or `CONFIG SET
   notify-keyspace-events` receives supported flags (`K`, `E`, `g`, `$`, `l`, `s`,
-  `h`, `z`, `t`, `A`), the server shall atomically update the live classes;
+  `h`, `z`, `t`, `x`, `e`, `A`), the server shall atomically update the live classes;
   unsupported/unknown classes and malformed flags shall fail without changing
   configuration.
 - **R158 (event-driven):** When a supported mutating command changes keys, the
@@ -471,14 +472,15 @@ reason to couple all future commands into a single large story.
 - **R159 (unwanted behavior):** If notifications are disabled, a category is not
   selected, a subscriber lacks ACL channel permission, or a command is unknown/
   non-mutating, then no notification event shall be emitted or delivered to that
-  subscriber. Expired/evicted/keymiss/new-key/module and `FLUSH*` events shall not
-  be claimed; their flags shall be rejected.
+  subscriber. Keymiss/new-key/module and `FLUSH*` keyless events shall not be
+  claimed; their flags shall be rejected.
 - **R160 (state-driven):** While notifications are enabled, mutation capture and
   publication shall follow command execution order and remain at-most-once and
   non-persistent. All-mode tests shall cover keyspace/keyevent frames, category and
-  runtime toggles, binary channels, rename/expire, MULTI, blocking pops, HLL and
-  `CONFIG`/`INFO` exposure. Documentation shall retain the missing event classes,
-  durable/replicated delivery, global happens-before and exhaustive-audit limits.
+  runtime toggles, binary channels, rename/expire, MULTI, blocking pops, HLL,
+  expired/evicted classes and `CONFIG`/`INFO` exposure. Documentation shall retain
+  the missing event classes, durable/replicated delivery, global happens-before
+  and exhaustive-audit limits.
 
 ### ACL credentials, dry-run and denial log (S41)
 
@@ -677,6 +679,29 @@ reason to couple all future commands into a single large story.
   `~`, LIMIT bounds, empty and missing streams, TTL, pending retention, WATCH and
   wrong types in unit and all-mode wire tests. `XADD` trim options, `XSETID`,
   blocking reads and history reads shall remain documented as unsupported.
+
+### Expired and evicted notification classes (S49)
+
+- **R193 (event-driven):** When `notify-keyspace-events` receives `x` or `e`, the
+  server shall enable `expired` and `evicted` event classes respectively; `A`
+  shall include both, and the canonical string shall round-trip them. Unknown
+  flags and still-unsupported keymiss/new-key/module flags shall fail without
+  changing configuration.
+- **R194 (event-driven):** When a key is logically removed by lazy lookup
+  expiration or by bounded background reclamation, the server shall publish
+  `expired` with the key through the enabled `K`/`E` channels. Setting a TTL
+  without removal shall publish no `expired` event.
+- **R195 (event-driven):** When a configured eviction policy actually removes a
+  victim, the server shall publish `evicted` with the victim key. `noeviction`
+  rejection, failed admission and explicit deletion shall not publish `evicted`,
+  and the victim's command event shall be suppressed when eviction occurs within
+  the same command.
+- **R196 (ubiquitous):** Lifecycle records shall use bounded per-kind in-memory
+  queues drained after the triggering command or maintenance pass, remain
+  at-most-once and non-persistent, add no worker or dependency, and be covered by
+  unit and all-mode wire tests for injected-clock lazy expiry, reaped expiry,
+  eviction, `CONFIG` round-trip and flag/category filtering. Durable delivery,
+  replay and complete-audit guarantees shall remain documented as absent.
 
 ### Development and delivery
 

@@ -61,8 +61,9 @@ or asynchronous deleter.
 
 - No true RSS/allocator accounting, `maxmemory` bytes runtime setting, memory
   fragmentation control, active defragmentation, object-size sampling, LFU,
-  eviction pools, replica-aware eviction or keyspace-notification events for
-  evictions. The keyspace event is not published.
+  eviction pools, replica-aware eviction or durable/replayed eviction
+  notifications. An `evicted` keyspace event is published at-most-once to current
+  subscribers when the `e` class is enabled.
 - Eviction is process-local; replicated/cluster policies and persistence of
   eviction policy are absent. The CLI policy must be supplied again after restart;
   `CONFIG SET` is runtime-only.
