@@ -68,6 +68,12 @@ MSB-first bit access, BYTE/BIT ranges, and atomic AND/OR/XOR/NOT destinations.
 wrap/saturate/fail overflow policies. See
 [bitmap/LCS/float limits](docs/string-algorithms.md).
 
+Geospatial commands `GEOADD`/`GEOPOS`/`GEODIST`/`GEOHASH`/`GEOSEARCH`/
+`GEOSEARCHSTORE` store WGS-84 points as sorted-set geohash scores, with radius/box
+searches, distance/coordinate/hash options and atomic store destinations. Searches
+use a bounded linear scan rather than a native neighbour index. See
+[geospatial limits](docs/geospatial.md).
+
 Binary-safe lists, sets, hashes and sorted sets support creation, mutation,
 removal, bounded random selection, set algebra/store commands, score ranges and
 rank/range inspection. Collection writes preserve expiry metadata where Redis

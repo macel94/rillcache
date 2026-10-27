@@ -72,6 +72,7 @@ reason to couple all future commands into a single large story.
 | S42 | As a bitmap user, I can count, locate and combine bits over binary strings with byte/bit ranges and atomic destinations. | S | R165–R168; range/padding/alias/TTL/OOM/WRONGTYPE and all-mode wire tests |
 | S43 | As a stream consumer, I can range-read entries, inspect and acknowledge pending deliveries, and read multiple streams without blocking so that consumer groups are usable beyond one read. | S | R169–R172; ack/pending/range/read/group lifecycle and all-mode wire tests |
 | S44 | As a bitmap user, I can read and atomically update signed or unsigned bit fields of arbitrary width with wrap, saturate or fail overflow behavior. | S | R173–R176; field/offset/overflow/RO/OOM/WRONGTYPE and all-mode wire tests |
+| S45 | As a location application, I can store points, inspect their coordinates, distance and geohash, and search by radius or box so that proximity queries do not require a separate index. | M | R177–R180; encoding, distance format, search/store atomicity, errors and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -573,6 +574,35 @@ reason to couple all future commands into a single large story.
   OOM atomicity. `u64` remains unsupported and no Redis-internal encoding guarantee
   is claimed.
 
+### Geospatial sorted sets (S45)
+
+- **R177 (event-driven):** When `GEOADD key [NX|XX] [CH] longitude latitude member
+  ...` receives triples, it shall validate every longitude/latitude and option
+  before any key access, reject unparseable/NaN coordinates with the float error
+  and out-of-range/non-finite pairs with the bounded pair error, encode each point into a 52-bit interleaved geohash score,
+  and apply `ZADD` NX/XX/CH semantics while preserving TTL and exact payload
+  accounting.
+- **R178 (event-driven):** When `GEOPOS`, `GEOHASH` or `GEODIST` reads members, it
+  shall decode geohash scores and return 17-fractional coordinate text, an
+  11-character standard geohash, or a four-decimal distance in M/KM/FT/MI
+  respectively. Missing members shall return the command's null shape; wrong-type
+  keys shall return WRONGTYPE; invalid units or coordinates shall fail before
+  producing a result.
+- **R179 (event-driven):** When `GEOSEARCH` runs, it shall require exactly one of
+  FROMMEMBER/FROMLONLAT and exactly one of BYRADIUS/BYBOX, support ASC/DESC,
+  COUNT with optional ANY validation and WITHCOORD/WITHDIST/WITHHASH, resolve
+  FROMMEMBER against the live source, scan the bounded sorted set with the
+  documented haversine/rectangle checks, and return at most COUNT deterministic
+  results. A missing source shall return an empty array.
+- **R180 (unwanted behavior):** When `GEOSEARCHSTORE` stores matches, it shall
+  perform one atomic destination replacement, clear the destination TTL, support
+  STOREDIST, delete the destination for an empty result and never partially write
+  on malformed options, wrong source type or payload OOM. `GEOADD` and
+  `GEOSEARCHSTORE` shall publish `zadd`/`geosearchstore`/`del` events, expose
+  truthful `@geo` metadata and two ordered keys for the store command, and be
+  covered by unit and all-mode wire tests. Legacy `GEORADIUS*` commands, native
+  neighbour indexes and RDB interchange shall remain documented as unsupported.
+
 ### Development and delivery
 
 - **R30 (event-driven):** When `make check` is run, the project shall check formatting,
@@ -915,7 +945,9 @@ BITCOUNT/BITPOS/BITOP/BITFIELD/BITFIELD_RO; LCS (LEN/IDX/WITHMATCHLEN/
 MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store
 commands, score/rank ranges, pops and bounded blocking `BLPOP`/`BRPOP` documented
-in [typed collections](collections.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor
+in [typed collections](collections.md); geospatial sorted sets (`GEOADD`,
+`GEOPOS`, `GEODIST`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`) documented in
+[geospatial limits](geospatial.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor
 iteration with MATCH/COUNT/TYPE/NOVALUES; PFADD/PFCOUNT/PFMERGE approximate
 cardinality; PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE and PUBSUB
 introspection.

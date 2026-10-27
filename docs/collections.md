@@ -22,7 +22,9 @@ Redis behavior.
 - Sorted sets: `ZADD` with `NX`, `XX`, `GT`, `LT`, `CH` and `INCR`, `ZREM`,
   `ZINCRBY`, `ZSCORE`, `ZCARD`, `ZCOUNT`, `ZRANGE`, `ZREVRANGE`,
   `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANK`, `ZREVRANK`,
-  `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE`, `ZPOPMIN`, `ZPOPMAX`.
+  `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE`, `ZPOPMIN`, `ZPOPMAX`. Geospatial
+`GEOADD`/`GEOSEARCH`/`GEOSEARCHSTORE` use the same sorted-set representation and
+publish `zadd`/`geosearchstore` events; see [geospatial limits](geospatial.md).
 
 Mutation commands stage their complete replacement value and check the configured
 key/value payload budget before publishing; failed writes preserve the previous
