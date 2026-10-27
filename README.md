@@ -81,7 +81,8 @@ than a native neighbour index. See [geospatial limits](docs/geospatial.md).
 Binary-safe lists, sets, hashes and sorted sets support creation, mutation,
 removal, bounded random selection (`SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`),
 HGETDEL atomic field reads/removal, per-field hash TTL controls
-(`HEXPIRE`/`HPEXPIRE`/`*AT`, `HTTL`/`HPTTL`, `*EXPIRETIME`, `HPERSIST`), set
+(`HEXPIRE`/`HPEXPIRE`/`*AT`, `HTTL`/`HPTTL`, `*EXPIRETIME`, `HPERSIST`),
+combined `HSETEX`/`HGETEX` field writes/reads with FNX/FXX and TTL clauses, set
 algebra/store commands, list position and
 multi-key pop (LPOS/LMPOP/BLMPOP), atomic and blocking list moves
 (LMOVE/RPOPLPUSH/BLMOVE/BRPOPLPUSH), score ranges and rank/range inspection. Sorted sets add unified `ZRANGE` score/lex/reverse/limit

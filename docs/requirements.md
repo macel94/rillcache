@@ -105,6 +105,7 @@ reason to couple all future commands into a single large story.
 | S75 | As an operator, I can request a durable protocol-level stop so that maintenance can flush acknowledged journal writes and join workers without relying on signals. | S | R296–R299; flags/errors/ABORT/MULTI/persistence/all-mode shutdown tests |
 | S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
+| S-HC | As a hash user, I can atomically read or set counted fields together with their expiry so that conditional writes and TTL updates do not race separate commands. | S | R-HC1–R-HC4; duplicate/binary/due-deadline/OOM/bounds/concurrency, journal, transaction and all-mode wire tests |
 | S78 | As an operator, I can configure automatic journal compaction thresholds so that an append-only file does not grow without bound between manual rewrites. | S | R306–R309; config/defaults/growth/baseline/replay and all-mode wire tests |
 | S79 | As a client or operator, I can read the truthful standalone replication state so health checks do not see unknown commands or invented topology. | XS | R310–R312; ROLE shape, INFO replication fields, ACL categories and all-mode wire tests |
 | S81 | As an operator, I can see per-field hash expirations and how many subkeys expired so field-TTL cleanup is observable like Redis 7.4. | XS | R316–R318; subexpiry, expired_subkeys, reset and all-mode wire tests |
@@ -1285,8 +1286,8 @@ and the offline upstream harness tests.
   FIELDS/count/options, negative times and unsupported conditions shall return
   bounded Redis-shaped errors or per-field `-2`/`-1` values without partial
   writes. Field expiry is lazy rather than actively scanned, publishes no
-  per-field notification (matching standalone Redis), and HGETEX/HSETEX remain
-  separately documented as unsupported.
+  per-field notification. Combined HGETEX/HSETEX value/TTL operations are
+  specified separately by S-HC; this is not a full vendor notification claim.
 - **R283 (ubiquitous):** Tests shall cover conditional expire/GT/LT/NX/XX,
   remaining/absolute TTL forms, past-deadline lazy removal, key deletion, HSET/
   HINCRBY/HDEL/HGETDEL TTL interactions, missing/wrong-type/error cases, journal
@@ -1408,6 +1409,32 @@ and the offline upstream harness tests.
   partial output. Tests shall cover pattern/category/module filters, `@` prefixes,
   unknown categories, syntax failures and all worker modes. No module metadata or
   Redis extended command docs are implied.
+
+### Combined hash field values and expiry (S-HC)
+
+- **R-HC1 (event-driven):** When HSETEX receives a valid counted field/value block,
+  it shall atomically apply all pairs (last duplicate wins), return one on success
+  or zero when FNX/FXX fails against the original live fields, preserve the key
+  TTL, clear written field TTLs by default, and support KEEPTTL or one explicit
+  EX/PX/EXAT/PXAT deadline. A due deadline shall remove targeted fields without
+  reserving discarded values; removing the final field shall delete the key.
+- **R-HC2 (event-driven):** When HGETEX receives a valid counted field block, it
+  shall return binary values/nulls in argument order, preserve TTLs by default,
+  and apply PERSIST or one explicit deadline to existing fields only. A due
+  deadline shall remove each field after its first returned value, so a later
+  duplicate shall return null. Missing keys shall not be created.
+- **R-HC3 (unwanted behavior):** If options/counts/times/types are invalid, final
+  payload admission fails, or a complete HGETEX RESP reply exceeds 2 MiB including
+  duplicates and framing, it shall return one bounded error with no partial reply
+  or live value/TTL mutation. Counts shall be positive signed-32-bit values;
+  deadlines shall not exceed Redis's verified `(2^48 - 1) >> 2` milliseconds.
+  Options may precede or follow the counted FIELDS block; duplicate clauses and
+  unsupported options shall be rejected without reflecting arbitrary bytes.
+- **R-HC4 (ubiquitous):** Tests shall cover due/zero/equal deadlines with injected
+  clocks, repeated/binary fields, FNX races, OOM and reply-size atomicity, errors,
+  key/field TTL interactions, discovery/ACL, WATCH/MULTI, persistence and all worker
+  modes. No active field-expiry scan, exhaustive vendor event parity, RSS ceiling,
+  eviction rollback, replication or full hash-command compatibility is implied.
 
 ### Truthful standalone replication status (S79)
 
@@ -1925,7 +1952,7 @@ error frames. Conservative defaults remain smaller than Redis limits.
 Default limits: 128 clients, 30-second socket inactivity timeout, 1 MiB bulk,
 1..=1024-byte password (via flag or file; ACL files add hashed users),
 2 MiB complete request frame, 1024 arguments, 64 MiB key/value payload and a 2 MiB
-maximum MGET RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
+maximum MGET or HGETEX RESP reply. CLI `--max-bulk-bytes` and `--max-frame-bytes` may raise
 request bounds up to 512 MiB (bulk must fit within frame); larger requests remain
 finite and grow buffers only as bytes arrive. Compatibility-only upstream runs
 match native and candidate at 8 MiB bulk and 16 MiB frame; MGET remains capped at

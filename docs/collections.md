@@ -21,7 +21,8 @@ Redis behavior.
   `SUNIONSTORE`, `SDIFFSTORE`, `SPOP`, `SRANDMEMBER`.
 - Hashes: `HSET`, `HSETNX`, `HGET`, `HMGET`, `HGETALL`, `HDEL`, `HGETDEL`,
   `HEXISTS`, `HLEN`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`,
-  `HRANDFIELD`.
+  `HRANDFIELD`, `HGETEX`, `HSETEX`; per-field `HEXPIRE`/`HPEXPIRE`,
+  `HEXPIREAT`/`HPEXPIREAT`, `HTTL`/`HPTTL`, `HEXPIRETIME`/`HPEXPIRETIME`, `HPERSIST`.
 - Sorted sets: `ZADD` with `NX`, `XX`, `GT`, `LT`, `CH` and `INCR`, `ZREM`,
   `ZINCRBY`, `ZSCORE`, `ZCARD`, `ZCOUNT`, `ZRANGE` (rank, score or lex with
   `BYSCORE`/`BYLEX`, `REV`, `LIMIT` and `WITHSCORES`), `ZREVRANGE`,
@@ -40,8 +41,40 @@ counts, adding values when requested. `HGETDEL key FIELDS numfields field
 deletes present fields, deletes an emptied hash key, and preserves remaining TTL
 and payload accounting. Per-field TTL controls use `HEXPIRE`/`HPEXPIRE`,
 `HEXPIREAT`/`HPEXPIREAT`, `HTTL`/`HPTTL`, `HEXPIRETIME`/`HPEXPIRETIME` and
-`HPERSIST`; field deadlines are lazy and purge on hash access. `HGETEX`/`HSETEX`
-conveniences remain unsupported.
+`HPERSIST`; field deadlines are lazy and purge on hash access. `HSETEX key
+[FNX|FXX] [EX|PX|EXAT|PXAT value|KEEPTTL] FIELDS numfields field value ...` sets
+field/value pairs with one optional condition and expiry clause, while
+`HGETEX key [EX|PX|EXAT|PXAT value|PERSIST] FIELDS numfields field ...` returns
+values and optionally sets or clears their TTLs. Options may precede or follow
+the counted FIELDS block. FNX requires every target field to be absent; FXX
+requires every target to exist, checked before any pair is changed. Duplicate
+HSETEX fields use the final value. Default HSETEX clears written field TTLs;
+KEEPTTL preserves them. Default HGETEX leaves TTLs alone and PERSIST clears them.
+Both preserve the hash key's own TTL and reject invalid/conflicting clauses
+without partial live writes. Counts are positive signed-32-bit integers.
+
+Nonnegative EX/PX/EXAT/PXAT values resolve to absolute deadlines no larger than
+`(2^48 - 1) >> 2` milliseconds, matching the verified Redis field-expiry ceiling.
+A deadline at or before now takes effect immediately: HSETEX deletes its target
+fields without retaining supplied values; HGETEX returns each field's value then
+deletes it, so a later duplicate returns null. Untouched fields and TTLs remain;
+removing the last field removes the key and reclaims its payload.
+
+HGETEX stages at most a **2 MiB complete RESP reply**, including framing and
+repeated values, before changing live TTLs. Larger results return one
+`ERR HGETEX reply exceeds configured limit` error with no partial array or TTL
+updates. This is an intentional bounded-I/O compatibility limit, not an RSS
+ceiling. Arbitrary unknown option bytes are omitted from errors. All-mode wire
+tests cover WATCH/MULTI, hash ACL categories and journal restart; injected-clock
+regressions cover exact deadlines, OOM, FNX races and reply amplification.
+The semantic reference is pinned Redis
+[`t_hash.c`](https://github.com/redis/redis/blob/498ecd0d6d007db11ddb3aea9428552598a78622/src/t_hash.c)
+and [`ebuckets.h`](https://github.com/redis/redis/blob/498ecd0d6d007db11ddb3aea9428552598a78622/src/ebuckets.h).
+Successful HSETEX emits the existing hash-key `hset` notification only for its
+supplied target. Rejected writes and unrelated keys reaped for admission receive
+no synthetic `hset`; genuine key lifecycle events remain separate. Field-level
+`hexpire`/`hdel`/`hexpired` event parity is not implemented. This does not claim the
+entire original upstream hash suite or vendor event parity.
 
 Mutation commands stage their complete replacement value and check the configured
 key/value payload budget before publishing; failed writes preserve the previous

@@ -124,6 +124,136 @@ fn msetex_reaping_does_not_publish_false_write_events_on_rejection_or_oom() {
 }
 
 #[test]
+fn hsetex_reaping_emits_only_real_successful_target_write_events() {
+    use crate::engine::{Clock, NotifyFlags};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    struct TestClock(AtomicI64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let clock = Arc::new(TestClock(AtomicI64::new(100)));
+    let store = Store::with_clock(12, clock.clone());
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"h\0\xff", b"FIELDS", b"1", b"a", b"v"]
+        ),
+        b":1\r\n"
+    );
+    let cases: &[(&[&[u8]], &[u8])] = &[
+        (
+            &[b"HSETEX", b"h\0\xff", b"FNX", b"FIELDS", b"1", b"a", b"new"],
+            b":0\r\n",
+        ),
+        (
+            &[
+                b"HSETEX", b"h\0\xff", b"FXX", b"FIELDS", b"1", b"missing", b"new",
+            ],
+            b":0\r\n",
+        ),
+        (
+            &[
+                b"HSETEX",
+                b"h\0\xff",
+                b"FIELDS",
+                b"1",
+                b"a",
+                b"too-large-value",
+            ],
+            b"-OOM configured payload limit exceeded\r\n",
+        ),
+        (
+            &[b"HSETEX", b"h\0\xff", b"FIELDS", b"1", b"a", b"newnew"],
+            b":1\r\n",
+        ),
+    ];
+    for (arguments, expected) in cases {
+        assert_eq!(
+            run(&store, &[b"SET", b"s", b"vvvv", b"PX", b"1"]),
+            b"+OK\r\n"
+        );
+        while receiver.try_recv().is_ok() {}
+        clock.0.fetch_add(2, Ordering::SeqCst);
+        assert_eq!(run(&store, arguments), *expected);
+        let events = if *expected == b":1\r\n" {
+            vec![
+                (b"expired".as_slice(), b"s".as_slice()),
+                (b"hset", b"h\0\xff"),
+            ]
+        } else if expected.starts_with(b"-OOM") {
+            vec![(b"expired".as_slice(), b"s".as_slice())]
+        } else {
+            Vec::new()
+        };
+        for (event, key) in events {
+            let mut channel = b"__keyevent@0__:".to_vec();
+            channel.extend_from_slice(event);
+            let mut frame = Vec::new();
+            crate::protocol::encode_request(
+                &[b"pmessage", b"__keyevent@0__:*", &channel, key],
+                &mut frame,
+            );
+            assert_eq!(receiver.try_recv().unwrap(), frame);
+        }
+        assert!(
+            receiver.try_recv().is_err(),
+            "no hset event for rejected writes or unrelated expired keys"
+        );
+    }
+    // Lazy expiry of a field on the target must not label a rejected FNX/FXX
+    // write as hset either; field lifecycle notifications are not implemented.
+    for arguments in [
+        vec![
+            b"HSETEX".as_slice(),
+            b"h\0\xff",
+            b"FNX",
+            b"FIELDS",
+            b"1",
+            b"a",
+            b"new",
+        ],
+        vec![
+            b"HSETEX".as_slice(),
+            b"h\0\xff",
+            b"FXX",
+            b"FIELDS",
+            b"2",
+            b"a",
+            b"new",
+            b"b",
+            b"new",
+        ],
+    ] {
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"HSETEX", b"h\0\xff", b"PX", b"1", b"FIELDS", b"1", b"b", b"v"
+                ]
+            ),
+            b":1\r\n"
+        );
+        while receiver.try_recv().is_ok() {}
+        clock.0.fetch_add(2, Ordering::SeqCst);
+        assert_eq!(run(&store, &arguments), b":0\r\n");
+        assert!(
+            receiver.try_recv().is_err(),
+            "rejected field expiry must not emit hset"
+        );
+        assert_eq!(
+            run(&store, &[b"HGET", b"h\0\xff", b"a"]),
+            b"$6\r\nnewnew\r\n"
+        );
+    }
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()

@@ -827,6 +827,10 @@ fn notification_events(
     if command.eq_ignore_ascii_case(b"MSETEX") {
         return msetex_notification_events(data, arguments, keys, flags, reply);
     }
+    let hsetex = command.eq_ignore_ascii_case(b"HSETEX");
+    if hsetex && reply != b":1\r\n" {
+        return Vec::new();
+    }
     if let Some((from_left, to_left)) = list_move_sides(command, arguments) {
         if !reply.starts_with(b"$") || reply == b"$-1\r\n" {
             return Vec::new();
@@ -843,6 +847,11 @@ fn notification_events(
     }
     let mut events = Vec::new();
     for key in keys {
+        // Admission/lazy expiry can change unrelated keys even when HSETEX
+        // succeeds. Only its supplied target can receive its write event.
+        if hsetex && arguments.get(1).copied() != Some(key.as_slice()) {
+            continue;
+        }
         if data.was_evicted(key) {
             continue;
         }
@@ -1056,7 +1065,7 @@ fn event_for(
         "sinterstore" => ("sinterstore", NotifyCategory::Set),
         "sunionstore" => ("sunionstore", NotifyCategory::Set),
         "sdiffstore" => ("sdiffstore", NotifyCategory::Set),
-        "hset" | "hsetnx" | "hmset" => ("hset", NotifyCategory::Hash),
+        "hset" | "hsetnx" | "hmset" | "hsetex" => ("hset", NotifyCategory::Hash),
         "hdel" => ("hdel", NotifyCategory::Hash),
         "hincrby" => ("hincrby", NotifyCategory::Hash),
         "hincrbyfloat" => ("hincrbyfloat", NotifyCategory::Hash),
