@@ -6,7 +6,7 @@
 //! guarantee or a server push notification.
 
 use super::Store;
-use super::collection_commands::ZSetPopOutcome;
+use super::collection_commands::{ListPopOutcome, ZSetPopOutcome};
 use super::collections::encode_list;
 use super::data::Collection;
 use super::notify::Category as NotifyCategory;
@@ -102,6 +102,49 @@ impl Store {
 }
 
 impl Store {
+    /// Pop from the first ready list under the normal transaction/journal gate,
+    /// matching one BLMPOP attempt.
+    pub(crate) fn blocking_lmpop(
+        &self,
+        keys: &[&[u8]],
+        left: bool,
+        count: usize,
+    ) -> ListPopOutcome {
+        if self.journal.is_some() {
+            let Ok(_gate) = self.transaction_gate.write() else {
+                return ListPopOutcome::JournalError;
+            };
+            self.blocking_lmpop_gated(keys, left, count)
+        } else {
+            let Ok(_gate) = self.transaction_gate.read() else {
+                return ListPopOutcome::JournalError;
+            };
+            self.blocking_lmpop_gated(keys, left, count)
+        }
+    }
+
+    fn blocking_lmpop_gated(&self, keys: &[&[u8]], left: bool, count: usize) -> ListPopOutcome {
+        let marks = self.journal_marks();
+        let outcome = {
+            let Ok(mut data) = self.data.write() else {
+                return ListPopOutcome::JournalError;
+            };
+            let now = self.now(&data);
+            self.list_pop_in_data(&mut data, keys, left, count, now)
+        };
+        if matches!(outcome, ListPopOutcome::Popped { .. }) {
+            let mut output = Vec::new();
+            self.commit_journal(marks, &[], &mut output, 0);
+            if output.first() == Some(&b'-') {
+                return ListPopOutcome::JournalError;
+            }
+            if let ListPopOutcome::Popped { key, .. } = &outcome {
+                self.notify_event("lmpop", key, NotifyCategory::List);
+            }
+        }
+        outcome
+    }
+
     /// Pop from the first ready sorted set under the normal transaction/journal
     /// gate, matching one BZMPOP attempt.
     pub(crate) fn blocking_zpop(&self, keys: &[&[u8]], max: bool, count: usize) -> ZSetPopOutcome {

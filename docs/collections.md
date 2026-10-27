@@ -14,7 +14,7 @@ Redis behavior.
 
 - Lists: `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LLEN`,
   `LRANGE`, `LINDEX`, `LINSERT`, `LREM`, `LSET`, `LTRIM`, `LPOS`, `LMPOP`,
-  `BLPOP`, `BRPOP`.
+  `BLPOP`, `BRPOP`, `BLMPOP`.
 - Sets: `SADD`, `SREM`, `SMEMBERS`, `SCARD`, `SISMEMBER`, `SMISMEMBER`,
   `SMOVE`, `SINTER`, `SUNION`, `SDIFF`, `SINTERCARD`, `SINTERSTORE`,
   `SUNIONSTORE`, `SDIFFSTORE`, `SPOP`, `SRANDMEMBER`.
@@ -74,7 +74,11 @@ compatibility.
 
 `BLPOP key [key ...] timeout` and `BRPOP ...` check keys in argument order and pop
 from the first live nonempty list, replying `[key, value]`; a wrong-type key returns
-WRONGTYPE. A nonempty list completes immediately. Otherwise the connection is
+WRONGTYPE. `BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT count]`
+immediately performs the LMPOP selection when a list is ready, otherwise waits
+with the same bounded polling model and returns `[key, [element, ...]]` on
+wakeup or a null array on timeout. Inside `MULTI`, BLMPOP executes the
+non-blocking LMPOP once at `EXEC` after validating its timeout. A nonempty list completes immediately. Otherwise the connection is
 marked blocked and no reply is written until data appears or the float-seconds
 timeout expires (the null array, or RESP3 null). Timeout `0` waits indefinitely;
 negative, NaN, infinite or out-of-range values return an error, as do missing keys
