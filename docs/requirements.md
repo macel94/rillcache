@@ -102,6 +102,7 @@ reason to couple all future commands into a single large story.
 | S72 | As an operator, I can pause and resume client command processing so that maintenance or failover preparation can drain traffic without dropping connections. | S | R284–R287; ALL/WRITE/timeout/unpause/pipelining/MULTI/shutdown and all-mode wire tests |
 | S73 | As an operator, I can inspect bounded latency event time series so that real spikes can be diagnosed without fabricated fork, AOF or replication metrics. | S | R288–R291; latest/history/reset/doctor, threshold, bounds, unsupported subcommands and all-mode wire tests |
 | S74 | As a client or operator, I can detect unsupported cluster, module and replica features through explicit reply contracts instead of unknown commands or fake capabilities. | XS | R292–R295; CLUSTER/module/WAIT shapes, errors and all-mode wire tests |
+| S76 | As an operator, disabled lifecycle notification classes do not impose a store write lock on every command, and enabling a class never replays stale events. | XS | R300–R302; dispatch benchmark, bounded queues, flag-change clearing and notification wire tests |
 | S77 | As a client or operator, I can filter the command registry by glob, ACL category or module so that discovery reflects the implemented surface without client-side parsing. | XS | R303–R305; PATTERN/ACLCAT/MODULE, syntax and all-mode wire tests |
 
 ## EARS acceptance requirements
@@ -1351,6 +1352,18 @@ and the offline upstream harness tests.
   ACL access and all worker modes. Documentation shall retain the absence of
   cluster routing, module execution, replication and Redis-8 extension support.
 
+### Lifecycle notification delivery cost (S76)
+
+- **R300 (state-driven):** While neither the expired nor the evicted notification
+  class is enabled, command dispatch shall not acquire the store write lock solely
+  to drain lifecycle queues, and pending lifecycle keys shall remain bounded.
+- **R301 (event-driven):** When notification flags change, the server shall discard
+  pending undispatched lifecycle keys before storing the new flags, so enabling an
+  expired/evicted class only delivers events observed after that point.
+- **R302 (ubiquitous):** Core dispatch benchmarks shall record the improvement and
+  all-mode notification tests shall still cover expired/evicted delivery, runtime
+  toggles, bounded queues and joined shutdown. Documentation shall retain the
+  process-local, at-most-once and non-persistent delivery limits.
 ### Command registry filters (S77)
 
 - **R303 (event-driven):** `COMMAND LIST FILTERBY PATTERN glob` shall return only
