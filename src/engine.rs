@@ -53,7 +53,10 @@ pub use eviction::EvictionPolicy;
 pub use journal::FsyncPolicy;
 pub use notify::{Category as NotifyCategory, NotifyFlags};
 use options::{Condition, ExpiryKind, SetOptions};
-pub(crate) use streams::{XReadOutcome, parse_xread, xread_reply};
+pub(crate) use streams::{
+    XReadGroupOptions, XReadGroupOutcome, XReadOutcome, parse_xread, parse_xreadgroup, xread_reply,
+    xreadgroup_reply,
+};
 pub use transaction::{TransactionOutcome, WatchState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

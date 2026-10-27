@@ -11,9 +11,10 @@ use std::time::{Duration, Instant};
 
 use crate::engine::{
     Access, AclError, Action, AuthError, ListPopOutcome, PopOutcome, Store, StreamId,
-    TransactionOutcome, WatchState, XReadOutcome, ZSetPopOutcome, blocking_lmpop_reply,
-    blocking_reply, blocking_zpop_reply, parse_bzmpop_timeout, parse_list_mpop, parse_mpop,
-    parse_xread, xread_reply,
+    TransactionOutcome, WatchState, XReadGroupOptions, XReadGroupOutcome, XReadOutcome,
+    ZSetPopOutcome, blocking_lmpop_reply, blocking_reply, blocking_zpop_reply,
+    parse_bzmpop_timeout, parse_list_mpop, parse_mpop, parse_xread, parse_xreadgroup, xread_reply,
+    xreadgroup_reply,
 };
 use crate::protocol::encode_bulk;
 
@@ -57,10 +58,27 @@ struct Blocked {
 
 #[derive(Clone, Debug)]
 enum BlockedKind {
-    List { left: bool },
-    ListMulti { left: bool, count: usize },
-    ZSet { max: bool, count: usize },
-    XRead { starts: Vec<StreamId>, count: usize },
+    List {
+        left: bool,
+    },
+    ListMulti {
+        left: bool,
+        count: usize,
+    },
+    ZSet {
+        max: bool,
+        count: usize,
+    },
+    XRead {
+        starts: Vec<StreamId>,
+        count: usize,
+    },
+    XReadGroup {
+        group: Vec<u8>,
+        consumer: Vec<u8>,
+        count: usize,
+        noack: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,6 +260,14 @@ impl Session {
         }
         if command.eq_ignore_ascii_case(b"XREAD") {
             self.xread(store, arguments, output);
+            return Action::Continue;
+        }
+        if command.eq_ignore_ascii_case(b"XREADGROUP")
+            && let Ok(options) = parse_xreadgroup(arguments)
+            && options.block.is_some()
+            && options.history.is_none()
+        {
+            self.blocking_xreadgroup(store, &options, output);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"PUBLISH") {
@@ -1074,6 +1100,37 @@ impl Session {
         });
     }
 
+    fn blocking_xreadgroup(
+        &mut self,
+        store: &Store,
+        options: &XReadGroupOptions<'_>,
+        output: &mut Vec<u8>,
+    ) {
+        match store.blocking_xreadgroup(options) {
+            XReadGroupOutcome::Empty => {}
+            outcome => {
+                xreadgroup_reply(outcome, options.key, options.group, output);
+                return;
+            }
+        }
+        let block = options.block.unwrap_or(0);
+        let deadline = if block == 0 {
+            None
+        } else {
+            Instant::now().checked_add(Duration::from_millis(block))
+        };
+        self.blocked = Some(Blocked {
+            keys: vec![options.key.to_vec()],
+            deadline,
+            kind: BlockedKind::XReadGroup {
+                group: options.group.to_vec(),
+                consumer: options.consumer.to_vec(),
+                count: options.count,
+                noack: options.noack,
+            },
+        });
+    }
+
     pub fn is_blocked(&self) -> bool {
         self.blocked.is_some()
     }
@@ -1119,6 +1176,29 @@ impl Session {
                     true
                 }
             },
+            BlockedKind::XReadGroup {
+                group,
+                consumer,
+                count,
+                noack,
+            } => {
+                let options = XReadGroupOptions {
+                    count,
+                    block: None,
+                    noack,
+                    key: keys[0],
+                    group: &group,
+                    consumer: &consumer,
+                    history: None,
+                };
+                match store.blocking_xreadgroup(&options) {
+                    XReadGroupOutcome::Empty => false,
+                    outcome => {
+                        xreadgroup_reply(outcome, keys[0], &group, &mut reply);
+                        true
+                    }
+                }
+            }
         };
         if !ready && !expired {
             return None;
