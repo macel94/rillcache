@@ -493,7 +493,7 @@ fn serve_client(
         loop {
             // Subscribers poll their bounded message queue and the socket. The short
             // read timeout is a delivery-latency bound, not a busy-poll guarantee.
-            let polling = session.is_subscribed() || session.is_blocked();
+            let polling = session.is_subscribed() || session.is_blocked() || session.is_paused();
             if polling != subscriber_timeout {
                 stream.set_read_timeout(Some(if polling {
                     Duration::from_millis(10)
@@ -521,6 +521,37 @@ fn serve_client(
                     output.clear();
                 }
                 if session.is_blocked() {
+                    let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
+                    if room > 0 {
+                        match stream.read(&mut chunk[..room]) {
+                            Ok(0) => return Ok(()),
+                            Ok(size) => input.extend_from_slice(&chunk[..size]),
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                                ) => {}
+                            Err(error) => return Err(error),
+                        }
+                    } else {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    continue;
+                }
+            }
+            if session.is_paused() {
+                if let Some((reply, action)) = session.poll_paused(store) {
+                    output.extend_from_slice(&reply);
+                    if !output.is_empty() {
+                        stream.write_all(&output)?;
+                        output.clear();
+                    }
+                    if action == Action::Close {
+                        return Ok(());
+                    }
+                }
+                if session.is_paused() || session.is_blocked() {
                     let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
                     if room > 0 {
                         match stream.read(&mut chunk[..room]) {
@@ -571,7 +602,7 @@ fn serve_client(
                 if action == Action::Close {
                     return Ok(());
                 }
-                if session.is_blocked() {
+                if session.is_blocked() || session.is_paused() {
                     break;
                 }
             }
@@ -596,7 +627,7 @@ fn serve_client(
                 }
             }
             let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
-            let polling = session.is_subscribed() || session.is_blocked();
+            let polling = session.is_subscribed() || session.is_blocked() || session.is_paused();
             if polling != subscriber_timeout {
                 stream.set_read_timeout(Some(if polling {
                     Duration::from_millis(10)
@@ -622,7 +653,9 @@ fn serve_client(
                     if matches!(
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) && (session.is_subscribed() || session.is_blocked()) =>
+                    ) && (session.is_subscribed()
+                        || session.is_blocked()
+                        || session.is_paused()) =>
                 {
                     continue;
                 }

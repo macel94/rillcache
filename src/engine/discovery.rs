@@ -393,6 +393,13 @@ pub(super) fn command_arity(name: &[u8]) -> Option<i64> {
         .map(|command| command.arity)
 }
 
+pub(crate) fn is_write_command(name: &[u8]) -> bool {
+    COMMANDS
+        .iter()
+        .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
+        .is_some_and(|command| command.flags.contains(&"write"))
+}
+
 pub(super) fn canonical_name(name: &[u8]) -> Option<&'static str> {
     COMMANDS
         .iter()

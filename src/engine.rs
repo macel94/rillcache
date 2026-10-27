@@ -20,6 +20,7 @@ mod commands;
 mod data;
 mod discovery;
 mod error_dialect;
+pub(crate) use discovery::is_write_command;
 mod eviction;
 mod geo;
 mod hll;
@@ -119,6 +120,7 @@ pub struct Store {
     slowlog_next_id: std::sync::atomic::AtomicU64,
     slowlog_threshold_us: std::sync::atomic::AtomicI64,
     slowlog_max_len: std::sync::atomic::AtomicUsize,
+    client_pause: std::sync::atomic::AtomicU64,
 }
 impl Store {
     pub fn new(max_payload_bytes: usize) -> Self {
@@ -175,6 +177,7 @@ impl Store {
             slowlog_next_id: std::sync::atomic::AtomicU64::new(0),
             slowlog_threshold_us: std::sync::atomic::AtomicI64::new(slowlog::DEFAULT_THRESHOLD_US),
             slowlog_max_len: std::sync::atomic::AtomicUsize::new(slowlog::DEFAULT_MAX_LEN),
+            client_pause: std::sync::atomic::AtomicU64::new(0),
         }
     }
     /// Select verified vendor-specific error wording before sharing the store.

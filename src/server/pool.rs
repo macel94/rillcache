@@ -182,6 +182,28 @@ impl Client {
                 return Ok(Some(progress));
             }
         }
+        if self.session.is_paused() {
+            if let Some((reply, action)) = self.session.poll_paused(store) {
+                self.output.extend_from_slice(&reply);
+                progress = true;
+                if action == Action::Close {
+                    self.closing = true;
+                }
+            }
+            if self.session.is_paused() || self.session.is_blocked() {
+                if self.eof {
+                    return Ok(None);
+                }
+                if self.input.is_empty() {
+                    let received = self.receive(config.limits, chunk)?;
+                    progress |= received;
+                    if self.eof {
+                        return Ok(None);
+                    }
+                }
+                return Ok(Some(progress));
+            }
+        }
         if !self.output.is_empty() {
             return Ok(self.open(progress, config.idle_timeout)); // Backpressure.
         }
@@ -212,7 +234,7 @@ impl Client {
                         self.closing = true;
                         break;
                     }
-                    if self.session.is_blocked() {
+                    if self.session.is_blocked() || self.session.is_paused() {
                         break;
                     }
                     // At most one bounded reply can take us beyond this soft limit.
