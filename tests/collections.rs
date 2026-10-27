@@ -242,3 +242,85 @@ fn collection_mutations_work_over_tcp_in_all_execution_modes() {
         server.shutdown().unwrap();
     }
 }
+
+#[test]
+fn legacy_hash_score_and_lex_commands_work_over_tcp_in_all_execution_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut stream = connect(&server);
+
+        command(
+            &mut stream,
+            &[b"HMSET", b"h", b"a", b"1", b"b", b"2"],
+            b"+OK\r\n",
+        );
+        command(&mut stream, &[b"HGET", b"h", b"a"], b"$1\r\n1\r\n");
+        command(&mut stream, &[b"HSET", b"h", b"c", b"3"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"HMSET", b"h", b"a"],
+            b"-ERR wrong number of arguments for 'hmset' command\r\n",
+        );
+
+        command(
+            &mut stream,
+            &[b"ZADD", b"z", b"1", b"a", b"2.5", b"b"],
+            b":2\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZMSCORE", b"z", b"a", b"missing", b"b"],
+            b"*3\r\n$1\r\n1\r\n$-1\r\n$3\r\n2.5\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZMSCORE", b"missing", b"a", b"b"],
+            b"*2\r\n$-1\r\n$-1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZMSCORE", b"z"],
+            b"-ERR wrong number of arguments for 'zmscore' command\r\n",
+        );
+
+        command(
+            &mut stream,
+            &[b"ZADD", b"lex", b"0", b"a", b"0", b"b", b"0", b"c"],
+            b":3\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZRANGEBYLEX", b"lex", b"-", b"+"],
+            b"*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZREVRANGEBYLEX", b"lex", b"[c", b"[a"],
+            b"*3\r\n$1\r\nc\r\n$1\r\nb\r\n$1\r\na\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZRANGEBYLEX", b"lex", b"-", b"+", b"LIMIT", b"1", b"1"],
+            b"*1\r\n$1\r\nb\r\n",
+        );
+
+        command(&mut stream, &[b"RPUSH", b"wrong", b"x"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"HMSET", b"wrong", b"a", b"1"],
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZMSCORE", b"wrong", b"a"],
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"ZRANGEBYLEX", b"wrong", b"-", b"+"],
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        );
+
+        server.shutdown().unwrap();
+    }
+}

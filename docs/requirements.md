@@ -117,6 +117,7 @@ reason to couple all future commands into a single large story.
 | S86 | As an ACL administrator, I can define independent command/key scopes per user so one login can read broadly while writing only a key namespace. | S | R328–R331; selector parsing, authorization, listing, ACL-file round-trip and all-mode wire tests |
 | S87 | As an operator, I can inspect the journal mode and change the fsync policy at runtime so durability tuning does not require a restart. | XS | R332–R334; startup values, live policy switch/replay, read-only mode/filename and all-mode wire tests |
 | S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
+| S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -1548,6 +1549,25 @@ and the offline upstream harness tests.
   shut down matching non-caller sockets and return the killed count. All-mode
   tests shall cover matching and non-matching local addresses, CLIENT LIST/INFO
   exposure, combined filters, caller protection and the unchanged legacy form.
+
+### Legacy hash and sorted-set commands (S90)
+
+- **R341 (event-driven):** `HMSET key field value [field value ...]` shall write
+  fields exactly like `HSET`, including TTL clearing, payload admission, journal
+  and notification behavior, but return `+OK` instead of the added-field count.
+  `ZMSCORE key member [member ...]` shall return one score bulk string per
+  requested member, a null bulk string for a missing member or key, and preserve
+  argument order; both shall reject wrong arity and wrong value types.
+- **R342 (event-driven):** `ZRANGEBYLEX key min max [LIMIT offset count]` and
+  `ZREVRANGEBYLEX key max min [LIMIT offset count]` shall accept Redis lex bounds
+  and return member arrays in ascending/reverse lexical order. They shall reject
+  `WITHSCORES`, invalid bounds and negative arity exactly like the equivalent
+  `ZRANGE ... BYLEX [REV]` forms they reuse.
+- **R343 (ubiquitous):** All-mode tests shall cover `HMSET` replies and field/TTL
+  effects, `ZMSCORE` order/nulls/missing keys, both lex aliases with bounds and
+  `LIMIT`, wrong types and arity errors, and every worker mode. Documentation
+  shall retain unsupported scripting, RDB/RESTORE, blocking sorted-set
+  `BZPOPMIN`/`BZPOPMAX`, multiple databases and replication.
 
 ### Error reply statistics (S84)
 
