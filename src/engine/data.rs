@@ -164,6 +164,8 @@ pub(super) struct ConsumerGroup {
 pub(super) struct Stream {
     pub entries: BTreeMap<StreamId, StreamEntry>,
     pub last_generated: StreamId,
+    pub entries_added: u64,
+    pub max_deleted: StreamId,
     pub groups: BTreeMap<Vec<u8>, ConsumerGroup>,
 }
 

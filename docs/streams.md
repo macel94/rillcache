@@ -40,6 +40,12 @@ owned value/tree after checking NX rejection and final payload admission.
   claims up to the count and returns `[next-start-id, claimed, deleted]`.
   `COUNT` must be positive; deleted-message pending IDs are pruned and reported in
   the third array so a caller can advance or restart a recovery loop.
+- `XSETID key last-id [ENTRIESADDED count] [MAXDELETEDID id]` aligns the stream
+  cursor and retention counters, for example after restore. The key must exist
+  and the last ID cannot be below the greatest retained entry or the effective
+  max-deleted ID. `ENTRIESADDED` cannot be below the retained length. `XADD`
+  increments entries-added even when the new entry is trimmed; `XDEL`, `XTRIM`
+  and XADD trimming advance max-deleted-entry-id.
 - `XINFO GROUPS key` and `XINFO CONSUMERS key group` expose group name, consumer
   count, pending count, last-delivered ID, unknown `entries-read` (null) and
   retained-entry `lag`, plus consumer name, pending count, `idle` and `inactive`.
@@ -58,15 +64,17 @@ owned value/tree after checking NX rejection and final payload admission.
   or more streams; `$` resolves to the last generated ID at command time. Blocking
   reads are rejected explicitly.
 - `XINFO STREAM key` and `XINFO STREAM key FULL` return actual stream entries,
-  group cursors, consumers and pending records in bounded RESP2 arrays.
+  group cursors, consumers and pending records in bounded RESP2 arrays, including
+  `last-generated-id`, `entries-added` and `max-deleted-entry-id`.
 - `COPY source destination [DB 0] [REPLACE]` creates an independent copy of
   string or stream state. Other database numbers/options are rejected.
 
 ## Limits
 
 This is not Redis Streams feature completeness. Blocking `XREAD`/`XREADGROUP`,
-history reads from a consumer's pending list, `XSETID`, replication and durable
-pending/consumer restoration are unsupported. XTRIM's
+history reads from a consumer's pending list, replication and durable
+pending/consumer restoration are unsupported. `XSETID` metadata is journaled, but
+pending owners/delivery counters remain volatile. XTRIM's
 `~` mode removes an exact number of entries up to the LIMIT/default bound rather
 than Redis's listpack-node granularity, so it never leaves more entries than the
 bound but may remove fewer than a native approximate trim. `XREAD` declares no static key positions, so ACL key
