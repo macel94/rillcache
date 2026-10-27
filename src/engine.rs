@@ -246,6 +246,11 @@ impl Store {
 
     fn publish_lifecycle_events(&self) {
         let flags = self.notify_flags();
+        // No lifecycle classes means there is nothing to deliver. Avoid taking
+        // the store write lock on every command just to discard queued keys.
+        if !flags.expired && !flags.evicted {
+            return;
+        }
         let (expired, evicted) = {
             let Ok(mut data) = self.data.write() else {
                 return;
@@ -634,6 +639,10 @@ impl Store {
     }
 
     pub fn set_notify_flags(&self, flags: NotifyFlags) {
+        // Events queued while a class was disabled are stale for delivery.
+        if let Ok(mut data) = self.data.write() {
+            data.clear_lifecycle();
+        }
         self.notifications.store(flags.bits(), Ordering::Release);
     }
 

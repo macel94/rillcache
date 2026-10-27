@@ -288,6 +288,13 @@ impl Data {
         )
     }
 
+    /// Discard pending lifecycle notifications that were queued while their
+    /// classes were disabled, so enabling them cannot deliver stale events.
+    pub(super) fn clear_lifecycle(&mut self) {
+        self.expired_events.clear();
+        self.evicted_events.clear();
+    }
+
     /// Record a mutation visible to `WATCH`/`EXEC` conflict checks and to the
     /// optional append-only journal. The event log is bounded; overflow forces a
     /// full-state journal snapshot instead of allowing a missed key.
@@ -757,5 +764,31 @@ impl Data {
         }
         self.payload_bytes = payload;
         self.touch(key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_queues_are_bounded_and_clearable() {
+        let mut data = Data::default();
+        push_lifecycle(&mut data.expired_events, b"a");
+        push_lifecycle(&mut data.evicted_events, b"b");
+        let (expired, evicted) = data.drain_lifecycle();
+        assert_eq!(expired, vec![b"a".to_vec()]);
+        assert_eq!(evicted, vec![b"b".to_vec()]);
+
+        push_lifecycle(&mut data.expired_events, b"stale");
+        data.clear_lifecycle();
+        let (expired, evicted) = data.drain_lifecycle();
+        assert!(expired.is_empty());
+        assert!(evicted.is_empty());
+
+        for index in 0..MAX_LIFECYCLE_EVENTS + 10 {
+            push_lifecycle(&mut data.expired_events, index.to_string().as_bytes());
+        }
+        assert_eq!(data.expired_events.len(), MAX_LIFECYCLE_EVENTS);
     }
 }
