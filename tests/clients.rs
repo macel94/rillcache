@@ -180,8 +180,13 @@ fn client_kill_removes_connections_and_protects_the_caller() {
     send(&mut admin, &[b"PING"], b"+PONG\r\n");
     send(
         &mut admin,
-        &[b"CLIENT", b"KILL", b"SKIPME", b"no"],
-        b"-ERR CLIENT KILL SKIPME no is not supported\r\n",
+        &[b"CLIENT", b"KILL", b"SKIPME", b"no", b"ID", b"999999999"],
+        b":0\r\n",
+    );
+    send(
+        &mut admin,
+        &[b"CLIENT", b"KILL", b"SKIPME", b"maybe"],
+        b"-ERR syntax error\r\n",
     );
     send(
         &mut admin,
@@ -306,5 +311,76 @@ fn client_kill_filters_by_local_address() {
     let mut finished = Vec::new();
     let _ = victim.read_to_end(&mut finished);
     send(&mut admin, &[b"PING"], b"+PONG\r\n");
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn client_kill_skipme_no_can_kill_the_caller_and_absent_types_are_empty() {
+    let server = start();
+    let mut admin = connect(&server);
+    let admin_id = client_id(&mut admin);
+    let mut witness = connect(&server);
+    let witness_id = client_id(&mut witness);
+
+    let list = client_list(&mut admin, &[b"TYPE", b"master"]);
+    assert!(list.is_empty(), "{list}");
+    let list = client_list(&mut admin, &[b"TYPE", b"replica"]);
+    assert!(list.is_empty(), "{list}");
+    let list = client_list(&mut admin, &[b"TYPE", b"slave"]);
+    assert!(list.is_empty(), "{list}");
+    send(
+        &mut admin,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"TYPE",
+            b"replica",
+            b"ID",
+            witness_id.to_string().as_bytes(),
+        ],
+        b":0\r\n",
+    );
+    send(&mut witness, &[b"PING"], b"+PONG\r\n");
+
+    // SKIPME no with a non-caller target behaves like the default.
+    send(
+        &mut admin,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"SKIPME",
+            b"no",
+            b"ID",
+            witness_id.to_string().as_bytes(),
+        ],
+        b":1\r\n",
+    );
+    let mut finished = Vec::new();
+    let _ = witness.read_to_end(&mut finished);
+
+    // Killing the caller closes its socket; the reply may race with the close.
+    let mut victim = connect(&server);
+    let victim_id = client_id(&mut victim);
+    let mut killer = connect(&server);
+    let killer_id = client_id(&mut killer);
+    send(
+        &mut killer,
+        &[
+            b"CLIENT",
+            b"KILL",
+            b"SKIPME",
+            b"no",
+            b"ID",
+            killer_id.to_string().as_bytes(),
+        ],
+        b"",
+    );
+    let mut reply = vec![0; 4];
+    let _ = killer.read(&mut reply);
+    let list = client_list(&mut victim, &[]);
+    assert!(!list.contains(&format!("id={killer_id} ")), "{list}");
+    assert!(list.contains(&format!("id={victim_id} ")), "{list}");
+    assert!(list.contains(&format!("id={admin_id} ")), "{list}");
+    send(&mut victim, &[b"PING"], b"+PONG\r\n");
     server.shutdown().unwrap();
 }

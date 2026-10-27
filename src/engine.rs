@@ -28,6 +28,7 @@ mod introspection;
 mod journal;
 mod keyspace;
 mod latency;
+mod monitor;
 mod multikey;
 mod notify;
 mod options;
@@ -102,7 +103,7 @@ pub struct Stats {
 
 pub struct Store {
     data: RwLock<Data>,
-    max_payload_bytes: usize,
+    max_payload_bytes: std::sync::atomic::AtomicUsize,
     error_dialect: ErrorDialect,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
@@ -114,6 +115,8 @@ pub struct Store {
     journal_limits: Limits,
     pubsub: RwLock<pubsub::PubSub>,
     clients: RwLock<std::collections::BTreeMap<u64, clients::ClientRecord>>,
+    monitors: RwLock<std::collections::BTreeMap<u64, std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    monitor_count: std::sync::atomic::AtomicUsize,
     notifications: std::sync::atomic::AtomicU32,
     acl_log: RwLock<std::collections::VecDeque<acl_log::AclLogEntry>>,
     connections_received: std::sync::atomic::AtomicU64,
@@ -172,7 +175,7 @@ impl Store {
     ) -> Self {
         Self {
             data: RwLock::new(Data::default()),
-            max_payload_bytes,
+            max_payload_bytes: std::sync::atomic::AtomicUsize::new(max_payload_bytes),
             error_dialect: ErrorDialect::default(),
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
@@ -184,6 +187,8 @@ impl Store {
             journal_limits: Limits::default(),
             pubsub: RwLock::new(pubsub::PubSub::default()),
             clients: RwLock::new(std::collections::BTreeMap::new()),
+            monitors: RwLock::new(std::collections::BTreeMap::new()),
+            monitor_count: std::sync::atomic::AtomicUsize::new(0),
             notifications: std::sync::atomic::AtomicU32::new(0),
             acl_log: RwLock::new(std::collections::VecDeque::new()),
             connections_received: std::sync::atomic::AtomicU64::new(0),
@@ -774,6 +779,22 @@ impl Store {
             .map(|journal| journal.policy())
     }
 
+    /// Current payload-budget limit in key and value bytes.
+    pub(super) fn payload_limit(&self) -> usize {
+        self.max_payload_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Change the payload budget and evict down to it using the active policy.
+    /// A noeviction or volatile policy may leave the store above the new budget;
+    /// subsequent admissions then fail rather than deleting ineligible keys.
+    pub fn set_payload_limit(&self, limit: usize) -> bool {
+        self.max_payload_bytes.store(limit, Ordering::Relaxed);
+        self.data.write().is_ok_and(|mut data| {
+            data.enforce_budget(limit);
+            true
+        })
+    }
+
     pub fn eviction_policy(&self) -> EvictionPolicy {
         self.data
             .read()
@@ -796,6 +817,45 @@ impl Store {
 
     pub fn notifications_enabled(&self) -> bool {
         self.notifications.load(Ordering::Acquire) != 0
+    }
+
+    /// Register a MONITOR stream. Re-registering the same connection replaces
+    /// its sender; the stream is bounded and uses the pubsub queue capacity.
+    pub fn add_monitor(&self, id: u64, sender: std::sync::mpsc::SyncSender<Vec<u8>>) -> bool {
+        let Ok(mut monitors) = self.monitors.write() else {
+            return false;
+        };
+        monitors.insert(id, sender);
+        self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+        true
+    }
+
+    pub fn remove_monitor(&self, id: u64) {
+        let Ok(mut monitors) = self.monitors.write() else {
+            return;
+        };
+        if monitors.remove(&id).is_some() {
+            self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+        }
+    }
+
+    /// Stream one received command to every monitor except its source. A full
+    /// monitor queue drops this line rather than blocking the command path.
+    pub fn monitor_command(&self, source: u64, arguments: &[&[u8]]) {
+        if self.monitor_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let address = self.client_address(source).unwrap_or_else(|| "?:0".into());
+        let line = monitor::line(&address, arguments);
+        let Ok(monitors) = self.monitors.read() else {
+            return;
+        };
+        for (id, sender) in monitors.iter() {
+            if *id == source {
+                continue;
+            }
+            let _ = sender.try_send(line.clone());
+        }
     }
 
     pub fn pubsub_queue_capacity() -> usize {

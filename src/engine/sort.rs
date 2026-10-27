@@ -244,7 +244,7 @@ impl Store {
             return;
         };
         let encoded = encode_list(values.into_iter().collect(), config.list_max_listpack_size);
-        let Some(payload) = data.reserve(destination, bytes, previous, self.max_payload_bytes, now)
+        let Some(payload) = data.reserve(destination, bytes, previous, self.payload_limit(), now)
         else {
             out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
             return;
