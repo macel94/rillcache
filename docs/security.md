@@ -52,7 +52,7 @@ Supported rules:
   `resetpass`
 - `allcommands`/`+@all`, `nocommands`/`-@all`, `+@category`, `-@category`
 - `+command`, `-command`, `+command|subcommand`, `-command|subcommand`
-- `allkeys`, `resetkeys`, `~pattern`
+- `allkeys`, `resetkeys`, `~pattern`, `%R~pattern`, `%W~pattern`, `%RW~pattern`
 - `allchannels`, `resetchannels`, `&pattern`
 - `reset`
 
@@ -63,8 +63,25 @@ Supported categories are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
 is an approximation over the published command table, not a byte-for-byte copy of
 a specific Redis release.
 
+Key patterns carry access modes. `~pattern` and `%RW~pattern` grant reads and
+writes, `%R~pattern` grants reads only and `%W~pattern` writes only. Commands
+require the access their Redis key specs perform: `GET` reads, `SET` without
+`GET`, `MSET` and `DEL` write, and read-modify-write operations require both.
+Mixed commands are checked per key (`BITOP` destination versus sources, `COPY`
+source versus destination, `RENAME` source versus destination, and `SORT`,
+`GEORADIUS*` or `*STORE` sources versus destinations). `SET ... GET` and
+mutating `BITFIELD` operations require read and write. `PFCOUNT` is read-write
+because Redis may promote a compact representation even though the command is
+otherwise read-only. `XREAD`/`XREADGROUP` keys are extracted from the `STREAMS`
+key/ID block; malformed/unbalanced blocks do not produce partial key lists. The
+last `STORE`/`STOREDIST` destination is checked for last-wins commands.
+A read-write key needs both a read and a write grant, which may come from
+different patterns. Patterns are cumulative and `resetkeys` clears all modes;
+`%RW~x` is listed canonically as `~x`, and adding read and write grants for the
+same pattern merges them into `~x`.
+
 `ACL SETUSER` is atomic: a bad rule leaves the previous user untouched. A
-parenthesized rule group, such as `(+set ~app:*)`, defines a Redis 7 selector.
+parenthesized rule group, such as `(+set %W~app:*)`, defines a Redis 7 selector.
 Selectors are alternatives to the root rules: a command is allowed when the root
 rules or any selector permits it, and its keys/channels must be permitted by that
 same set. `clearselectors` removes them and `reset` clears them with the rest of
@@ -112,8 +129,9 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
   addresses/names/users and terminate sessions; grant the CLIENT command only to
   trusted administrators. Key patterns apply only to commands with declared key
   positions:
-  `KEYS`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB/FLUSHALL`, `XREADGROUP` and similar
-  commands are not a per-key sandbox. Do not grant them to tenants who must not
+  `KEYS`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB/FLUSHALL` and similar commands are not
+  a per-key sandbox. `XREAD` and `XREADGROUP` key lists are extracted from their
+  `STREAMS` block, but dynamic `SORT BY/GET` lookups remain all-key-only. Do not grant these commands to tenants who must not
   see or clear the whole keyspace.
 - **Hashes are unsalted SHA-256.** This mirrors Redis ACL hash compatibility but
   is fast to brute-force offline; use long random passwords and protect the ACL

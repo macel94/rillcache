@@ -168,11 +168,12 @@ Access control starts with a single operator password for the `default` user
 (`--requirepass-file`/`--requirepass`, `AUTH`, atomic `HELLO ... AUTH`, runtime
 `CONFIG SET requirepass` rotation and a redacted `CONFIG GET`) or a Redis-style
 multi-user ACL file (`--aclfile`) with hashed passwords, ordered
-command/category rules, declared-key patterns and atomic `ACL SAVE`/`LOAD`.
-`NOAUTH`/`NOPERM` are checked before store access and apply to live connections.
-Persistent/centralized audit, brute-force controls and native TLS remain separate
-security gates; ACL selectors group command/key/channel rules and channel patterns
-are enforced for pub/sub.
+command/category rules, declared read/write key patterns and atomic `ACL SAVE`/`LOAD`.
+`NOAUTH`/`NOPERM` are checked before store access and apply to live connections;
+`%R~`/`%W~`/`%RW~` scope reads and writes per key pattern. Persistent/centralized
+audit, brute-force controls and native TLS remain separate security gates; ACL
+selectors group command/key/channel rules and channel patterns are enforced for
+pub/sub.
 `ACL GENPASS`, `ACL DRYRUN` and a bounded process-local `ACL LOG` support
 credential operations and policy debugging. See
 [security](docs/security.md).
