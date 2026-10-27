@@ -522,6 +522,38 @@ fn a_partial_tail_is_truncated_but_mid_file_corruption_fails() {
     let _ = std::fs::remove_file(&path);
 }
 #[test]
+fn runtime_appendfsync_updates_the_open_journal_and_survives_restart() {
+    let path = aof_path("runtime-fsync");
+    {
+        let store = open(&path, FsyncPolicy::EverySec);
+        assert_eq!(store.journal_policy(), Some(FsyncPolicy::EverySec));
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"appendfsync"]),
+            b"*2\r\n$11\r\nappendfsync\r\n$8\r\neverysec\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"SET", b"appendfsync", b"no"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(store.journal_policy(), Some(FsyncPolicy::No));
+        assert_eq!(run(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"SET", b"appendfsync", b"always"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(store.journal_policy(), Some(FsyncPolicy::Always));
+        assert_eq!(run(&store, &[b"SET", b"k", b"v2"]), b"+OK\r\n");
+        assert_eq!(
+            run(&store, &[b"CONFIG", b"GET", b"appendonly"]),
+            b"*2\r\n$10\r\nappendonly\r\n$3\r\nyes\r\n"
+        );
+    }
+    let store = open(&path, FsyncPolicy::EverySec);
+    assert_eq!(run(&store, &[b"GET", b"k"]), b"$2\r\nv2\r\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn automatic_rewrite_compacts_after_configured_growth() {
     let path = aof_path("auto-rewrite");
     {
