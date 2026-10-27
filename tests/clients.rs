@@ -225,13 +225,16 @@ fn client_kill_maxage_removes_only_old_connections() {
     let old_one_id = client_id(&mut old_one);
     let mut old_two = connect(&server);
     let old_two_id = client_id(&mut old_two);
-    std::thread::sleep(Duration::from_millis(150));
+    // Use the sleep itself as the threshold. The old clients are always at
+    // least that old, while the young client would need to wait two seconds
+    // before the KILL is dispatched to become eligible under load.
+    std::thread::sleep(Duration::from_secs(2));
     let mut young = connect(&server);
     let young_id = client_id(&mut young);
 
     send(
         &mut admin,
-        &[b"CLIENT", b"KILL", b"MAXAGE", b"100"],
+        &[b"CLIENT", b"KILL", b"MAXAGE", b"2000"],
         b":2\r\n",
     );
     let mut finished = Vec::new();
