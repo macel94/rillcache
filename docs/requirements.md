@@ -122,6 +122,7 @@ reason to couple all future commands into a single large story.
 | S92 | As an operator or compatibility tool, I can probe RDB, replication and multi-database commands and receive explicit standalone responses instead of misleading unknown-command errors. | XS | R347–R349; truthful LASTSAVE, explicit SAVE/BGSAVE/replica/database boundaries, data preservation and all-mode wire tests |
 | S93 | As an operator debugging a live instance, I can stream received commands with bounded output and redacted credentials without letting a slow monitor stall normal command service. | S | R350–R352; line format/bounds, redaction, RESET/QUIT cleanup, slow-reader behavior and all-mode wire tests |
 | S94 | As a durability-sensitive client, I can wait for the local AOF to fsync my preceding writes and get the actual acknowledgement counts even when no replicas exist. | S | R353–R355; local/no-AOF results, absent-replica timeout, transaction non-blocking behavior and all-mode wire tests |
+| S95 | As a client operator, I can query and kill the Redis client types (including absent master/replica types) and optionally include my own connection so client-management tooling matches Redis semantics. | XS | R356–R358; absent-type empty results, SKIPME yes/no, self-kill race and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -488,15 +489,16 @@ and the offline upstream harness tests.
   its ID, peer and local addresses, creation time and control handle; it shall update name,
   library, protocol and authenticated user after CLIENT/HELLO/AUTH/RESET and remove
   the record on close. The registry shall be bounded by `max_clients` and process-local.
-- **R150 (event-driven):** When `CLIENT LIST [TYPE normal|pubsub] [ID id ...]` is
+- **R150 (event-driven):** When `CLIENT LIST [TYPE normal|pubsub|master|replica|slave] [ID id ...]` is
   received, the server shall return newline-delimited records for matching
   connections with ID, peer and local addresses, name, age, N/P flags, db, live channel/pattern
   counts, RESP mode, user and library metadata, omitting fields it does not measure.
 - **R151 (event-driven):** When `CLIENT KILL` receives intersecting `ID`, `ADDR`,
-  `LADDR`, `TYPE normal|pubsub`, `USER` and `SKIPME yes` filters, the server shall shut down
-  matching non-caller sockets and return the count; the legacy address form shall
-  return `+OK`/`No such client`. The caller shall always be skipped, and `SKIPME no`
-  shall return an explicit unsupported error.
+  `LADDR`, `TYPE normal|pubsub|master|replica|slave`, `USER` and `SKIPME yes|no`
+  filters, the server shall shut down matching sockets and return the count,
+  skipping the caller by default. Absent master/replica types shall match nothing.
+  `SKIPME no` may kill the caller; its socket closes and the reply may race with
+  that close. The legacy address form shall return `+OK`/`No such client`.
 - **R152 (ubiquitous):** `INFO clients` shall report the current registry size with
   no fabricated cluster/blocked counts. All-mode tests shall cover metadata,
   RESP3/pubsub visibility, ID/TYPE filters, self protection, ID/address/legacy kills,
@@ -1540,7 +1542,7 @@ and the offline upstream harness tests.
 - **R322 (ubiquitous):** Tests shall cover old connections being killed, a young
   connection surviving, caller protection, invalid `MAXAGE` values, the
   unchanged legacy form and every worker mode. Documentation shall retain the
-  absence of `SKIPME no`, fd/idle/blocked metadata and a cross-process view.
+  absence of fd/idle/blocked metadata and a cross-process view.
 
 ### Client kill by local address (S89)
 
@@ -1652,6 +1654,23 @@ and the offline upstream harness tests.
   behavior and every worker mode. Documentation shall retain that this is a
   local-journal acknowledgement only, not replication, failover, RDB or a
   strong-consistency guarantee.
+
+### Client types and SKIPME (S95)
+
+- **R356 (event-driven):** `CLIENT LIST TYPE` shall accept `normal`, `pubsub`,
+  `master`, `replica` and `slave`. Because this standalone server has no
+  replication clients, the latter three shall return an empty result; unknown
+  types shall retain the explicit error.
+- **R357 (event-driven):** `CLIENT KILL TYPE` shall accept the same five values,
+  with absent types intersecting to zero kills. `SKIPME yes` shall remain the
+  default and always protect the caller; `SKIPME no` shall allow the caller to be
+  killed, closing its socket even though the reply may race with the close.
+  Unknown `SKIPME` values shall return a syntax error.
+- **R358 (ubiquitous):** All-mode tests shall cover absent-type list/kill
+  emptiness, `SKIPME no` targeting another client, caller self-kill and its
+  cleanup, invalid filters, the unchanged legacy form and every worker mode.
+  Documentation shall retain the absence of fd/idle/blocked metadata and a
+  cross-process view.
 
 ### Error reply statistics (S84)
 
