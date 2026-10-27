@@ -1665,6 +1665,7 @@ impl Session {
             append_info(&mut info, b"lib-ver", self.library_version.as_deref());
             if let Some(snapshot) = store.client_snapshot(self.id) {
                 append_info(&mut info, b"addr", Some(snapshot.addr.as_bytes()));
+                append_info(&mut info, b"laddr", Some(snapshot.laddr.as_bytes()));
                 append_info(
                     &mut info,
                     b"resp",
@@ -1744,9 +1745,10 @@ impl Session {
             use std::fmt::Write as _;
             let _ = writeln!(
                 text,
-                "id={} addr={} name={} age={} flags={} db=0 sub={} psub={} resp={} user={} lib-name={} lib-ver={}",
+                "id={} addr={} laddr={} name={} age={} flags={} db=0 sub={} psub={} resp={} user={} lib-name={} lib-ver={}",
                 snapshot.id,
                 snapshot.addr,
+                snapshot.laddr,
                 name,
                 snapshot.age_seconds,
                 flags,
@@ -1768,6 +1770,7 @@ impl Session {
         }
         let legacy = arguments.len() == 1;
         let mut addr_filter: Option<Vec<u8>> = None;
+        let mut laddr_filter: Option<Vec<u8>> = None;
         let mut id_filter = None;
         let mut type_filter = None;
         let mut user_filter: Option<Vec<u8>> = None;
@@ -1789,6 +1792,8 @@ impl Session {
                     id_filter = Some(id);
                 } else if arguments[index].eq_ignore_ascii_case(b"ADDR") {
                     addr_filter = Some(value.to_vec());
+                } else if arguments[index].eq_ignore_ascii_case(b"LADDR") {
+                    laddr_filter = Some(value.to_vec());
                 } else if arguments[index].eq_ignore_ascii_case(b"TYPE") {
                     if value.eq_ignore_ascii_case(b"normal") {
                         type_filter = Some(false);
@@ -1830,6 +1835,12 @@ impl Session {
             if addr_filter
                 .as_deref()
                 .is_some_and(|addr| snapshot.addr.as_bytes() != addr)
+            {
+                continue;
+            }
+            if laddr_filter
+                .as_deref()
+                .is_some_and(|addr| snapshot.laddr.as_bytes() != addr)
             {
                 continue;
             }

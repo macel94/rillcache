@@ -378,7 +378,12 @@ impl Server {
                 let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
                 let mut session = Session::new();
                 session.set_pubsub_sender(sender);
-                store.register_client(session.id(), peer, control.try_clone()?);
+                store.register_client(
+                    session.id(),
+                    peer,
+                    stream.local_addr()?,
+                    control.try_clone()?,
+                );
                 let thread = thread::Builder::new()
                     .name("rillcache-client".into())
                     .stack_size(256 * 1024)
