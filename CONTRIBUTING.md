@@ -47,8 +47,9 @@ pending CI or an invented manual-review checkpoint is not a draft reason.
 Verify the actual ready/auto-merge state, not just successful PR creation. Actual
 required checks and configured reviews remain mandatory; report genuine blockers
 without claiming completion or bypassing them. See the [delivery contract,
-draft root cause, INVEST/EARS examples and stale-PR solution](docs/parallel-pr-delivery.md)
-and the auto-loaded [project instructions](AGENTS.md).
+draft root cause, INVEST/EARS examples and stale-PR solution](docs/parallel-pr-delivery.md),
+the [parallel work lanes and advisory checker](docs/parallel-work-lanes.md), and
+the auto-loaded [project instructions](AGENTS.md).
 
 ## Safety is not negotiable
 
