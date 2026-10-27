@@ -2,6 +2,15 @@
 
 Story ID and EARS acceptance criteria; describe only the increment delivered.
 
+## Lane and shared surfaces
+
+- Lane: `streams` / `collections` / `strings-keyspace` / `security-clients` /
+  `persistence` / `observability-admin` / `pubsub` / `io-server` / `surface` /
+  `tooling` (see [the lane map](../docs/parallel-work-lanes.md))
+- Shared-surface files touched: none / list them and explain why
+- [ ] `python3 scripts/lane_check.py` reviewed; accidental shared-surface spill
+      was removed or moved to a surface-lane increment
+
 ## Evidence
 
 - [ ] All project code was AI-generated and is ready for human validation.
