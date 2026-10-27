@@ -89,6 +89,8 @@ impl Store {
             self.xgroup(a, out);
         } else if cmd.eq_ignore_ascii_case(b"XREADGROUP") {
             self.xreadgroup(a, out);
+        } else if cmd.eq_ignore_ascii_case(b"XSETID") {
+            self.xsetid(a, out);
         } else if cmd.eq_ignore_ascii_case(b"XINFO") {
             self.xinfo(a, out);
         } else {
@@ -241,6 +243,7 @@ impl Store {
         }
         stream.entries.insert(next, StreamEntry { fields });
         stream.last_generated = next;
+        stream.entries_added = stream.entries_added.saturating_add(1);
         if let Some(strategy) = &strategy {
             let cap = if approximate {
                 match limit {
@@ -312,6 +315,7 @@ impl Store {
         for key in ids {
             if stream.entries.remove(&key).is_some() {
                 deleted += 1;
+                stream.max_deleted = stream.max_deleted.max(key);
                 // Redis XDEL removes the message, not its pending-delivery
                 // references. Those IDs remain in group/consumer PEL metadata.
             }
@@ -323,6 +327,91 @@ impl Store {
         data.touch(a[1]);
         integer(deleted as i64, out);
     }
+    fn xsetid(&self, a: &[&[u8]], out: &mut Vec<u8>) {
+        if a.len() < 3 {
+            arity("xsetid", out);
+            return;
+        }
+        let Some(last) = id(a[2]) else {
+            id_error(out);
+            return;
+        };
+        let mut entries_added = None;
+        let mut max_deleted = None;
+        let mut index = 3;
+        while index < a.len() {
+            if a[index].eq_ignore_ascii_case(b"ENTRIESADDED") && index + 1 < a.len() {
+                let Some(value) = parse_i64(a[index + 1]) else {
+                    out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                    return;
+                };
+                if value < 0 {
+                    out.extend_from_slice(b"-ERR entries_added must be positive\r\n");
+                    return;
+                }
+                entries_added = Some(value as u64);
+                index += 2;
+            } else if a[index].eq_ignore_ascii_case(b"MAXDELETEDID") && index + 1 < a.len() {
+                let Some(value) = id(a[index + 1]) else {
+                    id_error(out);
+                    return;
+                };
+                max_deleted = Some(value);
+                index += 2;
+            } else {
+                out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        let Ok(mut data) = self.data.write() else {
+            internal_error(out);
+            return;
+        };
+        let now = self.now(&data);
+        data.expire_key(a[1], now);
+        let Some(entry) = data.entries.get_mut(a[1]) else {
+            out.extend_from_slice(b"-ERR no such key\r\n");
+            return;
+        };
+        let Some(stream) = entry.stream.as_mut() else {
+            out.extend_from_slice(
+                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            );
+            return;
+        };
+        if let Some((top, _)) = stream.entries.last_key_value()
+            && last < *top
+        {
+            out.extend_from_slice(
+                b"-ERR The ID specified in XSETID is smaller than the target stream top item\r\n",
+            );
+            return;
+        }
+        let next_max_deleted = max_deleted.unwrap_or(stream.max_deleted);
+        if last < next_max_deleted {
+            out.extend_from_slice(
+                if max_deleted.is_some() {
+                    b"-ERR The ID specified in XSETID is smaller than the provided max_deleted_entry_id\r\n"
+                } else {
+                    b"-ERR The ID specified in XSETID is smaller than current max_deleted_entry_id\r\n"
+                },
+            );
+            return;
+        }
+        let next_entries_added = entries_added.unwrap_or(stream.entries_added);
+        if next_entries_added < stream.entries.len() as u64 {
+            out.extend_from_slice(
+                b"-ERR The entries_added specified in XSETID is smaller than the target stream length\r\n",
+            );
+            return;
+        }
+        stream.last_generated = last;
+        stream.max_deleted = next_max_deleted;
+        stream.entries_added = next_entries_added;
+        data.touch(a[1]);
+        simple(b"OK", out);
+    }
+
     fn xlen(&self, a: &[&[u8]], out: &mut Vec<u8>) {
         if a.len() != 2 {
             arity("xlen", out);
@@ -1140,6 +1229,7 @@ impl Store {
         for id in remove {
             if stream.entries.remove(&id).is_some() {
                 deleted += 1;
+                stream.max_deleted = stream.max_deleted.max(id);
             }
         }
         if deleted > 0 {
@@ -1610,7 +1700,7 @@ impl Store {
             return;
         };
         if full {
-            array(6, out);
+            array(10, out);
             encode_bulk(Some(b"length"), out);
             integer(s.entries.len() as i64, out);
             encode_bulk(Some(b"entries"), out);
@@ -1674,12 +1764,20 @@ impl Store {
                     }
                 }
             }
+            encode_bulk(Some(b"max-deleted-entry-id"), out);
+            encode_bulk(Some(&id_text(s.max_deleted)), out);
+            encode_bulk(Some(b"entries-added"), out);
+            integer(s.entries_added as i64, out);
         } else {
-            array(10, out);
+            array(14, out);
             encode_bulk(Some(b"length"), out);
             integer(s.entries.len() as i64, out);
             encode_bulk(Some(b"last-generated-id"), out);
             encode_bulk(Some(&id_text(s.last_generated)), out);
+            encode_bulk(Some(b"max-deleted-entry-id"), out);
+            encode_bulk(Some(&id_text(s.max_deleted)), out);
+            encode_bulk(Some(b"entries-added"), out);
+            integer(s.entries_added as i64, out);
             encode_bulk(Some(b"groups"), out);
             integer(s.groups.len() as i64, out);
             encode_bulk(Some(b"first-entry"), out);
@@ -1728,6 +1826,7 @@ fn trim_stream(stream: &mut Stream, strategy: &AddTrim, cap: Option<usize>) -> u
     for id in remove {
         if stream.entries.remove(&id).is_some() {
             deleted += 1;
+            stream.max_deleted = stream.max_deleted.max(id);
         }
     }
     deleted

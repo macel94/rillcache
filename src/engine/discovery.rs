@@ -309,6 +309,7 @@ const COMMANDS: &[Command] = &[
     cmd("xread", -4, &["readonly", "blocking"], 0, 0, 0),
     cmd("xreadgroup", -7, &["write"], 0, 0, 0),
     cmd("xrevrange", -4, &["readonly", "slow"], 1, 1, 1),
+    cmd("xsetid", -3, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("xtrim", -4, &["write"], 1, 1, 1),
     cmd("zadd", -4, &["write", "denyoom", "fast"], 1, 1, 1),
     cmd("zcard", 2, &["readonly", "fast"], 1, 1, 1),
@@ -581,7 +582,7 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "zremrangebylex" | "zremrangebyrank" | "zremrangebyscore" | "zrevrange"
         | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
         "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
-        | "xread" | "xreadgroup" | "xrevrange" => "stream",
+        | "xread" | "xreadgroup" | "xrevrange" | "xsetid" | "xtrim" => "stream",
         "auth" | "client" | "hello" | "quit" | "reset" | "select" => "connection",
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "spublish" | "ssubscribe"
@@ -842,6 +843,7 @@ mod tests {
             ("georadius_ro", "geo"),
             ("georadiusbymember", "geo"),
             ("georadiusbymember_ro", "geo"),
+            ("xsetid", "stream"),
             ("bitpos", "bitmap"),
             ("spublish", "pubsub"),
             ("ssubscribe", "pubsub"),

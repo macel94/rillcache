@@ -607,6 +607,23 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
             let id = id_text(group.last_delivered);
             encode_request(&[b"XGROUP", b"CREATE", key, name, &id], output);
         }
+        if needs_sentinel || !stream.entries.is_empty() || !stream.groups.is_empty() {
+            let last = id_text(stream.last_generated);
+            let entries_added = stream.entries_added.to_string();
+            let max_deleted = id_text(stream.max_deleted);
+            encode_request(
+                &[
+                    b"XSETID",
+                    key,
+                    &last,
+                    b"ENTRIESADDED",
+                    entries_added.as_bytes(),
+                    b"MAXDELETEDID",
+                    &max_deleted,
+                ],
+                output,
+            );
+        }
     } else {
         encode_request(&[b"SET", key, entry.value.as_slice()], output);
     }

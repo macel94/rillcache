@@ -84,6 +84,7 @@ reason to couple all future commands into a single large story.
 | S54 | As a stream producer, I can append with explicit retention and skip creating a missing stream so that hot streams stay bounded without a separate trim call. | S | R213–R216; XADD trim/NOMKSTREAM/errors/TTL/WATCH and all-mode wire tests |
 | S55 | As a legacy geospatial client, I can use the GEORADIUS command family without rewriting clients to GEOSEARCH so existing radius and store workflows keep working. | M | R217–R220; aliases/RO/store/storedist/options, ACL and all-mode wire tests |
 | S56 | As a collection user, I can sort list, set and sorted-set values with limits and optionally store the result so that ordered projections do not require client-side work. | S | R221–R224; numeric/alpha/limit/store/RO/errors and all-mode wire tests |
+| S57 | As a stream operator, I can align a stream's last ID and retention counters after restore so that producers and groups resume without ID conflicts. | S | R225–R228; last-id/entries-added/max-deleted validation, XINFO, WATCH and all-mode wire tests |
 
 ## EARS acceptance requirements
 
@@ -638,8 +639,8 @@ reason to couple all future commands into a single large story.
   one bounded error without partial transfer. Successful claims shall touch the
   stream for WATCH/journal capture, publish `xclaim`/`xautoclaim` notifications,
   preserve payload accounting and TTL, keep pending metadata process-local, and
-  be covered by unit and all-mode wire tests. `XADD` trim options, `XSETID`,
-  blocking and history reads shall remain documented as unsupported.
+  be covered by unit and all-mode wire tests. Blocking and history reads shall
+  remain documented as unsupported.
 
 
 ### Sharded publish/subscribe (S47)
@@ -685,8 +686,8 @@ reason to couple all future commands into a single large story.
 - **R192 (unwanted behavior):** Invalid or partial trimming arguments shall not
   mutate the stream. Tests shall cover exact/approximate MAXLEN/MINID, `=` and
   `~`, LIMIT bounds, empty and missing streams, TTL, pending retention, WATCH and
-  wrong types in unit and all-mode wire tests. `XADD` trim options, `XSETID`,
-  blocking reads and history reads shall remain documented as unsupported.
+  wrong types in unit and all-mode wire tests. Blocking reads and history reads
+  shall remain documented as unsupported.
 
 ### Expired and evicted notification classes (S49)
 
@@ -832,8 +833,8 @@ reason to couple all future commands into a single large story.
 - **R216 (unwanted behavior):** Tests shall cover exact/approximate MAXLEN and
   MINID, `=`/`~`, LIMIT bounds, NOMKSTREAM on missing/existing keys, TTL,
   wrong types, malformed options/IDs, MULTI, WATCH, OOM and all worker modes.
-  XADD trim shall publish the `xadd` event only; `XSETID`, blocking reads and
-  history reads shall remain documented as unsupported.
+  XADD trim shall publish the `xadd` event only; blocking reads and history reads
+  shall remain documented as unsupported.
 
 ### Legacy geospatial radius aliases (S55)
 
@@ -888,6 +889,32 @@ reason to couple all future commands into a single large story.
   list/set/zset sources, missing/empty/self/overwrite/TTL/OOM/wrong-type cases,
   SORT_RO, BY/GET rejection, MULTI, WATCH, notifications and all worker modes.
   Dynamic BY/GET patterns remain documented as unsupported.
+
+### Stream ID and metadata control (S57)
+
+- **R225 (event-driven):** `XSETID key last-id [ENTRIESADDED count]
+  [MAXDELETEDID id]` shall parse the stream ID and optional metadata pairs,
+  reject malformed IDs/options, non-integer or negative `ENTRIESADDED`, and
+  require an existing stream key. It shall reject a last ID below the greatest
+  retained entry, below the effective maximum-deleted ID, or an entries-added
+  value below the retained length with the documented Redis errors and no partial
+  update.
+- **R226 (state-driven):** Streams shall track entries-added across accepted
+  XADD operations (including immediately trimmed entries) and the maximum deleted
+  entry ID across XDEL, XTRIM and XADD trimming. `XSETID` shall update
+  last-generated-id, entries-added and max-deleted-entry-id, and `XINFO STREAM`
+  (with and without FULL) shall expose `entries-added` and
+  `max-deleted-entry-id` truthfully.
+- **R227 (event-driven):** `XSETID` shall touch the key for WATCH/journal capture
+  and publish no separate keyspace event, matching standalone Redis. Journal
+  snapshots shall emit an `XSETID` record preserving last ID, entries-added and
+  max-deleted-entry-id so restart reproduces the metadata and enforces subsequent
+  XADD ID ordering.
+- **R228 (unwanted behavior):** Missing/wrong-type keys, invalid IDs, bad option
+  ordering/arity, negative counters and inconsistent metadata shall return bounded
+  errors without modifying the stream. Tests shall cover metadata changes, ID
+  ordering, XDEL/trim counter updates, MULTI, WATCH conflicts, restart replay and
+  all worker modes.
 
 ### Development and delivery
 
@@ -1231,8 +1258,8 @@ BITCOUNT/BITPOS/BITOP/BITFIELD/BITFIELD_RO; LCS (LEN/IDX/WITHMATCHLEN/
 MINMATCHLEN); lists, sets, hashes and sorted sets with
 creation, mutation, removal, bounded random selection, set algebra/store
 commands, score/rank/lex ranges, range storage, random members, sorted-set
-algebra/cardinality/multi-pop, blocking multi-pop, pops and bounded
-`BLPOP`/`BRPOP` documented
+algebra/cardinality/multi-pop, blocking multi-pop, pops, bounded
+`BLPOP`/`BRPOP` and stream `XSETID` metadata control documented
 in [typed collections](collections.md); geospatial sorted sets (`GEOADD`,
 `GEOPOS`, `GEODIST`, `GEOHASH`, `GEOSEARCH`, `GEOSEARCHSTORE`) documented in
 [geospatial limits](geospatial.md); SCAN/HSCAN/SSCAN/ZSCAN bounded cursor
