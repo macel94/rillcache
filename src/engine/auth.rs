@@ -1346,6 +1346,85 @@ mod tests {
     }
 
     #[test]
+    fn remaining_subcommand_categories_scope_config_latency_slowlog_and_pubsub() {
+        let mut auth = Auth::from_password(None);
+        for (name, rule) in [
+            (b"admin".as_slice(), b"+@admin".as_slice()),
+            (b"danger".as_slice(), b"+@dangerous".as_slice()),
+            (b"slow".as_slice(), b"+@slow".as_slice()),
+            (b"fast".as_slice(), b"+@fast".as_slice()),
+            (b"pubsub".as_slice(), b"+@pubsub".as_slice()),
+            (b"reader".as_slice(), b"+@read".as_slice()),
+            (b"writer".as_slice(), b"+@write".as_slice()),
+        ] {
+            auth.setuser(name, &[b"on", b"nopass", b"allkeys", b"-@all", rule])
+                .unwrap();
+        }
+        let access = |name: &[u8], command: &[&[u8]]| auth.authorize(Some(name), command);
+
+        for command in [
+            &[b"CONFIG".as_slice(), b"GET".as_slice(), b"maxmemory"][..],
+            &[b"CONFIG".as_slice(), b"SET".as_slice(), b"maxmemory", b"1"],
+            &[b"CONFIG".as_slice(), b"RESETSTAT"],
+        ] {
+            assert_eq!(access(b"admin", command), Access::Allowed);
+            assert_eq!(access(b"danger", command), Access::Allowed);
+            assert_eq!(access(b"slow", command), Access::Allowed);
+            assert_eq!(access(b"fast", command), Access::DeniedCommand);
+            assert_eq!(access(b"reader", command), Access::DeniedCommand);
+            assert_eq!(access(b"writer", command), Access::DeniedCommand);
+        }
+
+        assert_eq!(access(b"admin", &[b"LATENCY", b"DOCTOR"]), Access::Allowed);
+        assert_eq!(access(b"danger", &[b"LATENCY", b"LATEST"]), Access::Allowed);
+        assert_eq!(
+            access(b"admin", &[b"LATENCY", b"HELP"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(
+            access(b"danger", &[b"LATENCY", b"HELP"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(access(b"slow", &[b"LATENCY", b"HELP"]), Access::Allowed);
+        assert_eq!(
+            access(b"reader", &[b"LATENCY", b"HISTORY", b"command"]),
+            Access::DeniedCommand
+        );
+
+        assert_eq!(access(b"admin", &[b"SLOWLOG", b"GET"]), Access::Allowed);
+        assert_eq!(access(b"danger", &[b"SLOWLOG", b"LEN"]), Access::Allowed);
+        assert_eq!(
+            access(b"admin", &[b"SLOWLOG", b"HELP"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(
+            access(b"danger", &[b"SLOWLOG", b"HELP"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(access(b"slow", &[b"SLOWLOG", b"HELP"]), Access::Allowed);
+        assert_eq!(
+            access(b"writer", &[b"SLOWLOG", b"RESET"]),
+            Access::DeniedCommand
+        );
+
+        for command in [
+            &[b"PUBSUB".as_slice(), b"CHANNELS".as_slice()][..],
+            &[b"PUBSUB".as_slice(), b"NUMSUB".as_slice(), b"a"],
+            &[b"PUBSUB".as_slice(), b"NUMPAT"],
+            &[b"PUBSUB".as_slice(), b"SHARDCHANNELS"],
+            &[b"PUBSUB".as_slice(), b"SHARDNUMSUB", b"a"],
+        ] {
+            assert_eq!(access(b"pubsub", command), Access::Allowed);
+            assert_eq!(access(b"slow", command), Access::Allowed);
+            assert_eq!(access(b"fast", command), Access::DeniedCommand);
+            assert_eq!(access(b"admin", command), Access::DeniedCommand);
+            assert_eq!(access(b"danger", command), Access::DeniedCommand);
+            assert_eq!(access(b"reader", command), Access::DeniedCommand);
+            assert_eq!(access(b"writer", command), Access::DeniedCommand);
+        }
+    }
+
+    #[test]
     fn sort_dynamic_patterns_require_all_key_access() {
         let mut auth = Auth::from_password(None);
         auth.setuser(

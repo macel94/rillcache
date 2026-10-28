@@ -16,7 +16,9 @@ in this worktree's Store dispatcher.
 - `COMMAND LIST FILTERBY (PATTERN glob | ACLCAT category | MODULE name)` filters
   the same registry. PATTERN uses the server's byte-oriented glob matcher, ACLCAT
   accepts `@`-prefixed or bare categories and returns an empty list for unknown
-  categories, and MODULE returns an empty list because no modules are loadable.
+  categories, including bounded subcommand entries for `CLIENT`, `MEMORY`,
+  `OBJECT`, `ACL`, `COMMAND`, `XGROUP`, `XINFO`, `CONFIG`, `LATENCY`, `SLOWLOG`
+  and `PUBSUB`, and MODULE returns an empty list because no modules are loadable.
   Missing/extra/duplicate filters or unknown filter kinds return a syntax error.
 - `COMMAND GETKEYS <command> [args ...]` returns the declared key arguments
   using the same extraction as ACL key-pattern enforcement, including counted
