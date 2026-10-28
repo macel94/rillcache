@@ -213,3 +213,21 @@ in the separate [automatic reporting path](benchmark-reports.md). Future work
 includes mixed traffic/TTLs, additional sizes/keyspaces, client/server saturation,
 controlled hardware and a deliberate safe readiness/dependency boundary—not
 speculative sharding that weakens multi-key semantics.
+
+## Four-CPU pipeline-1 reductions
+
+The official four-CPU gate stresses default thread-per-client mode at pipeline 1,
+where per-request scheduling and shared-cacheline traffic dominate. Two general
+reductions avoid benchmark-specific modes:
+
+- **Sharded command counters.** `total_commands_processed` is accumulated in 64
+  per-client shards and summed only when `INFO stats` is read. The previous single
+  `AtomicU64` made every client thread contend on one cacheline for every command.
+- **Lock-free PING.** A top-level PING with no active transaction or subscriber
+  context writes `+PONG`/the echoed bulk/arity error directly from the session
+  dispatcher. It no longer needs the Store transaction gate or data lock; queued
+  PING and the Store fast path remain for `MULTI`/`EXEC`.
+
+These are general server paths, not a benchmark mode. The bounded multicore client
+handoff from the existing scheduler remains enabled for 2–4 CPU budgets. Fixed
+dispatch, expiry, accounting and shutdown semantics are unchanged.

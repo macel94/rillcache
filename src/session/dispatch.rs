@@ -3,11 +3,12 @@
 use std::io::Write;
 
 use crate::engine::{Access, Action, Store, WatchState, XReadGroupStart, parse_xreadgroup};
+use crate::protocol::encode_bulk;
 
 use super::Protocol;
 use super::Session;
 use super::client::select;
-use super::command::{allows_subscriber_command, command_name, is_auth_exempt};
+use super::command::{allows_subscriber_command, arity, command_name, is_auth_exempt};
 use super::reply::convert_resp2_reply;
 
 impl Session {
@@ -21,7 +22,7 @@ impl Session {
             output.extend_from_slice(b"-ERR empty command\r\n");
             return Action::Continue;
         };
-        store.record_command();
+        store.record_command(self.id);
         store.monitor_command(self.id, arguments);
         if command.eq_ignore_ascii_case(b"RESET") {
             return self.reset(store, arguments, output);
@@ -98,6 +99,14 @@ impl Session {
                 || command.eq_ignore_ascii_case(b"SET")
                 || command.eq_ignore_ascii_case(b"ECHO"))
         {
+            if command.eq_ignore_ascii_case(b"PING") {
+                match arguments.len() {
+                    1 => output.extend_from_slice(b"+PONG\r\n"),
+                    2 => encode_bulk(Some(arguments[1]), output),
+                    _ => arity("ping", output),
+                }
+                return Action::Continue;
+            }
             return self.execute_store(store, arguments, output);
         }
         if command.eq_ignore_ascii_case(b"MULTI") {

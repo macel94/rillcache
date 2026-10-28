@@ -7,6 +7,9 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::protocol::{Limits, encode_bulk};
+
+const COMMAND_COUNTER_SHARDS: usize = 64;
+
 mod acl_log;
 mod administration;
 mod audit;
@@ -162,7 +165,7 @@ pub struct Store {
     audit_syslog: Option<std::sync::Mutex<audit_syslog::SyslogSink>>,
     audit_syslog_write_failures: std::sync::atomic::AtomicU64,
     connections_received: std::sync::atomic::AtomicU64,
-    commands_processed: std::sync::atomic::AtomicU64,
+    commands_processed: [std::sync::atomic::AtomicU64; COMMAND_COUNTER_SHARDS],
     rejected_connections: std::sync::atomic::AtomicU64,
     slowlog: std::sync::RwLock<std::collections::VecDeque<slowlog::SlowlogEntry>>,
     slowlog_next_id: std::sync::atomic::AtomicU64,
@@ -245,7 +248,7 @@ impl Store {
             audit_syslog: None,
             audit_syslog_write_failures: std::sync::atomic::AtomicU64::new(0),
             connections_received: std::sync::atomic::AtomicU64::new(0),
-            commands_processed: std::sync::atomic::AtomicU64::new(0),
+            commands_processed: std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)),
             rejected_connections: std::sync::atomic::AtomicU64::new(0),
             slowlog: std::sync::RwLock::new(std::collections::VecDeque::new()),
             slowlog_next_id: std::sync::atomic::AtomicU64::new(0),
@@ -494,8 +497,9 @@ impl Store {
         self.rejected_connections.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_command(&self) {
-        self.commands_processed.fetch_add(1, Ordering::Relaxed);
+    pub fn record_command(&self, client_id: u64) {
+        let shard = (client_id as usize) % COMMAND_COUNTER_SHARDS;
+        self.commands_processed[shard].fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record one network command dispatch. `reply` is only the bytes produced
@@ -581,7 +585,11 @@ impl Store {
         };
         Stats {
             total_connections_received: self.connections_received.load(Ordering::Relaxed),
-            total_commands_processed: self.commands_processed.load(Ordering::Relaxed),
+            total_commands_processed: self
+                .commands_processed
+                .iter()
+                .map(|counter| counter.load(Ordering::Relaxed))
+                .sum(),
             rejected_connections: self.rejected_connections.load(Ordering::Relaxed),
             expired_keys,
             expired_subkeys,
@@ -632,7 +640,9 @@ impl Store {
             stats.clear();
         }
         self.connections_received.store(0, Ordering::Relaxed);
-        self.commands_processed.store(0, Ordering::Relaxed);
+        for counter in &self.commands_processed {
+            counter.store(0, Ordering::Relaxed);
+        }
         self.rejected_connections.store(0, Ordering::Relaxed);
         self.reset_command_statistics();
         self.data.write().is_ok_and(|mut data| {
