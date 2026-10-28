@@ -14,6 +14,17 @@ fn every_main_pr_requires_distinct_tests_and_real_valkey_measurements() {
         "\"context\": \"Tests and offline CI\"",
         "\"context\": \"Valkey performance gate\"",
         "\"context\": \"Valkey 4-CPU performance gate\"",
+        "\"context\": \"verify\"",
+        "\"context\": \"build (amd64, ubuntu-24.04)\"",
+        "\"context\": \"build (arm64, ubuntu-24.04-arm)\"",
+        "\"context\": \"Build pinned TCP compatibility tools\"",
+        "\"context\": \"Tcl redis / string\"",
+        "\"context\": \"Tcl redis / incr\"",
+        "\"context\": \"Tcl redis / keyspace\"",
+        "\"context\": \"Tcl valkey / string\"",
+        "\"context\": \"Tcl valkey / incr\"",
+        "\"context\": \"Tcl valkey / keyspace\"",
+        "\"context\": \"read-only-self-tests\"",
     ] {
         assert!(policy.contains(required), "missing main rule: {required}");
     }
@@ -135,6 +146,8 @@ fn generated_reports_use_prs_without_an_exception_for_main_or_policy_files() {
     assert!(script.contains("gh workflow run pr-quality.yml"));
     assert!(script.contains("gh workflow run pr-multicpu-quality.yml"));
     assert!(script.contains("gh workflow run upstream-compatibility.yml"));
+    assert!(script.contains("gh workflow run container.yml"));
+    assert!(script.contains("gh workflow run pr-branch-updater.yml"));
     assert!(script.contains("--auto --squash --match-head-commit"));
     assert!(script.contains("if [[ \"$created\" == 1 ]]"));
     let delivery = include_str!("../scripts/report-pr-delivery.py");
@@ -149,6 +162,8 @@ fn generated_reports_use_prs_without_an_exception_for_main_or_policy_files() {
         "/.github/workflows/ @macel94",
         "/scripts/pr-performance-gate.py @macel94",
         "/scripts/compare-builds.py @macel94",
+        "/.github/pr-workflow-gates.json @macel94",
+        "/scripts/pr_gate_policy.py @macel94",
         "/benchmarks/targets.mk @macel94",
     ] {
         assert!(owners.contains(path));

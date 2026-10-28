@@ -81,8 +81,8 @@ branch and the workflow run's own immutable `head_sha`. GitHub's nested
 updated: they are not snapshots of the source/base tested by that old run. They
 must never relabel an old success or failure as evidence for a newer head.
 Current-main ancestry is checked against the frozen actual main/head refs.
-The updater accepts only the required named check from the GitHub Actions app
-and matching check suite for the actual run SHA. If **any** exact-head run is
+The updater accepts only every required named check (all matrix members included)
+from the GitHub Actions app and matching check suite for the actual run SHA. If **any** exact-head run is
 active, it waits; if **any** exact-head run failed, it reports that failure even
 when a later run succeeded and never dispatches a retry. Exact source identity
 also prevents old failures from blocking a genuinely fixed new source head.
@@ -94,14 +94,13 @@ or `startup_failure` run for that head remains sticky and blocks a retry. A
 cancelled run therefore cannot mask a real failure and cannot by itself block a
 valid head. If no
 matching run is observable, it first verifies that the branch's
-`.github/workflows/ci.yml`, `.github/workflows/pr-quality.yml` and
-`.github/workflows/pr-multicpu-quality.yml` blobs still
+all six allowlisted workflow blobs (CI, both Valkey gates, container verification,
+upstream Tcl compatibility and read-only PR policy tests) still
 match protected `main` (a branch that rewrote a required workflow is reported as
 `untrusted_workflow` and never dispatched, because `workflow_dispatch` would
 otherwise run that rewritten workflow with the updater's write token). Only then
-does it explicitly dispatch `ci.yml`, `pr-quality.yml` and
-`pr-multicpu-quality.yml` on the validated branch (both benchmark workflows with
-that PR's number). Those existing workflows retain read-only
+does it explicitly dispatch those six workflows from the shared inventory on the
+validated branch (both benchmark workflows with that PR's number). Those existing workflows retain read-only
 permissions and their own head/base validation. This is necessary because GitHub
 suppresses most events caused by `GITHUB_TOKEN`; token-created PR synchronization
 runs may be approval-held, while `workflow_dispatch` is an explicit allowed trigger.
@@ -122,8 +121,9 @@ The updater does not merge PRs. GitHub's existing strict protection, real
 required checks, required CODEOWNERS review, and protected squash auto-merge stay
 authoritative. Failed benchmark evidence is retained by GitHub; an unchanged
 failed head is not silently refreshed to obtain a new check identity. A genuine
-worker source fix creates a new head and is evaluated normally. Manual dispatch
-is restricted to main, and failures/races remain visible rather than being
+worker source fix creates a new head and is evaluated normally. Privileged reconciliation dispatch
+is restricted to main; non-main dispatch runs only read-only policy tests.
+Failures/races remain visible rather than being
 retried until green.
 
 ### Security and event boundary
@@ -136,7 +136,7 @@ retried until green.
 - API data and branch names are passed through the Python standard-library HTTP
   client, not interpolated into shell commands. API error bodies and credentials
   are not printed.
-- Only the three allowlisted required workflows can be explicitly dispatched; their
+- Only the six inventory-allowlisted required workflows can be explicitly dispatched; their
   exact workflow paths, run event, candidate identity, check suite, check name
   and GitHub Actions app are validated before a pass is reported.
 - `contents:write` is present only on the trusted reconciliation job because

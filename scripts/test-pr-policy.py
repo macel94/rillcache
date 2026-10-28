@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 
+from pr_gate_policy import required_checks, required_workflows
+
 ROOT = Path(__file__).resolve().parents[1]
 FAKE = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -41,6 +43,18 @@ elif name == 'gh':
   elif '/git/ref/heads/main' in endpoint:
    s['main_reads']=s.get('main_reads',0)+1
    output=json.dumps({'object':{'sha':'d'*40 if os.environ.get('MAIN_RACE') and s['main_reads']>1 else main}})
+  elif endpoint.endswith('/rulesets/25863639'):
+   policy=json.loads((pathlib.Path(os.environ['FAKE_PROJECT_ROOT'])/'.github/main-ruleset.json').read_text())
+   if os.environ.get('LIVE_BYPASS_REDACTED'): del policy['bypass_actors']
+   if os.environ.get('LIVE_RULE_DRIFT'):
+    checks=next(r['parameters']['required_status_checks'] for r in policy['rules'] if r['type']=='required_status_checks')
+    checks[:]=[c for c in checks if c['context']!='Valkey 4-CPU performance gate']
+   output=json.dumps(policy)
+  elif endpoint.endswith('/rules/branches/main'):
+   output=json.dumps(json.loads((pathlib.Path(os.environ['FAKE_PROJECT_ROOT'])/'.github/main-ruleset.json').read_text())['rules'])
+  elif '/actions/workflows?per_page=100' in endpoint:
+   workflows=json.loads((pathlib.Path(os.environ['FAKE_PROJECT_ROOT'])/'.github/pr-workflow-gates.json').read_text())['workflows']
+   output=json.dumps({'total_count':len(workflows),'workflows':[{'path':'.github/workflows/'+p,'state':'active'} for p in workflows]})
   elif '/compare/' in endpoint: output=json.dumps({'status':'diverged' if os.environ.get('STALE') else 'ahead'})
   elif '/actions/workflows/' in endpoint and '/runs?' in endpoint:
    workflow=endpoint.split('/actions/workflows/',1)[1].split('/runs?',1)[0]
@@ -88,10 +102,8 @@ class PolicyTests(unittest.TestCase):
         status = rules['required_status_checks']
         self.assertIs(status['strict_required_status_checks_policy'], True)
         self.assertIs(status['do_not_enforce_on_create'], False)
-        self.assertEqual(status['required_status_checks'], [
-            {'context': 'Tests and offline CI', 'integration_id': 15368},
-            {'context': 'Valkey performance gate', 'integration_id': 15368},
-            {'context': 'Valkey 4-CPU performance gate', 'integration_id': 15368}])
+        self.assertEqual(status['required_status_checks'], required_checks())
+        self.assertEqual(len(status['required_status_checks']), 14)
 
     def test_every_pr_runs_read_only_frozen_tools_without_path_exemptions(self):
         workflow = (ROOT / '.github/workflows/pr-quality.yml').read_text()
@@ -163,7 +175,7 @@ class PolicyTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(FAKE); path.chmod(0o700)
             env = dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
-                       FAKE_STATE=str(state), GITHUB_REPOSITORY='example/project', GITHUB_RUN_ID='123',
+                       FAKE_STATE=str(state), FAKE_PROJECT_ROOT=str(ROOT), GITHUB_REPOSITORY='example/project', GITHUB_RUN_ID='123',
                        GITHUB_RUN_ATTEMPT='2', DEFAULT_BRANCH='main', RUNNER_TEMP=str(root),
                        GITHUB_STEP_SUMMARY=str(root / 'summary.md'))
             env.update(extra)
@@ -181,7 +193,7 @@ class PolicyTests(unittest.TestCase):
         gh = [args for name, args in state['calls'] if name == 'gh']
         self.assertTrue(any(args[:2] == ['pr', 'create'] for args in gh))
         dispatches = [args for args in gh if args[:2] == ['workflow', 'run']]
-        self.assertEqual([args[2] for args in dispatches], ['ci.yml', 'pr-quality.yml', 'pr-multicpu-quality.yml', 'upstream-compatibility.yml'])
+        self.assertEqual([args[2] for args in dispatches], list(required_workflows()))
         self.assertTrue(all(args[args.index('--ref') + 1] == state['branch'] for args in dispatches))
         self.assertIn('pull_request=42', dispatches[1])
         self.assertIn('pull_request=42', dispatches[2])
@@ -217,6 +229,18 @@ class PolicyTests(unittest.TestCase):
         result, _ = self.run_publisher(DISPATCH_FAIL='1')
         self.assertNotEqual(result.returncode, 0)
 
+    def test_live_rule_drift_prevents_auto_merge_even_if_every_workflow_reports_success(self):
+        result, state = self.run_publisher(LIVE_RULE_DRIFT='1', LIVE_BYPASS_REDACTED='1', RUN_MODE='success')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('LIVE RULESET DRIFT', result.stderr)
+        self.assertFalse(any(args[:2] in (['workflow', 'run'], ['pr', 'merge']) for name, args in state['calls'] if name == 'gh'))
+
+    def test_normal_actions_token_redaction_is_explicit_not_an_invented_empty_bypass_list(self):
+        result, state = self.run_publisher(LIVE_BYPASS_REDACTED='1', RUN_MODE='success')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('bypass-list completeness is UNVERIFIED', result.stderr)
+        self.assertFalse(any('rulesets' in arg and name == 'gh' and 'PUT' in args for name, args in state['calls'] for arg in args))
+
     def test_existing_running_checks_are_not_duplicated(self):
         result, state = self.run_publisher(EXISTING_PR='1', RUN_MODE='running')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -237,7 +261,7 @@ class PolicyTests(unittest.TestCase):
     def test_approval_held_runs_do_not_masquerade_as_tests_or_prevent_explicit_dispatch(self):
         result, state = self.run_publisher(RUN_MODE='held')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(sum(args[:2] == ['workflow', 'run'] for name, args in state['calls'] if name == 'gh'), 4)
+        self.assertEqual(sum(args[:2] == ['workflow', 'run'] for name, args in state['calls'] if name == 'gh'), 6)
 
     def test_untrusted_workflow_or_stale_or_changed_head_main_fail_before_dispatch(self):
         for flag in ['UNTRUSTED_WORKFLOW', 'STALE', 'HEAD_RACE', 'MAIN_RACE', 'PR_DRAFT', 'API_FAIL', 'INVALID_JSON']:

@@ -17,11 +17,11 @@ from typing import Any
 REPO = "macel94/rillcache"
 OWNER, NAME = REPO.split("/")
 MAIN = "main"
-REQUIRED = {
-    "ci.yml": "Tests and offline CI",
-    "pr-quality.yml": "Valkey performance gate",
-    "pr-multicpu-quality.yml": "Valkey 4-CPU performance gate",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pr_gate_policy import required_workflows
+
+REQUIRED_CHECKS = required_workflows()
+REQUIRED = {path: checks[0] for path, checks in REQUIRED_CHECKS.items()}
 ACTIONS_APP_ID = 15368
 # A cancelled/stale run has no performance verdict. Concurrency cancellation
 # (`cancel-in-progress`) and branch refreshes routinely supersede an older run for
@@ -257,17 +257,18 @@ class Updater:
         if run.get("conclusion") != "success":
             return False, f"workflow run {run_id} concluded {run.get('conclusion', 'unknown')}; no automatic retry"
         checks = self.api.call(f"repos/{REPO}/commits/{check_sha}/check-runs?per_page=100")
-        rows = [item for item in checks.get("check_runs", [])
-                if item.get("name") == REQUIRED[workflow]
-                and item.get("head_sha") == check_sha
-                and item.get("check_suite", {}).get("id") == run.get("check_suite_id")]
-        if len(rows) != 1:
-            return False, f"required check identity is missing or ambiguous for {workflow}"
-        check = rows[0]
-        if (check.get("conclusion") != "success"
-                or check.get("app", {}).get("slug") != "github-actions"
-                or check.get("app", {}).get("id") != ACTIONS_APP_ID):
-            return False, f"required check is not a successful GitHub Actions check for {workflow}"
+        for name in REQUIRED_CHECKS[workflow]:
+            rows = [item for item in checks.get("check_runs", [])
+                    if item.get("name") == name
+                    and item.get("head_sha") == check_sha
+                    and item.get("check_suite", {}).get("id") == run.get("check_suite_id")]
+            if len(rows) != 1:
+                return False, f"required check identity is missing or ambiguous for {workflow}: {name}"
+            check = rows[0]
+            if (check.get("conclusion") != "success"
+                    or check.get("app", {}).get("slug") != "github-actions"
+                    or check.get("app", {}).get("id") != ACTIONS_APP_ID):
+                return False, f"required check is not a successful GitHub Actions check for {workflow}: {name}"
         return True, "success"
 
     def dispatch(self, pr: dict, workflow: str) -> None:
@@ -434,7 +435,7 @@ class Updater:
                 return outcome
             if all(value["status"] == "passed" for value in states.values()):
                 outcome.update(status="checks_passed", workflows=states,
-                               detail="both exact required workflow/check identities passed; protected auto-merge remains authoritative")
+                               detail="all exact required workflow/check identities passed; protected auto-merge remains authoritative")
             else:
                 outcome.update(status="checks_dispatched", workflows=states,
                                detail="missing required workflows explicitly dispatched; awaiting exact runs")

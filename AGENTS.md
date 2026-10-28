@@ -5,7 +5,9 @@
 - Required checks: `Tests and offline CI`, `Valkey performance gate`, and
   `Valkey 4-CPU performance gate`, on an up-to-date branch/current head. All 20
   original medians and all 10 official-benchmark four-CPU medians must strictly
-  beat Valkey. The new required context needs reviewed live ruleset activation.
+  beat Valkey. All 14 contexts in `.github/pr-workflow-gates.json`, including
+  native container builds, every Tcl matrix member and PR policy tests, are
+  live-required. Run `python3 scripts/pr_gate_policy.py --live` to detect drift.
 - Never use administrator bypass, disable/relax the gate, omit losing cases, reuse
   historical passes or rerun until green to land a change. Preserve failed evidence.
 - CI/policy files require the configured code-owner review. Do not self-approve.

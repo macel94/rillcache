@@ -307,8 +307,9 @@ full compatibility claims. Expensive execution stays in GitHub Actions.
 **Tests and offline CI**, **Valkey performance gate** and **Valkey 4-CPU performance
 gate** on an up-to-date PR. Rillcache must have strictly higher median throughput
 than pinned Valkey in all 20 original cases and all 10 official-benchmark four-CPU
-cases; any tie, loss or invalid/incomplete measurement blocks merge. The added
-required context must also be activated in the live ruleset after policy review.
+cases; any tie, loss or invalid/incomplete measurement blocks merge. All 14
+[PR check contexts](docs/actions-gate-audit.md), including container builds,
+original Tcl suites and policy self-tests, are enforced in the live ruleset.
 No admin/bot bypass or direct main pushes. [Exact policy and scope](docs/pr-quality-gate.md).
 
 [CI](.github/workflows/ci.yml) runs the same `make ci` on PRs and main pushes,

@@ -156,7 +156,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertNotIn("secret-body", str(failure.exception))
         self.assertNotIn("top-secret", str(failure.exception))
 
-    def test_guarded_update_dispatches_all_three_required_workflows(self):
+    def test_guarded_update_dispatches_all_six_required_workflows(self):
         outcome = self.updater.process(pull())
         self.assertEqual(outcome["status"], "checks_dispatched")
         updates = [c for c in self.api.calls if c[0] == "PUT"]
@@ -164,7 +164,8 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(updates[0][1].endswith("/update-branch"))
         self.assertEqual(updates[0][2], {"expected_head_sha": B})
         dispatched = [c for c in self.api.calls if c[0] == "POST"]
-        self.assertEqual([c[1].rsplit("/", 2)[-2] for c in dispatched], ["ci.yml", "pr-quality.yml", "pr-multicpu-quality.yml"])
+        self.assertEqual([c[1].rsplit("/", 2)[-2] for c in dispatched], list(mod.REQUIRED))
+        self.assertEqual(len(dispatched), 6)
         self.assertEqual(dispatched[0][2], {"ref": "feature/1"})
         self.assertEqual(dispatched[1][2], {"ref": "feature/1", "inputs": {"pull_request": "1"}})
         self.assertEqual(dispatched[2][2], {"ref": "feature/1", "inputs": {"pull_request": "1"}})
@@ -282,14 +283,33 @@ class UpdaterTests(unittest.TestCase):
                 "created_at": "2026-10-26T00:00:00Z",
             })
             self.api.checks[check_sha] = self.api.checks.get(check_sha, []) + [{
-                "name": mod.REQUIRED[workflow], "head_sha": check_sha,
+                "name": name, "head_sha": check_sha,
                 "check_suite": {"id": 100 + index},
                 "app": {"slug": "github-actions", "id": mod.ACTIONS_APP_ID},
                 "conclusion": "success",
-            }]
+            } for name in mod.REQUIRED_CHECKS[workflow]]
         result = self.updater.process(p)
         self.assertEqual(result["status"], "checks_passed")
         self.assertFalse(any(c[0] in {"PUT", "POST"} for c in self.api.calls))
+
+    def test_every_matrix_member_must_have_a_successful_exact_app_suite_head_check(self):
+        for workflow, names in mod.REQUIRED_CHECKS.items():
+            run = {"id": 1, "path": f".github/workflows/{workflow}", "head_sha": C,
+                   "check_suite_id": 99, "status": "completed", "conclusion": "success"}
+            for name in names:
+                for change in ("missing", "skipped", "failure", "wrong-app", "duplicate"):
+                    with self.subTest(workflow=workflow, name=name, change=change):
+                        rows = [{"name": n, "head_sha": C, "check_suite": {"id": 99},
+                                 "conclusion": "success", "app": {"slug": "github-actions", "id": mod.ACTIONS_APP_ID}}
+                                for n in names]
+                        self.api.checks[C] = rows
+                        self.assertTrue(self.updater.check_identity(run, workflow)[0])
+                        item = next(r for r in rows if r["name"] == name)
+                        if change == "missing": rows.remove(item)
+                        elif change == "wrong-app": item["app"]["id"] = 1
+                        elif change == "duplicate": rows.append(dict(item))
+                        else: item["conclusion"] = change
+                        self.assertFalse(self.updater.check_identity(run, workflow)[0])
 
     def test_github_token_approval_held_pr_runs_do_not_block_explicit_dispatch(self):
         p = pull(base=A, head=C)
@@ -305,7 +325,7 @@ class UpdaterTests(unittest.TestCase):
         result = self.updater.process(p)
         self.assertEqual(result["status"], "checks_dispatched")
         dispatches = [call for call in self.api.calls if call[0] == "POST"]
-        self.assertEqual(len(dispatches), 3)
+        self.assertEqual(len(dispatches), 6)
 
     def source_run(self, head=C, associated=C, *, run_id=1, status="completed", conclusion="success"):
         return {"id": run_id, "path": ".github/workflows/ci.yml@refs/pull/1/merge",
@@ -602,16 +622,16 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn("secrets.", workflow)
         self.assertNotIn("git push", workflow)
         self.assertNotIn("--force", workflow)
-        self.assertIn("permissions:\n      contents: read\n    steps:", workflow)
+        self.assertIn("permissions:\n      contents: read\n      actions: read\n    steps:", workflow)
         self.assertIn("contents: write", workflow)
         self.assertIn("pull-requests: write", workflow)
         self.assertIn("actions: write", workflow)
 
     def test_dispatch_allowlist_matches_real_required_workflows(self):
         source = (ROOT / "scripts/update-pr-branches.py").read_text()
-        for workflow in ("ci.yml", "pr-quality.yml", "pr-multicpu-quality.yml"):
-            self.assertIn(f'"{workflow}"', source)
-        self.assertEqual(set(mod.REQUIRED.values()), {"Tests and offline CI", "Valkey performance gate", "Valkey 4-CPU performance gate"})
+        self.assertEqual(set(mod.REQUIRED), {"ci.yml", "pr-quality.yml", "pr-multicpu-quality.yml", "container.yml", "upstream-compatibility.yml", "pr-branch-updater.yml"})
+        self.assertIn("from pr_gate_policy import required_workflows", source)
+        self.assertEqual(sum(map(len, mod.REQUIRED_CHECKS.values())), 14)
         self.assertIn('path = f"repos/{REPO}/actions/workflows/{workflow}/dispatches"', source)
         self.assertIn('if workflow in {"pr-quality.yml", "pr-multicpu-quality.yml"}:', source)
 
