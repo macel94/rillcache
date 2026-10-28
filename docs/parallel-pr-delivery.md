@@ -31,7 +31,7 @@ The workflow runs a read-only self-test job on `pull_request`. Its privileged
 credentials disabled. The privileged job is never given PR artifacts or PR code
 and does not call merge or enable auto-merge. The workflow is triggered by main
 push, hourly schedule, manual dispatch on main, and completion of the existing
-`CI` / `PR Valkey quality gate` workflows. The `workflow_run` event executes the
+`CI` / `PR Valkey quality gate` / `PR multi-CPU Valkey performance` workflows. The `workflow_run` event executes the
 workflow definition from the default branch; the updater validates repository,
 branch and PR metadata before mutation.
 
@@ -48,7 +48,7 @@ required-check configuration, or main.
 
 The queue is **serialized**: a pass inspects candidates in ascending PR-number
 order and performs **at most one successful branch refresh**. A refreshed head is
-a new candidate identity that must run both required checks again, so refreshing
+a new candidate identity that must run all required checks again, so refreshing
 every stale PR in one pass would stampede the gate. A conflict, timeout, identity
 race, failed gate or API error on the current candidate is recorded as failed
 evidence and the pass continues to the next candidate; the first successful
@@ -94,12 +94,14 @@ or `startup_failure` run for that head remains sticky and blocks a retry. A
 cancelled run therefore cannot mask a real failure and cannot by itself block a
 valid head. If no
 matching run is observable, it first verifies that the branch's
-`.github/workflows/ci.yml` and `.github/workflows/pr-quality.yml` blobs still
+`.github/workflows/ci.yml`, `.github/workflows/pr-quality.yml` and
+`.github/workflows/pr-multicpu-quality.yml` blobs still
 match protected `main` (a branch that rewrote a required workflow is reported as
 `untrusted_workflow` and never dispatched, because `workflow_dispatch` would
 otherwise run that rewritten workflow with the updater's write token). Only then
-does it explicitly dispatch `ci.yml` and `pr-quality.yml` on the validated branch
-(the latter with that PR's number). Those existing workflows retain read-only
+does it explicitly dispatch `ci.yml`, `pr-quality.yml` and
+`pr-multicpu-quality.yml` on the validated branch (both benchmark workflows with
+that PR's number). Those existing workflows retain read-only
 permissions and their own head/base validation. This is necessary because GitHub
 suppresses most events caused by `GITHUB_TOKEN`; token-created PR synchronization
 runs may be approval-held, while `workflow_dispatch` is an explicit allowed trigger.
@@ -134,7 +136,7 @@ retried until green.
 - API data and branch names are passed through the Python standard-library HTTP
   client, not interpolated into shell commands. API error bodies and credentials
   are not printed.
-- Only the two existing required workflows can be explicitly dispatched; their
+- Only the three allowlisted required workflows can be explicitly dispatched; their
   exact workflow paths, run event, candidate identity, check suite, check name
   and GitHub Actions app are validated before a pass is reported.
 - `contents:write` is present only on the trusted reconciliation job because
@@ -169,7 +171,7 @@ merge. Do not claim the workflow is deployed before it actually merges.
 ## Native merge queues
 
 GitHub's native merge queue can validate candidates against the latest base and
-queued predecessors, but both required workflows must genuinely support
+queued predecessors, but all required workflows must genuinely support
 `merge_group` and preserve candidate/base identities. Simply enabling a queue
 would not adapt the current PR-only Valkey validation. The present personal-
 account

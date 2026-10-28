@@ -303,9 +303,11 @@ full compatibility claims. Expensive execution stays in GitHub Actions.
 
 **`main` is PR-only, including generated reports and documentation.** The active
 [ruleset](https://github.com/macel94/rillcache/rules/25863639) requires passing
-**Tests and offline CI** and **Valkey performance gate** on an up-to-date PR.
-Rillcache must have strictly higher median throughput than pinned Valkey in **all
-20 tested cases**; any tie, loss or invalid/incomplete measurement blocks merge.
+**Tests and offline CI**, **Valkey performance gate** and **Valkey 4-CPU performance
+gate** on an up-to-date PR. Rillcache must have strictly higher median throughput
+than pinned Valkey in all 20 original cases and all 10 official-benchmark four-CPU
+cases; any tie, loss or invalid/incomplete measurement blocks merge. The added
+required context must also be activated in the live ruleset after policy review.
 No admin/bot bypass or direct main pushes. [Exact policy and scope](docs/pr-quality-gate.md).
 
 [CI](.github/workflows/ci.yml) runs the same `make ci` on PRs and main pushes,
@@ -320,6 +322,10 @@ is opt-in; the packaged container is unauthenticated unless a password is suppli
 with genuine Copilot review and open report PRs instead of pushing main. The
 [mandatory PR comparison](.github/workflows/pr-quality.yml) is separate from the
 fast offline path and uses a frozen base client/harness, alternating native
-processes, three repetitions and both inherited/equal-one-CPU profiles. Shared
+processes, three repetitions and both inherited/equal-one-CPU profiles. A separate
+[4-CPU Valkey gate](.github/workflows/pr-multicpu-quality.yml) uses Valkey's official,
+unmodified `valkey-benchmark` for 10 workload/pipeline comparisons, with both
+servers pinned to exactly four logical CPUs. Generator CPUs are separate when
+available, otherwise shared and explicitly recorded. Shared
 runner noise can block a PR; passing this scoped throughput policy is not a
 universal performance, stable-hardware, full-compatibility or production claim.

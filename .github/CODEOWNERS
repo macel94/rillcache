@@ -4,6 +4,10 @@
 /.github/main-ruleset.json @macel94
 /.github/workflows/ @macel94
 /scripts/pr-performance-gate.py @macel94
+/scripts/pr-multicpu-performance.py @macel94
+/scripts/test-multicpu-performance.py @macel94
+/scripts/upstream/common.py @macel94
+/scripts/upstream/performance.py @macel94
 /scripts/compare-builds.py @macel94
 /scripts/publish-report-pr.sh @macel94
 /scripts/test-pr-policy.py @macel94

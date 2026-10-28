@@ -235,22 +235,32 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 ## PR-only main and scoped Valkey merge acceptance (S23–S24)
 
 - **R95 (ubiquitous):** Every future change to main shall come through an up-to-date
-  PR with passing distinct Tests and offline CI and Valkey performance gate checks
+  PR with passing distinct Tests and offline CI, Valkey performance gate and
+  Valkey 4-CPU performance gate checks
   from GitHub Actions. Active rules shall have no bypass actors, block deletion/
   force pushes, require squash merges and resolve review threads. CI/policy files
   shall require code-owner review; ordinary implementation PRs need no blanket
   approving-review quota.
 - **R96 (event-driven):** When a PR benchmark runs, it shall use the protected base
   harness, frozen Rust client/compiler and checksum-pinned Valkey, default server
-  modes, three alternating native repetitions, both CPU budgets and both pipeline
-  lengths across five workloads. The exact [20-condition policy](../pr-quality-gate.md)
+  modes, three alternating native repetitions, inherited and one-CPU profiles and
+  both pipeline lengths across five workloads. A second required workflow shall
+  independently measure five workloads at both pipelines with the unchanged
+  official `valkey-benchmark`, three alternating repetitions and exactly four
+  logical CPUs for each server. Client CPUs shall be disjoint when available,
+  otherwise shared and explicitly recorded. The exact [20-condition policy](../pr-quality-gate.md)
   shall retain source/binary identity, affinities, reply validation and owned-process
   readiness/cleanup. Only the installing PR may bootstrap against the exact pinned
   pre-policy source; a missing future base harness shall fail closed.
 - **R97 (unwanted behavior):** If any median is tied/slower than Valkey or evidence
   is missing, invalid, duplicated, nonfinite, mismatched, changed or incomplete,
-  then the required performance job shall fail. It shall revalidate all 120 raw
-  records and hashes, retain every row/spread/CPU/whole-batch tail and upload failures.
+  then each required performance job shall fail. The original gate shall revalidate
+  its 120 raw records; the four-CPU gate shall revalidate all 60 official-generator
+  samples, exact commands, statuses, hashes, data checks and 10 median comparisons.
+  Both shall retain every row/spread/CPU/pipeline tail and upload failures. The
+  four-CPU gate shall fail closed unless both servers have the same four allowed
+  logical CPUs. The upstream generator's non-error payload-validation limitations
+  shall remain explicit; it shall not claim the Rust client's every-reply contract.
   No path exemption, historical pass, fastest-sample substitution, automatic retry
   until green or threshold relaxation shall permit merge. Passing is scoped
   throughput acceptance on shared CI, not statistical certainty or production readiness.

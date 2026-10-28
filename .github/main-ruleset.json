@@ -31,7 +31,8 @@
         "strict_required_status_checks_policy": true,
         "required_status_checks": [
           {"context": "Tests and offline CI", "integration_id": 15368},
-          {"context": "Valkey performance gate", "integration_id": 15368}
+          {"context": "Valkey performance gate", "integration_id": 15368},
+          {"context": "Valkey 4-CPU performance gate", "integration_id": 15368}
         ]
       }
     }

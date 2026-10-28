@@ -13,6 +13,7 @@ fn every_main_pr_requires_distinct_tests_and_real_valkey_measurements() {
         "\"require_code_owner_review\": true",
         "\"context\": \"Tests and offline CI\"",
         "\"context\": \"Valkey performance gate\"",
+        "\"context\": \"Valkey 4-CPU performance gate\"",
     ] {
         assert!(policy.contains(required), "missing main rule: {required}");
     }
@@ -30,6 +31,38 @@ fn every_main_pr_requires_distinct_tests_and_real_valkey_measurements() {
         "if: always()",
     ] {
         assert!(gate.contains(required), "missing gate boundary: {required}");
+    }
+    let multicpu = include_str!("../.github/workflows/pr-multicpu-quality.yml");
+    for required in [
+        "pull_request:",
+        "name: Valkey 4-CPU performance gate",
+        "base/scripts/pr-multicpu-performance.py",
+        "valkey-benchmark",
+        "--generator",
+        "python3 \"$HARNESS\" --check evidence/gate",
+        "persist-credentials: false",
+        "if: always()",
+    ] {
+        assert!(
+            multicpu.contains(required),
+            "missing four-CPU gate boundary: {required}"
+        );
+    }
+    let wrapper = include_str!("../scripts/pr-multicpu-performance.py");
+    assert!(wrapper.contains("at least four distinct allowed logical CPUs required"));
+    assert!(wrapper.contains("server_cpus, client_cpus = placement(cpus)"));
+    for forbidden in [
+        "pull_request_target:",
+        "continue-on-error:",
+        "paths:",
+        "paths-ignore:",
+        "contents: write",
+        "secrets.",
+    ] {
+        assert!(
+            !multicpu.contains(forbidden),
+            "unsafe four-CPU gate exemption: {forbidden}"
+        );
     }
     for forbidden in [
         "pull_request_target:",
@@ -81,6 +114,7 @@ fn hosted_pr_updater_never_runs_its_writer_on_untrusted_pr_code() {
         "expected_head_sha",
         "ci.yml",
         "pr-quality.yml",
+        "pr-multicpu-quality.yml",
         "workflow_dispatch",
     ] {
         assert!(
@@ -99,6 +133,7 @@ fn generated_reports_use_prs_without_an_exception_for_main_or_policy_files() {
     assert!(script.contains("gh pr create"));
     assert!(script.contains("gh workflow run ci.yml"));
     assert!(script.contains("gh workflow run pr-quality.yml"));
+    assert!(script.contains("gh workflow run pr-multicpu-quality.yml"));
     assert!(script.contains("gh workflow run upstream-compatibility.yml"));
     assert!(script.contains("--auto --squash --match-head-commit"));
     assert!(script.contains("if [[ \"$created\" == 1 ]]"));

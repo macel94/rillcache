@@ -7,10 +7,11 @@ human product direction, review and test-based validation remain required.
 ## PR-only main and required quality gates
 
 Never commit on or push directly to `main`, including documentation and generated
-reports. Work on a branch and open a PR. Merge only after **Tests and offline CI**
-and **Valkey performance gate** pass on an up-to-date head: all 20 scoped median
-throughputs must strictly exceed Valkey. Ties, slower cases and invalid/incomplete
-evidence block merging. No administrator/bot bypass, fastest-sample selection or
+reports. Work on a branch and open a PR. Merge only after **Tests and offline CI**,
+**Valkey performance gate** and **Valkey 4-CPU performance gate** pass on an
+up-to-date head: all 20 original scoped median throughputs and all 10 official
+Valkey-benchmark four-CPU medians must strictly exceed Valkey. Ties, slower cases
+and invalid/incomplete evidence block merging. No administrator/bot bypass, fastest-sample selection or
 threshold relaxation. CI/policy files additionally require code-owner review;
 ordinary implementation PRs have no blanket approving-review quota. See the
 [enforced policy, exact benchmark scope and automation](docs/pr-quality-gate.md).
@@ -95,7 +96,7 @@ permissions only to update opted-in same-repository PR branches and explicitly
 dispatch the existing read-only required checks; it never checks out PR code or
 merges a PR. The publisher's narrowly scoped pull-request/action permissions create
 that PR and dispatch
-the two read-only required checks on its head; no new stored token is needed. Fork PRs never receive a privileged
+all three read-only required checks on its head; no new stored token is needed. Fork PRs never receive a privileged
 `pull_request_target` execution path. See [automatic reporting](docs/benchmark-reports.md).
 Do not commit credentials, benchmark build sources, generated target output or
 private environment files.
