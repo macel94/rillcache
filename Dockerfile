@@ -2,7 +2,7 @@
 FROM rust:1.99.1-alpine3.23@sha256:2a941e16ec6e357ff7112e92336087772584122b6ae4b30eb36cb9adff5b5458 AS build
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY .cargo ./.cargo
+COPY vendor-config.toml ./.cargo/config.toml
 COPY vendor ./vendor
 COPY src ./src
 COPY benches ./benches

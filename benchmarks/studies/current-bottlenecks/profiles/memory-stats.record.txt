@@ -1,0 +1,7 @@
+[ perf record: Woken up 17 times to write data ]
+Warning:
+Processed 1900 events and lost 23 chunks!
+
+Check IO/CPU overload!
+
+[ perf record: Captured and wrote 4.089 MB /tmp/rillcache-bottlenecks-20261027/profiles/memory-stats.data (499 samples) ]
