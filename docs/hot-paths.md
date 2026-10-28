@@ -232,9 +232,10 @@ These are general server paths, not a benchmark mode. The bounded multicore clie
 handoff from the existing scheduler remains enabled for 2–4 CPU budgets. Burst
 activity is observed across clients, not inferred from one request's pipeline
 depth: a single-command reply may join an active epoch. The active-epoch check
-short-circuits before the clock/window probe, and the idle window bound is stored
-in microseconds; the existing recent-reply window still prevents isolated replies
-from allocating a lease. A regression test
+short-circuits before the clock/window probe, the idle window bound is stored
+in microseconds, and the coordinator yields after a short idle spin instead of
+keeping a full core hot on tight CPU budgets; the existing recent-reply window
+still prevents isolated replies from allocating a lease. A regression test
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
 accounting, 50 µs idle / 100 ms maximum epoch and shutdown semantics are unchanged.
 
