@@ -1292,6 +1292,60 @@ mod tests {
     }
 
     #[test]
+    fn more_subcommand_categories_scope_acl_command_and_streams() {
+        let mut auth = Auth::from_password(None);
+        for (name, rule) in [
+            (b"admin".as_slice(), b"+@admin".as_slice()),
+            (b"connection".as_slice(), b"+@connection".as_slice()),
+            (b"writer".as_slice(), b"+@write".as_slice()),
+            (b"reader".as_slice(), b"+@read".as_slice()),
+        ] {
+            auth.setuser(name, &[b"on", b"nopass", b"allkeys", b"-@all", rule])
+                .unwrap();
+        }
+        let access = |name: &[u8], command: &[&[u8]]| auth.authorize(Some(name), command);
+
+        assert_eq!(access(b"admin", &[b"ACL", b"USERS"]), Access::Allowed);
+        assert_eq!(access(b"admin", &[b"ACL", b"CAT"]), Access::DeniedCommand);
+        assert_eq!(
+            access(b"admin", &[b"ACL", b"GENPASS"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(
+            access(b"connection", &[b"COMMAND", b"COUNT"]),
+            Access::Allowed
+        );
+        assert_eq!(
+            access(b"connection", &[b"ACL", b"CAT"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(
+            access(b"writer", &[b"XGROUP", b"CREATE", b"s", b"g", b"0"]),
+            Access::Allowed
+        );
+        assert_eq!(
+            access(b"writer", &[b"XGROUP", b"HELP"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(
+            access(b"reader", &[b"XINFO", b"STREAM", b"s"]),
+            Access::Allowed
+        );
+        assert_eq!(
+            access(b"reader", &[b"XINFO", b"GROUPS", b"s"]),
+            Access::Allowed
+        );
+        assert_eq!(
+            access(b"reader", &[b"XINFO", b"HELP"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(
+            access(b"admin", &[b"XINFO", b"STREAM", b"s"]),
+            Access::DeniedCommand
+        );
+    }
+
+    #[test]
     fn sort_dynamic_patterns_require_all_key_access() {
         let mut auth = Auth::from_password(None);
         auth.setuser(

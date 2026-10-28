@@ -6,7 +6,7 @@ command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
 design. It adds per-connection and per-peer-IP failed-`AUTH` budgets but not
 global/cross-process rate limiting, delayed responses or username lockout, TLS
-hardening (SNI/hot reload/OCSP), authenticated/centralized audit aggregation,
+hardening (SNI/hot reload/OCSP), collector sender authentication/TLS/federation,
 full-chain audit signing or key custody/rotation, or credential encryption at rest.
 
 ## What is implemented
@@ -70,10 +70,12 @@ Supported categories are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
 `@list`, `@set`, `@hash`, `@zset`, `@stream`, `@bitmap`, `@connection`,
 `@transaction`, `@admin`, `@fast`, `@slow` and `@dangerous`. Category membership
 is an approximation over the published command table, not a byte-for-byte copy of
-a specific Redis release. Bounded subcommand overrides refine `CLIENT`, `MEMORY`
-and `OBJECT`: `@admin`/`@dangerous` match only the administrative `CLIENT`
-subcommands, `MEMORY USAGE` is `@read` while statistics are `@admin`, and all
-`OBJECT` subcommands are `@keyspace` with data inspection also `@read`. `ACL CAT`
+a specific Redis release. Bounded subcommand overrides refine `CLIENT`, `MEMORY`,
+`OBJECT`, `ACL`, `COMMAND`, `XGROUP` and `XINFO`: `@admin`/`@dangerous` match only
+the administrative `CLIENT` and `ACL` subcommands, `MEMORY USAGE` is `@read` while
+statistics are `@admin`, all `OBJECT` subcommands are `@keyspace` with data
+inspection also `@read`, `COMMAND` subcommands are `@connection`, `XGROUP` write
+subcommands exclude `HELP`, and `XINFO` read subcommands exclude `HELP`. `ACL CAT`
 remains command-level rather than listing subcommand entries.
 
 Key patterns carry access modes. `~pattern` and `%RW~pattern` grant reads and
@@ -148,6 +150,21 @@ lines, provide replay protection, rotate keys, use an HSM/KMS, authenticate the
 collector or make storage tamper-proof. Key file permissions and custody are
 operator duties.
 
+`rillcache-audit-collector` is a separate standard-library-only UDP sink for
+off-host aggregation. `--bind ADDRESS` and `--output PATH` are required
+operationally (defaults are loopback and `audit.log`); each nonempty datagram up
+to `--max-datagram` is appended as one newline-terminated line, flushed, and
+rotated to `PATH.1` at `--max-bytes` (1 KiB..=1 GiB). Empty/oversized datagrams
+are dropped and counted. `--max-datagrams N` exits after N accepted datagrams for
+bounded tests or one-shot collection. `--hmac-key-file PATH` loads a shared
+16..=1024-byte key and retains only lines with a valid per-line HMAC; malformed,
+tampered and wrong-key datagrams are dropped and counted, while a collector
+without a key stores lines unverified. Verification does not authenticate sender
+identity, encrypt traffic, prevent replay, retry, reorder, deduplicate or federate
+multiple collectors; UDP loss and spoofing remain possible. The output is created
+mode-`0600` on Unix, but directory permissions and key/log custody are operator
+duties; the key is never written to the output or diagnostics.
+
 `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
 renames it over the target and fsyncs the directory (where supported); hashes are
 saved as `#...`, never plaintext passwords. ACL files are bounded to 4 MiB,
@@ -168,10 +185,11 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 ## Deliberate limits
 
 - **Not full Redis ACL.** Remaining subcommand-specific categories beyond the
-  bounded `CLIENT`/`MEMORY`/`OBJECT` overrides, nested selectors, dynamic
-  key-sandbox rules, authenticated/centralized audit aggregation, full-chain
-  signing/key rotation, global/cross-process rate limiting and TLS hardening
-  (SNI/hot reload/OCSP) are absent.
+  bounded `CLIENT`/`MEMORY`/`OBJECT`/`ACL`/`COMMAND`/`XGROUP`/`XINFO` overrides,
+  nested selectors, dynamic key-sandbox rules, collector sender
+  authentication/TLS/federation, full-chain signing/key rotation,
+  global/cross-process rate limiting and TLS hardening (SNI/hot reload/OCSP) are
+  absent.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported.

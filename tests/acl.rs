@@ -871,3 +871,94 @@ fn acl_subcommand_categories_scope_client_memory_and_object() {
 
     server.shutdown().unwrap();
 }
+
+#[test]
+fn acl_more_subcommand_categories_scope_acl_command_and_streams() {
+    let server = start(Config::default());
+    let mut admin = connect(&server);
+    for (user, password, rule) in [
+        ("admin", "admin-pass", "+@admin"),
+        ("connection", "connection-pass", "+@connection"),
+        ("writer", "writer-pass", "+@write"),
+        ("reader", "reader-pass", "+@read"),
+    ] {
+        send(
+            &mut admin,
+            &[
+                b"ACL",
+                b"SETUSER",
+                user.as_bytes(),
+                b"on",
+                format!(">{password}").as_bytes(),
+                b"allkeys",
+                b"-@all",
+                rule.as_bytes(),
+            ],
+            b"+OK\r\n",
+        );
+    }
+    let noperm = |command: &str| {
+        format!("-NOPERM this user has no permissions to run the '{command}' command\r\n")
+    };
+
+    let mut admin_user = connect(&server);
+    send(
+        &mut admin_user,
+        &[b"AUTH", b"admin", b"admin-pass"],
+        b"+OK\r\n",
+    );
+    assert!(!request(&mut admin_user, &[b"ACL", b"USERS"]).starts_with(b"-NOPERM"));
+    send(&mut admin_user, &[b"ACL", b"CAT"], noperm("acl").as_bytes());
+    send(
+        &mut admin_user,
+        &[b"ACL", b"GENPASS"],
+        noperm("acl").as_bytes(),
+    );
+    send(
+        &mut admin_user,
+        &[b"XINFO", b"STREAM", b"s"],
+        noperm("xinfo").as_bytes(),
+    );
+
+    let mut connection = connect(&server);
+    send(
+        &mut connection,
+        &[b"AUTH", b"connection", b"connection-pass"],
+        b"+OK\r\n",
+    );
+    assert!(!request(&mut connection, &[b"COMMAND", b"COUNT"]).starts_with(b"-NOPERM"));
+    send(&mut connection, &[b"ACL", b"CAT"], noperm("acl").as_bytes());
+
+    let mut writer = connect(&server);
+    send(
+        &mut writer,
+        &[b"AUTH", b"writer", b"writer-pass"],
+        b"+OK\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"XGROUP", b"CREATE", b"stream:acl", b"g", b"0", b"MKSTREAM"],
+        b"+OK\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"XGROUP", b"HELP"],
+        noperm("xgroup").as_bytes(),
+    );
+
+    let mut reader = connect(&server);
+    send(
+        &mut reader,
+        &[b"AUTH", b"reader", b"reader-pass"],
+        b"+OK\r\n",
+    );
+    assert!(!request(&mut reader, &[b"XINFO", b"STREAM", b"stream:acl"]).starts_with(b"-NOPERM"));
+    assert!(!request(&mut reader, &[b"XINFO", b"GROUPS", b"stream:acl"]).starts_with(b"-NOPERM"));
+    send(
+        &mut reader,
+        &[b"XINFO", b"HELP"],
+        noperm("xinfo").as_bytes(),
+    );
+
+    server.shutdown().unwrap();
+}

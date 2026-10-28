@@ -8,11 +8,12 @@ Not implemented or implied by the completed increments:
    clients; pinned `redis-cli` RESP2/RESP3/auth coverage is implemented (S103).
    Add command discovery and multiple databases only as separate compatible
    increments.
-2. Global/cross-process rate limiting, centralized audit aggregation, and full
-   chain/rotation audit-key custody. A per-connection failed-auth budget (S105),
-   a per-peer-IP throttle (S106), a bounded local ACL denial audit (S104),
-   best-effort UDP off-host shipping (S107) and per-line HMAC signing (S109) are
-   implemented.
+2. Global/cross-process rate limiting, collector sender authentication/TLS/
+   federation, and full chain/rotation audit-key custody. A per-connection
+   failed-auth budget (S105), a per-peer-IP throttle (S106), a bounded local ACL
+   denial audit (S104), best-effort UDP off-host shipping (S107), per-line HMAC
+   signing (S109), a bounded UDP collector (S110) and shared-key collector
+   verification (S111) are implemented.
    Native TLS 1.3 via rustls provides the current transport-encryption boundary;
    SNI/hot reload, OCSP/CRL and independent security review remain separate.
    Durability completeness, AOF rewrite/RDB, backup/restore drills and disk-fault

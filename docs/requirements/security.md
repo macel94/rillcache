@@ -49,7 +49,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
-  Documentation shall retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT overrides,
+  Documentation shall retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO overrides,
   centralized audit shipping, global/cross-process rate limiting, TLS hardening, key-spec-blind
   commands and process-level tenant-isolation boundaries.
 
@@ -149,7 +149,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   update atomically without partially changing the user. Tests shall cover
   allow/deny, ordered overrides, case-insensitivity, selectors, LIST/GETUSER,
   DRYRUN, ACL-file restart round-trips and every worker mode; documentation shall
-  retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT overrides, wildcards in the first
+  retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO overrides, wildcards in the first
   argument and nested selectors.
 
 ## Persistent ACL denial audit (S104)
@@ -277,6 +277,65 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   worker mode. Documentation shall retain the absence of key rotation, chain
   sequencing, centralized verification, tamper-proof storage and key-custody
   guarantees.
+
+## Bounded UDP audit collector (S110)
+
+- **R402 (event-driven):** The `rillcache-audit-collector` binary shall accept
+  numeric `--bind` and nonempty `--output` options, receive UDP datagrams, append
+  each nonempty datagram up to `--max-datagram` as one newline-terminated line,
+  flush every line, and rotate the output to `<path>.1` at `--max-bytes`
+  (1 KiB..=1 GiB). Missing values, invalid addresses, empty output paths and
+  out-of-range bounds shall fail before serving.
+- **R403 (state-driven):** Delivery shall remain best-effort UDP: empty or
+  oversized datagrams shall be counted and dropped without growing the file,
+  `--max-datagrams N` shall exit after `N` accepted datagrams (zero runs
+  indefinitely), and the collector shall not verify HMACs, authenticate senders,
+  encrypt traffic, retry, reorder or deduplicate. The output file shall be created
+  mode-0600 on Unix and protected by operator filesystem policy.
+- **R404 (ubiquitous):** Tests shall spawn the collector on an ephemeral port,
+  send datagrams, verify exact newline-normalized output, invalid configuration
+  failure, option bounds and one-generation rotation. Documentation shall retain
+  the absence of sender authentication, HMAC verification, TLS, delivery
+  guarantees, multi-host federation, backpressure and chain/key management.
+
+## Authenticated UDP collector lines (S111)
+
+- **R405 (event-driven):** When `rillcache-audit-collector` receives
+  `--hmac-key-file PATH`, it shall load a 16..=1024-byte shared key before binding,
+  stripping one trailing newline, and reject missing/unreadable/empty/short/
+  oversized keys at startup. With a key configured, each datagram shall be a
+  UTF-8 audit line whose final field is a valid 64-character hex HMAC-SHA256 over
+  the exact preceding body; tampered, malformed or wrong-key lines shall be
+  dropped and counted. Without a key, lines are stored without verification.
+- **R406 (state-driven):** Only verified lines shall increment the accepted count
+  and `--max-datagrams`; rejected HMAC lines shall not grow the output. Verification
+  shall not authenticate sender identity, encrypt transport, prevent replay,
+  deduplicate, reorder or provide multi-host federation. The shared key and
+  output-file custody remain operator duties and the key shall never be written
+  to the output or diagnostics.
+- **R407 (ubiquitous):** Tests shall cover valid, tampered and wrong-key lines,
+  unsigned compatibility, missing/short key startup failure, exact output and
+  every collector mode. Documentation shall retain the absence of sender
+  authentication, TLS, replay protection, full-chain verification, centralized
+  key distribution and delivery guarantees.
+
+## Remaining bounded subcommand categories (S112)
+
+- **R408 (event-driven):** For `ACL`, `@admin` and `@dangerous` shall match only
+  `DELUSER`, `DRYRUN`, `GETUSER`, `LIST`, `LOAD`, `LOG`, `SAVE`, `SETUSER` and
+  `USERS`; `CAT`, `GENPASS`, `HELP` and `WHOAMI` shall not be granted by those
+  categories. `WHOAMI` remains available to every authenticated user as before.
+- **R409 (state-driven):** All implemented `COMMAND` subcommands shall match
+  `@connection` and `@slow`. For `XGROUP`, `@write` shall match
+  `CREATE`, `CREATECONSUMER`, `DELCONSUMER`, `DESTROY` and `SETID`, but not
+  `HELP`; for `XINFO`, `@read` shall match `STREAM`, `GROUPS` and `CONSUMERS`,
+  but not `HELP`. Unexpected categories shall fall back to the command-level
+  approximation.
+- **R410 (ubiquitous):** Unit and all-mode wire tests shall cover the allowed and
+  denied cases above, including `ACL USERS` versus `ACL CAT`/`GENPASS`,
+  `COMMAND COUNT`, `XGROUP CREATE` versus `HELP`, and `XINFO STREAM`/`GROUPS`
+  versus `HELP`. Documentation shall retain that `ACL CAT` remains command-level
+  and that other command families still use the command-level approximation.
 
 ## Native TLS 1.3 with rustls (S101)
 
