@@ -31,6 +31,8 @@ KEYSPACE = 1024
 VALUE = b"v" * 64
 REPLACEMENT = b"w" * 64
 WARMUP = 8000
+DURATION_SECONDS = 10
+SCHEMA_VERSION = 2
 SHA = r"[0-9a-f]{40}"
 CSV_HEADER = ["test", "rps", "avg_latency_ms", "min_latency_ms", "p50_latency_ms",
               "p95_latency_ms", "p99_latency_ms", "max_latency_ms"]
@@ -72,10 +74,6 @@ def cpu_list(cpus):
     return ",".join(map(str, cpus))
 
 
-def requests(pipeline):
-    return 100000 if pipeline == 1 else 1000000
-
-
 def workload_command(workload):
     key = "data:__rand_int__"
     return {"ping": ["PING"], "get": ["GET", key],
@@ -85,8 +83,11 @@ def workload_command(workload):
 
 
 def generator_argv(binary, port, workload, pipeline, count, cpus):
+    # Official multi-threaded shutdown polls at 250 ms. A fixed ten-second
+    # measured duration spans 40 ticks instead of quantizing sub-second batches.
+    limit = ["--duration", str(DURATION_SECONDS)] if count is None else ["-n", str(count)]
     return ["taskset", "-c", cpu_list(cpus), str(binary), "-h", "127.0.0.1", "-p", str(port),
-            "-c", "8", "-P", str(pipeline), "-n", str(count), "-r", str(KEYSPACE),
+            "-c", "8", "-P", str(pipeline), *limit, "-r", str(KEYSPACE),
             "-d", "64", "-k", "1", "--threads", "2", "--seed", "42", "--csv", "--",
             *workload_command(workload)]
 
@@ -162,6 +163,10 @@ def read_generator(directory, workload, argv):
     result = read_json(directory / "command.json")
     ensure(result["argv"] == argv and type(result["exit_code"]) is int and result["exit_code"] == 0
            and not result.get("timed_out"), "load generator failed or command differs")
+    if "--duration" in argv:
+        elapsed = result.get("wall_seconds")
+        ensure(type(elapsed) in (int, float) and math.isfinite(elapsed)
+               and DURATION_SECONDS <= elapsed <= 180, "measured duration is missing, short or invalid")
     stderr = (directory / "stderr.log").read_text()
     ensure(all(line == "WARNING: Could not fetch server CONFIG" for line in stderr.splitlines() if line.strip()),
            "unexpected generator stderr")
@@ -181,7 +186,7 @@ def sample(binaries, variant, workload, pipeline, cpus, client_cpus, directory):
         with owned_server(binaries[variant], variant, cpus, directory) as (proc, port):
             result.update(port=port, pid=proc.pid)
             result["preload"] = validate_dataset(port, workload, preload=True)
-            for phase, count in (("warmup", WARMUP), ("measured", requests(pipeline))):
+            for phase, count in (("warmup", WARMUP), ("measured", None)):
                 argv = generator_argv(binaries["generator"], port, workload, pipeline, count, client_cpus)
                 before = process_stats(proc.pid)
                 start = time.monotonic()
@@ -239,7 +244,9 @@ def summary(rows):
             f"**{'PASS' if wins == 10 else 'FAIL'}: {wins}/10 medians strictly faster than Valkey.**", "",
             "Same pinned, unmodified valkey-benchmark for both default-mode servers; exactly four logical server CPUs. "
             "Eight clients, two generator threads, 1024 random keys, 64-byte values, seed 42, 8000 warmup commands, "
-            "100k requests at P=1 / 1m at P=16; three alternating native repetitions. Ties or any loss fail.", "",
+            "official --duration 10 for every measured sample; three alternating native repetitions. Ties or any loss fail.", "",
+            "Ten-second samples span 40 upstream 250 ms shutdown/progress ticks; residual timer quantization remains. "
+            "Earlier sub-second request-count evidence is retained as a failed, different experiment, never reused as a pass.", "",
             "Client CPUs are disjoint when available, otherwise share the four server CPUs (see manifest). "
             "The upstream tool rejects error replies but does not validate every non-error payload; full-keyspace "
             "checks/probes run before and after load. p99 is upstream pipeline latency, not per-command latency at P>1. "
@@ -256,12 +263,14 @@ def summary(rows):
 def load_cohort(directory):
     root = Path(directory).resolve()
     manifest = read_json(root / "manifest.json")
-    ensure(type(manifest["schema_version"]) is int and manifest["schema_version"] == 1
+    ensure(type(manifest["schema_version"]) is int and manifest["schema_version"] == SCHEMA_VERSION
            and manifest["complete"] is True, "incomplete gate evidence")
     server_cpus, client_cpus = placement(manifest["allowed_cpus"])
     ensure(manifest["server_cpus"] == server_cpus and manifest["client_cpus"] == client_cpus, "CPU allocation differs")
     ensure(type(manifest["runs"]) is int and manifest["runs"] == RUNS and manifest["workloads"] == list(WORKLOADS)
-           and manifest["pipelines"] == list(PIPELINES), "gate policy differs")
+           and manifest["pipelines"] == list(PIPELINES)
+           and type(manifest["duration_seconds"]) is int and manifest["duration_seconds"] == DURATION_SECONDS
+           and type(manifest["warmup_requests"]) is int and manifest["warmup_requests"] == WARMUP, "gate policy differs")
     ensure(all(re.fullmatch(SHA, manifest[k]) for k in ("base_source", "head_source", "candidate_source")), "invalid source identity")
     ensure(set(manifest["binary_sha256"]) == {"rillcache", "valkey", "generator"}
            and all(re.fullmatch(r"[0-9a-f]{64}", v) for v in manifest["binary_sha256"].values()), "invalid binary hashes")
@@ -284,7 +293,7 @@ def load_cohort(directory):
         ensure(server["actual_cpus_before"] == server_cpus == server["actual_cpus_after"], "observed affinity differs")
         ensure(server["cpus"] == server_cpus and server["argv"] == server_argv(
             manifest["binaries"][variant], variant, port, server_cpus, Path(manifest["launch_directory"]) / directory.name), "server command/affinity differs")
-        for phase, count in (("warmup", WARMUP), ("measured", requests(pipeline))):
+        for phase, count in (("warmup", WARMUP), ("measured", None)):
             metrics = read_generator(directory / phase, workload, generator_argv(
                 manifest["binaries"]["generator"], port, workload, pipeline, count, client_cpus))
             ensure(sample[phase] == metrics, "parsed metrics differ from official CSV")
@@ -308,7 +317,7 @@ def main():
     output = Path(args.out).resolve()
     ensure(not output.exists(), "output already exists; never reuse stale evidence")
     output.mkdir(parents=True)
-    manifest = {"schema_version": 1, "complete": False, "gate_passed": False}
+    manifest = {"schema_version": SCHEMA_VERSION, "complete": False, "gate_passed": False}
     save(output / "manifest.json", manifest)
     try:
         cpus = sorted(os.sched_getaffinity(0))
@@ -322,7 +331,8 @@ def main():
         manifest.update(base_source=args.base_source, head_source=args.head_source, candidate_source=args.candidate_source,
                         allowed_cpus=cpus, server_cpus=server_cpus, client_cpus=client_cpus, binaries=binaries,
                         binary_sha256=hashes, valkey_version=version, runs=RUNS, workloads=WORKLOADS,
-                        pipelines=PIPELINES, launch_directory=str(output), order=[], evidence_sha256={})
+                        pipelines=PIPELINES, duration_seconds=DURATION_SECONDS, warmup_requests=WARMUP,
+                        launch_directory=str(output), order=[], evidence_sha256={})
         save(output / "manifest.json", manifest)
         samples = []
         for identity in identities():

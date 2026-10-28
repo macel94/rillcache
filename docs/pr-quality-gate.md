@@ -92,8 +92,9 @@ generator, rewritten upstream assertion, or custom timed loop is used here.
 Five commands (PING, SET overwrite, GET hit, NX-existing rejection, XX-existing
 overwrite) at P=1 and P=16 give **10 strict median comparisons and 60 fresh native
 server samples**. Each sample has 8000 warmup commands, 8 connections, 2 generator
-threads, 1024 random keys, 64-byte values and seed 42; measured counts are 100k/1m
-at P=1/P=16. Three repetitions alternate server order. Default server modes,
+threads, 1024 random keys, 64-byte values and seed 42. Every measured sample uses
+the official **`--duration 10`** mode (not `-n`); three repetitions alternate server
+order. The wrapper requires at least ten seconds of observed generator wall time. Default server modes,
 loopback TCP and persistence/TLS-off are retained. There is no aggregate-score
 escape, tie pass, retry-until-green or substitution for the original 20-case gate.
 
@@ -114,6 +115,19 @@ future missing base wrappers fail closed. The same official generator binary is
 hashed and used for every sample. `--check` independently reloads raw CSV, validates
 exact argv/CPU/source/process identity, statuses, hashes, dataset checks and the
 regenerated table. Complete losses remain complete numeric evidence but fail.
+The initial request-count experiment on head `d429e62` is retained in Actions run
+[`40658513184`](https://github.com/macel94/rillcache/actions/runs/40658513184): it
+completed with **9/10**, including a failing PING/P=1 median tie at 133,155.80 req/s.
+No retry or pass is claimed for that head. Pinned Valkey `benchmarkSequence()`
+includes thread shutdown in elapsed time; `showThroughput()` polls shutdown every
+250 ms, quantizing the sub-second count-based samples into large throughput steps.
+The official duration mode is exercised by its unchanged integration tests; fixed
+ten-second measurements span 40 polling ticks rather than only 3–4. Residual timer
+quantization/shared-runner limits remain. Schema 2 additionally validates duration
+and rejects schema-1 count-based cohorts, preventing relabeling of failed evidence.
+This is a measurement-method correction, not a weaker threshold: ties/losses still
+fail, every workload remains, and the original 20-case gate is unchanged.
+
 Original stdout/stderr, command/server/sample JSON, resource observations, source
 and binary hashes, environment and summaries survive failures in 30-day artifacts.
 Offline validation: `python3 scripts/test-multicpu-performance.py`. Actual comparative

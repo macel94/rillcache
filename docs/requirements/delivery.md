@@ -246,8 +246,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   modes, three alternating native repetitions, inherited and one-CPU profiles and
   both pipeline lengths across five workloads. A second required workflow shall
   independently measure five workloads at both pipelines with the unchanged
-  official `valkey-benchmark`, three alternating repetitions and exactly four
-  logical CPUs for each server. Client CPUs shall be disjoint when available,
+  official `valkey-benchmark --duration 10`, three alternating repetitions and
+  exactly four logical CPUs for each server. The gate shall reject measured runs
+  shorter than ten seconds and shall not reinterpret prior count-based cohorts. Client CPUs shall be disjoint when available,
   otherwise shared and explicitly recorded. The exact [20-condition policy](../pr-quality-gate.md)
   shall retain source/binary identity, affinities, reply validation and owned-process
   readiness/cleanup. Only the installing PR may bootstrap against the exact pinned
