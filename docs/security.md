@@ -6,7 +6,7 @@ command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
 design. It adds per-connection and per-peer-IP failed-`AUTH` budgets but not
 global/cross-process rate limiting, delayed responses or username lockout, TLS
-hardening (SNI/hot reload/OCSP), centralized/off-host audit shipping,
+hardening (SNI/hot reload/OCSP), authenticated/centralized audit aggregation,
 tamper-evident audit signing, or credential encryption at rest.
 
 ## What is implemented
@@ -121,7 +121,19 @@ to `PATH.1`. `ACL LOG RESET` clears only the in-memory aggregation; the file is
 append-only and appends across restart. Runtime write failures leave the command
 reply unchanged but increment `audit_log_write_failures` in `INFO stats`. This is
 a local audit aid, not fsync-per-line durability, tamper-evident signing,
-off-host shipping or a substitute for rate limiting and independent review. `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
+authenticated/centralized shipping or a substitute for rate limiting and
+independent review.
+
+`--audit-syslog IP:PORT` additionally sends each denial line as one best-effort
+UDP datagram. It works with or without the local file, validates a numeric
+address with a nonzero port at startup, and shares the same fixed, redacted line
+format. UDP can lose, duplicate, reorder or expose datagrams to the path; there
+is no collector authentication, TLS, retry, backpressure, aggregation or delivery
+guarantee. Runtime send failures do not change the reply but increment
+`audit_syslog_write_failures` in `INFO stats`. The local file, when configured,
+remains the durable evidence path.
+
+`ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
 renames it over the target and fsyncs the directory (where supported); hashes are
 saved as `#...`, never plaintext passwords. ACL files are bounded to 4 MiB,
 10,000 users, 1,024 rules per user/operation and 1,024 key/channel patterns per
@@ -141,9 +153,9 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 ## Deliberate limits
 
 - **Not full Redis ACL.** Subcommand-specific categories, nested selectors,
-  dynamic key-sandbox rules, centralized/off-host audit shipping, tamper-evident
-  signing, global/cross-process rate limiting and TLS hardening (SNI/hot reload/OCSP)
-  are absent.
+  dynamic key-sandbox rules, authenticated/centralized audit aggregation,
+  tamper-evident signing, global/cross-process rate limiting and TLS hardening
+  (SNI/hot reload/OCSP) are absent.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported.

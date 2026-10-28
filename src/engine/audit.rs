@@ -56,6 +56,7 @@ impl AuditLog {
     /// Append one denial line, rotating the previous file when the bound would
     /// be exceeded. The caller decides whether a write failure is fatal; the
     /// server records a visible counter instead of failing the command.
+    #[cfg(test)]
     pub fn record(
         &mut self,
         reason: &str,
@@ -63,14 +64,11 @@ impl AuditLog {
         object: &[u8],
         username: &[u8],
     ) -> io::Result<()> {
-        let line = format!(
-            "{} {} {} {} {}\n",
-            timestamp_millis(),
-            token(reason),
-            token(context),
-            hex(username, MAX_USERNAME_BYTES),
-            hex(object, MAX_OBJECT_BYTES),
-        );
+        let line = format_line(reason, context, object, username);
+        self.record_line(&line)
+    }
+
+    pub fn record_line(&mut self, line: &str) -> io::Result<()> {
         if self.written > 0 && self.written.saturating_add(line.len() as u64) > self.max_bytes {
             self.rotate()?;
         }
@@ -103,6 +101,17 @@ fn open_append(path: &Path) -> io::Result<File> {
         options.mode(0o600);
     }
     options.open(path)
+}
+
+pub(super) fn format_line(reason: &str, context: &str, object: &[u8], username: &[u8]) -> String {
+    format!(
+        "{} {} {} {} {}\n",
+        timestamp_millis(),
+        token(reason),
+        token(context),
+        hex(username, MAX_USERNAME_BYTES),
+        hex(object, MAX_OBJECT_BYTES),
+    )
 }
 
 fn timestamp_millis() -> u128 {
