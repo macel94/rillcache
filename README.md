@@ -171,7 +171,7 @@ multi-user ACL file (`--aclfile`) with hashed passwords, ordered
 command/category rules, declared read/write key patterns and atomic `ACL SAVE`/`LOAD`.
 `NOAUTH`/`NOPERM` are checked before store access and apply to live connections;
 `%R~`/`%W~`/`%RW~` scope reads and writes per key pattern. Authenticated/
-centralized audit aggregation, full-chain signing/key rotation,
+centralized audit aggregation, full-chain signing/key-ID/hot rotation,
 global/cross-process rate limiting and TLS hardening (SNI/hot reload/OCSP) remain
 separate security gates; ACL selectors group command/key/channel rules and channel
 patterns are enforced for pub/sub. Native TLS 1.3 is implemented in-process with
@@ -179,7 +179,7 @@ rustls ([`docs/tls.md`](docs/tls.md)); it intentionally does not offer HTTP/2 or
 HTTP/3.
 `ACL GENPASS`, `ACL DRYRUN`, a bounded process-local `ACL LOG`, the optional
 `--audit-log` append-only denial trail and the separate
-`rillcache-audit-collector` UDP sink with optional shared-key HMAC verification
+`rillcache-audit-collector` UDP sink with shared-key/keyring HMAC verification
 support credential operations and policy debugging. See
 [security](docs/security.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,

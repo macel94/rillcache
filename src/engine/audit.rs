@@ -128,6 +128,54 @@ pub(super) fn format_line(
     }
 }
 
+/// Parse a hex-encoded audit keyring. Blank lines and `#` comments are ignored;
+/// at most eight unique 16..=1024-byte keys are accepted. The first key is the
+/// signing key for this process, while a collector may verify against all.
+pub(super) fn parse_keyring(text: &str) -> Result<Vec<Vec<u8>>, String> {
+    let mut keys: Vec<Vec<u8>> = Vec::new();
+    for (line_number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(bytes) = hex_decode(line) else {
+            return Err(format!(
+                "audit keyring line {} is not valid hex",
+                line_number + 1
+            ));
+        };
+        if !(16..=1024).contains(&bytes.len()) {
+            return Err(format!(
+                "audit keyring line {} must decode to 16..=1024 bytes",
+                line_number + 1
+            ));
+        }
+        if keys.len() >= 8 {
+            return Err("audit keyring accepts at most eight keys".into());
+        }
+        if !keys.iter().any(|existing| existing == &bytes) {
+            keys.push(bytes);
+        }
+    }
+    if keys.is_empty() {
+        return Err("audit keyring contains no keys".into());
+    }
+    Ok(keys)
+}
+
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut output = Vec::with_capacity(text.len() / 2);
+    for pair in text.as_bytes().as_chunks::<2>().0 {
+        let high = (pair[0] as char).to_digit(16)?;
+        let low = (pair[1] as char).to_digit(16)?;
+        output.push(((high << 4) | low) as u8);
+    }
+    Some(output)
+}
+
 pub(super) fn verify_line(key: &[u8], line: &str) -> bool {
     let line = line.trim_end_matches(['\r', '\n']);
     let Some((body, mac)) = line.rsplit_once(' ') else {
@@ -260,6 +308,25 @@ mod tests {
             key,
             "body zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
         ));
+    }
+
+    #[test]
+    fn keyrings_parse_hex_comments_duplicates_and_bounds() {
+        let first = "0123456789abcdef0123456789abcdef";
+        let second = "fedcba9876543210fedcba9876543210";
+        let keys = parse_keyring(&format!("# rotation\n{first}\n\n{second}\n{first}\n")).unwrap();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].len(), 16);
+        assert_eq!(keys[0][0], 0x01);
+        assert_eq!(keys[1][0], 0xfe);
+        assert!(parse_keyring("").is_err());
+        assert!(parse_keyring("zz").is_err());
+        assert!(parse_keyring("00").is_err());
+        let too_many = (0..9)
+            .map(|index| format!("{:032x}", index + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(parse_keyring(&too_many).is_err());
     }
 
     #[test]

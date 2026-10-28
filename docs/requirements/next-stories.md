@@ -9,11 +9,11 @@ Not implemented or implied by the completed increments:
    Add command discovery and multiple databases only as separate compatible
    increments.
 2. Global/cross-process rate limiting, collector sender authentication/TLS/
-   federation, and full chain/rotation audit-key custody. A per-connection
+   federation, and full-chain/key-ID/hot-rotation audit custody. A per-connection
    failed-auth budget (S105), a per-peer-IP throttle (S106), a bounded local ACL
    denial audit (S104), best-effort UDP off-host shipping (S107), per-line HMAC
-   signing (S109), a bounded UDP collector (S110) and shared-key collector
-   verification (S111) are implemented.
+   signing (S109), a bounded UDP collector (S110), shared-key collector
+   verification (S111) and manual audit keyring rotation (S115) are implemented.
    Native TLS 1.3 via rustls provides the current transport-encryption boundary;
    SNI/hot reload, OCSP/CRL and independent security review remain separate.
    Durability completeness, AOF rewrite/RDB, backup/restore drills and disk-fault

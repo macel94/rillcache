@@ -150,6 +150,8 @@ pub struct Config {
     pub audit_syslog: Option<SocketAddr>,
     /// Optional file containing the per-line audit HMAC key.
     pub audit_hmac_key_file: Option<PathBuf>,
+    /// Optional hex keyring; the first key signs, all keys may verify.
+    pub audit_hmac_keyring_file: Option<PathBuf>,
     /// Enable the append-only command journal.
     pub appendonly: bool,
     /// Journal basename inside `dir`; no path separators.
@@ -195,6 +197,7 @@ impl std::fmt::Debug for Config {
             .field("audit_log_max_bytes", &self.audit_log_max_bytes)
             .field("audit_syslog", &self.audit_syslog)
             .field("audit_hmac_key_file", &self.audit_hmac_key_file)
+            .field("audit_hmac_keyring_file", &self.audit_hmac_keyring_file)
             .field("appendonly", &self.appendonly)
             .field("appendfilename", &self.appendfilename)
             .field("appendfsync", &self.appendfsync)
@@ -232,6 +235,7 @@ impl Default for Config {
             audit_log_max_bytes: 8 * 1024 * 1024,
             audit_syslog: None,
             audit_hmac_key_file: None,
+            audit_hmac_keyring_file: None,
             appendonly: false,
             appendfilename: "appendonly.aof".into(),
             appendfsync: FsyncPolicy::EverySec,
@@ -281,6 +285,11 @@ impl Config {
                 .audit_hmac_key_file
                 .as_ref()
                 .is_some_and(|path| path.as_os_str().is_empty())
+            || self
+                .audit_hmac_keyring_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || (self.audit_hmac_key_file.is_some() && self.audit_hmac_keyring_file.is_some())
             || self.tls_handshake_timeout.is_zero()
             || (self.tls_bind_addr.is_none()
                 && (self.tls_cert_file.is_some()
@@ -330,6 +339,24 @@ impl Config {
     }
 
     fn load_audit_hmac_key(&self) -> io::Result<Option<Vec<u8>>> {
+        if let Some(path) = &self.audit_hmac_keyring_file {
+            let text = std::fs::read_to_string(path).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "cannot read audit HMAC keyring file {}: {error:?}",
+                        path.display()
+                    ),
+                )
+            })?;
+            let keys = crate::engine::parse_audit_keyring(&text).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid audit HMAC keyring {}: {error}", path.display()),
+                )
+            })?;
+            return Ok(keys.into_iter().next());
+        }
         let Some(path) = &self.audit_hmac_key_file else {
             return Ok(None);
         };

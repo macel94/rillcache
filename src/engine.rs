@@ -53,6 +53,12 @@ pub use acl_log::AclLogEntry;
 pub fn verify_audit_line(key: &[u8], line: &str) -> bool {
     audit::verify_line(key, line)
 }
+
+/// Parse a hex-encoded audit keyring used for key rotation. The first key is the
+/// signing key; all keys are valid verification keys.
+pub fn parse_audit_keyring(text: &str) -> Result<Vec<Vec<u8>>, String> {
+    audit::parse_keyring(text)
+}
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 pub use blocking::PopOutcome;
 pub use blocking::reply_value as blocking_reply;
