@@ -278,6 +278,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   sequencing, centralized verification, tamper-proof storage and key-custody
   guarantees.
 
+## Bounded UDP audit collector (S110)
+
+- **R402 (event-driven):** The `rillcache-audit-collector` binary shall accept
+  numeric `--bind` and nonempty `--output` options, receive UDP datagrams, append
+  each nonempty datagram up to `--max-datagram` as one newline-terminated line,
+  flush every line, and rotate the output to `<path>.1` at `--max-bytes`
+  (1 KiB..=1 GiB). Missing values, invalid addresses, empty output paths and
+  out-of-range bounds shall fail before serving.
+- **R403 (state-driven):** Delivery shall remain best-effort UDP: empty or
+  oversized datagrams shall be counted and dropped without growing the file,
+  `--max-datagrams N` shall exit after `N` accepted datagrams (zero runs
+  indefinitely), and the collector shall not verify HMACs, authenticate senders,
+  encrypt traffic, retry, reorder or deduplicate. The output file shall be created
+  mode-0600 on Unix and protected by operator filesystem policy.
+- **R404 (ubiquitous):** Tests shall spawn the collector on an ephemeral port,
+  send datagrams, verify exact newline-normalized output, invalid configuration
+  failure, option bounds and one-generation rotation. Documentation shall retain
+  the absence of sender authentication, HMAC verification, TLS, delivery
+  guarantees, multi-host federation, backpressure and chain/key management.
+
 ## Native TLS 1.3 with rustls (S101)
 
 - **R374 (event-driven):** The server shall expose an optional native TLS listener
