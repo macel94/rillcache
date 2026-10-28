@@ -298,6 +298,27 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   the absence of sender authentication, HMAC verification, TLS, delivery
   guarantees, multi-host federation, backpressure and chain/key management.
 
+## Authenticated UDP collector lines (S111)
+
+- **R405 (event-driven):** When `rillcache-audit-collector` receives
+  `--hmac-key-file PATH`, it shall load a 16..=1024-byte shared key before binding,
+  stripping one trailing newline, and reject missing/unreadable/empty/short/
+  oversized keys at startup. With a key configured, each datagram shall be a
+  UTF-8 audit line whose final field is a valid 64-character hex HMAC-SHA256 over
+  the exact preceding body; tampered, malformed or wrong-key lines shall be
+  dropped and counted. Without a key, lines are stored without verification.
+- **R406 (state-driven):** Only verified lines shall increment the accepted count
+  and `--max-datagrams`; rejected HMAC lines shall not grow the output. Verification
+  shall not authenticate sender identity, encrypt transport, prevent replay,
+  deduplicate, reorder or provide multi-host federation. The shared key and
+  output-file custody remain operator duties and the key shall never be written
+  to the output or diagnostics.
+- **R407 (ubiquitous):** Tests shall cover valid, tampered and wrong-key lines,
+  unsigned compatibility, missing/short key startup failure, exact output and
+  every collector mode. Documentation shall retain the absence of sender
+  authentication, TLS, replay protection, full-chain verification, centralized
+  key distribution and delivery guarantees.
+
 ## Native TLS 1.3 with rustls (S101)
 
 - **R374 (event-driven):** The server shall expose an optional native TLS listener

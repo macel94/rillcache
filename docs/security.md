@@ -6,7 +6,7 @@ command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
 design. It adds per-connection and per-peer-IP failed-`AUTH` budgets but not
 global/cross-process rate limiting, delayed responses or username lockout, TLS
-hardening (SNI/hot reload/OCSP), authenticated collector federation,
+hardening (SNI/hot reload/OCSP), collector sender authentication/TLS/federation,
 full-chain audit signing or key custody/rotation, or credential encryption at rest.
 
 ## What is implemented
@@ -154,11 +154,14 @@ operationally (defaults are loopback and `audit.log`); each nonempty datagram up
 to `--max-datagram` is appended as one newline-terminated line, flushed, and
 rotated to `PATH.1` at `--max-bytes` (1 KiB..=1 GiB). Empty/oversized datagrams
 are dropped and counted. `--max-datagrams N` exits after N accepted datagrams for
-bounded tests or one-shot collection. The collector does not verify HMACs,
-authenticate senders, encrypt traffic, retry, reorder, deduplicate or federate
+bounded tests or one-shot collection. `--hmac-key-file PATH` loads a shared
+16..=1024-byte key and retains only lines with a valid per-line HMAC; malformed,
+tampered and wrong-key datagrams are dropped and counted, while a collector
+without a key stores lines unverified. Verification does not authenticate sender
+identity, encrypt traffic, prevent replay, retry, reorder, deduplicate or federate
 multiple collectors; UDP loss and spoofing remain possible. The output is created
-mode-`0600` on Unix, but directory permissions and log custody are operator
-duties.
+mode-`0600` on Unix, but directory permissions and key/log custody are operator
+duties; the key is never written to the output or diagnostics.
 
 `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
 renames it over the target and fsyncs the directory (where supported); hashes are
@@ -181,7 +184,7 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 
 - **Not full Redis ACL.** Remaining subcommand-specific categories beyond the
   bounded `CLIENT`/`MEMORY`/`OBJECT` overrides, nested selectors, dynamic
-  key-sandbox rules, authenticated collector federation, full-chain
+  key-sandbox rules, collector sender authentication/TLS/federation, full-chain
   signing/key rotation, global/cross-process rate limiting and TLS hardening
   (SNI/hot reload/OCSP) are absent.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`

@@ -9,7 +9,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const HELP: &str = "rillcache-audit-collector — bounded UDP audit sink\n\nUsage: rillcache-audit-collector [OPTIONS]\n\n  --bind ADDRESS          UDP listen address (default 127.0.0.1:5514)\n  --output PATH           Append-only output file (default audit.log)\n  --max-bytes N           One-generation output bound (default 16777216)\n  --max-datagram N        Maximum accepted datagram bytes (default 4096)\n  --max-datagrams N       Exit after N accepted datagrams; 0 runs forever (default 0)\n  --print-address         Print the bound address to stdout (for tests/supervisors)\n  --help                  Show this help\n  --version               Show version\n\nUDP delivery is best-effort: datagrams can be lost, duplicated or reordered. The\ncollector stores signed lines but does not verify HMACs. Bind it to loopback or a\nprivate network and protect the output file with filesystem permissions.";
+const HELP: &str = "rillcache-audit-collector — bounded UDP audit sink\n\nUsage: rillcache-audit-collector [OPTIONS]\n\n  --bind ADDRESS          UDP listen address (default 127.0.0.1:5514)\n  --output PATH           Append-only output file (default audit.log)\n  --max-bytes N           One-generation output bound (default 16777216)\n  --max-datagram N        Maximum accepted datagram bytes (default 4096)\n  --max-datagrams N       Exit after N accepted datagrams; 0 runs forever (default 0)\n  --hmac-key-file PATH    Optional 16..=1024-byte shared key; verify each line\n  --print-address         Print the bound address to stdout (for tests/supervisors)\n  --help                  Show this help\n  --version               Show version\n\nUDP delivery is best-effort: datagrams can be lost, duplicated or reordered. With\n--hmac-key-file, tampered or wrong-key lines are dropped; sender identity and\ntransport encryption are not authenticated. Bind it to loopback or a private\nnetwork and protect the output file with filesystem permissions.";
 
 struct Options {
     bind: SocketAddr,
@@ -17,6 +17,7 @@ struct Options {
     max_bytes: u64,
     max_datagram: usize,
     max_datagrams: u64,
+    hmac_key_file: Option<PathBuf>,
     print_address: bool,
 }
 
@@ -27,6 +28,7 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
         max_bytes: 16 * 1024 * 1024,
         max_datagram: 4096,
         max_datagrams: 0,
+        hmac_key_file: None,
         print_address: false,
     };
     let mut arguments = arguments.into_iter();
@@ -78,6 +80,15 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
                     .ok_or("missing value for --max-datagrams")?
                     .parse::<u64>()
                     .map_err(|_| "--max-datagrams requires a nonnegative integer")?;
+            }
+            "--hmac-key-file" => {
+                let value = arguments
+                    .next()
+                    .ok_or("missing value for --hmac-key-file")?;
+                if value.is_empty() {
+                    return Err("--hmac-key-file requires a nonempty path".into());
+                }
+                options.hmac_key_file = Some(PathBuf::from(value));
             }
             _ => return Err(format!("unknown argument {argument}")),
         }
@@ -147,7 +158,29 @@ fn open_append(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+fn load_hmac_key(path: &Path) -> io::Result<Vec<u8>> {
+    let mut key = fs::read(path)?;
+    if key.ends_with(b"\n") {
+        key.pop();
+        if key.ends_with(b"\r") {
+            key.pop();
+        }
+    }
+    if !(16..=1024).contains(&key.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "audit HMAC key must be 16..=1024 bytes",
+        ));
+    }
+    Ok(key)
+}
+
 fn run(options: Options) -> io::Result<()> {
+    let hmac_key = options
+        .hmac_key_file
+        .as_deref()
+        .map(load_hmac_key)
+        .transpose()?;
     let socket = UdpSocket::bind(options.bind)?;
     if options.print_address {
         println!("listening on {}", socket.local_addr()?);
@@ -156,6 +189,7 @@ fn run(options: Options) -> io::Result<()> {
     let mut buffer = vec![0u8; options.max_datagram.saturating_add(1)];
     let mut accepted = 0u64;
     let mut rejected = 0u64;
+    let mut rejected_hmac = 0u64;
     loop {
         let (length, _) = match socket.recv_from(&mut buffer) {
             Ok(value) => value,
@@ -166,13 +200,25 @@ fn run(options: Options) -> io::Result<()> {
             rejected = rejected.saturating_add(1);
             continue;
         }
+        if let Some(key) = &hmac_key {
+            let Some(line) = std::str::from_utf8(&buffer[..length]).ok() else {
+                rejected_hmac = rejected_hmac.saturating_add(1);
+                continue;
+            };
+            if !rillcache::engine::verify_audit_line(key, line) {
+                rejected_hmac = rejected_hmac.saturating_add(1);
+                continue;
+            }
+        }
         output.append(&buffer[..length])?;
         accepted = accepted.saturating_add(1);
         if options.max_datagrams > 0 && accepted >= options.max_datagrams {
             break;
         }
     }
-    eprintln!("audit collector accepted {accepted}, rejected {rejected}");
+    eprintln!(
+        "audit collector accepted {accepted}, rejected {rejected}, rejected_hmac {rejected_hmac}"
+    );
     Ok(())
 }
 
@@ -248,6 +294,8 @@ mod tests {
                 "512",
                 "--max-datagrams",
                 "3",
+                "--hmac-key-file",
+                "/tmp/audit.key",
                 "--print-address",
             ]
             .map(str::to_owned),
@@ -256,6 +304,10 @@ mod tests {
         assert_eq!(options.max_bytes, 4096);
         assert_eq!(options.max_datagram, 512);
         assert_eq!(options.max_datagrams, 3);
+        assert_eq!(
+            options.hmac_key_file.as_deref(),
+            Some(Path::new("/tmp/audit.key"))
+        );
         assert!(options.print_address);
     }
 }

@@ -128,6 +128,18 @@ pub(super) fn format_line(
     }
 }
 
+pub(super) fn verify_line(key: &[u8], line: &str) -> bool {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let Some((body, mac)) = line.rsplit_once(' ') else {
+        return false;
+    };
+    if mac.len() != 64 || !mac.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    let expected = hex(&sha256::hmac_sha256(key, body.as_bytes()), 32);
+    mac.eq_ignore_ascii_case(&expected)
+}
+
 fn timestamp_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -232,6 +244,22 @@ mod tests {
         );
         let unsigned = format_line("command", "toplevel", b"set", b"alice", None);
         assert_eq!(unsigned.trim_end().split(' ').count(), 5);
+    }
+
+    #[test]
+    fn signed_lines_verify_and_reject_tampering_or_wrong_keys() {
+        let key = b"0123456789abcdef";
+        let line = format_line("command", "toplevel", b"set", b"alice", Some(key));
+        assert!(verify_line(key, &line));
+        assert!(verify_line(key, line.trim_end()));
+        assert!(!verify_line(b"fedcba9876543210", &line));
+        let tampered = line.replacen("736574", "736575", 1);
+        assert!(!verify_line(key, &tampered));
+        assert!(!verify_line(key, "unsigned five field line"));
+        assert!(!verify_line(
+            key,
+            "body zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        ));
     }
 
     #[test]
