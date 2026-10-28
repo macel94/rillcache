@@ -187,9 +187,7 @@ fn load_hmac_key(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 fn load_keyring(path: &Path) -> io::Result<Vec<Vec<u8>>> {
-    let text = fs::read_to_string(path)?;
-    rillcache::engine::parse_audit_keyring(&text)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+    rillcache::engine::read_audit_keyring(path)
 }
 
 fn run(options: Options) -> io::Result<()> {

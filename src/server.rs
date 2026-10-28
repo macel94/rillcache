@@ -340,16 +340,7 @@ impl Config {
 
     fn load_audit_hmac_key(&self) -> io::Result<Option<Vec<u8>>> {
         if let Some(path) = &self.audit_hmac_keyring_file {
-            let text = std::fs::read_to_string(path).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "cannot read audit HMAC keyring file {}: {error:?}",
-                        path.display()
-                    ),
-                )
-            })?;
-            let keys = crate::engine::parse_audit_keyring(&text).map_err(|error| {
+            let keys = crate::engine::read_audit_keyring(path).map_err(|error| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("invalid audit HMAC keyring {}: {error}", path.display()),
