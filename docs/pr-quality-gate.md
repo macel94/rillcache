@@ -109,7 +109,7 @@ nonzero exits, timeouts, malformed/nonfinite CSV and incomplete cohorts fail.
 
 The protected base supplies the orchestration wrapper and shared process/CSV
 helpers, not candidate replacements. Only installation against exact protected
-base `ad5827a81ef0df1f5de83d90055715774564a3ff` may bootstrap the new wrapper;
+base `d94bd4e97906e517c30d056ddd2be24c0714f315` may bootstrap the new wrapper;
 future missing base wrappers fail closed. The same official generator binary is
 hashed and used for every sample. `--check` independently reloads raw CSV, validates
 exact argv/CPU/source/process identity, statuses, hashes, dataset checks and the

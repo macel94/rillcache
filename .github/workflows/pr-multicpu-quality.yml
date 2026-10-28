@@ -79,7 +79,7 @@ jobs:
           harness="$GITHUB_WORKSPACE/base/scripts/pr-multicpu-performance.py"
           if [[ ! -f "$harness" ]]; then
             # Only this exact pre-installation protected main can bootstrap.
-            [[ "$BASE_SOURCE" == ad5827a81ef0df1f5de83d90055715774564a3ff ]]
+            [[ "$BASE_SOURCE" == d94bd4e97906e517c30d056ddd2be24c0714f315 ]]
             harness="$GITHUB_WORKSPACE/candidate/scripts/pr-multicpu-performance.py"
           fi
           echo "path=$harness" >> "$GITHUB_OUTPUT"
