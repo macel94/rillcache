@@ -110,6 +110,7 @@ streaming types, RESP3 booleans/maps/sets for data commands, AUTH/ACL, TLS, and
 multiple logical databases are unsupported. Redis-style inline request lines are
 supported in addition to RESP arrays; see [requirements](requirements.md) for the
 bounded quoting, escape and line semantics. The server does
-not emit asynchronous push frames. Real client-library handshake/interoperability
-validation remains a separate gate; passing local wire tests is not evidence of
-production readiness.
+not emit asynchronous push frames. A pinned `redis-cli` RESP2/RESP3, AUTH and
+client-metadata interop test is implemented (S103); Python/Node/Go client-library
+handshake/interoperability validation remains a separate gate. Passing local wire
+tests is not evidence of production readiness.
