@@ -253,9 +253,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R398 (ubiquitous):** Tests shall cover the over-grant and under-grant cases
   above through unit authorization and all-mode wire tests, with unknown
   subcommands falling back to the command-level approximation. Documentation
-  shall retain that `ACL CAT` remains command-level, that category membership is
-  approximate rather than byte-for-byte Redis metadata, and that other command
-  families still use command-level categories.
+  shall retain that category listings enumerate the bounded subcommand table,
+  that category membership is approximate rather than byte-for-byte Redis
+  metadata, and that other command families still use command-level categories.
 
 ## Per-line audit HMAC (S109)
 
@@ -334,8 +334,28 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R410 (ubiquitous):** Unit and all-mode wire tests shall cover the allowed and
   denied cases above, including `ACL USERS` versus `ACL CAT`/`GENPASS`,
   `COMMAND COUNT`, `XGROUP CREATE` versus `HELP`, and `XINFO STREAM`/`GROUPS`
-  versus `HELP`. Documentation shall retain that `ACL CAT` remains command-level
-  and that other command families still use the command-level approximation.
+  versus `HELP`. Documentation shall retain that category listings enumerate the bounded
+  subcommand table and that other command families still use the command-level
+  approximation.
+
+## Subcommand category listings (S113)
+
+- **R411 (event-driven):** `ACL CAT <category>` and
+  `COMMAND LIST FILTERBY ACLCAT <category>` shall enumerate the implemented
+  subcommand entries (`command|subcommand`) for the bounded families where a
+  subcommand list exists, using the same category overrides as authorization.
+  Commands without a known subcommand list shall keep their parent command entry;
+  unknown categories shall produce the existing empty/error behavior.
+- **R412 (state-driven):** Only implemented subcommands present in the table shall
+  be listed, in lower-case `command|subcommand` form, deduplicated and consistent
+  with the authorization decision for that category. `@all` shall include all
+  listed subcommands. The output shall not invent unsupported Redis subcommands or
+  claim byte-for-byte Redis metadata.
+- **R413 (ubiquitous):** Tests shall cover `ACL CAT` and `COMMAND LIST FILTERBY
+  ACLCAT` for admin/connection/read categories, parent fallback, unknown
+  categories and every worker mode. Documentation shall retain the bounded family
+  table, command-level fallback for other commands and approximate category
+  membership.
 
 ## Native TLS 1.3 with rustls (S101)
 

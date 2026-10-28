@@ -929,7 +929,7 @@ impl Store {
         discovery::CATEGORIES
     }
 
-    pub fn acl_commands(category: &[u8]) -> Vec<&'static str> {
+    pub fn acl_commands(category: &[u8]) -> Vec<String> {
         discovery::commands_in_category(category)
     }
 

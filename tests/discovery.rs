@@ -568,6 +568,30 @@ fn command_list_filters_by_pattern_category_and_module() {
             ),
             read
         );
+        let connection = String::from_utf8(request(
+            &mut client,
+            &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"@connection"],
+        ))
+        .unwrap();
+        assert!(connection.contains("client|id\r\n"), "{connection}");
+        assert!(connection.contains("command|count\r\n"), "{connection}");
+        assert!(connection.contains("client|kill\r\n"), "{connection}");
+        let admin = String::from_utf8(request(
+            &mut client,
+            &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"@admin"],
+        ))
+        .unwrap();
+        assert!(admin.contains("client|kill\r\n"), "{admin}");
+        assert!(admin.contains("acl|users\r\n"), "{admin}");
+        assert!(!admin.contains("acl|cat\r\n"), "{admin}");
+        let memory_read = String::from_utf8(request(
+            &mut client,
+            &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"@read"],
+        ))
+        .unwrap();
+        assert!(memory_read.contains("memory|usage\r\n"), "{memory_read}");
+        assert!(memory_read.contains("xinfo|stream\r\n"), "{memory_read}");
+        assert!(!memory_read.contains("memory|stats\r\n"), "{memory_read}");
         assert_eq!(
             request(
                 &mut client,
