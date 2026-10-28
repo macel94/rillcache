@@ -62,6 +62,11 @@ pub fn verify_audit_line(key: &[u8], line: &str) -> bool {
 pub fn parse_audit_keyring(text: &str) -> Result<Vec<Vec<u8>>, String> {
     audit::parse_keyring(text)
 }
+
+/// Read a hex audit keyring with a 64 KiB text bound, including comments.
+pub fn read_audit_keyring(path: &std::path::Path) -> std::io::Result<Vec<Vec<u8>>> {
+    audit::read_keyring(path)
+}
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 pub use blocking::PopOutcome;
 pub use blocking::reply_value as blocking_reply;

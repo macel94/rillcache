@@ -147,7 +147,8 @@ exact line body, using the dependency-free SHA-256 implementation. The same
 signed line is written to the file and UDP sink. Without a key, the five-field
 format is unchanged. The key is never included in diagnostics or replies.
 `--audit-hmac-keyring-file PATH` accepts a text keyring of hex keys (one per line,
-`#` comments allowed, at most eight unique 16..=1024-byte keys); the first key
+`#` comments allowed, at most eight unique 16..=1024-byte keys, at most 64 KiB of
+text including comments; repeated keys are ignored); the first key
 signs, and the collector accepts any key in its own keyring. An operator can
 therefore restart the signer with the new key first while the collector retains
 the old key until old lines age out. This is per-line authentication, not a hash

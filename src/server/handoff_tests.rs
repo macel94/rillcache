@@ -47,6 +47,58 @@ pub(super) fn loan(client: Client, stopping: &Arc<AtomicBool>) -> (Loan, Receive
 }
 
 #[test]
+fn one_command_reply_can_join_an_active_small_multicore_epoch() {
+    for capacity in 2..=CLIENT_HANDOFF_MAX_CPUS {
+        let sharing = Sharing::new(Config::default(), Arc::new(AtomicBool::new(false)), 50);
+        let (sender, loans) = mpsc::channel();
+        *sharing.leader.lock().unwrap() = Some(sender);
+        sharing.leader_active.store(true, Ordering::Release);
+        let (mut client, mut peer) = pair(Vec::new());
+        let original = client.stream.try_clone().unwrap();
+        original.set_nonblocking(false).unwrap();
+        client.shutdown_on_drop = false;
+        drop(client);
+        thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                let permit = Permit(Arc::new(AtomicUsize::new(2)));
+                let (sender, receiver) = mpsc::sync_channel(8);
+                let mut session = Session::new();
+                session.set_pubsub_sender(sender);
+                let context = ClientContext {
+                    limits: Config::default().limits,
+                    idle_timeout: Duration::from_secs(3),
+                    policy: SchedulingPolicy::new(None, Some(capacity)),
+                    permit: &permit,
+                    sharing: Some(&sharing),
+                };
+                assert!(!context.policy.single_reply_yield);
+                serve_client(
+                    &mut tls::Connection::plain(original),
+                    session,
+                    &Store::new(1024),
+                    &context,
+                    receiver,
+                )
+                .unwrap();
+            });
+            peer.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+            let mut reply = [0; 7];
+            peer.read_exact(&mut reply).unwrap();
+            assert_eq!(&reply, b"+PONG\r\n");
+            let borrowed = loans
+                .recv_timeout(Duration::from_secs(3))
+                .expect("a single-command reply must join the active epoch");
+            drop(borrowed);
+            peer.write_all(b"*1\r\n$4\r\nQUIT\r\n").unwrap();
+            let mut reply = [0; 5];
+            peer.read_exact(&mut reply).unwrap();
+            assert_eq!(&reply, b"+OK\r\n");
+            worker.join().unwrap();
+        });
+    }
+}
+
+#[test]
 fn loans_return_once_and_late_senders_recover_after_epoch_closure() {
     let stop = Arc::new(AtomicBool::new(false));
     let sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);

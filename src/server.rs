@@ -340,16 +340,7 @@ impl Config {
 
     fn load_audit_hmac_key(&self) -> io::Result<Option<Vec<u8>>> {
         if let Some(path) = &self.audit_hmac_keyring_file {
-            let text = std::fs::read_to_string(path).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "cannot read audit HMAC keyring file {}: {error:?}",
-                        path.display()
-                    ),
-                )
-            })?;
-            let keys = crate::engine::parse_audit_keyring(&text).map_err(|error| {
+            let keys = crate::engine::read_audit_keyring(path).map_err(|error| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("invalid audit HMAC keyring {}: {error}", path.display()),
@@ -949,12 +940,10 @@ fn serve_client(
                 stream.write_all(&output)?;
                 output.clear();
                 if let Some(sharing) = sharing.as_ref().filter(|sharing| {
-                    // A single-command reply is not a burst. Avoid the handoff
-                    // probe on the pipeline-1 path; pipelined batches still lend.
-                    (commands > 1 || policy.single_reply_yield)
-                        && !session.is_subscribed()
-                        && permit.has_peers()
-                        && sharing.should_lend()
+                    // Several clients can form a busy burst even when each
+                    // request has one command. The recent-progress/active-epoch
+                    // guard, not pipeline depth, decides whether to lend.
+                    !session.is_subscribed() && permit.has_peers() && sharing.should_lend()
                 }) {
                     let Some(raw) = stream.plain_mut() else {
                         return Err(io::Error::other(
