@@ -9,8 +9,10 @@ increments; it is not a claim of full Redis compatibility.
   pointer manipulation, custom allocator, native extension or build script.
   Safe standard-library APIs are allowed; the standard library/runtime/OS have
   internals outside this project's code and are not claimed to contain no unsafe.
-- **Zero external Rust dependencies**, including build, development, test and
-  benchmark dependencies. The dependency-policy test inspects all targets/features.
+- **One external Rust dependency exception:** rustls and the transitive crates
+  required to build it, vendored for offline builds. No other build, development,
+  test or benchmark dependency is permitted. The dependency-policy test inspects
+  all targets/features and rejects anything outside the rustls allowlist.
 - All project code is AI-generated. Human review, product judgment and test-based
   validation remain central. Automation does not replace that validation.
 - Compatibility is incremental, byte-oriented and demonstrated by tests.

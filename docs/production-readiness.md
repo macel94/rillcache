@@ -3,9 +3,10 @@
 Production drop-in compatibility is the goal, **not the current release status**.
 A command subset and passing microbenchmarks are insufficient to make that claim.
 This plan keeps the README's missing capabilities visible until independently
-verified. No unsafe code, FFI, custom allocator or external Rust dependency is
-permitted, including in tests. Optional external interoperability tools remain
-outside the application dependency graph.
+verified. No unsafe code, FFI, custom allocator or arbitrary external Rust
+dependency is permitted, including in tests. The sole exception is rustls and the
+transitive crates required to build it, vendored for offline builds. Optional
+external interoperability tools remain outside the application dependency graph.
 
 ## Current phase scope: durability deferred
 
@@ -53,7 +54,7 @@ Redis/Valkey comparisons before publication. Preserve data and protocol limits,
 error atomicity, binary safety and clean shutdown in every execution mode.
 Production claims remain blocked until the selected deployment profile's gates
 are actually met; unresolved scope, the durability deferral and the
-native-Rust-TLS constraint must be stated.
+TLS-hardening constraint must be stated.
 
 References: [Redis commands](https://redis.io/docs/latest/commands/),
 [Redis TLS](https://redis.io/docs/latest/operate/oss_and_stack/management/security/encryption/),

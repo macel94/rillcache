@@ -4,6 +4,9 @@
 !Cargo.toml
 !Cargo.lock
 !rust-toolchain.toml
+!vendor-config.toml
+!vendor/
+!vendor/**
 !src/
 !src/**
 !benches/

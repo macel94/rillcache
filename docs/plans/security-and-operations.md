@@ -2,7 +2,7 @@
 
 **Status: MIXED — SEC-1's single-password baseline (S27) and a Redis-style multi-user ACL/file subset (S28) are implemented; the remaining stories are design only.** The server now has password and ACL-file authentication, ordered command/category rules, read/write key patterns, Redis 7 selectors, channel enforcement, live `NOAUTH`/`NOPERM` denial, an `ACL` management/save/load/`LOG`/`DRYRUN`/`GENPASS` surface and authenticated `CONFIG SET requirepass`, but still lacks subcommand-specific categories, first-class native TLS, config reload, signal-driven graceful shutdown and a complete production observability contract. Nothing here is an approved security design or a production-readiness claim. Keep the standalone/library loopback default and the documented private-network/container restrictions unchanged; use a password and a TLS terminator before exposing this beyond a trusted network. See [security](../security.md).
 
-This plan decomposes the security and operations prerequisites into small stories. Names below are proposed ownership boundaries for future implementation PRs, not files changed by this plan. Preserve safe Rust, zero external Rust dependencies, binary safety, bounded I/O, atomic errors and joined shutdown. Security changes require human security review; do not treat passing compatibility tests as a security sign-off.
+This plan decomposes the security and operations prerequisites into small stories. Names below are proposed ownership boundaries for future implementation PRs, not files changed by this plan. Preserve safe Rust, the vendored rustls-only dependency exception, binary safety, bounded I/O, atomic errors and joined shutdown. Security changes require human security review; do not treat passing compatibility tests as a security sign-off.
 
 ## Current implementation facts and boundaries
 
@@ -51,7 +51,7 @@ This plan decomposes the security and operations prerequisites into small storie
 
 ### SEC-4 — Explicit TLS termination boundary (XS documentation/deployment, independent)
 
-**Value:** users can protect transport without an invented cryptographic implementation. Rust `std::net` provides TCP primitives; the standard library does not provide a TLS client/server API or portable signal-handler API. This project forbids external Rust dependencies, FFI and native extensions. Therefore **do not claim native TLS**, do not add hand-rolled crypto, and do not forward plaintext from an untrusted ingress to an exposed backend.
+**Value:** users can protect transport without an invented cryptographic implementation. Rust `std::net` provides TCP primitives; the standard library does not provide a TLS client/server API or portable signal-handler API. This project permits only the vendored rustls exception and still forbids arbitrary external Rust dependencies, FFI and native extensions. Native TLS 1.3 is provided by rustls; do not add hand-rolled crypto or forward plaintext from an untrusted ingress to an exposed backend.
 
 - **When** deployments require network confidentiality, **then** documentation/examples shall require an independently operated, maintained TLS terminator with certificate issuance/renewal, peer/hostname validation at its client-facing side, restricted backend reachability and an explicit trust boundary.
 - **If** the proxy-to-server leg is plaintext, **then** it shall remain on a same-host/private isolated network with network policy/firewall and must be described as plaintext; credentials are not protected on that leg. A terminator that merely encrypts client-to-proxy does not establish end-to-end encryption.
@@ -116,7 +116,7 @@ Potential future file ownership (all proposed, not existing APIs):
 | Session integration | `src/server/session.rs`, `src/server.rs`, `src/server/pool.rs` | Concurrent session API agreement; identical gating in both modes |
 | Auth/config | `src/security.rs`, `src/security/credentials.rs`, `src/main.rs` | Secret-source decision; session identity/lifecycle |
 | ACL metadata | `src/security/acl.rs`, `src/engine/metadata.rs`, `src/engine/commands.rs` | Auth identity, canonical command/key metadata; typed-store command extractors |
-| TLS boundary | `docs/containers.md`, `compose.yaml`, `deploy/kubernetes.yaml` | Operator-selected terminator and verified network boundary; no native TLS claim |
+| TLS boundary | `docs/tls.md`, `docs/containers.md`, `compose.yaml`, `deploy/kubernetes.yaml` | Native TLS 1.3 via rustls; SNI/hot reload/OCSP, plaintext-listener isolation and independent security review remain required |
 | Graceful shutdown | `src/server.rs`, `src/server/pool.rs`, `src/main.rs`, `docs/containers.md` | Managed tests independent; signal path requires policy/portability review |
 | Config/reload | `src/config.rs`, `src/main.rs`, `src/server.rs` | Config schema + secret source; session generation for mutable security state |
 | Metrics/resource tests | `src/server.rs`, `src/engine/data.rs`, module tests, docs | Metric definitions; typed-store owner for exact payload/expiry invariants |
@@ -153,7 +153,7 @@ Checked during planning; links point to official references. Redis AUTH document
 - [Redis AUTH command](https://redis.io/docs/latest/commands/auth/)
 - [Redis ACL guide](https://redis.io/docs/latest/operate/oss_and_stack/management/security/acl/)
 - [Redis TLS guide](https://redis.io/docs/latest/operate/oss_and_stack/management/security/encryption/)
-- [Rust `std::net`](https://doc.rust-lang.org/std/net/index.html) — TCP APIs; no TLS API.
+- [Rust `std::net`](https://doc.rust-lang.org/std/net/index.html) — TCP APIs; native TLS is provided separately by the vendored rustls exception.
 - [Rust Unix standard-library extensions](https://doc.rust-lang.org/std/os/unix/index.html) — platform-specific OS extensions do not establish a portable signal API. Confirm against pinned toolchain before considering any platform-specific implementation.
 - [Rust `TcpStream`](https://doc.rust-lang.org/std/net/struct.TcpStream.html) — socket I/O/shutdown primitives, not process signal handling or TLS.
 - [Container deployment boundary](../containers.md), [requirements/compatibility limits](../requirements.md), [production-readiness plan](../production-readiness.md).

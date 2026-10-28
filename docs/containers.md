@@ -1,9 +1,10 @@
 # Thin Docker and Kubernetes delivery
 
 **Experimental cache—not production Redis compatibility.** Optional single-password
-or multi-user ACL-file authentication and an opt-in append-only journal exist,
-but there is no native TLS, RDB format, AOF rewrite, replication or graceful
-signal-driven shutdown. Use authentication plus a private/trusted network.
+or multi-user ACL-file authentication, native TLS 1.3 via rustls, and an opt-in
+append-only journal exist, but there is no RDB format, AOF rewrite, replication or
+graceful signal-driven shutdown. Keep the plaintext listener private even when
+TLS is enabled.
 Publishing an image does not deploy a service.
 
 ## Run it
@@ -59,8 +60,9 @@ compaction that briefly pauses command service. Restart recovery ignores only an
 mid-file corruption. Stream consumer pending state is not restored. See
 [persistence](persistence.md).
 Rotate through authenticated `CONFIG SET requirepass` or by restarting with a new
-secret. TLS is still absent, so terminate TLS before traffic crosses an untrusted
-network and treat the inner connection as plaintext. See [security](security.md).
+secret. Native TLS 1.3 is available with `--tls-bind`, `--tls-cert-file` and
+`--tls-key-file`; mount certificates read-only and keep the plaintext listener on
+loopback/private space. See [native TLS](tls.md) and [security](security.md).
 
 [`compose.yaml`](../compose.yaml) adds a read-only root filesystem, dropped Linux
 capabilities, no-new-privileges, a 256-PID limit, 1 CPU and 256 MiB memory limit.
@@ -128,7 +130,8 @@ kubectl patch deployment rillcache --type=json -p='[
 For multi-user ACLs, create the secret from an ACL file and use
 `--aclfile /run/secrets/users.acl` instead. This keeps the root filesystem
 read-only and credentials out of the image and process arguments. It does not add
-TLS, brute-force controls, audit logging or durable backup guarantees.
+brute-force controls, audit logging or durable backup guarantees; TLS requires
+explicit certificate configuration.
 
 Use one replica and `Recreate`: independent replicas do not share data, and a
 Service over several would randomly route keys to unrelated caches. With

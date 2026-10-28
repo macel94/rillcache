@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 mod handoff;
 mod pool;
+mod tls;
 
 /// Busy clients may briefly lend I/O to an existing client thread on one CPU.
 pub const CLIENT_HANDOFF_IDLE_US: u64 = 50;
@@ -139,6 +140,13 @@ pub struct Config {
     pub notify_keyspace_events: NotifyFlags,
     /// Verified vendor-specific error wording; defaults to Valkey for compatibility.
     pub error_dialect: ErrorDialect,
+    /// Optional native TLS 1.3 listener. Plaintext remains on `bind_addr`.
+    pub tls_bind_addr: Option<SocketAddr>,
+    pub tls_cert_file: Option<PathBuf>,
+    pub tls_key_file: Option<PathBuf>,
+    /// Optional client CA. Setting it requires client certificates.
+    pub tls_client_ca_file: Option<PathBuf>,
+    pub tls_handshake_timeout: Duration,
 }
 
 impl std::fmt::Debug for Config {
@@ -166,6 +174,11 @@ impl std::fmt::Debug for Config {
                 "notify_keyspace_events",
                 &self.notify_keyspace_events.as_string(),
             )
+            .field("tls_bind_addr", &self.tls_bind_addr)
+            .field("tls_cert_file", &self.tls_cert_file)
+            .field("tls_key_file", &self.tls_key_file)
+            .field("tls_client_ca_file", &self.tls_client_ca_file)
+            .field("tls_handshake_timeout", &self.tls_handshake_timeout)
             .finish()
     }
 }
@@ -188,6 +201,11 @@ impl Default for Config {
             maxmemory_policy: EvictionPolicy::NoEviction,
             notify_keyspace_events: NotifyFlags::default(),
             error_dialect: ErrorDialect::default(),
+            tls_bind_addr: None,
+            tls_cert_file: None,
+            tls_key_file: None,
+            tls_client_ca_file: None,
+            tls_handshake_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -210,6 +228,16 @@ impl Config {
                 .as_ref()
                 .is_some_and(|password| password.is_empty() || password.len() > 1024)
             || (self.requirepass.is_some() && self.aclfile.is_some())
+            || self.tls_handshake_timeout.is_zero()
+            || (self.tls_bind_addr.is_none()
+                && (self.tls_cert_file.is_some()
+                    || self.tls_key_file.is_some()
+                    || self.tls_client_ca_file.is_some()))
+            || (self.tls_bind_addr.is_some()
+                && (self.tls_cert_file.is_none() || self.tls_key_file.is_none()))
+            || self
+                .tls_bind_addr
+                .is_some_and(|tls| tls == self.bind_addr && tls.port() != 0)
             || self.appendfilename.is_empty()
             || self.appendfilename == "."
             || self.appendfilename == ".."
@@ -218,7 +246,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, and the journal needs a basename without path separators in a nonempty directory",
+                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         Ok(())
@@ -227,6 +255,8 @@ impl Config {
 
 pub struct Server {
     listener: TcpListener,
+    tls_listener: Option<TcpListener>,
+    tls_acceptor: Option<Arc<tls::TlsAcceptor>>,
     config: Config,
     policy: SchedulingPolicy,
     store: Store,
@@ -279,10 +309,30 @@ impl Server {
         store.set_notify_flags(config.notify_keyspace_events);
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
+        let (tls_listener, tls_acceptor) = match config.tls_bind_addr {
+            Some(addr) => {
+                let acceptor = tls::TlsAcceptor::from_files(
+                    config
+                        .tls_cert_file
+                        .as_deref()
+                        .expect("validated certificate"),
+                    config.tls_key_file.as_deref().expect("validated key"),
+                    config.tls_client_ca_file.as_deref(),
+                    config.tls_handshake_timeout,
+                    config.idle_timeout,
+                )?;
+                let listener = TcpListener::bind(addr)?;
+                listener.set_nonblocking(true)?;
+                (Some(listener), Some(Arc::new(acceptor)))
+            }
+            None => (None, None),
+        };
         let capacity = thread::available_parallelism().ok().map(usize::from);
         let policy = SchedulingPolicy::new(config.worker_threads, capacity);
         Ok(Self {
             listener,
+            tls_listener,
+            tls_acceptor,
             config,
             policy,
             store,
@@ -291,6 +341,13 @@ impl Server {
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
+    }
+
+    pub fn tls_local_addr(&self) -> io::Result<Option<SocketAddr>> {
+        match &self.tls_listener {
+            Some(listener) => listener.local_addr().map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Run until an OS-level process termination or an unrecoverable server error.
@@ -302,6 +359,7 @@ impl Server {
     /// Run in a managed background thread, useful for tests and local benchmarks.
     pub fn spawn(self) -> io::Result<ServerHandle> {
         let addr = self.local_addr()?;
+        let tls_addr = self.tls_local_addr()?;
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
         let policy = self.policy;
@@ -310,6 +368,7 @@ impl Server {
             .spawn(move || self.serve(stop))?;
         Ok(ServerHandle {
             addr,
+            tls_addr,
             stopping,
             policy,
             thread: Some(thread),
@@ -317,111 +376,238 @@ impl Server {
     }
 
     fn serve(self, stopping: Arc<AtomicBool>) -> io::Result<()> {
-        if self.config.worker_threads.is_some() {
-            return pool::serve(
-                self.listener,
-                self.config,
-                stopping,
-                self.policy,
-                Arc::new(self.store),
-            );
-        }
-        let store = Arc::new(self.store);
-        let admitted = Arc::new(AtomicUsize::new(0));
-        let sharing = (self.policy.client_handoff_idle_us > 0).then(|| {
-            Arc::new(handoff::Sharing::new(
-                self.config.clone(),
-                Arc::clone(&stopping),
-                self.policy.client_handoff_idle_us,
-            ))
-        });
-        let mut workers: Vec<Worker> = Vec::new();
-        let mut maintenance = Instant::now();
-        let result = (|| {
-            while !stopping.load(Ordering::Acquire) && !store.shutdown_requested() {
-                if maintenance.elapsed() >= Duration::from_millis(100) {
-                    let _ = store.journal_sync();
-                    store.purge_expired(128);
-                    store.auto_rewrite_if_due();
-                    maintenance = Instant::now();
-                }
-                let mut index = 0;
-                while index < workers.len() {
-                    if workers[index].thread.is_finished() {
-                        join(workers.swap_remove(index).thread)?;
-                    } else {
-                        index += 1;
-                    }
-                }
-                let (mut stream, peer) = match self.listener.accept() {
-                    Ok(connection) => connection,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(1));
-                        continue;
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(error),
-                };
-                stream.set_nonblocking(false)?;
-                stream.set_nodelay(true)?;
-                store.record_connection();
-                stream.set_read_timeout(Some(self.config.idle_timeout))?;
-                stream.set_write_timeout(Some(self.config.idle_timeout))?;
-                if workers.len() >= store.max_clients() {
-                    store.record_rejected_connection();
-                    let _ = stream.write_all(b"-ERR max number of clients reached\r\n");
-                    let _ = stream.shutdown(Shutdown::Both);
-                    continue;
-                }
-                let control = stream.try_clone()?;
+        let Server {
+            listener,
+            tls_listener,
+            tls_acceptor,
+            config,
+            policy,
+            store,
+        } = self;
+        let store = Arc::new(store);
+        let tls_thread = match (tls_listener, tls_acceptor) {
+            (Some(listener), Some(acceptor)) => {
+                let config = config.clone();
                 let store = Arc::clone(&store);
-                let limits = self.config.limits;
-                let idle_timeout = self.config.idle_timeout;
-                let policy = self.policy;
-                let permit = Permit::acquire(&admitted);
-                let sharing = sharing.clone();
-                let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
-                let mut session = Session::new();
-                session.set_pubsub_sender(sender);
-                store.register_client(
-                    session.id(),
-                    peer,
-                    stream.local_addr()?,
-                    control.try_clone()?,
-                );
-                let thread = thread::Builder::new()
-                    .name("rillcache-client".into())
-                    .stack_size(256 * 1024)
-                    .spawn(move || {
-                        // Disconnects, idle timeouts and malformed input affect only this client.
-                        let context = ClientContext {
-                            limits,
-                            idle_timeout,
-                            policy,
-                            permit: &permit,
-                            sharing: sharing.as_deref(),
-                        };
-                        let _ = serve_client(&mut stream, session, &store, &context, receiver);
-                        let _ = stream.shutdown(Shutdown::Both);
-                    })?;
-                workers.push(Worker { control, thread });
+                let stop = Arc::clone(&stopping);
+                Some(
+                    thread::Builder::new()
+                        .name("rillcache-tls-accept".into())
+                        .spawn(move || {
+                            serve_tls(listener, acceptor, config, store, stop, policy)
+                        })?,
+                )
             }
-            Ok(())
-        })();
-        // Wake blocked readers/writers before joining; no detached workers survive shutdown.
-        for worker in &workers {
-            let _ = worker.control.shutdown(Shutdown::Both);
-        }
-        let mut result = result;
-        for worker in workers {
-            if let Err(error) = join(worker.thread) {
-                result = result.and(Err(error));
-            }
-        }
-        result
+            _ => None,
+        };
+        let result = if config.worker_threads.is_some() {
+            pool::serve(
+                listener,
+                config,
+                Arc::clone(&stopping),
+                policy,
+                Arc::clone(&store),
+            )
+        } else {
+            serve_plain(listener, config, store, Arc::clone(&stopping), policy)
+        };
+        stopping.store(true, Ordering::Release);
+        let tls_result = match tls_thread {
+            Some(thread) => join_result(thread),
+            None => Ok(()),
+        };
+        result.and(tls_result)
     }
 }
 
+fn serve_plain(
+    listener: TcpListener,
+    config: Config,
+    store: Arc<Store>,
+    stopping: Arc<AtomicBool>,
+    policy: SchedulingPolicy,
+) -> io::Result<()> {
+    let admitted = Arc::new(AtomicUsize::new(0));
+    let sharing = (policy.client_handoff_idle_us > 0).then(|| {
+        Arc::new(handoff::Sharing::new(
+            config.clone(),
+            Arc::clone(&stopping),
+            policy.client_handoff_idle_us,
+        ))
+    });
+    let mut workers: Vec<Worker> = Vec::new();
+    let mut maintenance = Instant::now();
+    let result = (|| {
+        while !stopping.load(Ordering::Acquire) && !store.shutdown_requested() {
+            if maintenance.elapsed() >= Duration::from_millis(100) {
+                let _ = store.journal_sync();
+                store.purge_expired(128);
+                store.auto_rewrite_if_due();
+                maintenance = Instant::now();
+            }
+            let mut index = 0;
+            while index < workers.len() {
+                if workers[index].thread.is_finished() {
+                    join(workers.swap_remove(index).thread)?;
+                } else {
+                    index += 1;
+                }
+            }
+            let (stream, peer) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            stream.set_nonblocking(false)?;
+            stream.set_nodelay(true)?;
+            store.record_connection();
+            stream.set_read_timeout(Some(config.idle_timeout))?;
+            stream.set_write_timeout(Some(config.idle_timeout))?;
+            if store.connected_clients() >= store.max_clients() {
+                store.record_rejected_connection();
+                let _ = (&stream).write_all(b"-ERR max number of clients reached\r\n");
+                let _ = stream.shutdown(Shutdown::Both);
+                continue;
+            }
+            let control = stream.try_clone()?;
+            let store = Arc::clone(&store);
+            let limits = config.limits;
+            let idle_timeout = config.idle_timeout;
+            let permit = Permit::acquire(&admitted);
+            let sharing = sharing.clone();
+            let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
+            let mut session = Session::new();
+            session.set_pubsub_sender(sender);
+            store.register_client(
+                session.id(),
+                peer,
+                stream.local_addr()?,
+                control.try_clone()?,
+            );
+            let thread = thread::Builder::new()
+                .name("rillcache-client".into())
+                .stack_size(256 * 1024)
+                .spawn(move || {
+                    let mut connection = tls::Connection::plain(stream);
+                    let context = ClientContext {
+                        limits,
+                        idle_timeout,
+                        policy,
+                        permit: &permit,
+                        sharing: sharing.as_deref(),
+                    };
+                    let _ = serve_client(&mut connection, session, &store, &context, receiver);
+                    let _ = connection.shutdown(Shutdown::Both);
+                })?;
+            workers.push(Worker { control, thread });
+        }
+        Ok(())
+    })();
+    for worker in &workers {
+        let _ = worker.control.shutdown(Shutdown::Both);
+    }
+    let mut result = result;
+    for worker in workers {
+        if let Err(error) = join(worker.thread) {
+            result = result.and(Err(error));
+        }
+    }
+    result
+}
+
+fn serve_tls(
+    listener: TcpListener,
+    acceptor: Arc<tls::TlsAcceptor>,
+    config: Config,
+    store: Arc<Store>,
+    stopping: Arc<AtomicBool>,
+    policy: SchedulingPolicy,
+) -> io::Result<()> {
+    let admitted = Arc::new(AtomicUsize::new(0));
+    let mut workers: Vec<Worker> = Vec::new();
+    let result = (|| {
+        while !stopping.load(Ordering::Acquire) && !store.shutdown_requested() {
+            let mut index = 0;
+            while index < workers.len() {
+                if workers[index].thread.is_finished() {
+                    join(workers.swap_remove(index).thread)?;
+                } else {
+                    index += 1;
+                }
+            }
+            let (stream, peer) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    stopping.store(true, Ordering::Release);
+                    return Err(error);
+                }
+            };
+            stream.set_nonblocking(false)?;
+            stream.set_nodelay(true)?;
+            store.record_connection();
+            if store.connected_clients() >= store.max_clients() {
+                store.record_rejected_connection();
+                let _ = stream.shutdown(Shutdown::Both);
+                continue;
+            }
+            let control = stream.try_clone()?;
+            let local_addr = stream.local_addr()?;
+            let store = Arc::clone(&store);
+            let acceptor = Arc::clone(&acceptor);
+            let limits = config.limits;
+            let idle_timeout = config.idle_timeout;
+            let permit = Permit::acquire(&admitted);
+            let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
+            let mut session = Session::new();
+            session.set_pubsub_sender(sender);
+            let client_id = session.id();
+            store.register_client(client_id, peer, local_addr, control.try_clone()?);
+            let thread = thread::Builder::new()
+                .name("rillcache-tls-client".into())
+                .stack_size(256 * 1024)
+                .spawn(move || {
+                    let mut connection = match acceptor.accept(stream) {
+                        Ok(connection) => connection,
+                        Err(_) => {
+                            store.pubsub_remove_client(client_id);
+                            store.unregister_client(client_id);
+                            return;
+                        }
+                    };
+                    let context = ClientContext {
+                        limits,
+                        idle_timeout,
+                        policy,
+                        permit: &permit,
+                        sharing: None,
+                    };
+                    let _ = serve_client(&mut connection, session, &store, &context, receiver);
+                    let _ = connection.shutdown(Shutdown::Both);
+                })?;
+            workers.push(Worker { control, thread });
+        }
+        Ok(())
+    })();
+    for worker in &workers {
+        let _ = worker.control.shutdown(Shutdown::Both);
+    }
+    let mut result = result;
+    for worker in workers {
+        if let Err(error) = join(worker.thread) {
+            result = result.and(Err(error));
+        }
+    }
+    result
+}
 struct Worker {
     control: TcpStream,
     thread: JoinHandle<()>,
@@ -433,8 +619,15 @@ fn join(thread: JoinHandle<()>) -> io::Result<()> {
         .map_err(|_| io::Error::other("client worker panicked"))
 }
 
+fn join_result(thread: JoinHandle<io::Result<()>>) -> io::Result<()> {
+    thread
+        .join()
+        .map_err(|_| io::Error::other("server worker panicked"))?
+}
+
 pub struct ServerHandle {
     addr: SocketAddr,
+    tls_addr: Option<SocketAddr>,
     stopping: Arc<AtomicBool>,
     policy: SchedulingPolicy,
     thread: Option<JoinHandle<io::Result<()>>>,
@@ -448,6 +641,10 @@ impl ServerHandle {
 
     pub fn local_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    pub fn tls_local_addr(&self) -> Option<SocketAddr> {
+        self.tls_addr
     }
 
     pub fn shutdown(mut self) -> io::Result<()> {
@@ -480,7 +677,7 @@ struct ClientContext<'a> {
 }
 
 fn serve_client(
-    stream: &mut TcpStream,
+    stream: &mut tls::Connection,
     mut session: Session,
     store: &Store,
     context: &ClientContext<'_>,
@@ -632,7 +829,12 @@ fn serve_client(
                 if let Some(sharing) = sharing.as_ref().filter(|sharing| {
                     !session.is_subscribed() && permit.has_peers() && sharing.should_lend()
                 }) {
-                    if sharing.exchange(stream, &mut input, &mut output, &mut session, store)? {
+                    let Some(raw) = stream.plain_mut() else {
+                        return Err(io::Error::other(
+                            "client handoff is not supported for TLS connections",
+                        ));
+                    };
+                    if sharing.exchange(raw, &mut input, &mut output, &mut session, store)? {
                         return Ok(());
                     }
                     // A lease may return ready/partial input. Parse before reading again.

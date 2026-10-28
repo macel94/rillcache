@@ -9,8 +9,8 @@ Not implemented or implied by the completed increments:
    Add command discovery and multiple databases only as separate compatible
    increments.
 2. Brute-force controls and a persistent audit path.
-   The Go TLS 1.3 sidecar provides the current transport-encryption boundary;
-   native Rust TLS, SNI/hot reload and independent security review remain separate.
+   Native TLS 1.3 via rustls provides the current transport-encryption boundary;
+   SNI/hot reload, OCSP/CRL and independent security review remain separate.
    Durability completeness, AOF rewrite/RDB, backup/restore drills and disk-fault
    recovery are explicitly deferred for this phase.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and
@@ -23,7 +23,7 @@ Not implemented or implied by the completed increments:
    as a no-key-map control. Evaluate
    a safe readiness boundary before speculative sharding; retain idle CPU,
    backpressure, shutdown and multi-key atomicity gates. Unsafe project code and
-   external Rust dependencies remain forbidden.
+   external Rust dependencies outside the vendored rustls exception remain forbidden.
 5. Controlled-hardware performance budgets and repeated current-release comparisons;
    later, richer types, pub/sub and additional stream capabilities driven by product judgment.
 
