@@ -78,6 +78,20 @@ pub fn dispatch_request<'a, T>(
     limits: Limits,
     execute: impl FnOnce(&[&[u8]]) -> T,
 ) -> Result<Option<(T, usize)>, ProtocolError> {
+    // The canonical one-argument PING frame is the hottest request in every
+    // benchmark and health probe. Skip generic array/length parsing when the
+    // complete exact frame is already available; fragmented or non-canonical
+    // frames still take the full bounded parser.
+    if input.len() >= 14
+        && limits.max_arguments >= 1
+        && limits.max_bulk_bytes >= 4
+        && limits.max_frame_bytes >= 14
+        && &input[..8] == b"*1\r\n$4\r\n"
+        && input[8..12].eq_ignore_ascii_case(b"PING")
+        && &input[12..14] == b"\r\n"
+    {
+        return Ok(Some((execute(&[b"PING"]), 14)));
+    }
     if input.first().is_some_and(|&byte| byte != b'*') {
         let Some((owned, consumed)) = parse_inline(input, limits)? else {
             return Ok(None);
@@ -539,6 +553,33 @@ mod tests {
         let parsed = parse_request(&bytes, limits).unwrap().unwrap();
         assert_eq!(parsed.arguments, [b"PING".as_slice()]);
         assert_eq!(parsed.consumed, 14);
+    }
+
+    #[test]
+    fn canonical_ping_fast_path_handles_fragmentation_and_case() {
+        let frame = b"*1\r\n$4\r\nPING\r\n";
+        for split in 0..frame.len() {
+            assert_eq!(
+                dispatch_request(&frame[..split], Limits::default(), |_| ()),
+                Ok(None),
+                "split {split}"
+            );
+        }
+        let mut calls = 0;
+        assert_eq!(
+            dispatch_request(frame, Limits::default(), |arguments| {
+                calls += 1;
+                assert_eq!(arguments, &[b"PING"]);
+            }),
+            Ok(Some(((), frame.len())))
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(
+            dispatch_request(b"*1\r\n$4\r\nping\r\n", Limits::default(), |arguments| {
+                assert_eq!(arguments, &[b"PING"]);
+            }),
+            Ok(Some(((), frame.len())))
+        );
     }
 
     #[test]
