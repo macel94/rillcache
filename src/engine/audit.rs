@@ -5,6 +5,7 @@
 //! every denial event as one bounded line. It is deliberately simple: one
 //! generation of rotation, no external dependencies and no secret material.
 
+use super::sha256;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -64,7 +65,7 @@ impl AuditLog {
         object: &[u8],
         username: &[u8],
     ) -> io::Result<()> {
-        let line = format_line(reason, context, object, username);
+        let line = format_line(reason, context, object, username, None);
         self.record_line(&line)
     }
 
@@ -103,15 +104,28 @@ fn open_append(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-pub(super) fn format_line(reason: &str, context: &str, object: &[u8], username: &[u8]) -> String {
-    format!(
-        "{} {} {} {} {}\n",
+pub(super) fn format_line(
+    reason: &str,
+    context: &str,
+    object: &[u8],
+    username: &[u8],
+    key: Option<&[u8]>,
+) -> String {
+    let body = format!(
+        "{} {} {} {} {}",
         timestamp_millis(),
         token(reason),
         token(context),
         hex(username, MAX_USERNAME_BYTES),
         hex(object, MAX_OBJECT_BYTES),
-    )
+    );
+    match key {
+        Some(key) => {
+            let mac = sha256::hmac_sha256(key, body.as_bytes());
+            format!("{body} {}\n", hex(&mac, 32))
+        }
+        None => format!("{body}\n"),
+    }
 }
 
 fn timestamp_millis() -> u128 {
@@ -199,6 +213,25 @@ mod tests {
         assert_eq!(fields[3].len(), MAX_USERNAME_BYTES * 2);
         assert_eq!(fields[4], "610062ff");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn signed_lines_are_verifiable_and_tamper_evident() {
+        let key = b"0123456789abcdef";
+        let line = format_line("command", "toplevel", b"set", b"alice", Some(key));
+        let (body, mac) = line.trim_end().rsplit_once(' ').unwrap();
+        assert_eq!(mac.len(), 64);
+        assert_eq!(
+            mac,
+            hex(&sha256::hmac_sha256(key, body.as_bytes()), 32).as_str()
+        );
+        let tampered = format!("{body}x");
+        assert_ne!(
+            mac,
+            hex(&sha256::hmac_sha256(key, tampered.as_bytes()), 32).as_str()
+        );
+        let unsigned = format_line("command", "toplevel", b"set", b"alice", None);
+        assert_eq!(unsigned.trim_end().split(' ').count(), 5);
     }
 
     #[test]

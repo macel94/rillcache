@@ -88,6 +88,24 @@ pub(super) fn hex(input: &[u8]) -> String {
     text
 }
 
+/// RFC 2104 HMAC-SHA256 for optional audit-line authentication.
+pub(super) fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    let mut normalized = [0u8; 64];
+    if key.len() > normalized.len() {
+        normalized[..32].copy_from_slice(&digest(key));
+    } else {
+        normalized[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Vec::with_capacity(64 + message.len());
+    inner.extend(normalized.iter().map(|byte| byte ^ 0x36));
+    inner.extend_from_slice(message);
+    let inner = digest(&inner);
+    let mut outer = Vec::with_capacity(96);
+    outer.extend(normalized.iter().map(|byte| byte ^ 0x5c));
+    outer.extend_from_slice(&inner);
+    digest(&outer)
+}
+
 pub(super) fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
     let mut difference = 0u8;
     for (a, b) in left.iter().zip(right) {
@@ -126,6 +144,34 @@ mod tests {
         assert_eq!(
             hex(&million),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+    }
+
+    fn hex32(bytes: [u8; 32]) -> String {
+        let mut text = String::with_capacity(64);
+        for byte in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(text, "{byte:02x}");
+        }
+        text
+    }
+
+    #[test]
+    fn hmac_sha256_matches_rfc_4231_vectors() {
+        assert_eq!(
+            hex32(hmac_sha256(&[0x0b; 20], b"Hi There")),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        assert_eq!(
+            hex32(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(
+            hex32(hmac_sha256(
+                &[0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            )),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
         );
     }
 
