@@ -1,7 +1,8 @@
 # Benchmarking from the first increment
 
 The objective is to outperform current Redis/Valkey implementations without
-unsafe project code or external Rust dependencies. This document defines how to
+unsafe project code or external Rust dependencies outside the vendored rustls
+exception. This document defines how to
 collect evidence, not a claim that this first server already wins.
 
 [Raw bootstrap comparison runs](../benchmarks/bootstrap/README.md) are preserved
@@ -323,7 +324,7 @@ allocation/lookup/encoding reductions, the bounded fixed-worker policy and an
 optional matched before/after workflow with raw evidence and readable tables.
 Contention, mixed TTL/traffic, client saturation and thread-per-client scaling
 still need profiling. Changing synchronization or I/O must retain safe Rust,
-zero Rust dependencies, command atomicity and all conformance tests.
+the rustls-only dependency exception, command atomicity and all conformance tests.
 
 References:
 [Valkey benchmark pitfalls](https://valkey.io/topics/benchmark/),

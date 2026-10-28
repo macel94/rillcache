@@ -1,114 +1,107 @@
-# TLS 1.3 sidecar
+# Native TLS 1.3 with rustls
 
-Rillcache itself speaks RESP over plain TCP. This repository now includes
-`tlsproxy/`, a small **Go standard-library** TLS 1.3 terminator for RESP. It does
-not use OpenSSL, cgo, or any external Go module. The Rust server remains
-dependency-free and unchanged; TLS is terminated one hop in front of it.
+Rillcache has a native TLS 1.3 listener implemented with
+[`rustls`](https://github.com/rustls/rustls) and its `ring` provider. There is no
+OpenSSL, no cgo and no separate TLS sidecar. TLS is part of the server process and
+uses the normal RESP session/worker path.
 
-```text
-RESP client == TLS 1.3 ==> tlsproxy == plaintext loopback ==> rillcache
-```
+The repository dependency policy allows **rustls and the transitive crates
+required to build it** as its sole external-dependency exception. The crates are
+vendored for offline builds. Project code remains `unsafe_code = "forbid"`.
 
 ## Protocol scope
 
-- TLS **1.3 only**. TLS 1.0, 1.1 and 1.2 handshakes are rejected.
-- RESP is proxied as opaque bytes. **HTTP/1.1, HTTP/2 and HTTP/3 are not
+- TLS **1.3 only** for the Rillcache listener. TLS 1.0, 1.1 and 1.2 handshakes
+  are rejected.
+- RESP is carried directly over TLS. **HTTP/1.1, HTTP/2 and HTTP/3 are not
   supported or negotiated.** HTTP/2 is an ALPN application protocol and HTTP/3 is
-  QUIC over UDP; neither is a transport for Redis clients. The proxy deliberately
-  offers no ALPN protocol.
-- No native Rust TLS. Native TLS still requires a dependency-policy decision,
-  because safe Rust with no external dependencies has no audited TLS stack.
-- The Go sidecar is a deployment component. It is not embedded in the `rillcache`
-  binary and does not change the Rust dependency graph.
+  QUIC over UDP; neither is a transport for Redis clients.
+- One server certificate/chain is supported. SNI-based certificate selection,
+  hot reload and OCSP/CRL integration are not implemented.
+- Plaintext and TLS listeners can run together. Put the TLS listener on the
+  exposed interface and bind the plaintext listener to loopback/private space, or
+  firewall the plaintext port.
 
-## Build
+## Configuration
 
-Go 1.22 or newer is required only to build the sidecar:
+| Flag | Meaning |
+| --- | --- |
+| `--tls-bind ADDRESS` | Native TLS listener; must differ from `--bind` |
+| `--tls-cert-file PATH` | PEM server certificate followed by intermediates |
+| `--tls-key-file PATH` | Unencrypted PEM private key |
+| `--tls-client-ca-file PATH` | Optional client CA; enables required mTLS |
+| `--tls-handshake-timeout-ms N` | Handshake deadline in milliseconds (default 5000) |
 
-```sh
-cd tlsproxy
-CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o tlsproxy .
-./tlsproxy --help
-```
-
-The resulting binary is static when built with `CGO_ENABLED=0`.
-
-## Run
+Example:
 
 ```sh
-./tlsproxy \
-  --listen 0.0.0.0:6380 \
-  --backend 127.0.0.1:6379 \
-  --cert /etc/rillcache/server-chain.pem \
-  --key /etc/rillcache/server-key.pem
+rillcache \
+  --bind 127.0.0.1:6379 \
+  --tls-bind 0.0.0.0:6380 \
+  --tls-cert-file /etc/rillcache/server-chain.pem \
+  --tls-key-file /etc/rillcache/server-key.pem
 ```
 
-Clients connect to port 6380 with their normal Redis TLS options, for example:
+Clients connect to the TLS port with their normal Redis TLS options, for example:
 
 ```sh
 redis-cli --tls --cacert ca.pem -h cache.example.com -p 6380 PING
 ```
 
-The certificate file must contain a PEM leaf certificate followed by any
-intermediate chain. The private key file must be an unencrypted PEM key accepted
-by Go's `crypto/tls` (RSA, ECDSA or Ed25519).
+The certificate must be valid for the hostname clients use. A private CA is fine
+as long as clients trust it.
 
 ## Mutual TLS
 
-Pass a CA bundle to require and verify a client certificate:
-
 ```sh
-./tlsproxy --listen 0.0.0.0:6380 --backend 127.0.0.1:6379 \
-  --cert server-chain.pem --key server-key.pem \
-  --client-ca client-ca.pem
+rillcache --tls-bind 0.0.0.0:6380 \
+  --bind 127.0.0.1:6379 \
+  --tls-cert-file server-chain.pem \
+  --tls-key-file server-key.pem \
+  --tls-client-ca-file client-ca.pem
 ```
 
-Without `--client-ca`, client certificates are neither requested nor required.
-There is no CRL/OCSP integration and no certificate hot reload; rotate
-certificates by restarting the sidecar during a controlled window.
+With a client CA configured, every TLS client must present a certificate that
+chains to it. A successful certificate handshake is **not** the same as Rillcache
+authentication: continue using `AUTH`/ACL rules after connecting. Certificate
+identity is not mapped automatically to an ACL user.
 
-## Flags
+## Development certificate
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--listen` | `127.0.0.1:6380` | TLS listener address |
-| `--backend` | `127.0.0.1:6379` | plaintext RESP backend |
-| `--cert` | required | PEM certificate chain |
-| `--key` | required | PEM private key |
-| `--client-ca` | empty | optional client CA; enables required mTLS |
-| `--max-conns` | `1024` | simultaneous TLS connections |
-| `--handshake-timeout` | `5s` | TLS handshake deadline |
-| `--dial-timeout` | `5s` | backend connect deadline |
-| `--shutdown-timeout` | `10s` | graceful drain deadline |
-| `--version` | | print version and exit |
+The tests use committed, test-only certificates under
+`tests/fixtures/tls/`. For local development they can be used directly:
 
-The process handles `SIGINT`/`SIGTERM` itself, stops accepting, waits for active
-proxies up to the shutdown deadline, then force-closes leftovers.
+```sh
+rillcache \
+  --bind 127.0.0.1:6379 \
+  --tls-bind 127.0.0.1:6380 \
+  --tls-cert-file tests/fixtures/tls/server.crt \
+  --tls-key-file tests/fixtures/tls/server.key
+```
+
+For a deployment, generate certificates with your normal PKI. Do not reuse the
+test keys.
 
 ## Operational limits
 
-- Bind the plaintext backend to loopback or a private network. The sidecar does
-  not authenticate the backend and the inner hop is plaintext.
-- The backend sees the sidecar's source address, not the original client address.
-  `CLIENT LIST`, `CLIENT KILL ADDR/LADDR` and any address-based operation therefore
-  observe proxy addresses.
-- One proxy process is a single point of failure. Run it under the same supervisor
-  as the server; replication and failover remain unsupported.
-- There is no SNI-based multi-certificate selection, no PROXY protocol, no
-  connection pooling, no metrics endpoint and no dynamic certificate reload.
-- TLS session tickets are held in process memory and do not survive a restart.
-- There is no proxy-level idle timeout. The plaintext backend's idle timeout
-  closes idle connections, which the proxy then mirrors.
-- Go chooses the TLS 1.3 cipher suites; no legacy cipher configuration is exposed.
-- This is transport encryption, not a durability or availability feature.
+- TLS does not cover replication or cluster links because those features do not
+  exist in this server.
+- There is no certificate hot reload; restart during a controlled window to
+  rotate material.
+- There is no SNI, no ALPN, no PROXY protocol and no client-certificate-to-ACL
+  mapping.
+- TLS connections use the per-client blocking worker path. The fixed
+  worker-pool setting continues to govern plaintext connections; TLS connections
+  are still bounded by the shared client limit.
+- TLS adds encryption/decryption and handshake cost. It is not free throughput.
+- This is transport encryption, not durability or availability.
 
 ## Tests
 
 ```sh
-cd tlsproxy
-go test -race ./...
+cargo test --locked --offline --test native_tls
 ```
 
-The tests start a real TLS 1.3 listener and backend, verify RESP echo, reject a
-TLS 1.2 client, assert that no HTTP ALPN protocol is negotiated, and exercise
-required client-certificate authentication and configuration validation.
+The tests cover TLS 1.3 RESP in all execution modes, plaintext coexistence, TLS
+1.2 rejection, absent HTTP ALPN, required client certificates and invalid TLS
+configuration.

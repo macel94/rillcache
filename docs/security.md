@@ -4,7 +4,7 @@ Rillcache supports either one operator-configured password for the implicit Redi
 `default` user or a Redis-style ACL file with multiple users, password hashes,
 command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
-design. It does not add native TLS, rate limiting, a persistent/centralized audit
+design. It does not add TLS hardening (SNI/hot reload/OCSP), rate limiting, a persistent/centralized audit
 log, or credential encryption at rest.
 
 ## What is implemented
@@ -139,13 +139,12 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 - **No tenant isolation at the process/network level.** All users share one
   in-memory keyspace and one process. ACL permissions do not create separate
   databases, memory budgets, CPU budgets or network identities.
-- **No native Rust TLS.** Rust's standard library exposes TCP, not TLS. The
-  project forbids external Rust dependencies and FFI, so native TLS has no
-  implementation path without an explicit dependency-policy decision. A bundled
-  Go standard-library TLS 1.3 sidecar ([`tlsproxy`](tls.md)) terminates TLS for
-  RESP without OpenSSL; it is a documented deployment boundary, and the inner hop
-  to rillcache remains plaintext. TLS 1.2 and older are rejected, and HTTP/2 or
-  HTTP/3 are not offered because Redis clients speak RESP.
+- **Native TLS via rustls.** The project has one explicit dependency exception:
+  rustls and the transitive crates required to build it, vendored for offline
+  builds. Native TLS 1.3 is terminated in-process; there is no OpenSSL, cgo or
+  sidecar. TLS 1.2 and older are rejected, and HTTP/2 or HTTP/3 are not offered
+  because Redis clients speak RESP. The plaintext listener still exists and must
+  be bound to loopback/private space or firewalled. See [native TLS](tls.md).
 - **No brute-force protection.** There is no delay, lockout, connection budget per
   source or credential-attempt audit for either `requirepass` or ACL users. Use
   network policy/firewalling and strong, unique passwords. Do not expose the port
@@ -175,9 +174,9 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
    keep the root filesystem read-only. `ACL SAVE` needs a writable file/directory,
    so mount a dedicated writable volume only when runtime ACL mutation+save is
    required.
-3. Restrict ingress with a network policy or firewall. Prefer the included
-   [TLS 1.3 sidecar](tls.md) or another audited terminator for anything crossing an
-   untrusted network, and document that inner hops are plaintext.
+3. Restrict ingress with a network policy or firewall. Use the native
+   [TLS 1.3 listener](tls.md) or another audited terminator for anything crossing
+   an untrusted network, and keep the plaintext listener private.
 4. Use a long random password from a secret manager, not a short human password;
    SHA-256 comparison does not make weak passwords hard to guess offline.
 5. Rotate with authenticated `CONFIG SET requirepass`, then restart clients, and

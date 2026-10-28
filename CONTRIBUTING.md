@@ -26,7 +26,9 @@ ordinary implementation PRs have no blanket approving-review quota. See the
    ports and managed server handles; do not use fixed sleeps for readiness.
 4. Run `make test` during iteration, then `make ci` before requesting review.
    `make fmt` applies formatting. All Cargo checks/builds use the pinned toolchain,
-   lockfile and offline mode. Zero external dependencies applies to every target.
+   lockfile and offline mode. The only external dependency exception is rustls
+   and its transitive crates, vendored for offline builds and enforced by the
+   dependency-policy test.
 5. Capture the relevant `make bench`/`make compare` evidence. The separate mandatory
    PR gate applies a scoped shared-runner throughput threshold, not a stable-hardware
    SLO or universal win. Preserve uncertainty, CPU/tails and losses; never trade

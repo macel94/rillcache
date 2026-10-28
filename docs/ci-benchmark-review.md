@@ -71,7 +71,7 @@ not production traffic or a test of the complete Redis feature set.
 The follow-up implemented atomic conditional SET (`NX`/`XX`), with racing-client,
 binary/empty data, invalid-option and payload-budget tests. Its rejection/update
 paths have reply-validated TCP and core benchmarks. No unsafe project code or
-external Rust dependency is permitted to obtain better numbers.
+Rust dependency outside the vendored rustls exception is permitted to obtain better numbers.
 
 ## Corrected comparison: b654fa6
 
@@ -146,7 +146,7 @@ switches alongside PING/SET/GET before selecting a bounded, safe-standard-librar
 I/O change. It must preserve binary safety, connection/frame/payload limits,
 backpressure, shutdown and multi-key atomicity, and measure idle CPU plus tail
 latency rather than maximizing a single throughput number. Unsafe code, FFI or
-external Rust dependencies are not an escape hatch.
+Rust dependencies outside the vendored rustls exception are not an escape hatch.
 
 ## CPU/RSS/scheduling investigation: 10d56ec
 

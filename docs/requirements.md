@@ -9,8 +9,10 @@ increments; it is not a claim of full Redis compatibility.
   pointer manipulation, custom allocator, native extension or build script.
   Safe standard-library APIs are allowed; the standard library/runtime/OS have
   internals outside this project's code and are not claimed to contain no unsafe.
-- **Zero external Rust dependencies**, including build, development, test and
-  benchmark dependencies. The dependency-policy test inspects all targets/features.
+- **One external Rust dependency exception:** rustls and the transitive crates
+  required to build it, vendored for offline builds. No other build, development,
+  test or benchmark dependency is permitted. The dependency-policy test inspects
+  all targets/features and rejects anything outside the rustls allowlist.
 - All project code is AI-generated. Human review, product judgment and test-based
   validation remain central. Automation does not replace that validation.
 - Compatibility is incremental, byte-oriented and demonstrated by tests.
@@ -122,7 +124,7 @@ reason to couple all future commands into a single large story.
 | S97 | As an operator, I can change the connection limit at runtime so capacity can be tuned without restarting or diverging from `INFO clients`. | XS | R362–R364; live admission/INFO, lowering/raising, invalid values and all-mode wire tests |
 | S98 | As an operator, I can inspect truthful payload accounting and a bounded diagnosis through `MEMORY STATS`/`DOCTOR` so I do not infer RSS or allocator health. | XS | R365–R367; fields/high-water/limit, doctor states, HELP and all-mode wire tests |
 | S99 | As a transaction user, I can queue `PUBLISH` and `SPUBLISH` so `EXEC` matches Redis and messages are delivered once at execution time. | XS | R368–R370; queue/no-early-delivery, fan-out/counts, ACL and all-mode wire tests |
-| S101 | As an operator, I can terminate TLS 1.3 in front of the RESP server with a vetted standard-library implementation so that traffic crossing an untrusted network is encrypted without adding Rust dependencies or OpenSSL. | S | R374–R377; TLS 1.3-only, RESP proxy, no HTTP ALPN, mTLS, invalid config and sidecar tests |
+| S101 | As an operator, I can terminate TLS 1.3 natively with rustls so that traffic crossing an untrusted network is encrypted without OpenSSL or a sidecar. | S | R374–R377; TLS 1.3-only, RESP in-process, no HTTP ALPN, mTLS, invalid config and all-mode tests |
 | S89 | As an operator, I can identify and kill connections by their local listener address so one bound interface or proxy hop can be targeted without guessing client ports. | XS | R339–R340; local-address metadata, filtered kills and all-mode wire tests |
 | S90 | As a client of older Redis tooling, I can use `HMSET`, `ZMSCORE`, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with Redis reply shapes so existing applications do not need command rewrites. | XS | R341–R343; legacy replies, score lookup, lex ranges/LIMIT and all-mode wire tests |
 | S91 | As a worker using sorted sets as priority queues, I can block until the lowest- or highest-scored member is available across several keys so polling loops and empty spins are unnecessary. | S | R344–R346; blocking/wake/timeout, per-key ordering, transactions and all-mode wire tests |
@@ -1915,27 +1917,26 @@ and the offline upstream harness tests.
   every worker mode. Documentation shall retain that this is a process-local
   registry view with no fd/idle/buffer/memory metadata or cross-process claim.
 
-### TLS 1.3 sidecar (S101)
+### Native TLS 1.3 with rustls (S101)
 
-- **R374 (event-driven):** The Go standard-library sidecar shall terminate TLS
-  only at version 1.3, reject TLS 1.2 and older handshakes, and proxy RESP bytes
-  bidirectionally to the configured plaintext backend. It shall not offer HTTP/2,
-  HTTP/3 or any ALPN protocol because Redis clients speak RESP, not HTTP.
+- **R374 (event-driven):** The server shall expose an optional native TLS listener
+  that accepts TLS 1.3 only, rejects TLS 1.2 and older handshakes, carries RESP
+  directly, and offers no HTTP/2, HTTP/3 or ALPN protocol because Redis clients
+  speak RESP, not HTTP. A plaintext listener may coexist on a distinct address.
 - **R375 (state-driven):** While a certificate and private key are configured, the
-  sidecar shall serve TLS with that chain; an optional client-CA file shall require
-  and verify client certificates. It shall enforce positive connection, handshake
-  and backend-dial bounds, close excess connections, and handle SIGINT/SIGTERM by
-  stopping accepts, draining active proxies up to the shutdown deadline, then
-  force-closing leftovers.
+  listener shall serve TLS with that chain; an optional client-CA file shall require
+  and verify client certificates. It shall enforce positive handshake bounds and
+  shared client admission, and join TLS workers on shutdown.
 - **R376 (unwanted behavior):** Missing/invalid certificate material, invalid CA
-  bundles, non-positive limits or invalid durations shall fail startup with a
-  bounded error. The sidecar shall use no OpenSSL, cgo or external Go modules, and
-  the Rust server dependency/safety policy shall remain unchanged.
-- **R377 (ubiquitous):** Tests shall cover a TLS 1.3 RESP echo, TLS 1.2 rejection,
-  absence of HTTP ALPN, required client-certificate authentication, configuration
-  validation and graceful shutdown documentation. Documentation shall retain the
-  absence of native Rust TLS, SNI/hot reload, backend authentication, proxy-aware
-  client addresses and any durability/HA claim.
+  bundles, a TLS listener on the plaintext address, non-positive handshake
+  timeouts or TLS files without a listener shall fail startup with a bounded error.
+  The only external Rust dependency exception shall be rustls and its required
+  transitive crates; project code remains unsafe-free and FFI-free.
+- **R377 (ubiquitous):** Tests shall cover TLS 1.3 RESP in every execution mode,
+  plaintext coexistence, TLS 1.2 rejection, absence of HTTP ALPN, required
+  client-certificate authentication and invalid configuration. Documentation shall
+  retain the absence of SNI/hot reload, OCSP/CRL, client-cert-to-ACL mapping,
+  replication TLS and any durability/HA claim.
 
 ### Development and delivery
 
@@ -2020,7 +2021,7 @@ and the offline upstream harness tests.
   clobber newer results. Publication shall stage only report paths, never force-
   push source changes, and retain a link to the last successful numeric report.
 - **R56 (ubiquitous):** Reporting tests shall run offline without credentials or
-  external Rust dependencies. Benchmarking/inference jobs shall not have repository
+  external Rust dependencies outside the rustls exception. Benchmarking/inference jobs shall not have repository
   write permission; a separate default-branch publication job alone shall receive
   the narrowly scoped permission needed to push generated Markdown.
 
@@ -2360,8 +2361,8 @@ Not implemented or implied by the completed increments:
    language clients; add command discovery and multiple databases only as separate
    compatible increments.
 2. First-argument command rules, brute-force controls and a persistent audit path.
-   The Go TLS 1.3 sidecar provides the current transport-encryption boundary;
-   native Rust TLS, SNI/hot reload and independent security review remain separate.
+   Native TLS 1.3 via rustls provides the current transport-encryption boundary;
+   SNI/hot reload, OCSP/CRL and independent security review remain separate.
    Durability completeness, AOF rewrite/RDB, backup/restore drills and disk-fault
    recovery are explicitly deferred for this phase.
 3. Richer data types, scripts, pub/sub, expanded streams, replication and
@@ -2374,7 +2375,7 @@ Not implemented or implied by the completed increments:
    as a no-key-map control. Evaluate
    a safe readiness boundary before speculative sharding; retain idle CPU,
    backpressure, shutdown and multi-key atomicity gates. Unsafe project code and
-   external Rust dependencies remain forbidden.
+   external Rust dependencies outside the vendored rustls exception remain forbidden.
 5. Controlled-hardware performance budgets and repeated current-release comparisons;
    later, richer types, pub/sub and additional stream capabilities driven by product judgment.
 

@@ -8,8 +8,9 @@ use rillcache::{Config, Server};
 
 mod healthcheck;
 
-const HELP: &str = "rillcache — safe Rust, standard library only\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Numeric socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH and an append-only journal; no native TLS,\nRDB format, eviction or replication. The standalone binary binds to loopback by\ndefault.";
+const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
+#[allow(clippy::large_enum_variant)]
 enum Options {
     Run(Config),
     Help,
@@ -53,7 +54,12 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--dir"
             | "--maxmemory-policy"
             | "--notify-keyspace-events"
-            | "--error-dialect" => {
+            | "--error-dialect"
+            | "--tls-bind"
+            | "--tls-cert-file"
+            | "--tls-key-file"
+            | "--tls-client-ca-file"
+            | "--tls-handshake-timeout-ms" => {
                 let value = arguments
                     .next()
                     .ok_or_else(|| format!("missing value for {option}"))?;
@@ -135,6 +141,22 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                             rillcache::engine::NotifyFlags::parse(value.as_bytes())
                                 .ok_or("--notify-keyspace-events requires supported classes")?;
                     }
+                    "--tls-bind" => {
+                        let address = value
+                            .parse::<SocketAddr>()
+                            .map_err(|_| "--tls-bind requires a numeric IP:port address")?;
+                        if address == config.bind_addr {
+                            return Err("--tls-bind must differ from --bind".into());
+                        }
+                        config.tls_bind_addr = Some(address);
+                    }
+                    "--tls-cert-file" => config.tls_cert_file = Some(value.into()),
+                    "--tls-key-file" => config.tls_key_file = Some(value.into()),
+                    "--tls-client-ca-file" => config.tls_client_ca_file = Some(value.into()),
+                    "--tls-handshake-timeout-ms" => {
+                        config.tls_handshake_timeout =
+                            Duration::from_millis(positive(&option, &value)? as u64)
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -203,6 +225,9 @@ fn main() -> ExitCode {
                 env!("CARGO_PKG_VERSION"),
                 server.local_addr()?
             );
+            if let Some(addr) = server.tls_local_addr()? {
+                eprintln!("rillcache TLS 1.3 listening on {addr}");
+            }
             server.run()
         }) {
             Ok(()) => ExitCode::SUCCESS,
@@ -221,6 +246,49 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tls_options_parse_and_require_a_distinct_listener() {
+        let Options::Run(config) = options(
+            [
+                "--tls-bind",
+                "127.0.0.1:6380",
+                "--tls-cert-file",
+                "server.pem",
+                "--tls-key-file",
+                "server.key",
+                "--tls-client-ca-file",
+                "ca.pem",
+                "--tls-handshake-timeout-ms",
+                "2500",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap() else {
+            panic!("expected TLS config");
+        };
+        assert_eq!(
+            config.tls_bind_addr,
+            Some("127.0.0.1:6380".parse().unwrap())
+        );
+        assert_eq!(
+            config.tls_cert_file.as_deref(),
+            Some(std::path::Path::new("server.pem"))
+        );
+        assert_eq!(
+            config.tls_key_file.as_deref(),
+            Some(std::path::Path::new("server.key"))
+        );
+        assert_eq!(
+            config.tls_client_ca_file.as_deref(),
+            Some(std::path::Path::new("ca.pem"))
+        );
+        assert_eq!(config.tls_handshake_timeout, Duration::from_millis(2500));
+        assert!(
+            options(["--tls-bind", "127.0.0.1:6379"].map(str::to_owned)).is_err(),
+            "TLS listener must differ from the plaintext listener"
+        );
+    }
 
     #[test]
     fn standalone_defaults_and_appended_container_options_are_distinct() {
