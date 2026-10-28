@@ -68,7 +68,7 @@ redis-cli/library handshake interoperability is not yet verified.
 
 Deliberately not supported: empty/null request arrays, other RESP3 types and
 pushes, commands beyond the documented collection/stream subsets, nonzero SELECT
-indices, native TLS, RDB/AOF-rewrite compatibility, replication, clustering,
+indices, TLS hardening (SNI/hot reload/OCSP), RDB/AOF-rewrite compatibility, replication, clustering,
 sharded pub/sub, keyspace notifications and scripts. Cluster mode,
 multi-database, and arbitrary Redis AOF/RDB files are not accepted.
 Single-password and multi-user ACL-file authentication are supported with

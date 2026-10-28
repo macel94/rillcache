@@ -42,7 +42,7 @@ This is a collaboration between a human and AI:
 
 - **Language:** Rust
 - **Dependencies:** None beyond the Rust standard library and runtime, including tests and benchmarks
-- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. Safe standard-library APIs are allowed; their internals are outside this policy's scope.
+- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. The sole external dependency exception is rustls and the transitive crates required to build it; they are vendored for offline builds. Safe standard-library APIs are allowed; their internals are outside this policy's scope.
 - **Compatibility target:** Redis protocol and behavior, developed incrementally
 - **Performance:** Aim to outperform current Redis/Valkey implementations, demonstrated by reproducible measurements—not assumed from the language choice.
 
@@ -171,11 +171,11 @@ multi-user ACL file (`--aclfile`) with hashed passwords, ordered
 command/category rules, declared read/write key patterns and atomic `ACL SAVE`/`LOAD`.
 `NOAUTH`/`NOPERM` are checked before store access and apply to live connections;
 `%R~`/`%W~`/`%RW~` scope reads and writes per key pattern. Persistent/centralized
-audit, brute-force controls and native Rust TLS remain separate security gates;
-ACL selectors group command/key/channel rules and channel patterns are enforced for
-pub/sub. A Go standard-library TLS 1.3 sidecar ([`tlsproxy`](docs/tls.md), no
-OpenSSL or Rust dependencies) terminates TLS for RESP; it intentionally does not
-offer HTTP/2 or HTTP/3.
+audit, brute-force controls and TLS hardening (SNI/hot reload/OCSP) remain
+separate security gates; ACL selectors group command/key/channel rules and channel
+patterns are enforced for pub/sub. Native TLS 1.3 is implemented in-process with
+rustls ([`docs/tls.md`](docs/tls.md)); it intentionally does not offer HTTP/2 or
+HTTP/3.
 `ACL GENPASS`, `ACL DRYRUN` and a bounded process-local `ACL LOG` support
 credential operations and policy debugging. See
 [security](docs/security.md).
@@ -196,10 +196,10 @@ This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata,
 `SELECT 0`, disconnect-equivalent `RESET`, `CLIENT LIST`/`KILL` and honest client
 statistics; single-password and multi-user ACL authentication are implemented.
-Audit controls, native Rust TLS, brute-force protection, RDB/background-AOF
-interoperability, backup/restore drills, scripts/functions, sharded pub/sub,
-keyspace notifications, replication, clustering, and real client-library
-interoperability remain production blockers. RESP3 replies are limited to the current command
+Audit controls, TLS hardening and independent security review, brute-force
+protection, RDB/background-AOF interoperability, backup/restore drills,
+scripts/functions, sharded pub/sub, keyspace notifications, replication,
+clustering, and real client-library interoperability remain production blockers. RESP3 replies are limited to the current command
 subset's strings, integers, errors, arrays and nulls. Multi-key string operations
 are atomic under the store lock; MGET replies are capped at 2 MiB to bound
 duplicate-key amplification. It binds to loopback by default. See
@@ -225,8 +225,8 @@ Append options normally, e.g. `--threads 4`, `--requirepass-file
 /run/secrets/rillcache`, `--aclfile /run/secrets/users.acl` or
 `--appendonly yes --dir /data` with a writable volume.
 **Experimental: optional password/ACL-file authentication and opt-in append-only
-persistence; no native Rust TLS, RDB format, background compaction or replication.
-Optional TLS 1.3 termination is provided by the Go `tlsproxy` sidecar.** Keep
+persistence; no RDB format, background compaction or replication. Native TLS 1.3
+termination is available through rustls; TLS 1.2 and older are rejected.** Keep
 authentication and network isolation in place for anything beyond loopback. See [container delivery](docs/containers.md)
 for resource bounds, Kubernetes networking, digest pinning, shutdown limitations
 and GitHub's one-time public-package visibility setting.

@@ -3,13 +3,18 @@ name = "rillcache"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-description = "A safe, standard-library-only Redis-compatible server experiment"
+description = "A safe Redis-compatible server with an explicit rustls-only dependency exception"
 repository = "https://github.com/macel94/rillcache"
 publish = false
 default-run = "rillcache"
 build = false
 
-# No dependencies, including development and build dependencies.
+# Dependency policy exception: rustls and its transitive dependency set only.
+# No build, development or benchmark dependencies outside that set.
+[dependencies]
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2.2"
+
 [lints.rust]
 unsafe_code = "forbid"
 unused_must_use = "deny"

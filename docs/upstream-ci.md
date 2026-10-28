@@ -49,8 +49,8 @@ against the Rust candidate.
 Only source archives are cached, keyed by the complete pin file, and checksums
 are revalidated on every use. Extracted/compiled native trees and Cargo target
 output are **not reused** across runner images, architectures, compilers,
-features, source heads or flags. There are no external Rust dependencies to make
-registry caching useful. Compatibility builds once and shares a same-workflow
+features, source heads or flags. Rust dependencies are limited to the vendored
+rustls exception, so registry caching is not relied upon. Compatibility builds once and shares a same-workflow
 artifact (never a previous-run or privileged-workflow artifact); performance
 builds and measures all three servers in its own single job. ImageOS/ImageVersion,
 OS/kernel, CPU/affinity, memory, toolchain/compiler/linker/libc/Tcl versions,

@@ -24,7 +24,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R112 (ubiquitous):** Authentication tests shall run offline in all execution
   modes, cover pipelined rejection/order, runtime rotation, `QUIT`, RESP2/RESP3
   HELLO, secret redaction and disabled/rotated credentials. Documentation shall
-  retain the missing brute-force, audit, native-TLS, durability and
+  retain the missing brute-force, audit, TLS-hardening, durability and
   live-deauthentication boundaries; a single password is not full Redis security.
 
 ## Multi-user ACLs (S28)
@@ -50,7 +50,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
   Documentation shall retain the missing subcommand-specific categories,
-  persistent audit, rate limiting, native TLS, key-spec-blind commands and
+  persistent audit, rate limiting, TLS hardening, key-spec-blind commands and
   process-level tenant-isolation boundaries.
 
 ## ACL credentials, dry-run and denial log (S41)
@@ -129,7 +129,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   denial for a read-only credential, listing, `ACL DRYRUN`, ACL-file restart
   round-trips and every worker mode. Documentation shall retain the
   subcommand-category, dynamic-key-sandbox, persistent-audit, rate-limiting and
-  native-TLS boundaries.
+  TLS-hardening boundaries.
 
 ## First-argument command rules (S102)
 
@@ -152,24 +152,23 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   retain the absence of subcommand-specific categories, wildcards in the first
   argument and nested selectors.
 
-## TLS 1.3 sidecar (S101)
+## Native TLS 1.3 with rustls (S101)
 
-- **R374 (event-driven):** The Go standard-library sidecar shall terminate TLS
-  only at version 1.3, reject TLS 1.2 and older handshakes, and proxy RESP bytes
-  bidirectionally to the configured plaintext backend. It shall not offer HTTP/2,
-  HTTP/3 or any ALPN protocol because Redis clients speak RESP, not HTTP.
+- **R374 (event-driven):** The server shall expose an optional native TLS listener
+  that accepts TLS 1.3 only, rejects TLS 1.2 and older handshakes, carries RESP
+  directly, and offers no HTTP/2, HTTP/3 or ALPN protocol because Redis clients
+  speak RESP, not HTTP. A plaintext listener may coexist on a distinct address.
 - **R375 (state-driven):** While a certificate and private key are configured, the
-  sidecar shall serve TLS with that chain; an optional client-CA file shall require
-  and verify client certificates. It shall enforce positive connection, handshake
-  and backend-dial bounds, close excess connections, and handle SIGINT/SIGTERM by
-  stopping accepts, draining active proxies up to the shutdown deadline, then
-  force-closing leftovers.
+  listener shall serve TLS with that chain; an optional client-CA file shall require
+  and verify client certificates. It shall enforce positive handshake bounds and
+  shared client admission, and join TLS workers on shutdown.
 - **R376 (unwanted behavior):** Missing/invalid certificate material, invalid CA
-  bundles, non-positive limits or invalid durations shall fail startup with a
-  bounded error. The sidecar shall use no OpenSSL, cgo or external Go modules, and
-  the Rust server dependency/safety policy shall remain unchanged.
-- **R377 (ubiquitous):** Tests shall cover a TLS 1.3 RESP echo, TLS 1.2 rejection,
-  absence of HTTP ALPN, required client-certificate authentication, configuration
-  validation and graceful shutdown documentation. Documentation shall retain the
-  absence of native Rust TLS, SNI/hot reload, backend authentication, proxy-aware
-  client addresses and any durability/HA claim.
+  bundles, a TLS listener on the plaintext address, non-positive handshake
+  timeouts or TLS files without a listener shall fail startup with a bounded error.
+  The only external Rust dependency exception shall be rustls and its required
+  transitive crates; project code remains unsafe-free and FFI-free.
+- **R377 (ubiquitous):** Tests shall cover TLS 1.3 RESP in every execution mode,
+  plaintext coexistence, TLS 1.2 rejection, absence of HTTP ALPN, required
+  client-certificate authentication and invalid configuration. Documentation shall
+  retain the absence of SNI/hot reload, OCSP/CRL, client-cert-to-ACL mapping,
+  replication TLS and any durability/HA claim.

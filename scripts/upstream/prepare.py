@@ -78,7 +78,7 @@ def build(bundle=False):
         "binary_sha256": {name: digest(WORK / "rillcache" if name == "rillcache" else source(name) / "src" / f"{name}-server")
                           for name in ("rillcache", "redis", "valkey")},
         "generator_sha256": digest(source("redis") / "src/redis-benchmark"),
-        "candidate_features": "existing defaults; no feature flags; no external crates",
+        "candidate_features": "existing defaults; no feature flags; vendored rustls exception",
         "native_scope": "core standalone; no bundled modules, TLS or implementation unit tests",
     }
     save(WORK / "build.json", metadata)
