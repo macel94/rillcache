@@ -118,6 +118,11 @@ pub struct Config {
     /// Consecutive failed AUTH/HELLO AUTH attempts before the connection closes.
     /// Zero disables the per-connection budget.
     pub auth_failure_limit: usize,
+    /// Failed authentication attempts per peer IP before a temporary lockout.
+    /// Zero disables the per-source budget.
+    pub auth_source_limit: usize,
+    /// Per-source failure window and lockout duration in milliseconds.
+    pub auth_source_window_ms: u64,
     /// None: one blocking worker per client. Some(1..=64): fixed I/O/execution lanes.
     pub worker_threads: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
@@ -163,6 +168,8 @@ impl std::fmt::Debug for Config {
             .field("bind_addr", &self.bind_addr)
             .field("max_clients", &self.max_clients)
             .field("auth_failure_limit", &self.auth_failure_limit)
+            .field("auth_source_limit", &self.auth_source_limit)
+            .field("auth_source_window_ms", &self.auth_source_window_ms)
             .field("worker_threads", &self.worker_threads)
             .field("max_data_bytes", &self.max_data_bytes)
             .field("limits", &self.limits)
@@ -199,6 +206,8 @@ impl Default for Config {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 6379)),
             max_clients: 128,
             auth_failure_limit: 10,
+            auth_source_limit: 0,
+            auth_source_window_ms: 60_000,
             worker_threads: None,
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
@@ -230,6 +239,8 @@ impl Config {
             .is_some_and(|count| !(1..=64).contains(&count))
             || self.max_clients == 0
             || self.auth_failure_limit > 10_000
+            || self.auth_source_limit > 10_000
+            || self.auth_source_window_ms == 0
             || self.max_data_bytes == 0
             || self.limits.max_arguments == 0
             || self.limits.max_bulk_bytes == 0
@@ -328,6 +339,7 @@ impl Server {
         );
         store.set_max_clients(config.max_clients);
         store.set_auth_failure_limit(config.auth_failure_limit);
+        store.set_auth_source_limit(config.auth_source_limit, config.auth_source_window_ms);
         store.set_eviction_policy(config.maxmemory_policy);
         store.set_notify_flags(config.notify_keyspace_events);
         let listener = TcpListener::bind(config.bind_addr)?;
@@ -504,6 +516,7 @@ fn serve_plain(
             let sharing = sharing.clone();
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
+            session.set_peer(peer);
             session.set_pubsub_sender(sender);
             store.register_client(
                 session.id(),
@@ -591,6 +604,7 @@ fn serve_tls(
             let permit = Permit::acquire(&admitted);
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
+            session.set_peer(peer);
             session.set_pubsub_sender(sender);
             let client_id = session.id();
             store.register_client(client_id, peer, local_addr, control.try_clone()?);

@@ -5,6 +5,7 @@ use std::io::Write;
 use crate::engine::{AuthError, Store};
 use crate::protocol::encode_bulk;
 
+use super::auth::AUTH_THROTTLED;
 use super::command::arity;
 use super::{MAX_LIBRARY_FIELD_BYTES, MAX_NAME_BYTES, Protocol, Session};
 
@@ -60,11 +61,21 @@ impl Session {
             return;
         }
         if let Some((username, password)) = credentials {
+            if self
+                .peer_ip
+                .is_some_and(|source| store.auth_source_locked(source))
+            {
+                output.extend_from_slice(AUTH_THROTTLED);
+                return;
+            }
             match store.authenticate_user(Some(username), password) {
                 Ok(name) => {
                     self.authenticated_user = Some(name);
                     self.failed_auth = 0;
                     self.close_requested = false;
+                    if let Some(source) = self.peer_ip {
+                        store.reset_auth_source(source);
+                    }
                 }
                 Err(AuthError::NoPassword) => {
                     output.extend_from_slice(
@@ -76,6 +87,9 @@ impl Session {
                     output.extend_from_slice(
                         b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
                     );
+                    if let Some(source) = self.peer_ip {
+                        store.note_auth_source_failure(source);
+                    }
                     self.note_auth_failure(store);
                     return;
                 }

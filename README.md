@@ -171,7 +171,7 @@ multi-user ACL file (`--aclfile`) with hashed passwords, ordered
 command/category rules, declared read/write key patterns and atomic `ACL SAVE`/`LOAD`.
 `NOAUTH`/`NOPERM` are checked before store access and apply to live connections;
 `%R~`/`%W~`/`%RW~` scope reads and writes per key pattern. Centralized/off-host
-audit shipping, tamper-evident signing, per-source/global rate limiting and TLS
+audit shipping, tamper-evident signing, global/cross-process rate limiting and TLS
 hardening (SNI/hot reload/OCSP) remain separate security gates; ACL selectors group command/key/channel rules and channel
 patterns are enforced for pub/sub. Native TLS 1.3 is implemented in-process with
 rustls ([`docs/tls.md`](docs/tls.md)); it intentionally does not offer HTTP/2 or
@@ -198,7 +198,7 @@ supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata,
 `SELECT 0`, disconnect-equivalent `RESET`, `CLIENT LIST`/`KILL` and honest client
 statistics; single-password and multi-user ACL authentication are implemented.
 Centralized audit shipping, TLS hardening and independent security review,
-per-source/global rate limiting, RDB/background-AOF interoperability, backup/restore drills,
+global/cross-process rate limiting, RDB/background-AOF interoperability, backup/restore drills,
 scripts/functions, sharded pub/sub, keyspace notifications, replication,
 clustering, and real client-library interoperability remain production blockers. RESP3 replies are limited to the current command
 subset's strings, integers, errors, arrays and nulls. Multi-key string operations

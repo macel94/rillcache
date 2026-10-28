@@ -11,6 +11,7 @@ mod acl_log;
 mod administration;
 mod audit;
 mod auth;
+mod auth_guard;
 mod bitfield;
 mod blocking;
 mod clients;
@@ -153,6 +154,8 @@ pub struct Store {
     client_pause: std::sync::atomic::AtomicU64,
     max_clients: std::sync::atomic::AtomicUsize,
     auth_failure_limit: usize,
+    auth_source_limit: usize,
+    auth_guard: std::sync::Mutex<auth_guard::AuthGuard>,
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
     auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64,
@@ -230,6 +233,8 @@ impl Store {
             client_pause: std::sync::atomic::AtomicU64::new(0),
             max_clients: std::sync::atomic::AtomicUsize::new(128),
             auth_failure_limit: 10,
+            auth_source_limit: 0,
+            auth_guard: std::sync::Mutex::new(auth_guard::AuthGuard::new(0, 60_000)),
             latency_monitor_threshold_ms: std::sync::atomic::AtomicU64::new(
                 latency::DEFAULT_THRESHOLD_MS,
             ),
@@ -630,6 +635,35 @@ impl Store {
 
     pub fn set_auth_failure_limit(&mut self, limit: usize) {
         self.auth_failure_limit = limit;
+    }
+
+    pub fn set_auth_source_limit(&mut self, limit: usize, window_ms: u64) {
+        self.auth_source_limit = limit;
+        if let Ok(guard) = self.auth_guard.get_mut() {
+            guard.configure(limit, window_ms);
+        }
+    }
+
+    pub fn auth_source_limit(&self) -> usize {
+        self.auth_source_limit
+    }
+
+    pub fn auth_source_locked(&self, source: std::net::IpAddr) -> bool {
+        self.auth_guard
+            .lock()
+            .is_ok_and(|mut guard| guard.locked(source))
+    }
+
+    pub fn note_auth_source_failure(&self, source: std::net::IpAddr) {
+        if let Ok(mut guard) = self.auth_guard.lock() {
+            guard.note_failure(source);
+        }
+    }
+
+    pub fn reset_auth_source(&self, source: std::net::IpAddr) {
+        if let Ok(mut guard) = self.auth_guard.lock() {
+            guard.reset(source);
+        }
     }
 
     pub fn set_eviction_policy(&self, policy: EvictionPolicy) -> bool {
