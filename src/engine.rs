@@ -19,6 +19,7 @@ mod collections;
 mod commands;
 mod data;
 mod discovery;
+mod dispatch;
 mod error_dialect;
 pub(crate) use discovery::is_write_command;
 mod eviction;
@@ -60,7 +61,6 @@ pub use error_dialect::ErrorDialect;
 pub use eviction::EvictionPolicy;
 pub use journal::FsyncPolicy;
 pub use notify::{Category as NotifyCategory, NotifyFlags};
-use options::{Condition, ExpiryKind, SetOptions};
 pub(crate) use streams::{
     XReadGroupOptions, XReadGroupOutcome, XReadGroupStart, XReadOutcome, parse_xread,
     parse_xreadgroup, xread_reply, xreadgroup_reply,
@@ -329,7 +329,7 @@ impl Store {
     /// Dispatch without the transaction gate; only `EXEC` may call this while
     /// holding the gate's write side.
     pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        // Ordinary data commands bypass unrelated specialized module dispatch.
+        // PING is the hottest command and stays ahead of all family routing.
         if let Some(command) = arguments.first() {
             if command.eq_ignore_ascii_case(b"PING") {
                 match arguments.len() {
@@ -339,228 +339,14 @@ impl Store {
                 }
                 return Action::Continue;
             }
-            if command.eq_ignore_ascii_case(b"GET") {
-                if arguments.len() != 2 {
-                    arity("get", output);
-                } else {
-                    self.get(arguments[1], output);
-                }
-                return Action::Continue;
-            }
-            if command.eq_ignore_ascii_case(b"SET") {
-                if arguments.len() < 3 {
-                    arity("set", output);
-                } else {
-                    match SetOptions::parse(&arguments[3..], false) {
-                        Ok(options) => {
-                            self.set(arguments[1], arguments[2], options, "set", false, output)
-                        }
-                        Err(error) => output.extend_from_slice(error),
-                    }
-                }
-                return Action::Continue;
-            }
-            if command.eq_ignore_ascii_case(b"ECHO") {
-                if arguments.len() == 2 {
-                    encode_bulk(Some(arguments[1]), output);
-                } else {
-                    arity("echo", output);
-                }
-                return Action::Continue;
+            // GET/SET/ECHO are the measured hot path. Keep the single string
+            // implementation, but call its small inlined entry directly so the
+            // one-CPU pipeline-1 path does not pay for a family router call.
+            if let Some(action) = dispatch::hot_string(self, command, arguments, output) {
+                return action;
             }
         }
-        let Some(command) = arguments.first() else {
-            output.extend_from_slice(b"-ERR empty command\r\n");
-            return Action::Continue;
-        };
-        if command.eq_ignore_ascii_case(b"PUBLISH") {
-            if arguments.len() != 3 {
-                arity("publish", output);
-            } else {
-                integer(
-                    i64::try_from(self.publish(arguments[1], arguments[2])).unwrap_or(i64::MAX),
-                    output,
-                );
-            }
-        } else if command.eq_ignore_ascii_case(b"SPUBLISH") {
-            if arguments.len() != 3 {
-                arity("spublish", output);
-            } else {
-                integer(
-                    i64::try_from(self.publish_shard(arguments[1], arguments[2]))
-                        .unwrap_or(i64::MAX),
-                    output,
-                );
-            }
-        } else if self.execute_collection_config(arguments, output)
-            || self.execute_admin(arguments, output)
-            || self.execute_scan(arguments, output)
-            || self.execute_discovery(arguments, output)
-            || self.execute_multikey(arguments, output)
-            || self.execute_streams(arguments, output)
-        {
-            return Action::Continue;
-        } else if command.eq_ignore_ascii_case(b"QUIT") {
-            if arguments.len() == 1 {
-                output.extend_from_slice(b"+OK\r\n");
-                return Action::Close;
-            }
-            arity("quit", output);
-        } else if command.eq_ignore_ascii_case(b"DELEX") {
-            self.delex(arguments, false, output);
-        } else if command.eq_ignore_ascii_case(b"DELIFEQ") {
-            self.delex(arguments, true, output);
-        } else if command.eq_ignore_ascii_case(b"DIGEST") {
-            if arguments.len() == 2 {
-                self.digest(arguments[1], output);
-            } else {
-                arity("digest", output);
-            }
-        } else if command.eq_ignore_ascii_case(b"DEL") || command.eq_ignore_ascii_case(b"UNLINK") {
-            if arguments.len() < 2 {
-                arity(
-                    if command.eq_ignore_ascii_case(b"UNLINK") {
-                        "unlink"
-                    } else {
-                        "del"
-                    },
-                    output,
-                );
-            } else if let Ok(mut data) = self.data.write() {
-                let now = self.now(&data);
-                let mut count = 0;
-                for key in &arguments[1..] {
-                    data.expire_key(key, now);
-                    count += i64::from(data.remove(key).is_some());
-                }
-                integer(count, output);
-            } else {
-                internal_error(output);
-            }
-        } else if command.eq_ignore_ascii_case(b"EXISTS") {
-            if arguments.len() < 2 {
-                arity("exists", output);
-            } else {
-                self.exists(&arguments[1..], output);
-            }
-        } else if command.eq_ignore_ascii_case(b"GETEX") {
-            if arguments.len() < 2 {
-                arity("getex", output);
-            } else {
-                match SetOptions::parse(&arguments[2..], true) {
-                    Ok(options) => self.getex(arguments[1], options, output),
-                    Err(error) => output.extend_from_slice(error),
-                }
-            }
-        } else if command.eq_ignore_ascii_case(b"GETDEL")
-            || command.eq_ignore_ascii_case(b"PERSIST")
-        {
-            let name = if command.eq_ignore_ascii_case(b"GETDEL") {
-                "getdel"
-            } else {
-                "persist"
-            };
-            if arguments.len() != 2 {
-                arity(name, output);
-            } else if name == "getdel" {
-                self.getdel(arguments[1], output);
-            } else {
-                self.persist(arguments[1], output);
-            }
-        } else if let Some((_, name, kind)) = [
-            (b"SETEX".as_slice(), "setex", ExpiryKind::Ex),
-            (b"PSETEX".as_slice(), "psetex", ExpiryKind::Px),
-        ]
-        .into_iter()
-        .find(|(token, _, _)| command.eq_ignore_ascii_case(token))
-        {
-            if arguments.len() != 4 {
-                arity(name, output);
-            } else {
-                self.set(
-                    arguments[1],
-                    arguments[3],
-                    SetOptions {
-                        expiry: Some((kind, arguments[2])),
-                        ..SetOptions::default()
-                    },
-                    name,
-                    false,
-                    output,
-                );
-            }
-        } else if command.eq_ignore_ascii_case(b"SETNX") || command.eq_ignore_ascii_case(b"GETSET")
-        {
-            let nx = command.eq_ignore_ascii_case(b"SETNX");
-            let name = if nx { "setnx" } else { "getset" };
-            if arguments.len() != 3 {
-                arity(name, output);
-            } else {
-                self.set(
-                    arguments[1],
-                    arguments[2],
-                    SetOptions {
-                        condition: if nx {
-                            Condition::Missing
-                        } else {
-                            Condition::Always
-                        },
-                        get: !nx,
-                        ..SetOptions::default()
-                    },
-                    name,
-                    nx,
-                    output,
-                );
-            }
-        } else if let Some((_, name, ms, absolute)) = [
-            (b"TTL".as_slice(), "ttl", false, false),
-            (b"PTTL".as_slice(), "pttl", true, false),
-            (b"EXPIRETIME".as_slice(), "expiretime", false, true),
-            (b"PEXPIRETIME".as_slice(), "pexpiretime", true, true),
-        ]
-        .into_iter()
-        .find(|(token, _, _, _)| command.eq_ignore_ascii_case(token))
-        {
-            if arguments.len() != 2 {
-                arity(name, output);
-            } else {
-                self.ttl(arguments[1], ms, absolute, output);
-            }
-        } else if let Some((_, name, seconds, absolute)) = [
-            (b"EXPIRE".as_slice(), "expire", true, false),
-            (b"PEXPIRE".as_slice(), "pexpire", false, false),
-            (b"EXPIREAT".as_slice(), "expireat", true, true),
-            (b"PEXPIREAT".as_slice(), "pexpireat", false, true),
-        ]
-        .into_iter()
-        .find(|(token, _, _, _)| command.eq_ignore_ascii_case(token))
-        {
-            self.expire(arguments, name, seconds, absolute, output);
-        } else if let Some((_, name)) = [
-            (b"INCR".as_slice(), "incr"),
-            (b"DECR".as_slice(), "decr"),
-            (b"INCRBY".as_slice(), "incrby"),
-            (b"DECRBY".as_slice(), "decrby"),
-        ]
-        .into_iter()
-        .find(|(token, _)| command.eq_ignore_ascii_case(token))
-        {
-            self.increment(arguments, name, output);
-        } else if !self.execute_keyspace(arguments, output)
-            && !self.execute_string_ranges(arguments, output)
-            && !self.execute_bitfield(arguments, output)
-            && !self.execute_geo(arguments, output)
-            && !self.execute_sort(arguments, output)
-            && !self.execute_string_algorithms(arguments, output)
-            && !self.execute_hll(arguments, output)
-            && !self.execute_collection_commands(arguments, output)
-            && !self.execute_unsupported(arguments, output)
-            && !self.execute_collections(arguments, output)
-        {
-            output.extend_from_slice(b"-ERR unknown command\r\n");
-        }
-        Action::Continue
+        dispatch::route(self, arguments, output)
     }
 
     /// Command-table arity used for MULTI queue-time validation and discovery.
