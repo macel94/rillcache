@@ -50,7 +50,7 @@ Each EARS section lives in the area file below; requirement IDs remain unique ac
 - [Data and strings](requirements/data-and-strings.md) — strings, expiry, integer counters, transactions, bitmaps and bitfields.
 - [Collections](requirements/collections.md) — lists, sets, hashes, sorted sets, geospatial, HyperLogLog and sorting.
 - [Streams](requirements/streams.md) — stream retention, groups, pending entries, ranges and blocking reads.
-- [Security](requirements/security.md) — password authentication, ACLs and the TLS 1.3 sidecar.
+- [Security](requirements/security.md) — password authentication, ACLs and native TLS 1.3 via rustls.
 - [Persistence](requirements/persistence.md) — journal durability, compaction, fsync policy, persistence status and RDB/replication boundaries.
 - [Observability](requirements/observability.md) — statistics, discovery, slow log, latency, MONITOR, pub/sub and notifications.
 - [Delivery and performance](requirements/delivery.md) — CI, containers, benchmark evidence, scheduling experiments and the PR merge gate.
