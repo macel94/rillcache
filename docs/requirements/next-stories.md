@@ -8,8 +8,9 @@ Not implemented or implied by the completed increments:
    clients; pinned `redis-cli` RESP2/RESP3/auth coverage is implemented (S103).
    Add command discovery and multiple databases only as separate compatible
    increments.
-2. Brute-force controls and centralized/off-host audit shipping. A bounded local
-   ACL denial audit is implemented (S104).
+2. Per-source/global rate limiting and centralized/off-host audit shipping. A
+   per-connection failed-auth budget (S105) and a bounded local ACL denial audit
+   (S104) are implemented.
    Native TLS 1.3 via rustls provides the current transport-encryption boundary;
    SNI/hot reload, OCSP/CRL and independent security review remain separate.
    Durability completeness, AOF rewrite/RDB, backup/restore drills and disk-fault

@@ -51,6 +51,8 @@ pub struct Session {
     multi: Option<Multi>,
     watched: WatchState,
     authenticated_user: Option<Vec<u8>>,
+    failed_auth: usize,
+    close_requested: bool,
     pubsub_sender: Option<SyncSender<Vec<u8>>>,
     monitoring: bool,
     pubsub_channels: BTreeSet<Vec<u8>>,
@@ -83,6 +85,8 @@ impl Session {
             multi: None,
             watched: WatchState::default(),
             authenticated_user: None,
+            failed_auth: 0,
+            close_requested: false,
             pubsub_sender: None,
             monitoring: false,
             pubsub_channels: BTreeSet::new(),
@@ -178,6 +182,8 @@ impl Session {
         }
         self.protocol = Protocol::Resp2;
         self.authenticated_user = None;
+        self.failed_auth = 0;
+        self.close_requested = false;
         self.sync_client_metadata(store);
         output.extend_from_slice(b"+RESET\r\n");
         Action::Continue

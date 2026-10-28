@@ -24,7 +24,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R112 (ubiquitous):** Authentication tests shall run offline in all execution
   modes, cover pipelined rejection/order, runtime rotation, `QUIT`, RESP2/RESP3
   HELLO, secret redaction and disabled/rotated credentials. Documentation shall
-  retain the missing brute-force, centralized-audit, TLS-hardening, durability and
+  retain the missing per-source rate limiting, centralized-audit, TLS-hardening, durability and
   live-deauthentication boundaries; a single password is not full Redis security.
 
 ## Multi-user ACLs (S28)
@@ -50,7 +50,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
   Documentation shall retain the missing subcommand-specific categories,
-  centralized audit shipping, rate limiting, TLS hardening, key-spec-blind
+  centralized audit shipping, per-source rate limiting, TLS hardening, key-spec-blind
   commands and process-level tenant-isolation boundaries.
 
 ## ACL credentials, dry-run and denial log (S41)
@@ -73,7 +73,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   permission and all-mode tests shall cover random output length/hex, invalid bits,
   allowed/denied dry runs, unknown users, no-log DRYRUN behavior, key/channel/
   command/noauth aggregation, reset and bounded counts. Documentation shall retain
-  the absence of replicated/centralized audit shipping, rate limiting, token/
+  the absence of replicated/centralized audit shipping, per-source rate limiting, token/
   timeout metadata and exhaustive security-event coverage.
 
 ## ACL selectors (S86)
@@ -98,7 +98,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   writes with broad reads, `clearselectors`/`reset`, atomic rejection, LIST/
   GETUSER exposure, ACL-file restart round-trips and every worker mode.
   Documentation shall retain the absence of nested selectors, subcommand
-  categories, rate limiting, centralized audit shipping and native TLS.
+  categories, per-source rate limiting, centralized audit shipping and native TLS.
 
 ## ACL read/write key modes (S88)
 
@@ -173,7 +173,27 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Tests shall cover line shape, hex/binary safety, truncation bounds, one-generation
   rotation, restart appends, startup failure, write-failure accounting and every
   worker mode. Documentation shall retain the absence of fsync-per-line,
-  off-host shipping, tamper-evident signing, rate limiting and centralized audit.
+  off-host shipping, tamper-evident signing, per-source rate limiting and centralized audit.
+
+## Per-connection failed-auth budget (S105)
+
+- **R387 (event-driven):** When `--auth-failure-limit N` is greater than zero,
+  the server shall count consecutive failed `AUTH` and `HELLO ... AUTH`
+  credential attempts per connection. On the `N`th failure it shall send the
+  standard bounded `WRONGPASS` reply and then close that connection. A successful
+  authentication or `RESET` shall clear the counter; arity errors, `NoPassword`
+  configuration errors and internal errors shall not consume the budget.
+- **R388 (state-driven):** A zero limit shall disable the budget. The counter
+  shall be connection-local, so exhausting one connection shall not close or
+  throttle another. The server shall not claim a per-source or global rate limit,
+  delay, username lockout or credential-attempt audit beyond the optional local
+  denial trail.
+- **R389 (ubiquitous):** Tests shall cover the exact limit, reset-on-success,
+  `RESET` clearing, `HELLO` sharing the same counter, zero disabling, connection
+  isolation, no secret reflection and every worker mode. Documentation shall
+  retain the absence of per-source/global rate limiting, delayed responses,
+  account lockout, centralized audit shipping and a complete brute-force
+  deployment boundary.
 
 ## Native TLS 1.3 with rustls (S101)
 

@@ -4,9 +4,9 @@ Rillcache supports either one operator-configured password for the implicit Redi
 `default` user or a Redis-style ACL file with multiple users, password hashes,
 command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
-design. It does not add TLS hardening (SNI/hot reload/OCSP), rate limiting,
-centralized/off-host audit shipping, tamper-evident audit signing, or credential
-encryption at rest.
+design. It adds a per-connection failed-`AUTH` budget but not per-source/global
+rate limiting, TLS hardening (SNI/hot reload/OCSP), centralized/off-host audit
+shipping, tamper-evident audit signing, or credential encryption at rest.
 
 ## What is implemented
 
@@ -141,7 +141,8 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 
 - **Not full Redis ACL.** Subcommand-specific categories, nested selectors,
   dynamic key-sandbox rules, centralized/off-host audit shipping, tamper-evident
-  signing, rate limiting and TLS hardening (SNI/hot reload/OCSP) are absent.
+  signing, per-source/global rate limiting and TLS hardening (SNI/hot reload/OCSP)
+  are absent.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported.
@@ -168,10 +169,14 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
   sidecar. TLS 1.2 and older are rejected, and HTTP/2 or HTTP/3 are not offered
   because Redis clients speak RESP. The plaintext listener still exists and must
   be bound to loopback/private space or firewalled. See [native TLS](tls.md).
-- **No brute-force protection.** There is no delay, lockout, connection budget per
-  source or credential-attempt audit for either `requirepass` or ACL users. Use
-  network policy/firewalling and strong, unique passwords. Do not expose the port
-  directly to untrusted clients.
+- **Per-connection failed-auth budget, not per-source rate limiting.**
+  `--auth-failure-limit N` (default 10, `0` disables) closes a connection after
+  `N` consecutive failed `AUTH` or `HELLO ... AUTH` attempts; a successful
+  authentication or `RESET` clears the counter. The standard `WRONGPASS` reply is
+  sent before the close. This limits guessing on one connection, but a client can
+  reconnect, and there is no delay, per-source/global lockout or credential-attempt
+  audit beyond the optional local denial trail. Use network policy/firewalling and
+  strong, unique passwords; do not expose the port directly to untrusted clients.
 - **No live deauthentication.** Rotating or disabling the password affects new
   authentication decisions; a connection that already authenticated remains
   authenticated, as in Redis. Close/reconnect administrative clients when rotating.

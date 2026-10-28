@@ -61,7 +61,11 @@ impl Session {
         }
         if let Some((username, password)) = credentials {
             match store.authenticate_user(Some(username), password) {
-                Ok(name) => self.authenticated_user = Some(name),
+                Ok(name) => {
+                    self.authenticated_user = Some(name);
+                    self.failed_auth = 0;
+                    self.close_requested = false;
+                }
                 Err(AuthError::NoPassword) => {
                     output.extend_from_slice(
                         b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
@@ -72,6 +76,7 @@ impl Session {
                     output.extend_from_slice(
                         b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
                     );
+                    self.note_auth_failure(store);
                     return;
                 }
                 Err(AuthError::Internal) => {

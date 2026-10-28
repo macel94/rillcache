@@ -152,6 +152,7 @@ pub struct Store {
     slowlog_max_len: std::sync::atomic::AtomicUsize,
     client_pause: std::sync::atomic::AtomicU64,
     max_clients: std::sync::atomic::AtomicUsize,
+    auth_failure_limit: usize,
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
     auto_aof_rewrite_percentage: std::sync::atomic::AtomicU64,
@@ -228,6 +229,7 @@ impl Store {
             slowlog_max_len: std::sync::atomic::AtomicUsize::new(slowlog::DEFAULT_MAX_LEN),
             client_pause: std::sync::atomic::AtomicU64::new(0),
             max_clients: std::sync::atomic::AtomicUsize::new(128),
+            auth_failure_limit: 10,
             latency_monitor_threshold_ms: std::sync::atomic::AtomicU64::new(
                 latency::DEFAULT_THRESHOLD_MS,
             ),
@@ -620,6 +622,14 @@ impl Store {
 
     pub fn max_clients(&self) -> usize {
         self.max_clients.load(Ordering::Relaxed)
+    }
+
+    pub fn auth_failure_limit(&self) -> usize {
+        self.auth_failure_limit
+    }
+
+    pub fn set_auth_failure_limit(&mut self, limit: usize) {
+        self.auth_failure_limit = limit;
     }
 
     pub fn set_eviction_policy(&self, policy: EvictionPolicy) -> bool {
