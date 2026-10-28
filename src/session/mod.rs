@@ -118,13 +118,7 @@ impl Session {
             && self.blocked.is_none()
             && !self.is_subscribed()
             && !self.is_monitoring()
-            && !store.authentication_required()
-            && !store.acl_restricted()
-            && store.client_pause_mode().is_none()
-            && !store.slowlog_enabled()
-            && !store.latency_enabled()
-            && !store.commandstats_enabled()
-            && !store.monitors_active()
+            && store.plain_fast()
             && arguments.first().is_some_and(|command| {
                 command.eq_ignore_ascii_case(b"PING")
                     || command.eq_ignore_ascii_case(b"GET")
@@ -139,9 +133,16 @@ impl Session {
                     2 => crate::protocol::encode_bulk(Some(arguments[1]), output),
                     _ => arity("ping", output),
                 }
+                if output.get(start) == Some(&b'-') {
+                    store.record_error(&output[start..]);
+                }
                 return Action::Continue;
             }
-            return self.execute_store(store, arguments, output);
+            let action = self.execute_store(store, arguments, output);
+            if output.get(start) == Some(&b'-') {
+                store.record_error(&output[start..]);
+            }
+            return action;
         }
         if self.pause_command(store, arguments) {
             return Action::Continue;
