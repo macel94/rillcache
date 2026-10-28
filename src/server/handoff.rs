@@ -71,6 +71,26 @@ impl Drop for Loan {
     }
 }
 
+/// Per-connection borrower return channel. Reusing one pair avoids allocating
+/// two channel endpoints for every reply that joins a handoff epoch.
+pub(super) struct LeaseChannel {
+    home: Sender<Option<Client>>,
+    returned: Receiver<Option<Client>>,
+}
+
+impl LeaseChannel {
+    pub(super) fn new() -> Self {
+        let (home, returned) = mpsc::channel();
+        Self { home, returned }
+    }
+}
+
+/// Mutable per-connection channels used while a socket is lent.
+pub(super) struct LeaseIO<'a> {
+    pub(super) pubsub: &'a mut Receiver<Vec<u8>>,
+    pub(super) channel: &'a mut LeaseChannel,
+}
+
 struct Leadership<'a> {
     sharing: &'a Sharing,
     receiver: Receiver<Loan>,
@@ -145,7 +165,7 @@ impl Sharing {
         input: &mut Vec<u8>,
         output: &mut Vec<u8>,
         session: &mut Session,
-        receiver: &mut Receiver<Vec<u8>>,
+        io: &mut LeaseIO<'_>,
         store: &Store,
     ) -> io::Result<bool> {
         debug_assert!(output.is_empty());
@@ -168,12 +188,11 @@ impl Sharing {
             shutdown_on_drop: true,
             // The original owner waits without I/O. Move its actual receiver,
             // not a disconnected substitute, so pushes still reach this lease.
-            pubsub: std::mem::replace(receiver, std::sync::mpsc::sync_channel(1).1),
+            pubsub: std::mem::replace(io.pubsub, std::sync::mpsc::sync_channel(1).1),
         };
-        let (home, returned) = mpsc::channel();
         let loan = Loan {
             client: Some(client),
-            home,
+            home: io.channel.home.clone(),
             stopping: Arc::clone(&self.stopping),
             coordinator: false,
         };
@@ -200,7 +219,9 @@ impl Sharing {
                 store,
             );
         }
-        let Some(mut client) = returned
+        let Some(mut client) = io
+            .channel
+            .returned
             .recv()
             .map_err(|_| io::Error::other("client I/O lease lost"))?
         else {
@@ -213,7 +234,7 @@ impl Sharing {
             client.output.drain(..client.sent);
         }
         *session = std::mem::take(&mut client.session);
-        std::mem::swap(receiver, &mut client.pubsub);
+        std::mem::swap(io.pubsub, &mut client.pubsub);
         *input = std::mem::take(&mut client.input);
         *output = std::mem::take(&mut client.output);
         let closing = client.closing;

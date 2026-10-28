@@ -293,7 +293,10 @@ fn returned_partial_reply_is_not_resent_and_blocking_mode_is_restored() {
                         &mut input,
                         &mut output,
                         &mut Session::new(),
-                        &mut mpsc::channel().1,
+                        &mut LeaseIO {
+                            pubsub: &mut mpsc::channel().1,
+                            channel: &mut LeaseChannel::new(),
+                        },
                         &Store::new(100),
                     )
                     .unwrap()
@@ -348,7 +351,10 @@ fn real_push_receiver_moves_with_the_lease_and_returns_to_its_owner() {
                         &mut Vec::new(),
                         &mut Vec::new(),
                         &mut session,
-                        &mut messages,
+                        &mut LeaseIO {
+                            pubsub: &mut messages,
+                            channel: &mut LeaseChannel::new(),
+                        },
                         store_ref,
                     )
                     .unwrap()

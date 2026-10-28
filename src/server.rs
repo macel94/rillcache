@@ -810,6 +810,7 @@ fn serve_client(
     let mut input = Vec::with_capacity(8192.min(limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; 16 * 1024];
+    let mut lease_channel = handoff::LeaseChannel::new();
     let result = (|| {
         let mut subscriber_timeout = false;
         loop {
@@ -955,7 +956,10 @@ fn serve_client(
                         &mut input,
                         &mut output,
                         &mut session,
-                        &mut receiver,
+                        &mut handoff::LeaseIO {
+                            pubsub: &mut receiver,
+                            channel: &mut lease_channel,
+                        },
                         store,
                     )? {
                         return Ok(());
