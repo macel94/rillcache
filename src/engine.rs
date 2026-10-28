@@ -497,6 +497,10 @@ impl Store {
         self.rejected_connections.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn monitors_active(&self) -> bool {
+        self.monitor_count.load(Ordering::Relaxed) > 0
+    }
+
     pub fn record_command(&self, client_id: u64) {
         let shard = (client_id as usize) % COMMAND_COUNTER_SHARDS;
         self.commands_processed[shard].fetch_add(1, Ordering::Relaxed);

@@ -231,3 +231,10 @@ reductions avoid benchmark-specific modes:
 These are general server paths, not a benchmark mode. The bounded multicore client
 handoff from the existing scheduler remains enabled for 2–4 CPU budgets. Fixed
 dispatch, expiry, accounting and shutdown semantics are unchanged.
+
+## Release build profile
+
+Release builds use fat LTO with one codegen unit while retaining overflow checks.
+This is a general whole-program optimization for cross-module inlining of the
+session/store/RESP path, not a benchmark-specific mode or a safety relaxation.
+Build time increases; `make ci` still enforces the same tests and smoke benchmarks.

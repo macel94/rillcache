@@ -26,3 +26,7 @@ harness = false
 [profile.release]
 # Keep overflow checks in optimized builds too. Measure before tuning further.
 overflow-checks = true
+# Whole-program optimization matters on the one-request pipeline: it inlines
+# session dispatch, store access and RESP framing across module boundaries.
+lto = "fat"
+codegen-units = 1
