@@ -17,8 +17,12 @@ mod handoff;
 mod pool;
 mod tls;
 
-/// Busy clients may briefly lend I/O to an existing client thread on one CPU.
+/// Busy clients may briefly lend I/O to an existing managed client thread.
 pub const CLIENT_HANDOFF_IDLE_US: u64 = 50;
+/// Bound sharing to small CPU budgets; larger/unknown machines keep blocking I/O.
+pub const CLIENT_HANDOFF_MAX_CPUS: usize = 4;
+/// Small multicore budgets share busy I/O without one-CPU reply-yield hints.
+pub const CLIENT_HANDOFF_MULTICORE_POLICY_VERSION: u64 = 3;
 /// Continuous traffic cannot retain a coordinator/admission slot indefinitely.
 pub const CLIENT_HANDOFF_MAX_EPOCH_MS: u64 = 100;
 /// v2 requires recent reply activity before creating a new handoff epoch.
@@ -54,8 +58,10 @@ impl SchedulingPolicy {
     pub fn client_handoff_policy_version(self) -> u64 {
         if self.client_handoff_idle_us == 0 {
             0
-        } else {
+        } else if self.single_reply_yield {
             CLIENT_HANDOFF_POLICY_VERSION
+        } else {
+            CLIENT_HANDOFF_MULTICORE_POLICY_VERSION
         }
     }
 
@@ -81,7 +87,9 @@ impl SchedulingPolicy {
                 0
             },
             single_reply_yield: workers.is_none() && capacity == Some(1),
-            client_handoff_idle_us: if workers.is_none() && capacity == Some(1) {
+            client_handoff_idle_us: if workers.is_none()
+                && capacity.is_some_and(|cpus| (1..=CLIENT_HANDOFF_MAX_CPUS).contains(&cpus))
+            {
                 CLIENT_HANDOFF_IDLE_US
             } else {
                 0
@@ -768,7 +776,7 @@ fn serve_client(
     mut session: Session,
     store: &Store,
     context: &ClientContext<'_>,
-    receiver: Receiver<Vec<u8>>,
+    mut receiver: Receiver<Vec<u8>>,
 ) -> io::Result<()> {
     let ClientContext {
         limits,
@@ -921,7 +929,14 @@ fn serve_client(
                             "client handoff is not supported for TLS connections",
                         ));
                     };
-                    if sharing.exchange(raw, &mut input, &mut output, &mut session, store)? {
+                    if sharing.exchange(
+                        raw,
+                        &mut input,
+                        &mut output,
+                        &mut session,
+                        &mut receiver,
+                        store,
+                    )? {
                         return Ok(());
                     }
                     // A lease may return ready/partial input. Parse before reading again.
@@ -983,7 +998,7 @@ mod tests {
     #[test]
     fn scheduling_hints_are_guarded_and_permits_release_on_drop() {
         let one_cpu = SchedulingPolicy::new(None, Some(1));
-        let many_cpu = SchedulingPolicy::new(None, Some(4));
+        let many_cpu = SchedulingPolicy::new(None, Some(8));
         assert!(!SchedulingPolicy::new(None, None).single_reply_yield);
         assert_eq!(SchedulingPolicy::new(None, None).client_handoff_idle_us, 0);
         assert_eq!(many_cpu.client_handoff_idle_us, 0);
@@ -1024,6 +1039,33 @@ mod tests {
     }
 
     #[test]
+    fn small_multicore_handoffs_preserve_single_cpu_and_fixed_mode_boundaries() {
+        for capacity in [Some(0), None, Some(5), Some(8), Some(64)] {
+            let policy = SchedulingPolicy::new(None, capacity);
+            assert_eq!(policy.client_handoff_idle_us, 0);
+            assert_eq!(policy.client_handoff_policy_version(), 0);
+            assert!(!policy.single_reply_yield);
+        }
+        for cpus in 2..=CLIENT_HANDOFF_MAX_CPUS {
+            let policy = SchedulingPolicy::new(None, Some(cpus));
+            assert_eq!(policy.client_handoff_idle_us, CLIENT_HANDOFF_IDLE_US);
+            assert_eq!(policy.client_handoff_policy_version(), 3);
+            assert_eq!(policy.client_handoff_max_epoch_ms(), 100);
+            assert!(!policy.single_reply_yield);
+            assert_eq!((policy.active_poll_us, policy.run_quantum_us), (0, 0));
+            for workers in [1, 4, 64] {
+                let fixed = SchedulingPolicy::new(Some(workers), Some(cpus));
+                assert_eq!(fixed.client_handoff_idle_us, 0);
+                assert_eq!(fixed.client_handoff_policy_version(), 0);
+            }
+        }
+        assert_eq!(
+            SchedulingPolicy::new(None, Some(1)).client_handoff_policy_version(),
+            2
+        );
+    }
+
+    #[test]
     fn handle_reports_the_immutable_policy_used_by_its_workers() {
         let server = Server::bind(Config {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -1042,44 +1084,46 @@ mod tests {
 
     #[test]
     fn constrained_reply_hints_preserve_wire_order_quit_and_shutdown() {
-        let mut server = Server::bind(Config {
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
-            ..Config::default()
-        })
-        .unwrap();
-        server.policy = SchedulingPolicy::new(None, Some(1));
-        let handle = server.spawn().unwrap();
-        assert!(handle.scheduling_policy().single_reply_yield);
-        let mut first = TcpStream::connect(handle.local_addr()).unwrap();
-        let mut second = TcpStream::connect(handle.local_addr()).unwrap();
-        for stream in [&mut first, &mut second] {
-            stream.set_nodelay(true).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
+        for capacity in 1..=CLIENT_HANDOFF_MAX_CPUS {
+            let mut server = Server::bind(Config {
+                bind_addr: "127.0.0.1:0".parse().unwrap(),
+                ..Config::default()
+            })
+            .unwrap();
+            server.policy = SchedulingPolicy::new(None, Some(capacity));
+            let handle = server.spawn().unwrap();
+            assert_eq!(handle.scheduling_policy().single_reply_yield, capacity == 1);
+            let mut first = TcpStream::connect(handle.local_addr()).unwrap();
+            let mut second = TcpStream::connect(handle.local_addr()).unwrap();
+            for stream in [&mut first, &mut second] {
+                stream.set_nodelay(true).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                stream.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+                let mut reply = [0; 7];
+                stream.read_exact(&mut reply).unwrap();
+                assert_eq!(&reply, b"+PONG\r\n");
+            }
+            first
+                .write_all(&b"*1\r\n$4\r\nPING\r\n".repeat(16))
                 .unwrap();
-            stream.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
-            let mut reply = [0; 7];
-            stream.read_exact(&mut reply).unwrap();
-            assert_eq!(&reply, b"+PONG\r\n");
+            let mut replies = vec![0; 7 * 16];
+            first.read_exact(&mut replies).unwrap();
+            assert_eq!(replies, b"+PONG\r\n".repeat(16));
+            first
+                .write_all(b"*1\r\n$4\r\nQUIT\r\n*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n")
+                .unwrap();
+            let mut reply = Vec::new();
+            first.read_to_end(&mut reply).unwrap();
+            assert_eq!(reply, b"+OK\r\n");
+            second.write_all(b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n").unwrap();
+            let mut reply = [0; 5];
+            second.read_exact(&mut reply).unwrap();
+            assert_eq!(&reply, b"$-1\r\n");
+            handle.shutdown().unwrap();
+            assert_eq!(second.read(&mut [0]).unwrap(), 0);
         }
-        first
-            .write_all(&b"*1\r\n$4\r\nPING\r\n".repeat(16))
-            .unwrap();
-        let mut replies = vec![0; 7 * 16];
-        first.read_exact(&mut replies).unwrap();
-        assert_eq!(replies, b"+PONG\r\n".repeat(16));
-        first
-            .write_all(b"*1\r\n$4\r\nQUIT\r\n*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n")
-            .unwrap();
-        let mut reply = Vec::new();
-        first.read_to_end(&mut reply).unwrap();
-        assert_eq!(reply, b"+OK\r\n");
-        second.write_all(b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n").unwrap();
-        let mut reply = [0; 5];
-        second.read_exact(&mut reply).unwrap();
-        assert_eq!(&reply, b"$-1\r\n");
-        handle.shutdown().unwrap();
-        assert_eq!(second.read(&mut [0]).unwrap(), 0);
     }
 
     #[test]

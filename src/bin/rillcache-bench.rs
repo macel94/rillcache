@@ -878,6 +878,21 @@ mod tests {
         assert!(text.contains("\"client_handoff_idle_us\":50"));
         assert!(text.contains("\"client_handoff_policy_version\":2"));
         assert!(text.contains("\"client_handoff_max_epoch_ms\":100"));
+        let multicore = rillcache::server::SchedulingPolicy {
+            single_reply_yield: false,
+            ..policy
+        };
+        let text = report(
+            "127.0.0.1:1".parse().unwrap(),
+            &options,
+            &[],
+            None,
+            Some(multicore),
+        );
+        assert!(text.contains("\"single_reply_yield\":false"));
+        assert!(text.contains("\"client_handoff_idle_us\":50"));
+        assert!(text.contains("\"client_handoff_policy_version\":3"));
+        assert!(text.contains("\"client_handoff_max_epoch_ms\":100"));
         let policy = rillcache::server::SchedulingPolicy {
             single_reply_yield: false,
             client_handoff_idle_us: 0,

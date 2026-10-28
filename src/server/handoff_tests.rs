@@ -115,7 +115,10 @@ fn cancelled_queued_and_active_loans_close_before_waking_owners() {
 #[test]
 fn leased_clients_share_existing_execute_once_and_command_quanta() {
     let stop = Arc::new(AtomicBool::new(false));
-    let sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);
+    let mut sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);
+    // Close after exactly one bounded pass, regardless of host preemption.
+    // A production epoch may legally expire with ready input still buffered.
+    sharing.max_epoch = Duration::ZERO;
     let (sender, receiver) = mpsc::channel();
     *sharing.leader.lock().unwrap() = Some(sender.clone());
     let request = b"*2\r\n$4\r\nINCR\r\n$1\r\nk\r\n";
@@ -133,15 +136,27 @@ fn leased_clients_share_existing_execute_once_and_command_quanta() {
         },
         &store,
     );
-    let first = first_home
+    let mut first = first_home
         .recv_timeout(Duration::from_secs(3))
         .unwrap()
         .unwrap();
-    let second = second_home
+    let mut second = second_home
         .recv_timeout(Duration::from_secs(3))
         .unwrap()
         .unwrap();
-    assert!(first.input.is_empty() && second.input.is_empty());
+    for client in [&mut first, &mut second] {
+        assert_eq!(
+            client.input, request,
+            "one command must remain after the quantum"
+        );
+        assert_eq!(
+            client
+                .poll(&store, &Config::default(), &mut [0; 128])
+                .unwrap(),
+            Some(true)
+        );
+        assert!(client.input.is_empty());
+    }
     let expected_first: Vec<u8> = (1..=64)
         .chain([129])
         .flat_map(|n| format!(":{n}\r\n").into_bytes())
@@ -226,6 +241,7 @@ fn returned_partial_reply_is_not_resent_and_blocking_mode_is_restored() {
                         &mut input,
                         &mut output,
                         &mut Session::new(),
+                        &mut mpsc::channel().1,
                         &Store::new(100),
                     )
                     .unwrap()
@@ -251,6 +267,72 @@ fn returned_partial_reply_is_not_resent_and_blocking_mode_is_restored() {
         thread::sleep(Duration::from_millis(2));
         peer.write_all(b"next").unwrap();
         worker.join().unwrap();
+    });
+}
+
+#[test]
+fn real_push_receiver_moves_with_the_lease_and_returns_to_its_owner() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);
+    let (sender, receiver) = mpsc::channel();
+    *sharing.leader.lock().unwrap() = Some(sender);
+    let (client, mut peer) = pair(Vec::new());
+    let mut original = client.stream.try_clone().unwrap();
+    original.set_nonblocking(false).unwrap();
+    let (push, mut messages) = mpsc::sync_channel(8);
+    let store = Store::new(1024);
+    let mut session = Session::new();
+    session.set_pubsub_sender(push.clone());
+    let mut reply = Vec::new();
+    session.execute(&store, &[b"MONITOR"], &mut reply);
+    assert_eq!(reply, b"+OK\r\n");
+    thread::scope(|scope| {
+        let store_ref = &store;
+        let owner = scope.spawn(move || {
+            assert!(
+                !sharing
+                    .exchange(
+                        &mut original,
+                        &mut Vec::new(),
+                        &mut Vec::new(),
+                        &mut session,
+                        &mut messages,
+                        store_ref,
+                    )
+                    .unwrap()
+            );
+            assert!(session.is_monitoring());
+            for expected in [b"+queued\r\n".as_slice(), b"+after\r\n"] {
+                assert_eq!(
+                    messages.recv_timeout(Duration::from_secs(3)).unwrap(),
+                    expected
+                );
+            }
+            assert!(matches!(
+                messages.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+        });
+        let mut pending = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+        push.send(b"+during\r\n".to_vec()).unwrap();
+        assert_eq!(
+            pending
+                .client
+                .as_mut()
+                .unwrap()
+                .poll(&store, &Config::default(), &mut [0; 128])
+                .unwrap(),
+            Some(true)
+        );
+        let mut bytes = [0; 9];
+        peer.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"+during\r\n");
+        // This frame is unread when the lease returns. It must follow the same
+        // receiver home rather than being dropped with the temporary client.
+        push.send(b"+queued\r\n".to_vec()).unwrap();
+        drop(pending);
+        push.send(b"+after\r\n".to_vec()).unwrap();
+        owner.join().unwrap();
     });
 }
 
