@@ -192,16 +192,16 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   frozen-client native comparisons shall include CPU, tails, singleton/batched
   controls and oversubscribed workers; rejected/noisy experiments stay explicit.
 
-## Single-CPU client I/O handoffs (S21–S22)
+## CPU-limited client I/O handoffs (S21–S22, S-IO4)
 
-- **R89 (optional feature):** Where the bind-time capacity hint is one CPU,
+- **R89 (optional feature):** Where the bind-time capacity hint is one through four CPUs,
   managed per-client workers may lend I/O only after actual reply progress and
   while multiple clients are admitted. A new epoch shall require recent reply
   activity within its window; isolated sparse replies shall not allocate a
   lease or activate post-reply polling. An active epoch may accept new loans.
-  Fixed modes, multicore/unknown hints and an initially lone client shall retain
-  their existing policy. Quiet borrowers shall return independently while busy
-  peers continue; the coordinator shall keep its own socket serviced. Quiet
+  Fixed modes, hints above four CPUs, unknown hints and an initially lone client
+  shall retain their existing policy. Quiet borrowers shall return independently
+  while busy peers continue; the coordinator shall keep its own socket serviced. Quiet
   epochs shall return sockets to blocking owners rather than permanently polling.
 - **R90 (state-driven):** While a client's socket is lent, its original worker
   shall wait and perform no I/O through its handle. Exactly one lease shall own
@@ -231,6 +231,23 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   available, alongside all existing modes. Frozen-client native comparisons
   shall retain baseline/default modes, CPU budgets, singleton/batched controls,
   process CPU, whole-batch tails and regressions; no all-traffic victory follows.
+
+### Small-multicore scheduling acceptance (S-IO4)
+
+- **R-IO4A (event-driven):** When default managed clients share a known two-, three-
+  or four-CPU capacity hint, active bursts may use the existing 50 µs idle / 100 ms
+  maximum-epoch handoff path. One-CPU policy v2 shall remain unchanged; small-
+  multicore policy shall be recorded as v3 without enabling single-reply yields.
+  Default thread counts, fixed lanes, TLS transport, admission and storage
+  atomicity shall not change.
+- **R-IO4B (state-driven):** While a connection is lent, its actual push-message
+  receiver shall move with its session and socket; the original worker shall
+  perform no competing receives. When the lease returns, that same receiver and
+  any unread queued messages shall return to the owner, with no duplicate delivery.
+- **R-IO4C (unwanted behavior):** If correctness tests or either unchanged Valkey
+  gate fails, then a scheduling change shall not claim merge acceptance. CPU and
+  syscall profiles shall remain separate diagnostics, not instrumented throughput
+  wins; failed four-CPU cohorts and actual policy versions shall remain visible.
 
 ## PR-only main and scoped Valkey merge acceptance (S23–S24)
 

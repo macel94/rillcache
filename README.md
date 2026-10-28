@@ -257,9 +257,9 @@ multiple lanes/clients. This trades CPU work for fewer premature sleeps, not
 free CPU, kernel readiness or an OS fairness guarantee. Earlier four-worker,
 one-CPU tail regressions motivated this separate budget; measure real traffic
 rather than assuming more workers improve latency. Default threading is unchanged;
-a guarded bind-time single-CPU hint lets busy clients briefly lend I/O to an
-existing client thread while their owners wait. Quiet sockets return to blocking
-owners; fixed modes, multicore/unknown hints and initially lone clients keep their
+a guarded bind-time one-through-four-CPU hint lets busy clients briefly lend I/O
+to an existing client thread while their owners wait. Quiet sockets return to
+blocking owners; fixed modes, above-four/unknown hints and initially lone clients keep their
 existing paths. This is bounded active polling, not readiness or free CPU.
 [Ownership, resource costs and tests](docs/client-io-handoffs.md). Socket deadlines
 and joined shutdown remain intact. Linux `make check`/`make ci` also run the full

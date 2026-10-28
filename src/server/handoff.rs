@@ -1,4 +1,4 @@
-//! Single-CPU busy-client I/O leases to an existing managed client thread.
+//! Small-budget busy-client I/O leases to an existing managed client thread.
 //! Quiet connections return to their blocking owners: no new permanent poller.
 
 use super::pool::Client;
@@ -134,6 +134,7 @@ impl Sharing {
         input: &mut Vec<u8>,
         output: &mut Vec<u8>,
         session: &mut Session,
+        receiver: &mut Receiver<Vec<u8>>,
         store: &Store,
     ) -> io::Result<bool> {
         debug_assert!(output.is_empty());
@@ -154,7 +155,9 @@ impl Sharing {
             activity,
             _permit: None,
             shutdown_on_drop: true,
-            pubsub: std::sync::mpsc::sync_channel(1).1,
+            // The original owner waits without I/O. Move its actual receiver,
+            // not a disconnected substitute, so pushes still reach this lease.
+            pubsub: std::mem::replace(receiver, std::sync::mpsc::sync_channel(1).1),
         };
         let (home, returned) = mpsc::channel();
         let loan = Loan {
@@ -198,6 +201,7 @@ impl Sharing {
             client.output.drain(..client.sent);
         }
         *session = std::mem::take(&mut client.session);
+        std::mem::swap(receiver, &mut client.pubsub);
         *input = std::mem::take(&mut client.input);
         *output = std::mem::take(&mut client.output);
         let closing = client.closing;
