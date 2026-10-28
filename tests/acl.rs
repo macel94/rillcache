@@ -962,3 +962,26 @@ fn acl_more_subcommand_categories_scope_acl_command_and_streams() {
 
     server.shutdown().unwrap();
 }
+
+#[test]
+fn acl_cat_lists_implemented_subcommand_entries() {
+    let server = start(Config::default());
+    let mut admin = connect(&server);
+    let admin_cat = String::from_utf8(request(&mut admin, &[b"ACL", b"CAT", b"admin"])).unwrap();
+    assert!(admin_cat.contains("client|kill\r\n"), "{admin_cat}");
+    assert!(admin_cat.contains("acl|users\r\n"), "{admin_cat}");
+    assert!(!admin_cat.contains("acl|cat\r\n"), "{admin_cat}");
+    assert!(!admin_cat.contains("client|setname\r\n"), "{admin_cat}");
+
+    let connection =
+        String::from_utf8(request(&mut admin, &[b"ACL", b"CAT", b"connection"])).unwrap();
+    assert!(connection.contains("client|id\r\n"), "{connection}");
+    assert!(connection.contains("command|count\r\n"), "{connection}");
+    assert!(connection.contains("client|kill\r\n"), "{connection}");
+
+    let read = String::from_utf8(request(&mut admin, &[b"ACL", b"CAT", b"read"])).unwrap();
+    assert!(read.contains("memory|usage\r\n"), "{read}");
+    assert!(read.contains("xinfo|stream\r\n"), "{read}");
+    assert!(!read.contains("memory|stats\r\n"), "{read}");
+    server.shutdown().unwrap();
+}

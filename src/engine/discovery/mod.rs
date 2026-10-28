@@ -550,6 +550,42 @@ pub(super) fn category_matches(name: &[u8], args: &[&[u8]], category: &[u8]) -> 
 /// Bounded Redis 8 subcommand-category overrides for the commands whose parent
 /// flags over- or under-grant the real subcommand categories. Unknown
 /// subcommands fall back to the command-level approximation.
+/// Implemented subcommands for commands that expose category-divergent or
+/// Redis-style subcommand entries. Commands absent here keep their parent entry.
+fn subcommands(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "acl" => &[
+            "cat", "deluser", "dryrun", "genpass", "getuser", "list", "load", "log", "save",
+            "setuser", "users", "whoami",
+        ],
+        "client" => &[
+            "getname", "id", "info", "kill", "list", "pause", "setinfo", "setname", "unpause",
+        ],
+        "command" => &["count", "getkeys", "info", "list"],
+        "config" => &["get", "resetstat", "set"],
+        "latency" => &["doctor", "help", "history", "latest", "reset"],
+        "memory" => &["doctor", "help", "stats", "usage"],
+        "object" => &["encoding", "help", "refcount"],
+        "pubsub" => &[
+            "channels",
+            "numpat",
+            "numsub",
+            "shardchannels",
+            "shardnumsub",
+        ],
+        "slowlog" => &["get", "help", "len", "reset"],
+        "xgroup" => &[
+            "create",
+            "createconsumer",
+            "delconsumer",
+            "destroy",
+            "setid",
+        ],
+        "xinfo" => &["consumers", "groups", "stream"],
+        _ => return None,
+    })
+}
+
 fn subcommand_category(name: &str, subcommand: &[u8], category: &[u8]) -> Option<bool> {
     let is = |candidates: &[&[u8]]| {
         candidates
@@ -775,15 +811,29 @@ fn command_group(name: &str) -> Option<&'static str> {
     })
 }
 
-pub(super) fn commands_in_category(category: &[u8]) -> Vec<&'static str> {
-    registry()
-        .iter()
-        .filter(|command| {
-            let name = command.name.as_bytes();
-            category_matches(name, &[name], category)
-        })
-        .map(|command| command.name)
-        .collect()
+pub(super) fn commands_in_category(category: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
+    for command in registry() {
+        let name = command.name;
+        if let Some(subs) = subcommands(name) {
+            for sub in subs {
+                let matched =
+                    subcommand_category(name, sub.as_bytes(), category).unwrap_or_else(|| {
+                        category_matches(
+                            name.as_bytes(),
+                            &[name.as_bytes(), sub.as_bytes()],
+                            category,
+                        )
+                    });
+                if matched {
+                    names.push(format!("{name}|{sub}"));
+                }
+            }
+        } else if category_matches(name.as_bytes(), &[name.as_bytes()], category) {
+            names.push(name.to_string());
+        }
+    }
+    names
 }
 
 const fn cmd(
@@ -1036,7 +1086,10 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
             write!(output, ":{}\r\n", registry().len()).expect("Vec write");
         }
     } else if sub.eq_ignore_ascii_case(b"LIST") {
-        let mut names: Vec<&'static str> = registry().iter().map(|item| item.name).collect();
+        let mut names: Vec<String> = registry()
+            .iter()
+            .map(|item| item.name.to_string())
+            .collect();
         if arguments.len() != 2 {
             if arguments.len() != 5 || !arguments[2].eq_ignore_ascii_case(b"FILTERBY") {
                 output.extend_from_slice(b"-ERR syntax error\r\n");

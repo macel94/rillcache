@@ -75,8 +75,9 @@ a specific Redis release. Bounded subcommand overrides refine `CLIENT`, `MEMORY`
 the administrative `CLIENT` and `ACL` subcommands, `MEMORY USAGE` is `@read` while
 statistics are `@admin`, all `OBJECT` subcommands are `@keyspace` with data
 inspection also `@read`, `COMMAND` subcommands are `@connection`, `XGROUP` write
-subcommands exclude `HELP`, and `XINFO` read subcommands exclude `HELP`. `ACL CAT`
-remains command-level rather than listing subcommand entries.
+subcommands exclude `HELP`, and `XINFO` read subcommands exclude `HELP`. `ACL CAT` and
+`COMMAND LIST FILTERBY ACLCAT` enumerate these implemented subcommand entries;
+commands outside the table keep parent entries.
 
 Key patterns carry access modes. `~pattern` and `%RW~pattern` grant reads and
 writes, `%R~pattern` grants reads only and `%W~pattern` writes only. Commands
