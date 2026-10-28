@@ -951,7 +951,7 @@ fn serve_client(
                 if let Some(sharing) = sharing.as_ref().filter(|sharing| {
                     // A single-command reply is not a burst. Avoid the handoff
                     // probe on the pipeline-1 path; pipelined batches still lend.
-                    commands > 1
+                    (commands > 1 || policy.single_reply_yield)
                         && !session.is_subscribed()
                         && permit.has_peers()
                         && sharing.should_lend()
