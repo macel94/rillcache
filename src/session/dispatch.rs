@@ -24,23 +24,6 @@ impl Session {
         };
         store.record_command(self.id);
         store.monitor_command(self.id, arguments);
-        let control_changes_fast_path = command.eq_ignore_ascii_case(b"ACL")
-            || command.eq_ignore_ascii_case(b"MONITOR")
-            || command.eq_ignore_ascii_case(b"SUBSCRIBE")
-            || command.eq_ignore_ascii_case(b"PSUBSCRIBE")
-            || command.eq_ignore_ascii_case(b"SSUBSCRIBE")
-            || (command.eq_ignore_ascii_case(b"CLIENT")
-                && arguments.get(1).is_some_and(|subcommand| {
-                    subcommand.eq_ignore_ascii_case(b"PAUSE")
-                        || subcommand.eq_ignore_ascii_case(b"UNPAUSE")
-                }))
-            || (command.eq_ignore_ascii_case(b"CONFIG")
-                && arguments
-                    .get(1)
-                    .is_some_and(|subcommand| subcommand.eq_ignore_ascii_case(b"SET")));
-        if control_changes_fast_path {
-            store.disable_plain_fast();
-        }
         if command.eq_ignore_ascii_case(b"RESET") {
             return self.reset(store, arguments, output);
         }

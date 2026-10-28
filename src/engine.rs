@@ -150,7 +150,6 @@ pub struct Store {
     auth: RwLock<Auth>,
     auth_required: AtomicBool,
     acl_restricted: AtomicBool,
-    plain_fast: AtomicBool,
     journal: Option<std::sync::Mutex<journal::Journal>>,
     journal_limits: Limits,
     pubsub: RwLock<pubsub::PubSub>,
@@ -233,7 +232,6 @@ impl Store {
             transaction_gate: RwLock::new(()),
             auth_required: AtomicBool::new(auth.required()),
             acl_restricted: AtomicBool::new(auth.restricted()),
-            plain_fast: AtomicBool::new(!auth.required() && !auth.restricted()),
             auth: RwLock::new(auth),
             journal: None,
             journal_limits: Limits::default(),
@@ -399,17 +397,6 @@ impl Store {
         self.auth_required.load(Ordering::Acquire)
     }
 
-    /// True while no auth/ACL/observer/pause control can change the fast
-    /// PING/GET/SET/ECHO path. Controls invalidate it; it is never re-enabled
-    /// implicitly, so a missed transition can only cost speed, not correctness.
-    pub(crate) fn plain_fast(&self) -> bool {
-        self.plain_fast.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn disable_plain_fast(&self) {
-        self.plain_fast.store(false, Ordering::Release);
-    }
-
     pub fn authenticate(&self, username: Option<&[u8]>, password: &[u8]) -> Result<(), AuthError> {
         self.authenticate_user(username, password).map(|_| ())
     }
@@ -500,7 +487,6 @@ impl Store {
         self.auth_required.store(auth.required(), Ordering::Release);
         self.acl_restricted
             .store(auth.restricted(), Ordering::Release);
-        self.disable_plain_fast();
     }
 
     pub fn record_connection(&self) {
@@ -509,6 +495,10 @@ impl Store {
 
     pub fn record_rejected_connection(&self) {
         self.rejected_connections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn monitors_active(&self) -> bool {
+        self.monitor_count.load(Ordering::Relaxed) > 0
     }
 
     pub fn record_command(&self, client_id: u64) {
