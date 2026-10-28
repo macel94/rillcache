@@ -4,6 +4,7 @@
 use super::pool::Client;
 use super::*;
 use crate::session::Session;
+use std::sync::atomic::AtomicU64;
 use std::sync::{
     Mutex,
     mpsc::{self, Receiver, Sender},
@@ -11,24 +12,13 @@ use std::sync::{
 
 pub(super) struct Sharing {
     leader: Mutex<Option<Sender<Loan>>>,
-    recent: Mutex<Burst>,
+    leader_active: AtomicBool,
+    recent_micros: AtomicU64,
+    base: Instant,
     config: Config,
     stopping: Arc<AtomicBool>,
     idle: Duration,
     max_epoch: Duration,
-}
-
-#[derive(Default)]
-struct Burst {
-    previous: Option<Instant>,
-}
-impl Burst {
-    fn observe(&mut self, now: Instant, window: Duration) -> bool {
-        self.previous
-            .replace(now)
-            .and_then(|then| now.checked_duration_since(then))
-            .is_some_and(|elapsed| elapsed < window)
-    }
 }
 
 struct EpochWindow {
@@ -94,6 +84,7 @@ impl Drop for Leadership<'_> {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
+        self.sharing.leader_active.store(false, Ordering::Release);
     }
 }
 
@@ -101,7 +92,9 @@ impl Sharing {
     pub(super) fn new(config: Config, stopping: Arc<AtomicBool>, idle_us: u64) -> Self {
         Self {
             leader: Mutex::new(None),
-            recent: Mutex::new(Burst::default()),
+            leader_active: AtomicBool::new(false),
+            recent_micros: AtomicU64::new(0),
+            base: Instant::now(),
             config,
             stopping,
             idle: Duration::from_micros(idle_us),
@@ -112,17 +105,13 @@ impl Sharing {
     /// v2 avoids lease allocation/polling for isolated sparse replies. Joining
     /// an existing epoch is allowed even if the previous local observation is old.
     pub(super) fn should_lend(&self) -> bool {
-        let recent = self
-            .recent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .observe(Instant::now(), self.idle);
-        recent
-            || self
-                .leader
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_some()
+        // Avoid taking two mutexes for every reply. The recent-activity
+        // timestamp and leader presence are atomics; the mutexes are only
+        // needed when actually creating or joining an epoch.
+        let now = self.base.elapsed().as_micros() as u64;
+        let previous = self.recent_micros.swap(now, Ordering::Relaxed);
+        let recent = previous != 0 && now.saturating_sub(previous) < self.idle.as_micros() as u64;
+        recent || self.leader_active.load(Ordering::Relaxed)
     }
 
     /// Called only after actual socket progress, with already-compacted input
@@ -178,6 +167,7 @@ impl Sharing {
         } else {
             let (sender, receiver) = mpsc::channel();
             *leader = Some(sender);
+            self.leader_active.store(true, Ordering::Release);
             drop(leader);
             self.run(
                 loan,
