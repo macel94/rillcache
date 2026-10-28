@@ -1,0 +1,25 @@
+# Core transport, strings and runtime stories
+
+Part of the [requirements and incremental delivery index](../requirements.md). Rows are preserved verbatim from the former monolithic story table; add new stories only in the matching area file.
+
+| ID | Story and value | Size | Acceptance evidence |
+| --- | --- | --- | --- |
+| S01 | As a client author, I can check connectivity and echo binary data so that I can validate my transport. | S | R10–R13; protocol unit tests and TCP tests |
+| S02 | As a cache user, I can store, overwrite and retrieve strings so that independent clients can share cached bytes. | S | R20–R22; engine and TCP tests |
+| S03 | As a cache user, I can check and delete keys so that I can invalidate data. | XS | R23–R24; duplicate-key and shared-connection tests |
+| S06 | As a cache user, I can create a value only when absent or replace it only when present so that concurrent clients do not race a separate existence check. | S | R25–R29; engine, pipeline, racing-client and current-reference tests |
+| S11 | As an operator, I can select a fixed number of I/O/execution workers and verify concurrent behavior in every mode locally and on GitHub. | S | R60–R64; mode-matrix TCP, standalone-thread and benchmark tests |
+| S12 | As a cache user, I can expire strings atomically and use Redis-compatible SET/expiry options without depending on polling or sleeps for correctness. | S | R65–R68; injected-clock, wire, budget and reference tests |
+| S13 | As a counter user, I can atomically change signed 64-bit integer strings without lost updates, overflow or changing their TTL. | S | R69–R71; boundary, many-writer and reference tests |
+| S16 | As a cache user, I get profiled storage fast paths without sacrificing expiry, atomic payload admission or bounded retained value capacity. | S | R79/R81; preserved profiles, capacity/accounting/expiry/OOM and concurrent tests |
+| S17 | As a client user, I get bounded borrowing dispatch and specialized RESP headers with unchanged framing, errors and owned-parser behavior. | S | R80/R82; fragmentation, stack/fallback, execute-once and decimal-boundary tests |
+| S18 | As a performance investigator, I can assess a bounded fixed-worker wait policy with reproducible frozen-client before/after evidence instead of assuming that busy polling is faster or free. | S | R83–R84; deterministic window/metadata tests, all-mode validation and isolated A/B workflow |
+| S19 | As a CPU-limited client, I get guarded cooperative scheduling hints without changing worker counts, deadlines or correctness, and can inspect the exact policy used. | S | R85–R86/R88; policy/permit/run-budget tests and matched CPU/tail evidence |
+| S20 | As a fixed-worker client, my ready complete request can execute in the receive pass without exceeding existing work or buffer bounds. | S | R87–R88; same-pass/execute-once/quantum, fragmentation, backpressure and shutdown tests |
+| S21 | As a CPU-constrained client, I can share active I/O with other managed client threads without a context switch per request, while quiet sockets return to blocking owners. | S | R89–R93; lease/epoch/quantum/partial-reply tests and the full TCP suite on one CPU |
+| S25 | As a cache user, I can atomically read or set multiple strings so that batch operations preserve ordering, expiry and payload admission. | S | R101–R104; duplicate/binary/expiry/admission tests, bounded MGET reply, all-mode wire/reference tests |
+| S26 | As a client, I can queue commands and execute them as one isolated batch, with optimistic invalidation when a watched key changes, so multi-step updates are not interleaved or lost to a race. | S | R105–R108; queue/abort/atomicity, expiry, RESP2/RESP3 and all-mode wire tests |
+| S33 | As a pool/client, I can reset a reused connection's server-side state without reconnecting so that stale transactions, subscriptions or protocol state cannot leak. | XS | R132–R133; reset/auth/pubsub/RESP2 and all-mode wire tests |
+| S36 | As a cache operator, I can choose a bounded eviction policy so that writes keep succeeding within a payload budget instead of always returning OOM. | S | R141–R144; policy, volatile, TTL/LRU, journal, stats and all-mode wire tests |
+| S75 | As an operator, I can request a durable protocol-level stop so that maintenance can flush acknowledged journal writes and join workers without relying on signals. | S | R296–R299; flags/errors/ABORT/MULTI/persistence/all-mode shutdown tests |
+| S96 | As an operator, I can read and change the payload byte budget at runtime so capacity can be reduced or raised without restarting the server. | S | R359–R361; visible maxmemory, policy-driven eviction, atomic validation and all-mode wire tests |
