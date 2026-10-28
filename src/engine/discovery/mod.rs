@@ -559,7 +559,8 @@ fn subcommands(name: &str) -> Option<&'static [&'static str]> {
             "setuser", "users", "whoami",
         ],
         "client" => &[
-            "getname", "id", "info", "kill", "list", "pause", "setinfo", "setname", "unpause",
+            "getname", "id", "info", "kill", "list", "pause", "setinfo", "setname", "unblock",
+            "unpause",
         ],
         "command" => &["count", "getkeys", "info", "list"],
         "config" => &["get", "resetstat", "set"],

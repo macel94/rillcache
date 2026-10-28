@@ -4,7 +4,7 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use crate::engine::{
-    ListMoveOutcome, ListPopOutcome, PopOutcome, Store, StreamId, XReadGroupOptions,
+    ListMoveOutcome, ListPopOutcome, PopOutcome, Store, StreamId, UnblockMode, XReadGroupOptions,
     XReadGroupOutcome, XReadGroupStart, XReadOutcome, ZSetPopOutcome, blocking_lmpop_reply,
     blocking_reply, blocking_zpop_reply, list_move_reply, parse_bzmpop_timeout, parse_list_mpop,
     parse_mpop, parse_side, parse_xread, xread_reply, xreadgroup_reply, zset_pop_single_reply,
@@ -423,6 +423,21 @@ impl Session {
     /// Poll a blocked pop. Returns one complete reply when it succeeded, failed or
     /// timed out, or `None` while the connection must remain blocked.
     pub fn poll_blocked(&mut self, store: &Store) -> Option<Vec<u8>> {
+        self.blocked.as_ref()?;
+        if let Some(mode) = store.take_unblock(self.id) {
+            self.blocked = None;
+            self.sync_blocked(store);
+            let mut reply = match mode {
+                UnblockMode::Timeout => b"*-1\r\n".to_vec(),
+                UnblockMode::Error => {
+                    b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n".to_vec()
+                }
+            };
+            if self.protocol == Protocol::Resp3 && mode == UnblockMode::Timeout {
+                reply = convert_resp2_reply(&reply);
+            }
+            return Some(reply);
+        }
         let blocked = self.blocked.as_ref()?;
         let keys: Vec<&[u8]> = blocked.keys.iter().map(Vec::as_slice).collect();
         let kind = blocked.kind.clone();

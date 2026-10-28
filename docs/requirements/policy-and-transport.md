@@ -257,6 +257,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   every worker mode. Documentation shall retain that this is a process-local
   registry view with no fd/idle/buffer/memory metadata or cross-process claim.
 
+## CLIENT UNBLOCK (S114)
+
+- **R414 (event-driven):** `CLIENT UNBLOCK <client-id> [TIMEOUT|ERROR]` shall
+  request a wake-up for a currently blocked connection and return `:1`; an
+  unknown or non-blocked ID shall return `:0`. `TIMEOUT` (the default) makes the
+  blocked command complete as a null array/value, while `ERROR` terminates it with
+  `UNBLOCKED client unblocked via CLIENT UNBLOCK`. Invalid IDs, extra arguments
+  and unknown modes shall return bounded errors without changing another client.
+- **R415 (state-driven):** A request shall wake only the target connection, clear
+  its blocked state and `CLIENT LIST`/`INFO clients` blocked marker, and be
+  consumed once. A request for a completed, disconnected or reset connection shall
+  be discarded rather than affecting a later command. RESP3 timeout wake-ups shall
+  use the protocol null frame, and the wake-up shall occur within the existing
+  blocked-client polling bound.
+- **R416 (ubiquitous):** Tests shall cover `:1`/`:0`, TIMEOUT and ERROR modes,
+  RESP3 null conversion, invalid input, connection isolation and every worker
+  mode. Documentation shall retain that this is a process-local same-server
+  control, requires the normal `CLIENT` permission and is not a cross-process or
+  distributed unblock mechanism.
+
 ## Real redis-cli interoperability (S103)
 
 - **R381 (event-driven):** When a pinned `redis-cli` connects over RESP2 or
