@@ -18,6 +18,7 @@ pub(super) struct Sharing {
     config: Config,
     stopping: Arc<AtomicBool>,
     idle: Duration,
+    idle_micros: u64,
     max_epoch: Duration,
 }
 
@@ -101,13 +102,14 @@ impl Sharing {
             config,
             stopping,
             idle: Duration::from_micros(idle_us),
+            idle_micros: idle_us,
             max_epoch: Duration::from_millis(CLIENT_HANDOFF_MAX_EPOCH_MS),
         }
     }
 
-    /// Whether an epoch is already accepting borrowers. Single-command replies
-    /// use this cheap atomic check to join active epochs without starting a new
-    /// one, which would add lease churn to every pipeline-1 reply.
+    /// Whether an epoch is already accepting borrowers. Kept as a separate
+    /// cheap atomic check so callers and tests can inspect leader presence
+    /// without the activity probe.
     pub(super) fn active(&self) -> bool {
         self.leader_active.load(Ordering::Relaxed)
     }
@@ -124,7 +126,7 @@ impl Sharing {
         }
         let now = self.base.elapsed().as_micros() as u64;
         let previous = self.recent_micros.swap(now, Ordering::Relaxed);
-        Self::recent_burst(previous, now, self.idle.as_micros() as u64)
+        Self::recent_burst(previous, now, self.idle_micros)
     }
 
     fn recent_burst(previous: u64, now: u64, idle_us: u64) -> bool {
