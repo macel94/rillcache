@@ -330,15 +330,21 @@ impl Store {
     /// holding the gate's write side.
     pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
         // PING is the hottest command and stays ahead of all family routing.
-        if let Some(command) = arguments.first()
-            && command.eq_ignore_ascii_case(b"PING")
-        {
-            match arguments.len() {
-                1 => output.extend_from_slice(b"+PONG\r\n"),
-                2 => encode_bulk(Some(arguments[1]), output),
-                _ => arity("ping", output),
+        if let Some(command) = arguments.first() {
+            if command.eq_ignore_ascii_case(b"PING") {
+                match arguments.len() {
+                    1 => output.extend_from_slice(b"+PONG\r\n"),
+                    2 => encode_bulk(Some(arguments[1]), output),
+                    _ => arity("ping", output),
+                }
+                return Action::Continue;
             }
-            return Action::Continue;
+            // GET/SET/ECHO are the measured hot path. Keep the single string
+            // implementation, but call its small inlined entry directly so the
+            // one-CPU pipeline-1 path does not pay for a family router call.
+            if let Some(action) = dispatch::hot_string(self, command, arguments, output) {
+                return action;
+            }
         }
         dispatch::route(self, arguments, output)
     }

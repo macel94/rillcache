@@ -90,8 +90,9 @@ The Rust implementations are newly generated safe code, not transplanted C.
    always maintained, but per-write journal-event key copies are collected only
    while append-only persistence or keyspace notifications need them; disabling
    both releases the bounded history immediately. `PING` bypasses family routing
-   entirely, while `GET`, `SET` and `ECHO` remain the first checks in the strings
-   family entry point (see [Dispatch module layout](#dispatch-module-layout)).
+   entirely, while `GET`, `SET` and `ECHO` call the small inlined strings hot
+   entry directly from the engine before the family router (see
+   [Dispatch module layout](#dispatch-module-layout)).
    Two local core runs measured store-path medians of roughly 40 → 22–27 ns for
    PING, 106 → 93–96 ns for GET and 335 → 278–312 ns for SET against the
    pre-change tree. These are isolated shared-VM store results with visible run
@@ -122,11 +123,12 @@ subscriptions and blocking waits are not store-dispatch commands. `EXEC`
 replays its queued commands through `execute_locked`, so those commands use the
 normal family path.
 
-PING stays in `engine.rs` ahead of family routing, and GET/SET/ECHO are the first
-checks in the strings family. Add a new command's arm and handler to its owning
-family module, not to a central match. Mark a family entry point `#[inline]` only
-when the hot path needs it; the large string remainder deliberately stays out of
-line so it does not bloat GET/SET/ECHO.
+PING stays in `engine.rs` ahead of family routing, and it calls the strings hot
+entry (`GET`/`SET`/`ECHO`) directly and inlined before `route`. Add a new
+command's arm and handler to its owning family module, not to a central match.
+Mark a family entry point `#[inline]` only when the hot path needs it; the large
+string remainder deliberately stays out of line so it does not bloat
+GET/SET/ECHO.
 
 ## Evidence discipline and rejected experiments
 

@@ -7,7 +7,7 @@ use super::super::options::{Condition, ExpiryKind, SetOptions};
 use super::super::{Action, Store, arity};
 use crate::protocol::encode_bulk;
 
-#[inline]
+#[inline(always)]
 pub(super) fn execute_data(
     store: &Store,
     command: &[u8],

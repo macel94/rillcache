@@ -24,7 +24,19 @@ mod pubsub;
 mod streams;
 mod strings;
 
-/// Route one non-PING store command. Empty input and unknown commands retain
+/// Direct GET/SET/ECHO entry used by the engine hot path. Keeping one
+/// implementation here avoids duplicating SET option parsing in `engine.rs`.
+#[inline(always)]
+pub(super) fn hot_string(
+    store: &Store,
+    command: &[u8],
+    arguments: &[&[u8]],
+    output: &mut Vec<u8>,
+) -> Option<Action> {
+    strings::execute_data(store, command, arguments, output)
+}
+
+/// Route one non-hot store command. Empty input and unknown commands retain
 /// their historical replies.
 #[inline]
 pub(super) fn route(store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
@@ -32,12 +44,6 @@ pub(super) fn route(store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) ->
         output.extend_from_slice(b"-ERR empty command\r\n");
         return Action::Continue;
     };
-    // Hot string commands are first in their family so GET/SET never scan
-    // unrelated family checks. The large remainder is a separate call so the
-    // GET / SET / ECHO path stays small.
-    if let Some(action) = strings::execute_data(store, command, arguments, output) {
-        return action;
-    }
     if let Some(action) = strings::execute_other(store, command, arguments, output) {
         return action;
     }
