@@ -491,7 +491,7 @@ pub(super) const CATEGORIES: &[&str] = &[
 /// Redis-style ACL category approximation over the published command table.
 /// `@slow` covers commands without the `fast` flag; script/module categories do
 /// not exist because neither capability does.
-pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) -> bool {
+pub(super) fn category_matches(name: &[u8], args: &[&[u8]], category: &[u8]) -> bool {
     let Some(command) = registry()
         .iter()
         .find(|command| name.eq_ignore_ascii_case(command.name.as_bytes()))
@@ -501,8 +501,15 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
     let has = |flag: &str| command.flags.contains(&flag);
     let name = command.name;
     let group = command_group(name);
+    if category.eq_ignore_ascii_case(b"all") {
+        return true;
+    }
+    if let Some(subcommand) = args.get(1)
+        && let Some(matched) = subcommand_category(name, subcommand, category)
+    {
+        return matched;
+    }
     match category {
-        b"all" => true,
         b"read" => has("readonly"),
         b"write" => has("write"),
         b"admin" => has("admin"),
@@ -537,6 +544,93 @@ pub(super) fn category_matches(name: &[u8], _args: &[&[u8]], category: &[u8]) ->
                 || matches!(name, "sort" | "sort_ro")
         }
         _ => false,
+    }
+}
+
+/// Bounded Redis 8 subcommand-category overrides for the commands whose parent
+/// flags over- or under-grant the real subcommand categories. Unknown
+/// subcommands fall back to the command-level approximation.
+fn subcommand_category(name: &str, subcommand: &[u8], category: &[u8]) -> Option<bool> {
+    let is = |candidates: &[&[u8]]| {
+        candidates
+            .iter()
+            .any(|candidate| subcommand.eq_ignore_ascii_case(candidate))
+    };
+    match name {
+        "client" => {
+            let recognized = is(&[
+                b"id",
+                b"getname",
+                b"setname",
+                b"setinfo",
+                b"info",
+                b"tracking",
+                b"caching",
+                b"reply",
+                b"getredir",
+                b"trackinginfo",
+                b"unblock",
+                b"help",
+                b"kill",
+                b"list",
+                b"no-evict",
+                b"pause",
+                b"unpause",
+            ]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+            {
+                Some(is(&[
+                    b"kill",
+                    b"list",
+                    b"no-evict",
+                    b"pause",
+                    b"unblock",
+                    b"unpause",
+                ]))
+            } else {
+                None
+            }
+        }
+        "memory" => {
+            let usage = subcommand.eq_ignore_ascii_case(b"usage");
+            let admin = is(&[b"stats", b"doctor", b"purge", b"malloc-stats"]);
+            let recognized = usage || admin || subcommand.eq_ignore_ascii_case(b"help");
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"read") {
+                Some(usage)
+            } else if category.eq_ignore_ascii_case(b"admin") {
+                Some(admin)
+            } else if category.eq_ignore_ascii_case(b"dangerous") {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        "object" => {
+            let help = subcommand.eq_ignore_ascii_case(b"help");
+            let recognized = help || is(&[b"encoding", b"refcount", b"idletime", b"freq"]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"keyspace") {
+                Some(true)
+            } else if category.eq_ignore_ascii_case(b"read") {
+                Some(!help)
+            } else if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 

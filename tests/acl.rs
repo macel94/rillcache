@@ -745,3 +745,129 @@ fn acl_first_argument_rules_scope_subcommands_and_round_trip() {
     server.shutdown().unwrap();
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn acl_subcommand_categories_scope_client_memory_and_object() {
+    let server = start(Config::default());
+    let mut admin = connect(&server);
+    send(
+        &mut admin,
+        &[b"SET", b"subcommand:key", b"value"],
+        b"+OK\r\n",
+    );
+    for (user, password, rule) in [
+        ("conn", "conn-pass", "+ @connection"),
+        ("administrator", "admin-pass", "+ @admin"),
+        ("reader", "reader-pass", "+ @read"),
+        ("keyspace", "keyspace-pass", "+ @keyspace"),
+        ("danger", "danger-pass", "+ @dangerous"),
+    ] {
+        let rule = rule.replace(' ', "");
+        send(
+            &mut admin,
+            &[
+                b"ACL",
+                b"SETUSER",
+                user.as_bytes(),
+                b"on",
+                format!(">{password}").as_bytes(),
+                b"allkeys",
+                b"-@all",
+                rule.as_bytes(),
+            ],
+            b"+OK\r\n",
+        );
+    }
+    let noperm = |command: &str| {
+        format!("-NOPERM this user has no permissions to run the '{command}' command\r\n")
+    };
+
+    let mut conn = connect(&server);
+    send(&mut conn, &[b"AUTH", b"conn", b"conn-pass"], b"+OK\r\n");
+    send(&mut conn, &[b"CLIENT", b"SETNAME", b"conn"], b"+OK\r\n");
+    assert!(!request(&mut conn, &[b"CLIENT", b"LIST"]).starts_with(b"-NOPERM"));
+    send(
+        &mut conn,
+        &[b"MEMORY", b"STATS"],
+        noperm("memory").as_bytes(),
+    );
+
+    let mut administrator = connect(&server);
+    send(
+        &mut administrator,
+        &[b"AUTH", b"administrator", b"admin-pass"],
+        b"+OK\r\n",
+    );
+    assert!(!request(&mut administrator, &[b"CLIENT", b"LIST"]).starts_with(b"-NOPERM"));
+    send(
+        &mut administrator,
+        &[b"CLIENT", b"SETNAME", b"administrator"],
+        noperm("client").as_bytes(),
+    );
+    assert!(!request(&mut administrator, &[b"MEMORY", b"STATS"]).starts_with(b"-NOPERM"));
+    send(
+        &mut administrator,
+        &[b"MEMORY", b"USAGE", b"subcommand:key"],
+        noperm("memory").as_bytes(),
+    );
+
+    let mut reader = connect(&server);
+    send(
+        &mut reader,
+        &[b"AUTH", b"reader", b"reader-pass"],
+        b"+OK\r\n",
+    );
+    assert!(
+        !request(&mut reader, &[b"MEMORY", b"USAGE", b"subcommand:key"]).starts_with(b"-NOPERM")
+    );
+    send(
+        &mut reader,
+        &[b"MEMORY", b"STATS"],
+        noperm("memory").as_bytes(),
+    );
+    assert!(
+        !request(&mut reader, &[b"OBJECT", b"ENCODING", b"subcommand:key"]).starts_with(b"-NOPERM")
+    );
+    send(
+        &mut reader,
+        &[b"OBJECT", b"HELP"],
+        noperm("object").as_bytes(),
+    );
+
+    let mut keyspace = connect(&server);
+    send(
+        &mut keyspace,
+        &[b"AUTH", b"keyspace", b"keyspace-pass"],
+        b"+OK\r\n",
+    );
+    assert!(
+        !request(&mut keyspace, &[b"OBJECT", b"ENCODING", b"subcommand:key"])
+            .starts_with(b"-NOPERM")
+    );
+    assert!(!request(&mut keyspace, &[b"OBJECT", b"HELP"]).starts_with(b"-NOPERM"));
+    send(
+        &mut keyspace,
+        &[b"MEMORY", b"USAGE", b"subcommand:key"],
+        noperm("memory").as_bytes(),
+    );
+
+    let mut danger = connect(&server);
+    send(
+        &mut danger,
+        &[b"AUTH", b"danger", b"danger-pass"],
+        b"+OK\r\n",
+    );
+    assert!(!request(&mut danger, &[b"CLIENT", b"LIST"]).starts_with(b"-NOPERM"));
+    send(
+        &mut danger,
+        &[b"CLIENT", b"SETNAME", b"danger"],
+        noperm("client").as_bytes(),
+    );
+    send(
+        &mut danger,
+        &[b"MEMORY", b"STATS"],
+        noperm("memory").as_bytes(),
+    );
+
+    server.shutdown().unwrap();
+}

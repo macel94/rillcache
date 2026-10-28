@@ -49,7 +49,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
-  Documentation shall retain the missing subcommand-specific categories,
+  Documentation shall retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT overrides,
   centralized audit shipping, global/cross-process rate limiting, TLS hardening, key-spec-blind
   commands and process-level tenant-isolation boundaries.
 
@@ -149,7 +149,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   update atomically without partially changing the user. Tests shall cover
   allow/deny, ordered overrides, case-insensitivity, selectors, LIST/GETUSER,
   DRYRUN, ACL-file restart round-trips and every worker mode; documentation shall
-  retain the absence of subcommand-specific categories, wildcards in the first
+  retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT overrides, wildcards in the first
   argument and nested selectors.
 
 ## Persistent ACL denial audit (S104)
@@ -235,6 +235,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   retain the absence of collector authentication, TLS, retries, ordering,
   backpressure, centralized aggregation, tamper-evident signing and delivery
   guarantees.
+
+## Bounded subcommand ACL categories (S108)
+
+- **R396 (event-driven):** For `CLIENT`, `+@admin` and `+@dangerous` shall match
+  only `KILL`, `LIST`, `NO-EVICT`, `PAUSE`, `UNBLOCK` and `UNPAUSE`; connection
+  subcommands such as `SETNAME`, `GETNAME`, `ID`, `INFO`, `SETINFO`, `TRACKING`,
+  `CACHING`, `REPLY`, `GETREDIR`, `TRACKINGINFO` and `HELP` shall remain governed
+  by `+@connection`/`+@slow` and shall be denied by an `@admin`-only grant.
+- **R397 (state-driven):** For `MEMORY`, `USAGE` shall match `@read`, while
+  `STATS`, `DOCTOR`, `PURGE` and `MALLOC-STATS` shall match `@admin` and not
+  `@read`; `@dangerous` shall not grant memory subcommands. For `OBJECT`,
+  `ENCODING`, `REFCOUNT`, `IDLETIME`, `FREQ` and `HELP` shall match `@keyspace`;
+  the data-inspection subcommands shall match `@read`, while `HELP` shall not;
+  `@admin` and `@dangerous` shall not grant object subcommands.
+- **R398 (ubiquitous):** Tests shall cover the over-grant and under-grant cases
+  above through unit authorization and all-mode wire tests, with unknown
+  subcommands falling back to the command-level approximation. Documentation
+  shall retain that `ACL CAT` remains command-level, that category membership is
+  approximate rather than byte-for-byte Redis metadata, and that other command
+  families still use command-level categories.
 
 ## Native TLS 1.3 with rustls (S101)
 
