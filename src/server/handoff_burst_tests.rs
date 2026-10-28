@@ -36,6 +36,19 @@ fn atomic_reply_observations_reject_stale_times_and_keep_the_exact_boundary() {
 }
 
 #[test]
+fn active_reflects_leader_presence_for_single_reply_joins() {
+    let sharing = Sharing::new(
+        Config::default(),
+        Arc::new(AtomicBool::new(false)),
+        CLIENT_HANDOFF_IDLE_US,
+    );
+    assert!(!sharing.active());
+    sharing.leader_active.store(true, Ordering::Release);
+    assert!(sharing.active());
+    assert!(sharing.should_lend());
+}
+
+#[test]
 fn progress_never_extends_an_epochs_maximum_lifetime() {
     let now = Instant::now();
     let idle = Duration::from_micros(50);

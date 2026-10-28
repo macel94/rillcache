@@ -105,6 +105,13 @@ impl Sharing {
         }
     }
 
+    /// Whether an epoch is already accepting borrowers. Single-command replies
+    /// use this cheap atomic check to join active epochs without starting a new
+    /// one, which would add lease churn to every pipeline-1 reply.
+    pub(super) fn active(&self) -> bool {
+        self.leader_active.load(Ordering::Relaxed)
+    }
+
     /// v2 avoids lease allocation/polling for isolated sparse replies. Joining
     /// an existing epoch is allowed even if the previous local observation is old.
     pub(super) fn should_lend(&self) -> bool {
@@ -114,7 +121,7 @@ impl Sharing {
         let now = self.base.elapsed().as_micros() as u64;
         let previous = self.recent_micros.swap(now, Ordering::Relaxed);
         let recent = Self::recent_burst(previous, now, self.idle.as_micros() as u64);
-        recent || self.leader_active.load(Ordering::Relaxed)
+        recent || self.active()
     }
 
     fn recent_burst(previous: u64, now: u64, idle_us: u64) -> bool {
