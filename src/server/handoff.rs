@@ -115,13 +115,16 @@ impl Sharing {
     /// v2 avoids lease allocation/polling for isolated sparse replies. Joining
     /// an existing epoch is allowed even if the previous local observation is old.
     pub(super) fn should_lend(&self) -> bool {
-        // Avoid taking two mutexes for every reply. The recent-activity
-        // timestamp and leader presence are atomics; the mutexes are only
-        // needed when actually creating or joining an epoch.
+        // An installed epoch accepts every reply, so check presence first. This
+        // skips the monotonic-clock read and atomic swap on the busiest path;
+        // the recent-activity window only matters when deciding whether to
+        // start a new epoch.
+        if self.active() {
+            return true;
+        }
         let now = self.base.elapsed().as_micros() as u64;
         let previous = self.recent_micros.swap(now, Ordering::Relaxed);
-        let recent = Self::recent_burst(previous, now, self.idle.as_micros() as u64);
-        recent || self.active()
+        Self::recent_burst(previous, now, self.idle.as_micros() as u64)
     }
 
     fn recent_burst(previous: u64, now: u64, idle_us: u64) -> bool {

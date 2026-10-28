@@ -940,16 +940,10 @@ fn serve_client(
                 stream.write_all(&output)?;
                 output.clear();
                 if let Some(sharing) = sharing.as_ref().filter(|sharing| {
-                    // Pipelined batches may create or join an epoch from recent
-                    // activity, and the one-CPU budget keeps starting epochs
-                    // from single replies because that is where the lease
-                    // saves a scheduler wakeup. On 2-4 CPUs a single reply only
-                    // joins an epoch that is already active: leasing one socket
-                    // per reply costs more than the wakeup it avoids.
-                    !session.is_subscribed()
-                        && permit.has_peers()
-                        && (((commands > 1 || policy.single_reply_yield) && sharing.should_lend())
-                            || sharing.active())
+                    // Several clients can form a busy burst even when each
+                    // request has one command. The recent-progress/active-epoch
+                    // guard, not pipeline depth, decides whether to lend.
+                    !session.is_subscribed() && permit.has_peers() && sharing.should_lend()
                 }) {
                     let Some(raw) = stream.plain_mut() else {
                         return Err(io::Error::other(
