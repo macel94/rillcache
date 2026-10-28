@@ -231,10 +231,12 @@ reductions avoid benchmark-specific modes:
 These are general server paths, not a benchmark mode. The bounded multicore client
 handoff from the existing scheduler remains enabled for 2–4 CPU budgets. Burst
 activity is observed across clients, not inferred from one request's pipeline
-depth: a single-command reply may join an epoch that is already active. Starting
-an epoch from a single reply is left to pipelined batches, because leasing one
-socket per reply measured slower at pipeline depth one. The existing recent-reply
-window still prevents isolated replies from allocating a lease. A regression test
+depth: on 2–4 CPUs a single-command reply may join an epoch that is already
+active, while the one-CPU budget still starts epochs from single replies because
+that is where the lease saves a scheduler wakeup. Starting an epoch from a single
+reply on 2–4 CPUs is left to pipelined batches, because leasing one socket per
+reply measured slower at pipeline depth one. The existing recent-reply window
+still prevents isolated replies from allocating a lease. A regression test
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
 accounting, 50 µs idle / 100 ms maximum epoch and shutdown semantics are unchanged.
 
