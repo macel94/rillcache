@@ -362,8 +362,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R417 (event-driven):** `--audit-hmac-keyring-file PATH` and the collector's
   `--hmac-keyring-file PATH` shall parse a text keyring of hex-encoded keys,
   ignoring blank lines and `#` comments, accepting at most eight unique
-  16..=1024-byte keys. Empty, non-hex, undersized, oversized, duplicate-only and
-  over-limit keyrings shall fail startup; the keyring and single-key options shall
+  16..=1024-byte keys and ignoring repeated keys even after eight unique keys.
+  Reading shall be bounded to 64 KiB of text including comments. Empty, non-hex,
+  undersized, oversized and over-limit keyrings shall fail startup; the keyring and single-key options shall
   be mutually exclusive.
 - **R418 (state-driven):** The server shall sign each denial with the first
   keyring key; the collector shall accept a line when any key in its keyring

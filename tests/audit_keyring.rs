@@ -106,7 +106,11 @@ user reader on >reader-secret allkeys allchannels -@all +get\n",
 fn collector_accepts_any_active_keyring_key() {
     let output = temp_name("collector-output");
     let keyring = temp_name("collector-keyring");
-    std::fs::write(&keyring, format!("{NEW_HEX}\n{OLD_HEX}\n")).unwrap();
+    assert!(verify_audit_line(NEW_KEY.as_bytes(), SIGNED_LINE));
+    assert!(!verify_audit_line(OLD_KEY.as_bytes(), SIGNED_LINE));
+    // The matching signing key is deliberately second: verify real rotation,
+    // not merely the same first-key behavior as the server.
+    std::fs::write(&keyring, format!("{OLD_HEX}\n{NEW_HEX}\n")).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"))
         .args([
             "--bind",
@@ -165,6 +169,15 @@ fn keyring_and_single_key_are_mutually_exclusive_and_invalid_keys_fail() {
         ..Config::default()
     };
     assert!(Server::bind(config).is_err());
+    std::fs::write(&keyring, "#".repeat(64 * 1024 + 1)).unwrap();
+    assert!(
+        Server::bind(Config {
+            audit_hmac_keyring_file: Some(keyring.clone()),
+            ..Config::default()
+        })
+        .is_err()
+    );
+    assert!(rillcache::engine::read_audit_keyring(&keyring).is_err());
     let _ = std::fs::remove_file(key);
     let _ = std::fs::remove_file(keyring);
     let _ = std::fs::remove_file(short);

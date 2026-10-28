@@ -79,11 +79,14 @@ impl Drop for Leadership<'_> {
         // Close admission to this epoch before dropping its receiver. A sender
         // cloned just before this point either succeeds into the old queue or
         // recovers its Loan on send failure. Both paths run Loan::drop.
-        self.sharing
+        let mut leader = self
+            .sharing
             .leader
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+            .unwrap_or_else(|e| e.into_inner());
+        leader.take();
+        // Publish while holding the admission lock: an old epoch must not clear
+        // the presence flag after a new leader has installed its sender.
         self.sharing.leader_active.store(false, Ordering::Release);
     }
 }
@@ -110,8 +113,15 @@ impl Sharing {
         // needed when actually creating or joining an epoch.
         let now = self.base.elapsed().as_micros() as u64;
         let previous = self.recent_micros.swap(now, Ordering::Relaxed);
-        let recent = previous != 0 && now.saturating_sub(previous) < self.idle.as_micros() as u64;
+        let recent = Self::recent_burst(previous, now, self.idle.as_micros() as u64);
         recent || self.leader_active.load(Ordering::Relaxed)
+    }
+
+    fn recent_burst(previous: u64, now: u64, idle_us: u64) -> bool {
+        previous != 0
+            && now
+                .checked_sub(previous)
+                .is_some_and(|elapsed| elapsed < idle_us)
     }
 
     /// Called only after actual socket progress, with already-compacted input
