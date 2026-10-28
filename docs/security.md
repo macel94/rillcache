@@ -6,7 +6,7 @@ command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
 design. It adds per-connection and per-peer-IP failed-`AUTH` budgets but not
 global/cross-process rate limiting, delayed responses or username lockout, TLS
-hardening (SNI/hot reload/OCSP), authenticated/centralized audit aggregation,
+hardening (SNI/hot reload/OCSP), authenticated collector federation,
 full-chain audit signing or key custody/rotation, or credential encryption at rest.
 
 ## What is implemented
@@ -148,6 +148,18 @@ lines, provide replay protection, rotate keys, use an HSM/KMS, authenticate the
 collector or make storage tamper-proof. Key file permissions and custody are
 operator duties.
 
+`rillcache-audit-collector` is a separate standard-library-only UDP sink for
+off-host aggregation. `--bind ADDRESS` and `--output PATH` are required
+operationally (defaults are loopback and `audit.log`); each nonempty datagram up
+to `--max-datagram` is appended as one newline-terminated line, flushed, and
+rotated to `PATH.1` at `--max-bytes` (1 KiB..=1 GiB). Empty/oversized datagrams
+are dropped and counted. `--max-datagrams N` exits after N accepted datagrams for
+bounded tests or one-shot collection. The collector does not verify HMACs,
+authenticate senders, encrypt traffic, retry, reorder, deduplicate or federate
+multiple collectors; UDP loss and spoofing remain possible. The output is created
+mode-`0600` on Unix, but directory permissions and log custody are operator
+duties.
+
 `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
 renames it over the target and fsyncs the directory (where supported); hashes are
 saved as `#...`, never plaintext passwords. ACL files are bounded to 4 MiB,
@@ -169,7 +181,7 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 
 - **Not full Redis ACL.** Remaining subcommand-specific categories beyond the
   bounded `CLIENT`/`MEMORY`/`OBJECT` overrides, nested selectors, dynamic
-  key-sandbox rules, authenticated/centralized audit aggregation, full-chain
+  key-sandbox rules, authenticated collector federation, full-chain
   signing/key rotation, global/cross-process rate limiting and TLS hardening
   (SNI/hot reload/OCSP) are absent.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`

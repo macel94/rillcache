@@ -177,9 +177,10 @@ separate security gates; ACL selectors group command/key/channel rules and chann
 patterns are enforced for pub/sub. Native TLS 1.3 is implemented in-process with
 rustls ([`docs/tls.md`](docs/tls.md)); it intentionally does not offer HTTP/2 or
 HTTP/3.
-`ACL GENPASS`, `ACL DRYRUN`, a bounded process-local `ACL LOG` and an optional
-`--audit-log` append-only denial trail support
-credential operations and policy debugging. See
+`ACL GENPASS`, `ACL DRYRUN`, a bounded process-local `ACL LOG`, the optional
+`--audit-log` append-only denial trail and the separate
+`rillcache-audit-collector` UDP sink support credential operations and policy
+debugging. See
 [security](docs/security.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
@@ -198,7 +199,7 @@ This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata,
 `SELECT 0`, disconnect-equivalent `RESET`, `CLIENT LIST`/`KILL` and honest client
 statistics; single-password and multi-user ACL authentication are implemented.
-Authenticated/centralized audit aggregation, TLS hardening and independent security review,
+Authenticated collector federation, TLS hardening and independent security review,
 global/cross-process rate limiting, RDB/background-AOF interoperability, backup/restore drills,
 scripts/functions, sharded pub/sub, keyspace notifications, replication,
 clustering, and real client-library interoperability remain production blockers. RESP3 replies are limited to the current command
