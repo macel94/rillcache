@@ -1225,6 +1225,73 @@ mod tests {
     }
 
     #[test]
+    fn subcommand_categories_scope_client_memory_and_object() {
+        let mut auth = Auth::from_password(None);
+        for (name, rule) in [
+            (b"connection".as_slice(), b"+@connection".as_slice()),
+            (b"admin".as_slice(), b"+@admin".as_slice()),
+            (b"reader".as_slice(), b"+@read".as_slice()),
+            (b"keyspace".as_slice(), b"+@keyspace".as_slice()),
+            (b"danger".as_slice(), b"+@dangerous".as_slice()),
+        ] {
+            auth.setuser(name, &[b"on", b"nopass", b"allkeys", b"-@all", rule])
+                .unwrap();
+        }
+
+        let access = |name: &[u8], command: &[&[u8]]| auth.authorize(Some(name), command);
+        assert_eq!(
+            access(b"connection", &[b"CLIENT", b"SETNAME", b"x"]),
+            Access::Allowed
+        );
+        assert_eq!(
+            access(b"connection", &[b"MEMORY", b"STATS"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(access(b"admin", &[b"CLIENT", b"LIST"]), Access::Allowed);
+        assert_eq!(
+            access(b"admin", &[b"CLIENT", b"SETNAME", b"x"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(access(b"danger", &[b"CLIENT", b"LIST"]), Access::Allowed);
+        assert_eq!(
+            access(b"danger", &[b"CLIENT", b"SETNAME", b"x"]),
+            Access::DeniedCommand
+        );
+
+        assert_eq!(
+            access(b"reader", &[b"MEMORY", b"USAGE", b"k"]),
+            Access::Allowed
+        );
+        assert_eq!(
+            access(b"reader", &[b"MEMORY", b"STATS"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(access(b"admin", &[b"MEMORY", b"STATS"]), Access::Allowed);
+        assert_eq!(
+            access(b"admin", &[b"MEMORY", b"USAGE", b"k"]),
+            Access::DeniedCommand
+        );
+
+        assert_eq!(
+            access(b"keyspace", &[b"OBJECT", b"ENCODING", b"k"]),
+            Access::Allowed
+        );
+        assert_eq!(access(b"keyspace", &[b"OBJECT", b"HELP"]), Access::Allowed);
+        assert_eq!(
+            access(b"reader", &[b"OBJECT", b"ENCODING", b"k"]),
+            Access::Allowed
+        );
+        assert_eq!(
+            access(b"reader", &[b"OBJECT", b"HELP"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(
+            access(b"admin", &[b"OBJECT", b"ENCODING", b"k"]),
+            Access::DeniedCommand
+        );
+    }
+
+    #[test]
     fn sort_dynamic_patterns_require_all_key_access() {
         let mut auth = Auth::from_password(None);
         auth.setuser(
