@@ -233,8 +233,9 @@ handoff from the existing scheduler remains enabled for 2–4 CPU budgets. Burst
 activity is observed across clients, not inferred from one request's pipeline
 depth: a single-command reply may join an active epoch. The active-epoch check
 short-circuits before the clock/window probe, the idle window bound is stored
-in microseconds, and each connection reuses one borrower return channel instead
-of allocating one per leased reply; the existing recent-reply window still
+in microseconds, each connection reuses one borrower return channel instead
+of allocating one per leased reply, and the coordinator takes one clock sample
+per pass instead of one per client; the existing recent-reply window still
 prevents isolated replies from allocating a lease. A regression test
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
 accounting, 50 µs idle / 100 ms maximum epoch and shutdown semantics are unchanged.

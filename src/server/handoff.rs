@@ -264,6 +264,9 @@ impl Sharing {
                 clients.push(loan);
                 progress = true;
             }
+            // One clock sample per pass: per-client quiet checks and the epoch
+            // window share it instead of reading the clock once per client.
+            let now = Instant::now();
             let mut index = 0;
             while index < clients.len() {
                 match clients[index].client.as_mut().expect("active loan").poll(
@@ -273,7 +276,7 @@ impl Sharing {
                 ) {
                     Ok(Some(made_progress)) => {
                         progress |= made_progress;
-                        if !made_progress && clients[index].quiet(Instant::now(), self.idle) {
+                        if !made_progress && clients[index].quiet(now, self.idle) {
                             clients.swap_remove(index); // Return this borrower, not a busy epoch.
                         } else {
                             index += 1;
@@ -289,7 +292,7 @@ impl Sharing {
             if clients.is_empty() {
                 break;
             }
-            if !window.active(Instant::now(), progress) {
+            if !window.active(now, progress) {
                 break;
             } else if !progress {
                 std::hint::spin_loop();
