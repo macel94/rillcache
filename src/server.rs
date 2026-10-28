@@ -949,7 +949,12 @@ fn serve_client(
                 stream.write_all(&output)?;
                 output.clear();
                 if let Some(sharing) = sharing.as_ref().filter(|sharing| {
-                    !session.is_subscribed() && permit.has_peers() && sharing.should_lend()
+                    // A single-command reply is not a burst. Avoid the handoff
+                    // probe on the pipeline-1 path; pipelined batches still lend.
+                    commands > 1
+                        && !session.is_subscribed()
+                        && permit.has_peers()
+                        && sharing.should_lend()
                 }) {
                     let Some(raw) = stream.plain_mut() else {
                         return Err(io::Error::other(
