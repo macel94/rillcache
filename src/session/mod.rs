@@ -24,6 +24,7 @@ mod transaction;
 mod tests;
 
 use std::collections::BTreeSet;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::time::Instant;
@@ -51,6 +52,7 @@ pub struct Session {
     multi: Option<Multi>,
     watched: WatchState,
     authenticated_user: Option<Vec<u8>>,
+    peer_ip: Option<IpAddr>,
     failed_auth: usize,
     close_requested: bool,
     pubsub_sender: Option<SyncSender<Vec<u8>>>,
@@ -85,6 +87,7 @@ impl Session {
             multi: None,
             watched: WatchState::default(),
             authenticated_user: None,
+            peer_ip: None,
             failed_auth: 0,
             close_requested: false,
             pubsub_sender: None,
@@ -96,6 +99,11 @@ impl Session {
             paused: None,
         }
     }
+    /// Record the accepted peer's IP for per-source authentication throttling.
+    pub fn set_peer(&mut self, peer: SocketAddr) {
+        self.peer_ip = Some(peer.ip());
+    }
+
     /// Dispatch connection commands locally and all data commands through the
     /// stable public RESP2 Store API, adapting only this session's reply.
     pub fn execute(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {

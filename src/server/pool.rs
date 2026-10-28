@@ -399,6 +399,7 @@ pub(super) fn serve(
             let control = stream.try_clone()?;
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
+            session.set_peer(peer);
             session.set_pubsub_sender(sender);
             store.register_client(session.id(), peer, stream.local_addr()?, control);
             let client = Client {

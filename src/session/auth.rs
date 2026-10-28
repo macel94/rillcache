@@ -9,6 +9,8 @@ use super::Session;
 use super::client::parse_client_id;
 use super::command::{arity, command_name};
 
+pub(super) const AUTH_THROTTLED: &[u8] = b"-ERR too many authentication attempts, try later\r\n";
+
 impl Session {
     pub(super) fn auth(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
         let (username, password) = match arguments {
@@ -19,11 +21,21 @@ impl Session {
                 return;
             }
         };
+        if self
+            .peer_ip
+            .is_some_and(|source| store.auth_source_locked(source))
+        {
+            output.extend_from_slice(AUTH_THROTTLED);
+            return;
+        }
         match store.authenticate_user(username, password) {
             Ok(name) => {
                 self.authenticated_user = Some(name);
                 self.failed_auth = 0;
                 self.close_requested = false;
+                if let Some(source) = self.peer_ip {
+                    store.reset_auth_source(source);
+                }
                 output.extend_from_slice(b"+OK\r\n");
             }
             Err(AuthError::NoPassword) => output.extend_from_slice(
@@ -33,6 +45,9 @@ impl Session {
                 output.extend_from_slice(
                     b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
                 );
+                if let Some(source) = self.peer_ip {
+                    store.note_auth_source_failure(source);
+                }
                 self.note_auth_failure(store);
             }
             Err(AuthError::Internal) => {

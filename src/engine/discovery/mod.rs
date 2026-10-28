@@ -747,10 +747,11 @@ impl Store {
             if matches!(section.as_slice(), b"clients" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Clients\r\nconnected_clients:{}\r\ncluster_connections:0\r\nmaxclients:{}\r\nauth_failure_limit:{}\r\nblocked_clients:{}\r",
+                    "# Clients\r\nconnected_clients:{}\r\ncluster_connections:0\r\nmaxclients:{}\r\nauth_failure_limit:{}\r\nauth_source_limit:{}\r\nblocked_clients:{}\r",
                     self.connected_clients(),
                     self.max_clients(),
                     self.auth_failure_limit(),
+                    self.auth_source_limit(),
                     self.blocked_clients()
                 );
             }
