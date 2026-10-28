@@ -24,7 +24,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R112 (ubiquitous):** Authentication tests shall run offline in all execution
   modes, cover pipelined rejection/order, runtime rotation, `QUIT`, RESP2/RESP3
   HELLO, secret redaction and disabled/rotated credentials. Documentation shall
-  retain the missing brute-force, audit, TLS-hardening, durability and
+  retain the missing brute-force, centralized-audit, TLS-hardening, durability and
   live-deauthentication boundaries; a single password is not full Redis security.
 
 ## Multi-user ACLs (S28)
@@ -50,8 +50,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
   Documentation shall retain the missing subcommand-specific categories,
-  persistent audit, rate limiting, TLS hardening, key-spec-blind commands and
-  process-level tenant-isolation boundaries.
+  centralized audit shipping, rate limiting, TLS hardening, key-spec-blind
+  commands and process-level tenant-isolation boundaries.
 
 ## ACL credentials, dry-run and denial log (S41)
 
@@ -73,7 +73,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   permission and all-mode tests shall cover random output length/hex, invalid bits,
   allowed/denied dry runs, unknown users, no-log DRYRUN behavior, key/channel/
   command/noauth aggregation, reset and bounded counts. Documentation shall retain
-  the absence of persistent/replicated/centralized audit, rate limiting, token/
+  the absence of replicated/centralized audit shipping, rate limiting, token/
   timeout metadata and exhaustive security-event coverage.
 
 ## ACL selectors (S86)
@@ -98,7 +98,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   writes with broad reads, `clearselectors`/`reset`, atomic rejection, LIST/
   GETUSER exposure, ACL-file restart round-trips and every worker mode.
   Documentation shall retain the absence of nested selectors, subcommand
-  categories, rate limiting, persistent audit and native TLS.
+  categories, rate limiting, centralized audit shipping and native TLS.
 
 ## ACL read/write key modes (S88)
 
@@ -128,7 +128,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   grants, per-key mixed commands, read denial for a write-only credential, write
   denial for a read-only credential, listing, `ACL DRYRUN`, ACL-file restart
   round-trips and every worker mode. Documentation shall retain the
-  subcommand-category, dynamic-key-sandbox, persistent-audit, rate-limiting and
+  subcommand-category, dynamic-key-sandbox, centralized-audit, rate-limiting and
   TLS-hardening boundaries.
 
 ## First-argument command rules (S102)
@@ -151,6 +151,29 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   DRYRUN, ACL-file restart round-trips and every worker mode; documentation shall
   retain the absence of subcommand-specific categories, wildcards in the first
   argument and nested selectors.
+
+## Persistent ACL denial audit (S104)
+
+- **R384 (event-driven):** When `--audit-log PATH` is configured, every ACL
+  denial (including `NOAUTH`) shall append one bounded line containing a Unix
+  millisecond timestamp, reason, context, hex-encoded username and hex-encoded
+  object. Binary, empty and newline-containing values shall be hex-safe; the
+  line shall contain no plaintext password, key value or reflected request bytes.
+  Each line shall be flushed before the denial returns, and the file shall be
+  opened before the listener accepts clients.
+- **R385 (state-driven):** The file shall be bounded by
+  `--audit-log-max-bytes` (1 KiB..=1 GiB, default 8 MiB) with one-generation
+  rotation to `<path>.1`; rotation shall preserve the previous generation and
+  keep the current line intact. An unopenable path or invalid bound shall fail
+  startup. A runtime write failure shall not change the command reply, shall
+  increment `audit_log_write_failures` in `INFO stats`, and shall remain visible
+  rather than silently claiming a durable trail.
+- **R386 (ubiquitous):** `ACL LOG RESET` shall clear only the in-memory
+  aggregation; the audit file is append-only and shall append across restart.
+  Tests shall cover line shape, hex/binary safety, truncation bounds, one-generation
+  rotation, restart appends, startup failure, write-failure accounting and every
+  worker mode. Documentation shall retain the absence of fsync-per-line,
+  off-host shipping, tamper-evident signing, rate limiting and centralized audit.
 
 ## Native TLS 1.3 with rustls (S101)
 

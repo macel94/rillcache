@@ -126,6 +126,10 @@ pub struct Config {
     pub requirepass: Option<Vec<u8>>,
     /// Optional Redis-style ACL file. Mutually exclusive with `requirepass`.
     pub aclfile: Option<PathBuf>,
+    /// Optional append-only ACL denial audit file.
+    pub audit_log: Option<PathBuf>,
+    /// One-generation audit rotation bound in bytes.
+    pub audit_log_max_bytes: u64,
     /// Enable the append-only command journal.
     pub appendonly: bool,
     /// Journal basename inside `dir`; no path separators.
@@ -164,6 +168,8 @@ impl std::fmt::Debug for Config {
                 &self.requirepass.as_ref().map(|_| "<redacted>"),
             )
             .field("aclfile", &self.aclfile)
+            .field("audit_log", &self.audit_log)
+            .field("audit_log_max_bytes", &self.audit_log_max_bytes)
             .field("appendonly", &self.appendonly)
             .field("appendfilename", &self.appendfilename)
             .field("appendfsync", &self.appendfsync)
@@ -194,6 +200,8 @@ impl Default for Config {
             idle_timeout: Duration::from_secs(30),
             requirepass: None,
             aclfile: None,
+            audit_log: None,
+            audit_log_max_bytes: 8 * 1024 * 1024,
             appendonly: false,
             appendfilename: "appendonly.aof".into(),
             appendfsync: FsyncPolicy::EverySec,
@@ -228,6 +236,11 @@ impl Config {
                 .as_ref()
                 .is_some_and(|password| password.is_empty() || password.len() > 1024)
             || (self.requirepass.is_some() && self.aclfile.is_some())
+            || self
+                .audit_log
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || !(1024..=1024 * 1024 * 1024).contains(&self.audit_log_max_bytes)
             || self.tls_handshake_timeout.is_zero()
             || (self.tls_bind_addr.is_none()
                 && (self.tls_cert_file.is_some()
@@ -246,7 +259,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
+                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         Ok(())
@@ -287,7 +300,7 @@ impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
         config.validate()?;
         let auth = config.load_auth()?;
-        let store = if config.appendonly {
+        let mut store = if config.appendonly {
             Store::with_auth_and_journal(
                 config.max_data_bytes,
                 auth,
@@ -299,6 +312,9 @@ impl Server {
             Store::with_auth(config.max_data_bytes, auth)
         }
         .with_error_dialect(config.error_dialect);
+        if let Some(path) = &config.audit_log {
+            store.attach_audit_log(path, config.audit_log_max_bytes)?;
+        }
         store.set_aof_config(
             config.appendonly,
             &config.appendfilename,

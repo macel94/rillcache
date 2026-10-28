@@ -23,27 +23,49 @@ impl AclLogEntry {
 
 impl Store {
     pub fn record_acl_denial(&self, reason: &str, context: &str, object: &[u8], username: &[u8]) {
-        let Ok(mut log) = self.acl_log.write() else {
+        if let Ok(mut log) = self.acl_log.write() {
+            if let Some(entry) = log.iter_mut().find(|entry| {
+                entry.reason == reason.as_bytes()
+                    && entry.context == context.as_bytes()
+                    && entry.object == object
+                    && entry.username == username
+            }) {
+                entry.count = entry.count.saturating_add(1);
+            } else {
+                log.push_front(AclLogEntry {
+                    count: 1,
+                    reason: reason.as_bytes().to_vec(),
+                    context: context.as_bytes().to_vec(),
+                    object: object.to_vec(),
+                    username: username.to_vec(),
+                    created: Instant::now(),
+                });
+                log.truncate(MAX_ACL_LOG);
+            }
+        }
+        let Some(audit) = &self.audit_log else {
             return;
         };
-        if let Some(entry) = log.iter_mut().find(|entry| {
-            entry.reason == reason.as_bytes()
-                && entry.context == context.as_bytes()
-                && entry.object == object
-                && entry.username == username
-        }) {
-            entry.count = entry.count.saturating_add(1);
-            return;
-        }
-        log.push_front(AclLogEntry {
-            count: 1,
-            reason: reason.as_bytes().to_vec(),
-            context: context.as_bytes().to_vec(),
-            object: object.to_vec(),
-            username: username.to_vec(),
-            created: Instant::now(),
+        let failed = audit.lock().map_or(true, |mut log| {
+            log.record(reason, context, object, username).is_err()
         });
-        log.truncate(MAX_ACL_LOG);
+        if failed {
+            self.audit_log_write_failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Attach an append-only denial audit. The server calls this once before
+    /// accepting clients; `Store::new`-based unit tests leave it disabled.
+    pub fn attach_audit_log(
+        &mut self,
+        path: &std::path::Path,
+        max_bytes: u64,
+    ) -> std::io::Result<()> {
+        self.audit_log = Some(std::sync::Mutex::new(super::audit::AuditLog::open(
+            path, max_bytes,
+        )?));
+        Ok(())
     }
 
     pub fn acl_log(&self, count: usize) -> Vec<AclLogEntry> {
