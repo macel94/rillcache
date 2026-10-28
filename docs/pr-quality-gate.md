@@ -22,8 +22,20 @@ an accepted delivery path.
   using the same unchanged official `valkey-benchmark` executable for both servers.
   Both servers receive exactly four logical CPUs; all 10 workload/pipeline medians
   must strictly beat Valkey. Fewer than four allowed CPUs fails, never skips.
-  This proposed third required context needs a corresponding verified live ruleset
-  update through the reviewed policy path; editing tracked JSON alone is not enforcement.
+  This context is now live-required; its earlier omission allowed PR #131 to merge
+  while it failed. See the [verified audit and correction](actions-gate-audit.md).
+- **Container verification and both native builds**: `verify`,
+  `build (amd64, ubuntu-24.04)` and `build (arm64, ubuntu-24.04-arm)` must all pass.
+- **Original Tcl compatibility**: the pinned tool build and every Redis/Valkey
+  string/incr/keyspace matrix check must pass; native-control/setup failures count.
+- **PR policy self-tests**: `read-only-self-tests` must pass. The audit branch adds
+  actual live-rule verification here; that source rollout requires its protected PR.
+
+That is 14 app-pinned contexts across six PR-triggered workflows. The complete
+[workflow/job inventory](../.github/pr-workflow-gates.json) accounts for every
+repository workflow and explicitly excludes only non-PR publication jobs and
+manual/scheduled studies. `python3 scripts/pr_gate_policy.py --live` verifies
+actual effective main protection; a tracked JSON file is never proof by itself.
 
 Required contexts are pinned to the GitHub Actions integration, not arbitrary
 commit-status writers. Test CI has a unique check name to avoid collision with
@@ -167,6 +179,8 @@ Offline optional tooling checks (Python standard library only):
 ```sh
 python3 scripts/pr-performance-gate.py --self-test
 python3 scripts/test-pr-policy.py
+python3 -m unittest scripts.test_pr_gate_policy -v
+python3 scripts/pr_gate_policy.py --live
 python3 scripts/test-multicpu-performance.py
 python3 scripts/pr-performance-gate.py --check /path/to/original-gate
 python3 scripts/pr-multicpu-performance.py --check /path/to/four-cpu-gate

@@ -10,7 +10,7 @@ on:
     - cron: '17 * * * *'
   workflow_dispatch:
   workflow_run:
-    workflows: [CI, PR Valkey quality gate, PR multi-CPU Valkey performance]
+    workflows: [CI, PR Valkey quality gate, PR multi-CPU Valkey performance, Container image, Upstream Tcl compatibility]
     types: [completed]
 
 permissions:
@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   read-only-self-tests:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -32,6 +32,13 @@ jobs:
           python3 -m unittest scripts.test_pr_branch_updater -v
           python3 scripts/test-pr-policy.py
           python3 scripts/test-multicpu-performance.py
+          python3 -m unittest scripts.test_pr_gate_policy -v
+      - name: Require actual live protection, not just tracked JSON
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/pr_gate_policy.py --live > "$RUNNER_TEMP/pr-gate-audit.md"
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/pr-gate-audit.md"
 
   reconcile:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -57,7 +64,9 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           PR_UPDATE_OUTCOMES: ${{ runner.temp }}/pr-update-outcomes.json
-        run: python3 scripts/update-pr-branches.py
+        run: |
+          python3 scripts/pr_gate_policy.py --live
+          python3 scripts/update-pr-branches.py
       - name: Retain machine-readable per-PR outcomes
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

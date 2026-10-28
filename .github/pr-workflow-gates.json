@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "workflows": {
+    "ci.yml": {
+      "events": ["push", "pull_request", "workflow_dispatch"],
+      "jobs": {"verify": ["Tests and offline CI"]},
+      "non_pr_jobs": {}
+    },
+    "pr-quality.yml": {
+      "events": ["pull_request", "workflow_dispatch"],
+      "jobs": {"benchmark": ["Valkey performance gate"]},
+      "non_pr_jobs": {}
+    },
+    "pr-multicpu-quality.yml": {
+      "events": ["pull_request", "workflow_dispatch"],
+      "jobs": {"benchmark": ["Valkey 4-CPU performance gate"]},
+      "non_pr_jobs": {}
+    },
+    "container.yml": {
+      "events": ["push", "pull_request", "workflow_dispatch"],
+      "jobs": {
+        "verify": ["verify"],
+        "build": ["build (amd64, ubuntu-24.04)", "build (arm64, ubuntu-24.04-arm)"]
+      },
+      "non_pr_jobs": {"publish": "not-pull-request", "public-pull": "needs-publish"}
+    },
+    "upstream-compatibility.yml": {
+      "events": ["pull_request", "workflow_dispatch"],
+      "jobs": {
+        "build": ["Build pinned TCP compatibility tools"],
+        "suites": ["Tcl redis / string", "Tcl redis / incr", "Tcl redis / keyspace", "Tcl valkey / string", "Tcl valkey / incr", "Tcl valkey / keyspace"]
+      },
+      "non_pr_jobs": {}
+    },
+    "pr-branch-updater.yml": {
+      "events": ["pull_request", "push", "schedule", "workflow_dispatch", "workflow_run"],
+      "jobs": {"read-only-self-tests": ["read-only-self-tests"]},
+      "non_pr_jobs": {"reconcile": "not-pull-request"}
+    },
+    "benchmarks.yml": {
+      "events": ["workflow_dispatch", "schedule"],
+      "jobs": {},
+      "non_pr_reason": "Manual/weekly comparisons, inference and report publication; not a PR event. Report PRs receive every ordinary required check."
+    },
+    "hotpaths.yml": {
+      "events": ["workflow_dispatch"],
+      "jobs": {},
+      "non_pr_reason": "Manual trusted-main profiling study, not an every-PR workload."
+    },
+    "copilot-auth-check.yml": {
+      "events": ["workflow_dispatch"],
+      "jobs": {},
+      "non_pr_reason": "Manual default-branch inference authentication probe, never a PR credential path."
+    },
+    "upstream-performance.yml": {
+      "events": ["workflow_dispatch"],
+      "jobs": {},
+      "non_pr_reason": "Separate manual Redis/Valkey three-server study, not a substitute for either mandatory PR performance gate."
+    }
+  }
+}

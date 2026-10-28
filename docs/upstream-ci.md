@@ -5,8 +5,10 @@ relax or feed historical passes into the existing **Tests and offline CI** and
 **Valkey performance gate** and **Valkey 4-CPU performance gate** protections.
 The original gate requires all 20 scoped medians; the latter uses the official
 `valkey-benchmark` and requires all 10 four-CPU workload/pipeline medians to win.
-Its required-check context additionally needs reviewed live ruleset activation. These new workflows do not grant full Redis or
-Valkey compatibility, production readiness, or a universal performance claim.
+The four-CPU context, compatibility build and all six Tcl matrix checks are now
+live-required: [full Actions gate audit](actions-gate-audit.md). The separate
+manual performance workflow is not a PR gate. These workflows do not grant full
+Redis/Valkey compatibility, production readiness, or a universal performance claim.
 
 ## Run and inspect
 

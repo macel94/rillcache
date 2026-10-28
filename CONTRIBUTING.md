@@ -10,7 +10,10 @@ Never commit on or push directly to `main`, including documentation and generate
 reports. Work on a branch and open a PR. Merge only after **Tests and offline CI**,
 **Valkey performance gate** and **Valkey 4-CPU performance gate** pass on an
 up-to-date head: all 20 original scoped median throughputs and all 10 official
-Valkey-benchmark four-CPU medians must strictly exceed Valkey. Ties, slower cases
+Valkey-benchmark four-CPU medians must strictly exceed Valkey. Container verify/
+both native builds, all six Tcl suites plus their build, and PR policy self-tests
+are also mandatory: [14 app-pinned checks across six PR workflows](docs/actions-gate-audit.md).
+Ties, slower cases
 and invalid/incomplete evidence block merging. No administrator/bot bypass, fastest-sample selection or
 threshold relaxation. CI/policy files additionally require code-owner review;
 ordinary implementation PRs have no blanket approving-review quota. See the
@@ -96,7 +99,7 @@ permissions only to update opted-in same-repository PR branches and explicitly
 dispatch the existing read-only required checks; it never checks out PR code or
 merges a PR. The publisher's narrowly scoped pull-request/action permissions create
 that PR and dispatch
-all three read-only required checks on its head; no new stored token is needed. Fork PRs never receive a privileged
+all six read-only required workflows on its head; no new stored token is needed. Fork PRs never receive a privileged
 `pull_request_target` execution path. See [automatic reporting](docs/benchmark-reports.md).
 Do not commit credentials, benchmark build sources, generated target output or
 private environment files.

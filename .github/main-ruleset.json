@@ -32,7 +32,18 @@
         "required_status_checks": [
           {"context": "Tests and offline CI", "integration_id": 15368},
           {"context": "Valkey performance gate", "integration_id": 15368},
-          {"context": "Valkey 4-CPU performance gate", "integration_id": 15368}
+          {"context": "Valkey 4-CPU performance gate", "integration_id": 15368},
+          {"context": "verify", "integration_id": 15368},
+          {"context": "build (amd64, ubuntu-24.04)", "integration_id": 15368},
+          {"context": "build (arm64, ubuntu-24.04-arm)", "integration_id": 15368},
+          {"context": "Build pinned TCP compatibility tools", "integration_id": 15368},
+          {"context": "Tcl redis / string", "integration_id": 15368},
+          {"context": "Tcl redis / incr", "integration_id": 15368},
+          {"context": "Tcl redis / keyspace", "integration_id": 15368},
+          {"context": "Tcl valkey / string", "integration_id": 15368},
+          {"context": "Tcl valkey / incr", "integration_id": 15368},
+          {"context": "Tcl valkey / keyspace", "integration_id": 15368},
+          {"context": "read-only-self-tests", "integration_id": 15368}
         ]
       }
     }

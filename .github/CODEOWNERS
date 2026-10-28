@@ -2,6 +2,9 @@
 # require the test and performance checks, without a blanket approval quota.
 /.github/CODEOWNERS @macel94
 /.github/main-ruleset.json @macel94
+/.github/pr-workflow-gates.json @macel94
+/scripts/pr_gate_policy.py @macel94
+/scripts/test_pr_gate_policy.py @macel94
 /.github/workflows/ @macel94
 /scripts/pr-performance-gate.py @macel94
 /scripts/pr-multicpu-performance.py @macel94

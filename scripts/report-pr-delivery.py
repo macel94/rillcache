@@ -8,13 +8,17 @@ failed run. It prints dispatch-needed flags, never an assertion that tests passe
 import argparse
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
 import time
 from urllib.parse import quote
 
-WORKFLOWS = ("ci.yml", "pr-quality.yml", "pr-multicpu-quality.yml", "upstream-compatibility.yml")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pr_gate_policy import PolicyError, audit_live, required_workflows
+
+WORKFLOWS = tuple(required_workflows())
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -95,6 +99,10 @@ def runs(api, workflow, branch):
 
 
 def dispatch_plan(api, number, branch):
+    try:
+        audit_live(api)
+    except (PolicyError, KeyError, TypeError, ValueError) as error:
+        raise DeliveryError(f"live merge protection audit failed: {error}") from error
     pr = identity(api, number, branch)
     head = pr["head"]["sha"]
     main = api.get("git/ref/heads/main").get("object", {}).get("sha", "")
