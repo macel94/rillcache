@@ -4,9 +4,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 Not implemented or implied by the completed increments:
 
-1. Validate HELLO/CLIENT session negotiation against real pinned redis-cli and
-   language clients; add command discovery and multiple databases only as separate
-   compatible increments.
+1. Validate HELLO/CLIENT session negotiation against real Python/Node/Go language
+   clients; pinned `redis-cli` RESP2/RESP3/auth coverage is implemented (S103).
+   Add command discovery and multiple databases only as separate compatible
+   increments.
 2. Brute-force controls and a persistent audit path.
    The Go TLS 1.3 sidecar provides the current transport-encryption boundary;
    native Rust TLS, SNI/hot reload and independent security review remain separate.

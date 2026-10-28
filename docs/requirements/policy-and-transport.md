@@ -256,3 +256,20 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   clearing the count, timeout/disconnect/reset clearing, `CLIENT LIST` flags and
   every worker mode. Documentation shall retain that this is a process-local
   registry view with no fd/idle/buffer/memory metadata or cross-process claim.
+
+## Real redis-cli interoperability (S103)
+
+- **R381 (event-driven):** When a pinned `redis-cli` connects over RESP2 or
+  negotiates RESP3, the server shall complete the handshake and serve `PING`,
+  `SET`, `GET`, `APPEND` and `CLIENT SETNAME` with the documented replies. Client
+  metadata shall remain connection-local; a separate CLI connection shall not
+  inherit another connection's name.
+- **R382 (event-driven):** When the default user requires a password,
+  `redis-cli --user default -a <password>` shall authenticate and receive normal
+  replies; a missing password shall receive `NOAUTH` and an incorrect password
+  shall receive `WRONGPASS` without reflecting the supplied secret.
+- **R383 (ubiquitous):** The interop test shall use `RILLCACHE_REDIS_CLI` or a
+  `redis-cli` on `PATH`, record its version, run in every worker mode, and skip
+  visibly with a diagnostic when no client is available unless
+  `RILLCACHE_REQUIRE_REDIS_CLI=1` is set. Language-client suites, richer protocol
+  negotiation and nonzero database selection remain separate increments.
