@@ -16,6 +16,26 @@ fn isolated_replies_do_not_activate_a_lease_and_leader_presence_does() {
 }
 
 #[test]
+fn atomic_reply_observations_reject_stale_times_and_keep_the_exact_boundary() {
+    assert!(!Sharing::recent_burst(0, 1, 50));
+    assert!(Sharing::recent_burst(100, 100, 50));
+    assert!(Sharing::recent_burst(100, 149, 50));
+    assert!(!Sharing::recent_burst(100, 150, 50));
+    assert!(!Sharing::recent_burst(200, 100, 50));
+    let stop = Arc::new(AtomicBool::new(false));
+    let sharing = Sharing::new(Config::default(), stop, 50);
+    let (sender, receiver) = mpsc::channel();
+    *sharing.leader.lock().unwrap() = Some(sender);
+    sharing.leader_active.store(true, Ordering::Release);
+    drop(Leadership {
+        sharing: &sharing,
+        receiver,
+    });
+    assert!(sharing.leader.lock().unwrap().is_none());
+    assert!(!sharing.leader_active.load(Ordering::Acquire));
+}
+
+#[test]
 fn progress_never_extends_an_epochs_maximum_lifetime() {
     let now = Instant::now();
     let idle = Duration::from_micros(50);

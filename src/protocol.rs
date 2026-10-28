@@ -87,7 +87,7 @@ pub fn dispatch_request<'a, T>(
         && limits.max_bulk_bytes >= 4
         && limits.max_frame_bytes >= 14
         && &input[..8] == b"*1\r\n$4\r\n"
-        && input[8..12].eq_ignore_ascii_case(b"PING")
+        && &input[8..12] == b"PING"
         && &input[12..14] == b"\r\n"
     {
         return Ok(Some((execute(&[b"PING"]), 14)));
@@ -576,10 +576,61 @@ mod tests {
         assert_eq!(calls, 1);
         assert_eq!(
             dispatch_request(b"*1\r\n$4\r\nping\r\n", Limits::default(), |arguments| {
-                assert_eq!(arguments, &[b"PING"]);
+                assert_eq!(arguments, &[b"ping"]);
             }),
             Ok(Some(((), frame.len())))
         );
+    }
+
+    #[test]
+    fn ping_shortcut_preserves_decoder_bytes_limits_and_pipeline_boundaries() {
+        for input in [
+            b"*1\r\n$4\r\nPING\r\n".as_slice(),
+            b"*1\r\n$4\r\nping\r\n",
+            b"*1\r\n$4\r\nPiNg\r\n",
+            b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nQUIT\r\n",
+            b"*1\r\n$4\r\nPINGxx",
+        ] {
+            for limits in [
+                Limits::default(),
+                Limits {
+                    max_arguments: 0,
+                    ..Limits::default()
+                },
+                Limits {
+                    max_bulk_bytes: 3,
+                    ..Limits::default()
+                },
+                Limits {
+                    max_frame_bytes: 13,
+                    ..Limits::default()
+                },
+                Limits {
+                    max_frame_bytes: 14,
+                    ..Limits::default()
+                },
+            ] {
+                let expected = parse_request(input, limits).map(|parsed| {
+                    parsed.map(|request| {
+                        (
+                            request
+                                .arguments
+                                .iter()
+                                .map(|argument| argument.to_vec())
+                                .collect::<Vec<_>>(),
+                            request.consumed,
+                        )
+                    })
+                });
+                let actual = dispatch_request(input, limits, |arguments| {
+                    arguments
+                        .iter()
+                        .map(|argument| argument.to_vec())
+                        .collect::<Vec<_>>()
+                });
+                assert_eq!(actual, expected, "input {input:?}, limits {limits:?}");
+            }
+        }
     }
 
     #[test]
