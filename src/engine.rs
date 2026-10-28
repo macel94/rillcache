@@ -48,6 +48,11 @@ mod transaction;
 mod unsupported;
 mod xxh3;
 pub use acl_log::AclLogEntry;
+
+/// Verify a per-line audit HMAC with a shared 16..=1024-byte key.
+pub fn verify_audit_line(key: &[u8], line: &str) -> bool {
+    audit::verify_line(key, line)
+}
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 pub use blocking::PopOutcome;
 pub use blocking::reply_value as blocking_reply;

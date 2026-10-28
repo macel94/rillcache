@@ -179,8 +179,8 @@ rustls ([`docs/tls.md`](docs/tls.md)); it intentionally does not offer HTTP/2 or
 HTTP/3.
 `ACL GENPASS`, `ACL DRYRUN`, a bounded process-local `ACL LOG`, the optional
 `--audit-log` append-only denial trail and the separate
-`rillcache-audit-collector` UDP sink support credential operations and policy
-debugging. See
+`rillcache-audit-collector` UDP sink with optional shared-key HMAC verification
+support credential operations and policy debugging. See
 [security](docs/security.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
@@ -199,7 +199,7 @@ This is **not yet** a drop-in Redis replacement or a production service. It
 supports a bounded `HELLO`/RESP3 session subset, common `CLIENT` metadata,
 `SELECT 0`, disconnect-equivalent `RESET`, `CLIENT LIST`/`KILL` and honest client
 statistics; single-password and multi-user ACL authentication are implemented.
-Authenticated collector federation, TLS hardening and independent security review,
+Collector sender authentication/TLS/federation, TLS hardening and independent security review,
 global/cross-process rate limiting, RDB/background-AOF interoperability, backup/restore drills,
 scripts/functions, sharded pub/sub, keyspace notifications, replication,
 clustering, and real client-library interoperability remain production blockers. RESP3 replies are limited to the current command
