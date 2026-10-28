@@ -49,7 +49,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
-  Documentation shall retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT overrides,
+  Documentation shall retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO overrides,
   centralized audit shipping, global/cross-process rate limiting, TLS hardening, key-spec-blind
   commands and process-level tenant-isolation boundaries.
 
@@ -149,7 +149,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   update atomically without partially changing the user. Tests shall cover
   allow/deny, ordered overrides, case-insensitivity, selectors, LIST/GETUSER,
   DRYRUN, ACL-file restart round-trips and every worker mode; documentation shall
-  retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT overrides, wildcards in the first
+  retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO overrides, wildcards in the first
   argument and nested selectors.
 
 ## Persistent ACL denial audit (S104)
@@ -318,6 +318,24 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   every collector mode. Documentation shall retain the absence of sender
   authentication, TLS, replay protection, full-chain verification, centralized
   key distribution and delivery guarantees.
+
+## Remaining bounded subcommand categories (S112)
+
+- **R408 (event-driven):** For `ACL`, `@admin` and `@dangerous` shall match only
+  `DELUSER`, `DRYRUN`, `GETUSER`, `LIST`, `LOAD`, `LOG`, `SAVE`, `SETUSER` and
+  `USERS`; `CAT`, `GENPASS`, `HELP` and `WHOAMI` shall not be granted by those
+  categories. `WHOAMI` remains available to every authenticated user as before.
+- **R409 (state-driven):** All implemented `COMMAND` subcommands shall match
+  `@connection` and `@slow`. For `XGROUP`, `@write` shall match
+  `CREATE`, `CREATECONSUMER`, `DELCONSUMER`, `DESTROY` and `SETID`, but not
+  `HELP`; for `XINFO`, `@read` shall match `STREAM`, `GROUPS` and `CONSUMERS`,
+  but not `HELP`. Unexpected categories shall fall back to the command-level
+  approximation.
+- **R410 (ubiquitous):** Unit and all-mode wire tests shall cover the allowed and
+  denied cases above, including `ACL USERS` versus `ACL CAT`/`GENPASS`,
+  `COMMAND COUNT`, `XGROUP CREATE` versus `HELP`, and `XINFO STREAM`/`GROUPS`
+  versus `HELP`. Documentation shall retain that `ACL CAT` remains command-level
+  and that other command families still use the command-level approximation.
 
 ## Native TLS 1.3 with rustls (S101)
 
