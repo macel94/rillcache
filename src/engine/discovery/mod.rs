@@ -630,6 +630,94 @@ fn subcommand_category(name: &str, subcommand: &[u8], category: &[u8]) -> Option
                 None
             }
         }
+        "acl" => {
+            let admin = is(&[
+                b"deluser", b"dryrun", b"getuser", b"list", b"load", b"log", b"save", b"setuser",
+                b"users",
+            ]);
+            let recognized = admin || is(&[b"cat", b"genpass", b"whoami", b"help"]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+            {
+                Some(admin)
+            } else {
+                None
+            }
+        }
+        "command" => {
+            let recognized = is(&[
+                b"count",
+                b"list",
+                b"info",
+                b"getkeys",
+                b"docs",
+                b"help",
+                b"getkeysandflags",
+            ]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"connection") {
+                Some(true)
+            } else if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+                || category.eq_ignore_ascii_case(b"read")
+                || category.eq_ignore_ascii_case(b"write")
+                || category.eq_ignore_ascii_case(b"keyspace")
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        "xgroup" => {
+            let help = subcommand.eq_ignore_ascii_case(b"help");
+            let recognized = help
+                || is(&[
+                    b"create",
+                    b"createconsumer",
+                    b"delconsumer",
+                    b"destroy",
+                    b"setid",
+                ]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"write") {
+                Some(!help)
+            } else if category.eq_ignore_ascii_case(b"read")
+                || category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+                || category.eq_ignore_ascii_case(b"connection")
+                || category.eq_ignore_ascii_case(b"keyspace")
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        "xinfo" => {
+            let help = subcommand.eq_ignore_ascii_case(b"help");
+            let recognized = help || is(&[b"stream", b"groups", b"consumers"]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"read") {
+                Some(!help)
+            } else if category.eq_ignore_ascii_case(b"write")
+                || category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+                || category.eq_ignore_ascii_case(b"connection")
+                || category.eq_ignore_ascii_case(b"keyspace")
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }

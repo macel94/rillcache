@@ -70,10 +70,12 @@ Supported categories are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
 `@list`, `@set`, `@hash`, `@zset`, `@stream`, `@bitmap`, `@connection`,
 `@transaction`, `@admin`, `@fast`, `@slow` and `@dangerous`. Category membership
 is an approximation over the published command table, not a byte-for-byte copy of
-a specific Redis release. Bounded subcommand overrides refine `CLIENT`, `MEMORY`
-and `OBJECT`: `@admin`/`@dangerous` match only the administrative `CLIENT`
-subcommands, `MEMORY USAGE` is `@read` while statistics are `@admin`, and all
-`OBJECT` subcommands are `@keyspace` with data inspection also `@read`. `ACL CAT`
+a specific Redis release. Bounded subcommand overrides refine `CLIENT`, `MEMORY`,
+`OBJECT`, `ACL`, `COMMAND`, `XGROUP` and `XINFO`: `@admin`/`@dangerous` match only
+the administrative `CLIENT` and `ACL` subcommands, `MEMORY USAGE` is `@read` while
+statistics are `@admin`, all `OBJECT` subcommands are `@keyspace` with data
+inspection also `@read`, `COMMAND` subcommands are `@connection`, `XGROUP` write
+subcommands exclude `HELP`, and `XINFO` read subcommands exclude `HELP`. `ACL CAT`
 remains command-level rather than listing subcommand entries.
 
 Key patterns carry access modes. `~pattern` and `%RW~pattern` grant reads and
@@ -183,10 +185,11 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 ## Deliberate limits
 
 - **Not full Redis ACL.** Remaining subcommand-specific categories beyond the
-  bounded `CLIENT`/`MEMORY`/`OBJECT` overrides, nested selectors, dynamic
-  key-sandbox rules, collector sender authentication/TLS/federation, full-chain
-  signing/key rotation, global/cross-process rate limiting and TLS hardening
-  (SNI/hot reload/OCSP) are absent.
+  bounded `CLIENT`/`MEMORY`/`OBJECT`/`ACL`/`COMMAND`/`XGROUP`/`XINFO` overrides,
+  nested selectors, dynamic key-sandbox rules, collector sender
+  authentication/TLS/federation, full-chain signing/key rotation,
+  global/cross-process rate limiting and TLS hardening (SNI/hot reload/OCSP) are
+  absent.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported.
