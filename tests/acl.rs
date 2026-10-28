@@ -595,3 +595,153 @@ fn acl_key_modes_scope_mixed_dynamic_and_option_dependent_specs() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn acl_first_argument_rules_scope_subcommands_and_round_trip() {
+    let path = temp_name("first-arg");
+    std::fs::write(&path, b"user default on nopass ~* &* +@all\n").unwrap();
+    let server = start(Config {
+        aclfile: Some(path.clone()),
+        ..Config::default()
+    });
+    let mut admin = connect(&server);
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"SETUSER",
+            b"config-reader",
+            b"on",
+            b">secret",
+            b"allkeys",
+            b"allchannels",
+            b"-@all",
+            b"+config|get",
+        ],
+        b"+OK\r\n",
+    );
+    let list = String::from_utf8(request(&mut admin, &[b"ACL", b"LIST"])).unwrap();
+    assert!(list.contains("+config|get"), "{list}");
+    let details =
+        String::from_utf8(request(&mut admin, &[b"ACL", b"GETUSER", b"config-reader"])).unwrap();
+    assert!(details.contains("+config|get"), "{details}");
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"DRYRUN",
+            b"config-reader",
+            b"CONFIG",
+            b"GET",
+            b"maxmemory",
+        ],
+        b"+OK\r\n",
+    );
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"DRYRUN",
+            b"config-reader",
+            b"CONFIG",
+            b"SET",
+            b"maxmemory",
+            b"1",
+        ],
+        b"-NOPERM this user has no permissions to run the 'config' command\r\n",
+    );
+
+    let mut reader = connect(&server);
+    send(
+        &mut reader,
+        &[b"AUTH", b"config-reader", b"secret"],
+        b"+OK\r\n",
+    );
+    let get = request(&mut reader, &[b"CONFIG", b"GET", b"maxmemory"]);
+    assert!(
+        String::from_utf8_lossy(&get).contains("maxmemory"),
+        "{get:?}"
+    );
+    send(
+        &mut reader,
+        &[b"CONFIG", b"SET", b"maxmemory", b"1"],
+        b"-NOPERM this user has no permissions to run the 'config' command\r\n",
+    );
+    send(&mut admin, &[b"ACL", b"SAVE"], b"+OK\r\n");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("+config|get"), "{saved}");
+    send(&mut admin, &[b"ACL", b"LOAD"], b"+OK\r\n");
+    send(
+        &mut reader,
+        &[b"CONFIG", b"SET", b"maxmemory", b"1"],
+        b"-NOPERM this user has no permissions to run the 'config' command\r\n",
+    );
+
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"SETUSER",
+            b"config-except-set",
+            b"on",
+            b">secret2",
+            b"allkeys",
+            b"allchannels",
+            b"-@all",
+            b"+config",
+            b"-config|set",
+        ],
+        b"+OK\r\n",
+    );
+    let mut except_set = connect(&server);
+    send(
+        &mut except_set,
+        &[b"AUTH", b"config-except-set", b"secret2"],
+        b"+OK\r\n",
+    );
+    let get = request(&mut except_set, &[b"CONFIG", b"GET", b"maxmemory"]);
+    assert!(
+        String::from_utf8_lossy(&get).contains("maxmemory"),
+        "{get:?}"
+    );
+    send(
+        &mut except_set,
+        &[b"CONFIG", b"SET", b"maxmemory", b"1"],
+        b"-NOPERM this user has no permissions to run the 'config' command\r\n",
+    );
+
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"SETUSER",
+            b"selector-reader",
+            b"on",
+            b">secret3",
+            b"allkeys",
+            b"allchannels",
+            b"-@all",
+            b"(+config|get)",
+        ],
+        b"+OK\r\n",
+    );
+    let mut selector = connect(&server);
+    send(
+        &mut selector,
+        &[b"AUTH", b"selector-reader", b"secret3"],
+        b"+OK\r\n",
+    );
+    let get = request(&mut selector, &[b"CONFIG", b"GET", b"maxmemory"]);
+    assert!(
+        String::from_utf8_lossy(&get).contains("maxmemory"),
+        "{get:?}"
+    );
+    send(
+        &mut selector,
+        &[b"CONFIG", b"SET", b"maxmemory", b"1"],
+        b"-NOPERM this user has no permissions to run the 'config' command\r\n",
+    );
+
+    server.shutdown().unwrap();
+    let _ = std::fs::remove_file(&path);
+}

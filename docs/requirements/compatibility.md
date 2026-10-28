@@ -73,8 +73,8 @@ sharded pub/sub, keyspace notifications and scripts. Cluster mode,
 multi-database, and arbitrary Redis AOF/RDB files are not accepted.
 Single-password and multi-user ACL-file authentication are supported with
 `AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors,
-read/write key modes, `ACL LOG`/`DRYRUN`/`GENPASS` and pub/sub channel enforcement
-are implemented. First-argument command rules, subcommand-specific categories,
+read/write key modes, first-argument command rules, `ACL LOG`/`DRYRUN`/`GENPASS`
+and pub/sub channel enforcement are implemented. Subcommand-specific categories,
 persistent/centralized audit and rate limiting remain absent. See
 [security](../security.md).
 Connection-local commands are rejected rather than queued inside MULTI. Unsupported SET options return
