@@ -115,6 +115,9 @@ impl Drop for Permit {
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub max_clients: usize,
+    /// Consecutive failed AUTH/HELLO AUTH attempts before the connection closes.
+    /// Zero disables the per-connection budget.
+    pub auth_failure_limit: usize,
     /// None: one blocking worker per client. Some(1..=64): fixed I/O/execution lanes.
     pub worker_threads: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
@@ -159,6 +162,7 @@ impl std::fmt::Debug for Config {
             .debug_struct("Config")
             .field("bind_addr", &self.bind_addr)
             .field("max_clients", &self.max_clients)
+            .field("auth_failure_limit", &self.auth_failure_limit)
             .field("worker_threads", &self.worker_threads)
             .field("max_data_bytes", &self.max_data_bytes)
             .field("limits", &self.limits)
@@ -194,6 +198,7 @@ impl Default for Config {
         Self {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 6379)),
             max_clients: 128,
+            auth_failure_limit: 10,
             worker_threads: None,
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
@@ -224,6 +229,7 @@ impl Config {
             .worker_threads
             .is_some_and(|count| !(1..=64).contains(&count))
             || self.max_clients == 0
+            || self.auth_failure_limit > 10_000
             || self.max_data_bytes == 0
             || self.limits.max_arguments == 0
             || self.limits.max_bulk_bytes == 0
@@ -321,6 +327,7 @@ impl Server {
             config.appendfsync,
         );
         store.set_max_clients(config.max_clients);
+        store.set_auth_failure_limit(config.auth_failure_limit);
         store.set_eviction_policy(config.maxmemory_policy);
         store.set_notify_flags(config.notify_keyspace_events);
         let listener = TcpListener::bind(config.bind_addr)?;

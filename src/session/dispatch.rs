@@ -235,7 +235,11 @@ impl Session {
             self.hello(store, &arguments[1..], output);
             self.refresh_pubsub_protocol(store);
             self.sync_client_metadata(store);
-            return Action::Continue;
+            return if self.close_requested {
+                Action::Close
+            } else {
+                Action::Continue
+            };
         }
         if command.eq_ignore_ascii_case(b"CLIENT") {
             self.client(store, &arguments[1..], output);
@@ -249,7 +253,11 @@ impl Session {
         if command.eq_ignore_ascii_case(b"AUTH") {
             self.auth(store, &arguments[1..], output);
             self.sync_client_metadata(store);
-            return Action::Continue;
+            return if self.close_requested {
+                Action::Close
+            } else {
+                Action::Continue
+            };
         }
         if command.eq_ignore_ascii_case(b"ACL") {
             self.acl(store, &arguments[1..], output);

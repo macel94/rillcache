@@ -22,17 +22,30 @@ impl Session {
         match store.authenticate_user(username, password) {
             Ok(name) => {
                 self.authenticated_user = Some(name);
+                self.failed_auth = 0;
+                self.close_requested = false;
                 output.extend_from_slice(b"+OK\r\n");
             }
             Err(AuthError::NoPassword) => output.extend_from_slice(
                 b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
             ),
-            Err(AuthError::WrongPassword) => output.extend_from_slice(
-                b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
-            ),
+            Err(AuthError::WrongPassword) => {
+                output.extend_from_slice(
+                    b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
+                );
+                self.note_auth_failure(store);
+            }
             Err(AuthError::Internal) => {
                 output.extend_from_slice(b"-ERR internal authentication error\r\n")
             }
+        }
+    }
+
+    pub(super) fn note_auth_failure(&mut self, store: &Store) {
+        self.failed_auth = self.failed_auth.saturating_add(1);
+        let limit = store.auth_failure_limit();
+        if limit > 0 && self.failed_auth >= limit {
+            self.close_requested = true;
         }
     }
 

@@ -8,7 +8,7 @@ use rillcache::{Config, Server};
 
 mod healthcheck;
 
-const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
+const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: thread per client)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
 enum Options {
@@ -40,6 +40,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             }
             "--bind"
             | "--max-clients"
+            | "--auth-failure-limit"
             | "--threads"
             | "--max-data-bytes"
             | "--max-bulk-bytes"
@@ -79,6 +80,13 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                         config.worker_threads = Some(count);
                     }
                     "--max-clients" => config.max_clients = positive(&option, &value)?,
+                    "--auth-failure-limit" => {
+                        config.auth_failure_limit = value
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|limit| *limit <= 10_000)
+                            .ok_or("--auth-failure-limit requires 0..=10000")?;
+                    }
                     "--max-data-bytes" => config.max_data_bytes = positive(&option, &value)?,
                     "--max-bulk-bytes" => {
                         config.limits.max_bulk_bytes = finite_limit(&option, &value)?
@@ -472,6 +480,9 @@ mod tests {
             vec!["--bind"],
             vec!["--bind", "localhost:6379"],
             vec!["--max-clients", "0"],
+            vec!["--auth-failure-limit", "10001"],
+            vec!["--auth-failure-limit", "-1"],
+            vec!["--auth-failure-limit", "x"],
             vec!["--threads", "0"],
             vec!["--threads", "65"],
             vec!["--threads", "-1"],
@@ -502,6 +513,8 @@ mod tests {
                 "4",
                 "--max-clients",
                 "4",
+                "--auth-failure-limit",
+                "3",
                 "--max-data-bytes",
                 "100",
                 "--max-bulk-bytes",
@@ -519,6 +532,7 @@ mod tests {
         };
         assert_eq!(config.bind_addr.port(), 0);
         assert_eq!(config.max_clients, 4);
+        assert_eq!(config.auth_failure_limit, 3);
         assert_eq!(config.worker_threads, Some(4));
         assert_eq!(config.max_data_bytes, 100);
         assert_eq!(config.limits.max_bulk_bytes, 8192);
