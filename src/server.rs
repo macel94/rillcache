@@ -140,6 +140,8 @@ pub struct Config {
     pub audit_log_max_bytes: u64,
     /// Optional best-effort UDP destination for the same denial lines.
     pub audit_syslog: Option<SocketAddr>,
+    /// Optional file containing the per-line audit HMAC key.
+    pub audit_hmac_key_file: Option<PathBuf>,
     /// Enable the append-only command journal.
     pub appendonly: bool,
     /// Journal basename inside `dir`; no path separators.
@@ -184,6 +186,7 @@ impl std::fmt::Debug for Config {
             .field("audit_log", &self.audit_log)
             .field("audit_log_max_bytes", &self.audit_log_max_bytes)
             .field("audit_syslog", &self.audit_syslog)
+            .field("audit_hmac_key_file", &self.audit_hmac_key_file)
             .field("appendonly", &self.appendonly)
             .field("appendfilename", &self.appendfilename)
             .field("appendfsync", &self.appendfsync)
@@ -220,6 +223,7 @@ impl Default for Config {
             audit_log: None,
             audit_log_max_bytes: 8 * 1024 * 1024,
             audit_syslog: None,
+            audit_hmac_key_file: None,
             appendonly: false,
             appendfilename: "appendonly.aof".into(),
             appendfsync: FsyncPolicy::EverySec,
@@ -265,6 +269,10 @@ impl Config {
             || self
                 .audit_syslog
                 .is_some_and(|destination| destination.port() == 0)
+            || self
+                .audit_hmac_key_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
             || self.tls_handshake_timeout.is_zero()
             || (self.tls_bind_addr.is_none()
                 && (self.tls_cert_file.is_some()
@@ -312,6 +320,34 @@ impl Config {
             None => Ok(Auth::from_password(self.requirepass.as_deref())),
         }
     }
+
+    fn load_audit_hmac_key(&self) -> io::Result<Option<Vec<u8>>> {
+        let Some(path) = &self.audit_hmac_key_file else {
+            return Ok(None);
+        };
+        let mut key = std::fs::read(path).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "cannot read audit HMAC key file {}: {error:?}",
+                    path.display()
+                ),
+            )
+        })?;
+        if key.ends_with(b"\n") {
+            key.pop();
+            if key.ends_with(b"\r") {
+                key.pop();
+            }
+        }
+        if !(16..=1024).contains(&key.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "audit HMAC key must be 16..=1024 bytes",
+            ));
+        }
+        Ok(Some(key))
+    }
 }
 
 impl Config {
@@ -324,6 +360,7 @@ impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
         config.validate()?;
         let auth = config.load_auth()?;
+        let audit_hmac_key = config.load_audit_hmac_key()?;
         let mut store = if config.appendonly {
             Store::with_auth_and_journal(
                 config.max_data_bytes,
@@ -341,6 +378,9 @@ impl Server {
         }
         if let Some(destination) = config.audit_syslog {
             store.attach_audit_syslog(destination)?;
+        }
+        if let Some(key) = audit_hmac_key {
+            store.set_audit_hmac_key(key);
         }
         store.set_aof_config(
             config.appendonly,

@@ -7,7 +7,7 @@ access-control boundary for a private deployment, not a complete Redis security
 design. It adds per-connection and per-peer-IP failed-`AUTH` budgets but not
 global/cross-process rate limiting, delayed responses or username lockout, TLS
 hardening (SNI/hot reload/OCSP), authenticated/centralized audit aggregation,
-tamper-evident audit signing, or credential encryption at rest.
+full-chain audit signing or key custody/rotation, or credential encryption at rest.
 
 ## What is implemented
 
@@ -124,9 +124,9 @@ flushed per denial and reserves one generation for rotation at
 to `PATH.1`. `ACL LOG RESET` clears only the in-memory aggregation; the file is
 append-only and appends across restart. Runtime write failures leave the command
 reply unchanged but increment `audit_log_write_failures` in `INFO stats`. This is
-a local audit aid, not fsync-per-line durability, tamper-evident signing,
-authenticated/centralized shipping or a substitute for rate limiting and
-independent review.
+a local audit aid, not fsync-per-line durability, full-chain signing/key
+rotation, authenticated/centralized shipping or a substitute for rate limiting
+and independent review.
 
 `--audit-syslog IP:PORT` additionally sends each denial line as one best-effort
 UDP datagram. It works with or without the local file, validates a numeric
@@ -136,6 +136,17 @@ is no collector authentication, TLS, retry, backpressure, aggregation or deliver
 guarantee. Runtime send failures do not change the reply but increment
 `audit_syslog_write_failures` in `INFO stats`. The local file, when configured,
 remains the durable evidence path.
+
+`--audit-hmac-key-file PATH` authenticates each denial line with a local
+16..=1024-byte key loaded before accept; one trailing newline is stripped. The
+server appends one space and a 64-character lowercase hex HMAC-SHA256 over the
+exact line body, using the dependency-free SHA-256 implementation. The same
+signed line is written to the file and UDP sink. Without a key, the five-field
+format is unchanged. The key is never included in diagnostics or replies. This is
+per-line authentication, not a hash chain: it does not detect deleted or reordered
+lines, provide replay protection, rotate keys, use an HSM/KMS, authenticate the
+collector or make storage tamper-proof. Key file permissions and custody are
+operator duties.
 
 `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
 renames it over the target and fsyncs the directory (where supported); hashes are
@@ -158,9 +169,9 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 
 - **Not full Redis ACL.** Remaining subcommand-specific categories beyond the
   bounded `CLIENT`/`MEMORY`/`OBJECT` overrides, nested selectors, dynamic
-  key-sandbox rules, authenticated/centralized audit aggregation, tamper-evident
-  signing, global/cross-process rate limiting and TLS hardening (SNI/hot reload/
-  OCSP) are absent.
+  key-sandbox rules, authenticated/centralized audit aggregation, full-chain
+  signing/key rotation, global/cross-process rate limiting and TLS hardening
+  (SNI/hot reload/OCSP) are absent.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported.

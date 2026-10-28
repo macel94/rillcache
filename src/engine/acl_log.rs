@@ -43,7 +43,13 @@ impl Store {
                 log.truncate(MAX_ACL_LOG);
             }
         }
-        let line = super::audit::format_line(reason, context, object, username);
+        let line = super::audit::format_line(
+            reason,
+            context,
+            object,
+            username,
+            self.audit_hmac_key.as_deref(),
+        );
         if let Some(audit) = &self.audit_log {
             let failed = audit
                 .lock()
@@ -60,6 +66,12 @@ impl Store {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
+    }
+
+    /// Attach the optional per-line HMAC key. The key is never logged or
+    /// included in `Debug` output.
+    pub fn set_audit_hmac_key(&mut self, key: Vec<u8>) {
+        self.audit_hmac_key = Some(key);
     }
 
     /// Attach a best-effort UDP audit sink. Delivery is not retried or

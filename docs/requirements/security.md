@@ -173,7 +173,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Tests shall cover line shape, hex/binary safety, truncation bounds, one-generation
   rotation, restart appends, startup failure, write-failure accounting and every
   worker mode. Documentation shall retain the absence of fsync-per-line,
-  off-host shipping, tamper-evident signing, global/cross-process rate limiting and centralized audit.
+  full-chain signing/key rotation, global/cross-process rate limiting and
+  centralized aggregation.
 
 ## Per-connection failed-auth budget (S105)
 
@@ -233,8 +234,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   and verify exact line shape, hex/redaction, file-independent operation,
   invalid-destination startup failure and every worker mode. Documentation shall
   retain the absence of collector authentication, TLS, retries, ordering,
-  backpressure, centralized aggregation, tamper-evident signing and delivery
-  guarantees.
+  backpressure, centralized aggregation, full-chain signing/key rotation and
+  delivery guarantees.
 
 ## Bounded subcommand ACL categories (S108)
 
@@ -255,6 +256,27 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   shall retain that `ACL CAT` remains command-level, that category membership is
   approximate rather than byte-for-byte Redis metadata, and that other command
   families still use command-level categories.
+
+## Per-line audit HMAC (S109)
+
+- **R399 (event-driven):** When `--audit-hmac-key-file PATH` is configured, the
+  server shall load a 16..=1024-byte key before accepting clients, stripping one
+  trailing newline. A missing, unreadable, empty, too-short or oversized key shall
+  fail startup. The key shall never appear in `Debug`, logs, errors, replies or
+  the audit line.
+- **R400 (state-driven):** While a key is configured, every denial line written
+  to the local file or the UDP sink shall append one space and a 64-character
+  lowercase hex HMAC-SHA256 over the exact line body (all preceding fields,
+  including the timestamp). Without a key, the five-field line remains unchanged.
+  Per-line authentication shall not claim ordering, deletion, replay or
+  full-chain protection, key rotation, HSM/KMS custody or authenticated
+  collector delivery.
+- **R401 (ubiquitous):** Tests shall cover RFC 4231 HMAC-SHA256 vectors, signed
+  line verification and tamper detection, five-field compatibility without a key,
+  file and UDP shape, missing/short key startup failure, secret absence and every
+  worker mode. Documentation shall retain the absence of key rotation, chain
+  sequencing, centralized verification, tamper-proof storage and key-custody
+  guarantees.
 
 ## Native TLS 1.3 with rustls (S101)
 
