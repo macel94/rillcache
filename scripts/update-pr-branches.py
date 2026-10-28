@@ -22,6 +22,11 @@ REQUIRED = {
     "pr-quality.yml": "Valkey performance gate",
 }
 ACTIONS_APP_ID = 15368
+# A cancelled/stale run has no performance verdict. Concurrency cancellation
+# (`cancel-in-progress`) and branch refreshes routinely supersede an older run for
+# the same head; those runs must not become sticky failed evidence. Genuine
+# failure/timed_out/startup_failure conclusions remain failed evidence.
+NON_VERDICT_CONCLUSIONS = frozenset({"cancelled", "stale"})
 SHA = re.compile(r"^[0-9a-f]{40}$")
 MAX_PAGES = 10
 PAGE_SIZE = 100
@@ -182,7 +187,9 @@ class Updater:
 
     def matching_runs(self, pr: dict, workflow: str, head: str, base: str) -> list[dict]:
         runs = self.workflow_runs(workflow, pr["head"]["ref"])
-        matched = [r for r in runs if self.run_matches(r, pr, head, base, workflow)]
+        matched = [r for r in runs
+                   if r.get("conclusion") not in NON_VERDICT_CONCLUSIONS
+                   and self.run_matches(r, pr, head, base, workflow)]
         return sorted(matched, key=lambda r: (iso_time(r.get("created_at")), int(r.get("id", 0) or 0)))
 
     @staticmethod
@@ -213,7 +220,9 @@ class Updater:
 
     def runs_for_head(self, pr: dict, workflow: str, head: str) -> list[dict]:
         runs = self.workflow_runs(workflow, pr["head"]["ref"])
-        matched = [r for r in runs if self.run_mentions_head(r, pr, workflow, head)]
+        matched = [r for r in runs
+                   if r.get("conclusion") not in NON_VERDICT_CONCLUSIONS
+                   and self.run_mentions_head(r, pr, workflow, head)]
         return sorted(matched, key=lambda r: (iso_time(r.get("created_at")), int(r.get("id", 0) or 0)))
 
     def workflow_trusted(self, workflow: str, ref: str) -> tuple[bool, str]:
@@ -366,6 +375,9 @@ class Updater:
                 outcome.update(status=state, base=main, previous_head=head, **detail)
                 if state != "updated":
                     return outcome
+                # The branch now has a new head (and will need fresh checks).
+                # reconcile() spends the single per-pass refresh slot on it.
+                outcome["refreshed"] = True
                 head = detail["head"]
                 pr = self.pull(number)
                 still_eligible, eligibility = self.eligible(pr)
@@ -431,6 +443,16 @@ class Updater:
             return outcome
 
     def reconcile(self) -> list[dict]:
+        """Reconcile the serialized PR queue, refreshing at most one branch.
+
+        A pass walks eligible PRs in ascending PR-number order and stops after
+        the first successful branch refresh: that refresh creates a new head and
+        a new required-check identity, so refreshing every stale PR at once would
+        stampede the gate. Candidates that conflict, race, time out or error are
+        recorded and the pass continues to the next candidate. Every PR behind the
+        successful refresh is reported as ``deferred`` so the queue is visible;
+        later passes (main push, schedule, workflow completion) advance it.
+        """
         self.repo()
         prs = self.pulls()
         if len(prs) >= MAX_PAGES * PAGE_SIZE:
@@ -441,21 +463,40 @@ class Updater:
             identity = (head.get("ref", ""), head.get("sha", ""))
             identities[identity] = identities.get(identity, 0) + 1
         outcomes = []
+        refreshed_pr: int | None = None
         for pr in sorted(prs, key=lambda item: item.get("number", 0)):
+            number = pr.get("number")
             head = pr.get("head", {})
+            if refreshed_pr is not None:
+                outcomes.append(self.deferred(pr, refreshed_pr))
+                continue
             identity = (head.get("ref", ""), head.get("sha", ""))
             if identities.get(identity, 0) > 1:
-                outcomes.append({"number": pr.get("number"), "url": pr.get("html_url"),
+                outcomes.append({"number": number, "url": pr.get("html_url"),
                                  "status": "identity_ambiguous",
                                  "detail": "multiple open PRs share this branch/head; workflow-dispatch PR identity cannot be proven"})
-            else:
-                outcomes.append(self.process(pr))
+                continue
+            outcome = self.process(pr)
+            outcomes.append(outcome)
+            if outcome.get("refreshed"):
+                refreshed_pr = number if isinstance(number, int) else 0
+        if sum(1 for item in outcomes if item.get("refreshed")) > 1:
+            raise ApiError(None, "invariant violated: more than one branch refresh in a pass")
         return outcomes
+
+    @staticmethod
+    def deferred(listed: dict, refreshed_pr: int) -> dict:
+        """Report a PR that this pass did not attempt because the slot was used."""
+        head = listed.get("head", {})
+        return {"number": listed.get("number"), "url": listed.get("html_url"),
+                "status": "deferred", "head": head.get("sha"),
+                "detail": (f"not attempted: this pass already refreshed PR #{refreshed_pr}; "
+                           "one successful branch refresh per pass, a later pass advances the queue")}
 
 
 def write_reports(outcomes: list[dict]) -> None:
     path = os.environ.get("PR_UPDATE_OUTCOMES")
-    report = {"schema": 1, "repository": REPO, "run_id": os.environ.get("GITHUB_RUN_ID"),
+    report = {"schema": 2, "repository": REPO, "run_id": os.environ.get("GITHUB_RUN_ID"),
               "generated_at": datetime.now(timezone.utc).isoformat(), "pull_requests": outcomes}
     if path:
         target = Path(path)
@@ -467,8 +508,18 @@ def write_reports(outcomes: list[dict]) -> None:
             number = item.get("number", "?")
             url = item.get("url")
             label = f"[#{number}]({url})" if isinstance(url, str) and url.startswith("https://github.com/") else f"#{number}"
-            detail = str(item.get("detail", "")).replace("|", "\\|").replace("\n", " ")
+            detail = str(item.get("detail") or item.get("error") or "").replace("|", "\\|").replace("\n", " ")
             lines.append(f"| {label} | {item.get('status', 'unknown')} | `{item.get('base', '')}` | `{item.get('head', item.get('previous_head', ''))}` | {detail} |")
+        refreshed = [item.get("number") for item in outcomes if item.get("refreshed")]
+        deferred = [item.get("number") for item in outcomes if item.get("status") == "deferred"]
+        lines.append("")
+        lines.append(f"Refreshed this pass: {', '.join(f'#{n}' for n in refreshed) if refreshed else 'none'}")
+        lines.append(f"Deferred to a later pass: {len(deferred)}"
+                     + (f" ({', '.join(f'#{n}' for n in deferred)})" if deferred else ""))
+        lines.append("")
+        lines.append("At most one successful branch refresh is performed per pass, so a rebased head "
+                     "does not stampede the required checks. Deferred PRs stay stale only until a "
+                     "later pass reaches them; failed candidates remain visible in the table above.")
         Path(summary).write_text("\n".join(lines) + "\n", encoding="utf-8", errors="replace")
 
 
@@ -487,6 +538,8 @@ def main() -> int:
         blocking = {"error", "api_error", "failed", "failed_gate", "conflict_or_race", "identity_race",
                     "identity_ambiguous", "consent_revoked", "dispatch_uncertain",
                     "untrusted_workflow", "update_uncertain", "not_current"}
+        # "deferred" is the expected serialized-queue state, not a failure: the
+        # PR stays queued for a later pass and its branch is untouched.
         return 1 if any(item.get("status") in blocking for item in outcomes) else 0
     except ApiError as exc:
         print(f"PR updater failed closed: {exc}", file=sys.stderr)
