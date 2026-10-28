@@ -562,7 +562,7 @@ fn subcommands(name: &str) -> Option<&'static [&'static str]> {
             "getname", "id", "info", "kill", "list", "pause", "setinfo", "setname", "unblock",
             "unpause",
         ],
-        "command" => &["count", "getkeys", "info", "list"],
+        "command" => &["count", "getkeys", "getkeysandflags", "info", "list"],
         "config" => &["get", "resetstat", "set"],
         "latency" => &["doctor", "help", "history", "latest", "reset"],
         "memory" => &["doctor", "help", "stats", "usage"],
@@ -1137,28 +1137,22 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
                 }
             }
         }
-    } else if sub.eq_ignore_ascii_case(b"GETKEYS") {
-        if arguments.len() < 3 {
-            output.extend_from_slice(
-                b"-ERR wrong number of arguments for 'command|getkeys' command\r\n",
-            );
-            return;
-        }
-        let target = &arguments[2..];
-        let Some(item) = registry()
-            .iter()
-            .find(|item| target[0].eq_ignore_ascii_case(item.name.as_bytes()))
-        else {
-            output.extend_from_slice(b"-ERR Invalid command specified\r\n");
-            return;
+    } else if sub.eq_ignore_ascii_case(b"GETKEYS") || sub.eq_ignore_ascii_case(b"GETKEYSANDFLAGS") {
+        let with_flags = sub.eq_ignore_ascii_case(b"GETKEYSANDFLAGS");
+        let subcommand = if with_flags {
+            "getkeysandflags"
+        } else {
+            "getkeys"
         };
-        let length = target.len() as i64;
-        if (item.arity > 0 && length != item.arity) || (item.arity < 0 && length < -item.arity) {
-            output.extend_from_slice(b"-ERR Invalid number of arguments specified for command\r\n");
-            return;
-        }
-        let keys = key_arguments(target[0], target);
-        if keys.is_empty() {
+        let (item, target) = match key_target(arguments, subcommand) {
+            Ok(resolved) => resolved,
+            Err(message) => {
+                output.extend_from_slice(&message);
+                return;
+            }
+        };
+        let accesses = key_accesses(target[0], target);
+        if accesses.is_empty() {
             if item.first_key <= 0 {
                 output.extend_from_slice(b"-ERR The command has no key arguments\r\n");
             } else {
@@ -1166,12 +1160,56 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
             }
             return;
         }
-        write_array_len(keys.len(), output);
-        for key in keys {
+        write_array_len(accesses.len(), output);
+        for (key, access) in accesses {
+            if with_flags {
+                write_array_len(2, output);
+            }
             encode_bulk(Some(key), output);
+            if with_flags {
+                write_array_len(1, output);
+                output.push(b'+');
+                output.extend_from_slice(key_access_flag(access).as_bytes());
+                output.extend_from_slice(b"\r\n");
+            }
         }
     } else {
         output.extend_from_slice(b"-ERR unsupported COMMAND subcommand\r\n");
+    }
+}
+
+fn key_target<'a>(
+    arguments: &'a [&'a [u8]],
+    subcommand: &str,
+) -> Result<(&'static Command, &'a [&'a [u8]]), Vec<u8>> {
+    if arguments.len() < 3 {
+        return Err(format!(
+            "-ERR wrong number of arguments for 'command|{subcommand}' command\r\n"
+        )
+        .into_bytes());
+    }
+    let target = &arguments[2..];
+    let Some(item) = registry()
+        .iter()
+        .find(|item| target[0].eq_ignore_ascii_case(item.name.as_bytes()))
+    else {
+        return Err(b"-ERR Invalid command specified\r\n".to_vec());
+    };
+    let length = target.len() as i64;
+    if (item.arity > 0 && length != item.arity) || (item.arity < 0 && length < -item.arity) {
+        return Err(b"-ERR Invalid number of arguments specified for command\r\n".to_vec());
+    }
+    Ok((item, target))
+}
+
+/// Primary key-spec access flag for `COMMAND GETKEYSANDFLAGS`. The bounded ACL
+/// model tracks only read versus write permission, so this reports `RO` or
+/// `RW` and omits the granular Redis flags
+/// (access/update/insert/delete/variable_flags).
+fn key_access_flag(access: KeyAccess) -> &'static str {
+    match access {
+        KeyAccess::Read => "RO",
+        KeyAccess::Write | KeyAccess::ReadWrite => "RW",
     }
 }
 

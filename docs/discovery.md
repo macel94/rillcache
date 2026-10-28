@@ -23,6 +23,12 @@ in this worktree's Store dispatcher.
   key lists, STORE destinations and legacy GEORADIUS destinations. Invalid
   commands/arity, no-key commands and unextractable arguments return bounded
   errors.
+- `COMMAND GETKEYSANDFLAGS <command> [args ...]` returns two-element
+  `[key, flags]` entries using the same command resolution, arity validation and
+  key extraction. Each flags array contains one primary access class: `RO` for
+  read-only keys and `RW` for writable or read-modify-write keys, preserving
+  source/destination ordering for commands such as `SORT ... STORE`, `COPY` and
+  `GEORADIUS ... STORE`. Errors match `COMMAND GETKEYS`.
 - `INFO [SERVER|MEMORY|KEYSPACE|DEFAULT|ALL]` returns a bounded RESP2 bulk string.
   With no section, the default output includes server, memory and keyspace.
 - INFO reports `rillcache_version` from the package version and `rillcache_*`
@@ -47,6 +53,10 @@ from the protocol encoder's standard bounded RESP framing.
 - **When** a supported COMMAND form is received, **then** the server shall return
   its registered command count/list/metadata with case-insensitive names and
   correct basic arity, flags and key positions.
+- **When** COMMAND GETKEYSANDFLAGS resolves a command, **then** each declared key
+  shall be paired with exactly one `RO` or `RW` primary access flag in the same
+  order as COMMAND GETKEYS, and invalid commands, arity or unextractable keys
+  shall return the bounded GETKEYS errors.
 - **When** COMMAND LIST FILTERBY is supplied, **then** PATTERN/ACLCAT/MODULE
   filtering shall return only matching registry names; MODULE and unknown ACL
   categories shall be empty, and malformed filters shall fail without reflection.
@@ -85,6 +95,8 @@ GET/SET forms and RESETSTAT; other runtime settings are unsupported. Every
 advertised name is wired to this worktree's Store dispatcher; unimplemented Redis
 commands remain unadvertised. The HELLO/CLIENT worker owns
 connection-local state; this module does not implement or advertise it. Detailed
-key specifications, subcommand records and Redis extended metadata are not
-supported. No network-facing production-readiness or
+key specifications beyond the coarse `RO`/`RW` access class, granular
+`GETKEYSANDFLAGS` sub-flags (for example `OW`, `RM`, `access`, `update`, `insert`,
+`delete` and `variable_flags`), subcommand records and Redis extended metadata are
+not supported. No network-facing production-readiness or
 full Redis compatibility claim follows from this feature.
