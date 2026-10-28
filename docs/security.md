@@ -57,6 +57,13 @@ Supported rules:
 - `reset`
 
 Rules are ordered: the last matching command/category/command rule decides.
+`+command|subcommand` and `-command|subcommand` match the literal first argument
+case-insensitively and participate in the same ordering, so a later
+`-config|set` can carve a denial out of an earlier `+config`. A subcommand rule
+does not grant the bare command, and the first argument has no wildcard form.
+The `|` rule is supported in root rules and selector groups, is rendered by
+`ACL LIST`/`ACL GETUSER`, round-trips through `ACL SAVE`/`LOAD`, and is evaluated
+by `ACL DRYRUN` without executing the command.
 Supported categories are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
 `@list`, `@set`, `@hash`, `@zset`, `@stream`, `@bitmap`, `@connection`,
 `@transaction`, `@admin`, `@fast`, `@slow` and `@dangerous`. Category membership
@@ -119,9 +126,11 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 
 ## Deliberate limits
 
-- **Not full Redis ACL.** Selectors, subcommand-specific categories, `ACL LOG`,
-  `ACL DRYRUN`, `ACL GENPASS`, per-user `reset` semantics beyond the implemented
-  rules, and commands not present in this server's command table are absent.
+- **Not full Redis ACL.** Subcommand-specific categories, nested selectors,
+  dynamic key-sandbox rules, persistent/centralized audit, rate limiting and
+  native TLS are absent. Selectors, first-argument command rules, `ACL LOG`,
+  `ACL DRYRUN` and `ACL GENPASS` are implemented for the published command table;
+  commands not present in that table remain unsupported.
   Channel patterns gate PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE, but
   sharded pub/sub and keyspace notifications do not exist. `PUBSUB` introspection
   is category-governed rather than channel-pattern-filtered, so it can reveal channel
