@@ -45,6 +45,7 @@ elif name == 'gh':
    output=json.dumps({'object':{'sha':'d'*40 if os.environ.get('MAIN_RACE') and s['main_reads']>1 else main}})
   elif endpoint.endswith('/rulesets/25863639'):
    policy=json.loads((pathlib.Path(os.environ['FAKE_PROJECT_ROOT'])/'.github/main-ruleset.json').read_text())
+   if os.environ.get('LIVE_BYPASS_REDACTED'): del policy['bypass_actors']
    if os.environ.get('LIVE_RULE_DRIFT'):
     checks=next(r['parameters']['required_status_checks'] for r in policy['rules'] if r['type']=='required_status_checks')
     checks[:]=[c for c in checks if c['context']!='Valkey 4-CPU performance gate']
@@ -229,10 +230,16 @@ class PolicyTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
     def test_live_rule_drift_prevents_auto_merge_even_if_every_workflow_reports_success(self):
-        result, state = self.run_publisher(LIVE_RULE_DRIFT='1', RUN_MODE='success')
+        result, state = self.run_publisher(LIVE_RULE_DRIFT='1', LIVE_BYPASS_REDACTED='1', RUN_MODE='success')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('LIVE RULESET DRIFT', result.stderr)
         self.assertFalse(any(args[:2] in (['workflow', 'run'], ['pr', 'merge']) for name, args in state['calls'] if name == 'gh'))
+
+    def test_normal_actions_token_redaction_is_explicit_not_an_invented_empty_bypass_list(self):
+        result, state = self.run_publisher(LIVE_BYPASS_REDACTED='1', RUN_MODE='success')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('bypass-list completeness is UNVERIFIED', result.stderr)
+        self.assertFalse(any('rulesets' in arg and name == 'gh' and 'PUT' in args for name, args in state['calls'] for arg in args))
 
     def test_existing_running_checks_are_not_duplicated(self):
         result, state = self.run_publisher(EXISTING_PR='1', RUN_MODE='running')

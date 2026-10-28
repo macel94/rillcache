@@ -44,9 +44,12 @@ def required_checks(root=ROOT):
             for checks in required_workflows(root).values() for check in checks]
 
 
-def rule_parameters(policy):
+def rule_parameters(policy, *, read_only_view=False):
     ensure(policy["target"] == "branch" and policy["enforcement"] == "active", "main ruleset is not active")
-    ensure(policy["bypass_actors"] == [], "main has bypass actors")
+    if "bypass_actors" in policy:
+        ensure(policy["bypass_actors"] == [], "main has bypass actors")
+    else:
+        ensure(read_only_view, "bypass actor visibility unavailable; full audit requires a ruleset-write-capable viewer")
     ensure(policy["conditions"] == {"ref_name": {"include": ["refs/heads/main"], "exclude": []}}, "main target/exclusions differ")
     rules = {rule["type"]: rule.get("parameters", {}) for rule in policy["rules"]}
     ensure({"deletion", "non_fast_forward", "required_linear_history", "pull_request", "required_status_checks"} <= rules.keys(), "main safety rules missing")
@@ -118,8 +121,8 @@ def audit_local(root=ROOT):
             if path == "pr-branch-updater.yml" and job == "read-only-self-tests":
                 ensure(condition and condition[1] == "github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')",
                        "policy self-tests must execute for PRs and read-only branch dispatch")
-                ensure("contents: write" not in block and "pull-requests: write" not in block,
-                       "untrusted policy self-tests have repository write permissions")
+                ensure(not re.search(r"^      [a-z-]+: write$", block, re.M),
+                       "untrusted policy self-tests have write permissions")
             else:
                 ensure(condition is None, f"required PR job can be skipped by a condition: {path}/{job}")
             all_checks.extend(checks)
@@ -151,10 +154,12 @@ class GitHub:
         return json.loads(result.stdout)
 
 
-def audit_live(api, root=ROOT):
+def audit_live(api, root=ROOT, *, read_only_view=False):
     inventory = audit_local(root)
     ruleset = api.get(f"rulesets/{RULESET_ID}")
-    live = rule_parameters(ruleset)
+    live = rule_parameters(ruleset, read_only_view=read_only_view)
+    if "bypass_actors" not in ruleset:
+        print("PR gate audit notice: bypass_actors is redacted by GitHub; bypass-list completeness is UNVERIFIED for this token.", file=sys.stderr)
     expected = required_checks(root)
     missing = [check for check in expected if check not in live]
     ensure(not missing, "LIVE RULESET DRIFT: missing/wrong-app required checks: " + ", ".join(c["context"] for c in missing))
@@ -178,8 +183,9 @@ def render(inventory):
         names = [name for checks in item["jobs"].values() for name in checks]
         scope = "; ".join(names) if names else item["non_pr_reason"]
         lines.append(f"| `{path}` | {scope} |")
-    lines += ["", "Missing checks, wrong GitHub App, disabled PR workflows, bypass actors, path exemptions, "
+    lines += ["", "Missing checks, wrong GitHub App, disabled PR workflows, visible bypass actors, path exemptions, "
               "uncatalogued jobs/matrix members or live/tracked policy drift fail this audit. "
+              "Full live audits require bypass-list visibility; an explicit read-only view does not attest a redacted list. "
               "Manual/scheduled studies and PR-inapplicable publication jobs are not fake PR passes.", ""]
     return "\n".join(lines)
 
@@ -187,11 +193,20 @@ def render(inventory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="also verify effective GitHub rules and workflow activation (GET only)")
+    parser.add_argument("--read-only-view", action="store_true",
+                        help="with --live: explicitly report GitHub's redacted bypass list as UNVERIFIED; never grant PR writes")
     args = parser.parse_args()
+    if args.read_only_view and not args.live:
+        parser.error("--read-only-view requires --live")
     try:
-        inventory = audit_live(GitHub()) if args.live else audit_local()
+        inventory = audit_live(GitHub(), read_only_view=args.read_only_view) if args.live else audit_local()
         print(render(inventory))
-        print("Live protection verified." if args.live else "Local workflow/policy coverage verified (not live enforcement).")
+        if args.read_only_view:
+            print("Live required checks, effective main rules and workflow activation verified. "
+                  "Bypass-list completeness: UNVERIFIED in this read-only view; a full operator audit requires ruleset-write visibility.")
+        else:
+            print("Full live protection verified (bypass list visible and empty)." if args.live
+                  else "Local workflow/policy coverage verified (not live enforcement).")
         return 0
     except (PolicyError, KeyError, TypeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(f"PR gate audit FAILED: {error}", file=sys.stderr)

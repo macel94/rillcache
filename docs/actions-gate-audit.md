@@ -75,6 +75,17 @@ drift or missing protection is a failure, not a warning or a successful no-op.
 There is no settings-write token, stored secret, privileged PR execution or
 administrator bypass in this checker.
 
+GitHub redacts `bypass_actors` unless the caller can **write the ruleset** (ordinary
+`contents: write` is insufficient). The first Actions attempt correctly failed
+rather than inventing an empty list: run `40674262028`, head `665d05c`. Full
+operator `--live` mode still requires that field to be visible and empty. Normal
+`GITHUB_TOKEN` automation explicitly selects `--live --read-only-view`: all
+required/effective checks, freshness, reviews and active workflows remain strict,
+visible bypass actors still fail, and a redacted list is labeled **UNVERIFIED**
+in logs/summary. This mode cannot detect a hidden later bypass-list change; it
+must not be described as full no-bypass proof. No admin secret or PR write scope
+is introduced to overcome this documented API boundary.
+
 The audit branch wires that live check into the required read-only policy job on
 every PR and into trusted reconciliation before any branch/action mutation.
 Those **source changes are deployed only after their protected PR merges**;

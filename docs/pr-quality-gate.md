@@ -36,6 +36,10 @@ That is 14 app-pinned contexts across six PR-triggered workflows. The complete
 repository workflow and explicitly excludes only non-PR publication jobs and
 manual/scheduled studies. `python3 scripts/pr_gate_policy.py --live` verifies
 actual effective main protection; a tracked JSON file is never proof by itself.
+Full operator mode requires visible bypass actors. Actions uses explicit
+`--read-only-view` because GitHub hides that field without ruleset-write access;
+redaction is reported as UNVERIFIED, never as an empty/no-bypass list. All fourteen
+contexts and the other readable controls remain mandatory in that mode.
 
 Required contexts are pinned to the GitHub Actions integration, not arbitrary
 commit-status writers. Test CI has a unique check name to avoid collision with

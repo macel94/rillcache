@@ -100,7 +100,9 @@ def runs(api, workflow, branch):
 
 def dispatch_plan(api, number, branch):
     try:
-        audit_live(api)
+        # GITHUB_TOKEN cannot see the ruleset-write-only bypass list, even when
+        # contents:write is needed for publication. Never invent an empty list.
+        audit_live(api, read_only_view=True)
     except (PolicyError, KeyError, TypeError, ValueError) as error:
         raise DeliveryError(f"live merge protection audit failed: {error}") from error
     pr = identity(api, number, branch)

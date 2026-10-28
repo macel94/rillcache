@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,7 +38,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/pr_gate_policy.py --live > "$RUNNER_TEMP/pr-gate-audit.md"
+          python3 scripts/pr_gate_policy.py --live --read-only-view > "$RUNNER_TEMP/pr-gate-audit.md"
           tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/pr-gate-audit.md"
 
   reconcile:
@@ -65,7 +66,7 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           PR_UPDATE_OUTCOMES: ${{ runner.temp }}/pr-update-outcomes.json
         run: |
-          python3 scripts/pr_gate_policy.py --live
+          python3 scripts/pr_gate_policy.py --live --read-only-view
           python3 scripts/update-pr-branches.py
       - name: Retain machine-readable per-PR outcomes
         if: always()

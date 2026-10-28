@@ -622,7 +622,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn("secrets.", workflow)
         self.assertNotIn("git push", workflow)
         self.assertNotIn("--force", workflow)
-        self.assertIn("permissions:\n      contents: read\n    steps:", workflow)
+        self.assertIn("permissions:\n      contents: read\n      actions: read\n    steps:", workflow)
         self.assertIn("contents: write", workflow)
         self.assertIn("pull-requests: write", workflow)
         self.assertIn("actions: write", workflow)

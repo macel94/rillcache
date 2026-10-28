@@ -54,6 +54,31 @@ class GatePolicyTests(unittest.TestCase):
         gate.audit_live(api)
         self.assertEqual([f"rulesets/{gate.RULESET_ID}", "rules/branches/main", "actions/workflows?per_page=100"], api.calls)
 
+    def test_redacted_bypass_list_never_becomes_an_empty_verified_list(self):
+        api = FakeAPI(); del api.policy["bypass_actors"]
+        with self.assertRaisesRegex(gate.PolicyError, "visibility unavailable"):
+            gate.audit_live(api)
+        gate.audit_live(api, read_only_view=True)
+        self.assertNotIn("bypass_actors", api.policy)
+        api.policy["bypass_actors"] = [{"actor_id": 1}]
+        with self.assertRaisesRegex(gate.PolicyError, "bypass actors"):
+            gate.audit_live(api, read_only_view=True)
+
+    def test_read_only_visibility_does_not_waive_required_checks(self):
+        api = FakeAPI(); del api.policy["bypass_actors"]
+        checks = next(r["parameters"]["required_status_checks"] for r in api.policy["rules"] if r["type"] == "required_status_checks")
+        checks.pop(2)
+        with self.assertRaisesRegex(gate.PolicyError, "LIVE RULESET DRIFT"):
+            gate.audit_live(api, read_only_view=True)
+
+    def test_read_only_job_cannot_gain_actions_write_to_reveal_private_fields(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name); self.fixture(root)
+            p = root / ".github/workflows/pr-branch-updater.yml"
+            p.write_text(p.read_text().replace("      actions: read", "      actions: write"))
+            with self.assertRaisesRegex(gate.PolicyError, "write permissions"):
+                gate.audit_local(root)
+
     def test_the_actual_two_gate_merge_gap_is_detected(self):
         api = FakeAPI()
         checks = next(r["parameters"] for r in api.policy["rules"] if r["type"] == "required_status_checks")
