@@ -542,6 +542,93 @@ fn command_getkeys_reuses_acl_key_specs() {
         server.shutdown().unwrap();
     }
 }
+
+#[test]
+fn command_getkeysandflags_reports_acl_access_classes() {
+    for mode in [None, Some(1), Some(4)] {
+        let server = start(mode);
+        let mut client = connect(&server);
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYSANDFLAGS", b"GET", b"k"]),
+            b"*1\r\n*2\r\n$1\r\nk\r\n*1\r\n+RO\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"GETKEYSANDFLAGS", b"SET", b"k", b"v"]
+            ),
+            b"*1\r\n*2\r\n$1\r\nk\r\n*1\r\n+RW\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"GETKEYSANDFLAGS", b"MGET", b"a", b"b"]
+            ),
+            b"*2\r\n*2\r\n$1\r\na\r\n*1\r\n+RO\r\n*2\r\n$1\r\nb\r\n*1\r\n+RO\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND",
+                    b"getkeysandflags",
+                    b"MSET",
+                    b"a",
+                    b"1",
+                    b"b",
+                    b"2",
+                ]
+            ),
+            b"*2\r\n*2\r\n$1\r\na\r\n*1\r\n+RW\r\n*2\r\n$1\r\nb\r\n*1\r\n+RW\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND",
+                    b"GETKEYSANDFLAGS",
+                    b"SORT",
+                    b"src",
+                    b"LIMIT",
+                    b"0",
+                    b"1",
+                    b"STORE",
+                    b"out",
+                ]
+            ),
+            b"*2\r\n*2\r\n$3\r\nsrc\r\n*1\r\n+RO\r\n*2\r\n$3\r\nout\r\n*1\r\n+RW\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"GETKEYSANDFLAGS", b"COPY", b"src", b"dst"]
+            ),
+            b"*2\r\n*2\r\n$3\r\nsrc\r\n*1\r\n+RO\r\n*2\r\n$3\r\ndst\r\n*1\r\n+RW\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[b"COMMAND", b"GETKEYSANDFLAGS", b"KEYS", b"*"]
+            ),
+            b"-ERR The command has no key arguments\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYSANDFLAGS", b"BOGUS"]),
+            b"-ERR Invalid command specified\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYSANDFLAGS", b"GET"]),
+            b"-ERR Invalid number of arguments specified for command\r\n"
+        );
+        assert_eq!(
+            request(&mut client, &[b"COMMAND", b"GETKEYSANDFLAGS"]),
+            b"-ERR wrong number of arguments for 'command|getkeysandflags' command\r\n"
+        );
+        assert_eq!(request(&mut client, &[b"PING"]), b"+PONG\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
 #[test]
 fn command_list_filters_by_pattern_category_and_module() {
     for mode in [None, Some(1), Some(4)] {

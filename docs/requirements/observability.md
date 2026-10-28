@@ -181,6 +181,28 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   GEORADIUS and no-key commands, invalid command/arity and all worker modes.
   COMMAND GETKEYS does not change keyspace state or bypass ACL enforcement.
 
+## Key access flags (S116)
+
+- **R420 (event-driven):** `COMMAND GETKEYSANDFLAGS <command> [args ...]` shall
+  return an array of two-element arrays containing the key and a one-element
+  flags array. Each flags array shall report the primary ACL access class of that
+  key: `RO` for read-only access and `RW` for writable or read-modify-write
+  access. Command resolution, arity validation and key extraction shall match
+  `COMMAND GETKEYS`, including counted key lists, STORE destinations and
+  read-source/write-destination ordering.
+- **R421 (unwanted behavior):** Invalid commands, wrong arity, commands without
+  key arguments and arguments from which declared keys cannot be extracted shall
+  return the same bounded errors as `COMMAND GETKEYS`, using
+  `command|getkeysandflags` in the wrong-arity message. The command shall not
+  change keyspace state, bypass ACL enforcement or reflect arbitrary bytes.
+- **R422 (ubiquitous):** Tests shall cover string, multi-key, read-source and
+  write-destination, and no-key cases plus invalid command and arity in every
+  worker mode. Documentation shall retain that flags report only the coarse
+  read/write access class enforced by the bounded ACL model; granular Redis
+  key-spec flags (`OW`, `RM`, `access`, `update`, `insert`, `delete`,
+  `variable_flags`), subcommand key specs and full command docs remain
+  unsupported.
+
 ## Slow command log (S70)
 
 - **R276 (event-driven):** `SLOWLOG GET [count]`, `LEN`, `RESET` and `HELP` shall
