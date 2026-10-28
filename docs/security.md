@@ -4,8 +4,9 @@ Rillcache supports either one operator-configured password for the implicit Redi
 `default` user or a Redis-style ACL file with multiple users, password hashes,
 command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
-design. It does not add TLS hardening (SNI/hot reload/OCSP), rate limiting, a persistent/centralized audit
-log, or credential encryption at rest.
+design. It does not add TLS hardening (SNI/hot reload/OCSP), rate limiting,
+centralized/off-host audit shipping, tamper-evident audit signing, or credential
+encryption at rest.
 
 ## What is implemented
 
@@ -105,9 +106,21 @@ source is unavailable rather than falling back to weak randomness.
 identical denial tuples aggregate by count. Reasons distinguish `noauth`,
 `command`, `key` and `channel`; context is `toplevel` or `multi`. `ACL LOG RESET`
 clears the buffer. Entries contain command/key/channel names and usernames and are
-therefore administrative data; the log is process-local, not persisted or
-replicated, and is not an exhaustive security audit trail. Unauthenticated denials
-are attributed to `default`. `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
+therefore administrative data. The in-memory buffer is process-local, not
+replicated, and is not an exhaustive security audit trail. Unauthenticated
+denials are attributed to `default`.
+
+`--audit-log PATH` adds an opt-in append-only denial trail. Each denial writes
+one bounded line of `unix-ms reason context username-hex object-hex`; binary,
+empty and newline-containing subjects are hex-encoded and truncated to fixed
+bounds, so the file never contains plaintext passwords or key values. The file is
+flushed per denial and reserves one generation for rotation at
+`--audit-log-max-bytes` (1 KiB..=1 GiB, default 8 MiB), renaming the previous file
+to `PATH.1`. `ACL LOG RESET` clears only the in-memory aggregation; the file is
+append-only and appends across restart. Runtime write failures leave the command
+reply unchanged but increment `audit_log_write_failures` in `INFO stats`. This is
+a local audit aid, not fsync-per-line durability, tamper-evident signing,
+off-host shipping or a substitute for rate limiting and independent review. `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
 renames it over the target and fsyncs the directory (where supported); hashes are
 saved as `#...`, never plaintext passwords. ACL files are bounded to 4 MiB,
 10,000 users, 1,024 rules per user/operation and 1,024 key/channel patterns per
@@ -127,9 +140,10 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 ## Deliberate limits
 
 - **Not full Redis ACL.** Subcommand-specific categories, nested selectors,
-  dynamic key-sandbox rules, persistent/centralized audit, rate limiting and
-  native TLS are absent. Selectors, first-argument command rules, `ACL LOG`,
-  `ACL DRYRUN` and `ACL GENPASS` are implemented for the published command table;
+  dynamic key-sandbox rules, centralized/off-host audit shipping, tamper-evident
+  signing, rate limiting and TLS hardening (SNI/hot reload/OCSP) are absent.
+  Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
+  and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported.
   Channel patterns gate PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE, but
   sharded pub/sub and keyspace notifications do not exist. `PUBSUB` introspection

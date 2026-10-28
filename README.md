@@ -170,13 +170,14 @@ Access control starts with a single operator password for the `default` user
 multi-user ACL file (`--aclfile`) with hashed passwords, ordered
 command/category rules, declared read/write key patterns and atomic `ACL SAVE`/`LOAD`.
 `NOAUTH`/`NOPERM` are checked before store access and apply to live connections;
-`%R~`/`%W~`/`%RW~` scope reads and writes per key pattern. Persistent/centralized
-audit, brute-force controls and TLS hardening (SNI/hot reload/OCSP) remain
-separate security gates; ACL selectors group command/key/channel rules and channel
+`%R~`/`%W~`/`%RW~` scope reads and writes per key pattern. Centralized/off-host
+audit shipping, tamper-evident signing, brute-force controls and TLS hardening
+(SNI/hot reload/OCSP) remain separate security gates; ACL selectors group command/key/channel rules and channel
 patterns are enforced for pub/sub. Native TLS 1.3 is implemented in-process with
 rustls ([`docs/tls.md`](docs/tls.md)); it intentionally does not offer HTTP/2 or
 HTTP/3.
-`ACL GENPASS`, `ACL DRYRUN` and a bounded process-local `ACL LOG` support
+`ACL GENPASS`, `ACL DRYRUN`, a bounded process-local `ACL LOG` and an optional
+`--audit-log` append-only denial trail support
 credential operations and policy debugging. See
 [security](docs/security.md).
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,

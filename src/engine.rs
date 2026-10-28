@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::protocol::{Limits, encode_bulk};
 mod acl_log;
 mod administration;
+mod audit;
 mod auth;
 mod bitfield;
 mod blocking;
@@ -119,6 +120,7 @@ pub struct Stats {
     pub evicted_keys: u64,
     pub pubsub_channels: usize,
     pub pubsub_patterns: usize,
+    pub audit_log_write_failures: u64,
 }
 
 pub struct Store {
@@ -139,6 +141,8 @@ pub struct Store {
     monitor_count: std::sync::atomic::AtomicUsize,
     notifications: std::sync::atomic::AtomicU32,
     acl_log: RwLock<std::collections::VecDeque<acl_log::AclLogEntry>>,
+    audit_log: Option<std::sync::Mutex<audit::AuditLog>>,
+    audit_log_write_failures: std::sync::atomic::AtomicU64,
     connections_received: std::sync::atomic::AtomicU64,
     commands_processed: std::sync::atomic::AtomicU64,
     rejected_connections: std::sync::atomic::AtomicU64,
@@ -213,6 +217,8 @@ impl Store {
             monitor_count: std::sync::atomic::AtomicUsize::new(0),
             notifications: std::sync::atomic::AtomicU32::new(0),
             acl_log: RwLock::new(std::collections::VecDeque::new()),
+            audit_log: None,
+            audit_log_write_failures: std::sync::atomic::AtomicU64::new(0),
             connections_received: std::sync::atomic::AtomicU64::new(0),
             commands_processed: std::sync::atomic::AtomicU64::new(0),
             rejected_connections: std::sync::atomic::AtomicU64::new(0),
@@ -554,6 +560,7 @@ impl Store {
             evicted_keys,
             pubsub_channels,
             pubsub_patterns,
+            audit_log_write_failures: self.audit_log_write_failures.load(Ordering::Relaxed),
         }
     }
 
