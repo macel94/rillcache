@@ -19,7 +19,8 @@ metadata; it is intentionally a small subset of Redis's connection statistics.
 
 Supported connection commands are `CLIENT ID`, `CLIENT SETNAME`, `CLIENT
 GETNAME`, `CLIENT SETINFO LIB-NAME|LIB-VER`, `CLIENT INFO`, `CLIENT LIST`,
-`CLIENT KILL`, `CLIENT PAUSE`, `CLIENT UNPAUSE`, `SELECT 0` and `RESET`.
+`CLIENT KILL`, `CLIENT PAUSE`, `CLIENT UNPAUSE`, `CLIENT UNBLOCK`,
+`SELECT 0` and `RESET`.
 Other database indices are rejected and never alias database zero. `AUTH` and
 `HELLO ... AUTH ...` authenticate either the `default` user or an ACL user when
 credentials are configured. `ACL WHOAMI`, `ACL GETUSER` and the other supported
@@ -62,6 +63,13 @@ and an active `ALL` pause is not downgraded by a subsequent `WRITE` pause.
 `CLIENT UNPAUSE` ends the pause immediately. Both management commands are exempt
 from the pause so an operator can always inspect or end it; the command is
 otherwise subject to the normal `CLIENT` permission.
+
+`CLIENT UNBLOCK <client-id> [TIMEOUT|ERROR]` wakes only a currently blocked
+connection and returns `:1`, or `:0` for an unknown/non-blocked ID. TIMEOUT (the
+default) completes the blocked command as a null; ERROR returns
+`UNBLOCKED client unblocked via CLIENT UNBLOCK`. The request is process-local,
+consumed once, discarded on completion/disconnect and subject to the normal
+`CLIENT` permission; RESP3 timeout wake-ups use the protocol null frame.
 
 A paused connection executes at most one deferred command, stops parsing
 pipelined commands until the pause ends, and polls with the same bounded model as

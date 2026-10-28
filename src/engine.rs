@@ -56,7 +56,7 @@ pub fn verify_audit_line(key: &[u8], line: &str) -> bool {
 pub use auth::{Access, AclError, Auth, AuthError, UserDetails};
 pub use blocking::PopOutcome;
 pub use blocking::reply_value as blocking_reply;
-pub use clients::ClientSnapshot;
+pub use clients::{ClientSnapshot, UnblockMode};
 pub(crate) use collection_commands::{
     ListMoveOutcome, ListPopOutcome, ZSetPopOutcome, list_move_reply,
     list_pop_reply as blocking_lmpop_reply, parse_bzmpop_timeout, parse_list_mpop, parse_mpop,
@@ -145,6 +145,7 @@ pub struct Store {
     journal_limits: Limits,
     pubsub: RwLock<pubsub::PubSub>,
     clients: RwLock<std::collections::BTreeMap<u64, clients::ClientRecord>>,
+    unblock_requests: std::sync::Mutex<std::collections::BTreeMap<u64, clients::UnblockMode>>,
     monitors: RwLock<std::collections::BTreeMap<u64, std::sync::mpsc::SyncSender<Vec<u8>>>>,
     monitor_count: std::sync::atomic::AtomicUsize,
     notifications: std::sync::atomic::AtomicU32,
@@ -227,6 +228,7 @@ impl Store {
             journal_limits: Limits::default(),
             pubsub: RwLock::new(pubsub::PubSub::default()),
             clients: RwLock::new(std::collections::BTreeMap::new()),
+            unblock_requests: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             monitors: RwLock::new(std::collections::BTreeMap::new()),
             monitor_count: std::sync::atomic::AtomicUsize::new(0),
             notifications: std::sync::atomic::AtomicU32::new(0),

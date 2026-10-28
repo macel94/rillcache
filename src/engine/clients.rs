@@ -20,6 +20,12 @@ pub struct ClientRecord {
     pub(super) control: Option<TcpStream>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnblockMode {
+    Timeout,
+    Error,
+}
+
 #[derive(Clone, Debug)]
 pub struct ClientSnapshot {
     pub id: u64,
@@ -129,9 +135,36 @@ impl Store {
 
     pub fn unregister_client(&self, id: u64) {
         self.remove_monitor(id);
+        if let Ok(mut requests) = self.unblock_requests.lock() {
+            requests.remove(&id);
+        }
         if let Ok(mut clients) = self.clients.write() {
             clients.remove(&id);
         }
+    }
+
+    /// Request a wake-up for a blocked connection. Returns false when the target
+    /// is unknown or not currently blocked.
+    pub fn request_unblock(&self, id: u64, mode: UnblockMode) -> bool {
+        let blocked = self
+            .client_snapshot(id)
+            .is_some_and(|client| client.blocked);
+        if !blocked {
+            return false;
+        }
+        if let Ok(mut requests) = self.unblock_requests.lock() {
+            requests.insert(id, mode);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn take_unblock(&self, id: u64) -> Option<UnblockMode> {
+        self.unblock_requests
+            .lock()
+            .ok()
+            .and_then(|mut requests| requests.remove(&id))
     }
 
     pub fn update_client_metadata(
@@ -196,6 +229,9 @@ impl Store {
             record
                 .blocked
                 .store(blocked, std::sync::atomic::Ordering::Relaxed);
+        }
+        if !blocked && let Ok(mut requests) = self.unblock_requests.lock() {
+            requests.remove(&id);
         }
     }
 

@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use crate::engine::{AuthError, Store};
+use crate::engine::{AuthError, Store, UnblockMode};
 use crate::protocol::encode_bulk;
 
 use super::auth::AUTH_THROTTLED;
@@ -221,6 +221,28 @@ impl Session {
             }
             store.unpause_clients();
             output.extend_from_slice(b"+OK\r\n");
+        } else if subcommand.eq_ignore_ascii_case(b"UNBLOCK") {
+            if rest.is_empty() || rest.len() > 2 {
+                arity("client|unblock", output);
+                return;
+            }
+            let Some(id) = parse_client_id(rest[0]) else {
+                output.extend_from_slice(b"-ERR invalid client ID\r\n");
+                return;
+            };
+            let mode = match rest.get(1) {
+                None => UnblockMode::Timeout,
+                Some(value) if value.eq_ignore_ascii_case(b"TIMEOUT") => UnblockMode::Timeout,
+                Some(value) if value.eq_ignore_ascii_case(b"ERROR") => UnblockMode::Error,
+                Some(_) => {
+                    output.extend_from_slice(
+                        b"-ERR CLIENT UNBLOCK reason should be TIMEOUT or ERROR\r\n",
+                    );
+                    return;
+                }
+            };
+            let requested = store.request_unblock(id, mode);
+            let _ = write!(output, ":{}\r\n", u8::from(requested));
         } else if subcommand.eq_ignore_ascii_case(b"LIST") {
             self.client_list(store, rest, output);
         } else if subcommand.eq_ignore_ascii_case(b"KILL") {
