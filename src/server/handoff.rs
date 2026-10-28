@@ -231,7 +231,6 @@ impl Sharing {
         let mut clients = vec![first];
         let mut chunk = [0; 16 * 1024];
         let mut window = EpochWindow::new(Instant::now(), self.idle, self.max_epoch);
-        let mut idle_passes = 0u32;
         loop {
             if self.stopping.load(Ordering::Acquire) {
                 for loan in &mut clients {
@@ -271,19 +270,8 @@ impl Sharing {
             }
             if !window.active(Instant::now(), progress) {
                 break;
-            } else if progress {
-                idle_passes = 0;
-            } else {
-                // While brokers wait for the next request, do not keep a full
-                // core hot: on a CPU budget smaller than the client count this
-                // steals time from owners that are ready to run. A bounded
-                // short spin keeps the common case fast, then yields.
-                idle_passes = idle_passes.wrapping_add(1);
-                if idle_passes.is_multiple_of(8) {
-                    std::thread::yield_now();
-                } else {
-                    std::hint::spin_loop();
-                }
+            } else if !progress {
+                std::hint::spin_loop();
             }
         }
         // Return queued late loans too, even on an unwinding leadership epoch.
