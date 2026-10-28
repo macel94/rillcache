@@ -173,7 +173,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Tests shall cover line shape, hex/binary safety, truncation bounds, one-generation
   rotation, restart appends, startup failure, write-failure accounting and every
   worker mode. Documentation shall retain the absence of fsync-per-line,
-  full-chain signing/key rotation, global/cross-process rate limiting and
+  full-chain signing/key-ID/hot rotation, global/cross-process rate limiting and
   centralized aggregation.
 
 ## Per-connection failed-auth budget (S105)
@@ -234,7 +234,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   and verify exact line shape, hex/redaction, file-independent operation,
   invalid-destination startup failure and every worker mode. Documentation shall
   retain the absence of collector authentication, TLS, retries, ordering,
-  backpressure, centralized aggregation, full-chain signing/key rotation and
+  backpressure, centralized aggregation, full-chain signing/key-ID/hot rotation and
   delivery guarantees.
 
 ## Bounded subcommand ACL categories (S108)
@@ -269,12 +269,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   lowercase hex HMAC-SHA256 over the exact line body (all preceding fields,
   including the timestamp). Without a key, the five-field line remains unchanged.
   Per-line authentication shall not claim ordering, deletion, replay or
-  full-chain protection, key rotation, HSM/KMS custody or authenticated
+  full-chain protection, key IDs, hot rotation, HSM/KMS custody or authenticated
   collector delivery.
 - **R401 (ubiquitous):** Tests shall cover RFC 4231 HMAC-SHA256 vectors, signed
   line verification and tamper detection, five-field compatibility without a key,
   file and UDP shape, missing/short key startup failure, secret absence and every
-  worker mode. Documentation shall retain the absence of key rotation, chain
+  worker mode. Documentation shall retain the absence of hot rotation, key IDs, chain
   sequencing, centralized verification, tamper-proof storage and key-custody
   guarantees.
 
@@ -356,6 +356,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   categories and every worker mode. Documentation shall retain the bounded family
   table, command-level fallback for other commands and approximate category
   membership.
+
+## Audit HMAC keyring rotation (S115)
+
+- **R417 (event-driven):** `--audit-hmac-keyring-file PATH` and the collector's
+  `--hmac-keyring-file PATH` shall parse a text keyring of hex-encoded keys,
+  ignoring blank lines and `#` comments, accepting at most eight unique
+  16..=1024-byte keys. Empty, non-hex, undersized, oversized, duplicate-only and
+  over-limit keyrings shall fail startup; the keyring and single-key options shall
+  be mutually exclusive.
+- **R418 (state-driven):** The server shall sign each denial with the first
+  keyring key; the collector shall accept a line when any key in its keyring
+  verifies it. The signed line format shall remain unchanged, so an operator can
+  restart the server with the new key first while the collector retains the old
+  key until old lines age out. Keys shall never appear in diagnostics or output.
+  There is no automatic reload, key ID, chain sequencing or HSM/KMS custody.
+- **R419 (ubiquitous):** Tests shall cover keyring parsing/comments/duplicates/
+  bounds, server first-key signing, collector any-key verification, mixed
+  single-key/keyring rejection, invalid-startup failure and exact output.
+  Documentation shall retain the manual restart/retention procedure and the
+  absence of full-chain signing, key IDs, hot rotation and centralized custody.
 
 ## Native TLS 1.3 with rustls (S101)
 

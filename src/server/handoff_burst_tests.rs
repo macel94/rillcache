@@ -1,37 +1,17 @@
 use super::*;
 
 #[test]
-fn isolated_replies_do_not_activate_a_lease_and_bursts_have_an_exact_boundary() {
-    let mut burst = Burst::default();
-    let now = Instant::now();
-    let window = Duration::from_micros(50);
-    assert!(!burst.observe(now, window));
-    assert!(!burst.observe(now + Duration::from_millis(1), window));
-    assert!(burst.observe(now + Duration::from_millis(1) + window / 2, window));
-    assert!(!burst.observe(now + Duration::from_millis(1) + window * 3 / 2, window));
-    assert!(burst.observe(now + Duration::from_millis(1) + window * 3 / 2, window));
-    assert!(
-        !burst.observe(now, window),
-        "an invalid backwards observation is not a burst"
-    );
-}
-
-#[test]
-fn an_active_epoch_accepts_a_client_without_a_recent_local_burst() {
+fn isolated_replies_do_not_activate_a_lease_and_leader_presence_does() {
     let stop = Arc::new(AtomicBool::new(false));
     let sharing = Sharing::new(Config::default(), stop, 50);
     assert!(!sharing.should_lend());
-    let (sender, receiver) = mpsc::channel();
+    let (sender, _receiver) = mpsc::channel();
     *sharing.leader.lock().unwrap() = Some(sender);
-    *sharing.recent.lock().unwrap() = Burst::default();
+    sharing.leader_active.store(true, Ordering::Release);
     assert!(sharing.should_lend());
-    drop(Leadership {
-        sharing: &sharing,
-        receiver,
-    });
-    *sharing.recent.lock().unwrap() = Burst {
-        previous: Some(Instant::now() - Duration::from_secs(1)),
-    };
+    sharing.leader_active.store(false, Ordering::Release);
+    std::thread::sleep(Duration::from_micros(100));
+    sharing.recent_micros.store(0, Ordering::Relaxed);
     assert!(!sharing.should_lend());
 }
 

@@ -9,7 +9,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const HELP: &str = "rillcache-audit-collector — bounded UDP audit sink\n\nUsage: rillcache-audit-collector [OPTIONS]\n\n  --bind ADDRESS          UDP listen address (default 127.0.0.1:5514)\n  --output PATH           Append-only output file (default audit.log)\n  --max-bytes N           One-generation output bound (default 16777216)\n  --max-datagram N        Maximum accepted datagram bytes (default 4096)\n  --max-datagrams N       Exit after N accepted datagrams; 0 runs forever (default 0)\n  --hmac-key-file PATH    Optional 16..=1024-byte shared key; verify each line\n  --print-address         Print the bound address to stdout (for tests/supervisors)\n  --help                  Show this help\n  --version               Show version\n\nUDP delivery is best-effort: datagrams can be lost, duplicated or reordered. With\n--hmac-key-file, tampered or wrong-key lines are dropped; sender identity and\ntransport encryption are not authenticated. Bind it to loopback or a private\nnetwork and protect the output file with filesystem permissions.";
+const HELP: &str = "rillcache-audit-collector — bounded UDP audit sink\n\nUsage: rillcache-audit-collector [OPTIONS]\n\n  --bind ADDRESS          UDP listen address (default 127.0.0.1:5514)\n  --output PATH           Append-only output file (default audit.log)\n  --max-bytes N           One-generation output bound (default 16777216)\n  --max-datagram N        Maximum accepted datagram bytes (default 4096)\n  --max-datagrams N       Exit after N accepted datagrams; 0 runs forever (default 0)\n  --hmac-key-file PATH    Optional 16..=1024-byte shared key; verify each line\n  --hmac-keyring-file PATH  Hex keyring; verify against any active key\n  --print-address         Print the bound address to stdout (for tests/supervisors)\n  --help                  Show this help\n  --version               Show version\n\nUDP delivery is best-effort: datagrams can be lost, duplicated or reordered. With\n--hmac-key-file, tampered or wrong-key lines are dropped; sender identity and\ntransport encryption are not authenticated. Bind it to loopback or a private\nnetwork and protect the output file with filesystem permissions.";
 
 struct Options {
     bind: SocketAddr,
@@ -18,6 +18,7 @@ struct Options {
     max_datagram: usize,
     max_datagrams: u64,
     hmac_key_file: Option<PathBuf>,
+    hmac_keyring_file: Option<PathBuf>,
     print_address: bool,
 }
 
@@ -29,6 +30,7 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
         max_datagram: 4096,
         max_datagrams: 0,
         hmac_key_file: None,
+        hmac_keyring_file: None,
         print_address: false,
     };
     let mut arguments = arguments.into_iter();
@@ -89,6 +91,15 @@ fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Options, String>
                     return Err("--hmac-key-file requires a nonempty path".into());
                 }
                 options.hmac_key_file = Some(PathBuf::from(value));
+            }
+            "--hmac-keyring-file" => {
+                let value = arguments
+                    .next()
+                    .ok_or("missing value for --hmac-keyring-file")?;
+                if value.is_empty() {
+                    return Err("--hmac-keyring-file requires a nonempty path".into());
+                }
+                options.hmac_keyring_file = Some(PathBuf::from(value));
             }
             _ => return Err(format!("unknown argument {argument}")),
         }
@@ -175,12 +186,29 @@ fn load_hmac_key(path: &Path) -> io::Result<Vec<u8>> {
     Ok(key)
 }
 
+fn load_keyring(path: &Path) -> io::Result<Vec<Vec<u8>>> {
+    let text = fs::read_to_string(path)?;
+    rillcache::engine::parse_audit_keyring(&text)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+}
+
 fn run(options: Options) -> io::Result<()> {
-    let hmac_key = options
-        .hmac_key_file
-        .as_deref()
-        .map(load_hmac_key)
-        .transpose()?;
+    if options.hmac_key_file.is_some() && options.hmac_keyring_file.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--hmac-key-file and --hmac-keyring-file are mutually exclusive",
+        ));
+    }
+    let hmac_keys = if let Some(path) = options.hmac_keyring_file.as_deref() {
+        Some(load_keyring(path)?)
+    } else {
+        options
+            .hmac_key_file
+            .as_deref()
+            .map(load_hmac_key)
+            .transpose()?
+            .map(|key| vec![key])
+    };
     let socket = UdpSocket::bind(options.bind)?;
     if options.print_address {
         println!("listening on {}", socket.local_addr()?);
@@ -200,12 +228,15 @@ fn run(options: Options) -> io::Result<()> {
             rejected = rejected.saturating_add(1);
             continue;
         }
-        if let Some(key) = &hmac_key {
+        if let Some(keys) = &hmac_keys {
             let Some(line) = std::str::from_utf8(&buffer[..length]).ok() else {
                 rejected_hmac = rejected_hmac.saturating_add(1);
                 continue;
             };
-            if !rillcache::engine::verify_audit_line(key, line) {
+            if !keys
+                .iter()
+                .any(|key| rillcache::engine::verify_audit_line(key, line))
+            {
                 rejected_hmac = rejected_hmac.saturating_add(1);
                 continue;
             }

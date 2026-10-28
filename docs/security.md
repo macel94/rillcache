@@ -7,7 +7,7 @@ access-control boundary for a private deployment, not a complete Redis security
 design. It adds per-connection and per-peer-IP failed-`AUTH` budgets but not
 global/cross-process rate limiting, delayed responses or username lockout, TLS
 hardening (SNI/hot reload/OCSP), collector sender authentication/TLS/federation,
-full-chain audit signing or key custody/rotation, or credential encryption at rest.
+full-chain audit signing, key IDs or hot-rotation custody, or credential encryption at rest.
 
 ## What is implemented
 
@@ -145,11 +145,16 @@ remains the durable evidence path.
 server appends one space and a 64-character lowercase hex HMAC-SHA256 over the
 exact line body, using the dependency-free SHA-256 implementation. The same
 signed line is written to the file and UDP sink. Without a key, the five-field
-format is unchanged. The key is never included in diagnostics or replies. This is
-per-line authentication, not a hash chain: it does not detect deleted or reordered
-lines, provide replay protection, rotate keys, use an HSM/KMS, authenticate the
-collector or make storage tamper-proof. Key file permissions and custody are
-operator duties.
+format is unchanged. The key is never included in diagnostics or replies.
+`--audit-hmac-keyring-file PATH` accepts a text keyring of hex keys (one per line,
+`#` comments allowed, at most eight unique 16..=1024-byte keys); the first key
+signs, and the collector accepts any key in its own keyring. An operator can
+therefore restart the signer with the new key first while the collector retains
+the old key until old lines age out. This is per-line authentication, not a hash
+chain: it does not detect deleted or reordered lines, provide replay protection,
+key IDs, hot reload, HSM/KMS custody, authenticated collector delivery or
+tamper-proof storage. Key files/keyrings and their permissions are operator
+duties.
 
 `rillcache-audit-collector` is a separate standard-library-only UDP sink for
 off-host aggregation. `--bind ADDRESS` and `--output PATH` are required
@@ -158,9 +163,10 @@ to `--max-datagram` is appended as one newline-terminated line, flushed, and
 rotated to `PATH.1` at `--max-bytes` (1 KiB..=1 GiB). Empty/oversized datagrams
 are dropped and counted. `--max-datagrams N` exits after N accepted datagrams for
 bounded tests or one-shot collection. `--hmac-key-file PATH` loads a shared
-16..=1024-byte key and retains only lines with a valid per-line HMAC; malformed,
-tampered and wrong-key datagrams are dropped and counted, while a collector
-without a key stores lines unverified. Verification does not authenticate sender
+16..=1024-byte key and retains only lines with a valid per-line HMAC, while
+`--hmac-keyring-file PATH` verifies against any listed rotation key; malformed,
+tampered and wrong-key datagrams are dropped and counted, and a collector without
+a key stores lines unverified. Verification does not authenticate sender
 identity, encrypt traffic, prevent replay, retry, reorder, deduplicate or federate
 multiple collectors; UDP loss and spoofing remain possible. The output is created
 mode-`0600` on Unix, but directory permissions and key/log custody are operator
@@ -188,7 +194,7 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 - **Not full Redis ACL.** Remaining subcommand-specific categories beyond the
   bounded `CLIENT`/`MEMORY`/`OBJECT`/`ACL`/`COMMAND`/`XGROUP`/`XINFO` overrides,
   nested selectors, dynamic key-sandbox rules, collector sender
-  authentication/TLS/federation, full-chain signing/key rotation,
+  authentication/TLS/federation, full-chain signing/key-ID/hot rotation,
   global/cross-process rate limiting and TLS hardening (SNI/hot reload/OCSP) are
   absent.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
