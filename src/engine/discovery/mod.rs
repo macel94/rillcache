@@ -759,7 +759,7 @@ impl Store {
                 let stats = self.stats();
                 let _ = writeln!(
                     text,
-                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nexpired_subkeys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r\naudit_log_write_failures:{}\r",
+                    "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nexpired_subkeys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r\naudit_log_write_failures:{}\r\naudit_syslog_write_failures:{}\r",
                     stats.total_connections_received,
                     stats.total_commands_processed,
                     stats.rejected_connections,
@@ -768,7 +768,8 @@ impl Store {
                     stats.evicted_keys,
                     stats.pubsub_channels,
                     stats.pubsub_patterns,
-                    stats.audit_log_write_failures
+                    stats.audit_log_write_failures,
+                    stats.audit_syslog_write_failures
                 );
             }
             if matches!(section.as_slice(), b"commandstats" | b"all") {

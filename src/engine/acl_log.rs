@@ -43,16 +43,35 @@ impl Store {
                 log.truncate(MAX_ACL_LOG);
             }
         }
-        let Some(audit) = &self.audit_log else {
-            return;
-        };
-        let failed = audit.lock().map_or(true, |mut log| {
-            log.record(reason, context, object, username).is_err()
-        });
-        if failed {
-            self.audit_log_write_failures
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let line = super::audit::format_line(reason, context, object, username);
+        if let Some(audit) = &self.audit_log {
+            let failed = audit
+                .lock()
+                .map_or(true, |mut log| log.record_line(&line).is_err());
+            if failed {
+                self.audit_log_write_failures
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
         }
+        if let Some(sink) = &self.audit_syslog {
+            let failed = sink.lock().map_or(true, |sink| sink.send(&line).is_err());
+            if failed {
+                self.audit_syslog_write_failures
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Attach a best-effort UDP audit sink. Delivery is not retried or
+    /// authenticated; the local file, when configured, remains authoritative.
+    pub fn attach_audit_syslog(
+        &mut self,
+        destination: std::net::SocketAddr,
+    ) -> std::io::Result<()> {
+        self.audit_syslog = Some(std::sync::Mutex::new(
+            super::audit_syslog::SyslogSink::open(destination)?,
+        ));
+        Ok(())
     }
 
     /// Attach an append-only denial audit. The server calls this once before

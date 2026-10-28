@@ -216,6 +216,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   global/cross-process rate limiting, delayed responses, username lockout,
   centralized audit shipping and a complete brute-force deployment boundary.
 
+## Off-host audit shipping (S107)
+
+- **R393 (event-driven):** When `--audit-syslog IP:PORT` is configured, every
+  ACL denial shall send the same bounded, redacted line used by the local audit
+  file as one UDP datagram to that destination. The sink shall work with or
+  without `--audit-log`, shall validate a numeric address with a nonzero port at
+  startup, and shall never include a plaintext password, key value or unbounded
+  request bytes.
+- **R394 (state-driven):** UDP delivery shall be best-effort with a bounded send
+  deadline. A send failure shall not change the command reply or block retries;
+  it shall increment `audit_syslog_write_failures` in `INFO stats`. The local
+  file, when configured, remains the durable evidence path; the sink shall not
+  claim reliable, ordered, authenticated or encrypted delivery.
+- **R395 (ubiquitous):** Tests shall receive the datagram on a local UDP socket
+  and verify exact line shape, hex/redaction, file-independent operation,
+  invalid-destination startup failure and every worker mode. Documentation shall
+  retain the absence of collector authentication, TLS, retries, ordering,
+  backpressure, centralized aggregation, tamper-evident signing and delivery
+  guarantees.
+
 ## Native TLS 1.3 with rustls (S101)
 
 - **R374 (event-driven):** The server shall expose an optional native TLS listener

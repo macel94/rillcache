@@ -138,6 +138,8 @@ pub struct Config {
     pub audit_log: Option<PathBuf>,
     /// One-generation audit rotation bound in bytes.
     pub audit_log_max_bytes: u64,
+    /// Optional best-effort UDP destination for the same denial lines.
+    pub audit_syslog: Option<SocketAddr>,
     /// Enable the append-only command journal.
     pub appendonly: bool,
     /// Journal basename inside `dir`; no path separators.
@@ -181,6 +183,7 @@ impl std::fmt::Debug for Config {
             .field("aclfile", &self.aclfile)
             .field("audit_log", &self.audit_log)
             .field("audit_log_max_bytes", &self.audit_log_max_bytes)
+            .field("audit_syslog", &self.audit_syslog)
             .field("appendonly", &self.appendonly)
             .field("appendfilename", &self.appendfilename)
             .field("appendfsync", &self.appendfsync)
@@ -216,6 +219,7 @@ impl Default for Config {
             aclfile: None,
             audit_log: None,
             audit_log_max_bytes: 8 * 1024 * 1024,
+            audit_syslog: None,
             appendonly: false,
             appendfilename: "appendonly.aof".into(),
             appendfsync: FsyncPolicy::EverySec,
@@ -258,6 +262,9 @@ impl Config {
                 .as_ref()
                 .is_some_and(|path| path.as_os_str().is_empty())
             || !(1024..=1024 * 1024 * 1024).contains(&self.audit_log_max_bytes)
+            || self
+                .audit_syslog
+                .is_some_and(|destination| destination.port() == 0)
             || self.tls_handshake_timeout.is_zero()
             || (self.tls_bind_addr.is_none()
                 && (self.tls_cert_file.is_some()
@@ -331,6 +338,9 @@ impl Server {
         .with_error_dialect(config.error_dialect);
         if let Some(path) = &config.audit_log {
             store.attach_audit_log(path, config.audit_log_max_bytes)?;
+        }
+        if let Some(destination) = config.audit_syslog {
+            store.attach_audit_syslog(destination)?;
         }
         store.set_aof_config(
             config.appendonly,
