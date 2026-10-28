@@ -10,7 +10,7 @@ on:
     - cron: '17 * * * *'
   workflow_dispatch:
   workflow_run:
-    workflows: [CI, PR Valkey quality gate]
+    workflows: [CI, PR Valkey quality gate, PR multi-CPU Valkey performance]
     types: [completed]
 
 permissions:
@@ -31,6 +31,7 @@ jobs:
         run: |
           python3 -m unittest scripts.test_pr_branch_updater -v
           python3 scripts/test-pr-policy.py
+          python3 scripts/test-multicpu-performance.py
 
   reconcile:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

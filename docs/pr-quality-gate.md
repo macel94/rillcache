@@ -18,8 +18,14 @@ an accepted delivery path.
   have **strictly higher median throughput than pinned Valkey in all 20 cases**.
   Ties and even one slower median fail. No averaged score, historical-result reuse,
   path exemption, successful no-op or manual override qualifies as a pass.
+- **Valkey 4-CPU performance gate**: a separate workflow runs on every main PR
+  using the same unchanged official `valkey-benchmark` executable for both servers.
+  Both servers receive exactly four logical CPUs; all 10 workload/pipeline medians
+  must strictly beat Valkey. Fewer than four allowed CPUs fails, never skips.
+  This proposed third required context needs a corresponding verified live ruleset
+  update through the reviewed policy path; editing tracked JSON alone is not enforcement.
 
-Both required contexts are pinned to the GitHub Actions integration, not arbitrary
+Required contexts are pinned to the GitHub Actions integration, not arbitrary
 commit-status writers. Test CI has a unique check name to avoid collision with
 container workflow jobs. Branches must include the latest `main`; changed heads
 need fresh checks. Only squash merging is allowed and review threads must be
@@ -42,7 +48,8 @@ CODEOWNERS is evaluated from the PR's base branch.
 | Warmup/repetitions | 1000 commands/client; 3 alternating native server repetitions |
 | Gate | Rillcache median cmd/s > Valkey median cmd/s in every workload/profile/pipeline |
 
-That is 20 comparison rows, 120 validated native records and 24 raw JSON files.
+The original gate has 20 comparison rows, 120 validated native records and 24 raw
+JSON files. It is unchanged by the additional four-CPU gate below.
 Only one owned server is alive at a time; readiness is reply-validated and cleanup
 waits/reaps on errors/timeouts. The same frozen base-branch Rust client validates
 every measured reply. The protected base also supplies the harness, Valkey source
@@ -73,6 +80,59 @@ answer appears. The suite is RESP2, small strings and cyclic keys, not realistic
 mixed traffic, complete compatibility or a production SLO. Batch tails and CPU are
 reported, not additional throughput gate criteria.
 
+## Independent official-Valkey four-CPU gate
+
+The [additional PR workflow](../.github/workflows/pr-multicpu-quality.yml) builds
+`valkey-server` and **`valkey-benchmark` from the same checksum-verified source**
+using protected-base pins/build tooling. The benchmark is unmodified: custom
+command mode is an [official supported interface](https://valkey.io/topics/benchmark/),
+also exercised in Valkey's `tests/integration/valkey-benchmark.tcl`. No Rust load
+generator, rewritten upstream assertion, or custom timed loop is used here.
+
+Five commands (PING, SET overwrite, GET hit, NX-existing rejection, XX-existing
+overwrite) at P=1 and P=16 give **10 strict median comparisons and 60 fresh native
+server samples**. Each sample has 8000 warmup commands, 8 connections, 2 generator
+threads, 1024 random keys, 64-byte values and seed 42. Every measured sample uses
+the official **`--duration 10`** mode (not `-n`); three repetitions alternate server
+order. The wrapper requires at least ten seconds of observed generator wall time. Default server modes,
+loopback TCP and persistence/TLS-off are retained. There is no aggregate-score
+escape, tie pass, retry-until-green or substitution for the original 20-case gate.
+
+Both servers are pinned to the same first four allowed logical CPUs; the generator
+uses remaining CPUs when available, otherwise shares those four. Affinity is
+checked before/after load; exact placement and overlap are recorded. These are
+logical CPU budgets, not proof of four physical cores, server worker counts or
+client-independent saturation. The wrapper checks every possible hit key before
+and after warmup/load and probes conditional SET semantics. The official generator
+rejects workload error replies but does **not** validate every non-error payload;
+this is not the original Rust client's every-reply contract. Unknown stderr,
+nonzero exits, timeouts, malformed/nonfinite CSV and incomplete cohorts fail.
+
+The protected base supplies the orchestration wrapper and shared process/CSV
+helpers, not candidate replacements. Only installation against exact protected
+base `d94bd4e97906e517c30d056ddd2be24c0714f315` may bootstrap the new wrapper;
+future missing base wrappers fail closed. The same official generator binary is
+hashed and used for every sample. `--check` independently reloads raw CSV, validates
+exact argv/CPU/source/process identity, statuses, hashes, dataset checks and the
+regenerated table. Complete losses remain complete numeric evidence but fail.
+The initial request-count experiment on head `d429e62` is retained in Actions run
+[`40658513184`](https://github.com/macel94/rillcache/actions/runs/40658513184): it
+completed with **9/10**, including a failing PING/P=1 median tie at 133,155.80 req/s.
+No retry or pass is claimed for that head. Pinned Valkey `benchmarkSequence()`
+includes thread shutdown in elapsed time; `showThroughput()` polls shutdown every
+250 ms, quantizing the sub-second count-based samples into large throughput steps.
+The official duration mode is exercised by its unchanged integration tests; fixed
+ten-second measurements span 40 polling ticks rather than only 3–4. Residual timer
+quantization/shared-runner limits remain. Schema 2 additionally validates duration
+and rejects schema-1 count-based cohorts, preventing relabeling of failed evidence.
+This is a measurement-method correction, not a weaker threshold: ties/losses still
+fail, every workload remains, and the original 20-case gate is unchanged.
+
+Original stdout/stderr, command/server/sample JSON, resource observations, source
+and binary hashes, environment and summaries survive failures in 30-day artifacts.
+Offline validation: `python3 scripts/test-multicpu-performance.py`. Actual comparative
+performance remains Actions-only; mocked/replayed tests are not performance wins.
+
 ## Automated report PRs
 
 The manual/weekly comparison and genuine Copilot review retain their separate
@@ -83,14 +143,14 @@ job has `contents: write`, `pull-requests: write` and `actions: write`. It:
 2. Creates `automation/benchmark-report-<run>-<attempt>` from current `main`.
 3. Commits only generated dashboard/history paths and opens a PR, or reuses an
    existing PR/no-ops an already-published report. It never pushes `main`.
-4. Observes exact-head CI, Valkey and original Tcl runs, dispatching only missing
+4. Observes exact-head CI, both Valkey gates and original Tcl runs, dispatching only missing
    read-only workflows after checking their definitions against protected main.
    Approval-held events are not test evidence. Any real exact-head failure stops
    publication without retries, including an earlier failure followed by success.
 5. Requests protected squash auto-merge only on its newly created ready PR, with
    `--match-head-commit`, and verifies the request or normal merged state. Existing
    disabled merge intent is preserved on retries. No automatic bypass or exemption
-   applies to report-only PRs; the two required checks above remain unchanged.
+   applies to report-only PRs; all required checks above apply equally.
    Stale report branches must be updated/rechecked; immutable history is retained.
 
 Repository Actions defaults remain read-only. GitHub's setting permitting Actions
@@ -107,7 +167,9 @@ Offline optional tooling checks (Python standard library only):
 ```sh
 python3 scripts/pr-performance-gate.py --self-test
 python3 scripts/test-pr-policy.py
-python3 scripts/pr-performance-gate.py --check /path/to/downloaded/gate
+python3 scripts/test-multicpu-performance.py
+python3 scripts/pr-performance-gate.py --check /path/to/original-gate
+python3 scripts/pr-multicpu-performance.py --check /path/to/four-cpu-gate
 ```
 
 The first suite includes archived real-cohort replay, single loss/tie rejection,

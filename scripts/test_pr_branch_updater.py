@@ -156,7 +156,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertNotIn("secret-body", str(failure.exception))
         self.assertNotIn("top-secret", str(failure.exception))
 
-    def test_guarded_update_uses_expected_sha_then_explicitly_dispatches_both_workflows(self):
+    def test_guarded_update_dispatches_all_three_required_workflows(self):
         outcome = self.updater.process(pull())
         self.assertEqual(outcome["status"], "checks_dispatched")
         updates = [c for c in self.api.calls if c[0] == "PUT"]
@@ -164,9 +164,10 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(updates[0][1].endswith("/update-branch"))
         self.assertEqual(updates[0][2], {"expected_head_sha": B})
         dispatched = [c for c in self.api.calls if c[0] == "POST"]
-        self.assertEqual([c[1].rsplit("/", 2)[-2] for c in dispatched], ["ci.yml", "pr-quality.yml"])
+        self.assertEqual([c[1].rsplit("/", 2)[-2] for c in dispatched], ["ci.yml", "pr-quality.yml", "pr-multicpu-quality.yml"])
         self.assertEqual(dispatched[0][2], {"ref": "feature/1"})
         self.assertEqual(dispatched[1][2], {"ref": "feature/1", "inputs": {"pull_request": "1"}})
+        self.assertEqual(dispatched[2][2], {"ref": "feature/1", "inputs": {"pull_request": "1"}})
 
     def test_pr_that_stops_being_eligible_during_update_stops_required_dispatch(self):
         original = self.api.call
@@ -304,7 +305,7 @@ class UpdaterTests(unittest.TestCase):
         result = self.updater.process(p)
         self.assertEqual(result["status"], "checks_dispatched")
         dispatches = [call for call in self.api.calls if call[0] == "POST"]
-        self.assertEqual(len(dispatches), 2)
+        self.assertEqual(len(dispatches), 3)
 
     def source_run(self, head=C, associated=C, *, run_id=1, status="completed", conclusion="success"):
         return {"id": run_id, "path": ".github/workflows/ci.yml@refs/pull/1/merge",
@@ -334,7 +335,7 @@ class UpdaterTests(unittest.TestCase):
                 result = updater.process(p)
                 self.assertEqual(result["status"], "checks_dispatched")
                 self.assertEqual(result["workflows"]["ci.yml"]["status"], "dispatched")
-                self.assertEqual(sum(call[0] == "POST" for call in api.calls), 2)
+                self.assertEqual(sum(call[0] == "POST" for call in api.calls), len(mod.REQUIRED))
                 self.assertFalse(updater.run_mentions_head(old, p, "ci.yml", C))
                 self.assertTrue(updater.run_mentions_head(old, p, "ci.yml", B))
 
@@ -447,7 +448,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(puts[0][2], {"expected_head_sha": B})
         self.assertTrue(outcomes[0]["refreshed"])
         # Only the refreshed candidate's required workflows are dispatched.
-        self.assertEqual([call[2]["ref"] for call in self.api.calls if call[0] == "POST"], ["feature/1", "feature/1"])
+        self.assertEqual([call[2]["ref"] for call in self.api.calls if call[0] == "POST"], ["feature/1"] * len(mod.REQUIRED))
         for deferred in outcomes[1:]:
             self.assertIn("PR #1", deferred["detail"])
             self.assertEqual(deferred["head"], B)
@@ -474,7 +475,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(outcomes[1]["refreshed"])
         puts = [call[1] for call in self.api.calls if call[0] == "PUT"]
         self.assertEqual([path.rsplit("/", 2)[-2] for path in puts], ["1", "2"])
-        self.assertEqual([call[2]["ref"] for call in self.api.calls if call[0] == "POST"], ["feature/2", "feature/2"])
+        self.assertEqual([call[2]["ref"] for call in self.api.calls if call[0] == "POST"], ["feature/2"] * len(mod.REQUIRED))
 
     def test_timeout_or_uncertain_update_does_not_consume_the_refresh_slot(self):
         for failure in ("pending", "uncertain"):
@@ -608,11 +609,11 @@ class WorkflowPolicyTests(unittest.TestCase):
 
     def test_dispatch_allowlist_matches_real_required_workflows(self):
         source = (ROOT / "scripts/update-pr-branches.py").read_text()
-        for workflow in ("ci.yml", "pr-quality.yml"):
+        for workflow in ("ci.yml", "pr-quality.yml", "pr-multicpu-quality.yml"):
             self.assertIn(f'"{workflow}"', source)
-        self.assertEqual(set(mod.REQUIRED.values()), {"Tests and offline CI", "Valkey performance gate"})
+        self.assertEqual(set(mod.REQUIRED.values()), {"Tests and offline CI", "Valkey performance gate", "Valkey 4-CPU performance gate"})
         self.assertIn('path = f"repos/{REPO}/actions/workflows/{workflow}/dispatches"', source)
-        self.assertIn('if workflow == "pr-quality.yml":', source)
+        self.assertIn('if workflow in {"pr-quality.yml", "pr-multicpu-quality.yml"}:', source)
 
 
 if __name__ == "__main__":

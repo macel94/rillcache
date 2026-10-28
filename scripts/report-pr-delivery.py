@@ -14,7 +14,7 @@ import sys
 import time
 from urllib.parse import quote
 
-WORKFLOWS = ("ci.yml", "pr-quality.yml", "upstream-compatibility.yml")
+WORKFLOWS = ("ci.yml", "pr-quality.yml", "pr-multicpu-quality.yml", "upstream-compatibility.yml")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 

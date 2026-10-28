@@ -90,7 +90,8 @@ class PolicyTests(unittest.TestCase):
         self.assertIs(status['do_not_enforce_on_create'], False)
         self.assertEqual(status['required_status_checks'], [
             {'context': 'Tests and offline CI', 'integration_id': 15368},
-            {'context': 'Valkey performance gate', 'integration_id': 15368}])
+            {'context': 'Valkey performance gate', 'integration_id': 15368},
+            {'context': 'Valkey 4-CPU performance gate', 'integration_id': 15368}])
 
     def test_every_pr_runs_read_only_frozen_tools_without_path_exemptions(self):
         workflow = (ROOT / '.github/workflows/pr-quality.yml').read_text()
@@ -102,6 +103,13 @@ class PolicyTests(unittest.TestCase):
             self.assertIn(text, workflow)
         for text in ('pull_request_target:', 'continue-on-error:', 'paths:', 'paths-ignore:', 'secrets.', 'contents: write'):
             self.assertNotIn(text, workflow)
+        multicpu = (ROOT / '.github/workflows/pr-multicpu-quality.yml').read_text()
+        for text in ('pull_request:', 'branches: [main]', 'name: Valkey 4-CPU performance gate',
+                     'base/scripts/pr-multicpu-performance.py', 'valkey-benchmark',
+                     '--generator', '--check evidence/gate', 'persist-credentials: false', 'if: always()'):
+            self.assertIn(text, multicpu)
+        for text in ('pull_request_target:', 'continue-on-error:', 'paths:', 'paths-ignore:', 'secrets.', 'contents: write'):
+            self.assertNotIn(text, multicpu)
         self.assertIn('name: Tests and offline CI', (ROOT / '.github/workflows/ci.yml').read_text())
         owners = (ROOT / '.github/CODEOWNERS').read_text()
         for path in ('/.github/CODEOWNERS', '/.github/main-ruleset.json', '/.github/workflows/',
@@ -173,9 +181,10 @@ class PolicyTests(unittest.TestCase):
         gh = [args for name, args in state['calls'] if name == 'gh']
         self.assertTrue(any(args[:2] == ['pr', 'create'] for args in gh))
         dispatches = [args for args in gh if args[:2] == ['workflow', 'run']]
-        self.assertEqual([args[2] for args in dispatches], ['ci.yml', 'pr-quality.yml', 'upstream-compatibility.yml'])
+        self.assertEqual([args[2] for args in dispatches], ['ci.yml', 'pr-quality.yml', 'pr-multicpu-quality.yml', 'upstream-compatibility.yml'])
         self.assertTrue(all(args[args.index('--ref') + 1] == state['branch'] for args in dispatches))
         self.assertIn('pull_request=42', dispatches[1])
+        self.assertIn('pull_request=42', dispatches[2])
         merge = [args for args in gh if args[:2] == ['pr', 'merge']]
         self.assertEqual(len(merge), 1)
         self.assertIn('--auto', merge[0])
@@ -228,7 +237,7 @@ class PolicyTests(unittest.TestCase):
     def test_approval_held_runs_do_not_masquerade_as_tests_or_prevent_explicit_dispatch(self):
         result, state = self.run_publisher(RUN_MODE='held')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(sum(args[:2] == ['workflow', 'run'] for name, args in state['calls'] if name == 'gh'), 3)
+        self.assertEqual(sum(args[:2] == ['workflow', 'run'] for name, args in state['calls'] if name == 'gh'), 4)
 
     def test_untrusted_workflow_or_stale_or_changed_head_main_fail_before_dispatch(self):
         for flag in ['UNTRUSTED_WORKFLOW', 'STALE', 'HEAD_RACE', 'MAIN_RACE', 'PR_DRAFT', 'API_FAIL', 'INVALID_JSON']:

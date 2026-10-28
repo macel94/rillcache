@@ -2,8 +2,10 @@
 
 - Never commit on or push directly to `main`, including generated docs/reports.
 - Work on a branch and open a PR. Merge only through GitHub's protected PR path.
-- Required checks: `Tests and offline CI` and `Valkey performance gate`, on an
-  up-to-date branch/current head. All 20 scoped medians must strictly beat Valkey.
+- Required checks: `Tests and offline CI`, `Valkey performance gate`, and
+  `Valkey 4-CPU performance gate`, on an up-to-date branch/current head. All 20
+  original medians and all 10 official-benchmark four-CPU medians must strictly
+  beat Valkey. The new required context needs reviewed live ruleset activation.
 - Never use administrator bypass, disable/relax the gate, omit losing cases, reuse
   historical passes or rerun until green to land a change. Preserve failed evidence.
 - CI/policy files require the configured code-owner review. Do not self-approve.
@@ -79,17 +81,17 @@
   invented by agents. Never hide failures or override revoked merge intent.
 - Auto-merge does not refresh stale branches. The remembered solution is a
   delivery-only serialized auto-update lane: refresh only the next eligible PR
-  against current main, run both required checks on its exact new candidate,
+  against current main, run all required checks on its exact new candidate,
   let protected auto-merge land it, then advance. Development and PR ownership
   stay independent; no shared implementation/integration branch.
-- Prefer native GitHub merge queues if supported, with both required workflows
+- Prefer native GitHub merge queues if supported, with all required workflows
   genuinely validating merge-group candidates. This personal-account repository
   currently lacks that feature; do not claim native queue support. The user
   permits a free organization if it is genuinely the best queue solution, with
   `macel94` retaining the organization Owner role and primary control; never
   purchase a plan or migrate without preserving access, gates and delivery.
-  Preserve strict up-to-date checks and all 20 Valkey
-  wins. Conflicts return to the owning worker; failures pause without retries
+  Preserve strict up-to-date checks, all 20 original wins and all 10 four-CPU wins.
+  Conflicts return to the owning worker; failures pause without retries
   until green, historical-pass reuse or speculative conflict resolution.
 - Read `docs/parallel-pr-delivery.md` for hosted PR branch reconciliation,
   token/dispatch constraints, exact check identity and failure behavior. The

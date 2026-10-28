@@ -29,7 +29,7 @@ else
   printf '%s\n' \
     "Generated report from https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID." \
     '' 'Only generated benchmark dashboard/history paths are changed.' \
-    'This PR has no bypass: tests and the full Valkey performance gate must pass on an up-to-date branch before squash merging.' \
+    'This PR has no bypass: tests and both Valkey performance gates must pass on an up-to-date branch before squash merging.' \
     'The measured source in the report remains explicit; a report update is not new application performance evidence.' > "$body"
   gh pr create --repo "$GITHUB_REPOSITORY" --base "$DEFAULT_BRANCH" --head "$branch" \
     --title "docs: publish benchmark report $GITHUB_RUN_ID" --body-file "$body"
@@ -42,13 +42,16 @@ fi
 # first: real failed evidence is a stop, and existing running/successful checks
 # must not be dispatched again. Dispatch definitions must match protected main.
 inspection=$(python3 "$helper" inspect --number "$number" --branch "$branch")
-read -r head ci_needed gate_needed tcl_needed <<< "$inspection"
-[[ "$head" =~ ^[0-9a-f]{40}$ && "$ci_needed$gate_needed$tcl_needed" =~ ^[01]{3}$ ]]
+read -r head ci_needed gate_needed multicpu_needed tcl_needed <<< "$inspection"
+[[ "$head" =~ ^[0-9a-f]{40}$ && "$ci_needed$gate_needed$multicpu_needed$tcl_needed" =~ ^[01]{4}$ ]]
 if [[ "$ci_needed" == 1 ]]; then
   gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
 fi
 if [[ "$gate_needed" == 1 ]]; then
   gh workflow run pr-quality.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f "pull_request=$number"
+fi
+if [[ "$multicpu_needed" == 1 ]]; then
+  gh workflow run pr-multicpu-quality.yml --repo "$GITHUB_REPOSITORY" --ref "$branch" -f "pull_request=$number"
 fi
 if [[ "$tcl_needed" == 1 ]]; then
   gh workflow run upstream-compatibility.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"

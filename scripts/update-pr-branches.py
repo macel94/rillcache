@@ -20,6 +20,7 @@ MAIN = "main"
 REQUIRED = {
     "ci.yml": "Tests and offline CI",
     "pr-quality.yml": "Valkey performance gate",
+    "pr-multicpu-quality.yml": "Valkey 4-CPU performance gate",
 }
 ACTIONS_APP_ID = 15368
 # A cancelled/stale run has no performance verdict. Concurrency cancellation
@@ -272,7 +273,7 @@ class Updater:
     def dispatch(self, pr: dict, workflow: str) -> None:
         path = f"repos/{REPO}/actions/workflows/{workflow}/dispatches"
         body: dict[str, Any] = {"ref": pr["head"]["ref"]}
-        if workflow == "pr-quality.yml":
+        if workflow in {"pr-quality.yml", "pr-multicpu-quality.yml"}:
             body["inputs"] = {"pull_request": str(pr["number"])}
         self.api.call(path, method="POST", body=body)
 

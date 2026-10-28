@@ -2,8 +2,10 @@
 
 Two **independent**, read-only workflows use `ubuntu-latest`. They do not replace,
 relax or feed historical passes into the existing **Tests and offline CI** and
-**Valkey performance gate** protections. The latter still requires all 20 scoped
-medians to strictly beat Valkey. These new workflows do not grant full Redis or
+**Valkey performance gate** and **Valkey 4-CPU performance gate** protections.
+The original gate requires all 20 scoped medians; the latter uses the official
+`valkey-benchmark` and requires all 10 four-CPU workload/pipeline medians to win.
+Its required-check context additionally needs reviewed live ruleset activation. These new workflows do not grant full Redis or
 Valkey compatibility, production readiness, or a universal performance claim.
 
 ## Run and inspect

@@ -1,0 +1,151 @@
+name: PR multi-CPU Valkey performance
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Open main PR whose current head is this dispatch ref
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-multicpu-valkey-${{ github.event.pull_request.number || inputs.pull_request }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Valkey 4-CPU performance gate
+    runs-on: ubuntu-24.04
+    env:
+      RILLCACHE_GATE_HELPERS: ${{ github.workspace }}/base/scripts/upstream
+    timeout-minutes: 30
+    steps:
+      - name: Validate the exact open PR and freeze its base and head identities
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          number = os.environ['PR_NUMBER']
+          assert re.fullmatch(r'[1-9][0-9]*', number), 'invalid PR number'
+          repo = os.environ['GITHUB_REPOSITORY']
+          pr = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/pulls/{number}']))
+          assert pr['state'] == 'open' and pr['base']['ref'] == 'main', 'not an open main PR'
+          assert pr['base']['repo']['full_name'] == repo, 'wrong base repository'
+          if os.environ['GITHUB_EVENT_NAME'] == 'pull_request':
+              event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())['pull_request']
+              assert event['head']['sha'] == pr['head']['sha'], 'superseded PR head'
+              assert event['base']['sha'] == pr['base']['sha'], 'base advanced; update the PR'
+              assert os.environ['GITHUB_REF'] == f'refs/pull/{number}/merge', 'not the tested merge ref'
+          else:
+              assert pr['head']['repo']['full_name'] == repo, 'dispatch requires an in-repository branch'
+              assert pr['head']['sha'] == os.environ['GITHUB_SHA'], 'dispatch is not the current PR head'
+              assert os.environ['GITHUB_REF'] == 'refs/heads/' + pr['head']['ref'], 'wrong dispatch branch'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              for key, value in [('base', pr['base']['sha']), ('head', pr['head']['sha'])]:
+                  assert re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source identity'
+                  out.write(f'{key}={value}\n')
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.context.outputs.base }}
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the checked source to contain the exact current base
+        env:
+          BASE_SOURCE: ${{ steps.context.outputs.base }}
+        run: git -C candidate merge-base --is-ancestor "$BASE_SOURCE" HEAD
+      - name: Select the protected orchestration wrapper with one pinned installation bootstrap
+        id: harness
+        env:
+          BASE_SOURCE: ${{ steps.context.outputs.base }}
+        run: |
+          harness="$GITHUB_WORKSPACE/base/scripts/pr-multicpu-performance.py"
+          if [[ ! -f "$harness" ]]; then
+            # Only this exact pre-installation protected main can bootstrap.
+            [[ "$BASE_SOURCE" == d94bd4e97906e517c30d056ddd2be24c0714f315 ]]
+            harness="$GITHUB_WORKSPACE/candidate/scripts/pr-multicpu-performance.py"
+          fi
+          echo "path=$harness" >> "$GITHUB_OUTPUT"
+          RILLCACHE_GATE_HARNESS="$harness" python3 "$GITHUB_WORKSPACE/candidate/scripts/test-multicpu-performance.py"
+          python3 "$GITHUB_WORKSPACE/candidate/scripts/test-multicpu-performance.py"
+          python3 "$GITHUB_WORKSPACE/candidate/scripts/test-pr-policy.py"
+      - name: Build checksum-pinned official Valkey server and benchmark once
+        id: tools
+        working-directory: base
+        run: |
+          mkdir -p "$RUNNER_TEMP/valkey-multicpu-tools"
+          rustc -vV > "$RUNNER_TEMP/valkey-multicpu-tools/compiler.txt"
+          toolchain=$(rustup show active-toolchain | awk '{print $1}')
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          version=$(awk '$1 == "VALKEY_VERSION" {print $3}' benchmarks/targets.mk)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          make "$PWD/target/competitors/valkey-$version/src/valkey-server"
+          # Same verified source tree and build settings; no benchmark patches.
+          make -C "target/competitors/valkey-$version/src" -j2 valkey-benchmark
+          cp "target/competitors/valkey-$version/src/valkey-server" "$RUNNER_TEMP/valkey-multicpu-tools/valkey"
+          cp "target/competitors/valkey-$version/src/valkey-benchmark" "$RUNNER_TEMP/valkey-multicpu-tools/valkey-benchmark"
+          sha256sum "target/competitors/valkey-$version/src/valkey-benchmark.c" > "$RUNNER_TEMP/valkey-multicpu-tools/benchmark-source.sha256"
+          cp benchmarks/targets.mk "$RUNNER_TEMP/valkey-multicpu-tools/reference-pins.mk"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build the candidate normally with the same pinned compiler
+        working-directory: candidate
+        env:
+          TOOLCHAIN: ${{ steps.tools.outputs.toolchain }}
+        run: |
+          cargo "+$TOOLCHAIN" build --locked --offline --release --bin rillcache
+          cp target/release/rillcache "$RUNNER_TEMP/valkey-multicpu-tools/candidate"
+      - name: Measure all ten conditions with the official benchmark and four server CPUs
+        env:
+          HARNESS: ${{ steps.harness.outputs.path }}
+          BASE_SOURCE: ${{ steps.context.outputs.base }}
+          HEAD_SOURCE: ${{ steps.context.outputs.head }}
+          VALKEY_VERSION: ${{ steps.tools.outputs.version }}
+        run: |
+          mkdir -p evidence
+          { uname -a; lscpu; cat "$RUNNER_TEMP/valkey-multicpu-tools/compiler.txt"; cc --version; } > evidence/environment.txt
+          cp "$RUNNER_TEMP/valkey-multicpu-tools/reference-pins.mk" evidence/reference-pins.mk
+          cp "$RUNNER_TEMP/valkey-multicpu-tools/benchmark-source.sha256" evidence/benchmark-source.sha256
+          python3 "$HARNESS" \
+            --candidate "$RUNNER_TEMP/valkey-multicpu-tools/candidate" \
+            --valkey "$RUNNER_TEMP/valkey-multicpu-tools/valkey" \
+            --generator "$RUNNER_TEMP/valkey-multicpu-tools/valkey-benchmark" \
+            --base-source "$BASE_SOURCE" --candidate-source "$GITHUB_SHA" --head-source "$HEAD_SOURCE" \
+            --valkey-version "$VALKEY_VERSION" --out evidence/gate
+      - name: Independently revalidate the full official CSV cohort, including losses
+        if: success() || failure()
+        env:
+          HARNESS: ${{ steps.harness.outputs.path }}
+        run: python3 "$HARNESS" --check evidence/gate
+      - name: Show all wins, losses, spreads, CPU and whole-batch tails
+        if: always()
+        run: |
+          if [[ -f evidence/gate/summary.md ]]; then
+            tee -a "$GITHUB_STEP_SUMMARY" < evidence/gate/summary.md
+          else
+            printf 'Four-CPU Valkey gate failed before a complete valid cohort was available. No performance pass.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Preserve raw measurements even when the required gate fails
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-valkey-four-cpu-${{ github.event.pull_request.number || inputs.pull_request }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 30
