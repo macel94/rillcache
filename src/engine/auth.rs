@@ -1151,6 +1151,80 @@ mod tests {
     }
 
     #[test]
+    fn first_argument_rules_allow_and_deny_subcommands_case_insensitively() {
+        let mut auth = Auth::from_password(None);
+        auth.setuser(
+            b"config-reader",
+            &[
+                b"on",
+                b"nopass",
+                b"allkeys",
+                b"resetchannels",
+                b"-@all",
+                b"+CONFIG|GeT",
+            ],
+        )
+        .unwrap();
+        let user = auth.lookup(b"config-reader").unwrap();
+        assert!(user.allows_command(&[b"CONFIG", b"GET", b"maxmemory"]));
+        assert!(!user.allows_command(&[b"CONFIG", b"SET", b"maxmemory", b"1"]));
+        assert!(!user.allows_command(&[b"CONFIG"]));
+        assert!(!user.allows_command(&[b"GET", b"any"]));
+        assert!(rules_text(&user.rules).contains("+config|GeT"));
+
+        auth.setuser(
+            b"config-except-set",
+            &[
+                b"on",
+                b"nopass",
+                b"allkeys",
+                b"resetchannels",
+                b"-@all",
+                b"+config",
+                b"-config|set",
+            ],
+        )
+        .unwrap();
+        let user = auth.lookup(b"config-except-set").unwrap();
+        assert!(user.allows_command(&[b"CONFIG", b"GET", b"maxmemory"]));
+        assert!(!user.allows_command(&[b"CONFIG", b"SET", b"maxmemory", b"1"]));
+        assert!(user.allows_command(&[b"CONFIG", b"RESETSTAT"]));
+
+        auth.setuser(
+            b"selector-reader",
+            &[
+                b"on",
+                b"nopass",
+                b"allkeys",
+                b"resetchannels",
+                b"-@all",
+                b"(+config|get)",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            auth.authorize(Some(b"selector-reader"), &[b"CONFIG", b"GET", b"maxmemory"]),
+            Access::Allowed
+        );
+        assert_eq!(
+            auth.authorize(
+                Some(b"selector-reader"),
+                &[b"CONFIG", b"SET", b"maxmemory", b"1"]
+            ),
+            Access::DeniedCommand
+        );
+
+        assert!(
+            auth.setuser(b"empty-sub", &[b"on", b"nopass", b"+config|"])
+                .is_err()
+        );
+        assert!(
+            auth.setuser(b"unknown-command", &[b"on", b"nopass", b"+bogus|get"])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn sort_dynamic_patterns_require_all_key_access() {
         let mut auth = Auth::from_password(None);
         auth.setuser(

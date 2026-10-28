@@ -49,9 +49,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
-  Documentation shall retain the missing first-argument rules, subcommand
-  categories, persistent audit, rate limiting, TLS hardening, key-spec-blind
-  commands and process-level tenant-isolation boundaries.
+  Documentation shall retain the missing subcommand-specific categories,
+  persistent audit, rate limiting, TLS hardening, key-spec-blind commands and
+  process-level tenant-isolation boundaries.
 
 ## ACL credentials, dry-run and denial log (S41)
 
@@ -97,9 +97,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R331 (ubiquitous):** Tests shall cover root/selector alternatives, key-scoped
   writes with broad reads, `clearselectors`/`reset`, atomic rejection, LIST/
   GETUSER exposure, ACL-file restart round-trips and every worker mode.
-  Documentation shall retain the absence of first-argument rules, nested
-  selectors, subcommand categories, rate limiting, persistent audit and native
-  TLS.
+  Documentation shall retain the absence of nested selectors, subcommand
+  categories, rate limiting, persistent audit and native TLS.
 
 ## ACL read/write key modes (S88)
 
@@ -128,9 +127,30 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R338 (ubiquitous):** Tests shall cover read-only, write-only and read-write
   grants, per-key mixed commands, read denial for a write-only credential, write
   denial for a read-only credential, listing, `ACL DRYRUN`, ACL-file restart
-  round-trips and every worker mode. Documentation shall retain the first-argument
-  rule, subcommand-category, dynamic-key-sandbox, persistent-audit, rate-limiting
-  and TLS-hardening boundaries.
+  round-trips and every worker mode. Documentation shall retain the
+  subcommand-category, dynamic-key-sandbox, persistent-audit, rate-limiting and
+  TLS-hardening boundaries.
+
+## First-argument command rules (S102)
+
+- **R378 (event-driven):** When an ACL rule uses `+command|subcommand` or
+  `-command|subcommand`, the server shall match the command case-insensitively
+  and the literal first argument case-insensitively. A subcommand rule shall not
+  grant the bare command without that first argument, and a bare command rule
+  shall continue to cover every subcommand unless a later ordered rule overrides
+  it.
+- **R379 (state-driven):** While authorizing a command, root rules and selector
+  rules shall apply the same ordered last-match-wins evaluation for
+  first-argument rules. `ACL LIST`, `ACL GETUSER`, `ACL SAVE` and `ACL LOAD` shall
+  preserve and round-trip the `|`-qualified rule, including selector groups, and
+  `ACL DRYRUN` shall report the same allow/deny decision without executing it.
+- **R380 (unwanted behavior):** An empty first argument (`+command|`), an unknown
+  command, an oversized rule or a malformed selector shall reject the whole
+  update atomically without partially changing the user. Tests shall cover
+  allow/deny, ordered overrides, case-insensitivity, selectors, LIST/GETUSER,
+  DRYRUN, ACL-file restart round-trips and every worker mode; documentation shall
+  retain the absence of subcommand-specific categories, wildcards in the first
+  argument and nested selectors.
 
 ## Native TLS 1.3 with rustls (S101)
 
