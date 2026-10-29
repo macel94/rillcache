@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """One read-only native diagnostic; never a required-gate result or retry."""
 import contextlib
-import json
 import os
 from pathlib import Path
 import re
@@ -52,8 +51,24 @@ def build_sources():
         COMMON.checked(['cargo', 'build', '--locked', '--offline', '--release', '--bin', 'rillcache'],
                        OUT / 'build' / name, cwd=tree, timeout=600)
         shutil.copy2(tree / 'target/release/rillcache', BIN / name)
-    shutil.copy2(COMMON.source('valkey') / 'src/valkey-server', BIN / 'valkey')
-    shutil.copy2(COMMON.source('valkey') / 'src/valkey-benchmark', BIN / 'generator')
+    # The advisory prerequisite build uses libc; the protected gate uses the
+    # upstream defaults. Build the exact protected Makefile targets instead.
+    pin = COMMON.PINS['upstreams']['valkey']
+    version = pin['version']
+    reference = ROOT / f'target/competitors/valkey-{version}'
+    archive = ROOT / f'target/upstream-downloads/valkey-{version}-{pin["sha256"]}.tar.gz'
+    assert G['digest'](archive) == pin['sha256']
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(archive, reference.parent / f'valkey-{version}.tar.gz')
+    COMMON.checked(['make', str(reference / 'src/valkey-server')], OUT / 'build/valkey-protected', timeout=900)
+    COMMON.checked(['make', '-C', str(reference / 'src'), '-j2', 'valkey-benchmark'],
+                   OUT / 'build/generator-protected', timeout=900)
+    G['save'](OUT / 'reference-identity.json', {
+        'source_archive_sha256': pin['sha256'], 'version': version,
+        'benchmark_c_sha256': G['digest'](reference / 'src/valkey-benchmark.c'),
+        'build_policy': 'same protected Makefile targets and defaults; no allocator/optimization/TLS overrides'})
+    shutil.copy2(reference / 'src/valkey-server', BIN / 'valkey')
+    shutil.copy2(reference / 'src/valkey-benchmark', BIN / 'generator')
     return {name: str((BIN / name).resolve()) for name in ('baseline', 'candidate', 'valkey', 'generator')}
 
 
@@ -71,7 +86,11 @@ def perf_tool():
         perf = find()
     if perf is None:
         raise RuntimeError('no usable perf executable; do not invent profiling evidence')
-    if not Path('/sys/kernel/tracing/events/syscalls/sys_exit_read/id').exists():
+    # Runner users may not search an already-mounted, root-only tracefs.
+    visible = COMMON.command(['sudo', '-n', 'test', '-e',
+                              '/sys/kernel/tracing/events/syscalls/sys_exit_read/id'],
+                             OUT / 'tracefs-root-visibility', timeout=20)
+    if visible['exit_code'] != 0:
         COMMON.checked(['sudo', '-n', 'mount', '-t', 'tracefs', '-o', 'ro', 'tracefs',
                         '/sys/kernel/tracing'], OUT / 'tracefs-read-only', timeout=20)
     COMMON.checked(['sudo', '-n', perf, 'stat', '-e', 'syscalls:sys_exit_read', '--filter',
@@ -242,6 +261,8 @@ def main():
             'CARGO_PROFILE_RELEASE_LTO', 'CARGO_PROFILE_RELEASE_CODEGEN_UNITS',
             'CARGO_BUILD_JOBS', 'RUSTUP_TOOLCHAIN')}
         metadata.pop('scope', None)
+        metadata['advisory_prerequisite_pins'] = metadata.pop('pins')
+        metadata['reference_build_policy'] = 'protected Makefile Valkey targets, upstream default allocator/optimization; not advisory libc flags'
         metadata['selected_server_and_generator_cpus'] = cpus
         smt = Path('/sys/devices/system/cpu/smt/active')
         metadata['smt_active'] = smt.read_text()[:3] if smt.exists() else 'unavailable'
