@@ -26,7 +26,7 @@ pub const CLIENT_HANDOFF_MULTICORE_IDLE_US: u64 = 100;
 /// Bound sharing to small CPU budgets; larger/unknown machines keep blocking I/O.
 pub const CLIENT_HANDOFF_MAX_CPUS: usize = 4;
 /// Small multicore budgets share busy I/O without one-CPU reply-yield hints.
-pub const CLIENT_HANDOFF_MULTICORE_POLICY_VERSION: u64 = 7;
+pub const CLIENT_HANDOFF_MULTICORE_POLICY_VERSION: u64 = 8;
 /// Continuous traffic cannot retain a coordinator/admission slot indefinitely.
 pub const CLIENT_HANDOFF_MAX_EPOCH_MS: u64 = 100;
 /// v2 requires recent reply activity before creating a new handoff epoch.
@@ -1102,7 +1102,7 @@ mod tests {
                 policy.client_handoff_idle_us,
                 CLIENT_HANDOFF_MULTICORE_IDLE_US
             );
-            assert_eq!(policy.client_handoff_policy_version(), 7);
+            assert_eq!(policy.client_handoff_policy_version(), 8);
             assert_eq!(policy.client_handoff_lanes, (cpus / 2).max(1));
             assert_eq!(policy.client_handoff_max_epoch_ms(), 100);
             assert!(!policy.single_reply_yield);

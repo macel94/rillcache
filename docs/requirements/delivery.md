@@ -237,8 +237,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-IO4A (event-driven):** When default managed clients share a known two-, three-
   or four-CPU capacity hint, active bursts may use a 100 µs idle / 100 ms
   maximum-epoch handoff path so a busy pipeline-1 client stays leased across its
-  request interval. One-CPU policy v2 shall remain unchanged at 50 µs; small-
-  multicore policy shall be recorded as v7 without enabling single-reply yields.
+  request interval. One-CPU policy v2 shall retain its 50 µs parameters; small-
+  multicore policy shall be recorded as v8 without enabling single-reply yields.
   Four-CPU admission may select two independent temporary coordinator groups only
   with an explicit bind-time Linux SMT-disabled hint; active/unknown SMT and 1–3
   CPU hints shall retain one group. The read-only probe shall read at most three
@@ -246,7 +246,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   affinity-specific physical-core count. A connection shall retain its assigned
   group across leases regardless of session-ID changes or disconnects. Default
   thread counts, fixed lanes, TLS, admission and shared transaction/storage
-  atomicity shall not change. Historical v3/v4/v5 evidence keeps its actual version.
+  atomicity shall not change. Historical v3/v4/v5/v6/v7 evidence keeps its actual version.
 - **R-IO4B (state-driven):** While a connection is lent, its actual push-message
   receiver shall move with its session and socket; the original worker shall
   perform no competing receives. When the lease returns, that same receiver and
@@ -277,6 +277,20 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   quiet borrower's ready I/O before returning it. Every pass shall retain epoch
   and shutdown checks; one-CPU/fixed policies remain unchanged. Tests shall cover
   the one-pass bound, each guard and execute-once queued input at idle return.
+
+- **R-IO4G (state-driven):** While clean normal multicore clients are lent, new
+  replies may drain in a bounded write phase after read/dispatch. Existing
+  pending output and blocked/paused/subscription/MONITOR states shall retain
+  normal service; command/read/write quanta, reply order, execute-once behavior,
+  backpressure and single-owner I/O shall remain intact. A failed writer shall
+  close without preventing peers' pending replies from draining. No store lock
+  shall span I/O. One-CPU v2 and fixed workers shall not use write batching.
+- **R-IO4H (event-driven):** When a handoff pass makes progress, its idle window
+  shall rearm from a post-I/O observation, not a timestamp from before that work.
+  Quiet checks may share a per-pass clock sample, but empty passes shall not
+  rearm idle time and progress shall not extend the independent maximum epoch.
+  Deterministic tests shall cover work longer than the idle window and fail
+  against the premature pre-pass accounting.
 
 ## PR-only main and scoped Valkey merge acceptance (S23–S24)
 

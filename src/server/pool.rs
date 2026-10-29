@@ -67,7 +67,7 @@ impl Drop for Client {
 }
 
 impl Client {
-    fn flush(&mut self) -> io::Result<bool> {
+    pub(super) fn flush(&mut self) -> io::Result<bool> {
         if self.sent == self.output.len() {
             self.output.clear();
             self.sent = 0;
@@ -132,6 +132,17 @@ impl Client {
         }
     }
 
+    pub(super) fn can_defer_flush(&self) -> bool {
+        self.output.is_empty()
+            && self.sent == 0
+            && !self.closing
+            && !self.eof
+            && !self.session.is_blocked()
+            && !self.session.is_paused()
+            && !self.session.is_subscribed()
+            && !self.session.is_monitoring()
+    }
+
     /// None means closed; Some indicates whether this pass made progress.
     pub(super) fn poll(
         &mut self,
@@ -139,6 +150,20 @@ impl Client {
         config: &Config,
         chunk: &mut [u8],
     ) -> io::Result<Option<bool>> {
+        self.poll_with_flush(store, config, chunk, false)
+    }
+
+    /// A clean normal client may leave its new reply for the coordinator's
+    /// bounded write phase. Pending output and asynchronous states keep normal
+    /// service; the caller must flush deferred replies before returning loans.
+    pub(super) fn poll_with_flush(
+        &mut self,
+        store: &Store,
+        config: &Config,
+        chunk: &mut [u8],
+        defer_flush: bool,
+    ) -> io::Result<Option<bool>> {
+        debug_assert!(!defer_flush || self.can_defer_flush());
         // Like blocking I/O, service already-ready input/output before declaring
         // inactivity; scheduler delay must not discard buffered commands.
         let mut progress = self.flush()?;
@@ -259,7 +284,9 @@ impl Client {
         } else if consumed > 0 {
             self.input.drain(..consumed);
         }
-        progress |= self.flush()?;
+        if !defer_flush {
+            progress |= self.flush()?;
+        }
         if self.closing || !self.output.is_empty() || !need_input {
             return Ok(self.open(progress, config.idle_timeout));
         }
@@ -524,6 +551,75 @@ mod tests {
             },
             peer,
         )
+    }
+
+    #[test]
+    fn deferred_flush_keeps_execute_once_order_and_command_quanta() {
+        let request = b"INCR counter\r\n";
+        let (mut client, mut peer) = test_client(request.repeat(QUANTUM + 1));
+        let store = Store::new(1024);
+        let config = Config::default();
+        assert!(client.can_defer_flush());
+        assert_eq!(
+            client
+                .poll_with_flush(&store, &config, &mut [0; 128], true)
+                .unwrap(),
+            Some(true)
+        );
+        assert_eq!(client.input, request);
+        let expected: Vec<u8> = (1..=QUANTUM)
+            .flat_map(|n| format!(":{n}\r\n").into_bytes())
+            .collect();
+        assert_eq!(client.output, expected);
+        assert_eq!(client.sent, 0);
+        peer.set_nonblocking(true).unwrap();
+        assert_eq!(
+            peer.peek(&mut [0; 1]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        peer.set_nonblocking(false).unwrap();
+        assert!(client.flush().unwrap());
+        let mut reply = vec![0; expected.len()];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(reply, expected);
+        assert_eq!(
+            client
+                .poll_with_flush(&store, &config, &mut [0; 128], true)
+                .unwrap(),
+            Some(true)
+        );
+        assert_eq!(client.output, b":65\r\n");
+        assert!(client.flush().unwrap());
+        let mut reply = [0; 5];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b":65\r\n");
+    }
+
+    #[test]
+    fn deferred_large_replies_retain_write_bounds_and_backpressure() {
+        let mut request = Vec::new();
+        crate::protocol::encode_request(&[b"ECHO", &vec![b'x'; OUTPUT_CHUNK * 3]], &mut request);
+        request.extend_from_slice(b"INCR counter\r\n");
+        let (mut client, _peer) = test_client(request);
+        let store = Store::new(1024);
+        let config = Config::default();
+        assert_eq!(
+            client
+                .poll_with_flush(&store, &config, &mut [0; 128], true)
+                .unwrap(),
+            Some(true)
+        );
+        assert!(client.output.len() > OUTPUT_CHUNK * 3);
+        assert_eq!(client.sent, 0);
+        assert!(client.flush().unwrap());
+        assert!(client.sent <= OUTPUT_CHUNK);
+        assert!(!client.can_defer_flush());
+        client.poll(&store, &config, &mut [0; 128]).unwrap();
+        assert!(!client.output.is_empty());
+        assert_eq!(client.input, b"INCR counter\r\n");
+        let mut reply = Vec::new();
+        store.execute(&[b"GET", b"counter"], &mut reply);
+        assert_eq!(reply, b"$-1\r\n");
     }
 
     #[test]

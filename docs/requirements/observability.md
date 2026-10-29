@@ -66,6 +66,20 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   rejection, lazy expiration and all execution modes. Documentation shall retain
   the missing hit/miss, byte, latency, slowlog, client-list, RSS and metrics gaps.
 
+## Nonrecursive INFO snapshots (S-INFOLOCK)
+
+- **R-INFO1 (state-driven):** While INFO builds a reply, it shall capture required
+  data fields under one read guard, release that guard before other subsystem
+  helpers/formatting, and reuse copied lifecycle/eviction counters without
+  recursively acquiring the data lock. Concurrent blocking writers shall not
+  deadlock INFO or prevent joined shutdown.
+- **R-INFO2 (event-driven):** When keyspace/default/all metrics are requested,
+  INFO shall compute live/expiring/subexpiry keys and average TTL in one pass
+  with unchanged expiry and saturating-TTL semantics. Other sections shall not
+  traverse entries solely to calculate unrequested keyspace fields. Tests shall
+  cover counter/wire behavior and controlled pub/sub contention with bounded
+  regression failure, not retries of an intermittently hanging test.
+
 ## Keyspace notifications (S40)
 
 - **R157 (event-driven):** When `--notify-keyspace-events` or `CONFIG SET

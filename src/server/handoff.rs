@@ -105,22 +105,17 @@ struct Loan {
     stopping: Arc<AtomicBool>,
     coordinator: bool,
     skip_idle_scan: bool,
+    flush_later: bool,
 }
 impl Loan {
     fn defer_idle_poll(&mut self) -> bool {
         // Clear before checking state: at most one pass can be skipped after
         // an actual empty poll. Never postpone known work or async delivery.
         std::mem::take(&mut self.skip_idle_scan)
-            && self.client.as_ref().is_some_and(|client| {
-                client.input.is_empty()
-                    && client.output.is_empty()
-                    && !client.closing
-                    && !client.eof
-                    && !client.session.is_blocked()
-                    && !client.session.is_paused()
-                    && !client.session.is_subscribed()
-                    && !client.session.is_monitoring()
-            })
+            && self
+                .client
+                .as_ref()
+                .is_some_and(|client| client.input.is_empty() && client.can_defer_flush())
     }
 
     fn quiet(&self, now: Instant, idle: Duration) -> bool {
@@ -282,6 +277,7 @@ impl Sharing {
             stopping: Arc::clone(&self.stopping),
             coordinator: false,
             skip_idle_scan: false,
+            flush_later: false,
         };
         let mut leader = self
             .leader
@@ -337,11 +333,21 @@ impl Sharing {
         Ok(closing)
     }
 
-    fn run(&self, mut first: Loan, leadership: Leadership<'_>, store: &Store) {
+    fn run(&self, first: Loan, leadership: Leadership<'_>, store: &Store) {
+        self.run_with_clock(first, leadership, store, Instant::now);
+    }
+
+    fn run_with_clock(
+        &self,
+        mut first: Loan,
+        leadership: Leadership<'_>,
+        store: &Store,
+        mut clock: impl FnMut() -> Instant,
+    ) {
         first.coordinator = true;
         let mut clients = vec![first];
         let mut chunk = [0; 16 * 1024];
-        let mut window = EpochWindow::new(Instant::now(), self.idle, self.max_epoch);
+        let mut window = EpochWindow::new(clock(), self.idle, self.max_epoch);
         let mut backoff = IdleBackoff::default();
         loop {
             if self.stopping.load(Ordering::Acquire) {
@@ -355,9 +361,9 @@ impl Sharing {
                 clients.push(loan);
                 progress = true;
             }
-            // One clock sample per pass: per-client quiet checks and the epoch
-            // window share it instead of reading the clock once per client.
-            let now = Instant::now();
+            // Quiet checks share one sample; epoch accounting below samples
+            // after bounded I/O so useful work cannot consume the idle window.
+            let now = clock();
             let mut index = 0;
             while index < clients.len() {
                 if self.adaptive_poll
@@ -367,11 +373,13 @@ impl Sharing {
                     index += 1;
                     continue;
                 }
-                match clients[index].client.as_mut().expect("active loan").poll(
-                    store,
-                    &self.config,
-                    &mut chunk,
-                ) {
+                let loan = &mut clients[index];
+                let client = loan.client.as_mut().expect("active loan");
+                loan.flush_later = self.adaptive_poll && client.can_defer_flush();
+                let polled =
+                    client.poll_with_flush(store, &self.config, &mut chunk, loan.flush_later);
+                loan.flush_later &= !client.output.is_empty();
+                match polled {
                     Ok(Some(made_progress)) => {
                         progress |= made_progress;
                         if self.adaptive_poll {
@@ -390,10 +398,31 @@ impl Sharing {
                     }
                 }
             }
+            // Drain new normal-client replies together, like a pending-write
+            // phase, rather than interleaving every read/dispatch with a send.
+            // Each deferred client started without pending output, so this adds
+            // no extra write quantum to its pass. No store lock spans this I/O.
+            let mut index = 0;
+            while index < clients.len() {
+                if std::mem::take(&mut clients[index].flush_later) {
+                    match clients[index].client.as_mut().expect("active loan").flush() {
+                        Ok(written) => {
+                            progress |= written;
+                            index += 1;
+                        }
+                        Err(_) => {
+                            let mut loan = clients.swap_remove(index);
+                            loan.client.take();
+                        }
+                    }
+                } else {
+                    index += 1;
+                }
+            }
             if clients.is_empty() {
                 break;
             }
-            if !window.active(now, progress) {
+            if !window.active(clock(), progress) {
                 break;
             }
             let spins = if self.adaptive_poll {

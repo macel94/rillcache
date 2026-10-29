@@ -42,6 +42,7 @@ pub(super) fn loan(client: Client, stopping: &Arc<AtomicBool>) -> (Loan, Receive
             stopping: Arc::clone(stopping),
             coordinator: false,
             skip_idle_scan: false,
+            flush_later: false,
         },
         returned,
     )

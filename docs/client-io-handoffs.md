@@ -10,7 +10,7 @@ The separate matched A/B study reports both improvements and regressions; those
 runner/cohort percentages must not be blended. This does not establish all-traffic
 performance, feature equivalence or production readiness.
 
-## Small-multicore policy v7
+## Small-multicore policy v8
 
 V3 enabled bounded handoffs for known two-, three- and four-CPU bind-time
 capacity hints. V4's unconditional two-coordinator experiment at four logical
@@ -21,8 +21,11 @@ seconds per ten-second sample. More busy pollers did not solve that bottleneck.
 This failed source/evidence retains its actual version.
 V5's SMT/backoff follow-up reached [7/10](https://github.com/macel94/rillcache/actions/runs/40796958078),
 with three small P1 losses remaining; it is also retained as failed evidence.
+V6 reached [5/10](https://github.com/macel94/rillcache/actions/runs/40800776710),
+again losing every P1 case. Its reduced diagnostic empty-read count was not a
+throughput victory.
 
-V6 retains one temporary coordinator at 1–3 CPUs, and also at four CPUs while SMT
+V8 retains one temporary coordinator at 1–3 CPUs, and also at four CPUs while SMT
 is active or unknown. Two groups are allowed at four CPUs only with an explicit
 bind-time Linux `smt/active` value of zero. This is a conservative machine-wide
 hint, not an affinity-specific physical-core count, CPU-model allowlist or host
@@ -46,14 +49,34 @@ syscalls in partly busy scans, not just wholly empty scans. It is not a readines
 notification or a fixed-time latency guarantee. One-CPU v2 and explicit fixed
 workers do not use either multicore backoff.
 
-V7 then raises the multicore quiet window to 100 µs while leaving the one-CPU
-window at 50 µs. At the measured pipeline-1 rate the eight clients issue roughly
+V7 raised the multicore quiet window to 100 µs while leaving the one-CPU
+window at 50 µs. At the measured pipeline-1 rate the eight clients issued roughly
 one request every 65–80 µs per connection, so a 50 µs window returned each client
 just before its next request and rebuilt the lease for every reply. The longer
-window keeps a busy client in the coordinator across that interval. The 100 ms
-maximum epoch, managed thread-per-client admission and absence of multicore
-single-reply yields are unchanged. No permanent worker is added. One-CPU
-scheduling remains v2 with one group and a 50 µs window. Fixed lanes, hints above
+window keeps a busy client in the coordinator across that interval. V7 source
+`8acd843` passed the [20-case](https://github.com/macel94/rillcache/actions/runs/40805057313)
+and [10-case](https://github.com/macel94/rillcache/actions/runs/40805057097) gates
+and merged through PR #138. Those results do not validate later v8 changes.
+
+V8 adds a bounded read/dispatch-then-write phase for clean normal multicore
+clients, following Valkey's pending-write pattern without adding an event loop
+or unsafe readiness API. Pending output, blocked/paused and push sessions keep
+their existing paths. New replies get at most the existing 64 KiB write quantum
+before loan return; write failure closes only that connection. Reply batching
+can delay an early client's send until the bounded read/dispatch pass ends, so
+this is not an all-traffic latency guarantee.
+
+Epoch accounting now samples time **after** bounded I/O. The previous shared
+pre-pass timestamp could spend a newly refreshed idle window on the
+progress-making work itself, closing immediately on the next empty pass. Quiet
+checks still share a per-pass sample, and the separate maximum never rearms.
+A deterministic injected-clock regression fails with the pre-pass timestamp and
+passes with post-I/O accounting; it does not rely on sleeping for 50 µs.
+
+The 100 µs multicore / 50 µs one-CPU idle and 100 ms maximum epoch parameters,
+managed thread-per-client admission and absence of multicore single-reply yields
+are unchanged. No permanent worker is added. One-CPU scheduling remains v2 with
+one group. Fixed lanes, hints above
 four or unknown capacity, and TLS transport retain their previous paths. More
 concurrent I/O can spend more CPU; two coordinators are not an efficiency or
 linear-scaling guarantee.
@@ -166,6 +189,8 @@ all client control handles and joins every started worker.
   reuse/partial replies/push ownership and eight-client wire/shutdown behavior.
   SMT-probe tests cover short/error/malformed/oversized reads and a three-byte
   read bound; policy/backoff tests cover conservative selection, cap and reset.
+  V8 additionally covers post-work idle accounting, deferred execute-once/order
+  and command/write quanta, large-reply backpressure and isolated write failure.
 - `make check`/`make ci` add the complete default TCP suite on one allowed Linux
   CPU when taskset is available; existing per-client/one/four-mode tests remain.
   The benchmark records captured `client_handoff_idle_us`,
@@ -192,4 +217,6 @@ Sources: [safe TCP cloning/options](https://doc.rust-lang.org/std/net/struct.Tcp
 [std channels](https://doc.rust-lang.org/std/sync/mpsc/),
 [Linux SMT status ABI](https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-devices-system-cpu),
 [bounded processor hints](https://doc.rust-lang.org/std/hint/fn.spin_loop.html),
+[Valkey pending writes](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c),
+[Valkey before-sleep phase](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c),
 [previous I/O investigation](io-scheduling.md).

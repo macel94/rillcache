@@ -233,16 +233,17 @@ handoff from the existing scheduler remains enabled for 2–4 CPU budgets. Burst
 activity is observed across clients, not inferred from one request's pipeline
 depth: a single-command reply may join an active epoch. The active-epoch check
 short-circuits before the clock/window probe, the idle window bound is stored
-in microseconds, and the coordinator takes one clock sample per pass instead of
-one per client. Each connection reuses one borrower return channel and an inactive
-lease shell. The latter retains the socket clone and placeholder session/receiver
+in microseconds, and per-client quiet checks share one clock sample per pass
+instead of sampling once per client. Epoch accounting uses a post-I/O sample so
+a long progress-making pass cannot consume its newly refreshed idle window.
+Each connection reuses one borrower return channel and an inactive lease shell. The latter retains the socket clone and placeholder session/receiver
 instead of allocating/cloning/dropping them at every epoch; real buffers, session
 and push receiver still move with their sole I/O owner. The existing recent-reply
 window still prevents isolated replies from allocating a lease. A regression test
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
 accounting, 100 µs multicore idle / 50 µs one-CPU idle / 100 ms maximum epoch and shutdown semantics are unchanged.
 
-Small-multicore policy v7 selects one coordinator when SMT is active or unknown;
+Small-multicore policy v8 selects one coordinator when SMT is active or unknown;
 four logical CPUs permit two independent round-robin groups only with an explicit
 bind-time Linux SMT-disabled hint. V4's unconditional two-group cohort failed
 5/10 on a two-core/four-thread runner and remains preserved, not accepted.
@@ -258,10 +259,30 @@ pass. V5's 7/10 four-CPU result stays failed evidence. These changes add no
 permanent thread, dependency or OS yield/sleep. Benchmark JSON records the actual
 captured lane count. Tests exercise independent leadership, concurrent transaction atomicity,
 reused partial-reply/push ownership and live eight-client ordering/shutdown.
+V8 batches new clean-normal-client replies in one bounded pending-write phase,
+inspired by Valkey's `handleClientsWithPendingWrites`/`beforeSleep` arrangement.
+Pending output and asynchronous sessions keep normal service. Command and write
+quanta, reply order, backpressure and one-owner I/O stay intact; batching may
+add a bounded pass to early-reply latency. A deterministic clock regression
+also catches premature idle expiry after long useful work. V6's 5/10 four-CPU
+cohort remains failed evidence; fewer diagnostic empty reads did not prove a win.
 The Rust Performance Book's [profiling](https://nnethercote.github.io/perf-book/profiling.html)
 and [workhorse reuse](https://nnethercote.github.io/perf-book/heap-allocations.html)
 guidance motivates these focused changes; shared-VM profiles are diagnostics,
 not a substitute for either unchanged protected performance gate.
+
+## INFO snapshot locking and unnecessary scans
+
+A captured stalled `blocked_clients` test exposed a real data-RwLock deadlock:
+INFO retained a read guard while `stats()`/`eviction_policy()` reacquired it,
+with a blocking-pop writer waiting. [Rust documents this exact reader/writer
+priority hazard](https://doc.rust-lang.org/std/sync/struct.RwLock.html).
+INFO now copies data counters/policy, releases the guard before other helpers,
+and reuses that snapshot. A controlled pub/sub-contention regression fails
+boundedly against the old implementation rather than hanging on cleanup.
+Unrequested keyspace sections no longer scan entries; requested keyspace metrics
+share one pass instead of four. Existing TTL, lifecycle and payload meanings stay
+unchanged; this is not an atomic cross-subsystem metrics or RSS guarantee.
 
 ## Release build profile
 
