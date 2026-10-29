@@ -896,7 +896,7 @@ mod tests {
         );
         assert!(text.contains("\"single_reply_yield\":false"));
         assert!(text.contains("\"client_handoff_idle_us\":100"));
-        assert!(text.contains("\"client_handoff_policy_version\":8"));
+        assert!(text.contains("\"client_handoff_policy_version\":9"));
         assert!(text.contains("\"client_handoff_lanes\":2"));
         assert!(text.contains("\"client_handoff_max_epoch_ms\":100"));
         let policy = rillcache::server::SchedulingPolicy {

@@ -19,7 +19,7 @@ fn long_progress_pass_keeps_a_full_idle_window_after_io() {
     // A first pass spends 200 us doing useful work, followed by an empty
     // pass. Its new 50 us idle window must start after that work, not before.
     let times = [
-        0, 0, 200, 201, 202, 203, 204, 205, 400, 401, 402, 403, 404, 501, 502,
+        0, 0, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 400, 401, 402, 403, 404, 451, 452,
     ];
     let mut calls = 0;
     sharing.run_with_clock(
@@ -43,15 +43,15 @@ fn long_progress_pass_keeps_a_full_idle_window_after_io() {
                     thread::yield_now();
                 }
             }
-            base + Duration::from_micros(*times.get(index).unwrap_or(&502))
+            base + Duration::from_micros(*times.get(index).unwrap_or(&452))
         },
     );
     assert!(
-        calls >= 9,
+        calls >= 13,
         "a long progress pass must not expire the new idle window"
     );
     assert!(
-        calls <= 15,
+        calls <= 19,
         "an empty epoch must still end at its idle/maximum boundary"
     );
     let client = home.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
@@ -65,70 +65,45 @@ fn long_progress_pass_keeps_a_full_idle_window_after_io() {
 }
 
 #[test]
-fn deferred_write_failure_closes_only_that_loan_and_flushes_peers() {
-    let stop = Arc::new(AtomicBool::new(false));
-    let mut sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);
-    sharing.adaptive_poll = true;
-    sharing.max_epoch = Duration::ZERO;
-    let (first, mut first_peer) = super::tests::pair(b"PING\r\n".to_vec());
-    first.stream.shutdown(Shutdown::Both).unwrap();
-    let (second, mut second_peer) = super::tests::pair(b"PING\r\n".to_vec());
-    let (first, first_home) = super::tests::loan(first, &stop);
-    let (second, second_home) = super::tests::loan(second, &stop);
-    let (sender, receiver) = mpsc::channel();
-    sender.send(second).ok().unwrap();
-    *sharing.leader.lock().unwrap() = Some(sender);
-    sharing.run(
-        first,
-        Leadership {
-            sharing: &sharing,
-            receiver,
-        },
-        &Store::new(1024),
-    );
-    assert!(
-        first_home
-            .recv_timeout(Duration::from_secs(3))
-            .unwrap()
-            .is_none()
-    );
-    let second = second_home
-        .recv_timeout(Duration::from_secs(3))
-        .unwrap()
-        .unwrap();
-    assert!(second.output.is_empty());
-    assert_eq!(first_peer.read(&mut [0]).unwrap(), 0);
-    let mut wire = [0; 7];
-    second_peer.read_exact(&mut wire).unwrap();
-    assert_eq!(&wire, b"+PONG\r\n");
-}
-
-#[test]
-fn empty_clients_skip_only_one_rescan_and_never_defer_known_work() {
+fn empty_clients_skip_at_most_three_rescans_and_recheck_known_work() {
     let stop = Arc::new(AtomicBool::new(false));
     let (client, _peer) = super::tests::pair(Vec::new());
     let (mut loan, _home) = super::tests::loan(client, &stop);
-    loan.skip_idle_scan = true;
-    assert!(loan.defer_idle_poll());
+    loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
+    for expected in (0..IDLE_SCAN_DEFERRALS).rev() {
+        assert!(loan.defer_idle_poll());
+        assert_eq!(loan.idle_scans_left, expected);
+    }
     for _ in 0..1000 {
-        assert!(!loan.defer_idle_poll(), "an empty poll must rearm the hint");
+        assert!(
+            !loan.defer_idle_poll(),
+            "an actual empty poll must rearm the budget"
+        );
     }
     for state in 0..4 {
+        {
+            let client = loan.client.as_mut().unwrap();
+            client.input.clear();
+            client.output.clear();
+            client.closing = false;
+            client.eof = false;
+        }
+        loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
+        assert!(loan.defer_idle_poll());
         let client = loan.client.as_mut().unwrap();
-        client.input.clear();
-        client.output.clear();
-        client.closing = false;
-        client.eof = false;
         match state {
             0 => client.input.extend_from_slice(b"PING\r\n"),
             1 => client.output.extend_from_slice(b"+pending\r\n"),
             2 => client.closing = true,
             _ => client.eof = true,
         }
-        loan.skip_idle_scan = true;
         assert!(!loan.defer_idle_poll());
-        assert!(!loan.skip_idle_scan);
+        assert_eq!(loan.idle_scans_left, 0);
     }
+    drop(loan.client.take());
+    loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
+    assert!(!loan.defer_idle_poll());
+    assert_eq!(loan.idle_scans_left, 0);
 }
 
 #[test]
@@ -151,8 +126,9 @@ fn asynchronous_session_states_are_never_deferred_by_an_empty_read_hint() {
                 || client.session.is_monitoring()
         );
         let (mut loan, _home) = super::tests::loan(client, &stop);
-        loan.skip_idle_scan = true;
+        loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
         assert!(!loan.defer_idle_poll());
+        assert_eq!(loan.idle_scans_left, 0);
     }
     struct Clock;
     impl crate::engine::Clock for Clock {
@@ -166,8 +142,9 @@ fn asynchronous_session_states_are_never_deferred_by_an_empty_read_hint() {
     client.session.execute(&store, &[b"PING"], &mut Vec::new());
     assert!(client.session.is_paused());
     let (mut loan, _home) = super::tests::loan(client, &stop);
-    loan.skip_idle_scan = true;
+    loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
     assert!(!loan.defer_idle_poll());
+    assert_eq!(loan.idle_scans_left, 0);
 }
 
 #[test]
@@ -192,7 +169,7 @@ fn deferred_quiet_borrowers_poll_ready_input_before_their_idle_return() {
     second.activity = Instant::now() - Duration::from_millis(1);
     let (first, first_home) = super::tests::loan(first, &stop);
     let (mut second, second_home) = super::tests::loan(second, &stop);
-    second.skip_idle_scan = true;
+    second.idle_scans_left = IDLE_SCAN_DEFERRALS;
     let (sender, receiver) = mpsc::channel();
     sender.send(second).ok().unwrap();
     *sharing.leader.lock().unwrap() = Some(sender);

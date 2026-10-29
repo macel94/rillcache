@@ -10,6 +10,9 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+// Bound empty normal-client rescans without postponing known/async work.
+const IDLE_SCAN_DEFERRALS: u8 = 3;
+
 /// Stable round-robin connection ownership; each group elects its own temporary
 /// coordinator. Data/transaction synchronization remains shared across groups.
 pub(super) struct Lanes {
@@ -104,18 +107,30 @@ struct Loan {
     home: Sender<Option<Client>>,
     stopping: Arc<AtomicBool>,
     coordinator: bool,
-    skip_idle_scan: bool,
-    flush_later: bool,
+    idle_scans_left: u8,
 }
 impl Loan {
     fn defer_idle_poll(&mut self) -> bool {
-        // Clear before checking state: at most one pass can be skipped after
-        // an actual empty poll. Never postpone known work or async delivery.
-        std::mem::take(&mut self.skip_idle_scan)
-            && self
-                .client
-                .as_ref()
-                .is_some_and(|client| client.input.is_empty() && client.can_defer_flush())
+        // Clear before checking state. Only an actual empty poll can rearm
+        // the bounded budget; known work and async states discard it at once.
+        let remaining = std::mem::take(&mut self.idle_scans_left);
+        if remaining == 0
+            || !self.client.as_ref().is_some_and(|client| {
+                client.input.is_empty()
+                    && client.output.is_empty()
+                    && client.sent == 0
+                    && !client.closing
+                    && !client.eof
+                    && !client.session.is_blocked()
+                    && !client.session.is_paused()
+                    && !client.session.is_subscribed()
+                    && !client.session.is_monitoring()
+            })
+        {
+            return false;
+        }
+        self.idle_scans_left = remaining - 1;
+        true
     }
 
     fn quiet(&self, now: Instant, idle: Duration) -> bool {
@@ -276,8 +291,7 @@ impl Sharing {
             home: io.channel.home.clone(),
             stopping: Arc::clone(&self.stopping),
             coordinator: false,
-            skip_idle_scan: false,
-            flush_later: false,
+            idle_scans_left: 0,
         };
         let mut leader = self
             .leader
@@ -373,17 +387,19 @@ impl Sharing {
                     index += 1;
                     continue;
                 }
-                let loan = &mut clients[index];
-                let client = loan.client.as_mut().expect("active loan");
-                loan.flush_later = self.adaptive_poll && client.can_defer_flush();
-                let polled =
-                    client.poll_with_flush(store, &self.config, &mut chunk, loan.flush_later);
-                loan.flush_later &= !client.output.is_empty();
-                match polled {
+                match clients[index].client.as_mut().expect("active loan").poll(
+                    store,
+                    &self.config,
+                    &mut chunk,
+                ) {
                     Ok(Some(made_progress)) => {
                         progress |= made_progress;
                         if self.adaptive_poll {
-                            clients[index].skip_idle_scan = !made_progress;
+                            clients[index].idle_scans_left = if made_progress {
+                                0
+                            } else {
+                                IDLE_SCAN_DEFERRALS
+                            };
                         }
                         if !made_progress && clients[index].quiet(now, self.idle) {
                             clients.swap_remove(index); // Return this borrower, not a busy epoch.
@@ -396,27 +412,6 @@ impl Sharing {
                         let mut loan = clients.swap_remove(index);
                         loan.client.take();
                     }
-                }
-            }
-            // Drain new normal-client replies together, like a pending-write
-            // phase, rather than interleaving every read/dispatch with a send.
-            // Each deferred client started without pending output, so this adds
-            // no extra write quantum to its pass. No store lock spans this I/O.
-            let mut index = 0;
-            while index < clients.len() {
-                if std::mem::take(&mut clients[index].flush_later) {
-                    match clients[index].client.as_mut().expect("active loan").flush() {
-                        Ok(written) => {
-                            progress |= written;
-                            index += 1;
-                        }
-                        Err(_) => {
-                            let mut loan = clients.swap_remove(index);
-                            loan.client.take();
-                        }
-                    }
-                } else {
-                    index += 1;
                 }
             }
             if clients.is_empty() {

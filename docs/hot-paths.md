@@ -243,7 +243,7 @@ window still prevents isolated replies from allocating a lease. A regression tes
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
 accounting, 100 µs multicore idle / 50 µs one-CPU idle / 100 ms maximum epoch and shutdown semantics are unchanged.
 
-Small-multicore policy v8 selects one coordinator when SMT is active or unknown;
+Small-multicore policy v9 selects one coordinator when SMT is active or unknown;
 four logical CPUs permit two independent round-robin groups only with an explicit
 bind-time Linux SMT-disabled hint. V4's unconditional two-group cohort failed
 5/10 on a two-core/four-thread runner and remains preserved, not accepted.
@@ -259,13 +259,15 @@ pass. V5's 7/10 four-CPU result stays failed evidence. These changes add no
 permanent thread, dependency or OS yield/sleep. Benchmark JSON records the actual
 captured lane count. Tests exercise independent leadership, concurrent transaction atomicity,
 reused partial-reply/push ownership and live eight-client ordering/shutdown.
-V8 batches new clean-normal-client replies in one bounded pending-write phase,
-inspired by Valkey's `handleClientsWithPendingWrites`/`beforeSleep` arrangement.
-Pending output and asynchronous sessions keep normal service. Command and write
-quanta, reply order, backpressure and one-owner I/O stay intact; batching may
-add a bounded pass to early-reply latency. A deterministic clock regression
-also catches premature idle expiry after long useful work. V6's 5/10 four-CPU
-cohort remains failed evidence; fewer diagnostic empty reads did not prove a win.
+V8's pending-write batching experiment failed all five P1 cases in its four-CPU
+gate (5/10 overall), and local PING traces did not show a syscall benefit.
+V9 rejects that extra phase and restores the shared poller unchanged. A normal
+client's actual empty poll now permits at most three guarded deferred rescans;
+known work/async states discard the counter, quiet borrowers still poll before
+returning, and epoch/shutdown checks remain per-pass. This trades a bounded
+probe delay for fewer futile reads, not a hard-time latency promise. The
+post-work clock correction has its own deterministic regression. V6/v8 failed
+cohorts stay visible; diagnostic counts alone are not throughput acceptance.
 The Rust Performance Book's [profiling](https://nnethercote.github.io/perf-book/profiling.html)
 and [workhorse reuse](https://nnethercote.github.io/perf-book/heap-allocations.html)
 guidance motivates these focused changes; shared-VM profiles are diagnostics,

@@ -10,7 +10,7 @@ The separate matched A/B study reports both improvements and regressions; those
 runner/cohort percentages must not be blended. This does not establish all-traffic
 performance, feature equivalence or production readiness.
 
-## Small-multicore policy v8
+## Small-multicore policy v9
 
 V3 enabled bounded handoffs for known two-, three- and four-CPU bind-time
 capacity hints. V4's unconditional two-coordinator experiment at four logical
@@ -25,7 +25,7 @@ V6 reached [5/10](https://github.com/macel94/rillcache/actions/runs/40800776710)
 again losing every P1 case. Its reduced diagnostic empty-read count was not a
 throughput victory.
 
-V8 retains one temporary coordinator at 1–3 CPUs, and also at four CPUs while SMT
+V9 retains one temporary coordinator at 1–3 CPUs, and also at four CPUs while SMT
 is active or unknown. Two groups are allowed at four CPUs only with an explicit
 bind-time Linux `smt/active` value of zero. This is a conservative machine-wide
 hint, not an affinity-specific physical-core count, CPU-model allowlist or host
@@ -56,15 +56,24 @@ just before its next request and rebuilt the lease for every reply. The longer
 window keeps a busy client in the coordinator across that interval. V7 source
 `8acd843` passed the [20-case](https://github.com/macel94/rillcache/actions/runs/40805057313)
 and [10-case](https://github.com/macel94/rillcache/actions/runs/40805057097) gates
-and merged through PR #138. Those results do not validate later v8 changes.
+and merged through PR #138. Those results do not validate later changes.
 
-V8 adds a bounded read/dispatch-then-write phase for clean normal multicore
-clients, following Valkey's pending-write pattern without adding an event loop
-or unsafe readiness API. Pending output, blocked/paused and push sessions keep
-their existing paths. New replies get at most the existing 64 KiB write quantum
-before loan return; write failure closes only that connection. Reply batching
-can delay an early client's send until the bounded read/dispatch pass ends, so
-this is not an all-traffic latency guarantee.
+V8 tried a read/dispatch-then-write phase inspired by Valkey's pending-write
+pattern. It passed the original 20 cases but failed the
+[four-CPU gate 5/10](https://github.com/macel94/rillcache/actions/runs/40812653865),
+losing all P1 cases (PING 109,844 versus 114,622 req/s). Three alternating local
+PING traces also did not establish a syscall benefit. That experiment and its
+failed cohort remain visible; copying upstream batching was not sufficient.
+
+V9 removes the extra write phase and restores the accepted shared `Client::poll`
+implementation unchanged. It instead budgets at most **three** subsequent
+normal-client rescans after an actual no-progress poll. The counter clears
+before every decision and only restores its decremented remainder while every
+normal/empty-state guard still holds. Known work and asynchronous states discard
+it immediately; quiet borrowers still poll ready I/O before idle return. No
+empty/deferred pass rearms idle time or the separate maximum. This adds at most
+three bounded passes to an unobserved socket's next probe, not a fixed-time
+latency guarantee or readiness notification. One-CPU/fixed workers do not defer.
 
 Epoch accounting now samples time **after** bounded I/O. The previous shared
 pre-pass timestamp could spend a newly refreshed idle window on the
@@ -189,8 +198,9 @@ all client control handles and joins every started worker.
   reuse/partial replies/push ownership and eight-client wire/shutdown behavior.
   SMT-probe tests cover short/error/malformed/oversized reads and a three-byte
   read bound; policy/backoff tests cover conservative selection, cap and reset.
-  V8 additionally covers post-work idle accounting, deferred execute-once/order
-  and command/write quanta, large-reply backpressure and isolated write failure.
+  V9 additionally covers post-work idle accounting, the exact three-pass budget,
+  state changes during deferral, async guards and ready input at idle return.
+  Original command/write/backpressure tests remain unchanged.
 - `make check`/`make ci` add the complete default TCP suite on one allowed Linux
   CPU when taskset is available; existing per-client/one/four-mode tests remain.
   The benchmark records captured `client_handoff_idle_us`,
