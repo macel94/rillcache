@@ -10,6 +10,39 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+/// Stable round-robin connection ownership; each group elects its own temporary
+/// coordinator. Data/transaction synchronization remains shared across groups.
+pub(super) struct Lanes {
+    lanes: Vec<Arc<Sharing>>,
+    next: usize,
+}
+impl Lanes {
+    pub(super) fn new(
+        config: &Config,
+        stopping: &Arc<AtomicBool>,
+        policy: SchedulingPolicy,
+    ) -> Self {
+        Self {
+            lanes: (0..policy.client_handoff_lanes)
+                .map(|_| {
+                    Arc::new(Sharing::new(
+                        config.clone(),
+                        Arc::clone(stopping),
+                        policy.client_handoff_idle_us,
+                    ))
+                })
+                .collect(),
+            next: 0,
+        }
+    }
+
+    pub(super) fn assign(&mut self) -> Option<Arc<Sharing>> {
+        let sharing = Arc::clone(self.lanes.get(self.next)?);
+        self.next = (self.next + 1) % self.lanes.len();
+        Some(sharing)
+    }
+}
+
 pub(super) struct Sharing {
     leader: Mutex<Option<Sender<Loan>>>,
     leader_active: AtomicBool,
@@ -71,17 +104,22 @@ impl Drop for Loan {
     }
 }
 
-/// Per-connection borrower return channel. Reusing one pair avoids allocating
-/// two channel endpoints for every reply that joins a handoff epoch.
+/// Per-connection return channel and inactive lease shell. Retain the cloned
+/// socket and placeholder session/receiver instead of rebuilding them per epoch.
 pub(super) struct LeaseChannel {
     home: Sender<Option<Client>>,
     returned: Receiver<Option<Client>>,
+    cached: Option<Client>,
 }
 
 impl LeaseChannel {
     pub(super) fn new() -> Self {
         let (home, returned) = mpsc::channel();
-        Self { home, returned }
+        Self {
+            home,
+            returned,
+            cached: None,
+        }
     }
 }
 
@@ -172,24 +210,33 @@ impl Sharing {
         if self.stopping.load(Ordering::Acquire) {
             return Ok(true);
         }
-        let activity = Instant::now();
-        let socket = stream.try_clone()?;
-        socket.set_nonblocking(true)?;
-        let client = Client {
-            stream: socket,
-            session: std::mem::take(session),
-            input: std::mem::take(input),
-            output: std::mem::take(output),
-            sent: 0,
-            closing: false,
-            eof: false,
-            activity,
-            _permit: None,
-            shutdown_on_drop: true,
-            // The original owner waits without I/O. Move its actual receiver,
-            // not a disconnected substitute, so pushes still reach this lease.
-            pubsub: std::mem::replace(io.pubsub, std::sync::mpsc::sync_channel(1).1),
+        let mut client = match io.channel.cached.take() {
+            Some(client) => client,
+            None => Client {
+                stream: stream.try_clone()?,
+                session: Session::new(),
+                input: Vec::new(),
+                output: Vec::new(),
+                sent: 0,
+                closing: false,
+                eof: false,
+                activity: Instant::now(),
+                _permit: None,
+                shutdown_on_drop: false,
+                pubsub: std::sync::mpsc::sync_channel(1).1,
+            },
         };
+        client.stream.set_nonblocking(true)?;
+        client.activity = Instant::now();
+        client.closing = false;
+        client.eof = false;
+        client.shutdown_on_drop = true;
+        std::mem::swap(session, &mut client.session);
+        std::mem::swap(input, &mut client.input);
+        std::mem::swap(output, &mut client.output);
+        // Move the actual receiver with the lease; the parked owner gets only
+        // the disconnected placeholder, reused on the next exchange.
+        std::mem::swap(io.pubsub, &mut client.pubsub);
         let loan = Loan {
             client: Some(client),
             home: io.channel.home.clone(),
@@ -233,13 +280,16 @@ impl Sharing {
         if client.sent > 0 {
             client.output.drain(..client.sent);
         }
-        *session = std::mem::take(&mut client.session);
+        std::mem::swap(session, &mut client.session);
         std::mem::swap(io.pubsub, &mut client.pubsub);
-        *input = std::mem::take(&mut client.input);
-        *output = std::mem::take(&mut client.output);
+        std::mem::swap(input, &mut client.input);
+        std::mem::swap(output, &mut client.output);
+        // A partially written reply was compacted above; the inactive shell has
+        // no pending output. Dropping this cache must not shut down the owner.
+        client.sent = 0;
         let closing = client.closing;
-        client.shutdown_on_drop = false; // Drop the lease handle, not the socket.
-        drop(client);
+        client.shutdown_on_drop = false;
+        io.channel.cached = Some(client);
         if !output.is_empty() {
             stream.write_all(output)?;
             output.clear();
@@ -312,3 +362,7 @@ mod tests;
 #[cfg(test)]
 #[path = "handoff_burst_tests.rs"]
 mod burst_tests;
+
+#[cfg(test)]
+#[path = "handoff_ownership_tests.rs"]
+mod ownership_tests;

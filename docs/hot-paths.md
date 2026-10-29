@@ -233,12 +233,25 @@ handoff from the existing scheduler remains enabled for 2–4 CPU budgets. Burst
 activity is observed across clients, not inferred from one request's pipeline
 depth: a single-command reply may join an active epoch. The active-epoch check
 short-circuits before the clock/window probe, the idle window bound is stored
-in microseconds, each connection reuses one borrower return channel instead
-of allocating one per leased reply, and the coordinator takes one clock sample
-per pass instead of one per client; the existing recent-reply window still
-prevents isolated replies from allocating a lease. A regression test
+in microseconds, and the coordinator takes one clock sample per pass instead of
+one per client. Each connection reuses one borrower return channel and an inactive
+lease shell. The latter retains the socket clone and placeholder session/receiver
+instead of allocating/cloning/dropping them at every epoch; real buffers, session
+and push receiver still move with their sole I/O owner. The existing recent-reply
+window still prevents isolated replies from allocating a lease. A regression test
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
 accounting, 50 µs idle / 100 ms maximum epoch and shutdown semantics are unchanged.
+
+Small-multicore policy v4 also divides four-CPU connections round-robin between
+two independent temporary coordinators. One through three CPUs retain one group.
+This removes a transport serialization point, not the shared store/transaction
+locks, and adds no permanent threads. Benchmark JSON records the captured lane
+count. Tests exercise independent leadership, concurrent transaction atomicity,
+reused partial-reply/push ownership and live eight-client ordering/shutdown.
+The Rust Performance Book's [profiling](https://nnethercote.github.io/perf-book/profiling.html)
+and [workhorse reuse](https://nnethercote.github.io/perf-book/heap-allocations.html)
+guidance motivates these focused changes; shared-VM profiles are diagnostics,
+not a substitute for either unchanged protected performance gate.
 
 ## Release build profile
 

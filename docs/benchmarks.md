@@ -43,7 +43,10 @@ TCP suite on one allowed CPU, exercising real automatic client handoffs.
 with `--addr`. Additive JSON `server_configuration` records mode/count, fixed-worker
 `active_poll_us` / `run_quantum_us`, and per-client `single_reply_yield`,
 `client_handoff_idle_us` / `client_handoff_policy_version` /
-`client_handoff_max_epoch_ms`. V2 requires recent reply activity to create an
+`client_handoff_max_epoch_ms` / `client_handoff_lanes`. The captured lane count
+is one at 1–3 CPU hints and two at four CPUs; multicore policy v4 adds no permanent
+threads or data shards. Older cohorts keep their original version/metadata.
+V2 requires recent reply activity to create an
 epoch, returns quiet borrowers independently and bounds a busy epoch to 100 ms
 between existing bounded passes; it does not add a permanent I/O worker.
 It serializes the actual immutable bind-time policy, not a later CPU resample;

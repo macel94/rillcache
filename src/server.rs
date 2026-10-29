@@ -22,7 +22,7 @@ pub const CLIENT_HANDOFF_IDLE_US: u64 = 50;
 /// Bound sharing to small CPU budgets; larger/unknown machines keep blocking I/O.
 pub const CLIENT_HANDOFF_MAX_CPUS: usize = 4;
 /// Small multicore budgets share busy I/O without one-CPU reply-yield hints.
-pub const CLIENT_HANDOFF_MULTICORE_POLICY_VERSION: u64 = 3;
+pub const CLIENT_HANDOFF_MULTICORE_POLICY_VERSION: u64 = 4;
 /// Continuous traffic cannot retain a coordinator/admission slot indefinitely.
 pub const CLIENT_HANDOFF_MAX_EPOCH_MS: u64 = 100;
 /// v2 requires recent reply activity before creating a new handoff epoch.
@@ -43,6 +43,8 @@ pub struct SchedulingPolicy {
     pub run_quantum_us: u64,
     pub single_reply_yield: bool,
     pub client_handoff_idle_us: u64,
+    /// Independent temporary coordinators, not additional server threads.
+    pub client_handoff_lanes: usize,
 }
 impl SchedulingPolicy {
     /// Version of this binary's multi-lane run policy; zero means no run budget.
@@ -75,6 +77,8 @@ impl SchedulingPolicy {
     }
 
     fn new(workers: Option<usize>, capacity: Option<usize>) -> Self {
+        let handoff = workers.is_none()
+            && capacity.is_some_and(|cpus| (1..=CLIENT_HANDOFF_MAX_CPUS).contains(&cpus));
         Self {
             active_poll_us: if workers.is_some() {
                 FIXED_WORKER_ACTIVE_POLL_US
@@ -87,10 +91,11 @@ impl SchedulingPolicy {
                 0
             },
             single_reply_yield: workers.is_none() && capacity == Some(1),
-            client_handoff_idle_us: if workers.is_none()
-                && capacity.is_some_and(|cpus| (1..=CLIENT_HANDOFF_MAX_CPUS).contains(&cpus))
-            {
-                CLIENT_HANDOFF_IDLE_US
+            client_handoff_idle_us: if handoff { CLIENT_HANDOFF_IDLE_US } else { 0 },
+            // Retain one coordinator at 1–3 CPUs; four CPUs can service two
+            // independent groups without funneling every socket through one.
+            client_handoff_lanes: if handoff {
+                (capacity.unwrap_or(1) / 2).max(1)
             } else {
                 0
             },
@@ -539,13 +544,7 @@ fn serve_plain(
     policy: SchedulingPolicy,
 ) -> io::Result<()> {
     let admitted = Arc::new(AtomicUsize::new(0));
-    let sharing = (policy.client_handoff_idle_us > 0).then(|| {
-        Arc::new(handoff::Sharing::new(
-            config.clone(),
-            Arc::clone(&stopping),
-            policy.client_handoff_idle_us,
-        ))
-    });
+    let mut sharing = handoff::Lanes::new(&config, &stopping, policy);
     let mut workers: Vec<Worker> = Vec::new();
     let mut maintenance = Instant::now();
     let result = (|| {
@@ -589,7 +588,7 @@ fn serve_plain(
             let limits = config.limits;
             let idle_timeout = config.idle_timeout;
             let permit = Permit::acquire(&admitted);
-            let sharing = sharing.clone();
+            let sharing = sharing.assign();
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
             session.set_peer(peer);
@@ -1029,6 +1028,8 @@ mod tests {
         assert_eq!(many_cpu.client_handoff_idle_us, 0);
         assert_eq!(one_cpu.client_handoff_idle_us, CLIENT_HANDOFF_IDLE_US);
         assert_eq!(one_cpu.client_handoff_policy_version(), 2);
+        assert_eq!(one_cpu.client_handoff_lanes, 1);
+        assert_eq!(many_cpu.client_handoff_lanes, 0);
         assert_eq!(many_cpu.client_handoff_policy_version(), 0);
         assert_eq!((one_cpu.active_poll_us, one_cpu.run_quantum_us), (0, 0));
         let counter = Arc::new(AtomicUsize::new(0));
@@ -1068,13 +1069,15 @@ mod tests {
         for capacity in [Some(0), None, Some(5), Some(8), Some(64)] {
             let policy = SchedulingPolicy::new(None, capacity);
             assert_eq!(policy.client_handoff_idle_us, 0);
+            assert_eq!(policy.client_handoff_lanes, 0);
             assert_eq!(policy.client_handoff_policy_version(), 0);
             assert!(!policy.single_reply_yield);
         }
         for cpus in 2..=CLIENT_HANDOFF_MAX_CPUS {
             let policy = SchedulingPolicy::new(None, Some(cpus));
             assert_eq!(policy.client_handoff_idle_us, CLIENT_HANDOFF_IDLE_US);
-            assert_eq!(policy.client_handoff_policy_version(), 3);
+            assert_eq!(policy.client_handoff_policy_version(), 4);
+            assert_eq!(policy.client_handoff_lanes, (cpus / 2).max(1));
             assert_eq!(policy.client_handoff_max_epoch_ms(), 100);
             assert!(!policy.single_reply_yield);
             assert_eq!((policy.active_poll_us, policy.run_quantum_us), (0, 0));
@@ -1082,6 +1085,7 @@ mod tests {
                 let fixed = SchedulingPolicy::new(Some(workers), Some(cpus));
                 assert_eq!(fixed.client_handoff_idle_us, 0);
                 assert_eq!(fixed.client_handoff_policy_version(), 0);
+                assert_eq!(fixed.client_handoff_lanes, 0);
             }
         }
         assert_eq!(
@@ -1148,6 +1152,96 @@ mod tests {
             assert_eq!(&reply, b"$-1\r\n");
             handle.shutdown().unwrap();
             assert_eq!(second.read(&mut [0]).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn dual_handoff_lanes_execute_once_preserve_quit_and_join_shutdown() {
+        use std::io::{BufRead, BufReader};
+        let mut server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            ..Config::default()
+        })
+        .unwrap();
+        server.policy = SchedulingPolicy::new(None, Some(4));
+        let handle = server.spawn().unwrap();
+        assert_eq!(handle.scheduling_policy().client_handoff_lanes, 2);
+        let mut increments = thread::scope(|scope| {
+            let mut workers = Vec::new();
+            let mut starts = Vec::new();
+            for _ in 0..8 {
+                let mut stream = TcpStream::connect(handle.local_addr()).unwrap();
+                stream.set_nodelay(true).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let (start, started) = std::sync::mpsc::channel();
+                starts.push(start);
+                workers.push(scope.spawn(move || {
+                    let mut stream = BufReader::new(&mut stream);
+                    stream.get_mut().write_all(b"PING\r\n").unwrap();
+                    let mut line = String::new();
+                    stream.read_line(&mut line).unwrap();
+                    assert_eq!(line, "+PONG\r\n");
+                    started.recv_timeout(Duration::from_secs(10)).unwrap();
+                    let mut increments = Vec::new();
+                    for pipeline in [1, 16, 1, 16] {
+                        stream
+                            .get_mut()
+                            .write_all(&b"INCR counter\r\n".repeat(pipeline))
+                            .unwrap();
+                        for _ in 0..pipeline {
+                            line.clear();
+                            stream.read_line(&mut line).unwrap();
+                            increments.push(
+                                line.strip_prefix(':')
+                                    .unwrap()
+                                    .trim()
+                                    .parse::<usize>()
+                                    .unwrap(),
+                            );
+                        }
+                    }
+                    stream
+                        .get_mut()
+                        .write_all(b"QUIT\r\nINCR counter\r\n")
+                        .unwrap();
+                    line.clear();
+                    stream.read_line(&mut line).unwrap();
+                    assert_eq!(line, "+OK\r\n");
+                    assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+                    increments
+                }));
+            }
+            for start in starts {
+                // A failed client must not strand the other test workers.
+                let _ = start.send(());
+            }
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        increments.sort_unstable();
+        assert_eq!(increments, (1..=8 * 34).collect::<Vec<_>>());
+        let mut idle = Vec::new();
+        for _ in 0..4 {
+            let mut stream = TcpStream::connect(handle.local_addr()).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            stream.write_all(b"GET counter\r\n").unwrap();
+            let mut reply = [0; 9];
+            stream.read_exact(&mut reply).unwrap();
+            assert_eq!(&reply, b"$3\r\n272\r\n");
+            idle.push(stream);
+        }
+        handle.shutdown().unwrap();
+        for mut stream in idle {
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0);
         }
     }
 

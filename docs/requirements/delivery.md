@@ -225,7 +225,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   additional socket handle per loan and bounded channel metadata are permitted;
   this resource/active-poll tradeoff is not readiness notification or free CPU.
 - **R94 (event-driven):** When handoffs are measured, embedded JSON shall record
-  the actual captured idle window, maximum epoch and policy version. Linux
+  the actual captured idle window, maximum epoch, policy version and coordinator
+  group count. Linux
   local/ordinary CI shall
   exercise the complete default TCP suite on one allowed CPU when taskset is
   available, alongside all existing modes. Frozen-client native comparisons
@@ -237,9 +238,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-IO4A (event-driven):** When default managed clients share a known two-, three-
   or four-CPU capacity hint, active bursts may use the existing 50 µs idle / 100 ms
   maximum-epoch handoff path. One-CPU policy v2 shall remain unchanged; small-
-  multicore policy shall be recorded as v3 without enabling single-reply yields.
-  Default thread counts, fixed lanes, TLS transport, admission and storage
-  atomicity shall not change.
+  multicore policy shall be recorded as v4 without enabling single-reply yields.
+  Four-CPU admission shall rotate connections between two independent temporary
+  coordinator groups; 1–3 CPU hints shall retain one group. A connection shall
+  retain its group across leases regardless of session-ID changes or disconnects.
+  Default thread counts, fixed lanes, TLS transport, admission and shared storage/
+  transaction atomicity shall not change. Historical v3 evidence remains v3.
 - **R-IO4B (state-driven):** While a connection is lent, its actual push-message
   receiver shall move with its session and socket; the original worker shall
   perform no competing receives. When the lease returns, that same receiver and
@@ -248,6 +252,14 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   gate fails, then a scheduling change shall not claim merge acceptance. CPU and
   syscall profiles shall remain separate diagnostics, not instrumented throughput
   wins; failed four-CPU cohorts and actual policy versions shall remain visible.
+
+- **R-IO4D (state-driven):** After a connection's first lease, later leases shall
+  reuse its inactive socket/session/receiver shell without allocating a new
+  placeholder or cloning the socket. Real state shall still have one owner;
+  return shall reset reply offsets and restore blocking mode. Dropping an
+  inactive shell shall close its extra handle without shutting down the original
+  connection. Tests shall cover repeated partial replies, queued pushes, lane-local
+  closure, cross-lane transactions and live concurrent ordering/joined shutdown.
 
 ## PR-only main and scoped Valkey merge acceptance (S23–S24)
 

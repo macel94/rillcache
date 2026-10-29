@@ -10,13 +10,22 @@ The separate matched A/B study reports both improvements and regressions; those
 runner/cohort percentages must not be blended. This does not establish all-traffic
 performance, feature equivalence or production readiness.
 
-## Small-multicore policy v3
+## Small-multicore policy v4
 
-The current runtime also enables bounded handoffs for known two-, three- and
-four-CPU bind-time capacity hints. It uses the same 50 µs idle / 100 ms maximum
-epoch and managed thread-per-client admission, but does not enable the one-CPU
-single-reply yield hint. One-CPU scheduling remains v2. Fixed lanes, hints above
-four or unknown capacity, and TLS transport retain their previous paths.
+V3 enabled bounded handoffs for known two-, three- and four-CPU bind-time
+capacity hints. V4 retains one temporary coordinator at two/three CPUs and uses
+two independent connection groups at four CPUs, rather than funneling all busy
+sockets through one coordinator. Admission assigns connections round-robin;
+each connection keeps its group across leases, independently of session IDs or
+other connections closing. Both groups use the same shared store and transaction
+locks: this is I/O ownership partitioning, not data sharding or thread pinning.
+
+The 50 µs idle / 100 ms maximum epoch, managed thread-per-client admission and
+absence of multicore single-reply yields are unchanged. No permanent worker is
+added. One-CPU scheduling remains v2 with one group. Fixed lanes, hints above
+four or unknown capacity, and TLS transport retain their previous paths. More
+concurrent I/O can spend more CPU; two coordinators are not an efficiency or
+linear-scaling guarantee.
 
 The motivating official four-CPU cohort loses all five pipeline-1 medians while
 winning all five pipeline-16 medians. Worker profiles identify TCP/syscall and
@@ -67,7 +76,7 @@ which candidate gets clean-source hosted comparisons.
 Default admission still creates one **managed thread per client**. A bind-time
 one-through-four-CPU capacity hint permits a client that just flushed replies to lend its
 socket/buffers to an existing client thread, while its own thread waits on a
-return channel. One temporary leader round-robins busy loans using the same
+return channel. Each group's temporary leader round-robins busy loans using the same
 bounded nonblocking `Client::poll` implementation as explicit fixed workers.
 This amortizes server-thread scheduling across an active burst rather than
 requesting a yield for every short response.
@@ -88,9 +97,13 @@ mode, and no 1 ms fixed-worker idle park on this path. An initially lone client,
 unknown/above-four capacity hint and explicit fixed modes do not enable handoffs.
 Capacity is an immutable hint, not a CPU budget, load detector or OS guarantee.
 
-The original worker does **no I/O while waiting for its lease**. Its temporary
+The original worker does **no I/O while waiting for its lease**. Its retained
 socket clone shares options with the original handle, so returning restores
-blocking mode before continuing. Input and output buffers move, not copy;
+blocking mode before continuing. Each connection caches an inactive lease shell:
+the clone, disconnected placeholder receiver and placeholder session are created
+only on its first lease and reused thereafter. Real session, receiver and buffer
+ownership swap into the lease and back; the cached shell has no pending bytes
+and must not shut down the original socket when dropped. Input and output buffers move, not copy;
 already-sent reply bytes are removed once. Returned ready input is parsed before
 another read, preserving execute-once behavior and QUIT/error/EOF ordering.
 Store locking and data semantics are unchanged.
@@ -105,8 +118,9 @@ all client control handles and joins every started worker.
 
 - Existing frame, argument, client and payload limits, 64-command quanta, bounded
   reads/writes and backpressure remain; no lock spans network I/O.
-- At most one extra cloned socket handle, one outstanding lease and bounded
-  channel metadata per lending client. This is not zero allocation or RSS-free.
+- At most one retained extra cloned socket handle, one outstanding lease and
+  bounded channel metadata per lending client. The inactive clone is released
+  when its connection worker exits. This is not zero allocation or RSS-free.
 - Active polling trades CPU for wake/scheduling work. Sparse multi-client bursts
   may pay handoff/channel/clone costs; quiet connections return to blocking I/O.
   A busy epoch can outlast its idle window, but progress does not extend its
@@ -116,11 +130,14 @@ all client control handles and joins every started worker.
 - No correctness relies on CPU-hint accuracy or OS yield/fairness behavior.
 - Deterministic tests cover epoch closure with queued/late senders, cancellation,
   unwind, exact 64-command round robin, partial reply suffixes, buffer retention,
-  one return per loan and restoration of blocking reads.
+  one return per loan and restoration of blocking reads. Additional tests cover
+  lane-local leadership closure, cross-lane transaction atomicity, repeated shell
+  reuse/partial replies/push ownership and eight-client wire/shutdown behavior.
 - `make check`/`make ci` add the complete default TCP suite on one allowed Linux
   CPU when taskset is available; existing per-client/one/four-mode tests remain.
   The benchmark records captured `client_handoff_idle_us`,
-  `client_handoff_policy_version` and `client_handoff_max_epoch_ms` rather than
+  `client_handoff_policy_version`, `client_handoff_max_epoch_ms` and
+  `client_handoff_lanes` rather than
   resampling CPU capacity later.
 
 The [first handoff reference cohort](../benchmarks/reports/40243686729-1.md)
