@@ -21,8 +21,10 @@ class ScopeTests(unittest.TestCase):
     def test_workflow_security_and_verified_actions(self):
         for name in ("upstream-compatibility", "upstream-performance"):
             text = (common.ROOT / f".github/workflows/{name}.yml").read_text()
-            self.assertIn("runs-on: ubuntu-latest", text)
-            self.assertNotIn("ubuntu-24.04", text)
+            runner = "ubuntu-24.04" if name == "upstream-performance" else "ubuntu-latest"
+            other = "ubuntu-latest" if name == "upstream-performance" else "ubuntu-24.04"
+            self.assertIn(f"runs-on: {runner}", text)
+            self.assertNotIn(f"runs-on: {other}", text)
             self.assertIn("contents: read", text)
             self.assertNotIn("write", text)
             self.assertNotIn("pull_request_target", text)

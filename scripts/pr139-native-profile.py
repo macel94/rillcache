@@ -30,6 +30,27 @@ def snapshot(pid):
             'actual_cpus': sorted(os.sched_getaffinity(pid))}
 
 
+def compile_application(tree, name):
+    # Git archives restore old mtimes: Cargo can otherwise reuse a stale app.
+    # Clean only this package's generated release artifacts in the owned CI
+    # workspace, retaining dependencies and already-frozen controls.
+    COMMON.checked(['cargo', 'clean', '--locked', '--offline', '--release', '--package', 'rillcache'],
+                   OUT / 'build' / f'{name}-clean', cwd=tree, timeout=120)
+    directory = OUT / 'build' / name
+    COMMON.checked(['cargo', 'build', '--locked', '--offline', '--release', '--bin', 'rillcache'],
+                   directory, cwd=tree, timeout=600)
+    assert 'Compiling rillcache v' in (directory / 'stderr.log').read_text(), 'application was not rebuilt'
+
+
+def cpu_report(perf, data, output, children):
+    with output.open('w') as stream:
+        # Only our known, sanitized, runner-owned capture is trusted here. Root
+        # perf otherwise rejects a non-root owner's file, even with read access.
+        subprocess.run(['sudo', '-n', perf, 'report', '--force', '--stdio', '--percent-limit', '0.5',
+                        '--children' if children else '--no-children', '-i', str(data)],
+                       stdout=stream, stderr=subprocess.STDOUT, timeout=45, check=True, env=SAFE_ENV)
+
+
 def build_sources():
     G['save'](OUT / 'initial.json', {'diagnostic_only': True, 'complete': False,
                                    'base': BASE, 'candidate': CANDIDATE})
@@ -49,9 +70,9 @@ def build_sources():
             archive.stdout.close()
             if archive.wait(timeout=30) != 0:
                 raise RuntimeError('source archive failed')
-        COMMON.checked(['cargo', 'build', '--locked', '--offline', '--release', '--bin', 'rillcache'],
-                       OUT / 'build' / name, cwd=tree, timeout=600)
+        compile_application(tree, name)
         shutil.copy2(tree / 'target/release/rillcache', BIN / name)
+    assert G['digest'](BIN / 'baseline') != G['digest'](BIN / 'candidate'), 'known behavior-changing revisions produced the same binary'
     # The advisory prerequisite build uses libc; the protected gate uses the
     # upstream defaults. Build the exact protected Makefile targets instead.
     pin = COMMON.PINS['upstreams']['valkey']
@@ -251,11 +272,7 @@ def sample(binaries, hashes, variant, run, mode, cpus, perf=None, cpu_event=None
                                directory / f'{role}-artifact-permission', timeout=15)
                 for children in (False, True):
                     suffix = 'children' if children else 'self'
-                    with (directory / f'{role}-{suffix}.txt').open('w') as output:
-                        subprocess.run(['sudo', '-n', perf, 'report', '--stdio', '--percent-limit', '0.5',
-                                        '--children' if children else '--no-children', '-i', str(data)],
-                                       stdout=output, stderr=subprocess.STDOUT, timeout=45, check=True,
-                                       env=SAFE_ENV)
+                    cpu_report(perf, data, directory / f'{role}-{suffix}.txt', children)
         return result
     finally:
         G['save'](directory / 'sample.json', result)

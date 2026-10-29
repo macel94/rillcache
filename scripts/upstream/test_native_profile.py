@@ -38,6 +38,42 @@ class NativeSetupTests(unittest.TestCase):
         self.assertEqual(result, ('/usr/bin/perf', 'cpu-clock'))
 
 
+class NativeBuildTests(unittest.TestCase):
+    def compile_with_status(self, status):
+        function = NATIVE['compile_application']
+        with tempfile.TemporaryDirectory() as temporary:
+            def checked(argv, directory, **_):
+                if argv[1] == 'build':
+                    directory.mkdir(parents=True)
+                    (directory / 'stderr.log').write_text(status)
+                return {'exit_code': 0}
+            with patch.dict(function.__globals__, {'OUT': Path(temporary) / 'evidence'}), \
+                 patch.object(NATIVE['COMMON'], 'checked', side_effect=checked) as command:
+                function(Path(temporary) / 'source', 'candidate')
+                return [call.args[0] for call in command.call_args_list]
+
+    def test_only_application_release_artifacts_are_cleaned_before_build(self):
+        commands = self.compile_with_status('Compiling rillcache v0.1.0\nFinished release profile')
+        self.assertEqual(commands, [
+            ['cargo', 'clean', '--locked', '--offline', '--release', '--package', 'rillcache'],
+            ['cargo', 'build', '--locked', '--offline', '--release', '--bin', 'rillcache']])
+
+    def test_a_stale_cargo_finished_status_is_rejected(self):
+        with self.assertRaisesRegex(AssertionError, 'application was not rebuilt'):
+            self.compile_with_status('Finished release profile in 0.01s')
+
+    def test_report_reads_only_the_specified_trusted_capture_with_owner_override(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary) / 'owned.perf.data'
+            with patch.object(NATIVE['subprocess'], 'run') as command:
+                NATIVE['cpu_report']('perf', data, Path(temporary) / 'report.txt', False)
+            self.assertEqual(command.call_args.args[0], [
+                'sudo', '-n', 'perf', 'report', '--force', '--stdio', '--percent-limit', '0.5',
+                '--no-children', '-i', str(data)])
+            self.assertTrue(command.call_args.kwargs['check'])
+            self.assertEqual(command.call_args.kwargs['env'], NATIVE['SAFE_ENV'])
+
+
 class NativeEvidenceTests(unittest.TestCase):
     def test_capture_is_runner_owned_even_if_privileged_profiler_cannot_start(self):
         with tempfile.TemporaryDirectory() as temporary:
