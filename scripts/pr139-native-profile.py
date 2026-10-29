@@ -15,8 +15,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/upstream/evidence/pr139-native'
 BIN = OUT / 'frozen-binaries'
-BASE = '956e5fededdbc4aa7539e69d205d3cc69ed5eecc'
-CANDIDATE = 'd9ecad9b805503af949e6fde65b1d029c9f751a4'
+BASE = 'aed4dd76d368a5a5343e466c6c2781a035039fbd'
+CANDIDATE = '7f5baf4a2c86ebbb9dface3c38a76d479e794575'
 G = runpy.run_path(str(ROOT / 'scripts/pr-multicpu-performance.py'))
 COMMON = sys.modules['common']
 SAFE_ENV = {'PATH': os.environ['PATH'], 'LANG': 'C', 'LC_ALL': 'C'}
@@ -175,7 +175,7 @@ def profiler_jobs(perf, cpu_event, mode, server_pid, generator_pid, directory):
                              '--filter', 'ret == -11', '-e', 'syscalls:sys_exit_read', '--filter', 'ret == -11',
                              '-e', 'syscalls:sys_exit_readv', '--filter', 'ret == -11']
             for event in ['sys_enter_recvfrom', 'sys_enter_read', 'sys_enter_readv', 'sys_enter_sendto', 'sys_enter_write',
-                          'sys_enter_ioctl', 'sys_enter_futex', 'sys_enter_epoll_wait',
+                          'sys_enter_ioctl', 'sys_enter_futex', 'sys_enter_sched_yield', 'sys_enter_epoll_wait',
                           'sys_enter_accept4', 'sys_enter_accept', 'sys_enter_nanosleep', 'sys_enter_clock_nanosleep']:
                 argv += ['-e', 'syscalls:' + event]
             argv += ['-e', 'task-clock,context-switches', '-p', str(pid),
