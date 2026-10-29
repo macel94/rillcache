@@ -233,4 +233,8 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Diagnostic branch only: existing read-only manual entry point, no gate.
+    import runpy
+    from pathlib import Path
+    runpy.run_path(str(Path(__file__).resolve().parents[1] / "pr139-native-profile.py"),
+                   run_name="__main__")
