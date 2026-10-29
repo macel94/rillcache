@@ -41,7 +41,7 @@ permanent code ownership. Pick one lane per task and record it in the PR.
 | `observability-admin` | `src/engine/slowlog.rs`, `latency.rs`, `monitor.rs`, `administration.rs`, `introspection.rs`, `unsupported.rs` | INFO, stats, slowlog, latency, monitor, admin surfaces |
 | `pubsub` | `src/engine/pubsub.rs`, `docs/pubsub.md` | publish/subscribe, notifications delivery, sharded channels |
 | `io-server` | `src/server.rs`, `src/server/pool.rs`, `src/protocol.rs`, `src/bin/**` | listener, pool, worker handoff, protocol framing |
-| `surface` | `src/engine.rs`, `src/session.rs`, `src/engine/discovery/mod.rs`, `docs/requirements.md`, `docs/requirements/**`, `docs/production-readiness.md`, `README.md`, `tests/discovery.rs`, `tests/core_dispatch.rs` | cross-cutting dispatch, session state, registry and requirement indexes |
+| `surface` | `src/engine.rs`, `src/engine/shard.rs`, `src/session.rs`, `src/engine/discovery/mod.rs`, `docs/requirements.md`, `docs/requirements/**`, `docs/production-readiness.md`, `docs/sharding.md`, `README.md`, `tests/discovery.rs`, `tests/core_dispatch.rs` | cross-cutting dispatch, session state, registry and requirement indexes, keyspace routing seam |
 | `tooling` | `scripts/**`, `.github/**`, `Makefile`, `Cargo.toml`, `benchmarks/**` | gates, automation, tooling and benchmark harness |
 
 After the command registry is split into `src/engine/discovery/<family>.rs`, those

@@ -208,6 +208,7 @@ are atomic under the store lock; MGET replies are capped at 2 MiB to bound
 duplicate-key amplification. It binds to loopback by default. See
 [client sessions](docs/client-sessions.md),
 [multi-key string limits](docs/multikey-strings.md),
+[keyspace sharding seam](docs/sharding.md),
 [security boundaries](docs/security.md),
 [INVEST stories and EARS requirements](docs/requirements.md), and the
 [production-readiness plan](docs/production-readiness.md) and
