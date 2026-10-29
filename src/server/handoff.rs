@@ -10,9 +10,6 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-// Bound empty normal-client rescans without postponing known/async work.
-const IDLE_SCAN_DEFERRALS: u8 = 3;
-
 /// Stable round-robin connection ownership; each group elects its own temporary
 /// coordinator. Data/transaction synchronization remains shared across groups.
 pub(super) struct Lanes {
@@ -107,18 +104,16 @@ struct Loan {
     home: Sender<Option<Client>>,
     stopping: Arc<AtomicBool>,
     coordinator: bool,
-    idle_scans_left: u8,
+    skip_idle_scan: bool,
 }
 impl Loan {
     fn defer_idle_poll(&mut self) -> bool {
-        // Clear before checking state. Only an actual empty poll can rearm
-        // the bounded budget; known work and async states discard it at once.
-        let remaining = std::mem::take(&mut self.idle_scans_left);
-        if remaining == 0
-            || !self.client.as_ref().is_some_and(|client| {
+        // Clear before checking state: at most one pass can be skipped after
+        // an actual empty poll. Never postpone known work or async delivery.
+        std::mem::take(&mut self.skip_idle_scan)
+            && self.client.as_ref().is_some_and(|client| {
                 client.input.is_empty()
                     && client.output.is_empty()
-                    && client.sent == 0
                     && !client.closing
                     && !client.eof
                     && !client.session.is_blocked()
@@ -126,11 +121,6 @@ impl Loan {
                     && !client.session.is_subscribed()
                     && !client.session.is_monitoring()
             })
-        {
-            return false;
-        }
-        self.idle_scans_left = remaining - 1;
-        true
     }
 
     fn quiet(&self, now: Instant, idle: Duration) -> bool {
@@ -291,7 +281,7 @@ impl Sharing {
             home: io.channel.home.clone(),
             stopping: Arc::clone(&self.stopping),
             coordinator: false,
-            idle_scans_left: 0,
+            skip_idle_scan: false,
         };
         let mut leader = self
             .leader
@@ -347,21 +337,11 @@ impl Sharing {
         Ok(closing)
     }
 
-    fn run(&self, first: Loan, leadership: Leadership<'_>, store: &Store) {
-        self.run_with_clock(first, leadership, store, Instant::now);
-    }
-
-    fn run_with_clock(
-        &self,
-        mut first: Loan,
-        leadership: Leadership<'_>,
-        store: &Store,
-        mut clock: impl FnMut() -> Instant,
-    ) {
+    fn run(&self, mut first: Loan, leadership: Leadership<'_>, store: &Store) {
         first.coordinator = true;
         let mut clients = vec![first];
         let mut chunk = [0; 16 * 1024];
-        let mut window = EpochWindow::new(clock(), self.idle, self.max_epoch);
+        let mut window = EpochWindow::new(Instant::now(), self.idle, self.max_epoch);
         let mut backoff = IdleBackoff::default();
         loop {
             if self.stopping.load(Ordering::Acquire) {
@@ -375,9 +355,9 @@ impl Sharing {
                 clients.push(loan);
                 progress = true;
             }
-            // Quiet checks share one sample; epoch accounting below samples
-            // after bounded I/O so useful work cannot consume the idle window.
-            let now = clock();
+            // One clock sample per pass: per-client quiet checks and the epoch
+            // window share it instead of reading the clock once per client.
+            let now = Instant::now();
             let mut index = 0;
             while index < clients.len() {
                 if self.adaptive_poll
@@ -395,11 +375,7 @@ impl Sharing {
                     Ok(Some(made_progress)) => {
                         progress |= made_progress;
                         if self.adaptive_poll {
-                            clients[index].idle_scans_left = if made_progress {
-                                0
-                            } else {
-                                IDLE_SCAN_DEFERRALS
-                            };
+                            clients[index].skip_idle_scan = !made_progress;
                         }
                         if !made_progress && clients[index].quiet(now, self.idle) {
                             clients.swap_remove(index); // Return this borrower, not a busy epoch.
@@ -417,7 +393,7 @@ impl Sharing {
             if clients.is_empty() {
                 break;
             }
-            if !window.active(clock(), progress) {
+            if !window.active(now, progress) {
                 break;
             }
             let spins = if self.adaptive_poll {

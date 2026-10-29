@@ -44,16 +44,12 @@ with `--addr`. Additive JSON `server_configuration` records mode/count, fixed-wo
 `active_poll_us` / `run_quantum_us`, and per-client `single_reply_yield`,
 `client_handoff_idle_us` / `client_handoff_policy_version` /
 `client_handoff_max_epoch_ms` / `client_handoff_lanes`. The captured lane count
-is one at 1–3 CPU hints and at four CPUs when SMT is active/unknown. Multicore v9
+is one at 1–3 CPU hints and at four CPUs when SMT is active/unknown. Multicore v6
 permits two groups at four CPUs only with an explicit bind-time Linux SMT-disabled
-hint; it uses capped processor-hint backoff and at most three guarded rescan
-deferrals per actual empty normal-client poll, not OS yields or sleeps. Known
-work and asynchronous states discard that counter. Shared polling retains
-immediate bounded reply flushing; v8's failed pending-write phase is rejected.
-Epoch time is sampled after bounded I/O rather than before it,
-retaining a full idle window after useful work and the separate maximum.
-This adds no permanent threads or data shards. Older cohorts, including failed
-v4/v5/v6/v8 experiments, keep their
+hint; it uses capped processor-hint backoff after empty scans and one guarded
+rescan deferral per empty normal-client poll, not OS yields or sleeps. Known
+work and asynchronous states are never deferred. This adds no permanent threads
+or data shards. Older cohorts, including failed v4/v5 experiments, keep their
 original metadata.
 V2 requires recent reply activity to create an
 epoch, returns quiet borrowers independently and bounds a busy epoch to 100 ms

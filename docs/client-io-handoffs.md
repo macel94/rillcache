@@ -10,7 +10,7 @@ The separate matched A/B study reports both improvements and regressions; those
 runner/cohort percentages must not be blended. This does not establish all-traffic
 performance, feature equivalence or production readiness.
 
-## Small-multicore policy v9
+## Small-multicore policy v7
 
 V3 enabled bounded handoffs for known two-, three- and four-CPU bind-time
 capacity hints. V4's unconditional two-coordinator experiment at four logical
@@ -21,11 +21,8 @@ seconds per ten-second sample. More busy pollers did not solve that bottleneck.
 This failed source/evidence retains its actual version.
 V5's SMT/backoff follow-up reached [7/10](https://github.com/macel94/rillcache/actions/runs/40796958078),
 with three small P1 losses remaining; it is also retained as failed evidence.
-V6 reached [5/10](https://github.com/macel94/rillcache/actions/runs/40800776710),
-again losing every P1 case. Its reduced diagnostic empty-read count was not a
-throughput victory.
 
-V9 retains one temporary coordinator at 1–3 CPUs, and also at four CPUs while SMT
+V6 retains one temporary coordinator at 1–3 CPUs, and also at four CPUs while SMT
 is active or unknown. Two groups are allowed at four CPUs only with an explicit
 bind-time Linux `smt/active` value of zero. This is a conservative machine-wide
 hint, not an affinity-specific physical-core count, CPU-model allowlist or host
@@ -49,43 +46,14 @@ syscalls in partly busy scans, not just wholly empty scans. It is not a readines
 notification or a fixed-time latency guarantee. One-CPU v2 and explicit fixed
 workers do not use either multicore backoff.
 
-V7 raised the multicore quiet window to 100 µs while leaving the one-CPU
-window at 50 µs. At the measured pipeline-1 rate the eight clients issued roughly
+V7 then raises the multicore quiet window to 100 µs while leaving the one-CPU
+window at 50 µs. At the measured pipeline-1 rate the eight clients issue roughly
 one request every 65–80 µs per connection, so a 50 µs window returned each client
 just before its next request and rebuilt the lease for every reply. The longer
-window keeps a busy client in the coordinator across that interval. V7 source
-`8acd843` passed the [20-case](https://github.com/macel94/rillcache/actions/runs/40805057313)
-and [10-case](https://github.com/macel94/rillcache/actions/runs/40805057097) gates
-and merged through PR #138. Those results do not validate later changes.
-
-V8 tried a read/dispatch-then-write phase inspired by Valkey's pending-write
-pattern. It passed the original 20 cases but failed the
-[four-CPU gate 5/10](https://github.com/macel94/rillcache/actions/runs/40812653865),
-losing all P1 cases (PING 109,844 versus 114,622 req/s). Three alternating local
-PING traces also did not establish a syscall benefit. That experiment and its
-failed cohort remain visible; copying upstream batching was not sufficient.
-
-V9 removes the extra write phase and restores the accepted shared `Client::poll`
-implementation unchanged. It instead budgets at most **three** subsequent
-normal-client rescans after an actual no-progress poll. The counter clears
-before every decision and only restores its decremented remainder while every
-normal/empty-state guard still holds. Known work and asynchronous states discard
-it immediately; quiet borrowers still poll ready I/O before idle return. No
-empty/deferred pass rearms idle time or the separate maximum. This adds at most
-three bounded passes to an unobserved socket's next probe, not a fixed-time
-latency guarantee or readiness notification. One-CPU/fixed workers do not defer.
-
-Epoch accounting now samples time **after** bounded I/O. The previous shared
-pre-pass timestamp could spend a newly refreshed idle window on the
-progress-making work itself, closing immediately on the next empty pass. Quiet
-checks still share a per-pass sample, and the separate maximum never rearms.
-A deterministic injected-clock regression fails with the pre-pass timestamp and
-passes with post-I/O accounting; it does not rely on sleeping for 50 µs.
-
-The 100 µs multicore / 50 µs one-CPU idle and 100 ms maximum epoch parameters,
-managed thread-per-client admission and absence of multicore single-reply yields
-are unchanged. No permanent worker is added. One-CPU scheduling remains v2 with
-one group. Fixed lanes, hints above
+window keeps a busy client in the coordinator across that interval. The 100 ms
+maximum epoch, managed thread-per-client admission and absence of multicore
+single-reply yields are unchanged. No permanent worker is added. One-CPU
+scheduling remains v2 with one group and a 50 µs window. Fixed lanes, hints above
 four or unknown capacity, and TLS transport retain their previous paths. More
 concurrent I/O can spend more CPU; two coordinators are not an efficiency or
 linear-scaling guarantee.
@@ -198,9 +166,6 @@ all client control handles and joins every started worker.
   reuse/partial replies/push ownership and eight-client wire/shutdown behavior.
   SMT-probe tests cover short/error/malformed/oversized reads and a three-byte
   read bound; policy/backoff tests cover conservative selection, cap and reset.
-  V9 additionally covers post-work idle accounting, the exact three-pass budget,
-  state changes during deferral, async guards and ready input at idle return.
-  Original command/write/backpressure tests remain unchanged.
 - `make check`/`make ci` add the complete default TCP suite on one allowed Linux
   CPU when taskset is available; existing per-client/one/four-mode tests remain.
   The benchmark records captured `client_handoff_idle_us`,
@@ -227,6 +192,4 @@ Sources: [safe TCP cloning/options](https://doc.rust-lang.org/std/net/struct.Tcp
 [std channels](https://doc.rust-lang.org/std/sync/mpsc/),
 [Linux SMT status ABI](https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-devices-system-cpu),
 [bounded processor hints](https://doc.rust-lang.org/std/hint/fn.spin_loop.html),
-[Valkey pending writes](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c),
-[Valkey before-sleep phase](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c),
 [previous I/O investigation](io-scheduling.md).

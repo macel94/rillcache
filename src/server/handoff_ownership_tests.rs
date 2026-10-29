@@ -3,107 +3,31 @@ use std::io::{BufRead, BufReader};
 use std::sync::Barrier;
 
 #[test]
-fn long_progress_pass_keeps_a_full_idle_window_after_io() {
-    let stop = Arc::new(AtomicBool::new(false));
-    let mut sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);
-    sharing.adaptive_poll = true;
-    sharing.max_epoch = Duration::from_micros(500);
-    let request = b"INCR counter\r\n";
-    let (client, mut peer) = super::tests::pair(request.to_vec());
-    let probe = client.stream.try_clone().unwrap();
-    let (first, home) = super::tests::loan(client, &stop);
-    let (sender, receiver) = mpsc::channel();
-    *sharing.leader.lock().unwrap() = Some(sender);
-    let store = Store::new(1024);
-    let base = Instant::now();
-    // A first pass spends 200 us doing useful work, followed by an empty
-    // pass. Its new 50 us idle window must start after that work, not before.
-    let times = [
-        0, 0, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 400, 401, 402, 403, 404, 451, 452,
-    ];
-    let mut calls = 0;
-    sharing.run_with_clock(
-        first,
-        Leadership {
-            sharing: &sharing,
-            receiver,
-        },
-        &store,
-        || {
-            let index = calls;
-            calls += 1;
-            if index == 5 {
-                peer.write_all(request).unwrap();
-                let deadline = Instant::now() + Duration::from_secs(3);
-                while !probe
-                    .peek(&mut [0; 64])
-                    .is_ok_and(|count| count == request.len())
-                {
-                    assert!(Instant::now() < deadline);
-                    thread::yield_now();
-                }
-            }
-            base + Duration::from_micros(*times.get(index).unwrap_or(&452))
-        },
-    );
-    assert!(
-        calls >= 13,
-        "a long progress pass must not expire the new idle window"
-    );
-    assert!(
-        calls <= 19,
-        "an empty epoch must still end at its idle/maximum boundary"
-    );
-    let client = home.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
-    assert!(client.output.is_empty());
-    let mut wire = [0; 8];
-    peer.read_exact(&mut wire).unwrap();
-    assert_eq!(&wire, b":1\r\n:2\r\n");
-    let mut reply = Vec::new();
-    store.execute(&[b"GET", b"counter"], &mut reply);
-    assert_eq!(reply, b"$1\r\n2\r\n");
-}
-
-#[test]
-fn empty_clients_skip_at_most_three_rescans_and_recheck_known_work() {
+fn empty_clients_skip_only_one_rescan_and_never_defer_known_work() {
     let stop = Arc::new(AtomicBool::new(false));
     let (client, _peer) = super::tests::pair(Vec::new());
     let (mut loan, _home) = super::tests::loan(client, &stop);
-    loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
-    for expected in (0..IDLE_SCAN_DEFERRALS).rev() {
-        assert!(loan.defer_idle_poll());
-        assert_eq!(loan.idle_scans_left, expected);
-    }
+    loan.skip_idle_scan = true;
+    assert!(loan.defer_idle_poll());
     for _ in 0..1000 {
-        assert!(
-            !loan.defer_idle_poll(),
-            "an actual empty poll must rearm the budget"
-        );
+        assert!(!loan.defer_idle_poll(), "an empty poll must rearm the hint");
     }
     for state in 0..4 {
-        {
-            let client = loan.client.as_mut().unwrap();
-            client.input.clear();
-            client.output.clear();
-            client.closing = false;
-            client.eof = false;
-        }
-        loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
-        assert!(loan.defer_idle_poll());
         let client = loan.client.as_mut().unwrap();
+        client.input.clear();
+        client.output.clear();
+        client.closing = false;
+        client.eof = false;
         match state {
             0 => client.input.extend_from_slice(b"PING\r\n"),
             1 => client.output.extend_from_slice(b"+pending\r\n"),
             2 => client.closing = true,
             _ => client.eof = true,
         }
+        loan.skip_idle_scan = true;
         assert!(!loan.defer_idle_poll());
-        assert_eq!(loan.idle_scans_left, 0);
+        assert!(!loan.skip_idle_scan);
     }
-    drop(loan.client.take());
-    loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
-    assert!(!loan.defer_idle_poll());
-    assert_eq!(loan.idle_scans_left, 0);
 }
 
 #[test]
@@ -126,9 +50,8 @@ fn asynchronous_session_states_are_never_deferred_by_an_empty_read_hint() {
                 || client.session.is_monitoring()
         );
         let (mut loan, _home) = super::tests::loan(client, &stop);
-        loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
+        loan.skip_idle_scan = true;
         assert!(!loan.defer_idle_poll());
-        assert_eq!(loan.idle_scans_left, 0);
     }
     struct Clock;
     impl crate::engine::Clock for Clock {
@@ -142,9 +65,8 @@ fn asynchronous_session_states_are_never_deferred_by_an_empty_read_hint() {
     client.session.execute(&store, &[b"PING"], &mut Vec::new());
     assert!(client.session.is_paused());
     let (mut loan, _home) = super::tests::loan(client, &stop);
-    loan.idle_scans_left = IDLE_SCAN_DEFERRALS;
+    loan.skip_idle_scan = true;
     assert!(!loan.defer_idle_poll());
-    assert_eq!(loan.idle_scans_left, 0);
 }
 
 #[test]
@@ -169,7 +91,7 @@ fn deferred_quiet_borrowers_poll_ready_input_before_their_idle_return() {
     second.activity = Instant::now() - Duration::from_millis(1);
     let (first, first_home) = super::tests::loan(first, &stop);
     let (mut second, second_home) = super::tests::loan(second, &stop);
-    second.idle_scans_left = IDLE_SCAN_DEFERRALS;
+    second.skip_idle_scan = true;
     let (sender, receiver) = mpsc::channel();
     sender.send(second).ok().unwrap();
     *sharing.leader.lock().unwrap() = Some(sender);
