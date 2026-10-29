@@ -3,15 +3,16 @@ name = "rillcache"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-description = "A safe Redis-compatible server with an explicit rustls-only dependency exception"
+description = "A safe Redis-compatible server with vendored rustls and Mio"
 repository = "https://github.com/macel94/rillcache"
 publish = false
 default-run = "rillcache"
 build = false
 
-# Dependency policy exception: rustls and its transitive dependency set only.
-# No build, development or benchmark dependencies outside that set.
+# Explicit exceptions: rustls, Mio and their required transitive crates.
+# Application code remains unsafe-free; dependencies expose safe OS/TLS APIs.
 [dependencies]
+mio = { version = "=1.2.4", default-features = false, features = ["os-poll", "os-ext"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2"
 

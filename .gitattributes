@@ -1,0 +1,2 @@
+# Preserve checksum-verified registry sources byte-for-byte, including whitespace.
+vendor/** -whitespace

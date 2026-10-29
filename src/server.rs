@@ -1,4 +1,4 @@
-//! Managed thread-per-client I/O, or an opt-in bounded nonblocking worker pool.
+//! Default Unix Mio readiness, portable managed-client fallback and fixed workers.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -16,6 +16,8 @@ use std::path::PathBuf;
 mod accept;
 mod handoff;
 mod pool;
+#[cfg(unix)]
+mod reactor;
 mod tls;
 mod topology;
 
@@ -44,6 +46,8 @@ pub const FIXED_WORKER_RUN_POLICY_VERSION: u64 = 2;
 /// Immutable bind-time scheduling decisions. Capacity is a hint, not a CPU budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SchedulingPolicy {
+    /// Default plain-TCP sockets use Mio readiness, not client-thread leases.
+    pub readiness_io: bool,
     pub active_poll_us: u64,
     pub run_quantum_us: u64,
     pub single_reply_yield: bool,
@@ -85,6 +89,7 @@ impl SchedulingPolicy {
         let handoff = workers.is_none()
             && capacity.is_some_and(|cpus| (1..=CLIENT_HANDOFF_MAX_CPUS).contains(&cpus));
         Self {
+            readiness_io: false,
             active_poll_us: if workers.is_some() {
                 FIXED_WORKER_ACTIVE_POLL_US
             } else {
@@ -157,7 +162,8 @@ pub struct Config {
     pub auth_source_limit: usize,
     /// Per-source failure window and lockout duration in milliseconds.
     pub auth_source_window_ms: u64,
-    /// None: one blocking worker per client. Some(1..=64): fixed I/O/execution lanes.
+    /// None: Unix Mio readiness, managed blocking-client fallback elsewhere.
+    /// Some(1..=64): the existing fixed I/O/execution lanes.
     pub worker_threads: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
     pub max_data_bytes: usize,
@@ -466,7 +472,16 @@ impl Server {
         };
         let capacity = thread::available_parallelism().ok().map(usize::from);
         let mut policy = SchedulingPolicy::new(config.worker_threads, capacity);
-        if policy.client_handoff_lanes > 1 {
+        if cfg!(unix) && config.worker_threads.is_none() {
+            policy = SchedulingPolicy {
+                readiness_io: true,
+                active_poll_us: 0,
+                run_quantum_us: 0,
+                single_reply_yield: false,
+                client_handoff_idle_us: 0,
+                client_handoff_lanes: 0,
+            };
+        } else if policy.client_handoff_lanes > 1 {
             policy = policy.with_smt_disabled(topology::smt_disabled());
         }
         Ok(Self {
@@ -567,6 +582,10 @@ fn serve_plain(
     stopping: Arc<AtomicBool>,
     policy: SchedulingPolicy,
 ) -> io::Result<()> {
+    #[cfg(unix)]
+    if policy.readiness_io {
+        return reactor::serve(listener, config, store, stopping);
+    }
     // A failed/unsupported setup leaves the original nonblocking fallback.
     // Keep the existing idle backoff, maintenance checks and joined shutdown.
     let _ = accept::enable_timeout(&listener);

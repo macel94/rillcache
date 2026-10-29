@@ -263,6 +263,7 @@ impl Sharing {
                 sent: 0,
                 closing: false,
                 eof: false,
+                retry_io: false,
                 activity: Instant::now(),
                 _permit: None,
                 shutdown_on_drop: false,

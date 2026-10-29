@@ -13,6 +13,28 @@ compatibility work. It retains 84 checked component samples, controls, CPU profi
 losses and limits. It is not a replacement native comparison or an optimization
 claim; the historical profiles below remain labeled with their original baseline.
 
+## Mio readiness follow-up (S-MIO)
+
+The user-authorized Mio exception replaces default Unix plain-TCP leases with a
+single readiness loop. Mio 1.2.4 is pinned/vendored with default logging disabled;
+application targets still forbid unsafe code. Linux uses epoll, but unlike
+Valkey's level-triggered `ae_epoll.c`, Mio requires edge-triggered draining.
+The runnable queue therefore retains bounded work until WouldBlock, preserves
+interrupted operations, limits accepts/commands/I/O per pass, and only registers
+writable interest while replies remain. Distinct non-recycled tokens prevent
+stale events from reaching a reused descriptor's new session.
+
+Deferred commands, pause and push channels retain 1 ms timer servicing; shutdown
+is checked around selector waits bounded at 10 ms, maintenance targets 100 ms,
+all subject to scheduler/command slack. Ordinary idle sockets are not scanned
+for recv readiness; inactivity is checked during maintenance. Existing Session
+and Client dispatch retain protocol, collectors, auth, transactions, bounded
+buffers and error accounting. Fixed-worker/TLS implementations and non-Unix
+fallback remain; benchmark provenance identifies `mio-readiness`, not leases.
+This is complete usable default behavior, not a claim that every performance
+case now wins: only fresh protected measurements can establish acceptance.
+The sections below describe earlier, source-pinned std-only investigations.
+
 ## Investigation
 
 The preceding published comparison was weakest with one logical server CPU and

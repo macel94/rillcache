@@ -24,12 +24,12 @@ REQUIRE_THREAD_MODES ?= 0
 CONTAINER_ENGINE ?= docker
 CONTAINER_IMAGE ?= rillcache:local
 
-.PHONY: help fmt fmt-check lint test test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
+.PHONY: help fmt fmt-check lint test-unit dev-check test test-constrained check release run smoke bench-core bench bench-threads metadata ci package competitors compare container container-smoke
 # Always validate cached tools: an interrupted linker may leave a truncated file.
 .PHONY: $(CURDIR)/target/competitors/redis-$(REDIS_VERSION)/src/redis-server $(CURDIR)/target/competitors/valkey-$(VALKEY_VERSION)/src/valkey-server
 
 help:
-	@printf '%s\n' 'make test       Fast unit, TCP, benchmark and policy tests' 'make check      Formatting, all-target Clippy and tests (offline)' 'make ci         Same fast verification as GitHub, plus release benchmark smoke' 'make run        Run on loopback:6379' 'make bench      Microbenchmarks and repeated local TCP benchmarks' 'make compare    Build pinned competitors once; compare three native servers' 'make package    Build a release archive and SHA-256 checksum' 'make container  Build the optional thin, non-root container image' 'make container-smoke  Test a built image in all three worker modes'
+	@printf '%s\n' 'make dev-check  Editing feedback: formatting, Clippy and one library-test pass' 'make test-unit  One offline library-test pass (not delivery validation)' 'make test       All-mode unit, TCP, benchmark and policy tests' 'make check      Formatting, all-target Clippy and tests (offline)' 'make ci         Same fast verification as GitHub, plus release benchmark smoke' 'make run        Run on loopback:6379' 'make bench      Microbenchmarks and repeated local TCP benchmarks' 'make compare    Build pinned competitors once; compare three native servers' 'make package    Build a release archive and SHA-256 checksum' 'make container  Build the optional thin, non-root container image' 'make container-smoke  Test a built image in all three worker modes'
 
 fmt:
 	$(CARGO) fmt --all
@@ -39,6 +39,12 @@ fmt-check:
 
 lint:
 	$(CARGO) clippy $(CARGO_FLAGS) --all-targets --all-features -- -D warnings
+
+# Editing feedback only. The full check/ci prerequisites below remain unchanged.
+test-unit:
+	$(CARGO) test $(CARGO_FLAGS) --lib
+
+dev-check: fmt-check lint test-unit
 
 test:
 	for workers in 0 1 4; do

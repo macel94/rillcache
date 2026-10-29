@@ -56,7 +56,7 @@ CODEOWNERS is evaluated from the PR's base branch.
 | Dimension | Required setting |
 | --- | --- |
 | Workloads | PING, SET overwrite, GET hit, NX-existing rejection, XX-existing overwrite |
-| Server modes | Default managed per-client Rillcache; default Valkey, no persistence/TLS |
+| Server modes | Default plain-TCP Rillcache; default Valkey, no persistence/TLS |
 | CPU profiles | Inherited affinity; equal one-logical-CPU servers with clients on other CPUs |
 | Pipelines | 1 and 16 |
 | Requests/workload/repetition | 100,000 at pipeline 1; 1,000,000 at pipeline 16 |
