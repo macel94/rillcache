@@ -58,8 +58,8 @@ pub(super) struct Sharing {
     adaptive_poll: bool,
 }
 
-/// Short processor-hint backoff after empty scans, not an OS yield or sleep.
-/// Real progress resets the sequence; the existing epoch still ends idle work.
+/// Bounded processor hints before a cooperative OS yield on exhausted empty
+/// multicore scans. No sleep or readiness guarantee; real progress resets it.
 #[derive(Default)]
 struct IdleBackoff {
     step: u32,
@@ -70,9 +70,13 @@ impl IdleBackoff {
             self.step = 0;
             return 0;
         }
-        let spins = 1 << self.step;
-        self.step = (self.step + 1).min(6);
+        let spins = 1 << self.step.min(6);
+        self.step = self.step.saturating_add(1).min(7);
         spins
+    }
+
+    fn should_yield(&self, progress: bool) -> bool {
+        !progress && self.step > 6
     }
 }
 
@@ -397,7 +401,14 @@ impl Sharing {
                 break;
             }
             let spins = if self.adaptive_poll {
-                backoff.observe(progress)
+                if backoff.should_yield(progress) {
+                    // Nothing was ready after the bounded spin stages. Let
+                    // runnable peers compete; this is not a wakeup promise.
+                    thread::yield_now();
+                    0
+                } else {
+                    backoff.observe(progress)
+                }
             } else {
                 usize::from(!progress) // Keep the one-CPU v2 policy unchanged.
             };

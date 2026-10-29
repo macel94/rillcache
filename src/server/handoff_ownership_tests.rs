@@ -148,6 +148,26 @@ fn idle_backoff_is_capped_and_actual_progress_resets_it() {
 }
 
 #[test]
+fn exhausted_backoff_yields_only_without_progress_and_remains_resettable() {
+    let mut backoff = IdleBackoff::default();
+    for expected in [1, 2, 4, 8, 16, 32, 64] {
+        assert!(!backoff.should_yield(false));
+        assert!(!backoff.should_yield(true));
+        assert_eq!(backoff.observe(false), expected);
+    }
+    for _ in 0..1000 {
+        assert!(backoff.should_yield(false));
+        assert!(!backoff.should_yield(true));
+        assert_eq!(backoff.observe(false), 64);
+        assert_eq!(backoff.step, 7);
+    }
+    assert_eq!(backoff.observe(true), 0);
+    assert!(!backoff.should_yield(false));
+    assert_eq!(backoff.observe(false), 1);
+    assert!(!backoff.should_yield(false));
+}
+
+#[test]
 fn admission_rotates_stably_and_epoch_closure_is_lane_local() {
     let stop = Arc::new(AtomicBool::new(false));
     for capacity in [None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)] {
