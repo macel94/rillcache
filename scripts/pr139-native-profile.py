@@ -15,8 +15,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/upstream/evidence/pr139-native'
 BIN = OUT / 'frozen-binaries'
-BASE = 'aed4dd76d368a5a5343e466c6c2781a035039fbd'
-CANDIDATE = '7f5baf4a2c86ebbb9dface3c38a76d479e794575'
+BASE = '96e3bfdfe4f50401951fc39310dd15340424d7b2'
+CANDIDATE = '5716920e3a1ba105c007e834e8c1bce6b6dcaf46'
 G = runpy.run_path(str(ROOT / 'scripts/pr-multicpu-performance.py'))
 COMMON = sys.modules['common']
 SAFE_ENV = {'PATH': os.environ['PATH'], 'LANG': 'C', 'LC_ALL': 'C'}
