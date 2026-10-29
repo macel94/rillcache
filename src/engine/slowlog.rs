@@ -340,6 +340,25 @@ mod tests {
     }
 
     #[test]
+    fn the_default_duration_threshold_is_inclusive_without_wall_clock_assumptions() {
+        let store = Store::new(1024);
+        assert_eq!(store.slowlog_threshold_us(), 10_000);
+        store.slowlog_push(&[b"PING"], Duration::from_micros(9_999), || {
+            panic!("a below-threshold sample must not capture metadata")
+        });
+        assert_eq!(store.slowlog_len(), 0);
+        for duration in [10_000, 10_001] {
+            store.slowlog_push(&[b"PING"], Duration::from_micros(duration), || {
+                ("127.0.0.1:1".into(), Vec::new())
+            });
+        }
+        let entries = store.slowlog.read().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].duration_us, 10_001);
+        assert_eq!(entries[1].duration_us, 10_000);
+    }
+
+    #[test]
     fn rejected_samples_never_capture_client_metadata() {
         let store = Store::new(1024);
         let captured = std::cell::Cell::new(0);
