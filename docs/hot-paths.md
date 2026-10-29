@@ -240,16 +240,17 @@ instead of allocating/cloning/dropping them at every epoch; real buffers, sessio
 and push receiver still move with their sole I/O owner. The existing recent-reply
 window still prevents isolated replies from allocating a lease. A regression test
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
-accounting, 50 µs idle / 100 ms maximum epoch and shutdown semantics are unchanged.
+accounting, 100 µs multicore idle / 50 µs one-CPU idle / 100 ms maximum epoch and shutdown semantics are unchanged.
 
-Small-multicore policy v6 selects one coordinator when SMT is active or unknown;
+Small-multicore policy v7 selects one coordinator when SMT is active or unknown;
 four logical CPUs permit two independent round-robin groups only with an explicit
 bind-time Linux SMT-disabled hint. V4's unconditional two-group cohort failed
 5/10 on a two-core/four-thread runner and remains preserved, not accepted.
 Empty multicore scans now use capped 1–64 processor-hint backoff, reset by real
-progress, rather than immediately repeating futile socket syscalls. One-CPU v2,
-fixed-worker policies, idle/maximum epoch bounds and shared transaction locks
-are unchanged. V6 also skips at most one rescan after a normal leased client's
+progress, rather than immediately repeating futile socket syscalls. V7 holds a
+multicore client for 100 µs of quiet instead of 50 µs so the lease spans the
+pipeline-1 request interval. One-CPU v2, fixed-worker policies, the 100 ms
+maximum epoch and shared transaction locks are unchanged. V6 also skips at most one rescan after a normal leased client's
 empty poll, without postponing buffered work, pending output or asynchronous
 session states. The hint clears before each decision; quiet borrowers still
 service ready I/O before an idle return. Epoch/shutdown checks remain on every

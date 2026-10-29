@@ -883,6 +883,7 @@ mod tests {
         assert!(text.contains("\"client_handoff_lanes\":1"));
         let multicore = rillcache::server::SchedulingPolicy {
             single_reply_yield: false,
+            client_handoff_idle_us: rillcache::server::CLIENT_HANDOFF_MULTICORE_IDLE_US,
             client_handoff_lanes: 2,
             ..policy
         };
@@ -894,8 +895,8 @@ mod tests {
             Some(multicore),
         );
         assert!(text.contains("\"single_reply_yield\":false"));
-        assert!(text.contains("\"client_handoff_idle_us\":50"));
-        assert!(text.contains("\"client_handoff_policy_version\":6"));
+        assert!(text.contains("\"client_handoff_idle_us\":100"));
+        assert!(text.contains("\"client_handoff_policy_version\":7"));
         assert!(text.contains("\"client_handoff_lanes\":2"));
         assert!(text.contains("\"client_handoff_max_epoch_ms\":100"));
         let policy = rillcache::server::SchedulingPolicy {

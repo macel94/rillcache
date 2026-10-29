@@ -18,12 +18,15 @@ mod pool;
 mod tls;
 mod topology;
 
-/// Busy clients may briefly lend I/O to an existing managed client thread.
+/// One-CPU busy clients may briefly lend I/O to an existing managed client thread.
 pub const CLIENT_HANDOFF_IDLE_US: u64 = 50;
+/// Small-multicore leases stay held across the longer pipeline-1 request
+/// interval so a busy client does not rebuild its lease for every reply.
+pub const CLIENT_HANDOFF_MULTICORE_IDLE_US: u64 = 100;
 /// Bound sharing to small CPU budgets; larger/unknown machines keep blocking I/O.
 pub const CLIENT_HANDOFF_MAX_CPUS: usize = 4;
 /// Small multicore budgets share busy I/O without one-CPU reply-yield hints.
-pub const CLIENT_HANDOFF_MULTICORE_POLICY_VERSION: u64 = 6;
+pub const CLIENT_HANDOFF_MULTICORE_POLICY_VERSION: u64 = 7;
 /// Continuous traffic cannot retain a coordinator/admission slot indefinitely.
 pub const CLIENT_HANDOFF_MAX_EPOCH_MS: u64 = 100;
 /// v2 requires recent reply activity before creating a new handoff epoch.
@@ -92,7 +95,13 @@ impl SchedulingPolicy {
                 0
             },
             single_reply_yield: workers.is_none() && capacity == Some(1),
-            client_handoff_idle_us: if handoff { CLIENT_HANDOFF_IDLE_US } else { 0 },
+            client_handoff_idle_us: if !handoff {
+                0
+            } else if capacity == Some(1) {
+                CLIENT_HANDOFF_IDLE_US
+            } else {
+                CLIENT_HANDOFF_MULTICORE_IDLE_US
+            },
             // Retain one coordinator at 1–3 CPUs; four CPUs can service two
             // independent groups without funneling every socket through one.
             client_handoff_lanes: if handoff {
@@ -1089,8 +1098,11 @@ mod tests {
         }
         for cpus in 2..=CLIENT_HANDOFF_MAX_CPUS {
             let policy = SchedulingPolicy::new(None, Some(cpus));
-            assert_eq!(policy.client_handoff_idle_us, CLIENT_HANDOFF_IDLE_US);
-            assert_eq!(policy.client_handoff_policy_version(), 6);
+            assert_eq!(
+                policy.client_handoff_idle_us,
+                CLIENT_HANDOFF_MULTICORE_IDLE_US
+            );
+            assert_eq!(policy.client_handoff_policy_version(), 7);
             assert_eq!(policy.client_handoff_lanes, (cpus / 2).max(1));
             assert_eq!(policy.client_handoff_max_epoch_ms(), 100);
             assert!(!policy.single_reply_yield);

@@ -10,7 +10,7 @@ The separate matched A/B study reports both improvements and regressions; those
 runner/cohort percentages must not be blended. This does not establish all-traffic
 performance, feature equivalence or production readiness.
 
-## Small-multicore policy v6
+## Small-multicore policy v7
 
 V3 enabled bounded handoffs for known two-, three- and four-CPU bind-time
 capacity hints. V4's unconditional two-coordinator experiment at four logical
@@ -46,9 +46,14 @@ syscalls in partly busy scans, not just wholly empty scans. It is not a readines
 notification or a fixed-time latency guarantee. One-CPU v2 and explicit fixed
 workers do not use either multicore backoff.
 
-The 50 µs idle / 100 ms maximum epoch, managed thread-per-client admission and
-absence of multicore single-reply yields are unchanged. No permanent worker is
-added. One-CPU scheduling remains v2 with one group. Fixed lanes, hints above
+V7 then raises the multicore quiet window to 100 µs while leaving the one-CPU
+window at 50 µs. At the measured pipeline-1 rate the eight clients issue roughly
+one request every 65–80 µs per connection, so a 50 µs window returned each client
+just before its next request and rebuilt the lease for every reply. The longer
+window keeps a busy client in the coordinator across that interval. The 100 ms
+maximum epoch, managed thread-per-client admission and absence of multicore
+single-reply yields are unchanged. No permanent worker is added. One-CPU
+scheduling remains v2 with one group and a 50 µs window. Fixed lanes, hints above
 four or unknown capacity, and TLS transport retain their previous paths. More
 concurrent I/O can spend more CPU; two coordinators are not an efficiency or
 linear-scaling guarantee.

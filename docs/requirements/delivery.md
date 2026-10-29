@@ -235,9 +235,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 ### Small-multicore scheduling acceptance (S-IO4)
 
 - **R-IO4A (event-driven):** When default managed clients share a known two-, three-
-  or four-CPU capacity hint, active bursts may use the existing 50 µs idle / 100 ms
-  maximum-epoch handoff path. One-CPU policy v2 shall remain unchanged; small-
-  multicore policy shall be recorded as v6 without enabling single-reply yields.
+  or four-CPU capacity hint, active bursts may use a 100 µs idle / 100 ms
+  maximum-epoch handoff path so a busy pipeline-1 client stays leased across its
+  request interval. One-CPU policy v2 shall remain unchanged at 50 µs; small-
+  multicore policy shall be recorded as v7 without enabling single-reply yields.
   Four-CPU admission may select two independent temporary coordinator groups only
   with an explicit bind-time Linux SMT-disabled hint; active/unknown SMT and 1–3
   CPU hints shall retain one group. The read-only probe shall read at most three
