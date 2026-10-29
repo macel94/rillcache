@@ -340,6 +340,31 @@ six traffic profiles and three idle captures retain identities/affinity/lifecycl
 and fresh distinct frozen binary hashes. The two protected performance gates
 remain separate, mandatory, and unchanged.
 
+## Unified session error accounting (S-UNIFIEDSESSION)
+
+The observer-disabled outer shortcut returned plain PING/GET/SET/ECHO replies
+before the common `record_error` epilogue. A bounded negative regression produces
+three ERR replies but finds no ERR counter with all optional collectors disabled.
+Removing that redundant shortcut keeps the existing checked `execute_inner`
+ordinary-command specialization and all common timing/observer/error hooks.
+Authorization, subscriptions, transactions, pause, MONITOR and enabled collectors
+are not bypassed. Tests cover all eight collector combinations, RESP2/3, binary
+and null replies, exactly-once command/error counts and all-mode TCP reset/recount.
+
+[Native study 40933353342](https://github.com/macel94/rillcache/actions/runs/40933353342)
+compared baseline `96e3bfd`, fix `5716920` and Valkey 9.1.2 with unchanged matched
+settings. This runner was an **Intel Xeon 6973P-C, two cores/four SMT threads**,
+not the earlier EPYC hosts. Normal PING/P1 medians [min–max] were 210,019.3
+[204,321.41–210,530.70], 208,360.91 [204,634.09–209,730.59] and 166,181.91
+[162,999.30–170,346.70] req/s. The candidate median is about 0.8% lower with
+overlapping spreads; **no throughput improvement is established**. Both Rust
+labels beating Valkey here is not evidence that the patch made either faster.
+Normal server CPU medians were 10.030/10.030/9.970 s and generator CPU
+17.608/17.096/15.614 s. All nine normal, six traffic-profile and three idle
+captures independently validated source/build, command, affinity and lifecycle
+identity. The change is justified by the reproduced accounting bug, not favorable
+hardware, instrumented throughput or a claim that protected gates already passed.
+
 ## Release build profile
 
 Release builds use fat LTO with one codegen unit while retaining overflow checks.

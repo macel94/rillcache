@@ -400,6 +400,23 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   count table, not an error log, message history, durable audit or replication
   statistic.
 
+## Unified session observation flow (S-UNIFIEDSESSION)
+
+- **R-ERRFLOW1 (event-driven):** When a plain PING/GET/SET/ECHO command emits
+  an error, the session shall count its code once through the common reply
+  epilogue regardless of slowlog, latency or commandstats configuration. Existing
+  output bytes shall not be mistaken for the current reply. Error table bounds,
+  RESETSTAT behavior, protocol replies and total command counts shall remain.
+- **R-ERRFLOW2 (ubiquitous):** Every collector combination and RESP2/RESP3 shall
+  retain binary/success/null/error replies, enabled slowlog and commandstats
+  recording, and normal authorization, subscriber, transaction, pause and MONITOR
+  handling. No observer-disabled early return may skip error accounting; the
+  existing ordinary-command specialization inside checked dispatch may remain.
+  Tests shall reproduce the old missing counters boundedly, cover all eight
+  collector combinations and all three TCP worker modes, reset and recount.
+  Native measurements shall disclose gains or losses without treating different
+  hardware's absolute rates as an optimization or bypassing either protected gate.
+
 ## Keyspace average TTL (S85)
 
 - **R326 (event-driven):** When `INFO keyspace` or `INFO all` is requested, the
