@@ -28,6 +28,27 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R19 (state-driven):** While a client performs no socket I/O for the configured
   inactivity timeout, the server shall release that connection.
 
+## Bounded idle admission waits (S-ACCEPTWAIT)
+
+- **R-ACCEPT1 (state-driven):** While the default plain Linux acceptor is idle,
+  it shall use a positive 10 ms kernel receive-timeout target before enabling
+  blocking accept. Only safe standard-library socket-option operations on an
+  owned duplicate may be used; the option handle shall perform no stream I/O or
+  shutdown. If setup fails or the platform is unsupported, the existing
+  nonblocking accept/backoff path shall remain available.
+- **R-ACCEPT2 (event-driven):** When a socket is admitted, its configured client
+  read/write timeouts shall still be installed before client I/O. Shutdown shall
+  retain joined ownership, and maintenance shall retain its bounded work and
+  100 ms scheduling target, checked between accept waits. Kernel timer rounding,
+  accept-wait slack and descheduling preclude a hard real-time deadline. Fixed
+  workers, TLS, foreground expiry/accounting and handoff epochs shall not change.
+- **R-ACCEPT3 (ubiquitous):** Tests shall cover failed timeout setup without a
+  blocking-mode change, timeout-before-mode ordering, positive timed empty
+  accept, listener lifetime and independent accepted-client timeout restoration.
+  All-mode TCP/shutdown/persistence tests remain mandatory. Idle syscall/CPU
+  captures shall be separate from normal throughput evidence; neither replaces
+  either unchanged protected performance gate.
+
 ## Explicit multithreaded execution
 
 - **R60 (optional feature):** Where `--threads N` is supplied for N in 1..64,

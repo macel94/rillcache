@@ -276,6 +276,36 @@ Unrequested keyspace sections no longer scan entries; requested keyspace metrics
 share one pass instead of four. Existing TTL, lifecycle and payload meanings stay
 unchanged; this is not an atomic cross-subsystem metrics or RSS guarantee.
 
+## Bounded Linux idle admission waits (S-ACCEPTWAIT)
+
+Default plain Linux admission now installs a positive 10 ms receive-timeout
+before enabling blocking accept, avoiding the old accept/1 ms sleep loop when
+no connection is pending. [Linux documents that SO_RCVTIMEO applies to
+accept](https://man7.org/linux/man-pages/man7/socket.7.html). A safe owned duplicate
+sets only the shared socket option; dropping it leaves the listener alive.
+Accepted client timeouts are still reset from Config. Unsupported platforms or
+setup failure retain nonblocking admission. Fixed workers, TLS, client handoffs
+and their 100 ms maximum epoch are unchanged. Maintenance keeps its 100 ms target
+between bounded waits; timer rounding/accept slack is not a hard deadline.
+
+The separate [native diagnostic run 40867447709](https://github.com/macel94/rillcache/actions/runs/40867447709)
+compared INFO head `956e5fe`, prototype `d9ecad9` and pinned Valkey 9.1.2 on
+Ubuntu 24.04/EPYC 7763, two cores/four shared SMT threads. Three Latin-rotated
+normal PING/P1 samples per variant used eight clients/two official-generator
+threads, 8000 warmups and ten-second loads. Baseline median was 107,798.2
+[106,294.0–107,867.5], candidate 108,673.2 [108,193.7–108,991.1] and Valkey
+112,324.7 [108,364.7–114,487.9] req/s. The scoped candidate gain is about 0.8%;
+it **still trails Valkey** and establishes neither an all-workload win nor tails.
+
+Separate approximately two-second **instrumented no-load** owned-process captures
+recorded accept/sleep calls of 1867/1867 versus 166/166, context switches of 1867
+versus 332 and task-clock of 19.01 versus 4.89 ms; Valkey recorded 0/0 calls,
+20 switches and 2.77 ms. These show substantially fewer admission wakeups, not
+unprofiled CPU/throughput or production-energy guarantees. All nine normal CSVs,
+six traffic profiles and three idle captures retain identities/affinity/lifecycles
+and fresh distinct frozen binary hashes. The two protected performance gates
+remain separate, mandatory, and unchanged.
+
 ## Release build profile
 
 Release builds use fat LTO with one codegen unit while retaining overflow checks.
