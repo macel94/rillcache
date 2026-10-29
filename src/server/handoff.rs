@@ -104,8 +104,25 @@ struct Loan {
     home: Sender<Option<Client>>,
     stopping: Arc<AtomicBool>,
     coordinator: bool,
+    skip_idle_scan: bool,
 }
 impl Loan {
+    fn defer_idle_poll(&mut self) -> bool {
+        // Clear before checking state: at most one pass can be skipped after
+        // an actual empty poll. Never postpone known work or async delivery.
+        std::mem::take(&mut self.skip_idle_scan)
+            && self.client.as_ref().is_some_and(|client| {
+                client.input.is_empty()
+                    && client.output.is_empty()
+                    && !client.closing
+                    && !client.eof
+                    && !client.session.is_blocked()
+                    && !client.session.is_paused()
+                    && !client.session.is_subscribed()
+                    && !client.session.is_monitoring()
+            })
+    }
+
     fn quiet(&self, now: Instant, idle: Duration) -> bool {
         // The coordinator cannot block waiting for its own returned socket
         // while it still services others. At most that one quiet loan remains.
@@ -264,6 +281,7 @@ impl Sharing {
             home: io.channel.home.clone(),
             stopping: Arc::clone(&self.stopping),
             coordinator: false,
+            skip_idle_scan: false,
         };
         let mut leader = self
             .leader
@@ -342,6 +360,13 @@ impl Sharing {
             let now = Instant::now();
             let mut index = 0;
             while index < clients.len() {
+                if self.adaptive_poll
+                    && clients[index].defer_idle_poll()
+                    && !clients[index].quiet(now, self.idle)
+                {
+                    index += 1;
+                    continue;
+                }
                 match clients[index].client.as_mut().expect("active loan").poll(
                     store,
                     &self.config,
@@ -349,6 +374,9 @@ impl Sharing {
                 ) {
                     Ok(Some(made_progress)) => {
                         progress |= made_progress;
+                        if self.adaptive_poll {
+                            clients[index].skip_idle_scan = !made_progress;
+                        }
                         if !made_progress && clients[index].quiet(now, self.idle) {
                             clients.swap_remove(index); // Return this borrower, not a busy epoch.
                         } else {

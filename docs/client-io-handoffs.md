@@ -10,7 +10,7 @@ The separate matched A/B study reports both improvements and regressions; those
 runner/cohort percentages must not be blended. This does not establish all-traffic
 performance, feature equivalence or production readiness.
 
-## Small-multicore policy v5
+## Small-multicore policy v6
 
 V3 enabled bounded handoffs for known two-, three- and four-CPU bind-time
 capacity hints. V4's unconditional two-coordinator experiment at four logical
@@ -18,9 +18,11 @@ CPUs completed with [5/10 wins](https://github.com/macel94/rillcache/actions/run
 not merge acceptance. On the two-core/four-thread EPYC runner its PING P1 median
 was 99,022 versus Valkey's 113,922 req/s, with worse p99 and about 21 server CPU
 seconds per ten-second sample. More busy pollers did not solve that bottleneck.
-This failed source/evidence remains v4, never relabeled as v5.
+This failed source/evidence retains its actual version.
+V5's SMT/backoff follow-up reached [7/10](https://github.com/macel94/rillcache/actions/runs/40796958078),
+with three small P1 losses remaining; it is also retained as failed evidence.
 
-V5 retains one temporary coordinator at 1–3 CPUs, and also at four CPUs while SMT
+V6 retains one temporary coordinator at 1–3 CPUs, and also at four CPUs while SMT
 is active or unknown. Two groups are allowed at four CPUs only with an explicit
 bind-time Linux `smt/active` value of zero. This is a conservative machine-wide
 hint, not an affinity-specific physical-core count, CPU-model allowlist or host
@@ -34,7 +36,15 @@ After an empty multicore scan, processor hints back off from 1 through at most
 64 `spin_loop` instructions, resetting immediately on real progress. This avoids
 hammering empty socket reads while clients/SMT siblings need execution resources.
 There is no added OS yield/sleep and no rearming of the idle/maximum epoch on an
-empty scan. The one-CPU v2 and explicit fixed-worker paths do not use this backoff.
+empty scan. V6 additionally defers one rescan of a normal leased client after an
+actual no-progress poll, clearing the hint before every decision so it cannot
+skip consecutive passes without another empty poll. Buffered input, pending
+output, EOF/closing, blocked/paused, subscription and MONITOR states are never
+deferred. A quiet borrower still polls ready I/O before its existing idle return;
+epoch/shutdown checks still run on every pass. This avoids repeated empty socket
+syscalls in partly busy scans, not just wholly empty scans. It is not a readiness
+notification or a fixed-time latency guarantee. One-CPU v2 and explicit fixed
+workers do not use either multicore backoff.
 
 The 50 µs idle / 100 ms maximum epoch, managed thread-per-client admission and
 absence of multicore single-reply yields are unchanged. No permanent worker is
@@ -99,7 +109,7 @@ requesting a yield for every short response.
 
 V2 starts a new epoch only after at least two reply-progress observations within
 50 µs, or joins an already active epoch. Isolated sparse replies therefore avoid
-lease/channel/clone allocation and post-reply active polling. V1 activated after
+per-reply lease/channel/clone allocation and post-reply active polling. V1 activated after
 every eligible reply; its separate results remain attributed to that source.
 After 50 µs without real progress, the epoch closes and sockets return to their
 blocking owners. V2 also returns individually quiet borrowers while others stay

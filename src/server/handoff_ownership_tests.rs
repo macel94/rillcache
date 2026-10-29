@@ -3,6 +3,135 @@ use std::io::{BufRead, BufReader};
 use std::sync::Barrier;
 
 #[test]
+fn empty_clients_skip_only_one_rescan_and_never_defer_known_work() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let (client, _peer) = super::tests::pair(Vec::new());
+    let (mut loan, _home) = super::tests::loan(client, &stop);
+    loan.skip_idle_scan = true;
+    assert!(loan.defer_idle_poll());
+    for _ in 0..1000 {
+        assert!(!loan.defer_idle_poll(), "an empty poll must rearm the hint");
+    }
+    for state in 0..4 {
+        let client = loan.client.as_mut().unwrap();
+        client.input.clear();
+        client.output.clear();
+        client.closing = false;
+        client.eof = false;
+        match state {
+            0 => client.input.extend_from_slice(b"PING\r\n"),
+            1 => client.output.extend_from_slice(b"+pending\r\n"),
+            2 => client.closing = true,
+            _ => client.eof = true,
+        }
+        loan.skip_idle_scan = true;
+        assert!(!loan.defer_idle_poll());
+        assert!(!loan.skip_idle_scan);
+    }
+}
+
+#[test]
+fn asynchronous_session_states_are_never_deferred_by_an_empty_read_hint() {
+    let stop = Arc::new(AtomicBool::new(false));
+    for args in [
+        &[b"BLPOP".as_slice(), b"q", b"0"][..],
+        &[b"SUBSCRIBE".as_slice(), b"c"][..],
+        &[b"MONITOR".as_slice()][..],
+    ] {
+        let (mut client, _peer) = super::tests::pair(Vec::new());
+        let (sender, _receiver) = mpsc::sync_channel(8);
+        client.session.set_pubsub_sender(sender);
+        client
+            .session
+            .execute(&Store::new(1024), args, &mut Vec::new());
+        assert!(
+            client.session.is_blocked()
+                || client.session.is_subscribed()
+                || client.session.is_monitoring()
+        );
+        let (mut loan, _home) = super::tests::loan(client, &stop);
+        loan.skip_idle_scan = true;
+        assert!(!loan.defer_idle_poll());
+    }
+    struct Clock;
+    impl crate::engine::Clock for Clock {
+        fn now_ms(&self) -> i64 {
+            1000
+        }
+    }
+    let store = Store::with_clock(1024, Arc::new(Clock));
+    store.pause_clients(1000, false);
+    let (mut client, _peer) = super::tests::pair(Vec::new());
+    client.session.execute(&store, &[b"PING"], &mut Vec::new());
+    assert!(client.session.is_paused());
+    let (mut loan, _home) = super::tests::loan(client, &stop);
+    loan.skip_idle_scan = true;
+    assert!(!loan.defer_idle_poll());
+}
+
+#[test]
+fn deferred_quiet_borrowers_poll_ready_input_before_their_idle_return() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut sharing = Sharing::new(Config::default(), Arc::clone(&stop), 50);
+    sharing.adaptive_poll = true;
+    sharing.max_epoch = Duration::ZERO;
+    let request = b"INCR counter\r\n";
+    let (first, mut first_peer) = super::tests::pair(request.to_vec());
+    let (mut second, mut second_peer) = super::tests::pair(Vec::new());
+    second_peer.write_all(request).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !second
+        .stream
+        .peek(&mut [0; 64])
+        .is_ok_and(|count| count == request.len())
+    {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    second.activity = Instant::now() - Duration::from_millis(1);
+    let (first, first_home) = super::tests::loan(first, &stop);
+    let (mut second, second_home) = super::tests::loan(second, &stop);
+    second.skip_idle_scan = true;
+    let (sender, receiver) = mpsc::channel();
+    sender.send(second).ok().unwrap();
+    *sharing.leader.lock().unwrap() = Some(sender);
+    let store = Store::new(1024);
+    sharing.run(
+        first,
+        Leadership {
+            sharing: &sharing,
+            receiver,
+        },
+        &store,
+    );
+    let _first = first_home
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap()
+        .unwrap();
+    let mut second = second_home
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap()
+        .unwrap();
+    let mut reply = Vec::new();
+    store.execute(&[b"GET", b"counter"], &mut reply);
+    assert_eq!(
+        reply, b"$1\r\n2\r\n",
+        "ready input must be serviced before idle return"
+    );
+    assert_eq!(
+        second
+            .poll(&store, &Config::default(), &mut [0; 128])
+            .unwrap(),
+        Some(false)
+    );
+    for (peer, expected) in [(&mut first_peer, b":1\r\n"), (&mut second_peer, b":2\r\n")] {
+        let mut reply = [0; 4];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, expected);
+    }
+}
+
+#[test]
 fn idle_backoff_is_capped_and_actual_progress_resets_it() {
     let mut backoff = IdleBackoff::default();
     for expected in [1, 2, 4, 8, 16, 32, 64] {
