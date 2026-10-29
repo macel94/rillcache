@@ -108,11 +108,15 @@ impl Session {
     /// stable public RESP2 Store API, adapting only this session's reply.
     pub fn execute(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
         let start = output.len();
-        // The benchmarked default mode has no auth, observers, pause, MULTI,
-        // subscriber or monitor context. Keep those cold checks out of the
-        // hottest GET/SET/ECHO/PING replies. Any enabled feature falls through
-        // to the normal fully checked path.
-        if self.multi.is_none()
+        // Enabled collectors require the common timed dispatcher. Reject the
+        // untimed shortcut before probing session/auth/pause state; default
+        // slow logging is enabled, so those probes would otherwise be discarded
+        // on every ordinary command. Collector hooks and context guards below
+        // remain unchanged.
+        if !store.slowlog_enabled()
+            && !store.latency_enabled()
+            && !store.commandstats_enabled()
+            && self.multi.is_none()
             && self.authenticated_user.is_none()
             && self.paused.is_none()
             && self.blocked.is_none()
@@ -121,9 +125,6 @@ impl Session {
             && !store.authentication_required()
             && !store.acl_restricted()
             && store.client_pause_mode().is_none()
-            && !store.slowlog_enabled()
-            && !store.latency_enabled()
-            && !store.commandstats_enabled()
             && !store.monitors_active()
             && arguments.first().is_some_and(|command| {
                 command.eq_ignore_ascii_case(b"PING")

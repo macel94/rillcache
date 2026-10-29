@@ -13,6 +13,86 @@ fn call(session: &mut Session, store: &Store, args: &[&[u8]]) -> Vec<u8> {
 }
 
 #[test]
+fn plain_replies_and_observers_are_preserved_for_every_collector_combination() {
+    for flags in 0..8 {
+        for protocol in [Protocol::Resp2, Protocol::Resp3] {
+            let store = Store::new(1024);
+            let slowlog = flags & 1 != 0;
+            let latency = flags & 2 != 0;
+            let stats = flags & 4 != 0;
+            store.set_slowlog_threshold_us(if slowlog { 0 } else { -1 });
+            store.set_latency_threshold_ms(u64::from(latency));
+            store.set_commandstats_enabled(stats);
+            let mut session = Session::new();
+            session.protocol = protocol;
+            assert_eq!(call(&mut session, &store, &[b"PING"]), b"+PONG\r\n");
+            assert_eq!(
+                call(&mut session, &store, &[b"ECHO", b"x\0"]),
+                b"$2\r\nx\0\r\n"
+            );
+            assert_eq!(
+                call(&mut session, &store, &[b"SET", b"k", b"v"]),
+                b"+OK\r\n"
+            );
+            assert_eq!(call(&mut session, &store, &[b"GET", b"k"]), b"$1\r\nv\r\n");
+            assert_eq!(
+                call(&mut session, &store, &[b"GET"]),
+                b"-ERR wrong number of arguments for 'get' command\r\n"
+            );
+            assert_eq!(store.slowlog_len(), if slowlog { 5 } else { 0 });
+            let mut info = Vec::new();
+            store.execute(&[b"INFO", b"commandstats"], &mut info);
+            let info = String::from_utf8(info).unwrap();
+            if stats {
+                for expected in [
+                    "cmdstat_ping:calls=1,",
+                    "cmdstat_echo:calls=1,",
+                    "cmdstat_set:calls=1,",
+                    "cmdstat_get:calls=2,",
+                ] {
+                    assert!(info.contains(expected), "flags={flags}: {info}");
+                }
+            } else {
+                assert!(!info.contains("cmdstat_"), "flags={flags}: {info}");
+            }
+        }
+    }
+}
+
+#[test]
+fn untimed_plain_commands_still_obey_auth_subscriber_and_multi_guards() {
+    let protected = Store::with_auth(1024, crate::engine::Auth::from_password(Some(b"pw")));
+    protected.set_slowlog_threshold_us(-1);
+    let mut session = Session::new();
+    assert_eq!(
+        call(&mut session, &protected, &[b"PING"]),
+        b"-NOAUTH Authentication required.\r\n"
+    );
+    assert_eq!(
+        call(&mut session, &protected, &[b"AUTH", b"pw"]),
+        b"+OK\r\n"
+    );
+    assert_eq!(call(&mut session, &protected, &[b"PING"]), b"+PONG\r\n");
+
+    let store = Store::new(1024);
+    store.set_slowlog_threshold_us(-1);
+    let mut subscriber = Session::new();
+    subscriber.set_pubsub_sender(std::sync::mpsc::sync_channel(4).0);
+    call(&mut subscriber, &store, &[b"SUBSCRIBE", b"c"]);
+    assert_eq!(
+        call(&mut subscriber, &store, &[b"PING"]),
+        b"*2\r\n$4\r\npong\r\n$0\r\n\r\n"
+    );
+    assert!(call(&mut subscriber, &store, &[b"GET", b"k"]).starts_with(b"-ERR Can't execute"));
+    store.pubsub_remove_client(subscriber.id());
+
+    let mut queued = Session::new();
+    assert_eq!(call(&mut queued, &store, &[b"MULTI"]), b"+OK\r\n");
+    assert_eq!(call(&mut queued, &store, &[b"PING"]), b"+QUEUED\r\n");
+    assert_eq!(call(&mut queued, &store, &[b"EXEC"]), b"*1\r\n+PONG\r\n");
+}
+
+#[test]
 fn hello_protocol_switch_and_errors_are_atomic() {
     let store = Store::new(1024);
     let mut session = Session::new();
