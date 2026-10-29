@@ -49,7 +49,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R116 (ubiquitous):** ACL tests shall run offline in all execution modes and cover
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
-  Documentation shall retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO overrides,
+  Documentation shall retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO/CONFIG/LATENCY/SLOWLOG/PUBSUB overrides,
   centralized audit shipping, global/cross-process rate limiting, TLS hardening, key-spec-blind
   commands and process-level tenant-isolation boundaries.
 
@@ -149,7 +149,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   update atomically without partially changing the user. Tests shall cover
   allow/deny, ordered overrides, case-insensitivity, selectors, LIST/GETUSER,
   DRYRUN, ACL-file restart round-trips and every worker mode; documentation shall
-  retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO overrides, wildcards in the first
+  retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO/CONFIG/LATENCY/SLOWLOG/PUBSUB overrides, wildcards in the first
   argument and nested selectors.
 
 ## Persistent ACL denial audit (S104)
@@ -398,3 +398,24 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   client-certificate authentication and invalid configuration. Documentation shall
   retain the absence of SNI/hot reload, OCSP/CRL, client-cert-to-ACL mapping,
   replication TLS and any durability/HA claim.
+
+## Remaining subcommand categories for administration and pub/sub (S117)
+
+- **R423 (event-driven):** For `CONFIG`, `@admin`, `@dangerous` and `@slow` shall
+  match the implemented `GET`, `SET` and `RESETSTAT` subcommands, while `@read`,
+  `@write`, `@fast`, `@connection`, `@keyspace` and `@pubsub` shall not grant
+  them. Unimplemented subcommands shall keep the parent command approximation.
+- **R424 (state-driven):** For `LATENCY` and `SLOWLOG`, `@admin` and
+  `@dangerous` shall match every implemented subcommand except `HELP`; `HELP`
+  shall match `@slow` only among the broad categories. For `PUBSUB`,
+  `CHANNELS`, `NUMSUB`, `NUMPAT`, `SHARDCHANNELS` and `SHARDNUMSUB` shall match
+  `@pubsub` and `@slow`, but not `@fast`, `@admin`, `@dangerous`, `@read`,
+  `@write`, `@connection` or `@keyspace`. Unknown subcommands and unexpected
+  categories shall fall back to the command-level approximation.
+- **R425 (ubiquitous):** Unit authorization and all-mode wire tests shall cover
+  the allowed and denied cases above, including `LATENCY HELP` and
+  `SLOWLOG HELP` versus their administrative subcommands and `PUBSUB`
+  introspection versus an admin-only grant. `ACL CAT` and
+  `COMMAND LIST FILTERBY ACLCAT` shall list the same bounded subcommand entries
+  for `admin`, `dangerous`, `slow` and `pubsub`. Documentation shall retain the
+  bounded family table and command-level fallback for other families.

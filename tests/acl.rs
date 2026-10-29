@@ -972,6 +972,36 @@ fn acl_cat_lists_implemented_subcommand_entries() {
     assert!(admin_cat.contains("acl|users\r\n"), "{admin_cat}");
     assert!(!admin_cat.contains("acl|cat\r\n"), "{admin_cat}");
     assert!(!admin_cat.contains("client|setname\r\n"), "{admin_cat}");
+    assert!(admin_cat.contains("config|get\r\n"), "{admin_cat}");
+    assert!(admin_cat.contains("latency|doctor\r\n"), "{admin_cat}");
+    assert!(admin_cat.contains("slowlog|get\r\n"), "{admin_cat}");
+    assert!(!admin_cat.contains("latency|help\r\n"), "{admin_cat}");
+    assert!(!admin_cat.contains("slowlog|help\r\n"), "{admin_cat}");
+    assert!(!admin_cat.contains("pubsub|channels\r\n"), "{admin_cat}");
+
+    let dangerous =
+        String::from_utf8(request(&mut admin, &[b"ACL", b"CAT", b"dangerous"])).unwrap();
+    assert!(dangerous.contains("config|set\r\n"), "{dangerous}");
+    assert!(dangerous.contains("latency|reset\r\n"), "{dangerous}");
+    assert!(dangerous.contains("slowlog|len\r\n"), "{dangerous}");
+    assert!(!dangerous.contains("latency|help\r\n"), "{dangerous}");
+    assert!(!dangerous.contains("slowlog|help\r\n"), "{dangerous}");
+    assert!(!dangerous.contains("pubsub|channels\r\n"), "{dangerous}");
+
+    let slow = String::from_utf8(request(&mut admin, &[b"ACL", b"CAT", b"slow"])).unwrap();
+    assert!(slow.contains("config|get\r\n"), "{slow}");
+    assert!(slow.contains("latency|help\r\n"), "{slow}");
+    assert!(slow.contains("slowlog|help\r\n"), "{slow}");
+    assert!(slow.contains("pubsub|channels\r\n"), "{slow}");
+
+    let pubsub = String::from_utf8(request(&mut admin, &[b"ACL", b"CAT", b"pubsub"])).unwrap();
+    assert!(pubsub.contains("pubsub|channels\r\n"), "{pubsub}");
+    assert!(pubsub.contains("pubsub|shardnumsub\r\n"), "{pubsub}");
+    assert!(!pubsub.contains("pubsub|help\r\n"), "{pubsub}");
+
+    let fast = String::from_utf8(request(&mut admin, &[b"ACL", b"CAT", b"fast"])).unwrap();
+    assert!(!fast.contains("config|get\r\n"), "{fast}");
+    assert!(!fast.contains("pubsub|channels\r\n"), "{fast}");
 
     let connection =
         String::from_utf8(request(&mut admin, &[b"ACL", b"CAT", b"connection"])).unwrap();

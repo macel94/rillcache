@@ -671,6 +671,45 @@ fn command_list_filters_by_pattern_category_and_module() {
         assert!(admin.contains("client|kill\r\n"), "{admin}");
         assert!(admin.contains("acl|users\r\n"), "{admin}");
         assert!(!admin.contains("acl|cat\r\n"), "{admin}");
+        assert!(admin.contains("config|get\r\n"), "{admin}");
+        assert!(admin.contains("latency|latest\r\n"), "{admin}");
+        assert!(admin.contains("slowlog|get\r\n"), "{admin}");
+        assert!(!admin.contains("latency|help\r\n"), "{admin}");
+        assert!(!admin.contains("slowlog|help\r\n"), "{admin}");
+        assert!(!admin.contains("pubsub|channels\r\n"), "{admin}");
+        let dangerous = String::from_utf8(request(
+            &mut client,
+            &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"@dangerous"],
+        ))
+        .unwrap();
+        assert!(dangerous.contains("config|resetstat\r\n"), "{dangerous}");
+        assert!(dangerous.contains("latency|doctor\r\n"), "{dangerous}");
+        assert!(dangerous.contains("slowlog|len\r\n"), "{dangerous}");
+        assert!(!dangerous.contains("latency|help\r\n"), "{dangerous}");
+        assert!(!dangerous.contains("slowlog|help\r\n"), "{dangerous}");
+        let slow = String::from_utf8(request(
+            &mut client,
+            &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"@slow"],
+        ))
+        .unwrap();
+        assert!(slow.contains("latency|help\r\n"), "{slow}");
+        assert!(slow.contains("slowlog|help\r\n"), "{slow}");
+        assert!(slow.contains("pubsub|channels\r\n"), "{slow}");
+        let pubsub = String::from_utf8(request(
+            &mut client,
+            &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"@pubsub"],
+        ))
+        .unwrap();
+        assert!(pubsub.contains("pubsub|channels\r\n"), "{pubsub}");
+        assert!(pubsub.contains("pubsub|shardnumsub\r\n"), "{pubsub}");
+        assert!(!pubsub.contains("pubsub|help\r\n"), "{pubsub}");
+        let fast = String::from_utf8(request(
+            &mut client,
+            &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"@fast"],
+        ))
+        .unwrap();
+        assert!(!fast.contains("config|get\r\n"), "{fast}");
+        assert!(!fast.contains("pubsub|channels\r\n"), "{fast}");
         let memory_read = String::from_utf8(request(
             &mut client,
             &[b"COMMAND", b"LIST", b"FILTERBY", b"ACLCAT", b"@read"],

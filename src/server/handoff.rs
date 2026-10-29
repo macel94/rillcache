@@ -10,6 +10,41 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+/// Stable round-robin connection ownership; each group elects its own temporary
+/// coordinator. Data/transaction synchronization remains shared across groups.
+pub(super) struct Lanes {
+    lanes: Vec<Arc<Sharing>>,
+    next: usize,
+}
+impl Lanes {
+    pub(super) fn new(
+        config: &Config,
+        stopping: &Arc<AtomicBool>,
+        policy: SchedulingPolicy,
+    ) -> Self {
+        Self {
+            lanes: (0..policy.client_handoff_lanes)
+                .map(|_| {
+                    let mut sharing = Sharing::new(
+                        config.clone(),
+                        Arc::clone(stopping),
+                        policy.client_handoff_idle_us,
+                    );
+                    sharing.adaptive_poll = !policy.single_reply_yield;
+                    Arc::new(sharing)
+                })
+                .collect(),
+            next: 0,
+        }
+    }
+
+    pub(super) fn assign(&mut self) -> Option<Arc<Sharing>> {
+        let sharing = Arc::clone(self.lanes.get(self.next)?);
+        self.next = (self.next + 1) % self.lanes.len();
+        Some(sharing)
+    }
+}
+
 pub(super) struct Sharing {
     leader: Mutex<Option<Sender<Loan>>>,
     leader_active: AtomicBool,
@@ -18,7 +53,27 @@ pub(super) struct Sharing {
     config: Config,
     stopping: Arc<AtomicBool>,
     idle: Duration,
+    idle_micros: u64,
     max_epoch: Duration,
+    adaptive_poll: bool,
+}
+
+/// Short processor-hint backoff after empty scans, not an OS yield or sleep.
+/// Real progress resets the sequence; the existing epoch still ends idle work.
+#[derive(Default)]
+struct IdleBackoff {
+    step: u32,
+}
+impl IdleBackoff {
+    fn observe(&mut self, progress: bool) -> usize {
+        if progress {
+            self.step = 0;
+            return 0;
+        }
+        let spins = 1 << self.step;
+        self.step = (self.step + 1).min(6);
+        spins
+    }
 }
 
 struct EpochWindow {
@@ -49,8 +104,25 @@ struct Loan {
     home: Sender<Option<Client>>,
     stopping: Arc<AtomicBool>,
     coordinator: bool,
+    skip_idle_scan: bool,
 }
 impl Loan {
+    fn defer_idle_poll(&mut self) -> bool {
+        // Clear before checking state: at most one pass can be skipped after
+        // an actual empty poll. Never postpone known work or async delivery.
+        std::mem::take(&mut self.skip_idle_scan)
+            && self.client.as_ref().is_some_and(|client| {
+                client.input.is_empty()
+                    && client.output.is_empty()
+                    && !client.closing
+                    && !client.eof
+                    && !client.session.is_blocked()
+                    && !client.session.is_paused()
+                    && !client.session.is_subscribed()
+                    && !client.session.is_monitoring()
+            })
+    }
+
     fn quiet(&self, now: Instant, idle: Duration) -> bool {
         // The coordinator cannot block waiting for its own returned socket
         // while it still services others. At most that one quiet loan remains.
@@ -68,6 +140,31 @@ impl Drop for Loan {
         }
         let _ = self.home.send(self.client.take());
     }
+}
+
+/// Per-connection return channel and inactive lease shell. Retain the cloned
+/// socket and placeholder session/receiver instead of rebuilding them per epoch.
+pub(super) struct LeaseChannel {
+    home: Sender<Option<Client>>,
+    returned: Receiver<Option<Client>>,
+    cached: Option<Client>,
+}
+
+impl LeaseChannel {
+    pub(super) fn new() -> Self {
+        let (home, returned) = mpsc::channel();
+        Self {
+            home,
+            returned,
+            cached: None,
+        }
+    }
+}
+
+/// Mutable per-connection channels used while a socket is lent.
+pub(super) struct LeaseIO<'a> {
+    pub(super) pubsub: &'a mut Receiver<Vec<u8>>,
+    pub(super) channel: &'a mut LeaseChannel,
 }
 
 struct Leadership<'a> {
@@ -101,13 +198,15 @@ impl Sharing {
             config,
             stopping,
             idle: Duration::from_micros(idle_us),
+            idle_micros: idle_us,
             max_epoch: Duration::from_millis(CLIENT_HANDOFF_MAX_EPOCH_MS),
+            adaptive_poll: false,
         }
     }
 
-    /// Whether an epoch is already accepting borrowers. Single-command replies
-    /// use this cheap atomic check to join active epochs without starting a new
-    /// one, which would add lease churn to every pipeline-1 reply.
+    /// Whether an epoch is already accepting borrowers. Kept as a separate
+    /// cheap atomic check so callers and tests can inspect leader presence
+    /// without the activity probe.
     pub(super) fn active(&self) -> bool {
         self.leader_active.load(Ordering::Relaxed)
     }
@@ -124,7 +223,7 @@ impl Sharing {
         }
         let now = self.base.elapsed().as_micros() as u64;
         let previous = self.recent_micros.swap(now, Ordering::Relaxed);
-        Self::recent_burst(previous, now, self.idle.as_micros() as u64)
+        Self::recent_burst(previous, now, self.idle_micros)
     }
 
     fn recent_burst(previous: u64, now: u64, idle_us: u64) -> bool {
@@ -143,37 +242,46 @@ impl Sharing {
         input: &mut Vec<u8>,
         output: &mut Vec<u8>,
         session: &mut Session,
-        receiver: &mut Receiver<Vec<u8>>,
+        io: &mut LeaseIO<'_>,
         store: &Store,
     ) -> io::Result<bool> {
         debug_assert!(output.is_empty());
         if self.stopping.load(Ordering::Acquire) {
             return Ok(true);
         }
-        let activity = Instant::now();
-        let socket = stream.try_clone()?;
-        socket.set_nonblocking(true)?;
-        let client = Client {
-            stream: socket,
-            session: std::mem::take(session),
-            input: std::mem::take(input),
-            output: std::mem::take(output),
-            sent: 0,
-            closing: false,
-            eof: false,
-            activity,
-            _permit: None,
-            shutdown_on_drop: true,
-            // The original owner waits without I/O. Move its actual receiver,
-            // not a disconnected substitute, so pushes still reach this lease.
-            pubsub: std::mem::replace(receiver, std::sync::mpsc::sync_channel(1).1),
+        let mut client = match io.channel.cached.take() {
+            Some(client) => client,
+            None => Client {
+                stream: stream.try_clone()?,
+                session: Session::new(),
+                input: Vec::new(),
+                output: Vec::new(),
+                sent: 0,
+                closing: false,
+                eof: false,
+                activity: Instant::now(),
+                _permit: None,
+                shutdown_on_drop: false,
+                pubsub: std::sync::mpsc::sync_channel(1).1,
+            },
         };
-        let (home, returned) = mpsc::channel();
+        client.stream.set_nonblocking(true)?;
+        client.activity = Instant::now();
+        client.closing = false;
+        client.eof = false;
+        client.shutdown_on_drop = true;
+        std::mem::swap(session, &mut client.session);
+        std::mem::swap(input, &mut client.input);
+        std::mem::swap(output, &mut client.output);
+        // Move the actual receiver with the lease; the parked owner gets only
+        // the disconnected placeholder, reused on the next exchange.
+        std::mem::swap(io.pubsub, &mut client.pubsub);
         let loan = Loan {
             client: Some(client),
-            home,
+            home: io.channel.home.clone(),
             stopping: Arc::clone(&self.stopping),
             coordinator: false,
+            skip_idle_scan: false,
         };
         let mut leader = self
             .leader
@@ -198,7 +306,9 @@ impl Sharing {
                 store,
             );
         }
-        let Some(mut client) = returned
+        let Some(mut client) = io
+            .channel
+            .returned
             .recv()
             .map_err(|_| io::Error::other("client I/O lease lost"))?
         else {
@@ -210,13 +320,16 @@ impl Sharing {
         if client.sent > 0 {
             client.output.drain(..client.sent);
         }
-        *session = std::mem::take(&mut client.session);
-        std::mem::swap(receiver, &mut client.pubsub);
-        *input = std::mem::take(&mut client.input);
-        *output = std::mem::take(&mut client.output);
+        std::mem::swap(session, &mut client.session);
+        std::mem::swap(io.pubsub, &mut client.pubsub);
+        std::mem::swap(input, &mut client.input);
+        std::mem::swap(output, &mut client.output);
+        // A partially written reply was compacted above; the inactive shell has
+        // no pending output. Dropping this cache must not shut down the owner.
+        client.sent = 0;
         let closing = client.closing;
-        client.shutdown_on_drop = false; // Drop the lease handle, not the socket.
-        drop(client);
+        client.shutdown_on_drop = false;
+        io.channel.cached = Some(client);
         if !output.is_empty() {
             stream.write_all(output)?;
             output.clear();
@@ -229,6 +342,7 @@ impl Sharing {
         let mut clients = vec![first];
         let mut chunk = [0; 16 * 1024];
         let mut window = EpochWindow::new(Instant::now(), self.idle, self.max_epoch);
+        let mut backoff = IdleBackoff::default();
         loop {
             if self.stopping.load(Ordering::Acquire) {
                 for loan in &mut clients {
@@ -241,8 +355,18 @@ impl Sharing {
                 clients.push(loan);
                 progress = true;
             }
+            // One clock sample per pass: per-client quiet checks and the epoch
+            // window share it instead of reading the clock once per client.
+            let now = Instant::now();
             let mut index = 0;
             while index < clients.len() {
+                if self.adaptive_poll
+                    && clients[index].defer_idle_poll()
+                    && !clients[index].quiet(now, self.idle)
+                {
+                    index += 1;
+                    continue;
+                }
                 match clients[index].client.as_mut().expect("active loan").poll(
                     store,
                     &self.config,
@@ -250,7 +374,10 @@ impl Sharing {
                 ) {
                     Ok(Some(made_progress)) => {
                         progress |= made_progress;
-                        if !made_progress && clients[index].quiet(Instant::now(), self.idle) {
+                        if self.adaptive_poll {
+                            clients[index].skip_idle_scan = !made_progress;
+                        }
+                        if !made_progress && clients[index].quiet(now, self.idle) {
                             clients.swap_remove(index); // Return this borrower, not a busy epoch.
                         } else {
                             index += 1;
@@ -266,9 +393,15 @@ impl Sharing {
             if clients.is_empty() {
                 break;
             }
-            if !window.active(Instant::now(), progress) {
+            if !window.active(now, progress) {
                 break;
-            } else if !progress {
+            }
+            let spins = if self.adaptive_poll {
+                backoff.observe(progress)
+            } else {
+                usize::from(!progress) // Keep the one-CPU v2 policy unchanged.
+            };
+            for _ in 0..spins {
                 std::hint::spin_loop();
             }
         }
@@ -286,3 +419,7 @@ mod tests;
 #[cfg(test)]
 #[path = "handoff_burst_tests.rs"]
 mod burst_tests;
+
+#[cfg(test)]
+#[path = "handoff_ownership_tests.rs"]
+mod ownership_tests;

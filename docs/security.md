@@ -193,7 +193,8 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 ## Deliberate limits
 
 - **Not full Redis ACL.** Remaining subcommand-specific categories beyond the
-  bounded `CLIENT`/`MEMORY`/`OBJECT`/`ACL`/`COMMAND`/`XGROUP`/`XINFO` overrides,
+  bounded `CLIENT`/`MEMORY`/`OBJECT`/`ACL`/`COMMAND`/`XGROUP`/`XINFO`/`CONFIG`/
+  `LATENCY`/`SLOWLOG`/`PUBSUB` overrides,
   nested selectors, dynamic key-sandbox rules, collector sender
   authentication/TLS/federation, full-chain signing/key-ID/hot rotation,
   global/cross-process rate limiting and TLS hardening (SNI/hot reload/OCSP) are

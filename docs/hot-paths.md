@@ -232,10 +232,36 @@ These are general server paths, not a benchmark mode. The bounded multicore clie
 handoff from the existing scheduler remains enabled for 2–4 CPU budgets. Burst
 activity is observed across clients, not inferred from one request's pipeline
 depth: a single-command reply may join an active epoch. The active-epoch check
-short-circuits before the clock/window probe; the existing recent-reply window
-still prevents isolated replies from allocating a lease. A regression test
+short-circuits before the clock/window probe, the idle window bound is stored
+in microseconds, and the coordinator takes one clock sample per pass instead of
+one per client. Each connection reuses one borrower return channel and an inactive
+lease shell. The latter retains the socket clone and placeholder session/receiver
+instead of allocating/cloning/dropping them at every epoch; real buffers, session
+and push receiver still move with their sole I/O owner. The existing recent-reply
+window still prevents isolated replies from allocating a lease. A regression test
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
-accounting, 50 µs idle / 100 ms maximum epoch and shutdown semantics are unchanged.
+accounting, 100 µs multicore idle / 50 µs one-CPU idle / 100 ms maximum epoch and shutdown semantics are unchanged.
+
+Small-multicore policy v7 selects one coordinator when SMT is active or unknown;
+four logical CPUs permit two independent round-robin groups only with an explicit
+bind-time Linux SMT-disabled hint. V4's unconditional two-group cohort failed
+5/10 on a two-core/four-thread runner and remains preserved, not accepted.
+Empty multicore scans now use capped 1–64 processor-hint backoff, reset by real
+progress, rather than immediately repeating futile socket syscalls. V7 holds a
+multicore client for 100 µs of quiet instead of 50 µs so the lease spans the
+pipeline-1 request interval. One-CPU v2, fixed-worker policies, the 100 ms
+maximum epoch and shared transaction locks are unchanged. V6 also skips at most one rescan after a normal leased client's
+empty poll, without postponing buffered work, pending output or asynchronous
+session states. The hint clears before each decision; quiet borrowers still
+service ready I/O before an idle return. Epoch/shutdown checks remain on every
+pass. V5's 7/10 four-CPU result stays failed evidence. These changes add no
+permanent thread, dependency or OS yield/sleep. Benchmark JSON records the actual
+captured lane count. Tests exercise independent leadership, concurrent transaction atomicity,
+reused partial-reply/push ownership and live eight-client ordering/shutdown.
+The Rust Performance Book's [profiling](https://nnethercote.github.io/perf-book/profiling.html)
+and [workhorse reuse](https://nnethercote.github.io/perf-book/heap-allocations.html)
+guidance motivates these focused changes; shared-VM profiles are diagnostics,
+not a substitute for either unchanged protected performance gate.
 
 ## Release build profile
 

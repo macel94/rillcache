@@ -225,8 +225,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   additional socket handle per loan and bounded channel metadata are permitted;
   this resource/active-poll tradeoff is not readiness notification or free CPU.
 - **R94 (event-driven):** When handoffs are measured, embedded JSON shall record
-  the actual captured idle window, maximum epoch and policy version. Linux
-  local/ordinary CI shall
+  the actual captured idle window, maximum epoch, policy version and coordinator
+  group count. Linux local/ordinary CI shall
   exercise the complete default TCP suite on one allowed CPU when taskset is
   available, alongside all existing modes. Frozen-client native comparisons
   shall retain baseline/default modes, CPU budgets, singleton/batched controls,
@@ -235,11 +235,18 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 ### Small-multicore scheduling acceptance (S-IO4)
 
 - **R-IO4A (event-driven):** When default managed clients share a known two-, three-
-  or four-CPU capacity hint, active bursts may use the existing 50 µs idle / 100 ms
-  maximum-epoch handoff path. One-CPU policy v2 shall remain unchanged; small-
-  multicore policy shall be recorded as v3 without enabling single-reply yields.
-  Default thread counts, fixed lanes, TLS transport, admission and storage
-  atomicity shall not change.
+  or four-CPU capacity hint, active bursts may use a 100 µs idle / 100 ms
+  maximum-epoch handoff path so a busy pipeline-1 client stays leased across its
+  request interval. One-CPU policy v2 shall remain unchanged at 50 µs; small-
+  multicore policy shall be recorded as v7 without enabling single-reply yields.
+  Four-CPU admission may select two independent temporary coordinator groups only
+  with an explicit bind-time Linux SMT-disabled hint; active/unknown SMT and 1–3
+  CPU hints shall retain one group. The read-only probe shall read at most three
+  bytes and treat unsupported/error/malformed status conservatively, not infer an
+  affinity-specific physical-core count. A connection shall retain its assigned
+  group across leases regardless of session-ID changes or disconnects. Default
+  thread counts, fixed lanes, TLS, admission and shared transaction/storage
+  atomicity shall not change. Historical v3/v4/v5 evidence keeps its actual version.
 - **R-IO4B (state-driven):** While a connection is lent, its actual push-message
   receiver shall move with its session and socket; the original worker shall
   perform no competing receives. When the lease returns, that same receiver and
@@ -248,6 +255,28 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   gate fails, then a scheduling change shall not claim merge acceptance. CPU and
   syscall profiles shall remain separate diagnostics, not instrumented throughput
   wins; failed four-CPU cohorts and actual policy versions shall remain visible.
+
+- **R-IO4D (state-driven):** After a connection's first lease, later leases shall
+  reuse its inactive socket/session/receiver shell without allocating a new
+  placeholder or cloning the socket. Real state shall still have one owner;
+  return shall reset reply offsets and restore blocking mode. Dropping an
+  inactive shell shall close its extra handle without shutting down the original
+  connection. Tests shall cover repeated partial replies, queued pushes, lane-local
+  closure, cross-lane transactions and live concurrent ordering/joined shutdown.
+
+- **R-IO4E (state-driven):** After empty multicore handoff scans, processor-hint
+  backoff shall grow from 1 to at most 64 instructions and reset on real progress,
+  without OS yield/sleep, rearming an idle epoch, extending its maximum, or changing
+  one-CPU v2/fixed-worker policies. Tests shall cover cap/reset, SMT-status failures
+  and bounded reads, conservative group selection and existing shutdown semantics.
+
+- **R-IO4F (state-driven):** After a no-progress poll of a normal leased client,
+  multicore sharing may defer at most one subsequent rescan. It shall clear that
+  hint before every decision, never defer buffered input, pending output,
+  EOF/closing, blocked/paused or subscription/MONITOR states, and still poll a
+  quiet borrower's ready I/O before returning it. Every pass shall retain epoch
+  and shutdown checks; one-CPU/fixed policies remain unchanged. Tests shall cover
+  the one-pass bound, each guard and execute-once queued input at idle return.
 
 ## PR-only main and scoped Valkey merge acceptance (S23–S24)
 

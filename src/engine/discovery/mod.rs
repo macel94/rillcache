@@ -710,6 +710,102 @@ fn subcommand_category(name: &str, subcommand: &[u8], category: &[u8]) -> Option
                 None
             }
         }
+        "config" => {
+            let recognized = is(&[b"get", b"set", b"resetstat"]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+                || category.eq_ignore_ascii_case(b"slow")
+            {
+                Some(true)
+            } else if category.eq_ignore_ascii_case(b"read")
+                || category.eq_ignore_ascii_case(b"write")
+                || category.eq_ignore_ascii_case(b"fast")
+                || category.eq_ignore_ascii_case(b"connection")
+                || category.eq_ignore_ascii_case(b"keyspace")
+                || category.eq_ignore_ascii_case(b"pubsub")
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        "latency" => {
+            let help = subcommand.eq_ignore_ascii_case(b"help");
+            let recognized = help || is(&[b"doctor", b"history", b"latest", b"reset"]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"slow") {
+                Some(true)
+            } else if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+            {
+                Some(!help)
+            } else if category.eq_ignore_ascii_case(b"read")
+                || category.eq_ignore_ascii_case(b"write")
+                || category.eq_ignore_ascii_case(b"fast")
+                || category.eq_ignore_ascii_case(b"connection")
+                || category.eq_ignore_ascii_case(b"keyspace")
+                || category.eq_ignore_ascii_case(b"pubsub")
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        "slowlog" => {
+            let help = subcommand.eq_ignore_ascii_case(b"help");
+            let recognized = help || is(&[b"get", b"len", b"reset"]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"slow") {
+                Some(true)
+            } else if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+            {
+                Some(!help)
+            } else if category.eq_ignore_ascii_case(b"read")
+                || category.eq_ignore_ascii_case(b"write")
+                || category.eq_ignore_ascii_case(b"fast")
+                || category.eq_ignore_ascii_case(b"connection")
+                || category.eq_ignore_ascii_case(b"keyspace")
+                || category.eq_ignore_ascii_case(b"pubsub")
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        "pubsub" => {
+            let recognized = is(&[
+                b"channels",
+                b"numsub",
+                b"numpat",
+                b"shardchannels",
+                b"shardnumsub",
+            ]);
+            if !recognized {
+                return None;
+            }
+            if category.eq_ignore_ascii_case(b"pubsub") || category.eq_ignore_ascii_case(b"slow") {
+                Some(true)
+            } else if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+                || category.eq_ignore_ascii_case(b"read")
+                || category.eq_ignore_ascii_case(b"write")
+                || category.eq_ignore_ascii_case(b"fast")
+                || category.eq_ignore_ascii_case(b"connection")
+                || category.eq_ignore_ascii_case(b"keyspace")
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
         "xgroup" => {
             let help = subcommand.eq_ignore_ascii_case(b"help");
             let recognized = help
