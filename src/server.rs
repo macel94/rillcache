@@ -13,6 +13,7 @@ use crate::protocol::{Limits, dispatch_request};
 use crate::session::Session;
 use std::path::PathBuf;
 
+mod accept;
 mod handoff;
 mod pool;
 mod tls;
@@ -566,6 +567,9 @@ fn serve_plain(
     stopping: Arc<AtomicBool>,
     policy: SchedulingPolicy,
 ) -> io::Result<()> {
+    // A failed/unsupported setup leaves the original nonblocking fallback.
+    // Keep the existing idle backoff, maintenance checks and joined shutdown.
+    let _ = accept::enable_timeout(&listener);
     let admitted = Arc::new(AtomicUsize::new(0));
     let mut sharing = handoff::Lanes::new(&config, &stopping, policy);
     let mut workers: Vec<Worker> = Vec::new();
