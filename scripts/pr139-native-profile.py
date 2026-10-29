@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """One read-only native diagnostic; never a required-gate result or retry."""
 import contextlib
+import json
 import os
 from pathlib import Path
 import re
@@ -134,6 +135,16 @@ def owned_server(binary, variant, cpus, directory):
             G['save'](directory / 'server.json', identity)
 
 
+def capture_permissions(directory):
+    results = {}
+    for role in ('server', 'generator'):
+        path = directory / f'{role}.perf.data'
+        if path.exists():
+            results[role] = COMMON.command(['sudo', '-n', 'chmod', '0644', str(path)],
+                                           directory / f'{role}-capture-permission', timeout=15)
+    return results
+
+
 def profiler_jobs(perf, cpu_event, mode, server_pid, generator_pid, directory):
     jobs = []
     for role, pid in [('server', server_pid), ('generator', generator_pid)]:
@@ -147,6 +158,8 @@ def profiler_jobs(perf, cpu_event, mode, server_pid, generator_pid, directory):
             argv += ['-e', 'task-clock,context-switches', '-p', str(pid),
                      '-o', str(directory / f'{role}-syscalls.txt'), '--', 'sleep', '8']
         else:
+            # Retain runner ownership even if privileged perf exits abnormally.
+            (directory / f'{role}.perf.data').touch(mode=0o600, exist_ok=False)
             argv = prefix + ['record', '-F', '199', '-e', cpu_event, '-g', '--call-graph', 'dwarf,4096',
                              '-p', str(pid), '-o', str(directory / f'{role}.perf.data'), '--', 'sleep', '8']
         log = (directory / f'{role}-profiler.log').open('wb')
@@ -198,6 +211,7 @@ def measured_load(argv, directory, server, mode, perf, cpu_event):
             for _, proc, _ in jobs:
                 if proc.poll() is None:
                     G['terminate'](proc)
+            metadata['capture_permissions'] = capture_permissions(directory)
             metadata['wall_seconds'] = time.monotonic() - start
             metadata.setdefault('exit_code', load.returncode)
             G['save'](directory / 'command.json', metadata)
@@ -218,7 +232,11 @@ def sample(binaries, hashes, variant, run, mode, cpus, perf=None, cpu_event=None
             G['read_generator'](directory / 'warmup', 'ping', warm)
             before = snapshot(server.pid)
             argv = G['generator_argv'](binaries['generator'], port, 'ping', 1, None, cpus)
+            if mode != 'normal':
+                # Keep targets alive through perf startup plus its 8s capture.
+                argv[argv.index('--duration') + 1] = '20'
             resource = measured_load(argv, directory / 'measured', server, mode, perf, cpu_event)
+            assert resource['wall_seconds'] >= (10 if mode == 'normal' else 20)
             after = snapshot(server.pid)
             metrics = G['read_generator'](directory / 'measured', 'ping', argv)
             G['validate_dataset'](port, 'ping', after=True)
@@ -241,6 +259,12 @@ def sample(binaries, hashes, variant, run, mode, cpus, perf=None, cpu_event=None
         return result
     finally:
         G['save'](directory / 'sample.json', result)
+        print('NATIVE_SAMPLE ' + json.dumps(result, sort_keys=True), flush=True)
+        for phase in ('warmup', 'measured'):
+            path = directory / phase / 'stdout.log'
+            if path.exists():
+                print('NATIVE_RAW_CSV ' + json.dumps({'variant': variant, 'run': run, 'mode': mode,
+                                                     'phase': phase, 'csv': path.read_text()}), flush=True)
 
 
 def main():
@@ -250,6 +274,7 @@ def main():
     OUT.mkdir(parents=True, exist_ok=False)
     manifest = {'diagnostic_only': True, 'complete': False, 'profiles_complete': False,
                 'base_source': BASE, 'candidate_source': CANDIDATE, 'normal_samples': [], 'profile_samples': [],
+                'normal_duration_seconds': 10, 'profile_load_seconds': 20, 'capture_seconds': 8,
                 'scope': 'PING/P1 only; default servers, official Valkey generator, 8 clients/2 threads, shared four CPUs; NOT a required gate'}
     try:
         cpus = sorted(os.sched_getaffinity(0))[:4]
@@ -288,7 +313,7 @@ def main():
         manifest['profiles_complete'] = True
         assert all(G['digest'](path) == hashes[name] for name, path in binaries.items())
         text = '# Native shared-four-CPU PING diagnostic (NOT a merge gate)\n\n'
-        text += 'Separate uninstrumented comparisons and instrumented syscall/CPU captures; default servers, one owned server at a time. All raw samples retained.\n\n'
+        text += 'Separate uninstrumented 10s comparisons and instrumented 20s loads with 8s syscall/CPU captures; default servers, one owned server at a time. All raw samples retained.\n\n'
         text += '| Server | Median [min-max] req/s | Server CPU seconds | Generator CPU seconds |\n|---|---:|---:|---:|\n'
         for variant in variants:
             rows = [s for s in manifest['normal_samples'] if s['variant'] == variant]
@@ -303,6 +328,7 @@ def main():
         raise
     finally:
         G['save'](OUT / 'manifest.json', manifest)
+        print('NATIVE_MANIFEST ' + json.dumps(manifest, sort_keys=True), flush=True)
 
 
 if __name__ == '__main__':
