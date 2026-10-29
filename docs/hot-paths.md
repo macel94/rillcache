@@ -242,7 +242,7 @@ window still prevents isolated replies from allocating a lease. A regression tes
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
 accounting, 100 µs multicore idle / 50 µs one-CPU idle / 100 ms maximum epoch and shutdown semantics are unchanged.
 
-Small-multicore policy v7 selects one coordinator when SMT is active or unknown;
+Small-multicore policies v7–v8 select one coordinator when SMT is active or unknown;
 four logical CPUs permit two independent round-robin groups only with an explicit
 bind-time Linux SMT-disabled hint. V4's unconditional two-group cohort failed
 5/10 on a two-core/four-thread runner and remains preserved, not accepted.
@@ -254,14 +254,48 @@ maximum epoch and shared transaction locks are unchanged. V6 also skips at most 
 empty poll, without postponing buffered work, pending output or asynchronous
 session states. The hint clears before each decision; quiet borrowers still
 service ready I/O before an idle return. Epoch/shutdown checks remain on every
-pass. V5's 7/10 four-CPU result stays failed evidence. These changes add no
-permanent thread, dependency or OS yield/sleep. Benchmark JSON records the actual
+pass. V5's 7/10 four-CPU result stays failed evidence. V5–v7 added no
+permanent thread, dependency or OS yield/sleep; v8's exhausted-backoff yield is
+separately described below. Benchmark JSON records the actual
 captured lane count. Tests exercise independent leadership, concurrent transaction atomicity,
 reused partial-reply/push ownership and live eight-client ordering/shutdown.
 The Rust Performance Book's [profiling](https://nnethercote.github.io/perf-book/profiling.html)
 and [workhorse reuse](https://nnethercote.github.io/perf-book/heap-allocations.html)
 guidance motivates these focused changes; shared-VM profiles are diagnostics,
 not a substitute for either unchanged protected performance gate.
+
+## Cooperative exhausted backoff (S-COOPIDLE)
+
+Multicore policy v8 retains the seven no-progress processor-hint stages
+1/2/4/8/16/32/64, then requests `thread::yield_now()` on further empty passes.
+Actual progress resets the sequence before any yield; the counter saturates.
+One-CPU v2, fixed workers, SMT group selection, ownership, deferred-read guards,
+command/output quanta and 100 µs idle / 100 ms maximum epochs are unchanged.
+This is neither a sleep nor readiness notification: [Rust warns that yielding
+can still busy-wait](https://doc.rust-lang.org/std/thread/fn.yield_now.html), and
+Linux gives no SCHED_OTHER fairness/performance guarantee. Correctness never
+relies on another thread being scheduled. Captured metadata now reports v8;
+only the benchmark CLI test's expected version changes, not its measurement loop.
+
+[Native study 40883093629](https://github.com/macel94/rillcache/actions/runs/40883093629)
+compared baseline `aed4dd7`, prototype `7f5baf4` and Valkey 9.1.2 on the same
+Ubuntu 24.04/EPYC 7763 two-core/four-SMT-thread runner. Nine normal PING/P1
+samples retained the preceding study's matched settings and Latin rotation.
+Medians [min–max] were 109,277.2 [109,075.5–109,318.0], 113,235.2
+[111,780.5–113,311.7] and 114,946.6 [112,647.8–115,924.8] req/s.
+The candidate gained about 3.6% against its own baseline but **still trailed
+Valkey by 1.5%**. Normal server CPU medians were 10.100/10.090/9.980 s and
+generator CPU 18.441/18.926/19.540 s. No statistical, tail or all-workload win
+is established. All nine normal, six traffic-profile and three idle captures
+were independently checked with fresh distinct binaries and owned lifecycles.
+
+Separate instrumented captures confirm 491 candidate yields versus zero, but
+empty receives/send rose 0.944→1.239, ioctl 5407→6082 and context switches
+6018→6798. They do **not** establish less empty I/O or unprofiled CPU/energy
+savings. The original advisory promotion condition (also beating Valkey in
+this subset) was not met; that loss remains visible. The measured own-baseline
+gain justifies testing this new runtime candidate through the unchanged protected
+gates, not claiming acceptance or retrying the old source until green.
 
 ## INFO snapshot locking and unnecessary scans
 
