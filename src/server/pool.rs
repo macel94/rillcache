@@ -110,7 +110,8 @@ impl Client {
             self.closing = true;
             return Ok(true);
         }
-        match self.stream.read(&mut chunk[..room]) {
+        let mut buffers = [io::IoSliceMut::new(&mut chunk[..room])];
+        match self.stream.read_vectored(&mut buffers) {
             Ok(0) => {
                 self.eof = true;
                 Ok(true)
@@ -524,6 +525,49 @@ mod tests {
             },
             peer,
         )
+    }
+
+    #[test]
+    fn receive_preserves_the_frame_room_and_leaves_excess_bytes_on_the_socket() {
+        let (mut client, mut peer) = test_client(vec![b'x'; 61]);
+        peer.write_all(b"abcd").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut queued = [0; 4];
+        while !client.stream.peek(&mut queued).is_ok_and(|n| n == 4) {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        let limits = Limits {
+            max_frame_bytes: 64,
+            max_bulk_bytes: 32,
+            ..Limits::default()
+        };
+        let mut chunk = [0xaa; 16];
+        assert!(client.receive(limits, &mut chunk).unwrap());
+        assert_eq!(client.input.len(), 64);
+        assert_eq!(&client.input[..61], &[b'x'; 61]);
+        assert_eq!(&client.input[61..], b"abc");
+        assert_eq!(&chunk[3..], &[0xaa; 13]);
+        let mut remaining = [0; 1];
+        assert_eq!(client.stream.peek(&mut remaining).unwrap(), 1);
+        assert_eq!(&remaining, b"d");
+        assert!(!client.eof);
+        assert!(client.receive(limits, &mut chunk).unwrap());
+        assert!(client.closing);
+        assert_eq!(client.stream.peek(&mut remaining).unwrap(), 1);
+        assert_eq!(&remaining, b"d");
+    }
+
+    #[test]
+    fn an_empty_receive_preserves_partial_input_and_activity() {
+        let (mut client, _peer) = test_client(b"partial".to_vec());
+        let activity = Instant::now() - Duration::from_secs(1);
+        client.activity = activity;
+        assert!(!client.receive(Limits::default(), &mut [0; 16]).unwrap());
+        assert_eq!(client.input, b"partial");
+        assert_eq!(client.activity, activity);
+        assert!(!client.eof);
+        assert!(!client.closing);
     }
 
     #[test]
