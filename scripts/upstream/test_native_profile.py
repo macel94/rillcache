@@ -75,6 +75,18 @@ class NativeBuildTests(unittest.TestCase):
 
 
 class NativeEvidenceTests(unittest.TestCase):
+    def test_syscall_capture_includes_readv_and_only_the_owned_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(NATIVE['subprocess'], 'Popen'):
+                jobs = NATIVE['profiler_jobs']('perf', 'cpu-clock', 'syscalls', 123, 124, Path(temporary))
+            for (role, _, argv), pid in zip(jobs, (123, 124)):
+                self.assertIn(role, ('server', 'generator'))
+                self.assertIn('syscalls:sys_exit_readv', argv)
+                self.assertIn('syscalls:sys_enter_readv', argv)
+                self.assertEqual(argv.count('--filter'), 3)
+                self.assertEqual(argv[argv.index('-p') + 1], str(pid))
+                self.assertNotIn('-a', argv)
+
     def test_capture_is_runner_owned_even_if_privileged_profiler_cannot_start(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

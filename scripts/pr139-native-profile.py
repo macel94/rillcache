@@ -15,8 +15,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/upstream/evidence/pr139-native'
 BIN = OUT / 'frozen-binaries'
-BASE = '0e04603bc71721317b3945bcc2d77406148f3692'
-CANDIDATE = '956e5fededdbc4aa7539e69d205d3cc69ed5eecc'
+BASE = '956e5fededdbc4aa7539e69d205d3cc69ed5eecc'
+CANDIDATE = '65efeb1237c265a21fcabbaaea6bd2b761d749ef'
 G = runpy.run_path(str(ROOT / 'scripts/pr-multicpu-performance.py'))
 COMMON = sys.modules['common']
 SAFE_ENV = {'PATH': os.environ['PATH'], 'LANG': 'C', 'LC_ALL': 'C'}
@@ -72,7 +72,7 @@ def build_sources():
                 raise RuntimeError('source archive failed')
         compile_application(tree, name)
         shutil.copy2(tree / 'target/release/rillcache', BIN / name)
-    assert G['digest'](BIN / 'baseline') != G['digest'](BIN / 'candidate'), 'known behavior-changing revisions produced the same binary'
+    assert G['digest'](BIN / 'baseline') != G['digest'](BIN / 'candidate'), 'known code-generating revisions produced the same binary'
     # The advisory prerequisite build uses libc; the protected gate uses the
     # upstream defaults. Build the exact protected Makefile targets instead.
     pin = COMMON.PINS['upstreams']['valkey']
@@ -172,8 +172,9 @@ def profiler_jobs(perf, cpu_event, mode, server_pid, generator_pid, directory):
         prefix = ['sudo', '-n', perf]
         if mode == 'syscalls':
             argv = prefix + ['stat', '-x', ';', '--no-big-num', '-e', 'syscalls:sys_exit_recvfrom',
-                             '--filter', 'ret == -11', '-e', 'syscalls:sys_exit_read', '--filter', 'ret == -11']
-            for event in ['sys_enter_recvfrom', 'sys_enter_read', 'sys_enter_sendto', 'sys_enter_write',
+                             '--filter', 'ret == -11', '-e', 'syscalls:sys_exit_read', '--filter', 'ret == -11',
+                             '-e', 'syscalls:sys_exit_readv', '--filter', 'ret == -11']
+            for event in ['sys_enter_recvfrom', 'sys_enter_read', 'sys_enter_readv', 'sys_enter_sendto', 'sys_enter_write',
                           'sys_enter_ioctl', 'sys_enter_futex', 'sys_enter_epoll_wait']:
                 argv += ['-e', 'syscalls:' + event]
             argv += ['-e', 'task-clock,context-switches', '-p', str(pid),
