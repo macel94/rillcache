@@ -25,11 +25,13 @@ impl Lanes {
         Self {
             lanes: (0..policy.client_handoff_lanes)
                 .map(|_| {
-                    Arc::new(Sharing::new(
+                    let mut sharing = Sharing::new(
                         config.clone(),
                         Arc::clone(stopping),
                         policy.client_handoff_idle_us,
-                    ))
+                    );
+                    sharing.adaptive_poll = !policy.single_reply_yield;
+                    Arc::new(sharing)
                 })
                 .collect(),
             next: 0,
@@ -53,6 +55,25 @@ pub(super) struct Sharing {
     idle: Duration,
     idle_micros: u64,
     max_epoch: Duration,
+    adaptive_poll: bool,
+}
+
+/// Short processor-hint backoff after empty scans, not an OS yield or sleep.
+/// Real progress resets the sequence; the existing epoch still ends idle work.
+#[derive(Default)]
+struct IdleBackoff {
+    step: u32,
+}
+impl IdleBackoff {
+    fn observe(&mut self, progress: bool) -> usize {
+        if progress {
+            self.step = 0;
+            return 0;
+        }
+        let spins = 1 << self.step;
+        self.step = (self.step + 1).min(6);
+        spins
+    }
 }
 
 struct EpochWindow {
@@ -162,6 +183,7 @@ impl Sharing {
             idle: Duration::from_micros(idle_us),
             idle_micros: idle_us,
             max_epoch: Duration::from_millis(CLIENT_HANDOFF_MAX_EPOCH_MS),
+            adaptive_poll: false,
         }
     }
 
@@ -302,6 +324,7 @@ impl Sharing {
         let mut clients = vec![first];
         let mut chunk = [0; 16 * 1024];
         let mut window = EpochWindow::new(Instant::now(), self.idle, self.max_epoch);
+        let mut backoff = IdleBackoff::default();
         loop {
             if self.stopping.load(Ordering::Acquire) {
                 for loan in &mut clients {
@@ -344,7 +367,13 @@ impl Sharing {
             }
             if !window.active(now, progress) {
                 break;
-            } else if !progress {
+            }
+            let spins = if self.adaptive_poll {
+                backoff.observe(progress)
+            } else {
+                usize::from(!progress) // Keep the one-CPU v2 policy unchanged.
+            };
+            for _ in 0..spins {
                 std::hint::spin_loop();
             }
         }

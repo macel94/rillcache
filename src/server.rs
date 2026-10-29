@@ -16,13 +16,14 @@ use std::path::PathBuf;
 mod handoff;
 mod pool;
 mod tls;
+mod topology;
 
 /// Busy clients may briefly lend I/O to an existing managed client thread.
 pub const CLIENT_HANDOFF_IDLE_US: u64 = 50;
 /// Bound sharing to small CPU budgets; larger/unknown machines keep blocking I/O.
 pub const CLIENT_HANDOFF_MAX_CPUS: usize = 4;
 /// Small multicore budgets share busy I/O without one-CPU reply-yield hints.
-pub const CLIENT_HANDOFF_MULTICORE_POLICY_VERSION: u64 = 4;
+pub const CLIENT_HANDOFF_MULTICORE_POLICY_VERSION: u64 = 5;
 /// Continuous traffic cannot retain a coordinator/admission slot indefinitely.
 pub const CLIENT_HANDOFF_MAX_EPOCH_MS: u64 = 100;
 /// v2 requires recent reply activity before creating a new handoff epoch.
@@ -101,6 +102,16 @@ impl SchedulingPolicy {
             },
         }
     }
+    fn with_smt_disabled(mut self, known_disabled: bool) -> Self {
+        // Logical CPUs may be siblings on the same core. Extra busy pollers
+        // must not assume independent execution resources when SMT is active
+        // or the optional host hint is unavailable.
+        if self.client_handoff_lanes > 1 && !known_disabled {
+            self.client_handoff_lanes = 1;
+        }
+        self
+    }
+
     fn yield_reply(self, commands: usize, permit: &Permit) -> bool {
         self.single_reply_yield && commands == 1 && permit.has_peers()
     }
@@ -444,7 +455,10 @@ impl Server {
             None => (None, None),
         };
         let capacity = thread::available_parallelism().ok().map(usize::from);
-        let policy = SchedulingPolicy::new(config.worker_threads, capacity);
+        let mut policy = SchedulingPolicy::new(config.worker_threads, capacity);
+        if policy.client_handoff_lanes > 1 {
+            policy = policy.with_smt_disabled(topology::smt_disabled());
+        }
         Ok(Self {
             listener,
             tls_listener,
@@ -1076,7 +1090,7 @@ mod tests {
         for cpus in 2..=CLIENT_HANDOFF_MAX_CPUS {
             let policy = SchedulingPolicy::new(None, Some(cpus));
             assert_eq!(policy.client_handoff_idle_us, CLIENT_HANDOFF_IDLE_US);
-            assert_eq!(policy.client_handoff_policy_version(), 4);
+            assert_eq!(policy.client_handoff_policy_version(), 5);
             assert_eq!(policy.client_handoff_lanes, (cpus / 2).max(1));
             assert_eq!(policy.client_handoff_max_epoch_ms(), 100);
             assert!(!policy.single_reply_yield);
@@ -1092,6 +1106,36 @@ mod tests {
             SchedulingPolicy::new(None, Some(1)).client_handoff_policy_version(),
             2
         );
+    }
+
+    #[test]
+    fn smt_or_unknown_topology_keeps_one_coordinator_without_changing_other_policies() {
+        for cpus in 1..=8 {
+            let original = SchedulingPolicy::new(None, Some(cpus));
+            for known_disabled in [false, true] {
+                let selected = original.with_smt_disabled(known_disabled);
+                let expected = if original.client_handoff_lanes > 1 && !known_disabled {
+                    1
+                } else {
+                    original.client_handoff_lanes
+                };
+                assert_eq!(selected.client_handoff_lanes, expected);
+                assert_eq!(selected.single_reply_yield, original.single_reply_yield);
+                assert_eq!(
+                    selected.client_handoff_idle_us,
+                    original.client_handoff_idle_us
+                );
+                assert_eq!(
+                    selected.client_handoff_policy_version(),
+                    original.client_handoff_policy_version()
+                );
+            }
+            for workers in [1, 4] {
+                let fixed = SchedulingPolicy::new(Some(workers), Some(cpus));
+                assert_eq!(fixed.with_smt_disabled(false), fixed);
+                assert_eq!(fixed.with_smt_disabled(true), fixed);
+            }
+        }
     }
 
     #[test]

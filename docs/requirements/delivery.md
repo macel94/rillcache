@@ -226,8 +226,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   this resource/active-poll tradeoff is not readiness notification or free CPU.
 - **R94 (event-driven):** When handoffs are measured, embedded JSON shall record
   the actual captured idle window, maximum epoch, policy version and coordinator
-  group count. Linux
-  local/ordinary CI shall
+  group count. Linux local/ordinary CI shall
   exercise the complete default TCP suite on one allowed CPU when taskset is
   available, alongside all existing modes. Frozen-client native comparisons
   shall retain baseline/default modes, CPU budgets, singleton/batched controls,
@@ -238,12 +237,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-IO4A (event-driven):** When default managed clients share a known two-, three-
   or four-CPU capacity hint, active bursts may use the existing 50 µs idle / 100 ms
   maximum-epoch handoff path. One-CPU policy v2 shall remain unchanged; small-
-  multicore policy shall be recorded as v4 without enabling single-reply yields.
-  Four-CPU admission shall rotate connections between two independent temporary
-  coordinator groups; 1–3 CPU hints shall retain one group. A connection shall
-  retain its group across leases regardless of session-ID changes or disconnects.
-  Default thread counts, fixed lanes, TLS transport, admission and shared storage/
-  transaction atomicity shall not change. Historical v3 evidence remains v3.
+  multicore policy shall be recorded as v5 without enabling single-reply yields.
+  Four-CPU admission may select two independent temporary coordinator groups only
+  with an explicit bind-time Linux SMT-disabled hint; active/unknown SMT and 1–3
+  CPU hints shall retain one group. The read-only probe shall read at most three
+  bytes and treat unsupported/error/malformed status conservatively, not infer an
+  affinity-specific physical-core count. A connection shall retain its assigned
+  group across leases regardless of session-ID changes or disconnects. Default
+  thread counts, fixed lanes, TLS, admission and shared transaction/storage
+  atomicity shall not change. Historical v3/v4 evidence keeps its actual version.
 - **R-IO4B (state-driven):** While a connection is lent, its actual push-message
   receiver shall move with its session and socket; the original worker shall
   perform no competing receives. When the lease returns, that same receiver and
@@ -260,6 +262,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   inactive shell shall close its extra handle without shutting down the original
   connection. Tests shall cover repeated partial replies, queued pushes, lane-local
   closure, cross-lane transactions and live concurrent ordering/joined shutdown.
+
+- **R-IO4E (state-driven):** After empty multicore handoff scans, processor-hint
+  backoff shall grow from 1 to at most 64 instructions and reset on real progress,
+  without OS yield/sleep, rearming an idle epoch, extending its maximum, or changing
+  one-CPU v2/fixed-worker policies. Tests shall cover cap/reset, SMT-status failures
+  and bounded reads, conservative group selection and existing shutdown semantics.
 
 ## PR-only main and scoped Valkey merge acceptance (S23–S24)
 

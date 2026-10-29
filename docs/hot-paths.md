@@ -242,11 +242,15 @@ window still prevents isolated replies from allocating a lease. A regression tes
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
 accounting, 50 µs idle / 100 ms maximum epoch and shutdown semantics are unchanged.
 
-Small-multicore policy v4 also divides four-CPU connections round-robin between
-two independent temporary coordinators. One through three CPUs retain one group.
-This removes a transport serialization point, not the shared store/transaction
-locks, and adds no permanent threads. Benchmark JSON records the captured lane
-count. Tests exercise independent leadership, concurrent transaction atomicity,
+Small-multicore policy v5 selects one coordinator when SMT is active or unknown;
+four logical CPUs permit two independent round-robin groups only with an explicit
+bind-time Linux SMT-disabled hint. V4's unconditional two-group cohort failed
+5/10 on a two-core/four-thread runner and remains preserved, not accepted.
+Empty multicore scans now use capped 1–64 processor-hint backoff, reset by real
+progress, rather than immediately repeating futile socket syscalls. One-CPU v2,
+fixed-worker policies, idle/maximum epoch bounds and shared transaction locks
+are unchanged. This adds no permanent thread, dependency or OS yield/sleep.
+Benchmark JSON records the actual captured lane count. Tests exercise independent leadership, concurrent transaction atomicity,
 reused partial-reply/push ownership and live eight-client ordering/shutdown.
 The Rust Performance Book's [profiling](https://nnethercote.github.io/perf-book/profiling.html)
 and [workhorse reuse](https://nnethercote.github.io/perf-book/heap-allocations.html)

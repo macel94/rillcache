@@ -3,6 +3,22 @@ use std::io::{BufRead, BufReader};
 use std::sync::Barrier;
 
 #[test]
+fn idle_backoff_is_capped_and_actual_progress_resets_it() {
+    let mut backoff = IdleBackoff::default();
+    for expected in [1, 2, 4, 8, 16, 32, 64] {
+        assert_eq!(backoff.observe(false), expected);
+    }
+    for _ in 0..1000 {
+        assert_eq!(backoff.observe(false), 64);
+    }
+    assert_eq!(backoff.observe(true), 0);
+    assert_eq!(backoff.observe(false), 1);
+    assert_eq!(backoff.observe(true), 0);
+    assert_eq!(backoff.observe(true), 0);
+    assert_eq!(backoff.observe(false), 1);
+}
+
+#[test]
 fn admission_rotates_stably_and_epoch_closure_is_lane_local() {
     let stop = Arc::new(AtomicBool::new(false));
     for capacity in [None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)] {
@@ -15,6 +31,7 @@ fn admission_rotates_stably_and_epoch_closure_is_lane_local() {
         }
         for index in 0..17 {
             let assigned = lanes.assign().unwrap();
+            assert_eq!(assigned.adaptive_poll, !policy.single_reply_yield);
             assert!(Arc::ptr_eq(
                 &assigned,
                 &lanes.lanes[index % lanes.lanes.len()]

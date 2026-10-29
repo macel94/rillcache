@@ -10,15 +10,31 @@ The separate matched A/B study reports both improvements and regressions; those
 runner/cohort percentages must not be blended. This does not establish all-traffic
 performance, feature equivalence or production readiness.
 
-## Small-multicore policy v4
+## Small-multicore policy v5
 
 V3 enabled bounded handoffs for known two-, three- and four-CPU bind-time
-capacity hints. V4 retains one temporary coordinator at two/three CPUs and uses
-two independent connection groups at four CPUs, rather than funneling all busy
-sockets through one coordinator. Admission assigns connections round-robin;
-each connection keeps its group across leases, independently of session IDs or
-other connections closing. Both groups use the same shared store and transaction
-locks: this is I/O ownership partitioning, not data sharding or thread pinning.
+capacity hints. V4's unconditional two-coordinator experiment at four logical
+CPUs completed with [5/10 wins](https://github.com/macel94/rillcache/actions/runs/40794219718),
+not merge acceptance. On the two-core/four-thread EPYC runner its PING P1 median
+was 99,022 versus Valkey's 113,922 req/s, with worse p99 and about 21 server CPU
+seconds per ten-second sample. More busy pollers did not solve that bottleneck.
+This failed source/evidence remains v4, never relabeled as v5.
+
+V5 retains one temporary coordinator at 1–3 CPUs, and also at four CPUs while SMT
+is active or unknown. Two groups are allowed at four CPUs only with an explicit
+bind-time Linux `smt/active` value of zero. This is a conservative machine-wide
+hint, not an affinity-specific physical-core count, CPU-model allowlist or host
+setting change; unavailable/non-Linux/malformed status falls back to one group.
+Admission rotates connections between the selected groups; each connection keeps
+its group across leases, independently of session IDs or other disconnects.
+All groups use the same shared store and transaction locks: this is I/O ownership
+partitioning, not data sharding or thread pinning.
+
+After an empty multicore scan, processor hints back off from 1 through at most
+64 `spin_loop` instructions, resetting immediately on real progress. This avoids
+hammering empty socket reads while clients/SMT siblings need execution resources.
+There is no added OS yield/sleep and no rearming of the idle/maximum epoch on an
+empty scan. The one-CPU v2 and explicit fixed-worker paths do not use this backoff.
 
 The 50 µs idle / 100 ms maximum epoch, managed thread-per-client admission and
 absence of multicore single-reply yields are unchanged. No permanent worker is
@@ -133,6 +149,8 @@ all client control handles and joins every started worker.
   one return per loan and restoration of blocking reads. Additional tests cover
   lane-local leadership closure, cross-lane transaction atomicity, repeated shell
   reuse/partial replies/push ownership and eight-client wire/shutdown behavior.
+  SMT-probe tests cover short/error/malformed/oversized reads and a three-byte
+  read bound; policy/backoff tests cover conservative selection, cap and reset.
 - `make check`/`make ci` add the complete default TCP suite on one allowed Linux
   CPU when taskset is available; existing per-client/one/four-mode tests remain.
   The benchmark records captured `client_handoff_idle_us`,
@@ -157,4 +175,6 @@ Sources: [safe TCP cloning/options](https://doc.rust-lang.org/std/net/struct.Tcp
 [capacity caveats](https://doc.rust-lang.org/std/thread/fn.available_parallelism.html),
 [yield caveats](https://doc.rust-lang.org/std/thread/fn.yield_now.html),
 [std channels](https://doc.rust-lang.org/std/sync/mpsc/),
+[Linux SMT status ABI](https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-devices-system-cpu),
+[bounded processor hints](https://doc.rust-lang.org/std/hint/fn.spin_loop.html),
 [previous I/O investigation](io-scheduling.md).
