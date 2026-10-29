@@ -75,6 +75,18 @@ class NativeBuildTests(unittest.TestCase):
 
 
 class NativeEvidenceTests(unittest.TestCase):
+    def test_idle_capture_has_only_the_owned_server_and_no_generator(self):
+        argv = NATIVE['idle_argv']('perf', 123, Path('/owned/idle/syscalls.txt'))
+        self.assertEqual(argv[:4], ['sudo', '-n', 'perf', 'stat'])
+        self.assertEqual(argv[argv.index('-p') + 1], '123')
+        self.assertEqual(argv[argv.index('-o') + 1], '/owned/idle/syscalls.txt')
+        self.assertEqual(argv[-3:], ['--', 'sleep', '2'])
+        events = argv[argv.index('-e') + 1].split(',')
+        self.assertIn('syscalls:sys_enter_accept4', events)
+        self.assertIn('syscalls:sys_enter_clock_nanosleep', events)
+        self.assertNotIn('-a', argv)
+        self.assertNotIn('--duration', argv)
+
     def test_syscall_capture_includes_readv_and_only_the_owned_target(self):
         with tempfile.TemporaryDirectory() as temporary:
             with patch.object(NATIVE['subprocess'], 'Popen'):
