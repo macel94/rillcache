@@ -75,10 +75,7 @@ impl BudgetInner {
         self.state.lock().map(|state| state.bytes).unwrap_or(0)
     }
     fn available_messages(&self) -> usize {
-        self.state
-            .lock()
-            .map(|state| state.messages)
-            .unwrap_or(0)
+        self.state.lock().map(|state| state.messages).unwrap_or(0)
     }
     fn is_closed(&self) -> bool {
         self.state.lock().map(|state| state.closed).unwrap_or(true)

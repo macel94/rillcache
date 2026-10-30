@@ -34,7 +34,12 @@ async fn ack(
     make: impl FnOnce(Acknowledge) -> Control,
 ) -> Result<(), OwnerError> {
     let (answer, reply) = reply_channel(replies.reserve(0).await.unwrap());
-    sender.control.reserve(0).await.unwrap().send_with(|| make(answer));
+    sender
+        .control
+        .reserve(0)
+        .await
+        .unwrap()
+        .send_with(|| make(answer));
     *reply.recv().await.unwrap()
 }
 
@@ -64,7 +69,8 @@ fn reservation_decision_apply_release_is_exclusive_and_exactly_once() {
     let core = OwnerCore::new(owner, layout, services()).unwrap();
     let key = key_for(layout, owner);
     let mut output = Vec::new();
-    core.try_execute(&[b"SET", &key, b"old"], &mut output).unwrap();
+    core.try_execute(&[b"SET", &key, b"old"], &mut output)
+        .unwrap();
     assert_eq!(output, b"+OK\r\n");
     let id = ReservationId::new(1).unwrap();
     let other = ReservationId::new(2).unwrap();
@@ -148,7 +154,10 @@ fn local_waiter_has_no_data_borrow_and_wakes_after_apply_and_release() {
             .unwrap();
             assert_eq!(read.as_mut().poll(&mut cx), Poll::Pending);
             core.release(id).unwrap();
-            assert_eq!(read.as_mut().poll(&mut cx), Poll::Ready(Ok(Action::Continue)));
+            assert_eq!(
+                read.as_mut().poll(&mut cx),
+                Poll::Ready(Ok(Action::Continue))
+            );
         }
         assert_eq!(output, b"$5\r\nvalue\r\n");
     });
@@ -164,10 +173,15 @@ fn cancelled_grant_does_not_strand_a_fence_or_block_stop() {
         let actor = OwnerActor::new(Rc::clone(&core), inbox);
         let replies = ByteBudget::new(1024).unwrap();
         let (answer, reply) = reply_channel(replies.reserve(0).await.unwrap());
-        sender.control.reserve(0).await.unwrap().send_with(|| Control::Reserve {
-            id: ReservationId::new(1).unwrap(),
-            reply: answer,
-        });
+        sender
+            .control
+            .reserve(0)
+            .await
+            .unwrap()
+            .send_with(|| Control::Reserve {
+                id: ReservationId::new(1).unwrap(),
+                reply: answer,
+            });
         drop(reply);
         let actor = tokio::task::spawn_local(actor.run());
         ack(&sender, &replies, |reply| Control::Stop { reply })
@@ -197,18 +211,23 @@ fn apply_finishes_when_response_is_cancelled_and_release_unblocks_queued_data() 
         let applied = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&applied);
         let (answer, reply) = reply_channel(replies.reserve(0).await.unwrap());
-        sender.control.reserve(0).await.unwrap().send_with(|| Control::Apply {
-            id,
-            now: 0,
-            reply: answer,
-            op: Box::new(move |executor, _now| {
-                count.fetch_add(1, Ordering::SeqCst);
-                let mut data = executor.data.borrow_mut();
-                let total = data.payload_bytes + 3 + 5;
-                data.put(b"key", b"value", None, total, 0);
-                Ok(())
-            }),
-        });
+        sender
+            .control
+            .reserve(0)
+            .await
+            .unwrap()
+            .send_with(|| Control::Apply {
+                id,
+                now: 0,
+                reply: answer,
+                op: Box::new(move |executor, _now| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let mut data = executor.data.borrow_mut();
+                    let total = data.payload_bytes + 3 + 5;
+                    data.put(b"key", b"value", None, total, 0);
+                    Ok(())
+                }),
+            });
         drop(reply);
         let mut output = Vec::new();
         {
@@ -277,9 +296,15 @@ fn three_real_owner_threads_hold_disjoint_data_and_fence_partial_visibility() {
     }
     run(async {
         let replies = ByteBudget::new(4096).unwrap();
-        let keys: Vec<Vec<u8>> = layout.owners().map(|owner| key_for(layout, owner)).collect();
+        let keys: Vec<Vec<u8>> = layout
+            .owners()
+            .map(|owner| key_for(layout, owner))
+            .collect();
         for (sender, key) in senders.iter().zip(&keys) {
-            assert_eq!(command(sender, &replies, &[b"SET", key, b"old"]).await, b"+OK\r\n");
+            assert_eq!(
+                command(sender, &replies, &[b"SET", key, b"old"]).await,
+                b"+OK\r\n"
+            );
         }
         let id = ReservationId::new(1).unwrap();
         for sender in &senders {
@@ -289,17 +314,26 @@ fn three_real_owner_threads_hold_disjoint_data_and_fence_partial_visibility() {
         }
         for (index, sender) in senders.iter().enumerate() {
             let (answer, reply) = reply_channel(replies.reserve(0).await.unwrap());
-            sender.control.reserve(0).await.unwrap().send_with(|| Control::Read {
-                id,
-                now: 0,
-                reply: answer,
-                op: Box::new(move |executor, _now| {
-                    let data = executor.data.borrow();
-                    assert_eq!(data.entries.len(), 1);
-                    assert!(data.entries.keys().all(|key| layout.owner_for(key).index() == index));
-                    let _ = reply.send(data.entries.len());
-                }),
-            });
+            sender
+                .control
+                .reserve(0)
+                .await
+                .unwrap()
+                .send_with(|| Control::Read {
+                    id,
+                    now: 0,
+                    reply: answer,
+                    op: Box::new(move |executor, _now| {
+                        let data = executor.data.borrow();
+                        assert_eq!(data.entries.len(), 1);
+                        assert!(
+                            data.entries
+                                .keys()
+                                .all(|key| layout.owner_for(key).index() == index)
+                        );
+                        let _ = reply.send(data.entries.len());
+                    }),
+                });
             assert_eq!(*reply.recv().await.unwrap(), 1);
         }
         for sender in &senders {
@@ -329,13 +363,18 @@ fn three_real_owner_threads_hold_disjoint_data_and_fence_partial_visibility() {
             let key = keys[0].clone();
             // Only queue once: the DATA lane intentionally has capacity one.
             if index == 0 {
-                senders[0].data.reserve(key.len()).await.unwrap().send_with(|| {
-                    Box::new(move |executor: &ShardExecutor| {
-                        let mut output = Vec::new();
-                        executor.execute(&[b"GET", &key], &mut output);
-                        let _ = answer.send(output);
-                    }) as DataWork
-                });
+                senders[0]
+                    .data
+                    .reserve(key.len())
+                    .await
+                    .unwrap()
+                    .send_with(|| {
+                        Box::new(move |executor: &ShardExecutor| {
+                            let mut output = Vec::new();
+                            executor.execute(&[b"GET", &key], &mut output);
+                            let _ = answer.send(output);
+                        }) as DataWork
+                    });
                 let mut pending = std::pin::pin!(reply.recv());
                 assert!(
                     pending
@@ -353,14 +392,20 @@ fn three_real_owner_threads_hold_disjoint_data_and_fence_partial_visibility() {
                 .unwrap();
         }
         for (sender, key) in senders.iter().zip(&keys) {
-            assert_eq!(command(sender, &replies, &[b"GET", key]).await, b"$3\r\nnew\r\n");
+            assert_eq!(
+                command(sender, &replies, &[b"GET", key]).await,
+                b"$3\r\nnew\r\n"
+            );
         }
         // Also exercise an abort transition without ever deciding/applying.
         let next = ReservationId::new(2).unwrap();
         for sender in &senders {
-            ack(sender, &replies, |reply| Control::Reserve { id: next, reply })
-                .await
-                .unwrap();
+            ack(sender, &replies, |reply| Control::Reserve {
+                id: next,
+                reply,
+            })
+            .await
+            .unwrap();
         }
         for sender in &senders {
             ack(sender, &replies, |reply| Control::Abort { id: next, reply })

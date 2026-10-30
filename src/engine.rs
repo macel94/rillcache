@@ -35,14 +35,13 @@ mod introspection;
 mod journal;
 mod keyspace;
 mod latency;
+#[cfg(test)]
+mod mailbox;
 mod monitor;
 mod multikey;
 mod notify;
 mod options;
 mod pubsub;
-// Recovered multi-owner work, not yet wired: kept for the next session.
-#[cfg(any())]
-mod mailbox;
 // Recovered multi-owner work, not yet wired: kept for the next session.
 #[cfg(any())]
 mod owner_actor;
@@ -1073,7 +1072,11 @@ impl ShardExecutor {
 
     pub fn stats(&self) -> Stats {
         let dataset = self.dataset_stats();
-        self.stats_from_counters((dataset.expired_keys, dataset.expired_subkeys, dataset.evicted_keys))
+        self.stats_from_counters((
+            dataset.expired_keys,
+            dataset.expired_subkeys,
+            dataset.evicted_keys,
+        ))
     }
 
     /// Owner-local dataset accounting, ignoring any published aggregate.
@@ -1096,9 +1099,9 @@ impl ShardExecutor {
             if let Some(deadline) = entry.expires {
                 stats.expiring_keys += 1;
                 stats.ttl_count += 1;
-                stats.ttl_sum = stats
-                    .ttl_sum
-                    .saturating_add(u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0));
+                stats.ttl_sum = stats.ttl_sum.saturating_add(
+                    u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0),
+                );
             }
         }
         stats

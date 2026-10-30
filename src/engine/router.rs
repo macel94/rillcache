@@ -247,7 +247,10 @@ impl MultiOwner {
                         .build()
                         .map_err(|_| OwnerError::Failed)?;
                     let local = tokio::task::LocalSet::new();
-                    local.block_on(&runtime, OwnerActor::new(std::rc::Rc::new(core), inbox).run())
+                    local.block_on(
+                        &runtime,
+                        OwnerActor::new(std::rc::Rc::new(core), inbox).run(),
+                    )
                 })
                 .map_err(|_| RouterError::Stopped)?;
             links.push(OwnerLink {
@@ -747,8 +750,9 @@ impl MultiOwner {
         }
         if gathered_bytes > MAX_TRANSACTION_BYTES {
             output.clear();
-            output
-                .extend_from_slice(b"-ERR multi-owner transaction exceeds the scratch memory bound\r\n");
+            output.extend_from_slice(
+                b"-ERR multi-owner transaction exceeds the scratch memory bound\r\n",
+            );
             return Ok(Action::Continue);
         }
         let data = Data::from_entries(entries, self.services.eviction_policy());
@@ -983,15 +987,18 @@ impl MultiOwner {
                     WatchProbe { epoch, keys }
                 })
                 .ok()?;
-            tokens.extend(probe.keys.into_iter().map(|(key, version, present)| {
-                WatchToken {
-                    owner: owner_index,
-                    key,
-                    version,
-                    present,
-                    epoch: probe.epoch,
-                }
-            }));
+            tokens.extend(
+                probe
+                    .keys
+                    .into_iter()
+                    .map(|(key, version, present)| WatchToken {
+                        owner: owner_index,
+                        key,
+                        version,
+                        present,
+                        epoch: probe.epoch,
+                    }),
+            );
         }
         Some(WatchState::from_tokens(tokens))
     }
@@ -1359,7 +1366,12 @@ impl Execution for MultiOwner {
             Err(_) => super::ListMoveOutcome::JournalError,
         }
     }
-    async fn blocking_zpop(&self, keys: &[&[u8]], max: bool, count: usize) -> super::ZSetPopOutcome {
+    async fn blocking_zpop(
+        &self,
+        keys: &[&[u8]],
+        max: bool,
+        count: usize,
+    ) -> super::ZSetPopOutcome {
         match self.scratch_outcome(keys, |scratch| scratch.blocking_zpop(keys, max, count)) {
             Ok(outcome) => outcome,
             Err(_) => super::ZSetPopOutcome::JournalError,

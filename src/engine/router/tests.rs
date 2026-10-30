@@ -9,12 +9,8 @@ fn services() -> Arc<ServerServices> {
 }
 
 fn router(owners: usize) -> Arc<MultiOwner> {
-    MultiOwner::start(
-        services(),
-        owners,
-        RouterSizing::for_limits(64, 64 * 1024),
-    )
-    .expect("router starts")
+    MultiOwner::start(services(), owners, RouterSizing::for_limits(64, 64 * 1024))
+        .expect("router starts")
 }
 
 fn call(router: &MultiOwner, args: &[&[u8]]) -> Vec<u8> {
@@ -116,7 +112,10 @@ fn duplicate_keys_keep_argument_order_and_counts() {
     let first = b"dup:a";
     let second = b"dup:b";
     assert_eq!(
-        call(&router, &[b"MSET", first, b"first", second, b"other", first, b"last"]),
+        call(
+            &router,
+            &[b"MSET", first, b"first", second, b"other", first, b"last"]
+        ),
         b"+OK\r\n"
     );
     assert_eq!(
@@ -175,7 +174,10 @@ fn exec_runtime_error_is_not_a_rollback_across_owners() {
         output,
         b"*3\r\n+OK\r\n-ERR value is not an integer or out of range\r\n+OK\r\n"
     );
-    assert_eq!(call(&router, &[b"GET", first]), b"$14\r\nnot-an-integer\r\n");
+    assert_eq!(
+        call(&router, &[b"GET", first]),
+        b"$14\r\nnot-an-integer\r\n"
+    );
     assert_eq!(call(&router, &[b"GET", &second]), b"$11\r\nafter-error\r\n");
     router.shutdown().unwrap();
 }
@@ -210,10 +212,7 @@ fn global_commands_cover_every_owner() {
     let router = router(4);
     for index in 0..64 {
         let key = format!("global:{index}");
-        assert_eq!(
-            call(&router, &[b"SET", key.as_bytes(), b"v"]),
-            b"+OK\r\n"
-        );
+        assert_eq!(call(&router, &[b"SET", key.as_bytes(), b"v"]), b"+OK\r\n");
     }
     assert_eq!(call(&router, &[b"DBSIZE"]), b":64\r\n");
     let keys = call(&router, &[b"KEYS", b"global:*"]);

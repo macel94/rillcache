@@ -10,10 +10,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-use super::partition::{OwnerId, PartitionLayout};
 use super::data::Data;
-use super::{Action, ServerServices, ShardExecutor};
 use super::mailbox::{Incoming, OwnerInbox, ReplySender, RetainedBytes};
+use super::partition::{OwnerId, PartitionLayout};
+use super::{Action, ServerServices, ShardExecutor};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ReservationId(u64);
@@ -117,7 +117,10 @@ impl OwnerCore {
         }
     }
 
-    pub(crate) fn turn<R>(&self, operation: impl FnOnce(&ShardExecutor) -> R) -> Result<R, OwnerError> {
+    pub(crate) fn turn<R>(
+        &self,
+        operation: impl FnOnce(&ShardExecutor) -> R,
+    ) -> Result<R, OwnerError> {
         self.active()?;
         Ok(operation(&self.executor))
     }
@@ -144,20 +147,31 @@ impl OwnerCore {
         if keys.is_empty() {
             return Err(OwnerError::NeedsCoordinator);
         }
-        if keys.iter().any(|key| self.layout.owner_for(key) != self.owner) {
+        if keys
+            .iter()
+            .any(|key| self.layout.owner_for(key) != self.owner)
+        {
             return Err(OwnerError::WrongOwner);
         }
         Ok(())
     }
 
     #[cfg(test)]
-    pub(crate) fn try_execute(&self, args: &[&[u8]], output: &mut Vec<u8>) -> Result<Action, OwnerError> {
+    pub(crate) fn try_execute(
+        &self,
+        args: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) -> Result<Action, OwnerError> {
         self.owns_command(args)?;
         self.turn(|executor| executor.execute(args, output))
     }
 
     #[cfg(test)]
-    pub(crate) async fn execute(&self, args: &[&[u8]], output: &mut Vec<u8>) -> Result<Action, OwnerError> {
+    pub(crate) async fn execute(
+        &self,
+        args: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) -> Result<Action, OwnerError> {
         // No notification/channel/global counter on the uncontended path.
         match self.try_execute(args, output) {
             Err(OwnerError::Fenced) => {}
@@ -235,7 +249,11 @@ impl OwnerCore {
             Stage::Applied => return Err(OwnerError::AlreadyApplied),
             Stage::Decided => {}
         }
-        let mut data = self.executor.data.try_borrow_mut().map_err(|_| self.fail())?;
+        let mut data = self
+            .executor
+            .data
+            .try_borrow_mut()
+            .map_err(|_| self.fail())?;
         let result = apply(&mut data);
         drop(data);
         match result {
@@ -308,7 +326,6 @@ impl OwnerCore {
         self.released.notify_waiters();
         OwnerError::Failed
     }
-
 }
 
 pub(crate) type DataWork = Box<dyn FnOnce(&ShardExecutor) + Send>;
@@ -317,13 +334,37 @@ pub(crate) type ScopedApply = Box<dyn FnOnce(&ShardExecutor, i64) -> Result<(), 
 pub(crate) type Acknowledge = ReplySender<Result<(), OwnerError>>;
 
 pub(crate) enum Control {
-    Reserve { id: ReservationId, reply: Acknowledge },
-    Decide { id: ReservationId, reply: Acknowledge },
-    Read { id: ReservationId, now: i64, op: ScopedWork, reply: Acknowledge },
-    Apply { id: ReservationId, now: i64, op: ScopedApply, reply: Acknowledge },
-    Release { id: ReservationId, reply: Acknowledge },
-    Abort { id: ReservationId, reply: Acknowledge },
-    Stop { reply: Acknowledge },
+    Reserve {
+        id: ReservationId,
+        reply: Acknowledge,
+    },
+    Decide {
+        id: ReservationId,
+        reply: Acknowledge,
+    },
+    Read {
+        id: ReservationId,
+        now: i64,
+        op: ScopedWork,
+        reply: Acknowledge,
+    },
+    Apply {
+        id: ReservationId,
+        now: i64,
+        op: ScopedApply,
+        reply: Acknowledge,
+    },
+    Release {
+        id: ReservationId,
+        reply: Acknowledge,
+    },
+    Abort {
+        id: ReservationId,
+        reply: Acknowledge,
+    },
+    Stop {
+        reply: Acknowledge,
+    },
 }
 
 pub(crate) struct OwnerActor {
