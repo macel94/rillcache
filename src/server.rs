@@ -16,6 +16,8 @@ use std::path::PathBuf;
 mod accept;
 mod handoff;
 mod pool;
+#[cfg(unix)]
+mod reactor;
 #[cfg(test)]
 mod storage_ownership_tests;
 mod tls;
@@ -45,11 +47,24 @@ pub const FIXED_WORKER_RUN_QUANTUM_US: u64 = 100;
 /// v2 starts a fresh run interval after a voluntary yield/park returns.
 pub const FIXED_WORKER_RUN_POLICY_VERSION: u64 = 2;
 
+/// Plain-TCP engine selected at bind time. The proven readiness reactor is the
+/// default; async Tokio is an explicit opt-in with a documented P1 trade-off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IoMode {
+    /// Mio readiness reactor with the published owner-local executor (default).
+    #[default]
+    Mio,
+    /// Current-thread Tokio sockets, opted into with `--io-mode tokio`.
+    Tokio,
+}
+
 /// Immutable bind-time scheduling decisions. Capacity is a hint, not a CPU budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SchedulingPolicy {
-    /// Default Unix plain-TCP sockets use async Tokio I/O.
+    /// Default Unix plain-TCP sockets use a readiness-based engine.
     pub readiness_io: bool,
+    /// Tokio is the selected readiness engine instead of the Mio reactor.
+    pub tokio_transport: bool,
     /// Total network runtimes, including the accept/runtime-zero thread.
     /// One additional bounded cold-I/O service thread is accounted separately.
     pub tokio_worker_threads: usize,
@@ -97,6 +112,7 @@ impl SchedulingPolicy {
             && capacity.is_some_and(|cpus| (1..=CLIENT_HANDOFF_MAX_CPUS).contains(&cpus));
         Self {
             readiness_io: false,
+            tokio_transport: false,
             tokio_worker_threads: 0,
             tokio_compatibility_owner: false,
             active_poll_us: if workers.is_some() {
@@ -171,10 +187,12 @@ pub struct Config {
     pub auth_source_limit: usize,
     /// Per-source failure window and lockout duration in milliseconds.
     pub auth_source_window_ms: u64,
-    /// None: one colocated Unix Tokio socket/data owner by default; mixed TLS
-    /// uses bounded async compatibility networking. Cold configurations and
-    /// non-Unix retain managed blocking clients. Some(1..=64): fixed lanes.
+    /// None: Unix readiness plain-TCP engine (Mio by default, Tokio when
+    /// `io_mode` is `Tokio`); cold configurations and non-Unix retain managed
+    /// blocking clients. Some(1..=64): fixed I/O/execution lanes.
     pub worker_threads: Option<usize>,
+    /// Explicit plain-TCP engine opt-in; `IoMode::Mio` is the default.
+    pub io_mode: IoMode,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
     pub max_data_bytes: usize,
     pub limits: Limits,
@@ -227,6 +245,7 @@ impl std::fmt::Debug for Config {
             .field("auth_source_limit", &self.auth_source_limit)
             .field("auth_source_window_ms", &self.auth_source_window_ms)
             .field("worker_threads", &self.worker_threads)
+            .field("io_mode", &self.io_mode)
             .field("max_data_bytes", &self.max_data_bytes)
             .field("limits", &self.limits)
             .field("idle_timeout", &self.idle_timeout)
@@ -268,6 +287,7 @@ impl Default for Config {
             auth_source_limit: 0,
             auth_source_window_ms: 60_000,
             worker_threads: None,
+            io_mode: IoMode::default(),
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
@@ -427,6 +447,7 @@ impl Config {
 fn tokio_plain_transport_enabled(config: &Config) -> bool {
     cfg!(unix)
         && config.worker_threads.is_none()
+        && config.io_mode == IoMode::Tokio
         && !config.appendonly
         // ACL SAVE/LOAD hold the auth write lock during filesystem I/O;
         // offloading the syscall alone would still stall runtime authorization.
@@ -493,20 +514,13 @@ impl Server {
         };
         let capacity = thread::available_parallelism().ok().map(usize::from);
         let mut policy = SchedulingPolicy::new(config.worker_threads, capacity);
-        if tokio_plain_transport_enabled(&config) {
+        if cfg!(unix) && config.worker_threads.is_none() {
+            // Both engines are readiness based; Tokio is opted into explicitly.
             policy = SchedulingPolicy {
                 readiness_io: true,
-                // Published storage currently has one data owner. Preserve
-                // direct socket/owner colocation by default, rather than make
-                // multiple runtimes synchronously wait on Store's bridge.
-                // Mixed TLS uses the external compatibility owner and async
-                // cold-service admission, within the effective network budget.
-                tokio_worker_threads: if config.tls_bind_addr.is_some() {
-                    capacity.unwrap_or(1).clamp(1, 64)
-                } else {
-                    1
-                },
-                tokio_compatibility_owner: config.tls_bind_addr.is_some(),
+                tokio_transport: false,
+                tokio_worker_threads: 0,
+                tokio_compatibility_owner: false,
                 active_poll_us: 0,
                 run_quantum_us: 0,
                 single_reply_yield: false,
@@ -515,6 +529,19 @@ impl Server {
             };
         } else if policy.client_handoff_lanes > 1 {
             policy = policy.with_smt_disabled(topology::smt_disabled());
+        }
+        if tokio_plain_transport_enabled(&config) {
+            policy.tokio_transport = true;
+            // Published storage currently has one data owner. Preserve direct
+            // socket/owner colocation rather than make runtimes wait on the
+            // Store bridge. Mixed TLS uses the external compatibility owner
+            // and async cold-service admission within the network budget.
+            policy.tokio_worker_threads = if config.tls_bind_addr.is_some() {
+                capacity.unwrap_or(1).clamp(1, 64)
+            } else {
+                1
+            };
+            policy.tokio_compatibility_owner = config.tls_bind_addr.is_some();
         }
         Ok(Self {
             listener,
@@ -627,7 +654,7 @@ fn serve_plain(
     policy: SchedulingPolicy,
 ) -> io::Result<()> {
     #[cfg(unix)]
-    if policy.readiness_io {
+    if policy.tokio_transport {
         return tokio_io::serve(
             listener,
             config,
@@ -635,6 +662,10 @@ fn serve_plain(
             stopping,
             policy.tokio_worker_threads,
         );
+    }
+    #[cfg(unix)]
+    if policy.readiness_io {
+        return reactor::serve(listener, config, store, stopping);
     }
     // A failed/unsupported setup leaves the original nonblocking fallback.
     // Keep the existing idle backoff, maintenance checks and joined shutdown.
@@ -1224,35 +1255,47 @@ mod tests {
     }
 
     #[test]
-    fn tokio_plain_transport_keeps_blocking_storage_sinks_on_fallback() {
+    fn tokio_plain_transport_is_opt_in_and_off_for_cold_configurations() {
         let default = Config::default();
-        assert_eq!(tokio_plain_transport_enabled(&default), cfg!(unix));
+        assert_eq!(default.io_mode, IoMode::Mio);
+        assert!(!tokio_plain_transport_enabled(&default));
+
+        let tokio = Config {
+            io_mode: IoMode::Tokio,
+            ..Config::default()
+        };
+        assert_eq!(tokio_plain_transport_enabled(&tokio), cfg!(unix));
 
         let fixed_workers = Config {
+            io_mode: IoMode::Tokio,
             worker_threads: Some(1),
             ..Config::default()
         };
         assert!(!tokio_plain_transport_enabled(&fixed_workers));
 
         let append_only = Config {
+            io_mode: IoMode::Tokio,
             appendonly: true,
             ..Config::default()
         };
         assert!(!tokio_plain_transport_enabled(&append_only));
 
         let acl_file = Config {
+            io_mode: IoMode::Tokio,
             aclfile: Some(std::env::temp_dir().join("rillcache-acl-test.conf")),
             ..Config::default()
         };
         assert!(!tokio_plain_transport_enabled(&acl_file));
 
         let audit_file = Config {
+            io_mode: IoMode::Tokio,
             audit_log: Some(std::env::temp_dir().join("rillcache-audit-test.log")),
             ..Config::default()
         };
         assert!(!tokio_plain_transport_enabled(&audit_file));
 
         let audit_syslog = Config {
+            io_mode: IoMode::Tokio,
             audit_syslog: Some("127.0.0.1:5514".parse().unwrap()),
             ..Config::default()
         };

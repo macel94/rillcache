@@ -1,9 +1,38 @@
 # Async plaintext transport increment (PR #143)
 
-Status: usable async transport on the **published one-owner storage API**, not
-complete multi-owner/thread-per-core execution or performance acceptance. The
-storage implementation was published in PR #144 (`9a4df76`); this PR owns its
+Status: **opt-in** async transport on the published one-owner storage API. The
+default plain-TCP engine remains the proven Mio readiness reactor. This is not
+complete multi-owner/thread-per-core execution, and it is not a performance
+acceptance claim. Storage was published in PR #144 (`9a4df76`); this PR owns the
 complete transport wiring without an unpublished sibling dependency.
+
+## Promotion decision (measured, not assumed)
+
+The async engine was implemented as the default and measured on protected gates.
+On head `cf76884` (merge with published `main`), the official four-CPU gate
+**passed 10/10**. The original 20-condition gate finished **18/20**, losing only
+two pipeline-1 conditions:
+
+| Profile | P | Workload | Rillcache | Valkey | Rate lead |
+| --- | ---: | --- | ---: | ---: | ---: |
+| inherited | 1 | set-nx-existing | 97,370 | 100,439 | −3.1% |
+| one-cpu | 1 | get | 84,573 | 84,632 | −0.1% |
+
+Every pipeline-16 condition won, by **+17.9% to +30.9%**. The same head won all
+five four-CPU pipeline-1 conditions, so P1 is at the noise boundary rather than
+structurally broken; the losing rows show ~1–2% higher measured CPU per command.
+The reproducible signature across six cohorts (shared-Store `41039159717` 5/10,
+`b85d2d2` 8/10, CI-overlapped local cohort, and `cf76884` 18/20 + 10/10) is:
+async per-connection tasks are cheaper at sustained pipeline depth and slightly
+dearer per round trip than the inline readiness loop.
+
+The protected gate measures the **default** server mode, and published `main`
+already passes both gates. Making async the default would therefore turn passing
+pipeline-1 conditions into failures. It is consequently **not promoted**: the
+default stays Mio, and async is selected explicitly with `--io-mode tokio`. The
+evidence above is reported as realized, including the losses; `cf76884` is not
+retried. A future promotion would need a source change that wins every condition,
+not a gate, workload or threshold change.
 
 ## Story and target sequencing
 
@@ -32,8 +61,8 @@ Relevant target-design decisions are reproduced here for self-contained review:
 
 Published `Store` is now a synchronous compatibility bridge, not the former
 lock-backed keyspace. Calling it directly from Tokio would block a runtime.
-Accordingly, ordinary eligible plaintext preserves the published **one-owner
-default**: one current-thread Tokio runtime owns both its sockets and
+Accordingly, when async is selected, eligible plaintext preserves the published
+**one-owner** layout: one current-thread Tokio runtime owns both its sockets and
 `Rc<ShardExecutor>`. Acceptance shares runtime zero. `Session::execute_on` and
 blocked-command polling use the complete common executor directly. All command
 families, observers, auth/ACL, transactions, expiry and accounting retain their
@@ -66,7 +95,8 @@ Thread accounting:
 
 | Configuration | Network runtimes | Cold service | Additional data owner | Other frontend threads |
 | --- | ---: | ---: | ---: | --- |
-| Eligible ordinary plaintext | 1, including acceptance | 1 | 0 | none |
+| Default `--io-mode mio` | Mio readiness reactor | none | 0 (local owner) | none |
+| `--io-mode tokio`, eligible plaintext | 1, including acceptance | 1 | 0 | none |
 | Mixed TLS plaintext compatibility | N, including acceptance | 1 | 1 shared with TLS | existing TLS accept/client threads |
 | Persistence/ACL-file/audit, fixed lanes, non-Unix | existing fallback | no Tokio cold service | published compatibility/local-mode policy | existing accept/workers/TLS as configured |
 
@@ -159,6 +189,10 @@ to one per connection. But its matched normal-release screen failed its
 predeclared rule: detected cargo/version-tool overlap and only 1/3 paired NX/P1
 rate wins. That candidate is preserved and **reverted**, not promoted or called
 a throughput win. Test-only diagnostic counters are absent from normal builds.
+
+`make test` covers the default Mio engine in all three worker modes, and
+`make test-async` runs the transport suites plus a constrained one-CPU run through
+the opt-in engine; both are part of `make check`/`make ci`.
 
 Fresh `make ci`, live protection and all 14 protected contexts remain required
 on the up-to-date exact source. All **20 original** and **10 official four-CPU**

@@ -32,12 +32,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 ## Default Unix Tokio plain-TCP execution (S-TOKIO-NET)
 
-- **R-TOKIO-NET1:** When default plain TCP runs on Unix without persistence,
-  ACL files or synchronous audit sinks, the server shall serve local sockets on
-  runtime zero and route remote sockets through bounded channels to current-thread Tokio
+- **R-TOKIO-NET1:** When plain TCP runs on Unix without persistence, ACL files or
+  synchronous audit sinks and the operator explicitly selects the async engine,
+  the server shall serve local sockets on runtime zero and route remote sockets through bounded channels to current-thread Tokio
   runtimes; socket reads and writes shall be async operations, not blocking
   calls or a wrapper around the former Mio connection loop. Fixed-worker mode,
   TLS, persistence/ACL-file/audit and portable non-Unix fallbacks remain available.
+  The proven readiness reactor shall remain the default because the protected
+  gate measures the default mode and the async engine does not win every
+  pipeline-1 condition; selection shall be explicit configuration.
 - **R-TOKIO-NET2:** When a route queue is full, acceptance shall apply bounded
   backpressure; the server shall not create an unbounded connection-task queue.
   Client admission, input-frame limits and response buffering shall remain bounded.

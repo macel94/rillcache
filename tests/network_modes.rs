@@ -7,10 +7,23 @@ use std::time::Duration;
 use rillcache::protocol::encode_request;
 use rillcache::{Config, Server, ServerHandle};
 
-fn start(workers: Option<usize>) -> ServerHandle {
+/// Mode matrix: proven default, opt-in async engine, and fixed workers.
+const MODES: [(Option<usize>, bool); 4] = [
+    (None, false),
+    (None, true),
+    (Some(1), false),
+    (Some(4), false),
+];
+
+fn start(workers: Option<usize>, async_io: bool) -> ServerHandle {
     Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         worker_threads: workers,
+        io_mode: if async_io {
+            rillcache::server::IoMode::Tokio
+        } else {
+            rillcache::server::IoMode::Mio
+        },
         ..Config::default()
     })
     .unwrap()
@@ -44,8 +57,8 @@ fn expect(stream: &mut TcpStream, expected: &[u8]) {
 
 #[test]
 fn fragmented_and_pipelined_wire_errors_are_isolated_in_every_mode() {
-    for workers in [None, Some(1), Some(4)] {
-        let server = start(workers);
+    for (workers, async_io) in MODES {
+        let server = start(workers, async_io);
         let mut healthy = connect(&server);
         let mut fragmented = connect(&server);
         for part in b"*2\r\n$4\r\nECHO\r\n$3\r\na\0b\r\n".chunks(2) {
@@ -82,8 +95,8 @@ fn fragmented_and_pipelined_wire_errors_are_isolated_in_every_mode() {
 
 #[test]
 fn blocked_and_pubsub_sessions_progress_and_join_on_shutdown_in_every_mode() {
-    for workers in [None, Some(1), Some(4)] {
-        let server = start(workers);
+    for (workers, async_io) in MODES {
+        let server = start(workers, async_io);
         let mut subscriber = connect(&server);
         send(&mut subscriber, &[b"SUBSCRIBE", b"events"]);
         expect(
@@ -114,8 +127,8 @@ fn blocked_and_pubsub_sessions_progress_and_join_on_shutdown_in_every_mode() {
 
 #[test]
 fn backpressured_reply_does_not_stall_healthy_clients_or_shutdown_in_every_mode() {
-    for workers in [None, Some(1), Some(4)] {
-        let server = start(workers);
+    for (workers, async_io) in MODES {
+        let server = start(workers, async_io);
         let mut healthy = connect(&server);
         let value = vec![b'x'; 1024 * 1024];
         send(&mut healthy, &[b"SET", b"large", &value]);

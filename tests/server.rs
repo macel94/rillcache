@@ -11,33 +11,45 @@ use rillcache::{Config, Server, ServerHandle};
 fn start(mut config: Config) -> ServerHandle {
     config.bind_addr = "127.0.0.1:0".parse().unwrap();
     if let Ok(mode) = std::env::var("RILLCACHE_TEST_THREADS") {
-        config.worker_threads = match mode.as_str() {
-            "0" => None,
-            "1" => Some(1),
-            "4" => Some(4),
-            _ => panic!("test mode must be 0, 1 or 4"),
-        };
+        match mode.as_str() {
+            "0" => config.worker_threads = None,
+            "1" => config.worker_threads = Some(1),
+            "4" => config.worker_threads = Some(4),
+            // Opt-in async engine coverage; the production default is Mio.
+            "tokio" => {
+                config.worker_threads = None;
+                config.io_mode = rillcache::server::IoMode::Tokio;
+            }
+            _ => panic!("test mode must be 0, 1, 4 or tokio"),
+        }
     }
     Server::bind(config).unwrap().spawn().unwrap()
 }
 
 #[test]
-fn default_local_owner_uses_one_runtime_within_effective_cpu_budget() {
-    if std::env::var("RILLCACHE_TEST_THREADS").as_deref() != Ok("0") {
+fn default_engine_is_mio_and_tokio_is_explicit() {
+    let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
+    if mode != "0" && mode != "tokio" {
         return;
     }
-    #[cfg(unix)]
-    {
-        let server = start(Config::default());
+    let server = start(Config::default());
+    let policy = server.scheduling_policy();
+    if mode == "tokio" {
+        assert!(policy.readiness_io);
+        assert!(policy.tokio_transport);
+        assert_eq!(policy.tokio_worker_threads, 1);
         let expected = thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1)
             .clamp(1, 64);
-        assert!(server.scheduling_policy().readiness_io);
-        assert_eq!(server.scheduling_policy().tokio_worker_threads, 1);
-        assert!(server.scheduling_policy().tokio_worker_threads <= expected);
-        server.shutdown().unwrap();
+        assert!(policy.tokio_worker_threads <= expected);
+    } else {
+        assert_eq!(Config::default().io_mode, rillcache::server::IoMode::Mio);
+        assert!(policy.readiness_io);
+        assert!(!policy.tokio_transport);
+        assert_eq!(policy.tokio_worker_threads, 0);
     }
+    server.shutdown().unwrap();
 }
 
 fn connect(server: &ServerHandle) -> TcpStream {

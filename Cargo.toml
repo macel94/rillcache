@@ -13,6 +13,7 @@ build = false
 # Application code remains unsafe-free; dependencies expose safe OS/TLS APIs.
 [dependencies]
 core_affinity = "=0.8.3"
+mio = { version = "=1.2.4", default-features = false, features = ["os-poll", "os-ext"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2"
 tokio = { version = "=1.54.1", default-features = false, features = ["io-util", "net", "rt", "sync", "time"] }

@@ -39,7 +39,7 @@ impl Process {
                 assert!(core_affinity::set_for_current(core));
             }
             let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
-            command.args(["--bind", "127.0.0.1:0"]);
+            command.args(["--bind", "127.0.0.1:0", "--io-mode", "tokio"]);
             if mixed {
                 command
                     .args(["--tls-bind", "127.0.0.2:0", "--tls-cert-file"])
