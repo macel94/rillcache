@@ -12,8 +12,24 @@
   historical passes or rerun until green to land a change. Preserve failed evidence.
 - CI/policy files require the configured code-owner review. Do not self-approve.
 - Read `docs/pr-quality-gate.md`, `CONTRIBUTING.md` and `docs/requirements.md`.
-- Preserve safe Rust, zero external Rust dependencies, honest benchmark scopes,
+- Preserve unsafe-free application Rust, only the authorized rustls/Mio dependency
+  exceptions and their required vendored transitives, honest benchmark scopes,
   expiry/accounting/atomicity invariants, bounded I/O and joined shutdown.
+
+## Efficient development loop
+
+- During editing, run relevant filtered tests or `make dev-check`; run `make test`
+  after a complete logical change and full `make ci` before review. The editing
+  targets never replace required checks, release/mode validation or merge gates.
+- Before a performance experiment, record one mechanism, measurable prediction,
+  matched baseline and rejection condition. Two unsuccessful experiments or 30
+  minutes without new evidence trigger a diagnosis review, not more knob changes.
+- Reuse this task's existing worktree/cache for serial changes; isolate parallel
+  work. Retain all earlier branches, worktrees, raw measurements and failures.
+- Keep one short canonical checkpoint and one append-only experiment ledger.
+  Load the performance-investigation skill when available and follow
+  `docs/development-cycle.md`. Do not push tooling-only commits as a way to retry
+  an unchanged failed runtime performance candidate.
 
 ## User preference: independent parallel agents
 

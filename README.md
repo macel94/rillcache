@@ -25,7 +25,7 @@ before/after regressions, CPU costs and raw records remain visible.
 
 ## Project vision
 
-The initial goal is to implement a useful Redis-compatible server using only Rust’s standard library and runtime—no external dependencies. Over time, the project may explore newer and more advanced functionality, including streams and richer pub/sub capabilities.
+The initial goal was a useful Redis-compatible server using Rust’s standard library and runtime. The reviewed dependency exceptions are now rustls for TLS and Mio for kernel readiness, with their required transitive crates vendored for offline builds. Over time, the project may explore newer and more advanced functionality, including streams and richer pub/sub capabilities.
 
 Compatibility and behavior will be guided by tests, with the aim of making the server dependable and understandable rather than merely checking off features.
 
@@ -42,7 +42,7 @@ This is a collaboration between a human and AI:
 
 - **Language:** Rust
 - **Dependencies:** None beyond the Rust standard library and runtime, including tests and benchmarks
-- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. The sole external dependency exception is rustls and the transitive crates required to build it; they are vendored for offline builds. Safe standard-library APIs are allowed; their internals are outside this policy's scope.
+- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. The explicit dependency exceptions are rustls and Mio, plus their required transitive crates, vendored for offline builds. Application code contains no unsafe blocks or handwritten FFI; standard-library and dependency implementation internals are outside that application-code policy. Default Unix plain TCP uses bounded Mio readiness (epoll on Linux); fixed-worker and TLS modes retain their existing execution paths.
 - **Compatibility target:** Redis protocol and behavior, developed incrementally
 - **Performance:** Aim to outperform current Redis/Valkey implementations, demonstrated by reproducible measurements—not assumed from the language choice.
 

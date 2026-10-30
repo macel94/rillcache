@@ -66,6 +66,20 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   rejection, lazy expiration and all execution modes. Documentation shall retain
   the missing hit/miss, byte, latency, slowlog, client-list, RSS and metrics gaps.
 
+## Nonrecursive INFO snapshots (S-INFOLOCK)
+
+- **R-INFO1 (state-driven):** While INFO builds a reply, it shall capture required
+  data fields under one read guard, release that guard before other subsystem
+  helpers/formatting, and reuse copied lifecycle/eviction counters without
+  recursively acquiring the data lock. Concurrent blocking writers shall not
+  deadlock INFO or prevent joined shutdown.
+- **R-INFO2 (event-driven):** When keyspace/default/all metrics are requested,
+  INFO shall compute live/expiring/subexpiry keys and average TTL in one pass
+  with unchanged expiry and saturating-TTL semantics. Other sections shall not
+  traverse entries solely to calculate unrequested keyspace fields. Tests shall
+  cover counter/wire behavior and controlled pub/sub contention with bounded
+  regression failure, not retries of an intermittently hanging test.
+
 ## Keyspace notifications (S40)
 
 - **R157 (event-driven):** When `--notify-keyspace-events` or `CONFIG SET
@@ -385,6 +399,23 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `INFO all` inclusion, reset clearing and all worker modes. This is a bounded
   count table, not an error log, message history, durable audit or replication
   statistic.
+
+## Unified session observation flow (S-UNIFIEDSESSION)
+
+- **R-ERRFLOW1 (event-driven):** When a plain PING/GET/SET/ECHO command emits
+  an error, the session shall count its code once through the common reply
+  epilogue regardless of slowlog, latency or commandstats configuration. Existing
+  output bytes shall not be mistaken for the current reply. Error table bounds,
+  RESETSTAT behavior, protocol replies and total command counts shall remain.
+- **R-ERRFLOW2 (ubiquitous):** Every collector combination and RESP2/RESP3 shall
+  retain binary/success/null/error replies, enabled slowlog and commandstats
+  recording, and normal authorization, subscriber, transaction, pause and MONITOR
+  handling. No observer-disabled early return may skip error accounting; the
+  existing ordinary-command specialization inside checked dispatch may remain.
+  Tests shall reproduce the old missing counters boundedly, cover all eight
+  collector combinations and all three TCP worker modes, reset and recount.
+  Native measurements shall disclose gains or losses without treating different
+  hardware's absolute rates as an optimization or bypassing either protected gate.
 
 ## Keyspace average TTL (S85)
 

@@ -21,6 +21,8 @@ mod reply;
 mod transaction;
 
 #[cfg(test)]
+mod observability_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::BTreeSet;
@@ -108,41 +110,9 @@ impl Session {
     /// stable public RESP2 Store API, adapting only this session's reply.
     pub fn execute(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
         let start = output.len();
-        // The benchmarked default mode has no auth, observers, pause, MULTI,
-        // subscriber or monitor context. Keep those cold checks out of the
-        // hottest GET/SET/ECHO/PING replies. Any enabled feature falls through
-        // to the normal fully checked path.
-        if self.multi.is_none()
-            && self.authenticated_user.is_none()
-            && self.paused.is_none()
-            && self.blocked.is_none()
-            && !self.is_subscribed()
-            && !self.is_monitoring()
-            && !store.authentication_required()
-            && !store.acl_restricted()
-            && store.client_pause_mode().is_none()
-            && !store.slowlog_enabled()
-            && !store.latency_enabled()
-            && !store.commandstats_enabled()
-            && !store.monitors_active()
-            && arguments.first().is_some_and(|command| {
-                command.eq_ignore_ascii_case(b"PING")
-                    || command.eq_ignore_ascii_case(b"GET")
-                    || command.eq_ignore_ascii_case(b"SET")
-                    || command.eq_ignore_ascii_case(b"ECHO")
-            })
-        {
-            store.record_command(self.id);
-            if arguments[0].eq_ignore_ascii_case(b"PING") {
-                match arguments.len() {
-                    1 => output.extend_from_slice(b"+PONG\r\n"),
-                    2 => crate::protocol::encode_bulk(Some(arguments[1]), output),
-                    _ => arity("ping", output),
-                }
-                return Action::Continue;
-            }
-            return self.execute_store(store, arguments, output);
-        }
+        // Use the common observation/error-accounting epilogue in every
+        // collector configuration. execute_inner already specializes ordinary
+        // commands after the normal authorization and subscriber checks.
         if self.pause_command(store, arguments) {
             return Action::Continue;
         }
