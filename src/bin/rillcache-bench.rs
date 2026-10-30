@@ -553,8 +553,8 @@ fn report(
             let policy = scheduling.expect("embedded scheduling policy");
             if policy.readiness_io {
                 format!(
-                    "{{\"mode\":\"tokio-current-thread\",\"workers\":{}}}",
-                    policy.tokio_worker_threads
+                    "{{\"mode\":\"tokio-current-thread\",\"workers\":{},\"network_runtime_threads\":{},\"accept_runtime_shared\":true,\"cold_io_service_threads\":1}}",
+                    policy.tokio_worker_threads, policy.tokio_worker_threads
                 )
             } else {
                 format!(
@@ -940,6 +940,9 @@ mod tests {
         );
         assert!(text.contains("\"mode\":\"tokio-current-thread\""));
         assert!(text.contains("\"workers\":3"));
+        assert!(text.contains("\"network_runtime_threads\":3"));
+        assert!(text.contains("\"accept_runtime_shared\":true"));
+        assert!(text.contains("\"cold_io_service_threads\":1"));
         assert!(!text.contains("\"mode\":\"thread-per-client\""));
         assert!(!text.contains("\"client_handoff_policy_version\""));
     }

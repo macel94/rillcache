@@ -167,9 +167,14 @@ fn run_all_cases(workers: Option<usize>) {
 
     // Timeout completes the command and clears its client flag/count.
     let mut timing_out = connect(&server);
+    let started = Instant::now();
     send(&mut timing_out, &[b"BLPOP", b"timeout-queue", b"0.05"]);
-    wait_until_blocked(&mut admin, 1);
+    // A separate observer may be descheduled for the entire 50 ms lifetime;
+    // demanding that it sample the transient flag is not deterministic. The
+    // indefinite waiters above/below verify visibility. Here verify the real
+    // timeout (not an immediate null reply) and subsequent count cleanup.
     assert_eq!(read_frame(&mut timing_out, 0), b"*-1\r\n");
+    assert!(started.elapsed() >= Duration::from_millis(50));
     wait_until_blocked(&mut admin, 0);
 
     // Disconnecting while blocked removes the registry record, so it cannot

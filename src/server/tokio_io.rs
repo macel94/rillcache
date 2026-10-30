@@ -1,12 +1,15 @@
-//! Default plain-TCP path: bounded per-runtime routing and async socket tasks.
+//! Async plaintext transport over the existing shared Store, not data ownership.
+
+#[cfg(test)]
+#[path = "tokio_io_tests.rs"]
+mod tests;
 
 use super::*;
-use crate::session::Session;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioListener, TcpStream as TokioStream};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinSet;
 
 const ROUTE_CAPACITY: usize = 32;
@@ -16,8 +19,12 @@ const MAX_READ: usize = 16 * 1024;
 const POLL_TICK: Duration = Duration::from_millis(10);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
 
+type Controls = Arc<Mutex<HashMap<u64, TcpStream>>>;
+type Tasks = JoinSet<io::Result<()>>;
+type ColdJob = Box<dyn FnOnce() + Send>;
+
 struct Accepted {
-    stream: std::net::TcpStream,
+    stream: TcpStream,
     session: Session,
     pubsub: Receiver<Vec<u8>>,
     registration: ClientRegistration,
@@ -26,7 +33,7 @@ struct Accepted {
 struct ClientRegistration {
     id: u64,
     store: Arc<Store>,
-    controls: Arc<Mutex<HashMap<u64, TcpStream>>>,
+    controls: Controls,
 }
 
 impl Drop for ClientRegistration {
@@ -44,6 +51,119 @@ struct Lane {
     thread: JoinHandle<io::Result<()>>,
 }
 
+struct Context {
+    config: Config,
+    store: Arc<Store>,
+    stopping: Arc<AtomicBool>,
+    controls: Controls,
+    cold: ColdExecutor,
+    task_limit: usize,
+}
+
+impl Context {
+    fn stopped(&self) -> bool {
+        self.stopping.load(Ordering::Acquire) || self.store.shutdown_requested()
+    }
+
+    fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        close_controls(&self.controls);
+    }
+
+    fn spawn(self: &Arc<Self>, tasks: &mut Tasks, accepted: Accepted) {
+        let context = Arc::clone(self);
+        tasks.spawn(async move {
+            let _registration = accepted.registration;
+            let stream = TokioStream::from_std(accepted.stream)?;
+            serve_connection(stream, accepted.session, accepted.pubsub, &context).await
+        });
+    }
+}
+
+fn close_controls(controls: &Controls) {
+    if let Ok(controls) = controls.lock() {
+        for control in controls.values() {
+            let _ = control.shutdown(Shutdown::Both);
+        }
+    }
+}
+
+// One cold executor, not Tokio's unbounded blocking-task queue. Its single
+// permit is acquired BEFORE copying a request or moving session/output state,
+// and is owned by the job until completion even if its receiver disappears.
+// This keeps ACL/paused disk-capable commands off network runtimes without
+// introducing a hop for ordinary commands or changing Session's epilogue.
+struct ColdExecutor {
+    sender: mpsc::Sender<ColdJob>,
+    permit: Arc<Semaphore>,
+}
+
+enum ColdOperation<'a> {
+    Command(&'a [u8]),
+    Paused,
+}
+
+impl ColdExecutor {
+    async fn run(
+        &self,
+        session: &mut Session,
+        output: &mut Vec<u8>,
+        context: &Context,
+        operation: ColdOperation<'_>,
+    ) -> io::Result<Option<Action>> {
+        let permit = Arc::clone(&self.permit)
+            .acquire_owned()
+            .await
+            .map_err(|_| io::Error::other("cold executor stopped"))?;
+        if context.stopped() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "server stopping",
+            ));
+        }
+        let frame = match operation {
+            ColdOperation::Command(frame) => Some(frame.to_vec()),
+            ColdOperation::Paused => None,
+        };
+        let mut owned_session = std::mem::take(session);
+        let mut owned_output = std::mem::take(output);
+        let store = Arc::clone(&context.store);
+        let limits = context.config.limits;
+        let (sender, receiver) = oneshot::channel();
+        let job = Box::new(move || {
+            let _permit = permit;
+            let action = if let Some(frame) = frame {
+                dispatch_request(&frame, limits, |args| {
+                    owned_session.execute(&store, args, &mut owned_output)
+                })
+                .expect("previously validated cold frame")
+                .map(|(action, _)| action)
+            } else {
+                owned_session.poll_paused(&store).map(|(reply, action)| {
+                    owned_output.extend_from_slice(&reply);
+                    action
+                })
+            };
+            let _ = sender.send((owned_session, owned_output, action));
+        });
+        if self.sender.send(job).await.is_err() {
+            context.stop();
+            return Err(io::Error::other("cold executor exited unexpectedly"));
+        }
+        match receiver.await {
+            Ok((returned_session, returned_output, action)) => {
+                *session = returned_session;
+                *output = returned_output;
+                Ok(action)
+            }
+            Err(_) => {
+                context.stop();
+                Err(io::Error::other("cold command panicked"))
+            }
+        }
+    }
+}
+
 pub(super) fn serve(
     listener: TcpListener,
     config: Config,
@@ -51,79 +171,109 @@ pub(super) fn serve(
     stopping: Arc<AtomicBool>,
     workers: usize,
 ) -> io::Result<()> {
+    // max_clients bounds active task sets as well as registered/queued clients.
+    // Channel capacity alone would not bound an eagerly drained JoinSet.
+    let task_limit = config.max_clients;
+    serve_with_task_limit(listener, config, store, stopping, workers, task_limit)
+}
+
+fn serve_with_task_limit(
+    listener: TcpListener,
+    config: Config,
+    store: Arc<Store>,
+    stopping: Arc<AtomicBool>,
+    workers: usize,
+    task_limit: usize,
+) -> io::Result<()> {
     let cores = core_affinity::get_core_ids().unwrap_or_default();
     let workers = workers.clamp(1, 64);
     let controls = Arc::new(Mutex::new(HashMap::new()));
-    let mut lanes: Vec<Lane> = Vec::with_capacity(workers);
-    for index in 0..workers {
-        let (sender, receiver) = mpsc::channel(ROUTE_CAPACITY);
-        let worker_config = config.clone();
-        let worker_store = Arc::clone(&store);
-        let worker_stop = Arc::clone(&stopping);
-        let core = cores.get(index % cores.len().max(1)).copied();
-        let thread = match thread::Builder::new()
-            .name(format!("rillcache-tokio-{index}"))
-            .spawn(move || {
-                if let Some(core) = core {
-                    // Affinity is best-effort; failure leaves the OS scheduler in control.
-                    let _ = core_affinity::set_for_current(core);
-                }
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()?;
-                runtime.block_on(worker(receiver, worker_config, worker_store, worker_stop))
-            }) {
-            Ok(thread) => thread,
-            Err(error) => {
-                stopping.store(true, Ordering::Release);
-                for lane in lanes.drain(..) {
-                    drop(lane.sender);
-                    let _ = lane.thread.join();
-                }
-                return Err(error);
+    let (sender, mut receiver) = mpsc::channel::<ColdJob>(1);
+    let cold_thread = thread::Builder::new()
+        .name("rillcache-cold-io".into())
+        .spawn(move || {
+            while let Some(job) = receiver.blocking_recv() {
+                job();
             }
-        };
-        lanes.push(Lane { sender, thread });
-    }
-
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            stopping.store(true, Ordering::Release);
-            for lane in lanes {
-                drop(lane.sender);
-                let _ = lane.thread.join();
-            }
-            return Err(error);
+        })?;
+    let context = Arc::new(Context {
+        config,
+        store,
+        stopping,
+        controls,
+        cold: ColdExecutor {
+            sender,
+            permit: Arc::new(Semaphore::new(1)),
+        },
+        task_limit: task_limit.max(1),
+    });
+    // Runtime zero accepts AND serves clients. Exactly N network runtime
+    // threads, plus one separately accounted cold-service thread; no N+1
+    // accept-runtime topology. Affinity never wraps or duplicates logical IDs.
+    let mut lanes = Vec::with_capacity(workers - 1);
+    let result = (|| {
+        for worker_index in 1..workers {
+            let (sender, receiver) = mpsc::channel(ROUTE_CAPACITY);
+            let worker_context = Arc::clone(&context);
+            let core = cores.get(worker_index).copied();
+            let thread = thread::Builder::new()
+                .name(format!("rillcache-tokio-{worker_index}"))
+                .spawn(move || {
+                    pin_worker(worker_index, core);
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    runtime.block_on(worker(receiver, worker_context))
+                })?;
+            lanes.push(Lane { sender, thread });
         }
-    };
-    let result = runtime.block_on(accept_loop(
-        listener,
-        Arc::clone(&store),
-        Arc::clone(&controls),
-        Arc::clone(&stopping),
-        &lanes,
-    ));
-    stopping.store(true, Ordering::Release);
-    if let Ok(controls) = controls.lock() {
-        for control in controls.values() {
-            let _ = control.shutdown(Shutdown::Both);
-        }
-    }
+        pin_worker(0, cores.first().copied());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(accept_loop(listener, Arc::clone(&context), &lanes))
+    })();
+    context.stop();
     let mut result = result;
+    // Even startup failure joins every already-started worker and the service.
     for lane in lanes {
         drop(lane.sender);
-        match lane.thread.join() {
-            Err(error) => {
-                result = result.and(Err(io::Error::other(format!(
-                    "Tokio network worker panicked: {error:?}"
-                ))));
-            }
-            Ok(Err(error)) => result = result.and(Err(error)),
-            Ok(Ok(())) => {}
+        result = result.and(join_result(lane.thread));
+    }
+    drop(context); // close the cold queue only after every client has joined
+    result.and(join(cold_thread))
+}
+
+fn pin_worker(index: usize, core: Option<core_affinity::CoreId>) {
+    let applied = core.is_some_and(core_affinity::set_for_current);
+    // Diagnostics must not crash a server whose launcher's stderr pipe closed.
+    let _ = writeln!(
+        io::stderr().lock(),
+        "rillcache: Tokio runtime {index} affinity cpu={:?} applied={applied}",
+        core.map(|core| core.id)
+    );
+}
+
+fn reap(tasks: &mut Tasks) -> io::Result<()> {
+    let mut result = Ok(());
+    while let Some(task) = tasks.try_join_next() {
+        if let Err(error) = task {
+            result = result.and(Err(io::Error::other(format!(
+                "Tokio client task failed: {error}"
+            ))));
+        }
+        // Network/protocol io::Errors are connection-local; task panics are not.
+    }
+    result
+}
+
+async fn join_tasks(tasks: &mut Tasks) -> io::Result<()> {
+    let mut result = Ok(());
+    while let Some(task) = tasks.join_next().await {
+        if let Err(error) = task {
+            result = result.and(Err(io::Error::other(format!(
+                "Tokio client task failed: {error}"
+            ))));
         }
     }
     result
@@ -131,178 +281,220 @@ pub(super) fn serve(
 
 async fn accept_loop(
     listener: TcpListener,
-    store: Arc<Store>,
-    controls: Arc<Mutex<HashMap<u64, TcpStream>>>,
-    stopping: Arc<AtomicBool>,
+    context: Arc<Context>,
     lanes: &[Lane],
 ) -> io::Result<()> {
     let listener = TokioListener::from_std(listener)?;
-    let mut next_lane = 0usize;
+    let mut tasks = Tasks::new();
+    let mut pending = None;
+    let mut next_lane = 0;
+    let mut turns = 0usize;
     let mut maintenance = Instant::now();
-    while !stopping.load(Ordering::Acquire) && !store.shutdown_requested() {
-        if lanes.iter().any(|lane| lane.thread.is_finished()) {
-            return Err(io::Error::other("Tokio network worker exited unexpectedly"));
-        }
-        if maintenance.elapsed() >= MAINTENANCE_TICK {
-            let _ = store.journal_sync();
-            store.purge_expired(128);
-            store.auto_rewrite_if_due();
-            maintenance = Instant::now();
-        }
-        let accepted = tokio::time::timeout(POLL_TICK, listener.accept()).await;
-        let (stream, peer) = match accepted {
-            Err(_) => continue,
-            Ok(Ok(pair)) => pair,
-            Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Ok(Err(error)) => return Err(error),
-        };
-        store.record_connection();
-        if store.connected_clients() >= store.max_clients() {
-            store.record_rejected_connection();
-            let mut stream = stream;
-            let _ = tokio::time::timeout(
-                POLL_TICK,
-                stream.write_all(b"-ERR max number of clients reached\r\n"),
-            )
-            .await;
-            let _ = stream.shutdown().await;
-            continue;
-        }
-        let stream = stream;
-        stream.set_nodelay(true)?;
-        let local = stream.local_addr()?;
-        let std_stream = stream.into_std()?;
-        let control = std_stream.try_clone()?;
-        let (sender, pubsub) = sync_channel(Store::pubsub_queue_capacity());
-        let mut session = Session::new();
-        session.set_peer(peer);
-        session.set_pubsub_sender(sender);
-        let id = session.id();
-        store.register_client(id, peer, local, control.try_clone()?);
-        controls
-            .lock()
-            .map_err(|_| io::Error::other("Tokio client registry poisoned"))?
-            .insert(id, control);
-        let accepted = Accepted {
-            stream: std_stream,
-            session,
-            pubsub,
-            registration: ClientRegistration {
-                id,
-                store: Arc::clone(&store),
-                controls: Arc::clone(&controls),
-            },
-        };
-
-        // A full lane applies bounded backpressure to acceptance rather than
-        // creating detached/unbounded connection tasks. Rotate before waiting.
-        let mut pending = Some(accepted);
-        let mut routed = false;
-        for offset in 0..lanes.len() {
-            let index = (next_lane + offset) % lanes.len();
-            match lanes[index]
-                .sender
-                .try_send(pending.take().expect("pending connection"))
-            {
-                Ok(()) => {
-                    next_lane = (index + 1) % lanes.len();
-                    routed = true;
+    let result = async {
+        loop {
+            reap(&mut tasks)?;
+            if context.stopped() {
+                return Ok(());
+            }
+            if lanes.iter().any(|lane| lane.thread.is_finished()) {
+                return Err(io::Error::other("Tokio network worker exited unexpectedly"));
+            }
+            if maintenance.elapsed() >= MAINTENANCE_TICK {
+                // Journal/audit configurations use the proven fallback. No
+                // sync/rewrite or other filesystem maintenance runs here.
+                context.store.purge_expired(128);
+                maintenance = Instant::now();
+            }
+            turns += 1;
+            if turns.is_multiple_of(COMMAND_QUANTUM) {
+                tokio::task::yield_now().await;
+            }
+            if let Some(accepted) = pending.take() {
+                // Try each lane once. Retain ownership on saturation, service
+                // maintenance/stop each tick, and NEVER drop a pending client
+                // just because another task finished. Do not await join_next
+                // while sockets are open: idle clients might never finish.
+                let count = lanes.len() + 1;
+                pending = Some(accepted);
+                for offset in 0..count {
+                    let index = (next_lane + offset) % count;
+                    if index == 0 {
+                        if tasks.len() >= context.task_limit {
+                            continue;
+                        }
+                        context.spawn(&mut tasks, pending.take().expect("pending client"));
+                    } else {
+                        match lanes[index - 1]
+                            .sender
+                            .try_send(pending.take().expect("pending client"))
+                        {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Full(value)) => {
+                                pending = Some(value);
+                                continue;
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                return Err(io::Error::other("Tokio network worker stopped"));
+                            }
+                        }
+                    }
+                    next_lane = (index + 1) % count;
                     break;
                 }
-                Err(mpsc::error::TrySendError::Full(value)) => pending = Some(value),
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(io::Error::other("Tokio network worker exited unexpectedly"));
+                if pending.is_some() {
+                    tokio::time::sleep(POLL_TICK).await;
                 }
+                continue;
             }
-        }
-        if !routed {
-            let index = next_lane % lanes.len();
-            lanes[index]
-                .sender
-                .send(pending.expect("pending connection"))
-                .await
-                .map_err(|_| io::Error::other("Tokio network worker stopped during routing"))?;
-            next_lane = (index + 1) % lanes.len();
-        }
-    }
-    Ok(())
-}
-
-async fn worker(
-    mut receiver: mpsc::Receiver<Accepted>,
-    config: Config,
-    store: Arc<Store>,
-    stopping: Arc<AtomicBool>,
-) -> io::Result<()> {
-    let mut tasks = JoinSet::new();
-    while let Some(accepted) = receiver.recv().await {
-        while let Some(result) = tasks.try_join_next() {
-            if let Err(error) = result
-                && error.is_panic()
+            let (mut stream, peer) = match tokio::time::timeout(POLL_TICK, listener.accept()).await
             {
-                return Err(io::Error::other("Tokio client task panicked"));
+                Err(_) => continue,
+                Ok(Ok(pair)) => pair,
+                Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Ok(Err(error)) => return Err(error),
+            };
+            context.store.record_connection();
+            if context.store.connected_clients() >= context.store.max_clients() {
+                context.store.record_rejected_connection();
+                let _ = tokio::time::timeout(
+                    POLL_TICK,
+                    stream.write_all(b"-ERR max number of clients reached\r\n"),
+                )
+                .await;
+                continue;
+            }
+            stream.set_nodelay(true)?;
+            let local = stream.local_addr()?;
+            let stream = stream.into_std()?;
+            let control = stream.try_clone()?;
+            let (sender, pubsub) = sync_channel(Store::pubsub_queue_capacity());
+            let mut session = Session::new();
+            session.set_peer(peer);
+            session.set_pubsub_sender(sender);
+            let id = session.id();
+            // Construct the guard before either registry insertion so every
+            // error path unregisters and releases its control descriptor.
+            let registration = ClientRegistration {
+                id,
+                store: Arc::clone(&context.store),
+                controls: Arc::clone(&context.controls),
+            };
+            context
+                .store
+                .register_client(id, peer, local, control.try_clone()?);
+            context
+                .controls
+                .lock()
+                .map_err(|_| io::Error::other("Tokio client registry poisoned"))?
+                .insert(id, control);
+            pending = Some(Accepted {
+                stream,
+                session,
+                pubsub,
+                registration,
+            });
+        }
+    }
+    .await;
+    // Stop and close BEFORE joining: read/write/paused/blocked tasks, and remote
+    // lanes saturated with admitted clients, must all observe cancellation.
+    context.stop();
+    drop(pending);
+    drop(listener);
+    result.and(join_tasks(&mut tasks).await)
+}
+
+async fn worker(mut receiver: mpsc::Receiver<Accepted>, context: Arc<Context>) -> io::Result<()> {
+    let mut tasks = Tasks::new();
+    let result = async {
+        loop {
+            reap(&mut tasks)?;
+            if context.stopped() {
+                return Ok(());
+            }
+            if tasks.len() >= context.task_limit {
+                // Capacity includes active tasks, not just the routing mailbox.
+                // Poll stop even if every active client is idle/backpressured.
+                tokio::time::sleep(POLL_TICK).await;
+                continue;
+            }
+            match tokio::time::timeout(POLL_TICK, receiver.recv()).await {
+                Ok(Some(accepted)) => context.spawn(&mut tasks, accepted),
+                Ok(None) => return Ok(()),
+                Err(_) => {}
             }
         }
-        let client_store = Arc::clone(&store);
-        let client_config = config.clone();
-        let client_stop = Arc::clone(&stopping);
-        tasks.spawn(async move {
-            let _registration = accepted.registration;
-            let stream = TokioStream::from_std(accepted.stream)?;
-            serve_connection(
-                stream,
-                accepted.session,
-                accepted.pubsub,
-                &client_store,
-                &client_config,
-                &client_stop,
-            )
-            .await
-        });
     }
-    while let Some(result) = tasks.join_next().await {
-        if let Err(error) = result
-            && error.is_panic()
-        {
-            return Err(io::Error::other("Tokio client task panicked"));
+    .await;
+    context.stop();
+    drop(receiver); // drop queued registrations before joining active tasks
+    result.and(join_tasks(&mut tasks).await)
+}
+
+async fn write_reply(stream: &mut TokioStream, reply: &[u8], timeout: Duration) -> io::Result<()> {
+    tokio::time::timeout(timeout, async {
+        for (index, chunk) in reply.chunks(OUTPUT_QUANTUM).enumerate() {
+            if index > 0 {
+                tokio::task::yield_now().await;
+            }
+            stream.write_all(chunk).await?;
         }
-    }
+        Ok(())
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "client write timeout"))?
+}
+
+async fn close_after_reply(
+    stream: &mut TokioStream,
+    reply: &[u8],
+    timeout: Duration,
+) -> io::Result<()> {
+    write_reply(stream, reply, timeout).await?;
+    stream.shutdown().await?;
+    // A single total drain deadline, not a fresh deadline per incoming chunk.
+    let _ = tokio::time::timeout(POLL_TICK, async {
+        let mut discard = [0u8; MAX_READ];
+        loop {
+            match stream.read(&mut discard).await {
+                Ok(0) => return Ok(()),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
+    })
+    .await;
     Ok(())
 }
 
-async fn close_after_reply(stream: &mut TokioStream, reply: &[u8]) -> io::Result<()> {
-    stream.write_all(reply).await?;
-    stream.shutdown().await?;
-    let mut discard = [0u8; MAX_READ];
-    loop {
-        match tokio::time::timeout(POLL_TICK, stream.read(&mut discard)).await {
-            Ok(Ok(0)) | Err(_) => return Ok(()),
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => {}
-            Ok(Err(error)) => return Err(error),
-        }
-    }
+// ACL GENPASS reads /dev/urandom without holding a data/auth lock. ACL-file
+// configurations use the fallback because SAVE/LOAD hold auth during disk I/O.
+// Session::queue rejects ACL inside MULTI; EXEC therefore stays synchronous and
+// cannot perform ACL disk I/O. Paused resumption also uses the cold executor.
+fn cold_command(args: &[&[u8]]) -> bool {
+    args.first()
+        .is_some_and(|name| name.eq_ignore_ascii_case(b"ACL"))
 }
 
 async fn serve_connection(
     mut stream: TokioStream,
     mut session: Session,
     pubsub: Receiver<Vec<u8>>,
-    store: &Store,
-    config: &Config,
-    stopping: &AtomicBool,
+    context: &Context,
 ) -> io::Result<()> {
-    let _ = stream.set_nodelay(true);
+    let config = &context.config;
+    let store = &context.store;
     let mut input = Vec::with_capacity(8192.min(config.limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; MAX_READ];
     let mut activity = Instant::now();
     loop {
-        if stopping.load(Ordering::Acquire) || store.shutdown_requested() {
+        if context.stopped() {
             return Ok(());
         }
         let mut pushed = 0;
-        while pushed < 64 && output.len() < OUTPUT_QUANTUM {
+        while pushed < COMMAND_QUANTUM && output.len() < OUTPUT_QUANTUM {
             match pubsub.try_recv() {
                 Ok(frame) => {
                     output.extend_from_slice(&frame);
@@ -317,18 +509,16 @@ async fn serve_connection(
             output.extend_from_slice(&reply);
         }
         if session.is_paused()
-            && let Some((reply, action)) = session.poll_paused(store)
+            && let Some(Action::Close) = context
+                .cold
+                .run(&mut session, &mut output, context, ColdOperation::Paused)
+                .await?
         {
-            output.extend_from_slice(&reply);
-            if action == Action::Close {
-                if !output.is_empty() {
-                    stream.write_all(&output).await?;
-                }
-                return Ok(());
-            }
+            write_reply(&mut stream, &output, config.idle_timeout).await?;
+            return Ok(());
         }
         if !output.is_empty() {
-            stream.write_all(&output).await?;
+            write_reply(&mut stream, &output, config.idle_timeout).await?;
             output.clear();
             activity = Instant::now();
         }
@@ -337,17 +527,31 @@ async fn serve_connection(
             let mut consumed = 0usize;
             let mut need_input = false;
             for _ in 0..COMMAND_QUANTUM {
+                let mut cold = false;
                 match dispatch_request(&input[consumed..], config.limits, |args| {
-                    if args.is_empty() {
+                    cold = cold_command(args);
+                    if cold || args.is_empty() {
                         Action::Continue
                     } else {
                         session.execute(store, args, &mut output)
                     }
                 }) {
-                    Ok(Some((action, used))) => {
+                    Ok(Some((mut action, used))) => {
+                        if cold {
+                            action = context
+                                .cold
+                                .run(
+                                    &mut session,
+                                    &mut output,
+                                    context,
+                                    ColdOperation::Command(&input[consumed..consumed + used]),
+                                )
+                                .await?
+                                .expect("complete cold command");
+                        }
                         consumed += used;
                         if action == Action::Close {
-                            stream.write_all(&output).await?;
+                            write_reply(&mut stream, &output, config.idle_timeout).await?;
                             return Ok(());
                         }
                         if session.is_blocked()
@@ -363,7 +567,7 @@ async fn serve_connection(
                     }
                     Err(error) => {
                         write!(output, "-ERR Protocol error: {error}\r\n")?;
-                        close_after_reply(&mut stream, &output).await?;
+                        close_after_reply(&mut stream, &output, config.idle_timeout).await?;
                         return Ok(());
                     }
                 }
@@ -371,8 +575,11 @@ async fn serve_connection(
             if consumed > 0 {
                 input.drain(..consumed);
             }
+            // No new dispatch/read while reply bytes are backpressured. The
+            // 64 KiB batch bound can be exceeded by ONE existing atomic reply;
+            // it is not a dishonest hard maximum or a change to wire semantics.
             if !output.is_empty() {
-                stream.write_all(&output).await?;
+                write_reply(&mut stream, &output, config.idle_timeout).await?;
                 output.clear();
                 activity = Instant::now();
             }
@@ -391,6 +598,7 @@ async fn serve_connection(
             close_after_reply(
                 &mut stream,
                 b"-ERR Protocol error: request frame limit exceeded\r\n",
+                config.idle_timeout,
             )
             .await?;
             return Ok(());
@@ -412,9 +620,12 @@ async fn serve_connection(
             Err(_) => return Ok(()),
             Ok(Ok(0)) => {
                 if !input.is_empty() {
-                    stream
-                        .write_all(b"-ERR Protocol error: unexpected end of stream\r\n")
-                        .await?;
+                    write_reply(
+                        &mut stream,
+                        b"-ERR Protocol error: unexpected end of stream\r\n",
+                        config.idle_timeout,
+                    )
+                    .await?;
                 }
                 return Ok(());
             }

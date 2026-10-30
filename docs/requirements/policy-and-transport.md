@@ -32,11 +32,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 ## Default Unix Tokio plain-TCP execution (S-TOKIO-NET)
 
-- **R-TOKIO-NET1:** When default plain TCP runs on Unix, the server shall route
-  accepted sockets through bounded channels to current-thread Tokio runtimes;
-  socket reads and writes shall be async operations, not blocking calls or a
-  wrapper around the former Mio connection loop. Fixed-worker mode, TLS and the
-  portable non-Unix fallback remain independently available.
+- **R-TOKIO-NET1:** When default plain TCP runs on Unix without persistence,
+  ACL files or synchronous audit sinks, the server shall serve local sockets on
+  runtime zero and route remote sockets through bounded channels to current-thread Tokio
+  runtimes; socket reads and writes shall be async operations, not blocking
+  calls or a wrapper around the former Mio connection loop. Fixed-worker mode,
+  TLS, persistence/ACL-file/audit and portable non-Unix fallbacks remain available.
 - **R-TOKIO-NET2:** When a route queue is full, acceptance shall apply bounded
   backpressure; the server shall not create an unbounded connection-task queue.
   Client admission, input-frame limits and response buffering shall remain bounded.
@@ -56,11 +57,34 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-TOKIO-NET7:** When measured, metadata shall identify the Tokio default
   runtime. Performance remains subject to every original and four-CPU protected
   comparison; async architecture alone is not evidence of a throughput win.
+- **R-TOKIO-NET8:** On the Unix default path, the accept loop shall share runtime
+  zero with bounded local client tasks; only the remaining effective-CPU budget
+  may start remote Tokio runtime threads. Append-only persistence, ACL files and
+  synchronous audit sinks shall retain the non-Tokio fallback until both their
+  blocking work and lock-held disk waits are isolated. ACL and paused resumption
+  shall use one separately accounted, bounded, joined cold-I/O service; its
+  permit shall precede retaining an extra
+  request frame and shall survive waiter cancellation until the job finishes.
+  EXEC shall retain the existing rejection of queued ACL session commands.
+  Tests shall cover actual one-effective-CPU thread count, fallback selection,
+  and healthy same-runtime GET progress during delayed cold service work.
+- **R-TOKIO-NET9:** Acceptance, per-client tasks and routing shall remain bounded
+  and fair under slow readers and sustained connections, while cancellation
+  closes sockets before all local tasks and remote worker threads are joined.
+  Async networking shall not move synchronous disk maintenance onto a Tokio
+  runtime. Tests shall cover full local task/remote routing capacity, pending
+  connection retention, healthy-client progress, byte backpressure, service
+  saturation, failure and shutdown. The 64 KiB output batch threshold shall not
+  be described as a hard limit on one atomic command reply or total RSS.
+
+Implementation decisions, current shared-Store limits and target sequencing are
+self-contained in [the transport increment](../async-transport.md).
 
 ## Legacy fallback admission waits (S-ACCEPTWAIT)
 
-These requirements describe the managed-client fallback. Default Unix plain TCP
-uses S-TOKIO-NET; timeout-based admission remains only on the portable fallback.
+These requirements describe the managed-client fallback. Eligible default Unix
+plain TCP uses S-TOKIO-NET; persistence/ACL-file/audit configurations and portable
+platforms retain timeout-based fallback admission.
 
 - **R-ACCEPT1 (state-driven):** While the default plain Linux acceptor is idle,
   it shall use a positive 10 ms kernel receive-timeout target before enabling

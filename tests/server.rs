@@ -21,6 +21,24 @@ fn start(mut config: Config) -> ServerHandle {
     Server::bind(config).unwrap().spawn().unwrap()
 }
 
+#[test]
+fn default_tokio_runtime_budget_matches_effective_cpu_capacity() {
+    if std::env::var("RILLCACHE_TEST_THREADS").as_deref() != Ok("0") {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let server = start(Config::default());
+        let expected = thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .clamp(1, 64);
+        assert!(server.scheduling_policy().readiness_io);
+        assert_eq!(server.scheduling_policy().tokio_worker_threads, expected);
+        server.shutdown().unwrap();
+    }
+}
+
 fn connect(server: &ServerHandle) -> TcpStream {
     let stream = TcpStream::connect(server.local_addr()).unwrap();
     stream

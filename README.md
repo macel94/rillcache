@@ -185,9 +185,15 @@ support credential operations and policy debugging. See
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
 bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
-It is already multithreaded by default (one managed worker per client). Optional
-`--threads 1` or `--threads N` selects exactly 1..64 shared I/O/execution workers
-plus the accept/control thread; idle clients do not occupy an entire worker.
+On Unix, default plaintext TCP uses current-thread Tokio runtimes sized to the
+bind-time effective CPU hint (1..=64), with acceptance sharing runtime zero and
+one additional bounded cold-I/O service thread. Storage is still shared and
+synchronous, not shard-owned. Persistence/ACL-file/audit configurations, native TLS and
+non-Unix defaults retain their previous socket paths. See the complete
+[transport decisions, bounds and lifecycle](docs/async-transport.md).
+Optional `--threads 1` or `--threads N` selects exactly 1..64 existing shared
+I/O/execution workers plus the accept/control thread; idle clients do not occupy
+an entire worker.
 
 **Durability completeness is explicitly deferred for the current phase.** The
 append-only journal remains available and tested, but it is best-effort: there is
@@ -257,7 +263,8 @@ window after progress, plus a separate 100 µs cooperative run-budget hint for
 multiple lanes/clients. This trades CPU work for fewer premature sleeps, not
 free CPU, kernel readiness or an OS fairness guarantee. Earlier four-worker,
 one-CPU tail regressions motivated this separate budget; measure real traffic
-rather than assuming more workers improve latency. Default threading is unchanged;
+rather than assuming more workers improve latency. For default Unix async TCP,
+see the [separately accounted runtime/service topology](docs/async-transport.md);
 a guarded bind-time one-through-four-CPU hint lets busy clients briefly lend I/O
 to an existing client thread while their owners wait. Quiet sockets return to
 blocking owners; fixed modes, above-four/unknown hints and initially lone clients keep their

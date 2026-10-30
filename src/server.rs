@@ -48,7 +48,8 @@ pub const FIXED_WORKER_RUN_POLICY_VERSION: u64 = 2;
 pub struct SchedulingPolicy {
     /// Default Unix plain-TCP sockets use async Tokio I/O.
     pub readiness_io: bool,
-    /// Number of current-thread Tokio client runtimes selected at bind time.
+    /// Total network runtimes, including the accept/runtime-zero thread.
+    /// One additional bounded cold-I/O service thread is accounted separately.
     pub tokio_worker_threads: usize,
     pub active_poll_us: u64,
     pub run_quantum_us: u64,
@@ -417,6 +418,17 @@ impl Config {
     }
 }
 
+fn tokio_plain_transport_enabled(config: &Config) -> bool {
+    cfg!(unix)
+        && config.worker_threads.is_none()
+        && !config.appendonly
+        // ACL SAVE/LOAD hold the auth write lock during filesystem I/O;
+        // offloading the syscall alone would still stall runtime authorization.
+        && config.aclfile.is_none()
+        && config.audit_log.is_none()
+        && config.audit_syslog.is_none()
+}
+
 impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
         config.validate()?;
@@ -475,13 +487,12 @@ impl Server {
         };
         let capacity = thread::available_parallelism().ok().map(usize::from);
         let mut policy = SchedulingPolicy::new(config.worker_threads, capacity);
-        if cfg!(unix) && config.worker_threads.is_none() {
+        if tokio_plain_transport_enabled(&config) {
             policy = SchedulingPolicy {
                 readiness_io: true,
-                tokio_worker_threads: thread::available_parallelism()
-                    .map(usize::from)
-                    .unwrap_or(1)
-                    .clamp(1, 64),
+                // Capture the affinity/quota-aware hint once, BEFORE any
+                // runtime thread pins itself to a single logical CPU.
+                tokio_worker_threads: capacity.unwrap_or(1).clamp(1, 64),
                 active_poll_us: 0,
                 run_quantum_us: 0,
                 single_reply_yield: false,
@@ -1184,6 +1195,42 @@ mod tests {
                 assert_eq!(fixed.with_smt_disabled(true), fixed);
             }
         }
+    }
+
+    #[test]
+    fn tokio_plain_transport_keeps_blocking_storage_sinks_on_fallback() {
+        let default = Config::default();
+        assert_eq!(tokio_plain_transport_enabled(&default), cfg!(unix));
+
+        let fixed_workers = Config {
+            worker_threads: Some(1),
+            ..Config::default()
+        };
+        assert!(!tokio_plain_transport_enabled(&fixed_workers));
+
+        let append_only = Config {
+            appendonly: true,
+            ..Config::default()
+        };
+        assert!(!tokio_plain_transport_enabled(&append_only));
+
+        let acl_file = Config {
+            aclfile: Some(std::env::temp_dir().join("rillcache-acl-test.conf")),
+            ..Config::default()
+        };
+        assert!(!tokio_plain_transport_enabled(&acl_file));
+
+        let audit_file = Config {
+            audit_log: Some(std::env::temp_dir().join("rillcache-audit-test.log")),
+            ..Config::default()
+        };
+        assert!(!tokio_plain_transport_enabled(&audit_file));
+
+        let audit_syslog = Config {
+            audit_syslog: Some("127.0.0.1:5514".parse().unwrap()),
+            ..Config::default()
+        };
+        assert!(!tokio_plain_transport_enabled(&audit_syslog));
     }
 
     #[test]
