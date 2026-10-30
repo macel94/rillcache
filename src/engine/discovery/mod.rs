@@ -996,36 +996,33 @@ impl Store {
             output.extend_from_slice(b"-ERR internal store error\r\n");
             return;
         };
-        let now = self.now(&data);
-        let live_keys = data
-            .entries
-            .values()
-            .filter(|entry| entry.alive(now))
-            .count();
-        let expiring_keys = data
-            .entries
-            .values()
-            .filter(|entry| entry.alive(now) && entry.expires.is_some())
-            .count();
-        let subexpiry_keys = data
-            .entries
-            .values()
-            .filter(|entry| entry.alive(now) && !entry.field_ttl.is_empty())
-            .count();
-        let (ttl_sum, ttl_count) = data
-            .entries
-            .values()
-            .filter_map(|entry| {
-                entry
-                    .alive(now)
-                    .then_some(entry.expires)
-                    .flatten()
-                    .map(|deadline| u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0))
-            })
-            .fold((0u64, 0u64), |(sum, count), ttl| {
-                (sum.saturating_add(ttl), count + 1)
-            });
+        let (mut live_keys, mut expiring_keys, mut subexpiry_keys) = (0usize, 0usize, 0usize);
+        let (mut ttl_sum, mut ttl_count) = (0u64, 0u64);
+        if sections.iter().any(|section| {
+            section.eq_ignore_ascii_case(b"keyspace")
+                || section.eq_ignore_ascii_case(b"default")
+                || section.eq_ignore_ascii_case(b"all")
+        }) {
+            let now = self.now(&data);
+            for entry in data.entries.values().filter(|entry| entry.alive(now)) {
+                live_keys += 1;
+                subexpiry_keys += usize::from(!entry.field_ttl.is_empty());
+                if let Some(deadline) = entry.expires {
+                    expiring_keys += 1;
+                    ttl_count += 1;
+                    ttl_sum = ttl_sum.saturating_add(
+                        u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0),
+                    );
+                }
+            }
+        }
         let avg_ttl = ttl_sum.checked_div(ttl_count).unwrap_or(0);
+        let payload_bytes = data.payload_bytes;
+        let eviction = data.eviction;
+        let lifecycle = (data.expired_keys, data.expired_subkeys, data.evicted_keys);
+        // Do not hold data across helpers that can take data or another lock:
+        // std RwLock reads are not reentrant when a writer is queued.
+        drop(data);
         let mut text = String::new();
         for (index, section) in sections.iter().enumerate() {
             let section = section.to_ascii_lowercase();
@@ -1061,9 +1058,9 @@ impl Store {
                 let _ = writeln!(
                     text,
                     "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
-                    data.payload_bytes,
+                    payload_bytes,
                     self.payload_limit(),
-                    self.eviction_policy().name(),
+                    eviction.name(),
                     self.notify_flags().as_string()
                 );
             }
@@ -1085,7 +1082,7 @@ impl Store {
                 );
             }
             if matches!(section.as_slice(), b"stats" | b"default" | b"all") {
-                let stats = self.stats();
+                let stats = self.stats_from_counters(lifecycle);
                 let _ = writeln!(
                     text,
                     "# Stats\r\ntotal_connections_received:{}\r\ntotal_commands_processed:{}\r\nrejected_connections:{}\r\nexpired_keys:{}\r\nexpired_subkeys:{}\r\nevicted_keys:{}\r\npubsub_channels:{}\r\npubsub_patterns:{}\r\naudit_log_write_failures:{}\r\naudit_syslog_write_failures:{}\r",
@@ -1334,6 +1331,63 @@ fn write_array_len(length: usize, output: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn info_releases_its_data_snapshot_before_waiting_for_pubsub() {
+        use std::sync::{Arc, mpsc};
+        use std::time::{Duration, Instant};
+        struct Clock(mpsc::Sender<()>);
+        impl crate::engine::Clock for Clock {
+            fn now_ms(&self) -> i64 {
+                let _ = self.0.send(());
+                1000
+            }
+        }
+        let (entered, observed) = mpsc::channel();
+        let store = Store::with_clock(1024, Arc::new(Clock(entered)));
+        let mut setup = Vec::new();
+        store.execute(&[b"SET", b"ttl", b"v", b"PX", b"10000"], &mut setup);
+        assert_eq!(setup, b"+OK\r\n");
+        {
+            let mut data = store.data.write().unwrap();
+            data.expired_keys = 7;
+            data.expired_subkeys = 3;
+            data.evicted_keys = 2;
+        }
+        let pubsub = store.pubsub.write().unwrap();
+        while observed.try_recv().is_ok() {}
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut reply = Vec::new();
+                store.info(&[b"INFO", b"all"], &mut reply);
+                reply
+            });
+            let entered = observed.recv_timeout(Duration::from_secs(3)).is_ok();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut released = false;
+            while entered && Instant::now() < deadline {
+                if let Ok(_writer) = store.data.try_write() {
+                    released = true;
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            // Release the controlled wait before joining/asserting, including
+            // on the old implementation: regression failure must not hang CI.
+            drop(pubsub);
+            let reply = String::from_utf8(reader.join().unwrap()).unwrap();
+            assert!(entered, "INFO must reach its data snapshot");
+            assert!(released, "INFO retained data while waiting on pub/sub");
+            for expected in [
+                "maxmemory_policy:noeviction\r\n",
+                "expired_keys:7\r\n",
+                "expired_subkeys:3\r\n",
+                "evicted_keys:2\r\n",
+            ] {
+                assert!(reply.contains(expected), "{reply}");
+            }
+        });
+    }
 
     #[test]
     fn family_groups_flatten_to_sorted_unique_registry() {

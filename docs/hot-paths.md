@@ -13,6 +13,32 @@ compatibility work. It retains 84 checked component samples, controls, CPU profi
 losses and limits. It is not a replacement native comparison or an optimization
 claim; the historical profiles below remain labeled with their original baseline.
 
+## Mio readiness follow-up (S-MIO)
+
+The user-authorized Mio exception replaces default Unix plain-TCP leases with a
+single readiness loop. Runnable connections use recyclable indexed slots with
+full-token validation; hashing routes kernel events, not productive I/O turns.
+A turn owns its one queued continuation, and asynchronous membership changes
+only on session-state transitions. Slot storage is bounded by peak simultaneous
+connections rather than lifetime connection count. Mio 1.2.4 is pinned/vendored with default logging disabled;
+application targets still forbid unsafe code. Linux uses epoll, but unlike
+Valkey's level-triggered `ae_epoll.c`, Mio requires edge-triggered draining.
+The runnable queue therefore retains bounded work until WouldBlock, preserves
+interrupted operations, limits accepts/commands/I/O per pass, and only registers
+writable interest while replies remain. Distinct non-recycled tokens prevent
+stale events from reaching a reused descriptor's new session.
+
+Deferred commands, pause and push channels retain 1 ms timer servicing; shutdown
+is checked around selector waits bounded at 10 ms, maintenance targets 100 ms,
+all subject to scheduler/command slack. Ordinary idle sockets are not scanned
+for recv readiness; inactivity is checked during maintenance. Existing Session
+and Client dispatch retain protocol, collectors, auth, transactions, bounded
+buffers and error accounting. Fixed-worker/TLS implementations and non-Unix
+fallback remain; benchmark provenance identifies `mio-readiness`, not leases.
+This is complete usable default behavior, not a claim that every performance
+case now wins: only fresh protected measurements can establish acceptance.
+The sections below describe earlier, source-pinned std-only investigations.
+
 ## Investigation
 
 The preceding published comparison was weakest with one logical server CPU and
@@ -242,7 +268,7 @@ window still prevents isolated replies from allocating a lease. A regression tes
 exercises single-command admission at CPU hints 2–4. Fixed dispatch, expiry,
 accounting, 100 µs multicore idle / 50 µs one-CPU idle / 100 ms maximum epoch and shutdown semantics are unchanged.
 
-Small-multicore policy v7 selects one coordinator when SMT is active or unknown;
+Small-multicore policies v7–v8 select one coordinator when SMT is active or unknown;
 four logical CPUs permit two independent round-robin groups only with an explicit
 bind-time Linux SMT-disabled hint. V4's unconditional two-group cohort failed
 5/10 on a two-core/four-thread runner and remains preserved, not accepted.
@@ -254,14 +280,116 @@ maximum epoch and shared transaction locks are unchanged. V6 also skips at most 
 empty poll, without postponing buffered work, pending output or asynchronous
 session states. The hint clears before each decision; quiet borrowers still
 service ready I/O before an idle return. Epoch/shutdown checks remain on every
-pass. V5's 7/10 four-CPU result stays failed evidence. These changes add no
-permanent thread, dependency or OS yield/sleep. Benchmark JSON records the actual
+pass. V5's 7/10 four-CPU result stays failed evidence. V5–v7 added no
+permanent thread, dependency or OS yield/sleep; v8's exhausted-backoff yield is
+separately described below. Benchmark JSON records the actual
 captured lane count. Tests exercise independent leadership, concurrent transaction atomicity,
 reused partial-reply/push ownership and live eight-client ordering/shutdown.
 The Rust Performance Book's [profiling](https://nnethercote.github.io/perf-book/profiling.html)
 and [workhorse reuse](https://nnethercote.github.io/perf-book/heap-allocations.html)
 guidance motivates these focused changes; shared-VM profiles are diagnostics,
 not a substitute for either unchanged protected performance gate.
+
+## Cooperative exhausted backoff (S-COOPIDLE)
+
+Multicore policy v8 retains the seven no-progress processor-hint stages
+1/2/4/8/16/32/64, then requests `thread::yield_now()` on further empty passes.
+Actual progress resets the sequence before any yield; the counter saturates.
+One-CPU v2, fixed workers, SMT group selection, ownership, deferred-read guards,
+command/output quanta and 100 µs idle / 100 ms maximum epochs are unchanged.
+This is neither a sleep nor readiness notification: [Rust warns that yielding
+can still busy-wait](https://doc.rust-lang.org/std/thread/fn.yield_now.html), and
+Linux gives no SCHED_OTHER fairness/performance guarantee. Correctness never
+relies on another thread being scheduled. Captured metadata now reports v8;
+only the benchmark CLI test's expected version changes, not its measurement loop.
+
+[Native study 40883093629](https://github.com/macel94/rillcache/actions/runs/40883093629)
+compared baseline `aed4dd7`, prototype `7f5baf4` and Valkey 9.1.2 on the same
+Ubuntu 24.04/EPYC 7763 two-core/four-SMT-thread runner. Nine normal PING/P1
+samples retained the preceding study's matched settings and Latin rotation.
+Medians [min–max] were 109,277.2 [109,075.5–109,318.0], 113,235.2
+[111,780.5–113,311.7] and 114,946.6 [112,647.8–115,924.8] req/s.
+The candidate gained about 3.6% against its own baseline but **still trailed
+Valkey by 1.5%**. Normal server CPU medians were 10.100/10.090/9.980 s and
+generator CPU 18.441/18.926/19.540 s. No statistical, tail or all-workload win
+is established. All nine normal, six traffic-profile and three idle captures
+were independently checked with fresh distinct binaries and owned lifecycles.
+
+Separate instrumented captures confirm 491 candidate yields versus zero, but
+empty receives/send rose 0.944→1.239, ioctl 5407→6082 and context switches
+6018→6798. They do **not** establish less empty I/O or unprofiled CPU/energy
+savings. The original advisory promotion condition (also beating Valkey in
+this subset) was not met; that loss remains visible. The measured own-baseline
+gain justifies testing this new runtime candidate through the unchanged protected
+gates, not claiming acceptance or retrying the old source until green.
+
+## INFO snapshot locking and unnecessary scans
+
+A captured stalled `blocked_clients` test exposed a real data-RwLock deadlock:
+INFO retained a read guard while `stats()`/`eviction_policy()` reacquired it,
+with a blocking-pop writer waiting. [Rust documents this exact reader/writer
+priority hazard](https://doc.rust-lang.org/std/sync/struct.RwLock.html).
+INFO now copies data counters/policy, releases the guard before other helpers,
+and reuses that snapshot. A controlled pub/sub-contention regression fails
+boundedly against the old implementation rather than hanging on cleanup.
+Unrequested keyspace sections no longer scan entries; requested keyspace metrics
+share one pass instead of four. Existing TTL, lifecycle and payload meanings stay
+unchanged; this is not an atomic cross-subsystem metrics or RSS guarantee.
+
+## Bounded Linux idle admission waits (S-ACCEPTWAIT)
+
+Default plain Linux admission now installs a positive 10 ms receive-timeout
+before enabling blocking accept, avoiding the old accept/1 ms sleep loop when
+no connection is pending. [Linux documents that SO_RCVTIMEO applies to
+accept](https://man7.org/linux/man-pages/man7/socket.7.html). A safe owned duplicate
+sets only the shared socket option; dropping it leaves the listener alive.
+Accepted client timeouts are still reset from Config. Unsupported platforms or
+setup failure retain nonblocking admission. Fixed workers, TLS, client handoffs
+and their 100 ms maximum epoch are unchanged. Maintenance keeps its 100 ms target
+between bounded waits; timer rounding/accept slack is not a hard deadline.
+
+The separate [native diagnostic run 40867447709](https://github.com/macel94/rillcache/actions/runs/40867447709)
+compared INFO head `956e5fe`, prototype `d9ecad9` and pinned Valkey 9.1.2 on
+Ubuntu 24.04/EPYC 7763, two cores/four shared SMT threads. Three Latin-rotated
+normal PING/P1 samples per variant used eight clients/two official-generator
+threads, 8000 warmups and ten-second loads. Baseline median was 107,798.2
+[106,294.0–107,867.5], candidate 108,673.2 [108,193.7–108,991.1] and Valkey
+112,324.7 [108,364.7–114,487.9] req/s. The scoped candidate gain is about 0.8%;
+it **still trails Valkey** and establishes neither an all-workload win nor tails.
+
+Separate approximately two-second **instrumented no-load** owned-process captures
+recorded accept/sleep calls of 1867/1867 versus 166/166, context switches of 1867
+versus 332 and task-clock of 19.01 versus 4.89 ms; Valkey recorded 0/0 calls,
+20 switches and 2.77 ms. These show substantially fewer admission wakeups, not
+unprofiled CPU/throughput or production-energy guarantees. All nine normal CSVs,
+six traffic profiles and three idle captures retain identities/affinity/lifecycles
+and fresh distinct frozen binary hashes. The two protected performance gates
+remain separate, mandatory, and unchanged.
+
+## Unified session error accounting (S-UNIFIEDSESSION)
+
+The observer-disabled outer shortcut returned plain PING/GET/SET/ECHO replies
+before the common `record_error` epilogue. A bounded negative regression produces
+three ERR replies but finds no ERR counter with all optional collectors disabled.
+Removing that redundant shortcut keeps the existing checked `execute_inner`
+ordinary-command specialization and all common timing/observer/error hooks.
+Authorization, subscriptions, transactions, pause, MONITOR and enabled collectors
+are not bypassed. Tests cover all eight collector combinations, RESP2/3, binary
+and null replies, exactly-once command/error counts and all-mode TCP reset/recount.
+
+[Native study 40933353342](https://github.com/macel94/rillcache/actions/runs/40933353342)
+compared baseline `96e3bfd`, fix `5716920` and Valkey 9.1.2 with unchanged matched
+settings. This runner was an **Intel Xeon 6973P-C, two cores/four SMT threads**,
+not the earlier EPYC hosts. Normal PING/P1 medians [min–max] were 210,019.3
+[204,321.41–210,530.70], 208,360.91 [204,634.09–209,730.59] and 166,181.91
+[162,999.30–170,346.70] req/s. The candidate median is about 0.8% lower with
+overlapping spreads; **no throughput improvement is established**. Both Rust
+labels beating Valkey here is not evidence that the patch made either faster.
+Normal server CPU medians were 10.030/10.030/9.970 s and generator CPU
+17.608/17.096/15.614 s. All nine normal, six traffic-profile and three idle
+captures independently validated source/build, command, affinity and lifecycle
+identity. The change is justified by the reproduced accounting bug, not favorable
+hardware, instrumented throughput or a claim that protected gates already passed.
 
 ## Release build profile
 

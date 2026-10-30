@@ -24,6 +24,7 @@ pub(super) fn pair(input: Vec<u8>) -> (Client, TcpStream) {
             sent: 0,
             closing: false,
             eof: false,
+            retry_io: false,
             activity: Instant::now(),
             _permit: None,
             shutdown_on_drop: true,

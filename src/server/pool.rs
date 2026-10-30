@@ -51,6 +51,8 @@ pub(super) struct Client {
     pub(super) sent: usize,
     pub(super) closing: bool,
     pub(super) eof: bool,
+    /// EINTR is not WouldBlock: readiness owners must retain their runnable token.
+    pub(super) retry_io: bool,
     pub(super) activity: Instant,
     pub(super) _permit: Option<Permit>,
     pub(super) shutdown_on_drop: bool,
@@ -91,6 +93,7 @@ impl Client {
                     io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                 ) =>
             {
+                self.retry_io |= error.kind() == io::ErrorKind::Interrupted;
                 Ok(false)
             }
             Err(error) => Err(error),
@@ -102,7 +105,7 @@ impl Client {
     }
 
     /// At most one bounded socket read per client/pass.
-    fn receive(&mut self, limits: Limits, chunk: &mut [u8]) -> io::Result<bool> {
+    pub(super) fn receive(&mut self, limits: Limits, chunk: &mut [u8]) -> io::Result<bool> {
         let room = (limits.max_frame_bytes - self.input.len()).min(chunk.len());
         if room == 0 {
             self.output
@@ -126,6 +129,7 @@ impl Client {
                     io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                 ) =>
             {
+                self.retry_io |= error.kind() == io::ErrorKind::Interrupted;
                 Ok(false)
             }
             Err(error) => Err(error),
@@ -141,7 +145,15 @@ impl Client {
     ) -> io::Result<Option<bool>> {
         // Like blocking I/O, service already-ready input/output before declaring
         // inactivity; scheduler delay must not discard buffered commands.
+        self.retry_io = false;
         let mut progress = self.flush()?;
+        if self.closing {
+            return Ok(if self.output.is_empty() {
+                None
+            } else {
+                self.open(progress, config.idle_timeout)
+            });
+        }
         if self.session.is_subscribed() || self.session.is_monitoring() {
             let mut pushed = 0;
             while pushed < 64 {
@@ -410,6 +422,7 @@ pub(super) fn serve(
                 sent: 0,
                 closing: false,
                 eof: false,
+                retry_io: false,
                 activity: Instant::now(),
                 _permit: Some(Permit::acquire(&admitted)),
                 shutdown_on_drop: true,
@@ -517,6 +530,7 @@ mod tests {
                 sent: 0,
                 closing: false,
                 eof: false,
+                retry_io: false,
                 activity: Instant::now(),
                 _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
                 shutdown_on_drop: true,
@@ -606,6 +620,7 @@ mod tests {
             sent: 0,
             closing: false,
             eof: false,
+            retry_io: false,
             activity: Instant::now() - Duration::from_secs(2),
             _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
             shutdown_on_drop: true,

@@ -5,7 +5,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 ## Policy and transport
 
 - **R01 (ubiquitous):** The project shall compile with unsafe project code forbidden
-  and without any external dependency in any target or feature.
+  and only the explicitly authorized rustls/Mio dependency graphs, vendored and
+  allowlisted across all targets/features. No application unsafe code or FFI is
+  introduced by using their safe APIs.
 - **R10 (event-driven):** When a complete supported RESP2 command is received, the
   server shall execute it once and return one correctly framed response.
 - **R11 (state-driven):** While a command is incomplete, the server shall retain
@@ -28,12 +30,59 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R19 (state-driven):** While a client performs no socket I/O for the configured
   inactivity timeout, the server shall release that connection.
 
+## Default Unix readiness I/O (S-MIO)
+
+- **R-MIO1:** When default plain TCP runs on Unix, the server shall use one Mio
+  readiness loop (epoll on Linux), without a per-client thread or busy lease scan.
+  Fixed workers, TLS and the non-Unix managed-client fallback remain available.
+- **R-MIO2:** When readiness is delivered, bounded read/command/write and accept
+  quanta shall retain runnable work until WouldBlock. Interrupted I/O shall not
+  discard readiness; spurious events shall not imply successful I/O. Pending
+  output shall add writable interest and remove it when drained.
+- **R-MIO3:** While commands are blocked/paused or clients receive pushes, bounded
+  timer servicing shall deliver replies without another socket-input edge.
+  Peer EOF behind buffered deferred commands shall release registration/accounting.
+- **R-MIO4:** When descriptors close/reuse or shutdown/error occurs, monotonically
+  distinct tokens shall reject stale events, registrations shall be removed
+  before sockets close, and all owned connections/workers shall be cleaned/joined.
+  Recycled directory slots shall stay bounded by peak simultaneous clients;
+  queued slot references shall validate the full token before service or removal.
+  Admission, frame limits, inactivity, expiry and command accounting remain intact.
+- **R-MIO5:** When measured, metadata shall identify readiness rather than leases.
+  Significant throughput gains are a hypothesis, not an acceptance exemption;
+  every original and four-CPU protected comparison remains mandatory.
+
+## Legacy fallback admission waits (S-ACCEPTWAIT)
+
+These requirements describe the managed-client fallback. Default Unix plain TCP
+is superseded by S-MIO; its acceptor waits through the readiness selector.
+
+- **R-ACCEPT1 (state-driven):** While the default plain Linux acceptor is idle,
+  it shall use a positive 10 ms kernel receive-timeout target before enabling
+  blocking accept. Only safe standard-library socket-option operations on an
+  owned duplicate may be used; the option handle shall perform no stream I/O or
+  shutdown. If setup fails or the platform is unsupported, the existing
+  nonblocking accept/backoff path shall remain available.
+- **R-ACCEPT2 (event-driven):** When a socket is admitted, its configured client
+  read/write timeouts shall still be installed before client I/O. Shutdown shall
+  retain joined ownership, and maintenance shall retain its bounded work and
+  100 ms scheduling target, checked between accept waits. Kernel timer rounding,
+  accept-wait slack and descheduling preclude a hard real-time deadline. Fixed
+  workers, TLS, foreground expiry/accounting and handoff epochs shall not change.
+- **R-ACCEPT3 (ubiquitous):** Tests shall cover failed timeout setup without a
+  blocking-mode change, timeout-before-mode ordering, positive timed empty
+  accept, listener lifetime and independent accepted-client timeout restoration.
+  All-mode TCP/shutdown/persistence tests remain mandatory. Idle syscall/CPU
+  captures shall be separate from normal throughput evidence; neither replaces
+  either unchanged protected performance gate.
+
 ## Explicit multithreaded execution
 
 - **R60 (optional feature):** Where `--threads N` is supplied for N in 1..64,
   the server shall create exactly N managed I/O/execution workers, independent of
-  client count. Without the option it shall retain managed thread-per-client I/O.
-  S21 may lend busy-client I/O between those existing per-client workers; it
+  client count. Without the option it shall use S-MIO on Unix and the managed
+  thread-per-client fallback elsewhere. In the legacy fallback, S21 may lend
+  busy-client I/O between those existing per-client workers; it
   does not replace their admission/thread-count contract or add a permanent lane.
   The accept/control thread is additional; one worker is not one OS thread total.
 - **R61 (state-driven):** While clients are idle, slow readers or submitting large
@@ -42,7 +91,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R62 (event-driven):** When a server stops or a worker fails, it shall close
   client sockets and join every started worker, including partial-start cleanup.
 - **R63 (event-driven):** When `make test` or `make ci` runs locally or on GitHub,
-  socket correctness shall run in thread-per-client, one-worker and four-worker
+  socket correctness shall run in default/readiness, one-worker and four-worker
   configurations, with concurrent clients and reply-validated mode benchmark smoke.
 - **R64 (event-driven):** When embedded thread modes are benchmarked, results shall
   record the selected mode/worker count. Fixed worker options shall be rejected

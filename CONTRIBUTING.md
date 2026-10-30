@@ -28,11 +28,16 @@ ordinary implementation PRs have no blanket approving-review quota. See the
    Specify binary data, invalid arguments, limits, concurrency and failure cases.
 3. Add unit and wire-level tests alongside the implementation. Use ephemeral
    ports and managed server handles; do not use fixed sleeps for readiness.
-4. Run `make test` during iteration, then `make ci` before requesting review.
+4. During editing, run the relevant `cargo test --locked --offline --lib FILTER`
+   or `--test TARGET FILTER`; use `make dev-check` for formatting, all-target
+   Clippy and one library-test pass. Run `make test` after a complete logical
+   change and `make ci` before requesting review, not after every speculative
+   edit. Focused checks are not delivery evidence. See the
+   [bounded development cycle](docs/development-cycle.md).
    `make fmt` applies formatting. All Cargo checks/builds use the pinned toolchain,
-   lockfile and offline mode. The only external dependency exception is rustls
-   and its transitive crates, vendored for offline builds and enforced by the
-   dependency-policy test.
+   lockfile and offline mode. Explicit external dependency exceptions are rustls
+   and Mio with their required transitive crates, vendored for offline builds
+   and enforced by the dependency-policy test.
 5. Capture the relevant `make bench`/`make compare` evidence. The separate mandatory
    PR gate applies a scoped shared-runner throughput threshold, not a stable-hardware
    SLO or universal win. Preserve uncertainty, CPU/tails and losses; never trade
@@ -60,7 +65,7 @@ the auto-loaded [project instructions](AGENTS.md).
 ## Safety is not negotiable
 
 `unsafe_code = "forbid"` applies package-wide, and each crate root also contains
-`#![forbid(unsafe_code)]`. No unsafe code, FFI, native extensions, dependency
+`#![forbid(unsafe_code)]`. No unsafe code, FFI, native extensions, unapproved dependency
 exceptions, build scripts or alternative allocators. Do not relax/remove the
 policy to make an optimization work. Safe APIs of the Rust standard library and
 runtime are permitted; their implementation internals are outside this policy.

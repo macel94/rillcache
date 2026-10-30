@@ -134,3 +134,46 @@ fn info_errorstats_counts_codes_and_resets_in_all_modes() {
         server.shutdown().unwrap();
     }
 }
+
+#[test]
+fn plain_errors_are_counted_with_optional_collectors_disabled_in_all_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut stream = connect(&server);
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"slowlog-log-slower-than", b"-1"],
+            b"+OK\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"latency-monitor-threshold", b"0"],
+            b"+OK\r\n",
+        );
+        command(&mut stream, &[b"LPUSH", b"list", b"x"], b":1\r\n");
+        for (args, prefix) in [
+            (
+                &[b"PING".as_slice(), b"one", b"two"][..],
+                b"-ERR".as_slice(),
+            ),
+            (&[b"GET".as_slice(), b"list"][..], b"-WRONGTYPE".as_slice()),
+            (&[b"SET".as_slice(), b"key"][..], b"-ERR".as_slice()),
+            (&[b"ECHO".as_slice()][..], b"-ERR".as_slice()),
+        ] {
+            send(&mut stream, args);
+            assert!(read_frame(&mut stream, 0).starts_with(prefix));
+        }
+        let stats = info(&mut stream, b"errorstats");
+        assert!(contains(&stats, b"errorstat_ERR:3\r\n"), "{stats:?}");
+        assert!(contains(&stats, b"errorstat_WRONGTYPE:1\r\n"), "{stats:?}");
+        command(&mut stream, &[b"CONFIG", b"RESETSTAT"], b"+OK\r\n");
+        assert!(!contains(&info(&mut stream, b"errorstats"), b"errorstat_"));
+        send(&mut stream, &[b"PING", b"one", b"two"]);
+        assert!(read_frame(&mut stream, 0).starts_with(b"-ERR"));
+        assert!(contains(
+            &info(&mut stream, b"errorstats"),
+            b"errorstat_ERR:1\r\n"
+        ));
+        server.shutdown().unwrap();
+    }
+}

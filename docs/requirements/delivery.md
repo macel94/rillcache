@@ -238,7 +238,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   or four-CPU capacity hint, active bursts may use a 100 µs idle / 100 ms
   maximum-epoch handoff path so a busy pipeline-1 client stays leased across its
   request interval. One-CPU policy v2 shall remain unchanged at 50 µs; small-
-  multicore policy shall be recorded as v7 without enabling single-reply yields.
+  multicore policy shall be recorded as v8 without enabling single-reply yields.
   Four-CPU admission may select two independent temporary coordinator groups only
   with an explicit bind-time Linux SMT-disabled hint; active/unknown SMT and 1–3
   CPU hints shall retain one group. The read-only probe shall read at most three
@@ -246,7 +246,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   affinity-specific physical-core count. A connection shall retain its assigned
   group across leases regardless of session-ID changes or disconnects. Default
   thread counts, fixed lanes, TLS, admission and shared transaction/storage
-  atomicity shall not change. Historical v3/v4/v5 evidence keeps its actual version.
+  atomicity shall not change. Historical v3–v7 evidence keeps its actual version.
 - **R-IO4B (state-driven):** While a connection is lent, its actual push-message
   receiver shall move with its session and socket; the original worker shall
   perform no competing receives. When the lease returns, that same receiver and
@@ -265,9 +265,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   closure, cross-lane transactions and live concurrent ordering/joined shutdown.
 
 - **R-IO4E (state-driven):** After empty multicore handoff scans, processor-hint
-  backoff shall grow from 1 to at most 64 instructions and reset on real progress,
-  without OS yield/sleep, rearming an idle epoch, extending its maximum, or changing
-  one-CPU v2/fixed-worker policies. Tests shall cover cap/reset, SMT-status failures
+  backoff shall grow from 1 to at most 64 instructions and reset on real progress.
+  These seven spin stages shall not yield/sleep; exhausted backoff may request
+  R-IO4G's cooperative yield. Neither path shall rearm an idle epoch, extend its
+  maximum, or change one-CPU v2/fixed-worker policies. Tests shall cover cap/reset, SMT-status failures
   and bounded reads, conservative group selection and existing shutdown semantics.
 
 - **R-IO4F (state-driven):** After a no-progress poll of a normal leased client,
@@ -277,6 +278,18 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   quiet borrower's ready I/O before returning it. Every pass shall retain epoch
   and shutdown checks; one-CPU/fixed policies remain unchanged. Tests shall cover
   the one-pass bound, each guard and execute-once queued input at idle return.
+
+- **R-IO4G (state-driven, S-COOPIDLE):** After all seven no-progress multicore
+  spin stages are exhausted, further empty passes may request an OS yield.
+  Real progress shall reset the saturated counter before any yield. No new
+  sleep, permanent thread, socket/store lock across the yield or scheduler
+  fairness guarantee shall be introduced. Existing epoch/shutdown checks,
+  ownership, asynchronous-work guards and one-CPU/fixed policies shall remain.
+  Tests shall cover the exact stages, 1000 saturated observations, no yield on
+  progress, reset and all-mode ordering/transaction/joined-shutdown behavior.
+  Captured policy metadata shall identify v8. Normal throughput and separate
+  instrumented counters shall disclose gains and losses; R-IO4C and both
+  unchanged protected gates still determine merge acceptance.
 
 ## PR-only main and scoped Valkey merge acceptance (S23–S24)
 

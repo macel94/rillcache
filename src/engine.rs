@@ -502,10 +502,6 @@ impl Store {
         self.rejected_connections.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn monitors_active(&self) -> bool {
-        self.monitor_count.load(Ordering::Relaxed) > 0
-    }
-
     pub fn record_command(&self, client_id: u64) {
         let shard = (client_id as usize) % COMMAND_COUNTER_SHARDS;
         self.commands_processed[shard].fetch_add(1, Ordering::Relaxed);
@@ -583,15 +579,21 @@ impl Store {
     }
 
     pub fn stats(&self) -> Stats {
-        let (expired_keys, expired_subkeys, evicted_keys, pubsub_channels, pubsub_patterns) = {
-            let (expired, subkeys, evicted) = self.data.read().map_or((0, 0, 0), |data| {
-                (data.expired_keys, data.expired_subkeys, data.evicted_keys)
-            });
-            let (channels, patterns) = self.pubsub.read().map_or((0, 0), |pubsub| {
-                (pubsub.channel_names(None).len(), pubsub.numpat())
-            });
-            (expired, subkeys, evicted, channels, patterns)
-        };
+        let lifecycle = self.data.read().map_or((0, 0, 0), |data| {
+            (data.expired_keys, data.expired_subkeys, data.evicted_keys)
+        });
+        self.stats_from_counters(lifecycle)
+    }
+
+    // INFO already captured these counters. Reuse them rather than attempting
+    // a recursive data read, which can deadlock behind a queued writer.
+    fn stats_from_counters(
+        &self,
+        (expired_keys, expired_subkeys, evicted_keys): (u64, u64, u64),
+    ) -> Stats {
+        let (pubsub_channels, pubsub_patterns) = self.pubsub.read().map_or((0, 0), |pubsub| {
+            (pubsub.channel_names(None).len(), pubsub.numpat())
+        });
         Stats {
             total_connections_received: self.connections_received.load(Ordering::Relaxed),
             total_commands_processed: self

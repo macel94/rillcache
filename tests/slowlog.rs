@@ -330,7 +330,13 @@ fn slowlog_validates_config_logs_blocking_time_and_skips_queued_commands() {
             ]))
         );
 
-        // A fast command below the default threshold is not recorded.
+        // A VM can deschedule even PING past 10 ms. The default threshold's
+        // exact boundary is tested with controlled durations in engine tests.
+        // Check disabled recording here without imposing a scheduler deadline.
+        ok(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"slowlog-log-slower-than", b"-1"],
+        );
         ok(&mut stream, &[b"SLOWLOG", b"RESET"]);
         assert_eq!(
             call(&mut stream, &[b"PING"]),
@@ -338,10 +344,20 @@ fn slowlog_validates_config_logs_blocking_time_and_skips_queued_commands() {
         );
         assert_eq!(integer(&mut stream, &[b"SLOWLOG", b"LEN"]), 0);
 
-        // A timed-out blocking pop records the total wait duration.
+        // Restore the unchanged default and measure the real blocking wait.
+        ok(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"slowlog-log-slower-than", b"10000"],
+        );
         assert_eq!(
             call(&mut stream, &[b"BLPOP", b"missing", b"0.05"]),
             Value::Array(None)
+        );
+        // Freeze recording before inspection: a slow LEN/GET must not become
+        // an unexpected newest entry while checking the blocking command.
+        ok(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"slowlog-log-slower-than", b"-1"],
         );
         assert_eq!(integer(&mut stream, &[b"SLOWLOG", b"LEN"]), 1);
         let blocked = entries(&mut stream, b"1");

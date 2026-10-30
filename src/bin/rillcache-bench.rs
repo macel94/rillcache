@@ -551,14 +551,19 @@ fn report(
         }
         (None, None) => {
             let policy = scheduling.expect("embedded scheduling policy");
-            format!(
-                "{{\"mode\":\"thread-per-client\",\"workers\":null,\"single_reply_yield\":{},\"client_handoff_idle_us\":{},\"client_handoff_policy_version\":{},\"client_handoff_max_epoch_ms\":{},\"client_handoff_lanes\":{}}}",
-                policy.single_reply_yield,
-                policy.client_handoff_idle_us,
-                policy.client_handoff_policy_version(),
-                policy.client_handoff_max_epoch_ms(),
-                policy.client_handoff_lanes
-            )
+            if policy.readiness_io {
+                "{\"mode\":\"mio-readiness\",\"workers\":1,\"readiness_policy_version\":1}"
+                    .to_owned()
+            } else {
+                format!(
+                    "{{\"mode\":\"thread-per-client\",\"workers\":null,\"single_reply_yield\":{},\"client_handoff_idle_us\":{},\"client_handoff_policy_version\":{},\"client_handoff_max_epoch_ms\":{},\"client_handoff_lanes\":{}}}",
+                    policy.single_reply_yield,
+                    policy.client_handoff_idle_us,
+                    policy.client_handoff_policy_version(),
+                    policy.client_handoff_max_epoch_ms(),
+                    policy.client_handoff_lanes
+                )
+            }
         }
     };
     let insertion = output.len() - "\"results\":[".len();
@@ -863,6 +868,7 @@ mod tests {
     fn report_uses_captured_scheduling_policy_without_resampling_capacity() {
         let options = Options::default();
         let policy = rillcache::server::SchedulingPolicy {
+            readiness_io: false,
             active_poll_us: 0,
             run_quantum_us: 0,
             single_reply_yield: true,
@@ -896,7 +902,7 @@ mod tests {
         );
         assert!(text.contains("\"single_reply_yield\":false"));
         assert!(text.contains("\"client_handoff_idle_us\":100"));
-        assert!(text.contains("\"client_handoff_policy_version\":7"));
+        assert!(text.contains("\"client_handoff_policy_version\":8"));
         assert!(text.contains("\"client_handoff_lanes\":2"));
         assert!(text.contains("\"client_handoff_max_epoch_ms\":100"));
         let policy = rillcache::server::SchedulingPolicy {
@@ -917,6 +923,21 @@ mod tests {
         assert!(text.contains("\"client_handoff_policy_version\":0"));
         assert!(text.contains("\"client_handoff_max_epoch_ms\":0"));
         assert!(text.contains("\"client_handoff_lanes\":0"));
+        let readiness = rillcache::server::SchedulingPolicy {
+            readiness_io: true,
+            ..policy
+        };
+        let text = report(
+            "127.0.0.1:1".parse().unwrap(),
+            &options,
+            &[],
+            None,
+            Some(readiness),
+        );
+        assert!(text.contains("\"mode\":\"mio-readiness\""));
+        assert!(text.contains("\"readiness_policy_version\":1"));
+        assert!(!text.contains("\"mode\":\"thread-per-client\""));
+        assert!(!text.contains("\"client_handoff_policy_version\""));
     }
 
     #[test]
