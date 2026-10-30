@@ -42,6 +42,7 @@ mod options;
 mod pubsub;
 mod scan;
 mod sha256;
+mod shard;
 mod slowlog;
 mod sort;
 mod streams;
@@ -83,6 +84,7 @@ pub use error_dialect::ErrorDialect;
 pub use eviction::EvictionPolicy;
 pub use journal::FsyncPolicy;
 pub use notify::{Category as NotifyCategory, NotifyFlags};
+use shard::Keyspace;
 pub(crate) use streams::{
     XReadGroupOptions, XReadGroupOutcome, XReadGroupStart, XReadOutcome, parse_xread,
     parse_xreadgroup, xread_reply, xreadgroup_reply,
@@ -146,7 +148,10 @@ pub struct Stats {
 }
 
 pub struct Store {
-    data: RwLock<Data>,
+    /// Single keyspace facade. The server currently owns one lock-backed
+    /// shard; the owner-thread increment replaces the internals of `Keyspace`,
+    /// not these call sites.
+    data: Keyspace,
     max_payload_bytes: std::sync::atomic::AtomicUsize,
     error_dialect: ErrorDialect,
     collection_config: RwLock<CollectionConfig>,
@@ -229,7 +234,7 @@ impl Store {
         auth: Auth,
     ) -> Self {
         Self {
-            data: RwLock::new(Data::default()),
+            data: Keyspace::single(),
             max_payload_bytes: std::sync::atomic::AtomicUsize::new(max_payload_bytes),
             error_dialect: ErrorDialect::default(),
             collection_config: RwLock::new(CollectionConfig::default()),
@@ -791,6 +796,18 @@ impl Store {
             data.enforce_budget(limit);
             true
         })
+    }
+
+    /// Deterministic shard index for `key` under the current keyspace layout.
+    /// The server currently owns one shard, so every key maps to zero; the
+    /// routing contract is established here for the owner-thread increment.
+    pub fn shard_for(&self, key: &[u8]) -> usize {
+        self.data.shard_for(key)
+    }
+
+    /// Number of key-space shards in the current layout.
+    pub fn shard_count(&self) -> usize {
+        self.data.shard_count()
     }
 
     pub fn eviction_policy(&self) -> EvictionPolicy {
