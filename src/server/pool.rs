@@ -1,10 +1,11 @@
-//! Optional bounded I/O/execution lanes using only safe standard-library APIs.
-//! Nonblocking round-robin polling is portable, not an epoll/kqueue substitute.
+//! Optional bounded I/O lanes using Tokio runtimes, mailboxes and safe CPU affinity.
+//! Client sockets remain nonblocking and round-robin polled in this execution mode.
 
 use super::*;
 use std::sync::atomic::AtomicUsize;
-use std::sync::mpsc::{self, Receiver, Sender, sync_channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::Instant;
+use tokio::sync::mpsc::{self, Sender};
 
 use crate::session::Session;
 
@@ -304,73 +305,102 @@ pub(super) fn serve(
     store: Arc<Store>,
 ) -> io::Result<()> {
     let count = config.worker_threads.expect("fixed worker configuration");
+    let accept_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(io::Error::other)?;
+    let listener =
+        accept_runtime.block_on(async { tokio::net::TcpListener::from_std(listener) })?;
     let admitted = Arc::new(AtomicUsize::new(0));
     let mut lanes: Vec<Lane> = Vec::new();
     let result = (|| {
+        let core_ids = core_affinity::get_core_ids().unwrap_or_default();
         for index in 0..count {
             // The shared admission counter bounds the sum of all channel queues,
             // active clients and in-flight transfers by max_clients.
-            let (sender, receiver) = mpsc::channel::<Client>();
+            let queue_capacity = store.max_clients().div_ceil(count).max(1);
+            let (sender, mut receiver) = mpsc::channel::<Client>(queue_capacity);
             let store = Arc::clone(&store);
             let admitted = Arc::clone(&admitted);
             let stop = Arc::clone(&stopping);
             let config = config.clone();
             let reaper = index == 0;
+            let core_id = core_ids.get(index).copied();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .map_err(io::Error::other)?;
             let thread = thread::Builder::new()
                 .name(format!("rillcache-io-{index}"))
                 .spawn(move || {
-                    let mut clients: Vec<Client> = Vec::new();
-                    let mut chunk = [0; 16 * 1024];
-                    let mut maintenance = Instant::now();
-                    let mut polling = PollWindow::new(maintenance);
-                    while !stop.load(Ordering::Acquire) && !store.shutdown_requested() {
-                        if reaper && maintenance.elapsed() >= Duration::from_millis(100) {
-                            let _ = store.journal_sync();
-                            store.purge_expired(128);
-                            store.auto_rewrite_if_due();
-                            maintenance = Instant::now();
-                        }
-                        let mut progress = false;
-                        while let Ok(client) = receiver.try_recv() {
-                            clients.push(client);
-                            progress = true;
-                        }
-                        let mut index = 0;
-                        while index < clients.len() {
-                            match clients[index].poll(&store, &config, &mut chunk) {
-                                Ok(Some(made_progress)) => {
-                                    progress |= made_progress;
-                                    index += 1;
-                                }
-                                _ => {
-                                    let id = clients[index].session.id();
-                                    store.pubsub_remove_client(id);
-                                    store.unregister_client(id);
-                                    clients.swap_remove(index);
-                                }
-                            }
-                        }
-                        // Replies in flight are not an idle connection. Give the
-                        // next client request a short bounded window to arrive,
-                        // without rearming that window on empty/spurious scans.
-                        let now = Instant::now();
-                        if polling.active(now, progress) {
-                            if polling.yield_due(
-                                now,
-                                policy.run_quantum_us,
-                                admitted.load(Ordering::Relaxed) > 1,
-                            ) {
-                                thread::yield_now();
-                                polling.resumed(Instant::now());
-                            } else if !progress {
-                                std::hint::spin_loop();
-                            }
-                        } else {
-                            thread::park_timeout(Duration::from_millis(1));
-                            polling.resumed(Instant::now());
-                        }
+                    if let Some(core_id) = core_id {
+                        let _ = core_affinity::set_for_current(core_id);
                     }
-                    // Dropping clients and queued transfers closes every socket and permit.
+                    runtime.block_on(async move {
+                        let mut clients: Vec<Client> = Vec::new();
+                        let mut chunk = [0; 16 * 1024];
+                        let mut maintenance = Instant::now();
+                        let mut polling = PollWindow::new(maintenance);
+                        while !stop.load(Ordering::Acquire) && !store.shutdown_requested() {
+                            if reaper && maintenance.elapsed() >= Duration::from_millis(100) {
+                                let _ = store.journal_sync();
+                                store.purge_expired(128);
+                                store.auto_rewrite_if_due();
+                                maintenance = Instant::now();
+                            }
+                            let idle_wait = if polling.active(Instant::now(), false) {
+                                Duration::from_micros(FIXED_WORKER_ACTIVE_POLL_US)
+                            } else {
+                                Duration::from_millis(1)
+                            };
+                            let mut progress = false;
+                            if let Ok(Some(client)) =
+                                tokio::time::timeout(idle_wait, receiver.recv()).await
+                            {
+                                clients.push(client);
+                                progress = true;
+                            }
+                            while let Ok(client) = receiver.try_recv() {
+                                clients.push(client);
+                                progress = true;
+                            }
+                            let mut index = 0;
+                            while index < clients.len() {
+                                match clients[index].poll(&store, &config, &mut chunk) {
+                                    Ok(Some(made_progress)) => {
+                                        progress |= made_progress;
+                                        index += 1;
+                                    }
+                                    _ => {
+                                        let id = clients[index].session.id();
+                                        store.pubsub_remove_client(id);
+                                        store.unregister_client(id);
+                                        clients.swap_remove(index);
+                                    }
+                                }
+                            }
+                            // Replies in flight are not an idle connection. Give the
+                            // next client request a short bounded window to arrive,
+                            // without rearming that window on empty/spurious scans.
+                            let now = Instant::now();
+                            if polling.active(now, progress) {
+                                if polling.yield_due(
+                                    now,
+                                    policy.run_quantum_us,
+                                    admitted.load(Ordering::Relaxed) > 1,
+                                ) {
+                                    thread::yield_now();
+                                    polling.resumed(Instant::now());
+                                } else if !progress {
+                                    tokio::task::yield_now().await;
+                                }
+                            } else {
+                                polling.resumed(Instant::now());
+                            }
+                        }
+                        // Dropping clients and queued transfers closes every socket and permit.
+                    });
                 })?;
             lanes.push(Lane { sender, thread });
         }
@@ -389,15 +419,16 @@ pub(super) fn serve(
                 }
                 return Err(io::Error::other("I/O worker exited unexpectedly"));
             }
-            let (mut stream, peer) = match listener.accept() {
-                Ok(connection) => connection,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(1));
-                    continue;
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
+            let accepted = accept_runtime.block_on(async {
+                tokio::time::timeout(Duration::from_millis(1), listener.accept()).await
+            });
+            let (stream, peer) = match accepted {
+                Err(_) => continue,
+                Ok(Ok(connection)) => connection,
+                Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Ok(Err(error)) => return Err(error),
             };
+            let mut stream = stream.into_std()?;
             stream.set_nodelay(true)?;
             store.record_connection();
             if admitted.load(Ordering::Acquire) >= store.max_clients() {
@@ -428,7 +459,7 @@ pub(super) fn serve(
                 shutdown_on_drop: true,
                 pubsub: receiver,
             };
-            if lanes[next].sender.send(client).is_err() {
+            if lanes[next].sender.blocking_send(client).is_err() {
                 // Shutdown may race an accept already in flight. Closed receiver
                 // after a stop request is cancellation, not a worker failure.
                 if stopping.load(Ordering::Acquire) {
@@ -436,15 +467,11 @@ pub(super) fn serve(
                 }
                 return Err(io::Error::other("I/O worker unavailable"));
             }
-            lanes[next].thread.thread().unpark();
             next = (next + 1) % count;
         }
         Ok(())
     })();
     stopping.store(true, Ordering::Release);
-    for lane in &lanes {
-        lane.thread.thread().unpark();
-    }
     let mut result = result;
     for lane in lanes {
         if let Err(error) = join(lane.thread) {

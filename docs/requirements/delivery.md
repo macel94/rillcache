@@ -85,7 +85,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   clobber newer results. Publication shall stage only report paths, never force-
   push source changes, and retain a link to the last successful numeric report.
 - **R56 (ubiquitous):** Reporting tests shall run offline without credentials or
-  external Rust dependencies outside the rustls exception. Benchmarking/inference jobs shall not have repository
+  external Rust dependencies outside the reviewed runtime/readiness/TLS allowlist. Benchmarking/inference jobs shall not have repository
   write permission; a separate default-branch publication job alone shall receive
   the narrowly scoped permission needed to push generated Markdown.
 

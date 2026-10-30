@@ -391,8 +391,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R376 (unwanted behavior):** Missing/invalid certificate material, invalid CA
   bundles, a TLS listener on the plaintext address, non-positive handshake
   timeouts or TLS files without a listener shall fail startup with a bounded error.
-  The only external Rust dependency exception shall be rustls and its required
-  transitive crates; project code remains unsafe-free and FFI-free.
+  External Rust dependency exceptions shall remain limited to the reviewed Tokio,
+  core_affinity, Mio and rustls crates and their required transitive dependencies;
+  project code remains unsafe-free and FFI-free.
 - **R377 (ubiquitous):** Tests shall cover TLS 1.3 RESP in every execution mode,
   plaintext coexistence, TLS 1.2 rejection, absence of HTTP ALPN, required
   client-certificate authentication and invalid configuration. Documentation shall

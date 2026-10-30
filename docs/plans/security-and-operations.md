@@ -51,7 +51,7 @@ This plan decomposes the security and operations prerequisites into small storie
 
 ### SEC-4 — Explicit TLS termination boundary (XS documentation/deployment, independent)
 
-**Value:** users can protect transport without an invented cryptographic implementation. Rust `std::net` provides TCP primitives; the standard library does not provide a TLS client/server API or portable signal-handler API. This project permits only the vendored rustls exception and still forbids arbitrary external Rust dependencies, FFI and native extensions. Native TLS 1.3 is provided by rustls; do not add hand-rolled crypto or forward plaintext from an untrusted ingress to an exposed backend.
+**Value:** users can protect transport without an invented cryptographic implementation. Rust `std::net` provides TCP primitives; the standard library does not provide a TLS client/server API or portable signal-handler API. This project permits only the reviewed, vendored Tokio, core_affinity, Mio and rustls exceptions (plus their required transitive crates) and still forbids arbitrary external Rust dependencies, FFI and native extensions. Native TLS 1.3 is provided by rustls; do not add hand-rolled crypto or forward plaintext from an untrusted ingress to an exposed backend.
 
 - **When** deployments require network confidentiality, **then** documentation/examples shall require an independently operated, maintained TLS terminator with certificate issuance/renewal, peer/hostname validation at its client-facing side, restricted backend reachability and an explicit trust boundary.
 - **If** the proxy-to-server leg is plaintext, **then** it shall remain on a same-host/private isolated network with network policy/firewall and must be described as plaintext; credentials are not protected on that leg. A terminator that merely encrypts client-to-proxy does not establish end-to-end encryption.
@@ -153,7 +153,7 @@ Checked during planning; links point to official references. Redis AUTH document
 - [Redis AUTH command](https://redis.io/docs/latest/commands/auth/)
 - [Redis ACL guide](https://redis.io/docs/latest/operate/oss_and_stack/management/security/acl/)
 - [Redis TLS guide](https://redis.io/docs/latest/operate/oss_and_stack/management/security/encryption/)
-- [Rust `std::net`](https://doc.rust-lang.org/std/net/index.html) — TCP APIs; native TLS is provided separately by the vendored rustls exception.
+- [Rust `std::net`](https://doc.rust-lang.org/std/net/index.html) — TCP APIs; native TLS is provided separately by the vendored rustls exception; Tokio, core_affinity and Mio are separately reviewed runtime/readiness exceptions.
 - [Rust Unix standard-library extensions](https://doc.rust-lang.org/std/os/unix/index.html) — platform-specific OS extensions do not establish a portable signal API. Confirm against pinned toolchain before considering any platform-specific implementation.
 - [Rust `TcpStream`](https://doc.rust-lang.org/std/net/struct.TcpStream.html) — socket I/O/shutdown primitives, not process signal handling or TLS.
 - [Container deployment boundary](../containers.md), [requirements/compatibility limits](../requirements.md), [production-readiness plan](../production-readiness.md).

@@ -3,16 +3,23 @@ name = "rillcache"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-description = "A safe Redis-compatible server with vendored rustls and Mio"
+description = "A safe Redis-compatible server with Tokio, CPU affinity, Mio and rustls"
 repository = "https://github.com/macel94/rillcache"
 publish = false
 default-run = "rillcache"
 build = false
 
-# Explicit exceptions: rustls, Mio and their required transitive crates.
+# Explicit exceptions: Tokio, core_affinity, Mio, rustls and required transitive crates.
 # Application code remains unsafe-free; dependencies expose safe OS/TLS APIs.
 [dependencies]
 mio = { version = "=1.2.4", default-features = false, features = ["os-poll", "os-ext"] }
+tokio = { version = "=1.54.1", default-features = false, features = [
+    "net",
+    "rt",
+    "sync",
+    "time",
+] }
+core_affinity = "=0.8.3"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2"
 

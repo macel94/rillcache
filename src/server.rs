@@ -1187,6 +1187,14 @@ mod tests {
         let mut copy = handle.scheduling_policy();
         copy.run_quantum_us = 0;
         assert_ne!(copy, handle.scheduling_policy());
+        let mut client = TcpStream::connect(handle.local_addr()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+        let mut reply = [0; 7];
+        client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"+PONG\r\n");
         handle.shutdown().unwrap();
     }
 

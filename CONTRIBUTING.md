@@ -35,9 +35,9 @@ ordinary implementation PRs have no blanket approving-review quota. See the
    edit. Focused checks are not delivery evidence. See the
    [bounded development cycle](docs/development-cycle.md).
    `make fmt` applies formatting. All Cargo checks/builds use the pinned toolchain,
-   lockfile and offline mode. Explicit external dependency exceptions are rustls
-   and Mio with their required transitive crates, vendored for offline builds
-   and enforced by the dependency-policy test.
+   lockfile and offline mode. Explicit external dependency exceptions are Tokio,
+   core_affinity, Mio and rustls with their required transitive crates, vendored
+   for offline builds and enforced by the dependency-policy test.
 5. Capture the relevant `make bench`/`make compare` evidence. The separate mandatory
    PR gate applies a scoped shared-runner throughput threshold, not a stable-hardware
    SLO or universal win. Preserve uncertainty, CPU/tails and losses; never trade
@@ -74,9 +74,9 @@ runtime are permitted; their implementation internals are outside this policy.
 
 `make ci` is identical locally and on GitHub: formatting, all-target Clippy,
 unit/integration/policy tests, release build, validated TCP smoke, core benchmarks.
-The fast path has no third-party crates, containers, services or secrets to set
-up. No target cache is transferred: for this tiny dependency-free project that
-would add overhead; revisit only with measured evidence.
+The Rust fast path uses only the explicitly approved vendored dependencies;
+no containers, services or secrets are needed. No target cache is transferred:
+revisit only with measured evidence.
 
 GitHub main builds deliver checksummed Linux binaries as short-lived Actions
 artifacts. Verify the archive using its adjacent SHA-256 file, extract it, then

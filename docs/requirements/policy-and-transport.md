@@ -5,7 +5,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 ## Policy and transport
 
 - **R01 (ubiquitous):** The project shall compile with unsafe project code forbidden
-  and only the explicitly authorized rustls/Mio dependency graphs, vendored and
+  and only the explicitly authorized Tokio/core_affinity/Mio/rustls dependency graphs, vendored and
   allowlisted across all targets/features. No application unsafe code or FFI is
   introduced by using their safe APIs.
 - **R10 (event-driven):** When a complete supported RESP2 command is received, the
