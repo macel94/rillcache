@@ -52,6 +52,20 @@ test:
 		RILLCACHE_TEST_THREADS="$$workers" $(CARGO) test $(CARGO_FLAGS)
 	done
 
+# The async Tokio engine is opt-in (--io-mode tokio), so the default mode matrix
+# above covers the proven readiness reactor. This passes the transport suites and
+# one-CPU constrained run through the async engine explicitly.
+test-async:
+	printf '\nTesting opt-in async Tokio engine\n'
+	RILLCACHE_TEST_THREADS=tokio $(CARGO) test $(CARGO_FLAGS) --test server --test network_modes
+	$(CARGO) test $(CARGO_FLAGS) --test readiness --test transport_topology
+	if [[ "$$(uname -s)" == Linux ]] && command -v taskset >/dev/null; then
+		allowed="$$(awk '/Cpus_allowed_list:/ {print $$2}' /proc/self/status)"
+		cpu="$${allowed%%[-,]*}"
+		[[ "$$cpu" =~ ^[0-9]+$$ ]]
+		taskset -c "$$cpu" env RILLCACHE_TEST_THREADS=tokio $(CARGO) test $(CARGO_FLAGS) --test server
+	fi
+
 # Exercise the automatic single-CPU handoff path, not just fake policy guards.
 # Cargo-only checks stay portable; Linux make/CI also uses its existing taskset.
 test-constrained:
@@ -65,7 +79,7 @@ test-constrained:
 		printf 'Single-CPU affinity test unavailable here; portable policy/ownership tests still run.\n'
 	fi
 
-check: fmt-check lint test test-constrained
+check: fmt-check lint test test-constrained test-async
 
 release:
 	$(CARGO) build $(CARGO_FLAGS) --release --bins

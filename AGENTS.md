@@ -12,8 +12,8 @@
   historical passes or rerun until green to land a change. Preserve failed evidence.
 - CI/policy files require the configured code-owner review. Do not self-approve.
 - Read `docs/pr-quality-gate.md`, `CONTRIBUTING.md` and `docs/requirements.md`.
-- Preserve unsafe-free application Rust, only the authorized rustls/Mio dependency
-  exceptions and their required vendored transitives, honest benchmark scopes,
+- Preserve unsafe-free application Rust, only the reviewed rustls/Tokio/CPU-affinity
+  dependency exceptions and their required vendored transitives, honest benchmark scopes,
   expiry/accounting/atomicity invariants, bounded I/O and joined shutdown.
 
 ## Efficient development loop

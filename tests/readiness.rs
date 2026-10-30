@@ -10,12 +10,16 @@ use std::time::{Duration, Instant};
 fn start() -> ServerHandle {
     let mut config = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
+        // This suite owns the opt-in async engine; the default stays Mio.
+        io_mode: rillcache::server::IoMode::Tokio,
         ..Config::default()
     };
     config.limits.max_bulk_bytes = 8 * 1024 * 1024;
     config.limits.max_frame_bytes = 16 * 1024 * 1024;
     let server = Server::bind(config).unwrap().spawn().unwrap();
     assert!(server.scheduling_policy().readiness_io);
+    assert!(server.scheduling_policy().tokio_transport);
+    assert!(server.scheduling_policy().tokio_worker_threads > 0);
     assert_eq!(server.scheduling_policy().client_handoff_lanes, 0);
     server
 }

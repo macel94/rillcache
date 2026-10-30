@@ -25,7 +25,7 @@ before/after regressions, CPU costs and raw records remain visible.
 
 ## Project vision
 
-The initial goal was a useful Redis-compatible server using Rust’s standard library and runtime. The reviewed dependency exceptions are now rustls for TLS and Mio for kernel readiness, with their required transitive crates vendored for offline builds. Over time, the project may explore newer and more advanced functionality, including streams and richer pub/sub capabilities.
+The initial goal was a useful Redis-compatible server using Rust’s standard library and runtime. The reviewed dependency exceptions include rustls for TLS, Tokio for default Unix plain-TCP async execution, and `core_affinity` for best-effort safe worker pinning, with required transitive crates vendored for offline builds. The non-Unix portable fallback and TLS session path remain separately managed.
 
 Compatibility and behavior will be guided by tests, with the aim of making the server dependable and understandable rather than merely checking off features.
 
@@ -42,7 +42,7 @@ This is a collaboration between a human and AI:
 
 - **Language:** Rust
 - **Dependencies:** None beyond the Rust standard library and runtime, including tests and benchmarks
-- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. The explicit dependency exceptions are rustls and Mio, plus their required transitive crates, vendored for offline builds. Application code contains no unsafe blocks or handwritten FFI; standard-library and dependency implementation internals are outside that application-code policy. Default Unix plain TCP uses bounded Mio readiness (epoll on Linux); fixed-worker and TLS modes retain their existing execution paths.
+- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. The explicit dependency exceptions are rustls, Tokio and `core_affinity`, plus their required transitive crates, vendored for offline builds. Tokio uses Mio as its internal readiness backend. Application code contains no unsafe blocks or handwritten FFI; standard-library and dependency implementation internals are outside that application-code policy. Default Unix plain TCP uses bounded async Tokio worker runtimes; TLS and fixed-worker modes retain their separately managed execution paths.
 - **Compatibility target:** Redis protocol and behavior, developed incrementally
 - **Performance:** Aim to outperform current Redis/Valkey implementations, demonstrated by reproducible measurements—not assumed from the language choice.
 
@@ -185,13 +185,23 @@ support credential operations and policy debugging. See
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
 bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
-It is already multithreaded by default (one managed worker per client). Optional
-`--threads 1` or `--threads N` selects exactly 1..64 shared I/O/execution workers
-plus the accept/control thread; idle clients do not occupy an entire worker.
+On Unix, plaintext TCP defaults to the proven Mio readiness reactor with the
+published owner-local executor. `--io-mode tokio` opts into an async engine that
+co-locates one current-thread Tokio socket runtime with the same executor plus one
+bounded cold-I/O service thread; ordinary local commands still have no
+data-bridge hop. It is opt-in because measured pipeline-1 conditions do not all
+strictly beat Valkey while pipeline-16 wins broadly. Mixed TLS uses an explicitly
+accounted compatibility owner with bridge calls kept off async runtimes.
+Persistence, ACL-file/audit configurations, native TLS sockets and non-Unix
+platforms retain their previous socket paths. See the complete
+[transport decisions, bounds and lifecycle](docs/async-transport.md).
 An opt-in `--storage-owners N` (`1..=64`) moves data execution itself onto `N`
 owned workers with whole-owner routing and cross-owner transactions; see
 [multi-owner execution](docs/plans/multi-owner-execution.md) for its exact
 semantics and limits. One owner, the default, keeps the shipped zero-hop path.
+Optional `--threads 1` or `--threads N` selects exactly 1..64 existing shared
+I/O/execution workers plus the accept/control thread; idle clients do not occupy
+an entire worker.
 
 **Durability completeness is explicitly deferred for the current phase.** The
 append-only journal remains available and tested, but it is best-effort: there is
@@ -261,7 +271,8 @@ window after progress, plus a separate 100 µs cooperative run-budget hint for
 multiple lanes/clients. This trades CPU work for fewer premature sleeps, not
 free CPU, kernel readiness or an OS fairness guarantee. Earlier four-worker,
 one-CPU tail regressions motivated this separate budget; measure real traffic
-rather than assuming more workers improve latency. Default threading is unchanged;
+rather than assuming more workers improve latency. For default Unix async TCP,
+see the [separately accounted runtime/service topology](docs/async-transport.md);
 a guarded bind-time one-through-four-CPU hint lets busy clients briefly lend I/O
 to an existing client thread while their owners wait. Quiet sockets return to
 blocking owners; fixed modes, above-four/unknown hints and initially lone clients keep their
