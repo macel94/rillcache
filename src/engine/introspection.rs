@@ -6,7 +6,7 @@
 //! metrics.
 
 use super::data::Collection;
-use super::{Store, arity, internal_error};
+use super::{ShardExecutor, arity, internal_error};
 use crate::protocol::encode_bulk;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,7 +32,7 @@ const OBJECT_HELP: &[&[u8]] = &[
     b"    Print this help.",
 ];
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_introspection(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(command) = args.first() else {
             return false;
@@ -81,7 +81,7 @@ impl Store {
             object_syntax_error(subcommand, out);
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -137,7 +137,7 @@ mod tests {
     use super::*;
     use crate::engine::Action;
 
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(store.execute(args, &mut out), Action::Continue);
         out
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn time_and_object_encodings_are_truthful() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         let time = run(&store, &[b"TIME"]);
         assert!(time.starts_with(b"*2\r\n$"));
         run(&store, &[b"SET", b"s", b"v"]);

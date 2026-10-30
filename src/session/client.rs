@@ -1,8 +1,9 @@
 //! HELLO negotiation, CLIENT metadata/list/kill and connection metadata sync.
 
+use crate::engine::Execution;
 use std::io::Write;
 
-use crate::engine::{AuthError, Store, UnblockMode};
+use crate::engine::{AuthError, UnblockMode};
 use crate::protocol::encode_bulk;
 
 use super::auth::AUTH_THROTTLED;
@@ -10,7 +11,12 @@ use super::command::arity;
 use super::{MAX_LIBRARY_FIELD_BYTES, MAX_NAME_BYTES, Protocol, Session};
 
 impl Session {
-    pub(super) fn hello(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn hello<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         let (requested, options) = match arguments.split_first() {
             None => (self.protocol, &[][..]),
             Some((&version, rest)) => {
@@ -141,7 +147,7 @@ impl Session {
             }
         }
     }
-    pub(super) fn sync_client_metadata(&self, store: &Store) {
+    pub(super) fn sync_client_metadata<E: Execution>(&self, store: &E) {
         let user = store.whoami(self.authenticated_user.as_deref());
         store.update_client_metadata(
             self.id,
@@ -152,7 +158,12 @@ impl Session {
             user.as_deref(),
         );
     }
-    pub(super) fn client(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn client<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         let Some((subcommand, rest)) = arguments.split_first() else {
             output.extend_from_slice(b"-ERR wrong number of arguments for 'client' command\r\n");
             return;
@@ -269,7 +280,12 @@ impl Session {
         }
     }
 
-    pub(super) fn client_list(&self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn client_list<E: Execution>(
+        &self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         let mut type_filter = None;
         let mut absent_type = false;
         let mut ids: Option<Vec<u64>> = None;
@@ -367,7 +383,12 @@ impl Session {
         encode_bulk(Some(text.as_bytes()), output);
     }
 
-    pub(super) fn client_kill(&self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn client_kill<E: Execution>(
+        &self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         if arguments.is_empty() {
             arity("client|kill", output);
             return;

@@ -5,10 +5,10 @@
 //! so CONFIG GET/SET keep their specialized implementation instead of the
 //! generic CONFIG fallback.
 
-use super::super::{Action, Store, arity};
+use super::super::{Action, ShardExecutor, arity};
 
 pub(super) fn execute(
-    store: &Store,
+    store: &ShardExecutor,
     command: &[u8],
     arguments: &[&[u8]],
     output: &mut Vec<u8>,

@@ -1,17 +1,8 @@
-//! Key-space ownership seam.
+//! Fixed-layout deterministic key routing. The active executor owns one shard.
 //!
-//! The server currently owns exactly one shard, still guarded by `RwLock`.
-//! This module establishes the deterministic routing contract and the
-//! `Keyspace` facade so the owner-thread increment can replace the lock
-//! without changing every command call site.
-//!
-//! Routing is a pure, safe computation over the key bytes. The process seed is
-//! random so client-controlled keys cannot deliberately target one shard; it is
-//! stable for the process lifetime so every worker agrees on ownership.
-
-use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockResult};
-
-use super::data::Data;
+//! Layouts are stable for a process lifetime. Seeded XXH3 disperses ordinary
+//! keys, but is not a cryptographic HashDoS guarantee. Data ownership and the
+//! external operation bridge live in the executor/bridge, not in a guard facade.
 
 /// Hard upper bound shared with the server's worker-count limit.
 pub const MAX_SHARDS: usize = 64;
@@ -87,53 +78,13 @@ impl ShardRouter {
     }
 }
 
-/// The single keyspace facade used by `Store`.
-///
-/// Call sites keep using `read`/`write`/`try_write`. The owner-thread
-/// increment replaces the body of this type with bounded channel dispatch; the
-/// command modules do not need to know which representation is active.
-pub(super) struct Keyspace {
-    data: RwLock<Data>,
-    router: ShardRouter,
-}
-
-impl Keyspace {
-    /// One lock-backed shard: today's behavior with the routing seam in place.
-    pub(super) fn single() -> Self {
-        Self {
-            data: RwLock::new(Data::default()),
-            router: ShardRouter::new(1).expect("one shard is a valid layout"),
-        }
-    }
-
-    pub(super) fn read(&self) -> LockResult<RwLockReadGuard<'_, Data>> {
-        self.data.read()
-    }
-
-    pub(super) fn write(&self) -> LockResult<RwLockWriteGuard<'_, Data>> {
-        self.data.write()
-    }
-
-    pub(super) fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, Data>> {
-        self.data.try_write()
-    }
-
-    pub(super) fn shard_for(&self, key: &[u8]) -> usize {
-        self.router.shard_for(key)
-    }
-
-    pub(super) fn shard_count(&self) -> usize {
-        self.router.count()
-    }
-}
-
 fn process_seed() -> u64 {
     use std::hash::{BuildHasher, RandomState};
     RandomState::new().hash_one(0_u64)
 }
 
 /// XXH3 already spreads key bytes well; adding the process seed and running a
-/// SplitMix64 finalizer makes the mapping unpredictable without a second map.
+/// SplitMix64 finalizer disperses routing indices without a second map.
 fn seeded_hash(seed: u64, key: &[u8]) -> u64 {
     let mut value = super::xxh3::xxh3_64(key).wrapping_add(seed);
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);

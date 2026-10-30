@@ -84,7 +84,9 @@ pub use error_dialect::ErrorDialect;
 pub use eviction::EvictionPolicy;
 pub use journal::FsyncPolicy;
 pub use notify::{Category as NotifyCategory, NotifyFlags};
-use shard::Keyspace;
+mod bridge;
+pub use bridge::Store;
+pub(crate) use bridge::{BridgeInbox, Execution, StoreHandle};
 pub(crate) use streams::{
     XReadGroupOptions, XReadGroupOutcome, XReadGroupStart, XReadOutcome, parse_xread,
     parse_xreadgroup, xread_reply, xreadgroup_reply,
@@ -133,7 +135,7 @@ pub(super) struct CommandStatValues {
     pub failed_calls: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
     pub total_connections_received: u64,
     pub total_commands_processed: u64,
@@ -147,16 +149,18 @@ pub struct Stats {
     pub audit_syslog_write_failures: u64,
 }
 
-pub struct Store {
-    /// Single keyspace facade. The server currently owns one lock-backed
-    /// shard; the owner-thread increment replaces the internals of `Keyspace`,
-    /// not these call sites.
-    data: Keyspace,
+#[doc(hidden)]
+pub struct ServerServices {
+    #[cfg(test)]
+    owner_events: std::sync::Mutex<Vec<(&'static str, std::thread::ThreadId)>>,
+    #[cfg(test)]
+    bridge_submissions: std::sync::atomic::AtomicUsize,
+    router: shard::ShardRouter,
+    eviction_policy: std::sync::atomic::AtomicU8,
     max_payload_bytes: std::sync::atomic::AtomicUsize,
-    error_dialect: ErrorDialect,
+    error_dialect: RwLock<ErrorDialect>,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
-    transaction_gate: RwLock<()>,
     auth: RwLock<Auth>,
     auth_required: AtomicBool,
     acl_restricted: AtomicBool,
@@ -168,11 +172,12 @@ pub struct Store {
     monitors: RwLock<std::collections::BTreeMap<u64, std::sync::mpsc::SyncSender<Vec<u8>>>>,
     monitor_count: std::sync::atomic::AtomicUsize,
     notifications: std::sync::atomic::AtomicU32,
+    notification_epoch: std::sync::atomic::AtomicU64,
     acl_log: RwLock<std::collections::VecDeque<acl_log::AclLogEntry>>,
-    audit_log: Option<std::sync::Mutex<audit::AuditLog>>,
+    audit_log: std::sync::Mutex<Option<audit::AuditLog>>,
     audit_log_write_failures: std::sync::atomic::AtomicU64,
-    audit_hmac_key: Option<Vec<u8>>,
-    audit_syslog: Option<std::sync::Mutex<audit_syslog::SyslogSink>>,
+    audit_hmac_key: RwLock<Option<Vec<u8>>>,
+    audit_syslog: std::sync::Mutex<Option<audit_syslog::SyslogSink>>,
     audit_syslog_write_failures: std::sync::atomic::AtomicU64,
     connections_received: std::sync::atomic::AtomicU64,
     commands_processed: [std::sync::atomic::AtomicU64; COMMAND_COUNTER_SHARDS],
@@ -183,8 +188,8 @@ pub struct Store {
     slowlog_max_len: std::sync::atomic::AtomicUsize,
     client_pause: std::sync::atomic::AtomicU64,
     max_clients: std::sync::atomic::AtomicUsize,
-    auth_failure_limit: usize,
-    auth_source_limit: usize,
+    auth_failure_limit: std::sync::atomic::AtomicUsize,
+    auth_source_limit: std::sync::atomic::AtomicUsize,
     auth_guard: std::sync::Mutex<auth_guard::AuthGuard>,
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
@@ -193,53 +198,48 @@ pub struct Store {
     aof_config: RwLock<journal::AofConfig>,
     error_stats: RwLock<std::collections::BTreeMap<Vec<u8>, u64>>,
     shutdown_requested: AtomicBool,
+    owner_failed: AtomicBool,
     commandstats_enabled: AtomicBool,
     command_stats: Vec<CommandStat>,
 }
-impl Store {
-    pub fn new(max_payload_bytes: usize) -> Self {
-        Self::with_clock(max_payload_bytes, Arc::new(SystemClock))
-    }
-    pub fn with_clock(max_payload_bytes: usize, clock: Arc<dyn Clock>) -> Self {
-        Self::with_clock_and_auth(max_payload_bytes, clock, Auth::default())
-    }
-    /// Server construction with the configured default-user credential.
-    pub fn with_auth(max_payload_bytes: usize, auth: Auth) -> Self {
-        Self::with_clock_and_auth(max_payload_bytes, Arc::new(SystemClock), auth)
-    }
-    /// Server construction with an append-only journal. The file is replayed
-    /// into a fresh store before the journal is attached for new writes.
-    pub fn with_auth_and_journal(
-        max_payload_bytes: usize,
-        auth: Auth,
-        path: &std::path::Path,
-        policy: FsyncPolicy,
-        limits: Limits,
-    ) -> std::io::Result<Self> {
-        let mut store = Self::with_auth(max_payload_bytes, auth);
-        let mut journal = journal::Journal::open(path, policy, limits)?;
-        journal.replay(&store)?;
-        store.attach_journal(journal);
-        let filename = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("appendonly.aof");
-        store.set_aof_config(true, filename, policy);
-        Ok(store)
-    }
 
-    pub fn with_clock_and_auth(
-        max_payload_bytes: usize,
-        clock: Arc<dyn Clock>,
-        auth: Auth,
-    ) -> Self {
+/// Synchronous, thread-confined data execution. No data reference escapes this type.
+/// The Rc marker makes the entire executor !Send and !Sync.
+pub(crate) struct ShardExecutor {
+    services: Arc<ServerServices>,
+    data: std::cell::RefCell<Data>,
+    notification_epoch: std::cell::Cell<u64>,
+    _local: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl std::ops::Deref for ShardExecutor {
+    type Target = ServerServices;
+    fn deref(&self) -> &ServerServices {
+        &self.services
+    }
+}
+
+impl ServerServices {
+    #[cfg(test)]
+    pub(crate) fn owner_trace(&self) -> Vec<(&'static str, std::thread::ThreadId)> {
+        self.owner_events.lock().unwrap().clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn bridge_count(&self) -> usize {
+        self.bridge_submissions.load(Ordering::Relaxed)
+    }
+    fn with_clock_and_auth(max_payload_bytes: usize, clock: Arc<dyn Clock>, auth: Auth) -> Self {
         Self {
-            data: Keyspace::single(),
+            #[cfg(test)]
+            owner_events: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            bridge_submissions: std::sync::atomic::AtomicUsize::new(0),
+            router: shard::ShardRouter::new(1).expect("single-owner layout"),
+            eviction_policy: std::sync::atomic::AtomicU8::new(0),
             max_payload_bytes: std::sync::atomic::AtomicUsize::new(max_payload_bytes),
-            error_dialect: ErrorDialect::default(),
+            error_dialect: RwLock::new(ErrorDialect::default()),
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
-            transaction_gate: RwLock::new(()),
             auth_required: AtomicBool::new(auth.required()),
             acl_restricted: AtomicBool::new(auth.restricted()),
             auth: RwLock::new(auth),
@@ -251,11 +251,12 @@ impl Store {
             monitors: RwLock::new(std::collections::BTreeMap::new()),
             monitor_count: std::sync::atomic::AtomicUsize::new(0),
             notifications: std::sync::atomic::AtomicU32::new(0),
+            notification_epoch: std::sync::atomic::AtomicU64::new(0),
             acl_log: RwLock::new(std::collections::VecDeque::new()),
-            audit_log: None,
+            audit_log: std::sync::Mutex::new(None),
             audit_log_write_failures: std::sync::atomic::AtomicU64::new(0),
-            audit_hmac_key: None,
-            audit_syslog: None,
+            audit_hmac_key: RwLock::new(None),
+            audit_syslog: std::sync::Mutex::new(None),
             audit_syslog_write_failures: std::sync::atomic::AtomicU64::new(0),
             connections_received: std::sync::atomic::AtomicU64::new(0),
             commands_processed: std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)),
@@ -266,8 +267,8 @@ impl Store {
             slowlog_max_len: std::sync::atomic::AtomicUsize::new(slowlog::DEFAULT_MAX_LEN),
             client_pause: std::sync::atomic::AtomicU64::new(0),
             max_clients: std::sync::atomic::AtomicUsize::new(128),
-            auth_failure_limit: 10,
-            auth_source_limit: 0,
+            auth_failure_limit: std::sync::atomic::AtomicUsize::new(10),
+            auth_source_limit: std::sync::atomic::AtomicUsize::new(0),
             auth_guard: std::sync::Mutex::new(auth_guard::AuthGuard::new(0, 60_000)),
             latency_monitor_threshold_ms: std::sync::atomic::AtomicU64::new(
                 latency::DEFAULT_THRESHOLD_MS,
@@ -278,17 +279,12 @@ impl Store {
             aof_config: RwLock::new(journal::AofConfig::default()),
             error_stats: RwLock::new(std::collections::BTreeMap::new()),
             shutdown_requested: AtomicBool::new(false),
+            owner_failed: AtomicBool::new(false),
             commandstats_enabled: AtomicBool::new(false),
             command_stats: (0..discovery::command_count())
                 .map(|_| CommandStat::default())
                 .collect(),
         }
-    }
-    /// Select verified vendor-specific error wording before sharing the store.
-    /// Currently only MSETEX's short counted key/value block differs.
-    pub fn with_error_dialect(mut self, dialect: ErrorDialect) -> Self {
-        self.error_dialect = dialect;
-        self
     }
 
     /// Bounded best-effort background reclamation; no sleep-dependent correctness.
@@ -299,101 +295,6 @@ impl Store {
 
     pub(crate) fn shutdown_requested(&self) -> bool {
         self.shutdown_requested.load(Ordering::Acquire)
-    }
-
-    pub fn purge_expired(&self, limit: usize) -> usize {
-        let started = self.latency_enabled().then(std::time::Instant::now);
-        let Ok(_gate) = self.transaction_gate.read() else {
-            return 0;
-        };
-        let (count, expired) = {
-            let Ok(mut data) = self.data.try_write() else {
-                return 0;
-            };
-            let count = data.reap(self.clock.now_ms().max(0), limit);
-            let (expired, _) = data.drain_lifecycle();
-            (count, expired)
-        };
-        for key in expired {
-            self.notify_event("expired", &key, NotifyCategory::Expired);
-        }
-        if let Some(started) = started {
-            self.record_expire_latency(started.elapsed());
-        }
-        count
-    }
-
-    /// Append exactly one reply. No store lock is held during socket I/O.
-    /// With an append-only journal attached, commands take the exclusive
-    /// transaction gate so mutation, capture and append keep one global order.
-    pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        if self.journal.is_some() || self.notifications_enabled() {
-            let Ok(_gate) = self.transaction_gate.write() else {
-                internal_error(output);
-                return Action::Continue;
-            };
-            let marks = self.journal_marks();
-            let start = output.len();
-            let action = self.execute_locked(arguments, output);
-            self.commit_journal(marks, arguments, output, start);
-            self.publish_lifecycle_events();
-            return action;
-        }
-        let Ok(_gate) = self.transaction_gate.read() else {
-            internal_error(output);
-            return Action::Continue;
-        };
-        let action = self.execute_locked(arguments, output);
-        self.publish_lifecycle_events();
-        action
-    }
-
-    fn publish_lifecycle_events(&self) {
-        let flags = self.notify_flags();
-        // No lifecycle classes means there is nothing to deliver. Avoid taking
-        // the store write lock on every command just to discard queued keys.
-        if !flags.expired && !flags.evicted {
-            return;
-        }
-        let (expired, evicted) = {
-            let Ok(mut data) = self.data.write() else {
-                return;
-            };
-            data.drain_lifecycle()
-        };
-        if flags.expired {
-            for key in expired {
-                self.notify_event("expired", &key, NotifyCategory::Expired);
-            }
-        }
-        if flags.evicted {
-            for key in evicted {
-                self.notify_event("evicted", &key, NotifyCategory::Evicted);
-            }
-        }
-    }
-
-    /// Dispatch without the transaction gate; only `EXEC` may call this while
-    /// holding the gate's write side.
-    pub(super) fn execute_locked(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        // PING is the hottest command and stays ahead of all family routing.
-        if let Some(command) = arguments.first() {
-            if command.eq_ignore_ascii_case(b"PING") {
-                match arguments.len() {
-                    1 => output.extend_from_slice(b"+PONG\r\n"),
-                    2 => encode_bulk(Some(arguments[1]), output),
-                    _ => arity("ping", output),
-                }
-                return Action::Continue;
-            }
-            // GET/SET/ECHO are the measured hot path. Keep the single string
-            // implementation, but call its small inlined entry directly so the
-            // one-CPU pipeline-1 path does not pay for a family router call.
-            if let Some(action) = dispatch::hot_string(self, command, arguments, output) {
-                return action;
-            }
-        }
-        dispatch::route(self, arguments, output)
     }
 
     /// Command-table arity used for MULTI queue-time validation and discovery.
@@ -583,15 +484,8 @@ impl Store {
             .collect()
     }
 
-    pub fn stats(&self) -> Stats {
-        let lifecycle = self.data.read().map_or((0, 0, 0), |data| {
-            (data.expired_keys, data.expired_subkeys, data.evicted_keys)
-        });
-        self.stats_from_counters(lifecycle)
-    }
-
-    // INFO already captured these counters. Reuse them rather than attempting
-    // a recursive data read, which can deadlock behind a queued writer.
+    // INFO already captured these counters. Reuse them without extending
+    // its data borrow across control-service snapshotting.
     fn stats_from_counters(
         &self,
         (expired_keys, expired_subkeys, evicted_keys): (u64, u64, u64),
@@ -651,24 +545,6 @@ impl Store {
             .unwrap_or_default()
     }
 
-    pub fn reset_stats(&self) -> bool {
-        if let Ok(mut stats) = self.error_stats.write() {
-            stats.clear();
-        }
-        self.connections_received.store(0, Ordering::Relaxed);
-        for counter in &self.commands_processed {
-            counter.store(0, Ordering::Relaxed);
-        }
-        self.rejected_connections.store(0, Ordering::Relaxed);
-        self.reset_command_statistics();
-        self.data.write().is_ok_and(|mut data| {
-            data.expired_keys = 0;
-            data.expired_subkeys = 0;
-            data.evicted_keys = 0;
-            true
-        })
-    }
-
     pub fn set_max_clients(&self, value: usize) {
         self.max_clients.store(value, Ordering::Relaxed);
     }
@@ -678,22 +554,22 @@ impl Store {
     }
 
     pub fn auth_failure_limit(&self) -> usize {
-        self.auth_failure_limit
+        self.auth_failure_limit.load(Ordering::Acquire)
     }
 
-    pub fn set_auth_failure_limit(&mut self, limit: usize) {
-        self.auth_failure_limit = limit;
+    pub fn set_auth_failure_limit(&self, limit: usize) {
+        self.auth_failure_limit.store(limit, Ordering::Release);
     }
 
-    pub fn set_auth_source_limit(&mut self, limit: usize, window_ms: u64) {
-        self.auth_source_limit = limit;
-        if let Ok(guard) = self.auth_guard.get_mut() {
+    pub fn set_auth_source_limit(&self, limit: usize, window_ms: u64) {
+        self.auth_source_limit.store(limit, Ordering::Release);
+        if let Ok(mut guard) = self.auth_guard.lock() {
             guard.configure(limit, window_ms);
         }
     }
 
     pub fn auth_source_limit(&self) -> usize {
-        self.auth_source_limit
+        self.auth_source_limit.load(Ordering::Acquire)
     }
 
     pub fn auth_source_locked(&self, source: std::net::IpAddr) -> bool {
@@ -713,12 +589,9 @@ impl Store {
             guard.reset(source);
         }
     }
-
     pub fn set_eviction_policy(&self, policy: EvictionPolicy) -> bool {
-        self.data.write().is_ok_and(|mut data| {
-            data.eviction = policy;
-            true
-        })
+        self.eviction_policy.store(policy as u8, Ordering::Release);
+        true
     }
 
     pub(crate) fn auto_aof_rewrite_percentage(&self) -> u64 {
@@ -759,71 +632,29 @@ impl Store {
         })
     }
 
-    pub(crate) fn set_aof_policy(&self, policy: FsyncPolicy) -> std::io::Result<()> {
-        if let Some(journal) = self.journal.as_ref() {
-            let mut journal = journal
-                .lock()
-                .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
-            journal.set_policy(policy)?;
-        }
-        let mut config = self
-            .aof_config
-            .write()
-            .map_err(|_| std::io::Error::other("poisoned AOF configuration lock"))?;
-        config.policy = policy;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn journal_policy(&self) -> Option<FsyncPolicy> {
-        self.journal
-            .as_ref()
-            .and_then(|journal| journal.lock().ok())
-            .map(|journal| journal.policy())
-    }
-
     /// Current payload-budget limit in key and value bytes.
     pub(super) fn payload_limit(&self) -> usize {
         self.max_payload_bytes.load(Ordering::Relaxed)
     }
-
-    /// Change the payload budget and evict down to it using the active policy.
-    /// A noeviction or volatile policy may leave the store above the new budget;
-    /// subsequent admissions then fail rather than deleting ineligible keys.
-    pub fn set_payload_limit(&self, limit: usize) -> bool {
-        self.max_payload_bytes.store(limit, Ordering::Relaxed);
-        self.data.write().is_ok_and(|mut data| {
-            data.enforce_budget(limit);
-            true
-        })
-    }
-
-    /// Deterministic shard index for `key` under the current keyspace layout.
-    /// The server currently owns one shard, so every key maps to zero; the
-    /// routing contract is established here for the owner-thread increment.
     pub fn shard_for(&self, key: &[u8]) -> usize {
-        self.data.shard_for(key)
+        self.router.shard_for(key)
     }
-
-    /// Number of key-space shards in the current layout.
     pub fn shard_count(&self) -> usize {
-        self.data.shard_count()
+        self.router.count()
     }
-
     pub fn eviction_policy(&self) -> EvictionPolicy {
-        self.data
-            .read()
-            .map_or(EvictionPolicy::NoEviction, |data| data.eviction)
-    }
-
-    pub fn set_notify_flags(&self, flags: NotifyFlags) {
-        // Events queued while a class was disabled are stale for delivery.
-        let collect = self.journal.is_some() || flags.bits() != 0;
-        if let Ok(mut data) = self.data.write() {
-            data.clear_lifecycle();
-            data.set_collect_events(collect);
+        match self.eviction_policy.load(Ordering::Acquire) {
+            1 => EvictionPolicy::AllKeysRandom,
+            2 => EvictionPolicy::AllKeysLru,
+            3 => EvictionPolicy::VolatileRandom,
+            4 => EvictionPolicy::VolatileLru,
+            5 => EvictionPolicy::VolatileTtl,
+            _ => EvictionPolicy::NoEviction,
         }
+    }
+    pub fn set_notify_flags(&self, flags: NotifyFlags) {
         self.notifications.store(flags.bits(), Ordering::Release);
+        self.notification_epoch.fetch_add(1, Ordering::AcqRel);
     }
 
     pub fn notify_flags(&self) -> NotifyFlags {
@@ -991,6 +822,207 @@ impl Store {
         auth.set_password(password);
         self.refresh_auth_flags(&auth);
         true
+    }
+}
+
+impl ShardExecutor {
+    #[cfg(test)]
+    pub(crate) fn new(limit: usize) -> Self {
+        Self::with_clock(limit, Arc::new(SystemClock))
+    }
+    #[cfg(test)]
+    pub(crate) fn with_clock(limit: usize, clock: Arc<dyn Clock>) -> Self {
+        Self::with_clock_and_auth(limit, clock, Auth::default())
+    }
+    #[cfg(test)]
+    pub(crate) fn with_auth(limit: usize, auth: Auth) -> Self {
+        Self::with_clock_and_auth(limit, Arc::new(SystemClock), auth)
+    }
+    #[cfg(test)]
+    pub(crate) fn with_clock_and_auth(limit: usize, clock: Arc<dyn Clock>, auth: Auth) -> Self {
+        Self::with_services(Arc::new(ServerServices::with_clock_and_auth(
+            limit, clock, auth,
+        )))
+    }
+    pub(crate) fn services(&self) -> Arc<ServerServices> {
+        Arc::clone(&self.services)
+    }
+    pub(crate) fn with_services(services: Arc<ServerServices>) -> Self {
+        #[cfg(test)]
+        services
+            .owner_events
+            .lock()
+            .unwrap()
+            .push(("construct", std::thread::current().id()));
+        let mut data = Data::default();
+        data.eviction = services.eviction_policy();
+        data.set_collect_events(services.notifications_enabled());
+        Self {
+            notification_epoch: std::cell::Cell::new(
+                services.notification_epoch.load(Ordering::Acquire),
+            ),
+            services,
+            data: std::cell::RefCell::new(data),
+            _local: std::marker::PhantomData,
+        }
+    }
+
+    fn refresh_data_config(&self) {
+        let mut data = self.data.borrow_mut();
+        let epoch = self.services.notification_epoch.load(Ordering::Acquire);
+        if self.notification_epoch.replace(epoch) != epoch {
+            data.clear_lifecycle();
+        }
+        data.eviction = self.eviction_policy();
+        data.set_collect_events(self.journal.is_some() || self.notifications_enabled());
+    }
+
+    pub fn purge_expired(&self, limit: usize) -> usize {
+        self.refresh_data_config();
+        let started = self.latency_enabled().then(std::time::Instant::now);
+
+        let (count, expired) = {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
+                return 0;
+            };
+            let count = data.reap(self.clock.now_ms().max(0), limit);
+            let (expired, _) = data.drain_lifecycle();
+            (count, expired)
+        };
+        for key in expired {
+            self.notify_event("expired", &key, NotifyCategory::Expired);
+        }
+        if let Some(started) = started {
+            self.record_expire_latency(started.elapsed());
+        }
+        count
+    }
+
+    /// Append exactly one reply in a synchronous owner turn. No data borrow
+    /// survives socket I/O. The compatibility owner preserves global journal
+    /// ordering through mutation, capture and append before its next turn.
+    pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        self.refresh_data_config();
+        if self.journal.is_some() || self.notifications_enabled() {
+            let marks = self.journal_marks();
+            let start = output.len();
+            let action = self.execute_command(arguments, output);
+            self.commit_journal(marks, arguments, output, start);
+            self.publish_lifecycle_events();
+            return action;
+        }
+
+        let action = self.execute_command(arguments, output);
+        self.publish_lifecycle_events();
+        action
+    }
+
+    fn publish_lifecycle_events(&self) {
+        let flags = self.notify_flags();
+        // No lifecycle classes means there is nothing to deliver. Avoid taking
+        // a mutable data borrow on every command just to discard queued keys.
+        if !flags.expired && !flags.evicted {
+            return;
+        }
+        let (expired, evicted) = {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
+                return;
+            };
+            data.drain_lifecycle()
+        };
+        if flags.expired {
+            for key in expired {
+                self.notify_event("expired", &key, NotifyCategory::Expired);
+            }
+        }
+        if flags.evicted {
+            for key in evicted {
+                self.notify_event("evicted", &key, NotifyCategory::Evicted);
+            }
+        }
+    }
+
+    /// Dispatch inside an admitted owner turn. EXEC and journal replay use
+    /// the same synchronous implementation without routing constituent commands.
+    pub(super) fn execute_command(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        // PING is the hottest command and stays ahead of all family routing.
+        if let Some(command) = arguments.first() {
+            if command.eq_ignore_ascii_case(b"PING") {
+                match arguments.len() {
+                    1 => output.extend_from_slice(b"+PONG\r\n"),
+                    2 => encode_bulk(Some(arguments[1]), output),
+                    _ => arity("ping", output),
+                }
+                return Action::Continue;
+            }
+            // GET/SET/ECHO are the measured hot path. Keep the single string
+            // implementation, but call its small inlined entry directly so the
+            // one-CPU pipeline-1 path does not pay for a family router call.
+            if let Some(action) = dispatch::hot_string(self, command, arguments, output) {
+                return action;
+            }
+        }
+        dispatch::route(self, arguments, output)
+    }
+
+    pub fn stats(&self) -> Stats {
+        let lifecycle = self.data.try_borrow().map_or((0, 0, 0), |data| {
+            (data.expired_keys, data.expired_subkeys, data.evicted_keys)
+        });
+        self.stats_from_counters(lifecycle)
+    }
+
+    pub fn reset_stats(&self) -> bool {
+        if let Ok(mut stats) = self.error_stats.write() {
+            stats.clear();
+        }
+        self.connections_received.store(0, Ordering::Relaxed);
+        for counter in &self.commands_processed {
+            counter.store(0, Ordering::Relaxed);
+        }
+        self.rejected_connections.store(0, Ordering::Relaxed);
+        self.reset_command_statistics();
+        self.data.try_borrow_mut().is_ok_and(|mut data| {
+            data.expired_keys = 0;
+            data.expired_subkeys = 0;
+            data.evicted_keys = 0;
+            true
+        })
+    }
+
+    pub(crate) fn set_aof_policy(&self, policy: FsyncPolicy) -> std::io::Result<()> {
+        if let Some(journal) = self.journal.as_ref() {
+            let mut journal = journal
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned journal lock"))?;
+            journal.set_policy(policy)?;
+        }
+        let mut config = self
+            .aof_config
+            .write()
+            .map_err(|_| std::io::Error::other("poisoned AOF configuration lock"))?;
+        config.policy = policy;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn journal_policy(&self) -> Option<FsyncPolicy> {
+        self.journal
+            .as_ref()
+            .and_then(|journal| journal.lock().ok())
+            .map(|journal| journal.policy())
+    }
+
+    /// Change the payload budget and evict down to it using the active policy.
+    /// A noeviction or volatile policy may leave the store above the new budget;
+    /// subsequent admissions then fail rather than deleting ineligible keys.
+    pub fn set_payload_limit(&self, limit: usize) -> bool {
+        self.refresh_data_config();
+        self.max_payload_bytes.store(limit, Ordering::Relaxed);
+        self.data.try_borrow_mut().is_ok_and(|mut data| {
+            data.enforce_budget(limit);
+            true
+        })
     }
 }
 

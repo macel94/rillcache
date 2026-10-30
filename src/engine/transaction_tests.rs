@@ -9,21 +9,21 @@ impl Clock for TestClock {
     }
 }
 
-fn call(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+fn call(store: &impl crate::engine::Execution, args: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     assert_eq!(store.execute(args, &mut out), Action::Continue);
     out
 }
 
-fn changed(store: &Store, watched: &WatchState, now: i64) -> bool {
-    let data = store.data.read().unwrap();
+fn changed(store: &ShardExecutor, watched: &WatchState, now: i64) -> bool {
+    let data = store.data.try_borrow().unwrap();
     watched.changed(&data, now)
 }
 
 #[test]
 fn watch_detects_writes_deletes_expiry_and_flush() {
     let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-    let store = Store::with_clock(1024, clock.clone());
+    let store = ShardExecutor::with_clock(1024, clock.clone());
 
     let watched = store.watch_snapshot(&[b"k"]).unwrap();
     assert_eq!(call(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
@@ -50,7 +50,7 @@ fn watch_detects_writes_deletes_expiry_and_flush() {
 
 #[test]
 fn aborted_transaction_emits_one_null_array_and_executes_nothing() {
-    let store = Store::new(1024);
+    let store = ShardExecutor::new(1024);
     assert_eq!(call(&store, &[b"SET", b"k", b"before"]), b"+OK\r\n");
     let watched = store.watch_snapshot(&[b"k"]).unwrap();
     assert_eq!(call(&store, &[b"SET", b"k", b"other"]), b"+OK\r\n");
@@ -71,7 +71,7 @@ fn aborted_transaction_emits_one_null_array_and_executes_nothing() {
 
 #[test]
 fn transaction_replies_are_one_array_in_order_and_failures_do_not_roll_back() {
-    let store = Store::new(1024);
+    let store = ShardExecutor::new(1024);
     let watched = store.watch_snapshot(&[]).unwrap();
     let mut out = Vec::new();
     let outcome = store.execute_transaction(
@@ -96,7 +96,7 @@ fn transaction_replies_are_one_array_in_order_and_failures_do_not_roll_back() {
 
 #[test]
 fn exec_is_exclusive_with_ordinary_reads() {
-    let store = Arc::new(Store::new(16 * 1024 * 1024));
+    let store = Arc::new(super::Store::new(16 * 1024 * 1024));
     const UPDATES: usize = 4000;
     let watched = store.watch_snapshot(&[]).unwrap();
     let mut commands = (0..UPDATES)
@@ -130,15 +130,15 @@ fn exec_is_exclusive_with_ordinary_reads() {
     done.store(true, Ordering::Release);
     reader.join().unwrap();
     assert_eq!(outcome, TransactionOutcome::Completed(Action::Continue));
-    assert_eq!(call(&store, &[b"GET", b"key"]), b"$5\r\nfinal\r\n");
+    assert_eq!(call(store.as_ref(), &[b"GET", b"key"]), b"$5\r\nfinal\r\n");
 }
 
 #[test]
 fn version_tracking_is_bounded_and_invalidates_watches() {
-    let store = Store::new(1024);
+    let store = ShardExecutor::new(1024);
     let watched = store.watch_snapshot(&[b"first"]).unwrap();
     {
-        let mut data = store.data.write().unwrap();
+        let mut data = store.data.try_borrow_mut().unwrap();
         for index in 0..(super::data::MAX_TRACKED_VERSIONS + 8) {
             data.touch(format!("key-{index}").as_bytes());
         }
@@ -147,5 +147,5 @@ fn version_tracking_is_bounded_and_invalidates_watches() {
         changed(&store, &watched, 0),
         "bounded version eviction must fail closed"
     );
-    assert!(store.data.read().unwrap().versions.len() <= super::data::MAX_TRACKED_VERSIONS);
+    assert!(store.data.try_borrow().unwrap().versions.len() <= super::data::MAX_TRACKED_VERSIONS);
 }

@@ -5,7 +5,7 @@
 //! 10 ms; this is a bounded latency/CPU tradeoff, not a condition-variable
 //! guarantee or a server push notification.
 
-use super::Store;
+use super::ShardExecutor;
 use super::collection_commands::{ListMoveOutcome, ListPopOutcome, ZSetPopOutcome};
 use super::collections::encode_list;
 use super::data::Collection;
@@ -19,27 +19,17 @@ pub enum PopOutcome {
     JournalError,
 }
 
-impl Store {
+impl ShardExecutor {
     /// Pop one live list element from the first nonempty key under the store's
-    /// normal transaction/journal gate. Expired entries are treated as absent.
+    /// synchronous owner turn. Expired entries are treated as absent.
     pub fn blocking_pop(&self, keys: &[&[u8]], left: bool) -> PopOutcome {
-        if self.journal.is_some() {
-            let Ok(_gate) = self.transaction_gate.write() else {
-                return PopOutcome::JournalError;
-            };
-            self.blocking_pop_gated(keys, left)
-        } else {
-            let Ok(_gate) = self.transaction_gate.read() else {
-                return PopOutcome::JournalError;
-            };
-            self.blocking_pop_gated(keys, left)
-        }
+        self.blocking_pop_in_turn(keys, left)
     }
 
-    fn blocking_pop_gated(&self, keys: &[&[u8]], left: bool) -> PopOutcome {
+    fn blocking_pop_in_turn(&self, keys: &[&[u8]], left: bool) -> PopOutcome {
         let marks = self.journal_marks();
         let outcome = {
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 return PopOutcome::JournalError;
             };
             let now = self.now(&data);
@@ -101,8 +91,8 @@ impl Store {
     }
 }
 
-impl Store {
-    /// Pop from the first ready list under the normal transaction/journal gate,
+impl ShardExecutor {
+    /// Pop from the first ready list in one non-interleaved owner turn,
     /// matching one BLMPOP attempt.
     pub(crate) fn blocking_lmpop(
         &self,
@@ -110,23 +100,13 @@ impl Store {
         left: bool,
         count: usize,
     ) -> ListPopOutcome {
-        if self.journal.is_some() {
-            let Ok(_gate) = self.transaction_gate.write() else {
-                return ListPopOutcome::JournalError;
-            };
-            self.blocking_lmpop_gated(keys, left, count)
-        } else {
-            let Ok(_gate) = self.transaction_gate.read() else {
-                return ListPopOutcome::JournalError;
-            };
-            self.blocking_lmpop_gated(keys, left, count)
-        }
+        self.blocking_lmpop_in_turn(keys, left, count)
     }
 
-    fn blocking_lmpop_gated(&self, keys: &[&[u8]], left: bool, count: usize) -> ListPopOutcome {
+    fn blocking_lmpop_in_turn(&self, keys: &[&[u8]], left: bool, count: usize) -> ListPopOutcome {
         let marks = self.journal_marks();
         let outcome = {
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 return ListPopOutcome::JournalError;
             };
             let now = self.now(&data);
@@ -145,8 +125,7 @@ impl Store {
         outcome
     }
 
-    /// Move one element between lists under the store's normal transaction and
-    /// journal gate. Returns `Empty` when the source has no live element so the
+    /// Move one element between lists within one synchronous owner turn. Returns `Empty` when the source has no live element so the
     /// caller can keep blocking.
     pub(crate) fn blocking_list_move(
         &self,
@@ -155,20 +134,10 @@ impl Store {
         from_left: bool,
         to_left: bool,
     ) -> ListMoveOutcome {
-        if self.journal.is_some() {
-            let Ok(_gate) = self.transaction_gate.write() else {
-                return ListMoveOutcome::JournalError;
-            };
-            self.blocking_list_move_gated(source, destination, from_left, to_left)
-        } else {
-            let Ok(_gate) = self.transaction_gate.read() else {
-                return ListMoveOutcome::JournalError;
-            };
-            self.blocking_list_move_gated(source, destination, from_left, to_left)
-        }
+        self.blocking_list_move_in_turn(source, destination, from_left, to_left)
     }
 
-    fn blocking_list_move_gated(
+    fn blocking_list_move_in_turn(
         &self,
         source: &[u8],
         destination: &[u8],
@@ -177,7 +146,7 @@ impl Store {
     ) -> ListMoveOutcome {
         let marks = self.journal_marks();
         let outcome = {
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 return ListMoveOutcome::JournalError;
             };
             let now = self.now(&data);
@@ -201,26 +170,16 @@ impl Store {
         outcome
     }
 
-    /// Pop from the first ready sorted set under the normal transaction/journal
-    /// gate, matching one BZMPOP attempt.
+    /// Pop from the first ready sorted set in one owner turn, matching one
+    /// BZMPOP attempt.
     pub(crate) fn blocking_zpop(&self, keys: &[&[u8]], max: bool, count: usize) -> ZSetPopOutcome {
-        if self.journal.is_some() {
-            let Ok(_gate) = self.transaction_gate.write() else {
-                return ZSetPopOutcome::JournalError;
-            };
-            self.blocking_zpop_gated(keys, max, count)
-        } else {
-            let Ok(_gate) = self.transaction_gate.read() else {
-                return ZSetPopOutcome::JournalError;
-            };
-            self.blocking_zpop_gated(keys, max, count)
-        }
+        self.blocking_zpop_in_turn(keys, max, count)
     }
 
-    fn blocking_zpop_gated(&self, keys: &[&[u8]], max: bool, count: usize) -> ZSetPopOutcome {
+    fn blocking_zpop_in_turn(&self, keys: &[&[u8]], max: bool, count: usize) -> ZSetPopOutcome {
         let marks = self.journal_marks();
         let outcome = {
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 return ZSetPopOutcome::JournalError;
             };
             let now = self.now(&data);

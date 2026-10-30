@@ -25,6 +25,7 @@ mod observability_tests;
 #[cfg(test)]
 mod tests;
 
+use crate::engine::Execution;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -109,6 +110,22 @@ impl Session {
     /// Dispatch connection commands locally and all data commands through the
     /// stable public RESP2 Store API, adapting only this session's reply.
     pub fn execute(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+        self.execute_on(store, arguments, output)
+    }
+
+    pub fn poll_blocked(&mut self, store: &Store) -> Option<Vec<u8>> {
+        self.poll_blocked_on(store)
+    }
+    pub fn poll_paused(&mut self, store: &Store) -> Option<(Vec<u8>, Action)> {
+        self.poll_paused_on(store)
+    }
+
+    pub(crate) fn execute_on<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) -> Action {
         let start = output.len();
         // Use the common observation/error-accounting epilogue in every
         // collector configuration. execute_inner already specializes ordinary
@@ -168,9 +185,9 @@ impl Session {
     }
 
     /// Disconnect-equivalent server-side context reset (Redis RESET).
-    pub(super) fn reset(
+    pub(super) fn reset<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         arguments: &[&[u8]],
         output: &mut Vec<u8>,
     ) -> Action {

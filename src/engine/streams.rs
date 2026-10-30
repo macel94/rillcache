@@ -1,6 +1,6 @@
 use super::data::{Consumer, ConsumerGroup, Pending, Stream, StreamEntry, StreamId};
 use super::notify::Category as NotifyCategory;
-use super::{Store, arity, integer, internal_error};
+use super::{ShardExecutor, arity, integer, internal_error};
 use crate::protocol::encode_bulk;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -271,7 +271,7 @@ pub(crate) fn xreadgroup_reply(outcome: XReadGroupOutcome, group: &[u8], out: &m
     }
 }
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_streams(&self, a: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(cmd) = a.first() else { return false };
         if cmd.eq_ignore_ascii_case(b"XADD") {
@@ -410,7 +410,7 @@ impl Store {
             .unwrap_or_default()
             .as_millis()
             .min(u64::MAX as u128) as u64;
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -500,7 +500,7 @@ impl Store {
                 }
             }
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -568,7 +568,7 @@ impl Store {
                 return;
             }
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -622,7 +622,7 @@ impl Store {
             arity("xlen", out);
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -653,7 +653,7 @@ impl Store {
                 }
             }
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -744,7 +744,7 @@ impl Store {
                 consumer = Some(a[index + 3]);
             }
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -839,7 +839,7 @@ impl Store {
             };
             count = usize::try_from(parsed).unwrap_or(usize::MAX);
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -906,7 +906,7 @@ impl Store {
         &self,
         options: &XReadOptions<'_>,
     ) -> Option<(Vec<StreamId>, XReadOutcome)> {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             return None;
         };
         let now = self.now(&data);
@@ -949,7 +949,7 @@ impl Store {
         starts: &[StreamId],
         count: usize,
     ) -> Option<XReadOutcome> {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             return None;
         };
         let now = self.now(&data);
@@ -1055,7 +1055,7 @@ impl Store {
         let delivery = delivery
             .map(|value| if value < 0 || value > now { now } else { value })
             .unwrap_or(now);
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1186,7 +1186,7 @@ impl Store {
             }
         }
         let now = self.clock.now_ms().max(0);
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1397,7 +1397,7 @@ impl Store {
         } else {
             None
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1476,7 +1476,7 @@ impl Store {
                 out.extend_from_slice(b"-ERR syntax error\r\n");
                 return;
             }
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 internal_error(out);
                 return;
             };
@@ -1539,7 +1539,7 @@ impl Store {
                     }
                 }
             };
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 internal_error(out);
                 return;
             };
@@ -1567,7 +1567,7 @@ impl Store {
                 arity("xgroup", out);
                 return;
             }
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 internal_error(out);
                 return;
             };
@@ -1593,7 +1593,7 @@ impl Store {
                 arity("xgroup", out);
                 return;
             }
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 internal_error(out);
                 return;
             };
@@ -1625,7 +1625,7 @@ impl Store {
                 arity("xgroup", out);
                 return;
             }
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 internal_error(out);
                 return;
             };
@@ -1676,7 +1676,7 @@ impl Store {
     }
 
     pub(crate) fn xreadgroup_multi(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             return XReadGroupOutcome::JournalError;
         };
         let now = self.clock.now_ms().max(0);
@@ -1810,20 +1810,10 @@ impl Store {
     }
 
     pub(crate) fn blocking_xreadgroup(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
-        if self.journal.is_some() {
-            let Ok(_gate) = self.transaction_gate.write() else {
-                return XReadGroupOutcome::JournalError;
-            };
-            self.blocking_xreadgroup_gated(options)
-        } else {
-            let Ok(_gate) = self.transaction_gate.read() else {
-                return XReadGroupOutcome::JournalError;
-            };
-            self.blocking_xreadgroup_gated(options)
-        }
+        self.blocking_xreadgroup_in_turn(options)
     }
 
-    fn blocking_xreadgroup_gated(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
+    fn blocking_xreadgroup_in_turn(&self, options: &XReadGroupOptions<'_>) -> XReadGroupOutcome {
         let marks = self.journal_marks();
         let outcome = self.xreadgroup_multi(options);
         if let XReadGroupOutcome::Ready { delivered, .. } = &outcome
@@ -1842,7 +1832,7 @@ impl Store {
     }
 
     fn xinfo_groups(&self, a: &[&[u8]], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1886,7 +1876,7 @@ impl Store {
     }
 
     fn xinfo_consumers(&self, a: &[&[u8]], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1968,7 +1958,7 @@ impl Store {
             }
         }
         let limit = if count == 0 { usize::MAX } else { count };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2130,14 +2120,14 @@ fn reply_entry(id: StreamId, e: &StreamEntry, out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         store.execute(args, &mut out);
         out
     }
     #[test]
     fn group_state_and_stream_entries_are_deep_copied_and_keyspace_aware() {
-        let store = Store::new(1_000_000);
+        let store = ShardExecutor::new(1_000_000);
         assert_eq!(
             run(&store, &[b"XADD", b"src", b"100", b"a", b"1"]),
             b"$5\r\n100-0\r\n"
@@ -2166,21 +2156,21 @@ mod tests {
         );
         assert!(read.starts_with(b"*1\r\n"));
         assert_eq!(run(&store, &[b"COPY", b"src", b"dst"]), b":1\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 14);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 14);
         assert_eq!(run(&store, &[b"TYPE", b"dst"]), b"+stream\r\n");
         let info = run(&store, &[b"XINFO", b"STREAM", b"dst", b"FULL"]);
         assert_eq!(info, run(&store, &[b"XINFO", b"STREAM", b"src", b"FULL"]));
         assert!(run(&store, &[b"GET", b"dst"]).starts_with(b"-WRONGTYPE"));
         assert_eq!(run(&store, &[b"DEL", b"src"]), b":1\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 7);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 7);
         assert_eq!(info, run(&store, &[b"XINFO", b"STREAM", b"dst", b"FULL"]));
         assert_eq!(run(&store, &[b"RENAME", b"dst", b"moved"]), b"+OK\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 9);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 9);
         assert_eq!(run(&store, &[b"XLEN", b"moved"]), b":2\r\n");
     }
     #[test]
     fn mkstream_admission_failure_is_atomic_and_well_framed() {
-        let store = Store::new(0);
+        let store = ShardExecutor::new(0);
         assert_eq!(
             run(
                 &store,
@@ -2194,7 +2184,7 @@ mod tests {
 
     #[test]
     fn xdel_and_noack_change_real_stream_state_without_creating_pending_entries() {
-        let store = Store::new(1000);
+        let store = ShardExecutor::new(1000);
         for (id, field) in [(b"1".as_slice(), b"a".as_slice()), (b"2", b"b")] {
             run(&store, &[b"XADD", b"s", id, field, b"v"]);
         }
@@ -2221,14 +2211,14 @@ mod tests {
     }
     #[test]
     fn xdel_preserves_pending_references_in_groups_and_consumers() {
-        let store = Store::new(1000);
+        let store = ShardExecutor::new(1000);
         run(&store, &[b"XADD", b"s", b"1", b"f", b"v"]);
         run(&store, &[b"XGROUP", b"CREATE", b"s", b"g", b"0"]);
         run(
             &store,
             &[b"XREADGROUP", b"GROUP", b"g", b"c", b"STREAMS", b"s", b">"],
         );
-        let data = store.data.read().unwrap();
+        let data = store.data.try_borrow().unwrap();
         let group = &data.entries[b"s".as_slice()]
             .stream
             .as_ref()
@@ -2252,7 +2242,7 @@ mod tests {
                 .any(|w| w == pending_entry)
         );
         assert_eq!(run(&store, &[b"XLEN", b"s"]), b":0\r\n");
-        let data = store.data.read().unwrap();
+        let data = store.data.try_borrow().unwrap();
         let group = &data.entries[b"s".as_slice()]
             .stream
             .as_ref()

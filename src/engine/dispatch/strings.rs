@@ -4,12 +4,12 @@
 //! Redis commands retain their short direct path.
 
 use super::super::options::{Condition, ExpiryKind, SetOptions};
-use super::super::{Action, Store, arity};
+use super::super::{Action, ShardExecutor, arity};
 use crate::protocol::encode_bulk;
 
 #[inline(always)]
 pub(super) fn execute_data(
-    store: &Store,
+    store: &ShardExecutor,
     command: &[u8],
     arguments: &[&[u8]],
     output: &mut Vec<u8>,
@@ -47,7 +47,7 @@ pub(super) fn execute_data(
 /// Every remaining string-family command. Deliberately not `#[inline]` so the
 /// large match does not bloat the GET / SET / ECHO path.
 pub(super) fn execute_other(
-    store: &Store,
+    store: &ShardExecutor,
     command: &[u8],
     arguments: &[&[u8]],
     output: &mut Vec<u8>,

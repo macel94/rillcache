@@ -1,6 +1,6 @@
 use super::*;
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_admin(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(command) = args.first() else {
             return false;
@@ -14,7 +14,7 @@ impl Store {
         if command.eq_ignore_ascii_case(b"FLUSHDB") || command.eq_ignore_ascii_case(b"FLUSHALL") {
             if args.len() > 2 || args.get(1).is_some_and(|arg| !flush_mode(arg)) {
                 out.extend_from_slice(b"-ERR syntax error\r\n");
-            } else if let Ok(mut data) = self.data.write() {
+            } else if let Ok(mut data) = self.data.try_borrow_mut() {
                 data.flush();
                 out.extend_from_slice(b"+OK\r\n");
             } else {
@@ -84,7 +84,7 @@ impl Store {
                 arity("memory|usage", out);
                 return;
             }
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 internal_error(out);
                 return;
             };
@@ -143,7 +143,7 @@ impl Store {
     }
 
     fn memory_snapshot(&self) -> Option<MemorySnapshot> {
-        let data = self.data.read().ok()?;
+        let data = self.data.try_borrow().ok()?;
         let now = self.now(&data);
         let mut keys = 0usize;
         let mut expires = 0usize;
@@ -243,7 +243,7 @@ fn flush_mode(arg: &[u8]) -> bool {
     arg.eq_ignore_ascii_case(b"SYNC") || arg.eq_ignore_ascii_case(b"ASYNC")
 }
 
-impl Store {
+impl ShardExecutor {
     /// Parse SHUTDOWN, force a journal flush and, on success, request stop.
     /// Returns without a success reply; the session closes the caller.
     pub(crate) fn shutdown_command(&self, args: &[&[u8]], out: &mut Vec<u8>) {
@@ -282,7 +282,7 @@ impl Store {
     }
 }
 
-fn config(store: &Store, args: &[&[u8]], out: &mut Vec<u8>) {
+fn config(store: &ShardExecutor, args: &[&[u8]], out: &mut Vec<u8>) {
     let Some(sub) = args.get(1) else {
         arity("config", out);
         return;
@@ -317,7 +317,7 @@ fn config(store: &Store, args: &[&[u8]], out: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(store.execute(args, &mut out), Action::Continue);
         out
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn flush_is_atomic_and_clears_payload_and_expiry_index() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         assert_eq!(
             run(&store, &[b"SET", b"one", b"v", b"PX", b"50000"]),
             b"+OK\r\n"
@@ -336,7 +336,7 @@ mod tests {
         );
         assert_eq!(run(&store, &[b"FLUSHDB", b"ASYNC"]), b"+OK\r\n");
         assert_eq!(run(&store, &[b"DBSIZE"]), b":0\r\n");
-        let data = store.data.read().unwrap();
+        let data = store.data.try_borrow().unwrap();
         assert_eq!(data.payload_bytes, 0);
         assert!(data.entries.is_empty());
         assert!(data.expirations.is_empty());
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn malformed_flush_preserves_state_and_registry_flush_arity_is_strict() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         run(&store, &[b"SET", b"k", b"v"]);
         for args in [
             &[b"FLUSHDB".as_slice(), b"BAD"][..],
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn config_and_memory_responses_are_honest_and_memory_accounts_expiry() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         assert_eq!(
             run(&store, &[b"CONFIG", b"GET", b"unsupported-setting"]),
             b"*0\r\n"
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn memory_stats_and_doctor_report_payload_high_water() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         let empty = run(&store, &[b"MEMORY", b"DOCTOR"]);
         assert!(
             empty
@@ -423,7 +423,7 @@ mod tests {
         assert_eq!(run(&store, &[b"SET", b"key", &value]), b"+OK\r\n");
         assert_eq!(run(&store, &[b"DEL", b"key"]), b":1\r\n");
         {
-            let data = store.data.read().unwrap();
+            let data = store.data.try_borrow().unwrap();
             assert_eq!(data.payload_bytes, 0);
             assert!(data.peak_payload_bytes() > 0);
         }

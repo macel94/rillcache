@@ -8,7 +8,7 @@
 
 use super::data::Collection;
 use super::keyspace::glob_match;
-use super::{Store, arity, encode_bulk, internal_error, wrong_type};
+use super::{ShardExecutor, arity, encode_bulk, internal_error, wrong_type};
 use std::io::Write;
 
 const DEFAULT_COUNT: usize = 10;
@@ -79,7 +79,7 @@ fn parse_count(raw: &[u8]) -> Result<usize, ()> {
     Ok(count.min(MAX_COUNT))
 }
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_scan(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> bool {
         let Some(command) = arguments.first() else {
             return false;
@@ -114,7 +114,7 @@ impl Store {
             output.extend_from_slice(b"-ERR syntax error or invalid cursor\r\n");
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -148,7 +148,7 @@ impl Store {
             return;
         };
         let key = arguments[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };

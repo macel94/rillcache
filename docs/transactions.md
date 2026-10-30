@@ -29,14 +29,15 @@ listed below.
 
 ## Execution
 
-`EXEC` takes the store-wide transaction write gate, validates all watched keys,
-then executes the queue in order under that gate. Every queued command's reply
+`EXEC` runs as one synchronous owner turn: it validates all watched keys,
+then executes the queue in order without interleaving another data operation. Every queued command's reply
 is appended as one RESP array, using the connection's negotiated RESP2/RESP3
 framing. A command error is an array element; later commands still run - Redis
 does not roll back a partially executed transaction.
 
-Ordinary commands take the read side of the same gate, so another client cannot
-observe or mutate the keyspace between two commands of one `EXEC`. The queue is
+Ordinary commands run on the same owner, so another client cannot observe or
+mutate the keyspace between two commands of one `EXEC`. The external Store
+bridge submits a complete EXEC batch as one request, not independent commands. The queue is
 owned by the connection, survives worker handoffs with the rest of `Session`, and
 is discarded when the connection closes.
 
@@ -70,7 +71,9 @@ part of the payload budget.
 - Subscription commands, `PUBSUB` introspection, scripts, functions and modules
   remain outside queued execution. Messages are at-most-once as elsewhere; no
   durable delivery is implied by publishing from `EXEC`.
-- The write gate provides mutual exclusion with other commands in this process.
-  It is not replication, durable atomic commit, distributed locking or crash
+- The single owner provides mutual exclusion with other data operations in this
+  process. Multi-owner execution is not implemented by this increment (see the
+  [ownership design](plans/owner-local-storage.md)). It is not replication,
+  durable atomic commit, distributed locking or crash
   recovery. `SET key token NX PX ...` plus conditional release still has the
   failover and fencing limits described in [requirements](requirements.md).

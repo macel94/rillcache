@@ -6,7 +6,7 @@
 //! cannot expose a partially written bitfield.
 
 use super::options::{NOT_INTEGER, OOM, parse_integer};
-use super::{Store, arity, integer, internal_error, wrong_type};
+use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use std::io::Write;
 
 const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
@@ -250,7 +250,7 @@ fn append_reply(results: &[Option<i64>], output: &mut Vec<u8>) {
     }
 }
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_bitfield(&self, args: &[&[u8]], output: &mut Vec<u8>) -> bool {
         let Some(command) = args.first() else {
             return false;
@@ -278,7 +278,7 @@ impl Store {
             return true;
         }
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return true;
         };
@@ -391,7 +391,7 @@ mod tests {
     use super::*;
     use crate::engine::Action;
 
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(store.execute(args, &mut out), Action::Continue);
         out
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn get_set_incr_signed_unsigned_and_hash_offsets() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(run(&store, &[b"BITFIELD", b"k"]), b"*0\r\n");
         assert_eq!(
             run(&store, &[b"BITFIELD", b"k", b"GET", b"u8", b"0"]),
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn overflow_policies_apply_to_set_and_incr_without_partial_writes() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(
             run(
                 &store,
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn validation_errors_do_not_mutate_and_ro_rejects_writes() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(
             run(&store, &[b"BITFIELD", b"k", b"GET", b"u64", b"0"]),
             TYPE_ERROR
@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn writes_extend_zero_fill_preserve_ttl_and_fail_atomically_on_oom() {
-        let store = Store::new(4);
+        let store = ShardExecutor::new(4);
         assert_eq!(
             run(&store, &[b"BITFIELD", b"k", b"SET", b"u8", b"8", b"1"]),
             b"*1\r\n:0\r\n"

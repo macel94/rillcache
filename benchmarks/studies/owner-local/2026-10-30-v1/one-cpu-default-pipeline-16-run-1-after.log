@@ -1,0 +1,5 @@
+ping run 1: 318937 ops/s, batch p50 203.9 us, p99 2825.8 us
+set run 1: 140317 ops/s, batch p50 275.4 us, p99 8457.0 us
+get run 1: 58334 ops/s, batch p50 512.2 us, p99 16496.4 us
+set-nx-existing run 1: 125778 ops/s, batch p50 313.4 us, p99 9759.9 us
+set-xx-existing run 1: 162063 ops/s, batch p50 288.8 us, p99 5177.7 us

@@ -1,6 +1,5 @@
 //! Bounded ACL denial log for SEC-1/SEC-2 operations.
 
-use super::Store;
 use std::time::Instant;
 
 const MAX_ACL_LOG: usize = 128;
@@ -21,7 +20,7 @@ impl AclLogEntry {
     }
 }
 
-impl Store {
+impl super::ServerServices {
     pub fn record_acl_denial(&self, reason: &str, context: &str, object: &[u8], username: &[u8]) {
         if let Ok(mut log) = self.acl_log.write() {
             if let Some(entry) = log.iter_mut().find(|entry| {
@@ -43,24 +42,19 @@ impl Store {
                 log.truncate(MAX_ACL_LOG);
             }
         }
-        let line = super::audit::format_line(
-            reason,
-            context,
-            object,
-            username,
-            self.audit_hmac_key.as_deref(),
-        );
-        if let Some(audit) = &self.audit_log {
+        let key = self.audit_hmac_key.read().expect("audit key lock");
+        let line = super::audit::format_line(reason, context, object, username, key.as_deref());
+        if let Ok(mut audit) = self.audit_log.lock() {
             let failed = audit
-                .lock()
-                .map_or(true, |mut log| log.record_line(&line).is_err());
+                .as_mut()
+                .is_some_and(|log| log.record_line(&line).is_err());
             if failed {
                 self.audit_log_write_failures
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        if let Some(sink) = &self.audit_syslog {
-            let failed = sink.lock().map_or(true, |sink| sink.send(&line).is_err());
+        if let Ok(sink) = self.audit_syslog.lock() {
+            let failed = sink.as_ref().is_some_and(|sink| sink.send(&line).is_err());
             if failed {
                 self.audit_syslog_write_failures
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -70,32 +64,29 @@ impl Store {
 
     /// Attach the optional per-line HMAC key. The key is never logged or
     /// included in `Debug` output.
-    pub fn set_audit_hmac_key(&mut self, key: Vec<u8>) {
-        self.audit_hmac_key = Some(key);
+    pub fn set_audit_hmac_key(&self, key: Vec<u8>) {
+        *self.audit_hmac_key.write().expect("audit key lock") = Some(key);
     }
 
     /// Attach a best-effort UDP audit sink. Delivery is not retried or
     /// authenticated; the local file, when configured, remains authoritative.
-    pub fn attach_audit_syslog(
-        &mut self,
-        destination: std::net::SocketAddr,
-    ) -> std::io::Result<()> {
-        self.audit_syslog = Some(std::sync::Mutex::new(
-            super::audit_syslog::SyslogSink::open(destination)?,
-        ));
+    pub fn attach_audit_syslog(&self, destination: std::net::SocketAddr) -> std::io::Result<()> {
+        *self
+            .audit_syslog
+            .lock()
+            .map_err(|_| std::io::Error::other("audit sink lock"))? =
+            Some(super::audit_syslog::SyslogSink::open(destination)?);
         Ok(())
     }
 
     /// Attach an append-only denial audit. The server calls this once before
-    /// accepting clients; `Store::new`-based unit tests leave it disabled.
-    pub fn attach_audit_log(
-        &mut self,
-        path: &std::path::Path,
-        max_bytes: u64,
-    ) -> std::io::Result<()> {
-        self.audit_log = Some(std::sync::Mutex::new(super::audit::AuditLog::open(
-            path, max_bytes,
-        )?));
+    /// accepting clients; `ShardExecutor::new`-based unit tests leave it disabled.
+    pub fn attach_audit_log(&self, path: &std::path::Path, max_bytes: u64) -> std::io::Result<()> {
+        *self
+            .audit_log
+            .lock()
+            .map_err(|_| std::io::Error::other("audit log lock"))? =
+            Some(super::audit::AuditLog::open(path, max_bytes)?);
         Ok(())
     }
 
@@ -143,11 +134,11 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::{Access, Auth, Store};
+    use crate::engine::{Access, Auth, ShardExecutor};
 
     #[test]
     fn denials_aggregate_and_reset_with_a_bounded_log() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         store.record_acl_denial("command", "toplevel", b"get", b"default");
         store.record_acl_denial("command", "toplevel", b"get", b"default");
         store.record_acl_denial("key", "multi", b"secret", b"alice");
@@ -162,7 +153,7 @@ mod tests {
 
     #[test]
     fn dryrun_is_read_only_and_generatepass_is_bounded_hex() {
-        let store = Store::with_auth(1024, Auth::from_password(None));
+        let store = ShardExecutor::with_auth(1024, Auth::from_password(None));
         assert!(matches!(
             store.acl_dryrun(b"default", &[b"GET", b"k"]),
             Some(Access::Allowed)
