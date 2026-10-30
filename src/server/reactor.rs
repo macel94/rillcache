@@ -16,10 +16,19 @@ const STOP_TICK: Duration = Duration::from_millis(10);
 const ASYNC_TICK: Duration = Duration::from_millis(1);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
 
+/// An index is reusable, but its full, non-recycled selector token is not.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ReadyKey {
+    slot: usize,
+    token: Token,
+}
+
 struct Connection {
+    token: Token,
     client: Client,
     store: Arc<Store>,
     queued: bool,
+    asynchronous: bool,
     writable: bool,
     read_closed: bool,
 }
@@ -34,9 +43,13 @@ impl Drop for Connection {
 struct Reactor {
     poll: Poll,
     listener: TcpListener,
-    clients: HashMap<Token, Connection>,
-    ready: VecDeque<Token>,
-    asynchronous: HashSet<Token>,
+    // Only kernel-event routing hashes tokens. Productive turns use indexed
+    // slots directly; holes are recycled rather than growing with connection age.
+    tokens: HashMap<Token, usize>,
+    clients: Vec<Option<Connection>>,
+    free_slots: Vec<usize>,
+    ready: VecDeque<ReadyKey>,
+    asynchronous: HashSet<ReadyKey>,
     next_token: usize,
     accept_ready: bool,
     config: Config,
@@ -49,7 +62,7 @@ impl Drop for Reactor {
     fn drop(&mut self) {
         // Cloned administration handles can keep an open-file description alive.
         // Deregister before closing any registered socket, including on errors.
-        for connection in self.clients.values() {
+        for connection in self.clients.iter().flatten() {
             let fd = connection.client.stream.as_raw_fd();
             let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
         }
@@ -58,21 +71,32 @@ impl Drop for Reactor {
 }
 
 impl Reactor {
-    fn enqueue(&mut self, token: Token) {
-        if let Some(connection) = self.clients.get_mut(&token)
+    fn enqueue(&mut self, key: ReadyKey) {
+        if let Some(connection) = self.clients.get_mut(key.slot).and_then(Option::as_mut)
+            && connection.token == key.token
             && !connection.queued
         {
             connection.queued = true;
-            self.ready.push_back(token);
+            self.ready.push_back(key);
         }
     }
 
-    fn remove(&mut self, token: Token) {
-        if let Some(connection) = self.clients.remove(&token) {
-            let fd = connection.client.stream.as_raw_fd();
-            let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
+    fn remove(&mut self, key: ReadyKey) {
+        let Some(slot) = self.clients.get_mut(key.slot) else {
+            return;
+        };
+        if slot
+            .as_ref()
+            .is_none_or(|connection| connection.token != key.token)
+        {
+            return; // A stale queued reference must not close the recycled slot.
         }
-        self.asynchronous.remove(&token);
+        let connection = slot.take().expect("validated occupied connection slot");
+        self.tokens.remove(&key.token);
+        self.asynchronous.remove(&key);
+        self.free_slots.push(key.slot);
+        let fd = connection.client.stream.as_raw_fd();
+        let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
     }
 
     fn accept(&mut self) -> io::Result<()> {
@@ -95,8 +119,6 @@ impl Reactor {
                 let _ = stream.shutdown(Shutdown::Both);
                 continue;
             }
-            // Never recycle a token: queued events for a closed/reused fd must
-            // not dispatch against a different client's session.
             let token = Token(self.next_token);
             self.next_token = self
                 .next_token
@@ -113,37 +135,53 @@ impl Reactor {
                 .register(&mut SourceFd(&fd), token, Interest::READABLE)?;
             self.store
                 .register_client(session.id(), peer, stream.local_addr()?, control);
-            self.clients.insert(
+            let connection = Connection {
                 token,
-                Connection {
-                    client: Client {
-                        stream,
-                        session,
-                        input: Vec::with_capacity(8192.min(self.config.limits.max_frame_bytes)),
-                        output: Vec::with_capacity(8192),
-                        sent: 0,
-                        closing: false,
-                        eof: false,
-                        retry_io: false,
-                        activity: Instant::now(),
-                        _permit: Some(Permit::acquire(&self.admitted)),
-                        shutdown_on_drop: true,
-                        pubsub: receiver,
-                    },
-                    store: Arc::clone(&self.store),
-                    queued: false,
-                    writable: false,
-                    read_closed: false,
+                client: Client {
+                    stream,
+                    session,
+                    input: Vec::with_capacity(8192.min(self.config.limits.max_frame_bytes)),
+                    output: Vec::with_capacity(8192),
+                    sent: 0,
+                    closing: false,
+                    eof: false,
+                    retry_io: false,
+                    activity: Instant::now(),
+                    _permit: Some(Permit::acquire(&self.admitted)),
+                    shutdown_on_drop: true,
+                    pubsub: receiver,
                 },
-            );
-            self.enqueue(token);
+                store: Arc::clone(&self.store),
+                queued: false,
+                asynchronous: false,
+                writable: false,
+                read_closed: false,
+            };
+            let slot = match self.free_slots.pop() {
+                Some(slot) => {
+                    debug_assert!(self.clients[slot].is_none());
+                    self.clients[slot] = Some(connection);
+                    slot
+                }
+                None => {
+                    self.clients.push(Some(connection));
+                    self.clients.len() - 1
+                }
+            };
+            self.tokens.insert(token, slot);
+            self.enqueue(ReadyKey { slot, token });
         }
         // Keep accept readiness after a bounded batch, even without another edge.
         Ok(())
     }
 
-    fn service(&mut self, token: Token, chunk: &mut [u8]) -> io::Result<Option<bool>> {
-        let Some(connection) = self.clients.get_mut(&token) else {
+    fn service(&mut self, key: ReadyKey, chunk: &mut [u8]) -> io::Result<Option<bool>> {
+        let Some(connection) = self
+            .clients
+            .get_mut(key.slot)
+            .and_then(Option::as_mut)
+            .filter(|connection| connection.token == key.token)
+        else {
             return Ok(None);
         };
         connection.queued = false;
@@ -167,14 +205,17 @@ impl Reactor {
             return Ok(None);
         };
         progress |= made_progress;
-        if client.session.is_blocked()
+        let needs_async = client.session.is_blocked()
             || client.session.is_paused()
             || client.session.is_subscribed()
-            || client.session.is_monitoring()
-        {
-            self.asynchronous.insert(token);
-        } else {
-            self.asynchronous.remove(&token);
+            || client.session.is_monitoring();
+        if needs_async != connection.asynchronous {
+            if needs_async {
+                self.asynchronous.insert(key);
+            } else {
+                self.asynchronous.remove(&key);
+            }
+            connection.asynchronous = needs_async;
         }
         let writable = !client.output.is_empty();
         if writable != connection.writable {
@@ -186,10 +227,16 @@ impl Reactor {
             let fd = client.stream.as_raw_fd();
             self.poll
                 .registry()
-                .reregister(&mut SourceFd(&fd), token, interest)?;
+                .reregister(&mut SourceFd(&fd), key.token, interest)?;
             connection.writable = writable;
         }
-        Ok(Some(progress || retry_before_dispatch || client.retry_io))
+        let runnable = progress || retry_before_dispatch || client.retry_io;
+        if runnable {
+            // Own the continuation here: no second token lookup/queue admission.
+            connection.queued = true;
+            self.ready.push_back(key);
+        }
+        Ok(Some(runnable))
     }
 
     fn run(&mut self) -> io::Result<()> {
@@ -203,25 +250,31 @@ impl Reactor {
                 let _ = self.store.journal_sync();
                 self.store.purge_expired(128);
                 self.store.auto_rewrite_if_due();
-                // The normal client state machine services pending input/output
-                // before enforcing inactivity, even after scheduler delays.
                 let expired: Vec<_> = self
                     .clients
                     .iter()
-                    .filter(|(_, connection)| {
-                        connection.client.activity.elapsed() >= self.config.idle_timeout
+                    .enumerate()
+                    .filter_map(|(slot, entry)| {
+                        entry
+                            .as_ref()
+                            .filter(|connection| {
+                                connection.client.activity.elapsed() >= self.config.idle_timeout
+                            })
+                            .map(|connection| ReadyKey {
+                                slot,
+                                token: connection.token,
+                            })
                     })
-                    .map(|(&token, _)| token)
                     .collect();
-                for token in expired {
-                    self.enqueue(token);
+                for key in expired {
+                    self.enqueue(key);
                 }
                 maintenance = now;
             }
             if !self.asynchronous.is_empty() && now.duration_since(asynchronous) >= ASYNC_TICK {
-                let tokens: Vec<_> = self.asynchronous.iter().copied().collect();
-                for token in tokens {
-                    self.enqueue(token);
+                let keys: Vec<_> = self.asynchronous.iter().copied().collect();
+                for key in keys {
+                    self.enqueue(key);
                 }
                 asynchronous = now;
             }
@@ -241,24 +294,28 @@ impl Reactor {
                 let token = event.token();
                 if token == LISTENER {
                     self.accept_ready = true;
-                } else {
-                    if let Some(connection) = self.clients.get_mut(&token) {
+                } else if let Some(&slot) = self.tokens.get(&token) {
+                    if let Some(connection) = self
+                        .clients
+                        .get_mut(slot)
+                        .and_then(Option::as_mut)
+                        .filter(|connection| connection.token == token)
+                    {
                         connection.read_closed |= event.is_read_closed();
                     }
-                    self.enqueue(token);
+                    self.enqueue(ReadyKey { slot, token });
                 }
             }
             if self.accept_ready {
                 self.accept()?;
             }
             for _ in 0..RUN_QUANTUM {
-                let Some(token) = self.ready.pop_front() else {
+                let Some(key) = self.ready.pop_front() else {
                     break;
                 };
-                match self.service(token, &mut chunk) {
-                    Ok(Some(true)) => self.enqueue(token),
-                    Ok(Some(false)) => {}
-                    Ok(None) | Err(_) => self.remove(token),
+                match self.service(key, &mut chunk) {
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => self.remove(key),
                 }
             }
         }
@@ -279,7 +336,9 @@ pub(super) fn serve(
     Reactor {
         poll,
         listener,
-        clients: HashMap::new(),
+        tokens: HashMap::new(),
+        clients: Vec::new(),
+        free_slots: Vec::new(),
         ready: VecDeque::new(),
         asynchronous: HashSet::new(),
         next_token: 1,
@@ -307,7 +366,9 @@ mod tests {
             listener,
             config,
             store,
-            clients: HashMap::new(),
+            tokens: HashMap::new(),
+            clients: Vec::new(),
+            free_slots: Vec::new(),
             ready: VecDeque::new(),
             asynchronous: HashSet::new(),
             next_token: 1,
@@ -324,10 +385,10 @@ mod tests {
             .map(|_| TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap())
             .collect();
         reactor.accept().unwrap();
-        assert_eq!(reactor.clients.len(), ACCEPT_QUANTUM);
+        assert_eq!(reactor.tokens.len(), ACCEPT_QUANTUM);
         assert!(reactor.accept_ready, "a second edge is not guaranteed");
         reactor.accept().unwrap();
-        assert_eq!(reactor.clients.len(), peers.len());
+        assert_eq!(reactor.tokens.len(), peers.len());
         assert!(!reactor.accept_ready);
         assert_eq!(reactor.ready.len(), peers.len());
         let store = Arc::clone(&reactor.store);
@@ -344,21 +405,67 @@ mod tests {
         let mut reactor = fixture();
         let _first = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
         reactor.accept().unwrap();
+        let old = ReadyKey {
+            slot: 0,
+            token: Token(1),
+        };
         for _ in 0..100 {
-            reactor.enqueue(Token(1));
+            reactor.enqueue(old);
         }
         assert_eq!(reactor.ready.len(), 1);
-        reactor.remove(Token(1));
+        reactor.remove(old);
         let _second = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
         reactor.accept().unwrap();
-        assert!(reactor.clients.contains_key(&Token(2)));
-        assert!(!reactor.clients.contains_key(&Token(1)));
-        reactor.enqueue(Token(1));
+        let new = ReadyKey {
+            slot: 0,
+            token: Token(2),
+        };
+        assert_eq!(reactor.clients.len(), 1, "reuse the same bounded slot");
+        assert_eq!(reactor.tokens.get(&Token(2)), Some(&0));
+        assert!(!reactor.tokens.contains_key(&Token(1)));
+        reactor.enqueue(old);
         assert_eq!(
             reactor.ready.iter().copied().collect::<Vec<_>>(),
-            vec![Token(1), Token(2)]
+            vec![old, new]
         );
-        assert_eq!(reactor.service(Token(1), &mut [0; 1024]).unwrap(), None);
-        assert!(reactor.clients.contains_key(&Token(2)));
+        assert_eq!(reactor.service(old, &mut [0; 1024]).unwrap(), None);
+        reactor.remove(old); // Stale cleanup must not close the new occupant.
+        assert_eq!(reactor.clients[0].as_ref().unwrap().token, new.token);
+    }
+
+    #[test]
+    fn productive_turn_owns_exactly_one_runnable_continuation() {
+        let mut reactor = fixture();
+        let _peer = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
+        reactor.accept().unwrap();
+        let key = reactor.ready.pop_front().unwrap();
+        reactor.clients[key.slot]
+            .as_mut()
+            .unwrap()
+            .client
+            .input
+            .extend_from_slice(b"PING\r\n");
+        assert_eq!(reactor.service(key, &mut [0; 1024]).unwrap(), Some(true));
+        assert!(reactor.clients[key.slot].as_ref().unwrap().queued);
+        assert_eq!(reactor.ready.iter().copied().collect::<Vec<_>>(), vec![key]);
+        reactor.enqueue(key);
+        assert_eq!(reactor.ready.len(), 1);
+        assert!(reactor.asynchronous.is_empty());
+    }
+
+    #[test]
+    fn closed_slots_do_not_grow_with_total_connection_count() {
+        let mut reactor = fixture();
+        for _ in 0..128 {
+            let _peer = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
+            reactor.accept().unwrap();
+            let key = reactor.ready.pop_front().unwrap();
+            reactor.remove(key);
+            assert_eq!(reactor.clients.len(), 1);
+            assert_eq!(reactor.free_slots, vec![0]);
+            assert!(reactor.tokens.is_empty());
+            assert!(reactor.asynchronous.is_empty());
+            assert_eq!(reactor.store.connected_clients(), 0);
+        }
     }
 }

@@ -16,7 +16,11 @@ claim; the historical profiles below remain labeled with their original baseline
 ## Mio readiness follow-up (S-MIO)
 
 The user-authorized Mio exception replaces default Unix plain-TCP leases with a
-single readiness loop. Mio 1.2.4 is pinned/vendored with default logging disabled;
+single readiness loop. Runnable connections use recyclable indexed slots with
+full-token validation; hashing routes kernel events, not productive I/O turns.
+A turn owns its one queued continuation, and asynchronous membership changes
+only on session-state transitions. Slot storage is bounded by peak simultaneous
+connections rather than lifetime connection count. Mio 1.2.4 is pinned/vendored with default logging disabled;
 application targets still forbid unsafe code. Linux uses epoll, but unlike
 Valkey's level-triggered `ae_epoll.c`, Mio requires edge-triggered draining.
 The runnable queue therefore retains bounded work until WouldBlock, preserves

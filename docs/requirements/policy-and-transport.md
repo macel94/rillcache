@@ -45,6 +45,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-MIO4:** When descriptors close/reuse or shutdown/error occurs, monotonically
   distinct tokens shall reject stale events, registrations shall be removed
   before sockets close, and all owned connections/workers shall be cleaned/joined.
+  Recycled directory slots shall stay bounded by peak simultaneous clients;
+  queued slot references shall validate the full token before service or removal.
   Admission, frame limits, inactivity, expiry and command accounting remain intact.
 - **R-MIO5:** When measured, metadata shall identify readiness rather than leases.
   Significant throughput gains are a hypothesis, not an acceptance exemption;
