@@ -1,15 +1,20 @@
 #![forbid(unsafe_code)]
 
-/// Explicit user-authorized exceptions: rustls, Mio and their required
-/// transitive crates. Any other package in any target/feature graph fails.
+/// Reviewed exceptions: rustls, Mio (used internally by Tokio), Tokio and
+/// core_affinity with their required transitive crates. Any other package fails.
 const ALLOWED: &[&str] = &[
+    "bytes",
     "cc",
     "cfg-if",
+    "core_affinity",
     "find-msvc-tools",
     "getrandom",
+    "hermit-abi",
     "libc",
     "mio",
+    "num_cpus",
     "once_cell",
+    "pin-project-lite",
     "rillcache",
     "ring",
     "rustls",
@@ -17,8 +22,13 @@ const ALLOWED: &[&str] = &[
     "rustls-pki-types",
     "rustls-webpki",
     "shlex",
+    "socket2",
     "subtle",
+    "tokio",
     "untrusted",
+    "winapi",
+    "winapi-i686-pc-windows-gnu",
+    "winapi-x86_64-pc-windows-gnu",
     "wasi",
     "windows-link",
     "windows-sys",
@@ -35,7 +45,7 @@ const ALLOWED: &[&str] = &[
 ];
 
 #[test]
-fn only_reviewed_tls_readiness_and_required_transitive_crates_are_allowed() {
+fn only_reviewed_tls_runtime_affinity_and_transitive_crates_are_allowed() {
     let output = std::process::Command::new(env!("CARGO"))
         .args([
             "tree",
@@ -69,7 +79,7 @@ fn only_reviewed_tls_readiness_and_required_transitive_crates_are_allowed() {
         let name = line.split_whitespace().next().unwrap_or_default();
         assert!(
             ALLOWED.contains(&name),
-            "external dependency outside the rustls/Mio exceptions: {line}\n{tree}"
+            "external dependency outside the reviewed runtime/TLS/affinity exceptions: {line}\n{tree}"
         );
     }
 }

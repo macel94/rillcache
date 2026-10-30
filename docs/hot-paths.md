@@ -13,10 +13,11 @@ compatibility work. It retains 84 checked component samples, controls, CPU profi
 losses and limits. It is not a replacement native comparison or an optimization
 claim; the historical profiles below remain labeled with their original baseline.
 
-## Mio readiness follow-up (S-MIO)
+## Historical Mio readiness implementation (S-MIO; superseded)
 
-The user-authorized Mio exception replaces default Unix plain-TCP leases with a
-single readiness loop. Runnable connections use recyclable indexed slots with
+This preceding increment used the reviewed Mio dependency to replace default
+Unix plain-TCP leases with a single readiness loop. The active default path is
+now the Tokio runtime described in the transport requirements. Runnable connections use recyclable indexed slots with
 full-token validation; hashing routes kernel events, not productive I/O turns.
 A turn owns its one queued continuation, and asynchronous membership changes
 only on session-state transitions. Slot storage is bounded by peak simultaneous
@@ -34,9 +35,9 @@ all subject to scheduler/command slack. Ordinary idle sockets are not scanned
 for recv readiness; inactivity is checked during maintenance. Existing Session
 and Client dispatch retain protocol, collectors, auth, transactions, bounded
 buffers and error accounting. Fixed-worker/TLS implementations and non-Unix
-fallback remain; benchmark provenance identifies `mio-readiness`, not leases.
-This is complete usable default behavior, not a claim that every performance
-case now wins: only fresh protected measurements can establish acceptance.
+fallback remained; benchmark provenance identified `mio-readiness`, not leases.
+This historical implementation is retained as design/evidence context, not as a
+claim about the current Tokio default or a performance acceptance result.
 The sections below describe earlier, source-pinned std-only investigations.
 
 ## Investigation

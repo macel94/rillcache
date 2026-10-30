@@ -11,16 +11,17 @@ The migration must stay inside the repository's existing rules:
 
 - `#![forbid(unsafe_code)]` on every target. No raw pointers, FFI, allocator or
   atomic-pointer tricks.
-- The only external crate exception is `rustls` and its transitive set, enforced
-  by `tests/policy.rs`. `core_affinity`, `tokio`, `bytes`, `hashbrown`, `flume`
-  and `crossbeam` are therefore unavailable.
-- `std::collections::HashMap` is the safe per-shard map; `std::sync::mpsc`'s
-  bounded `sync_channel` is the owner-thread mailbox and the oneshot reply.
+- External crates remain allowlisted by `tests/policy.rs`: rustls, Mio, Tokio
+  and `core_affinity` with only their required transitive packages. `hashbrown`,
+  `flume` and `crossbeam` remain unavailable.
+- `std::collections::HashMap` is the safe per-shard map; Tokio's bounded
+  channels route sockets, while `std::sync::mpsc::sync_channel` remains the
+  bounded pub/sub message queue.
 - Borrowed `&[u8]` parsing remains the zero-copy boundary; the protocol already
   dispatches small argument lists without allocating.
-- Core pinning is **external**: run under `taskset -c 0-3 …` or a cgroup cpuset.
-  `std` exposes no affinity API, and adding a crate would require relaxing the
-  dependency policy. The process does not claim to pin itself.
+- Tokio current-thread workers make a best-effort affinity attempt through the
+  safe `core_affinity` API; failure leaves scheduling to the OS. External
+  `taskset`/cpuset control remains supported.
 
 ## Current seam
 

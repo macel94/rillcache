@@ -16,6 +16,7 @@ fn start() -> ServerHandle {
     config.limits.max_frame_bytes = 16 * 1024 * 1024;
     let server = Server::bind(config).unwrap().spawn().unwrap();
     assert!(server.scheduling_policy().readiness_io);
+    assert!(server.scheduling_policy().tokio_worker_threads > 0);
     assert_eq!(server.scheduling_policy().client_handoff_lanes, 0);
     server
 }

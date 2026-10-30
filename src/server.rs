@@ -1,4 +1,4 @@
-//! Default Unix Mio readiness, portable managed-client fallback and fixed workers.
+//! Default Unix Tokio networking, portable managed-client fallback and fixed workers.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -16,9 +16,9 @@ use std::path::PathBuf;
 mod accept;
 mod handoff;
 mod pool;
-#[cfg(unix)]
-mod reactor;
 mod tls;
+#[cfg(unix)]
+mod tokio_io;
 mod topology;
 
 /// One-CPU busy clients may briefly lend I/O to an existing managed client thread.
@@ -46,8 +46,10 @@ pub const FIXED_WORKER_RUN_POLICY_VERSION: u64 = 2;
 /// Immutable bind-time scheduling decisions. Capacity is a hint, not a CPU budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SchedulingPolicy {
-    /// Default plain-TCP sockets use Mio readiness, not client-thread leases.
+    /// Default Unix plain-TCP sockets use async Tokio I/O.
     pub readiness_io: bool,
+    /// Number of current-thread Tokio client runtimes selected at bind time.
+    pub tokio_worker_threads: usize,
     pub active_poll_us: u64,
     pub run_quantum_us: u64,
     pub single_reply_yield: bool,
@@ -90,6 +92,7 @@ impl SchedulingPolicy {
             && capacity.is_some_and(|cpus| (1..=CLIENT_HANDOFF_MAX_CPUS).contains(&cpus));
         Self {
             readiness_io: false,
+            tokio_worker_threads: 0,
             active_poll_us: if workers.is_some() {
                 FIXED_WORKER_ACTIVE_POLL_US
             } else {
@@ -162,8 +165,8 @@ pub struct Config {
     pub auth_source_limit: usize,
     /// Per-source failure window and lockout duration in milliseconds.
     pub auth_source_window_ms: u64,
-    /// None: Unix Mio readiness, managed blocking-client fallback elsewhere.
-    /// Some(1..=64): the existing fixed I/O/execution lanes.
+    /// None: Unix Tokio current-thread runtimes, managed blocking-client fallback
+    /// elsewhere. Some(1..=64): the existing fixed I/O/execution lanes.
     pub worker_threads: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
     pub max_data_bytes: usize,
@@ -475,6 +478,10 @@ impl Server {
         if cfg!(unix) && config.worker_threads.is_none() {
             policy = SchedulingPolicy {
                 readiness_io: true,
+                tokio_worker_threads: thread::available_parallelism()
+                    .map(usize::from)
+                    .unwrap_or(1)
+                    .clamp(1, 64),
                 active_poll_us: 0,
                 run_quantum_us: 0,
                 single_reply_yield: false,
@@ -584,7 +591,13 @@ fn serve_plain(
 ) -> io::Result<()> {
     #[cfg(unix)]
     if policy.readiness_io {
-        return reactor::serve(listener, config, store, stopping);
+        return tokio_io::serve(
+            listener,
+            config,
+            store,
+            stopping,
+            policy.tokio_worker_threads,
+        );
     }
     // A failed/unsupported setup leaves the original nonblocking fallback.
     // Keep the existing idle backoff, maintenance checks and joined shutdown.

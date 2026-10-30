@@ -552,8 +552,10 @@ fn report(
         (None, None) => {
             let policy = scheduling.expect("embedded scheduling policy");
             if policy.readiness_io {
-                "{\"mode\":\"mio-readiness\",\"workers\":1,\"readiness_policy_version\":1}"
-                    .to_owned()
+                format!(
+                    "{{\"mode\":\"tokio-current-thread\",\"workers\":{}}}",
+                    policy.tokio_worker_threads
+                )
             } else {
                 format!(
                     "{{\"mode\":\"thread-per-client\",\"workers\":null,\"single_reply_yield\":{},\"client_handoff_idle_us\":{},\"client_handoff_policy_version\":{},\"client_handoff_max_epoch_ms\":{},\"client_handoff_lanes\":{}}}",
@@ -869,6 +871,7 @@ mod tests {
         let options = Options::default();
         let policy = rillcache::server::SchedulingPolicy {
             readiness_io: false,
+            tokio_worker_threads: 0,
             active_poll_us: 0,
             run_quantum_us: 0,
             single_reply_yield: true,
@@ -925,6 +928,7 @@ mod tests {
         assert!(text.contains("\"client_handoff_lanes\":0"));
         let readiness = rillcache::server::SchedulingPolicy {
             readiness_io: true,
+            tokio_worker_threads: 3,
             ..policy
         };
         let text = report(
@@ -934,8 +938,8 @@ mod tests {
             None,
             Some(readiness),
         );
-        assert!(text.contains("\"mode\":\"mio-readiness\""));
-        assert!(text.contains("\"readiness_policy_version\":1"));
+        assert!(text.contains("\"mode\":\"tokio-current-thread\""));
+        assert!(text.contains("\"workers\":3"));
         assert!(!text.contains("\"mode\":\"thread-per-client\""));
         assert!(!text.contains("\"client_handoff_policy_version\""));
     }

@@ -25,7 +25,7 @@ before/after regressions, CPU costs and raw records remain visible.
 
 ## Project vision
 
-The initial goal was a useful Redis-compatible server using Rust’s standard library and runtime. The reviewed dependency exceptions are now rustls for TLS and Mio for kernel readiness, with their required transitive crates vendored for offline builds. Over time, the project may explore newer and more advanced functionality, including streams and richer pub/sub capabilities.
+The initial goal was a useful Redis-compatible server using Rust’s standard library and runtime. The reviewed dependency exceptions include rustls for TLS, Tokio for default Unix plain-TCP async execution, and `core_affinity` for best-effort safe worker pinning, with required transitive crates vendored for offline builds. The non-Unix portable fallback and TLS session path remain separately managed.
 
 Compatibility and behavior will be guided by tests, with the aim of making the server dependable and understandable rather than merely checking off features.
 
@@ -42,7 +42,7 @@ This is a collaboration between a human and AI:
 
 - **Language:** Rust
 - **Dependencies:** None beyond the Rust standard library and runtime, including tests and benchmarks
-- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. The explicit dependency exceptions are rustls and Mio, plus their required transitive crates, vendored for offline builds. Application code contains no unsafe blocks or handwritten FFI; standard-library and dependency implementation internals are outside that application-code policy. Default Unix plain TCP uses bounded Mio readiness (epoll on Linux); fixed-worker and TLS modes retain their existing execution paths.
+- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. The explicit dependency exceptions are rustls, Tokio and `core_affinity`, plus their required transitive crates, vendored for offline builds. Tokio uses Mio as its internal readiness backend. Application code contains no unsafe blocks or handwritten FFI; standard-library and dependency implementation internals are outside that application-code policy. Default Unix plain TCP uses bounded async Tokio worker runtimes; TLS and fixed-worker modes retain their separately managed execution paths.
 - **Compatibility target:** Redis protocol and behavior, developed incrementally
 - **Performance:** Aim to outperform current Redis/Valkey implementations, demonstrated by reproducible measurements—not assumed from the language choice.
 

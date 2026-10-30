@@ -35,9 +35,10 @@ ordinary implementation PRs have no blanket approving-review quota. See the
    edit. Focused checks are not delivery evidence. See the
    [bounded development cycle](docs/development-cycle.md).
    `make fmt` applies formatting. All Cargo checks/builds use the pinned toolchain,
-   lockfile and offline mode. Explicit external dependency exceptions are rustls
-   and Mio with their required transitive crates, vendored for offline builds
-   and enforced by the dependency-policy test.
+   lockfile and offline mode. Explicit external dependency exceptions are rustls,
+   Tokio for async plain-TCP networking, and `core_affinity` for safe best-effort
+   affinity, with required transitive crates vendored for offline builds and
+   enforced by the dependency-policy test. Tokio uses Mio internally.
 5. Capture the relevant `make bench`/`make compare` evidence. The separate mandatory
    PR gate applies a scoped shared-runner throughput threshold, not a stable-hardware
    SLO or universal win. Preserve uncertainty, CPU/tails and losses; never trade
