@@ -28,9 +28,11 @@ Not implemented or implied by the completed increments:
    as a no-key-map control. Evaluate
    a safe readiness boundary before speculative sharding; retain idle CPU,
    backpressure, shutdown and multi-key atomicity gates. Unsafe project code and
-   external Rust dependencies outside the vendored rustls exception remain forbidden.
-   The routing/facade seam is in place ([sharding](sharding.md)); owner-thread and
-   multi-shard execution remain unimplemented.
+   unreviewed Rust dependencies outside the manifest's authorized exceptions
+   remain forbidden.
+   One-owner local execution and the external compatibility bridge are in place
+   ([ownership design](../plans/owner-local-storage.md)); complete multi-owner
+   coordination and the nonblocking thread-per-core target remain unimplemented.
 5. Controlled-hardware performance budgets and repeated current-release comparisons;
    later, richer types, pub/sub and additional stream capabilities driven by product judgment.
 

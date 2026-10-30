@@ -1,6 +1,7 @@
 //! Bounded process-local client registry for CLIENT LIST/KILL and INFO clients.
 
-use super::Store;
+#[cfg(test)]
+use super::ShardExecutor;
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -45,7 +46,7 @@ pub struct ClientSnapshot {
 
 const PAUSE_WRITE_ONLY: u64 = 1 << 63;
 
-impl Store {
+impl super::ServerServices {
     /// Pause client command processing until `timeout_ms` milliseconds from the
     /// current clock. A later deadline wins; an ALL pause is not downgraded by a
     /// later WRITE pause. The deadline and mode live in one atomic word so a
@@ -290,7 +291,7 @@ mod pause_tests {
 
     #[test]
     fn pause_deadline_mode_and_unpause_are_coherent() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(store.client_pause_mode(), None);
         store.pause_clients(30, true);
         assert_eq!(store.client_pause_mode(), Some(true));

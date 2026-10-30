@@ -1,17 +1,8 @@
-//! Key-space ownership seam.
+//! Fixed-layout deterministic key routing. The active executor owns one shard.
 //!
-//! The server currently owns exactly one shard, still guarded by `RwLock`.
-//! This module establishes the deterministic routing contract and the
-//! `Keyspace` facade so the owner-thread increment can replace the lock
-//! without changing every command call site.
-//!
-//! Routing is a pure, safe computation over the key bytes. The process seed is
-//! random so client-controlled keys cannot deliberately target one shard; it is
-//! stable for the process lifetime so every worker agrees on ownership.
-
-use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockResult};
-
-use super::data::Data;
+//! Layouts are stable for a process lifetime. Seeded XXH3 disperses ordinary
+//! keys, but is not a cryptographic HashDoS guarantee. Data ownership and the
+//! external operation bridge live in the executor/bridge, not in a guard facade.
 
 /// Hard upper bound shared with the server's worker-count limit.
 pub const MAX_SHARDS: usize = 64;
@@ -87,53 +78,13 @@ impl ShardRouter {
     }
 }
 
-/// The single keyspace facade used by `Store`.
-///
-/// Call sites keep using `read`/`write`/`try_write`. The owner-thread
-/// increment replaces the body of this type with bounded channel dispatch; the
-/// command modules do not need to know which representation is active.
-pub(super) struct Keyspace {
-    data: RwLock<Data>,
-    router: ShardRouter,
-}
-
-impl Keyspace {
-    /// One lock-backed shard: today's behavior with the routing seam in place.
-    pub(super) fn single() -> Self {
-        Self {
-            data: RwLock::new(Data::default()),
-            router: ShardRouter::new(1).expect("one shard is a valid layout"),
-        }
-    }
-
-    pub(super) fn read(&self) -> LockResult<RwLockReadGuard<'_, Data>> {
-        self.data.read()
-    }
-
-    pub(super) fn write(&self) -> LockResult<RwLockWriteGuard<'_, Data>> {
-        self.data.write()
-    }
-
-    pub(super) fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, Data>> {
-        self.data.try_write()
-    }
-
-    pub(super) fn shard_for(&self, key: &[u8]) -> usize {
-        self.router.shard_for(key)
-    }
-
-    pub(super) fn shard_count(&self) -> usize {
-        self.router.count()
-    }
-}
-
 fn process_seed() -> u64 {
     use std::hash::{BuildHasher, RandomState};
     RandomState::new().hash_one(0_u64)
 }
 
 /// XXH3 already spreads key bytes well; adding the process seed and running a
-/// SplitMix64 finalizer makes the mapping unpredictable without a second map.
+/// SplitMix64 finalizer disperses routing indices without a second map.
 fn seeded_hash(seed: u64, key: &[u8]) -> u64 {
     let mut value = super::xxh3::xxh3_64(key).wrapping_add(seed);
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -211,5 +162,105 @@ mod tests {
             Action::Continue
         );
         assert_eq!(store.shard_for(b"key"), 0);
+    }
+
+    #[test]
+    fn stores_isolate_data_even_when_the_same_key_routes_to_zero() {
+        let first = Store::new(1024);
+        let second = Store::new(1024);
+        assert_eq!(first.shard_for(b"shared"), second.shard_for(b"shared"));
+
+        let mut output = Vec::new();
+        first.execute(&[b"SET", b"shared", b"first"], &mut output);
+        assert_eq!(output, b"+OK\r\n");
+        output.clear();
+        second.execute(&[b"GET", b"shared"], &mut output);
+        assert_eq!(output, b"$-1\r\n");
+        output.clear();
+        second.execute(&[b"SET", b"shared", b"second"], &mut output);
+        assert_eq!(output, b"+OK\r\n");
+        output.clear();
+        first.execute(&[b"GET", b"shared"], &mut output);
+        assert_eq!(output, b"$5\r\nfirst\r\n");
+    }
+
+    #[test]
+    fn concurrent_store_callers_keep_independent_keys_and_atomic_multi_key_views() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let store = Arc::new(Store::new(1024 * 1024));
+        let start = Arc::new(Barrier::new(5));
+        let done = Arc::new(AtomicBool::new(false));
+        let observations = Arc::new(AtomicUsize::new(0));
+
+        let observer = {
+            let store = Arc::clone(&store);
+            let start = Arc::clone(&start);
+            let done = Arc::clone(&done);
+            let observations = Arc::clone(&observations);
+            std::thread::spawn(move || {
+                start.wait();
+                while !done.load(Ordering::Acquire) {
+                    let mut output = Vec::new();
+                    store.execute(&[b"MGET", b"left", b"right"], &mut output);
+                    assert!(
+                        output == b"*2\r\n$1\r\n0\r\n$1\r\n0\r\n"
+                            || output == b"*2\r\n$1\r\n1\r\n$1\r\n1\r\n",
+                        "reader observed a partial MSET: {output:?}"
+                    );
+                    observations.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        };
+
+        let mut output = Vec::new();
+        store.execute(&[b"MSET", b"left", b"0", b"right", b"0"], &mut output);
+        assert_eq!(output, b"+OK\r\n");
+
+        let writers = (0..4)
+            .map(|worker| {
+                let store = Arc::clone(&store);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    for index in 0..250 {
+                        let value = ((index + worker) % 2).to_string();
+                        let mut output = Vec::new();
+                        store.execute(
+                            &[
+                                b"MSET",
+                                b"left",
+                                value.as_bytes(),
+                                b"right",
+                                value.as_bytes(),
+                            ],
+                            &mut output,
+                        );
+                        assert_eq!(output, b"+OK\r\n");
+
+                        let key = format!("worker:{worker}:{index}");
+                        output.clear();
+                        store.execute(&[b"SET", key.as_bytes(), value.as_bytes()], &mut output);
+                        assert_eq!(output, b"+OK\r\n");
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        done.store(true, Ordering::Release);
+        observer.join().unwrap();
+        assert!(observations.load(Ordering::Relaxed) > 0);
+
+        for worker in 0..4 {
+            for index in 0..250 {
+                let key = format!("worker:{worker}:{index}");
+                let mut output = Vec::new();
+                store.execute(&[b"GET", key.as_bytes()], &mut output);
+                assert!(output == b"$1\r\n0\r\n" || output == b"$1\r\n1\r\n");
+            }
+        }
     }
 }

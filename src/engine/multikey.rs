@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 
 use super::options::OOM;
-use super::{Store, internal_error};
+use super::{ShardExecutor, internal_error};
 use crate::protocol::encode_bulk;
 
 /// Bound per-command reply buffering independently of duplicate-key amplification.
 const MAX_MGET_REPLY_BYTES: usize = 2 * 1024 * 1024;
 
-impl Store {
+impl ShardExecutor {
     fn msetex(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
         use super::options::{Condition, SetOptions, parse_integer};
         // Native command dispatch enforces MSETEX's minimum arity (4 arguments).
@@ -27,7 +27,12 @@ impl Store {
         // The public startup dialect chooses wording, not validation or mutation.
         let pair_end = (count as u64) * 2 + 2;
         if (arguments.len() as u64) < pair_end {
-            output.extend_from_slice(self.error_dialect.short_msetex_pairs());
+            output.extend_from_slice(
+                self.error_dialect
+                    .read()
+                    .expect("error dialect lock")
+                    .short_msetex_pairs(),
+            );
             return;
         }
         // The comparison above guarantees the conversion is lossless.
@@ -56,7 +61,7 @@ impl Store {
         for pair in arguments[2..pair_end].as_chunks::<2>().0 {
             final_values.insert(pair[0], pair[1]);
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -147,7 +152,7 @@ impl Store {
                 arity("mget", output);
                 return true;
             }
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 internal_error(output);
                 return true;
             };
@@ -212,7 +217,7 @@ impl Store {
             final_values.insert(pair[0], pair[1]);
         }
 
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return true;
         };
@@ -303,16 +308,14 @@ mod tests {
         }
     }
 
-    fn clock_store(budget: usize) -> (Store, Arc<TestClock>) {
+    fn clock_store(budget: usize) -> (ShardExecutor, Arc<TestClock>) {
         let clock = Arc::new(TestClock(AtomicI64::new(100)));
-        (Store::with_clock(budget, clock.clone()), clock)
+        (ShardExecutor::with_clock(budget, clock.clone()), clock)
     }
 
-    fn run(store: &Store, arguments: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &impl crate::engine::Execution, arguments: &[&[u8]]) -> Vec<u8> {
         let mut output = Vec::new();
-        if !store.execute_multikey(arguments, &mut output) {
-            store.execute(arguments, &mut output);
-        }
+        store.execute(arguments, &mut output);
         output
     }
 
@@ -358,7 +361,7 @@ mod tests {
             run(&store, &[b"MSET", b"a", b"x", b"a", b"123456789"]),
             b"+OK\r\n"
         );
-        assert_eq!(store.data.read().unwrap().payload_bytes, 10);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 10);
         assert_eq!(run(&store, &[b"PTTL", b"a"]), b":-1\r\n");
         assert_eq!(run(&store, &[b"MGET", b"a"]), b"*1\r\n$9\r\n123456789\r\n");
         assert_eq!(
@@ -366,7 +369,7 @@ mod tests {
             b"-OOM configured payload limit exceeded\r\n"
         );
         assert_eq!(run(&store, &[b"GET", b"b"]), b"$-1\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 10);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 10);
     }
 
     #[test]
@@ -397,7 +400,7 @@ mod tests {
         clock.0.store(102, Ordering::SeqCst);
         assert_eq!(run(&store, &[b"MGET", b"stale"]), b"*1\r\n$-1\r\n");
         assert_eq!(run(&store, &[b"MSETNX", b"stale", b"z"]), b":1\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 13);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 13);
     }
 
     #[test]
@@ -412,7 +415,7 @@ mod tests {
             run(&store, &[b"MSET", b"a", b"123", b"b", b"456"]),
             b"+OK\r\n"
         );
-        assert_eq!(store.data.read().unwrap().payload_bytes, 8);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 8);
         assert_eq!(run(&store, &[b"PEXPIRE", b"a", b"50"]), b":1\r\n");
         assert_eq!(
             run(&store, &[b"MSET", b"a", b"x", b"c", b"12345"]),
@@ -423,7 +426,7 @@ mod tests {
             run(&store, &[b"MGET", b"a", b"b", b"c"]),
             b"*3\r\n$3\r\n123\r\n$3\r\n456\r\n$-1\r\n"
         );
-        assert_eq!(store.data.read().unwrap().payload_bytes, 8);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 8);
     }
 
     #[test]
@@ -509,7 +512,7 @@ mod tests {
         assert_eq!(run(&store, &[b"GET", b"expired"]), b"$1\r\nv\r\n");
         clock.0.store(101, Ordering::SeqCst);
         assert_eq!(run(&store, &[b"GET", b"expired"]), b"$-1\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 9);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 9);
     }
 
     #[test]
@@ -622,7 +625,7 @@ mod tests {
 
     #[test]
     fn simultaneous_msetnx_has_one_atomic_winner() {
-        let (store, _) = clock_store(1024);
+        let store = super::super::Store::new(1024);
         let store = Arc::new(store);
         let barrier = Arc::new(Barrier::new(8));
         let winners = Arc::new(AtomicUsize::new(0));
@@ -635,10 +638,7 @@ mod tests {
                     let value = [id as u8];
                     let mut output = Vec::new();
                     barrier.wait();
-                    store.execute_multikey(
-                        &[b"MSETNX", b"left", &value, b"right", &value],
-                        &mut output,
-                    );
+                    store.execute(&[b"MSETNX", b"left", &value, b"right", &value], &mut output);
                     if output == b":1\r\n" {
                         winners.fetch_add(1, Ordering::SeqCst);
                     }
@@ -646,9 +646,9 @@ mod tests {
             }
         });
         assert_eq!(winners.load(Ordering::SeqCst), 1);
-        let left = run(&store, &[b"GET", b"left"]);
-        let right = run(&store, &[b"GET", b"right"]);
+        let left = run(store.as_ref(), &[b"GET", b"left"]);
+        let right = run(store.as_ref(), &[b"GET", b"right"]);
         assert_eq!(left, right);
-        assert!(store.data.read().unwrap().payload_bytes <= 1024);
+        assert!(store.call(|executor| executor.data.borrow().payload_bytes) <= 1024);
     }
 }

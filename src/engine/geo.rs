@@ -9,7 +9,7 @@
 
 use super::collection_commands::encode_zset;
 use super::options::{NOT_INTEGER, OOM, parse_integer};
-use super::{Store, arity, integer, internal_error, wrong_type};
+use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 use std::collections::HashMap;
 use std::io::Write;
@@ -71,7 +71,7 @@ struct Hit {
     lat: f64,
 }
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_geo(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(command) = args.first() else {
             return false;
@@ -201,7 +201,7 @@ impl Store {
     }
 
     fn geopos(&self, args: &[&[u8]], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -252,7 +252,7 @@ impl Store {
         } else {
             1.0
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -301,7 +301,7 @@ impl Store {
     }
 
     fn geohash(&self, args: &[&[u8]], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -354,7 +354,7 @@ impl Store {
         search: &Search,
         out: &mut Vec<u8>,
     ) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1020,7 +1020,7 @@ mod tests {
     use super::*;
     use crate::engine::Action;
 
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(store.execute(args, &mut out), Action::Continue);
         out
@@ -1040,7 +1040,7 @@ mod tests {
 
     #[test]
     fn geoadd_geodist_and_search_are_consistent() {
-        let store = Store::new(4096);
+        let store = ShardExecutor::new(4096);
         assert_eq!(
             run(
                 &store,
@@ -1093,7 +1093,7 @@ mod tests {
 
     #[test]
     fn geoadd_options_errors_and_store_search_are_atomic() {
-        let store = Store::new(4096);
+        let store = ShardExecutor::new(4096);
         assert_eq!(
             run(
                 &store,

@@ -1,0 +1,84 @@
+{
+  "contract": {
+    "allowed_cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "build_environment": {
+      "AR": null,
+      "BUILD_TLS": null,
+      "CARGO_BUILD_JOBS": null,
+      "CARGO_ENCODED_RUSTFLAGS": null,
+      "CARGO_INCREMENTAL": null,
+      "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": null,
+      "CARGO_PROFILE_RELEASE_LTO": null,
+      "CARGO_TARGET_DIR": null,
+      "CC": null,
+      "CFLAGS": null,
+      "CPPFLAGS": null,
+      "CXX": null,
+      "CXXFLAGS": null,
+      "LDFLAGS": null,
+      "MAKEFLAGS": null,
+      "MALLOC": null,
+      "RANLIB": null,
+      "RUSTC_WORKSPACE_WRAPPER": null,
+      "RUSTC_WRAPPER": null,
+      "RUSTFLAGS": null,
+      "RUSTUP_TOOLCHAIN": null
+    },
+    "cc": "cc (Debian 14.2.0-19) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+    "cpu": {
+      "Architecture": "x86_64",
+      "CPU family": "23",
+      "CPU(s)": "6",
+      "Core(s) per socket": "6",
+      "Model": "1",
+      "Model name": "AMD EPYC Processor (with IBPB)",
+      "Socket(s)": "1",
+      "Stepping": "2",
+      "Thread(s) per core": "1",
+      "Vendor ID": "AuthenticAMD"
+    },
+    "kernel_release": "6.12.113+deb13-cloud-amd64",
+    "libc": "ldd (Debian GLIBC 2.41-12+deb13u4) 2.41\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\nWritten by Roland McGrath and Ulrich Drepper.",
+    "linker": "GNU ld (GNU Binutils for Debian) 2.44\nCopyright (C) 2025 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) a later version.\nThis program has absolutely no warranty.",
+    "os_release": "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nVERSION=\"13 (trixie)\"\nVERSION_CODENAME=trixie\nDEBIAN_VERSION_FULL=13.7\nID=debian\nHOME_URL=\"https://www.debian.org/\"\nSUPPORT_URL=\"https://www.debian.org/support\"\nBUG_REPORT_URL=\"https://bugs.debian.org/\"\n",
+    "rust": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+    "schema_version": 1,
+    "selected_cpus": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "topology": {
+      "0": {
+        "core_id": "0",
+        "physical_package_id": "0",
+        "thread_siblings_list": "0"
+      },
+      "1": {
+        "core_id": "1",
+        "physical_package_id": "0",
+        "thread_siblings_list": "1"
+      },
+      "2": {
+        "core_id": "2",
+        "physical_package_id": "0",
+        "thread_siblings_list": "2"
+      },
+      "3": {
+        "core_id": "3",
+        "physical_package_id": "0",
+        "thread_siblings_list": "3"
+      }
+    }
+  },
+  "fingerprint": "378cf17416d8b83c1e8e4a099ce4680afb4ee852d1838efdcb8b4c5f798fae65",
+  "scope": "SKU/topology/software identity, not proof of a dedicated physical host or stable load"
+}

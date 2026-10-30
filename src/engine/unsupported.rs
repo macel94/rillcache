@@ -6,7 +6,7 @@
 //! complete cluster or module host.
 
 use super::options::NOT_INTEGER;
-use super::{Store, arity, integer};
+use super::{ShardExecutor, arity, integer};
 use crate::protocol::encode_bulk;
 use std::io::Write as _;
 
@@ -17,7 +17,7 @@ const REPLICATION_DISABLED: &[u8] =
     b"-ERR replication is not supported by this standalone server\r\n";
 const MULTI_DB_DISABLED: &[u8] = b"-ERR this server supports only database 0\r\n";
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_unsupported(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(command) = args.first() else {
             return false;

@@ -1,5 +1,5 @@
 use super::options::{NOT_INTEGER, OOM, parse_integer};
-use super::{Store, arity, integer, internal_error, wrong_type};
+use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 use std::io::Write;
 
@@ -9,7 +9,7 @@ const OFFSET_ERROR: &[u8] = b"-ERR bit offset is not an integer or out of range\
 const FLOAT_ERROR: &[u8] = b"-ERR value is not a valid float\r\n";
 const LCS_LIMIT: usize = 4 * 1024 * 1024;
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_string_algorithms(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(command) = args.first() else {
             return false;
@@ -62,7 +62,7 @@ impl Store {
             out.extend_from_slice(OFFSET_ERROR);
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -104,7 +104,7 @@ impl Store {
             out.extend_from_slice(OFFSET_ERROR);
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -153,7 +153,7 @@ impl Store {
             out.extend_from_slice(b"-ERR increment would produce NaN or Infinity\r\n");
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -235,7 +235,7 @@ impl Store {
             );
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -453,7 +453,7 @@ fn find_bit(bytes: &[u8], bit: u8, start_bit: usize, end_bit: usize) -> Option<u
     None
 }
 
-impl Store {
+impl ShardExecutor {
     fn bitcount(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let (start, end, unit) = match args.len() {
             2 => (None, None, BitUnit::Byte),
@@ -479,7 +479,7 @@ impl Store {
                 return;
             }
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -570,7 +570,7 @@ impl Store {
             }
             _ => unreachable!(),
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -661,7 +661,7 @@ impl Store {
         }
         let destination = args[2];
         let sources = &args[3..];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };

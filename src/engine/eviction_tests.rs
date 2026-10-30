@@ -9,15 +9,15 @@ impl Clock for TestClock {
     }
 }
 
-fn call(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+fn call(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     assert_eq!(store.execute(args, &mut out), Action::Continue);
     out
 }
 
-fn store_with_policy(maximum: usize, policy: EvictionPolicy) -> (Store, Arc<TestClock>) {
+fn store_with_policy(maximum: usize, policy: EvictionPolicy) -> (ShardExecutor, Arc<TestClock>) {
     let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-    let store = Store::with_clock(maximum, clock.clone());
+    let store = ShardExecutor::with_clock(maximum, clock.clone());
     assert!(store.set_eviction_policy(policy));
     (store, clock)
 }

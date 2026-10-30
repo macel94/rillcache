@@ -7,7 +7,7 @@
 //! require binary-format compatibility. This is intentionally not an RDB/AOF
 //! rewrite implementation: the file grows without compaction.
 
-use super::Store;
+use super::ShardExecutor;
 use super::data::{Collection, Data};
 use super::notify::{Category as NotifyCategory, NotifyFlags};
 use crate::protocol::{Limits, dispatch_request, encode_request};
@@ -121,7 +121,7 @@ impl Journal {
         })
     }
 
-    pub(super) fn replay(&mut self, store: &Store) -> io::Result<()> {
+    pub(super) fn replay(&mut self, store: &ShardExecutor) -> io::Result<()> {
         self.file.seek(SeekFrom::Start(0))?;
         let mut buffer = Vec::new();
         let mut consumed = 0usize;
@@ -132,7 +132,7 @@ impl Journal {
             while consumed < buffer.len() {
                 let parsed = dispatch_request(&buffer[consumed..], self.limits, |arguments| {
                     let mut output = Vec::new();
-                    let action = store.execute_locked(arguments, &mut output);
+                    let action = store.execute_command(arguments, &mut output);
                     if output.first() == Some(&b'-') {
                         Err(())
                     } else {
@@ -248,13 +248,9 @@ impl Journal {
 }
 
 impl Journal {
-    pub(super) fn limits(&self) -> Limits {
-        self.limits
-    }
-
     /// Replace the log with a compact full-state snapshot using an fsynced
-    /// same-directory temporary file. Called under the store's exclusive
-    /// transaction gate, so no concurrent append can be lost.
+    /// same-directory temporary file. Called within the single compatibility
+    /// owner's turn, so no concurrent append can be lost.
     fn rewrite(&mut self, records: &[u8]) -> io::Result<u64> {
         let directory = self.path.parent().unwrap_or_else(|| Path::new("."));
         let temporary = directory.join(format!(
@@ -346,20 +342,13 @@ impl Drop for Journal {
     }
 }
 
-impl Store {
-    pub(super) fn attach_journal(&mut self, journal: Journal) {
-        self.journal_limits = journal.limits();
-        self.journal = Some(std::sync::Mutex::new(journal));
-        if let Ok(mut data) = self.data.write() {
-            data.set_collect_events(true);
-        }
-    }
-
+impl ShardExecutor {
     pub(super) fn journal_marks(&self) -> Option<(u64, u64)> {
+        self.refresh_data_config();
         if self.journal.is_none() && !self.notifications_enabled() {
             return None;
         }
-        let data = self.data.read().ok()?;
+        let data = self.data.try_borrow().ok()?;
         Some((data.journal_seq(), data.flush_seq()))
     }
 
@@ -379,7 +368,7 @@ impl Store {
             return;
         }
         let (records, events, lifecycle) = {
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 if journaled {
                     output.truncate(start);
                     output.extend_from_slice(b"-ERR internal journal error\r\n");
@@ -513,8 +502,8 @@ impl Store {
         }
     }
 
-    /// Rewrite the journal as a complete state snapshot. The caller must already
-    /// hold the exclusive transaction gate (the journal-enabled execute path).
+    /// Rewrite the journal as a complete state snapshot within a synchronous
+    /// compatibility-owner turn; no append can interleave with replacement.
     pub fn auto_rewrite_if_due(&self) -> bool {
         let percentage = self.auto_aof_rewrite_percentage();
         if percentage == 0 {
@@ -530,9 +519,7 @@ impl Store {
         if !due {
             return false;
         }
-        let Ok(_gate) = self.transaction_gate.write() else {
-            return false;
-        };
+
         let due = journal
             .lock()
             .is_ok_and(|journal| journal.auto_rewrite_due(percentage, min_size));
@@ -547,7 +534,7 @@ impl Store {
             return Err(());
         };
         let records = {
-            let Ok(mut data) = self.data.write() else {
+            let Ok(mut data) = self.data.try_borrow_mut() else {
                 return Err(());
             };
             let now = self.clock.now_ms().max(0);

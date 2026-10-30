@@ -9,7 +9,7 @@
 
 use super::data::Data;
 use super::options::OOM;
-use super::{Store, arity, integer, internal_error, wrong_type};
+use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use std::collections::BTreeSet;
 
 const MAGIC: &[u8; 4] = b"HYLL";
@@ -220,7 +220,7 @@ fn inspect(data: &mut Data, key: &[u8], now: i64) -> KeyState {
     }
 }
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_hll(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(command) = args.first() else {
             return false;
@@ -243,7 +243,7 @@ impl Store {
             return;
         }
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -287,7 +287,7 @@ impl Store {
             arity("pfcount", out);
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -316,7 +316,7 @@ impl Store {
             return;
         }
         let destination = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -376,7 +376,7 @@ mod tests {
     use super::*;
     use crate::engine::Action;
 
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(store.execute(args, &mut out), Action::Continue);
         out
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn exact_small_counts_add_merge_and_empty_creation() {
-        let store = Store::new(1 << 20);
+        let store = ShardExecutor::new(1 << 20);
         assert_eq!(run(&store, &[b"PFADD", b"h"]), b":1\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"h"]), b"+string\r\n");
         assert_eq!(run(&store, &[b"PFCOUNT", b"h"]), b":0\r\n");
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn merge_preserves_existing_destination_and_ttl() {
-        let store = Store::new(1 << 20);
+        let store = ShardExecutor::new(1 << 20);
         assert_eq!(run(&store, &[b"PFADD", b"d", b"a"]), b":1\r\n");
         assert_eq!(run(&store, &[b"PEXPIRE", b"d", b"10000"]), b":1\r\n");
         assert_eq!(run(&store, &[b"PFADD", b"s", b"b"]), b":1\r\n");
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn invalid_strings_and_wrong_types_are_rejected_without_mutation() {
-        let store = Store::new(1 << 20);
+        let store = ShardExecutor::new(1 << 20);
         assert_eq!(run(&store, &[b"SET", b"bad", b"not-hll"]), b"+OK\r\n");
         for args in [
             &[b"PFADD".as_slice(), b"bad", b"x"][..],

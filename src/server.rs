@@ -18,6 +18,8 @@ mod handoff;
 mod pool;
 #[cfg(unix)]
 mod reactor;
+#[cfg(test)]
+mod storage_ownership_tests;
 mod tls;
 mod topology;
 
@@ -540,6 +542,12 @@ impl Server {
             store,
         } = self;
         let store = Arc::new(store);
+        // A local reactor may exit before TLS users finish. Mixed transports
+        // therefore share the joined external owner, never a reactor-owned inbox.
+        if tls_listener.is_some() {
+            store.ensure_external_owner();
+        }
+
         let tls_thread = match (tls_listener, tls_acceptor) {
             (Some(listener), Some(acceptor)) => {
                 let config = config.clone();
@@ -564,14 +572,20 @@ impl Server {
                 Arc::clone(&store),
             )
         } else {
-            serve_plain(listener, config, store, Arc::clone(&stopping), policy)
+            serve_plain(
+                listener,
+                config,
+                Arc::clone(&store),
+                Arc::clone(&stopping),
+                policy,
+            )
         };
         stopping.store(true, Ordering::Release);
         let tls_result = match tls_thread {
             Some(thread) => join_result(thread),
             None => Ok(()),
         };
-        result.and(tls_result)
+        result.and(tls_result).and(store.owner_status())
     }
 }
 

@@ -2,6 +2,7 @@
 //! Nonblocking round-robin polling is portable, not an epoll/kqueue substitute.
 
 use super::*;
+use crate::engine::{BridgeInbox, Execution, StoreHandle};
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, Receiver, Sender, sync_channel};
 use std::time::Instant;
@@ -137,9 +138,9 @@ impl Client {
     }
 
     /// None means closed; Some indicates whether this pass made progress.
-    pub(super) fn poll(
+    pub(super) fn poll<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         config: &Config,
         chunk: &mut [u8],
     ) -> io::Result<Option<bool>> {
@@ -173,7 +174,7 @@ impl Client {
             }
         }
         if self.session.is_blocked() {
-            if let Some(reply) = self.session.poll_blocked(store) {
+            if let Some(reply) = self.session.poll_blocked_on(store) {
                 self.output.extend_from_slice(&reply);
                 progress = true;
             }
@@ -195,7 +196,7 @@ impl Client {
             }
         }
         if self.session.is_paused() {
-            if let Some((reply, action)) = self.session.poll_paused(store) {
+            if let Some((reply, action)) = self.session.poll_paused_on(store) {
                 self.output.extend_from_slice(&reply);
                 progress = true;
                 if action == Action::Close {
@@ -236,7 +237,7 @@ impl Client {
                 if args.is_empty() {
                     Action::Continue // Redis ignores an empty inline line.
                 } else {
-                    self.session.execute(store, args, &mut self.output)
+                    self.session.execute_on(store, args, &mut self.output)
                 }
             }) {
                 Ok(Some((action, used))) => {
@@ -319,57 +320,31 @@ pub(super) fn serve(
             let thread = thread::Builder::new()
                 .name(format!("rillcache-io-{index}"))
                 .spawn(move || {
-                    let mut clients: Vec<Client> = Vec::new();
-                    let mut chunk = [0; 16 * 1024];
-                    let mut maintenance = Instant::now();
-                    let mut polling = PollWindow::new(maintenance);
-                    while !stop.load(Ordering::Acquire) && !store.shutdown_requested() {
-                        if reaper && maintenance.elapsed() >= Duration::from_millis(100) {
-                            let _ = store.journal_sync();
-                            store.purge_expired(128);
-                            store.auto_rewrite_if_due();
-                            maintenance = Instant::now();
-                        }
-                        let mut progress = false;
-                        while let Ok(client) = receiver.try_recv() {
-                            clients.push(client);
-                            progress = true;
-                        }
-                        let mut index = 0;
-                        while index < clients.len() {
-                            match clients[index].poll(&store, &config, &mut chunk) {
-                                Ok(Some(made_progress)) => {
-                                    progress |= made_progress;
-                                    index += 1;
-                                }
-                                _ => {
-                                    let id = clients[index].session.id();
-                                    store.pubsub_remove_client(id);
-                                    store.unregister_client(id);
-                                    clients.swap_remove(index);
-                                }
-                            }
-                        }
-                        // Replies in flight are not an idle connection. Give the
-                        // next client request a short bounded window to arrive,
-                        // without rearming that window on empty/spurious scans.
-                        let now = Instant::now();
-                        if polling.active(now, progress) {
-                            if polling.yield_due(
-                                now,
-                                policy.run_quantum_us,
-                                admitted.load(Ordering::Relaxed) > 1,
-                            ) {
-                                thread::yield_now();
-                                polling.resumed(Instant::now());
-                            } else if !progress {
-                                std::hint::spin_loop();
-                            }
-                        } else {
-                            thread::park_timeout(Duration::from_millis(1));
-                            polling.resumed(Instant::now());
-                        }
+                    if count == 1
+                        && let Some((executor, inbox)) = store.install_local()
+                    {
+                        run_lane(
+                            executor,
+                            Some(inbox),
+                            receiver,
+                            config,
+                            stop,
+                            admitted,
+                            policy,
+                            reaper,
+                        );
+                        return;
                     }
+                    run_lane(
+                        StoreHandle(store),
+                        None,
+                        receiver,
+                        config,
+                        stop,
+                        admitted,
+                        policy,
+                        reaper,
+                    );
                     // Dropping clients and queued transfers closes every socket and permit.
                 })?;
             lanes.push(Lane { sender, thread });
@@ -452,6 +427,73 @@ pub(super) fn serve(
         }
     }
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_lane<E: Execution>(
+    store: E,
+    inbox: Option<BridgeInbox>,
+    receiver: Receiver<Client>,
+    config: Config,
+    stop: Arc<AtomicBool>,
+    admitted: Arc<AtomicUsize>,
+    policy: SchedulingPolicy,
+    reaper: bool,
+) {
+    let mut clients: Vec<Client> = Vec::new();
+    let mut chunk = [0; 16 * 1024];
+    let mut maintenance = Instant::now();
+    let mut polling = PollWindow::new(maintenance);
+    while !stop.load(Ordering::Acquire) && !store.shutdown_requested() {
+        if let Some(inbox) = &inbox {
+            inbox.drain(&store);
+        }
+        if reaper && maintenance.elapsed() >= Duration::from_millis(100) {
+            let _ = store.journal_sync();
+            store.purge_expired(128);
+            store.auto_rewrite_if_due();
+            maintenance = Instant::now();
+        }
+        let mut progress = false;
+        while let Ok(client) = receiver.try_recv() {
+            clients.push(client);
+            progress = true;
+        }
+        let mut index = 0;
+        while index < clients.len() {
+            match clients[index].poll(&store, &config, &mut chunk) {
+                Ok(Some(made_progress)) => {
+                    progress |= made_progress;
+                    index += 1;
+                }
+                _ => {
+                    let id = clients[index].session.id();
+                    store.pubsub_remove_client(id);
+                    store.unregister_client(id);
+                    clients.swap_remove(index);
+                }
+            }
+        }
+        // Replies in flight are not an idle connection. Give the
+        // next client request a short bounded window to arrive,
+        // without rearming that window on empty/spurious scans.
+        let now = Instant::now();
+        if polling.active(now, progress) {
+            if polling.yield_due(
+                now,
+                policy.run_quantum_us,
+                admitted.load(Ordering::Relaxed) > 1,
+            ) {
+                thread::yield_now();
+                polling.resumed(Instant::now());
+            } else if !progress {
+                std::hint::spin_loop();
+            }
+        } else {
+            thread::park_timeout(Duration::from_millis(1));
+            polling.resumed(Instant::now());
+        }
+    }
 }
 
 #[cfg(test)]

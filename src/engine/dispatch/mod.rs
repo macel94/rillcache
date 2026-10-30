@@ -1,4 +1,4 @@
-//! Command-family routing for `Store::execute_locked`.
+//! Command-family routing for `ShardExecutor::execute_command`.
 //!
 //! `engine.rs` keeps only the direct PING fast path; every other store command
 //! is handled by one family module below. Each family owns the command-name
@@ -11,11 +11,11 @@
 //!
 //! Transaction markers (`MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH`) are
 //! connection state in `session.rs`. `EXEC` replays its queue through
-//! `execute_locked`, so queued store commands reach this dispatcher normally;
+//! `execute_command`, so queued store commands reach this dispatcher normally;
 //! the markers themselves never do. Blocking variants likewise live in
 //! `session.rs` because they need per-connection wait state.
 
-use super::{Action, Store};
+use super::{Action, ShardExecutor};
 
 mod admin;
 mod collections;
@@ -28,7 +28,7 @@ mod strings;
 /// implementation here avoids duplicating SET option parsing in `engine.rs`.
 #[inline(always)]
 pub(super) fn hot_string(
-    store: &Store,
+    store: &ShardExecutor,
     command: &[u8],
     arguments: &[&[u8]],
     output: &mut Vec<u8>,
@@ -39,7 +39,7 @@ pub(super) fn hot_string(
 /// Route one non-hot store command. Empty input and unknown commands retain
 /// their historical replies.
 #[inline]
-pub(super) fn route(store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+pub(super) fn route(store: &ShardExecutor, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
     let Some(command) = arguments.first() else {
         output.extend_from_slice(b"-ERR empty command\r\n");
         return Action::Continue;

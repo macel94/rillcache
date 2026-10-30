@@ -1,5 +1,5 @@
 //! Runtime collection encoding thresholds exposed through CONFIG.
-use super::{Store, keyspace::glob_match};
+use super::{ShardExecutor, keyspace::glob_match};
 use std::io::Write;
 
 #[derive(Clone, Copy, Debug)]
@@ -116,7 +116,7 @@ impl CollectionConfig {
     }
 }
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_collection_config(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         if !args
             .first()
@@ -545,7 +545,7 @@ impl Store {
 mod tests {
     use super::*;
 
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         assert!(store.execute_collection_config(args, &mut out));
         out
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn thresholds_choose_compact_and_expanded_storage_without_changing_values() {
         use super::super::data::Collection;
-        let store = Store::new(20_000);
+        let store = ShardExecutor::new(20_000);
         let call = |args: &[&[u8]]| {
             let mut out = Vec::new();
             store.execute(args, &mut out);
@@ -565,7 +565,7 @@ mod tests {
         call(&[b"ZADD", b"z", b"1", b"member"]);
         call(&[b"RPUSH", b"l", b"small"]);
         {
-            let data = store.data.read().unwrap();
+            let data = store.data.try_borrow().unwrap();
             assert!(matches!(
                 data.entries[b"s".as_slice()].collection.as_ref(),
                 Some(Collection::SetInt(_))
@@ -605,7 +605,7 @@ mod tests {
         call(&[b"ZADD", b"z", b"2", b"other"]);
         call(&[b"RPUSH", b"l", &vec![b'x'; 5000]]);
         {
-            let data = store.data.read().unwrap();
+            let data = store.data.try_borrow().unwrap();
             assert!(matches!(
                 data.entries[b"s".as_slice()].collection.as_ref(),
                 Some(Collection::Set(_))
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn runtime_maxmemory_is_visible_and_evicts_to_the_new_budget() {
-        let store = Store::new(64);
+        let store = ShardExecutor::new(64);
         assert_eq!(
             run(&store, &[b"CONFIG", b"GET", b"maxmemory"]),
             b"*2\r\n$9\r\nmaxmemory\r\n$2\r\n64\r\n"
@@ -652,12 +652,12 @@ mod tests {
         out.clear();
         store.execute(&[b"SET", b"k2", b"vvvv"], &mut out);
         assert_eq!(out, b"+OK\r\n");
-        assert!(store.data.read().unwrap().payload_bytes > 8);
+        assert!(store.data.try_borrow().unwrap().payload_bytes > 8);
         assert_eq!(
             run(&store, &[b"CONFIG", b"SET", b"maxmemory", b"8"]),
             b"+OK\r\n"
         );
-        assert!(store.data.read().unwrap().payload_bytes <= 8);
+        assert!(store.data.try_borrow().unwrap().payload_bytes <= 8);
         assert_eq!(
             run(&store, &[b"CONFIG", b"GET", b"maxmemory"]),
             b"*2\r\n$9\r\nmaxmemory\r\n$1\r\n8\r\n"
@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn config_get_matches_legacy_aliases_and_deduplicates_patterns() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         assert_eq!(
             run(
                 &store,
@@ -713,7 +713,7 @@ mod tests {
 
     #[test]
     fn collection_config_thresholds_round_trip_with_aliases_and_atomic_validation() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         assert_eq!(
             run(&store, &[b"CONFIG", b"GET", b"list-max-listpack-size"]),
             b"*2\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n"
@@ -772,7 +772,7 @@ mod tests {
     }
     #[test]
     fn commandstats_and_auto_aof_settings_validate_together_before_publication() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(
             run(
                 &store,
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn journal_config_visibility_is_read_only_except_for_appendfsync() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(
             run(&store, &[b"CONFIG", b"GET", b"append*"]),
             b"*6\r\n$14\r\nappendfilename\r\n$14\r\nappendonly.aof\r\n$11\r\nappendfsync\r\n$8\r\neverysec\r\n$10\r\nappendonly\r\n$2\r\nno\r\n"
@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn runtime_maxclients_roundtrips_and_rejects_invalid_values() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(
             run(&store, &[b"CONFIG", b"GET", b"maxclients"]),
             b"*2\r\n$10\r\nmaxclients\r\n$3\r\n128\r\n"
@@ -897,7 +897,7 @@ mod tests {
 
     #[test]
     fn auto_aof_rewrite_config_roundtrips_and_validates() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(
             run(&store, &[b"CONFIG", b"GET", b"auto-aof-rewrite-percentage"]),
             b"*2\r\n$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n"

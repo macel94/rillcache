@@ -5,7 +5,8 @@
 //! arguments and 128 bytes per argument, mirroring Redis's truncation, so an
 //! unbounded client request cannot become unbounded retained memory.
 
-use super::Store;
+#[cfg(test)]
+use super::ShardExecutor;
 use crate::protocol::encode_bulk;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -26,7 +27,7 @@ pub(crate) struct SlowlogEntry {
     client_name: Vec<u8>,
 }
 
-impl Store {
+impl super::ServerServices {
     pub(crate) fn slowlog_threshold_us(&self) -> i64 {
         self.slowlog_threshold_us.load(Ordering::Relaxed)
     }
@@ -341,7 +342,7 @@ mod tests {
 
     #[test]
     fn the_default_duration_threshold_is_inclusive_without_wall_clock_assumptions() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(store.slowlog_threshold_us(), 10_000);
         store.slowlog_push(&[b"PING"], Duration::from_micros(9_999), || {
             panic!("a below-threshold sample must not capture metadata")
@@ -360,7 +361,7 @@ mod tests {
 
     #[test]
     fn rejected_samples_never_capture_client_metadata() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         let captured = std::cell::Cell::new(0);
         let metadata = || {
             captured.set(captured.get() + 1);
@@ -385,7 +386,7 @@ mod tests {
 
     #[test]
     fn threshold_and_max_len_bound_the_retained_entries() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         store.set_slowlog_threshold_us(0);
         store.set_slowlog_max_len(2);
         for index in 0..4 {

@@ -8,7 +8,7 @@
 use super::collections::encode_list;
 use super::data::{Collection, Data};
 use super::options::NOT_INTEGER;
-use super::{Store, arity, integer, internal_error, wrong_type};
+use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 use std::io::Write;
 
@@ -20,7 +20,7 @@ struct Item {
     compare: Vec<u8>,
 }
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_sort(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(command) = args.first() else {
             return false;
@@ -100,7 +100,7 @@ impl Store {
                 return;
             }
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -327,7 +327,7 @@ mod tests {
     use super::*;
     use crate::engine::Action;
 
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(store.execute(args, &mut out), Action::Continue);
         out
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn sort_orders_lists_sets_and_sorted_sets_with_limits() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         run(&store, &[b"RPUSH", b"list", b"3", b"1", b"2"]);
         assert_eq!(
             run(&store, &[b"SORT", b"list"]),
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn sort_errors_stores_and_pattern_limits_are_bounded() {
-        let store = Store::new(64);
+        let store = ShardExecutor::new(64);
         run(&store, &[b"RPUSH", b"list", b"bad", b"1"]);
         assert_eq!(run(&store, &[b"SORT", b"list"]), NUMERIC_ERROR);
         run(&store, &[b"RPUSH", b"nums", b"2", b"1"]);
@@ -399,7 +399,7 @@ mod tests {
             b":0\r\n"
         );
         assert_eq!(run(&store, &[b"EXISTS", b"out"]), b":0\r\n");
-        let small = Store::new(2);
+        let small = ShardExecutor::new(2);
         assert_eq!(run(&small, &[b"RPUSH", b"l", b"a"]), b":1\r\n");
         let out = run(&small, &[b"SORT", b"l", b"ALPHA", b"STORE", b"dest"]);
         assert!(out.starts_with(b"-OOM"), "{out:?}");

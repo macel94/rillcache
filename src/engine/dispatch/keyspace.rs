@@ -1,9 +1,9 @@
 //! Key lifecycle, expiry and keyspace-wide commands.
 
-use super::super::{Action, Store, arity, integer, internal_error};
+use super::super::{Action, ShardExecutor, arity, integer, internal_error};
 
 pub(super) fn execute(
-    store: &Store,
+    store: &ShardExecutor,
     command: &[u8],
     arguments: &[&[u8]],
     output: &mut Vec<u8>,
@@ -34,7 +34,7 @@ pub(super) fn execute(
                 },
                 output,
             );
-        } else if let Ok(mut data) = store.data.write() {
+        } else if let Ok(mut data) = store.data.try_borrow_mut() {
             let now = store.now(&data);
             let mut count = 0;
             for key in &arguments[1..] {

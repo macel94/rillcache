@@ -1,0 +1,44 @@
+{
+  "observed_at": "2026-10-30T11:36:52.616975+00:00",
+  "user_report": "Network worktree started make ci-delivery/full tests/build while screen.py was active. Treat overlapping samples as contention-affected advisory, not causal proof.",
+  "assessment": "Entire cohort marked contention-affected. Per-sample overlap was not continuously instrumented. Post-run observation does not reconstruct load during every sample or establish isolation. No controlled causal improvement/regression claim is justified; all 60 validated records and all 10 rows, including 8 lower candidate medians, remain intact.",
+  "current_allowed_cpus": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "current_files": {
+    "/proc/loadavg": "2.16 4.59 5.11 8/393 4106319\n",
+    "/proc/self/cgroup": "0::/user.slice/user-0.slice/user@0.service/tmux-spawn-c4383844-8c8d-4d2c-bf4f-49edced4bcc7.scope\n",
+    "/sys/fs/cgroup/cpuset.cpus.effective": "0-5\n",
+    "/sys/fs/cgroup/cpu.stat": "usage_usec 1249979484000\nuser_usec 419280992000\nsystem_usec 830698492000\nnice_usec 39788000\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+    "/sys/fs/cgroup/cgroup.controllers": "cpuset cpu io memory hugetlb pids rdma misc\n",
+    "/sys/fs/cgroup/user.slice/cpu.max": "max 100000\n",
+    "/sys/fs/cgroup/user.slice/cpu.stat": "usage_usec 137353989874\nuser_usec 79946437400\nsystem_usec 57407552474\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+    "/sys/fs/cgroup/user.slice/user-0.slice/cpu.max": "max 100000\n",
+    "/sys/fs/cgroup/user.slice/user-0.slice/cpu.stat": "usage_usec 132742098726\nuser_usec 76986279106\nsystem_usec 55755819619\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+    "/sys/fs/cgroup/user.slice/user-0.slice/user@0.service/cpu.max": "max 100000\n",
+    "/sys/fs/cgroup/user.slice/user-0.slice/user@0.service/cpu.stat": "usage_usec 116117162691\nuser_usec 69203156665\nsystem_usec 46914006026\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+    "/sys/fs/cgroup/user.slice/user-0.slice/user@0.service/tmux-spawn-c4383844-8c8d-4d2c-bf4f-49edced4bcc7.scope/cpu.max": "max 100000\n",
+    "/sys/fs/cgroup/user.slice/user-0.slice/user@0.service/tmux-spawn-c4383844-8c8d-4d2c-bf4f-49edced4bcc7.scope/cpu.stat": "usage_usec 5591728808\nuser_usec 3293096640\nsystem_usec 2298632167\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n"
+  },
+  "current_process_snapshot": "    PID    PPID ELAPSED %CPU %MEM COMMAND         COMMAND\n",
+  "earlier_live_observation": "2026-10-30T12:35:02+01:00: sibling tokio-async-network make ci elapsed 282s; cargo release build and rustc rillcache_bench active, rustc 97.4% CPU. load averages 5.42/5.63/5.45; allowed CPUs 0-5. Later ancestor/current scope cpu.max values max 100000, no scope throttling recorded. These are post-run snapshots, not evidence of no contention.",
+  "sample_completion_times": {
+    "one-cpu-default-pipeline-1-run-1-after.json": "2026-10-30T11:31:03.767338+00:00",
+    "one-cpu-default-pipeline-1-run-1-before.json": "2026-10-30T11:30:15.365759+00:00",
+    "one-cpu-default-pipeline-1-run-2-after.json": "2026-10-30T11:31:56.449055+00:00",
+    "one-cpu-default-pipeline-1-run-2-before.json": "2026-10-30T11:32:41.926536+00:00",
+    "one-cpu-default-pipeline-1-run-3-after.json": "2026-10-30T11:33:45.520606+00:00",
+    "one-cpu-default-pipeline-1-run-3-before.json": "2026-10-30T11:33:11.571501+00:00",
+    "one-cpu-default-pipeline-16-run-1-after.json": "2026-10-30T11:34:00.649098+00:00",
+    "one-cpu-default-pipeline-16-run-1-before.json": "2026-10-30T11:33:53.844877+00:00",
+    "one-cpu-default-pipeline-16-run-2-after.json": "2026-10-30T11:34:12.629488+00:00",
+    "one-cpu-default-pipeline-16-run-2-before.json": "2026-10-30T11:34:18.009663+00:00",
+    "one-cpu-default-pipeline-16-run-3-after.json": "2026-10-30T11:34:29.918050+00:00",
+    "one-cpu-default-pipeline-16-run-3-before.json": "2026-10-30T11:34:24.109861+00:00"
+  }
+}

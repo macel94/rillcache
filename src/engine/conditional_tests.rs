@@ -9,11 +9,11 @@ impl Clock for TestClock {
         self.0.load(Ordering::SeqCst)
     }
 }
-fn store(maximum: usize) -> (Store, Arc<TestClock>) {
+fn store(maximum: usize) -> (ShardExecutor, Arc<TestClock>) {
     let clock = Arc::new(TestClock(AtomicI64::new(100)));
-    (Store::with_clock(maximum, clock.clone()), clock)
+    (ShardExecutor::with_clock(maximum, clock.clone()), clock)
 }
-fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+fn run(store: &impl crate::engine::Execution, args: &[&[u8]]) -> Vec<u8> {
     let mut reply = Vec::new();
     assert_eq!(store.execute(args, &mut reply), Action::Continue);
     reply
@@ -70,7 +70,7 @@ fn value_and_digest_conditions_preserve_ttl_and_budget_on_rejection_and_error() 
         );
         assert_eq!(run(&store, &[b"GET", b"k"]), b"$2\r\n\0\xff\r\n");
         assert_eq!(run(&store, &[b"PTTL", b"k"]), b":50\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 3);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 3);
         for other in [
             b"NX".as_slice(),
             b"XX",
@@ -102,8 +102,8 @@ fn value_and_digest_conditions_preserve_ttl_and_budget_on_rejection_and_error() 
         clock.0.store(151, Ordering::SeqCst);
         assert_eq!(run(&store, &[b"DIGEST", b"k"]), b"$-1\r\n");
         assert_eq!(run(&store, &[b"DELEX", b"k", b"IFDEQ", b"bad"]), b":0\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
-        assert!(store.data.read().unwrap().expirations.is_empty());
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
+        assert!(store.data.try_borrow().unwrap().expirations.is_empty());
     }
 }
 
@@ -197,7 +197,7 @@ fn typed_comparisons_fail_without_mutation_and_msetex_reclaims_typed_payload() {
     );
     assert_eq!(run(&store, &[b"XLEN", b"k"]), b":1\r\n");
     assert_eq!(run(&store, &[b"PTTL", b"k"]), b":50\r\n");
-    assert_eq!(store.data.read().unwrap().payload_bytes, 22);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 22);
     assert_eq!(
         run(
             &store,
@@ -218,12 +218,12 @@ fn typed_comparisons_fail_without_mutation_and_msetex_reclaims_typed_payload() {
     assert_eq!(run(&store, &[b"GET", b"k"]), b"$1\r\nx\r\n");
     assert_eq!(run(&store, &[b"PTTL", b"k"]), b":50\r\n");
     assert_eq!(run(&store, &[b"PTTL", b"b"]), b":-1\r\n");
-    assert_eq!(store.data.read().unwrap().payload_bytes, 7);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 7);
     assert_eq!(run(&store, &[b"DEL", b"k", b"b"]), b":2\r\n");
-    assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     run(&store, &[b"XADD", b"k", b"1-0", b"f", b"v"]);
     assert_eq!(run(&store, &[b"DELEX", b"k"]), b":1\r\n");
-    assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn msetex_strict_counts_expiry_and_option_errors_preserve_the_whole_batch() {
 #[test]
 fn concurrent_value_and_digest_compares_and_deletes_have_one_winner() {
     for condition in [b"IFEQ".as_slice(), b"IFDEQ"] {
-        let (store, _) = store(128);
+        let store = super::Store::new(128);
         run(&store, &[b"SET", b"k", b"old"]);
         let digest = run(&store, &[b"DIGEST", b"k"]);
         let expected: &[u8] = if condition == b"IFEQ" {

@@ -7,11 +7,11 @@ impl Clock for TestClock {
         self.0.load(Ordering::SeqCst)
     }
 }
-fn setup(maximum: usize) -> (Store, Arc<TestClock>) {
+fn setup(maximum: usize) -> (ShardExecutor, Arc<TestClock>) {
     let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-    (Store::with_clock(maximum, clock.clone()), clock)
+    (ShardExecutor::with_clock(maximum, clock.clone()), clock)
 }
-fn exec(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+fn exec(store: &impl crate::engine::Execution, args: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     assert_eq!(store.execute(args, &mut out), Action::Continue);
     out
@@ -38,7 +38,7 @@ fn expiry_is_logical_without_sleeps_and_matches_the_millisecond_boundary() {
     assert_eq!(exec(&store, &[b"EXISTS", b"k", b"k"]), b":0\r\n");
     assert_eq!(exec(&store, &[b"TTL", b"k"]), b":-2\r\n");
     assert_eq!(exec(&store, &[b"DEL", b"k", b"k"]), b":0\r\n");
-    assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     assert_eq!(exec(&store, &[b"SET", b"k", b"v", b"NX"]), b"+OK\r\n");
     assert_eq!(exec(&store, &[b"TTL", b"k"]), b":-1\r\n");
 }
@@ -53,7 +53,7 @@ fn observed_expiration_cannot_resurrect_on_a_later_wall_clock_rollback() {
         assert!(reply == b"$-1\r\n" || reply == b":0\r\n" || reply == b":-2\r\n");
         clock.0.store(1000, Ordering::SeqCst);
         assert_eq!(exec(&store, &[b"GET", b"k"]), b"$-1\r\n");
-        assert!(store.data.read().unwrap().expirations.is_empty());
+        assert!(store.data.try_borrow().unwrap().expirations.is_empty());
     }
 }
 
@@ -80,7 +80,7 @@ fn set_get_conditionals_keep_or_clear_ttl_without_mutating_rejected_writes() {
     );
     assert_eq!(exec(&store, &[b"SET", b"k", b"plain"]), b"+OK\r\n");
     assert_eq!(exec(&store, &[b"PTTL", b"k"]), b":-1\r\n");
-    assert!(store.data.read().unwrap().expirations.is_empty());
+    assert!(store.data.try_borrow().unwrap().expirations.is_empty());
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn aliases_getex_getdel_and_absolute_expiry_preserve_exact_wire_semantics() {
     exec(&store, &[b"SET", b"k", b"x", b"EXAT", b"2"]);
     assert_eq!(exec(&store, &[b"PEXPIRETIME", b"k"]), b":2000\r\n");
     assert_eq!(exec(&store, &[b"GETDEL", b"k"]), bulk(b"x"));
-    assert!(store.data.read().unwrap().expirations.is_empty());
+    assert!(store.data.try_borrow().unwrap().expirations.is_empty());
     assert_eq!(
         exec(&store, &[b"SET", b"k", b"x", b"PXAT", b"1000"]),
         b"+OK\r\n"
@@ -200,12 +200,12 @@ fn expiry_metadata_is_indexed_and_reclaimed_without_a_false_payload_oom() {
     exec(&store, &[b"SET", b"k", b"123", b"PX", b"10"]);
     for value in 20..1020 {
         exec(&store, &[b"PEXPIRE", b"k", value.to_string().as_bytes()]);
-        assert_eq!(store.data.read().unwrap().expirations.len(), 1);
+        assert_eq!(store.data.try_borrow().unwrap().expirations.len(), 1);
     }
     clock.0.store(5000, Ordering::SeqCst);
     assert_eq!(exec(&store, &[b"SET", b"new", b"x"]), b"+OK\r\n");
-    assert_eq!(store.data.read().unwrap().payload_bytes, 4);
-    assert!(store.data.read().unwrap().expirations.is_empty());
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 4);
+    assert!(store.data.try_borrow().unwrap().expirations.is_empty());
     let (store, clock) = setup(10000);
     for key in 0..400 {
         exec(
@@ -216,7 +216,7 @@ fn expiry_metadata_is_indexed_and_reclaimed_without_a_false_payload_oom() {
     clock.0.store(1002, Ordering::SeqCst);
     assert_eq!(store.purge_expired(128), 128);
     assert_eq!(store.purge_expired(1000), 272);
-    assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn deterministic_mixed_commands_preserve_payload_and_expiry_index_invariants() {
         if iteration % 11 == 0 {
             store.purge_expired(7);
         }
-        let data = store.data.read().unwrap();
+        let data = store.data.try_borrow().unwrap();
         assert_eq!(
             data.payload_bytes,
             data.entries
@@ -362,7 +362,7 @@ fn admitted_overwrites_reuse_capacity_but_release_disproportionate_shrinks() {
         );
         assert_eq!(exec(&store, &[b"GET", b"k"]), bulk(&value));
         assert_eq!(exec(&store, &[b"PTTL", b"k"]), b":100\r\n");
-        let data = store.data.read().unwrap();
+        let data = store.data.try_borrow().unwrap();
         let entry = &data.entries[b"k".as_slice()];
         let capacity = entry.value.capacity();
         if length == 768 {
@@ -393,18 +393,19 @@ fn cached_admission_metadata_survives_reaping_other_keys_and_preserves_live_oom_
         exec(&store, &[b"SET", b"live", b"123456", b"GET"]),
         bulk(b"1")
     );
-    assert_eq!(store.data.read().unwrap().payload_bytes, 10);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 10);
     assert_eq!(
         exec(&store, &[b"SET", b"live", b"1234567", b"GET"]),
         options::OOM
     );
     assert_eq!(exec(&store, &[b"GET", b"live"]), bulk(b"123456"));
-    assert!(store.data.read().unwrap().expirations.is_empty());
+    assert!(store.data.try_borrow().unwrap().expirations.is_empty());
 }
 
 #[test]
 fn increments_preserve_expiration_and_shared_key_updates_are_atomic() {
-    let (store, clock) = setup(100);
+    let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+    let store = super::Store::with_clock(100, clock.clone());
     exec(&store, &[b"SET", b"count", b"0", b"PX", b"100"]);
     std::thread::scope(|scope| {
         for _ in 0..8 {

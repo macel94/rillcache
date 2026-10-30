@@ -2,14 +2,14 @@
 //! entry as their key and expiry; mutations stage a new value before admission.
 use super::data::{Collection, Entry};
 use super::options::{NOT_INTEGER, OOM, parse_integer};
-use super::{Store, arity, integer, internal_error, wrong_type};
+use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
 const MAX_ELEMENTS: usize = 1_000_000;
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn execute_collections(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(cmd) = args.first() else {
             return false;
@@ -160,7 +160,7 @@ impl Store {
 
     fn set_add(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -216,7 +216,7 @@ impl Store {
     }
 
     fn set_read(&self, args: &[&[u8]], name: &str, out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -257,7 +257,7 @@ impl Store {
 
     fn hash_set(&self, args: &[&[u8]], out: &mut Vec<u8>, legacy: bool) {
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -325,7 +325,7 @@ impl Store {
     }
 
     fn hash_read(&self, args: &[&[u8]], name: &str, out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -378,7 +378,7 @@ impl Store {
             members.push((score, pair[1]));
         }
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -444,7 +444,7 @@ impl Store {
         } else {
             (0, -1, false)
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -539,7 +539,7 @@ impl Store {
 
     fn push_list(&self, args: &[&[u8]], left: bool, out: &mut Vec<u8>) {
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -603,7 +603,7 @@ impl Store {
         } else {
             None
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -656,7 +656,7 @@ impl Store {
     }
 
     fn list_len(&self, key: &[u8], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -682,7 +682,7 @@ impl Store {
             out.extend_from_slice(NOT_INTEGER);
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -793,7 +793,7 @@ fn parse_count(bytes: &[u8]) -> Option<i64> {
 mod tests {
     use super::*;
 
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         store.execute(args, &mut out);
         out
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn lists_are_binary_safe_ordered_and_empty_pop_deletes_key() {
-        let store = Store::new(128);
+        let store = ShardExecutor::new(128);
         assert_eq!(run(&store, &[b"LPUSH", b"l", b"a\0", b"\xff"]), b":2\r\n");
         assert_eq!(run(&store, &[b"RPUSH", b"l", b"z"]), b":3\r\n");
         assert_eq!(
@@ -814,12 +814,12 @@ mod tests {
         );
         assert_eq!(run(&store, &[b"RPOP", b"l"]), b"$1\r\nz\r\n");
         assert_eq!(run(&store, &[b"EXISTS", b"l"]), b":0\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     }
 
     #[test]
     fn list_keys_share_ttl_accounting_and_all_string_commands_reject_wrong_type() {
-        let store = Store::new(10);
+        let store = ShardExecutor::new(10);
         assert_eq!(run(&store, &[b"RPUSH", b"k", b"1234"]), b":1\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"k"]), b"+list\r\n");
         assert_eq!(
@@ -836,12 +836,12 @@ mod tests {
         );
         assert_eq!(run(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
         assert_eq!(run(&store, &[b"GET", b"k"]), b"$1\r\nv\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 2);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 2);
     }
 
     #[test]
     fn sets_hashes_and_sorted_sets_have_real_binary_safe_semantics() {
-        let store = Store::new(128);
+        let store = ShardExecutor::new(128);
         assert_eq!(run(&store, &[b"SADD", b"s", b"b", b"a", b"b"]), b":2\r\n");
         assert_eq!(run(&store, &[b"SCARD", b"s"]), b":2\r\n");
         assert_eq!(run(&store, &[b"SISMEMBER", b"s", b"b"]), b":1\r\n");
@@ -896,7 +896,7 @@ mod tests {
 
     #[test]
     fn ranges_with_stops_before_the_first_element_are_empty() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         run(&store, &[b"RPUSH", b"l", b"one", b"two"]);
         run(&store, &[b"ZADD", b"z", b"1", b"one", b"2", b"two"]);
         for command in [b"LRANGE".as_slice(), b"ZRANGE"] {
@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn list_rename_preserves_collection_and_ttl_and_failed_push_is_atomic() {
-        let store = Store::new(5);
+        let store = ShardExecutor::new(5);
         assert_eq!(run(&store, &[b"RPUSH", b"l", b"123"]), b":1\r\n");
         assert_eq!(run(&store, &[b"PEXPIRE", b"l", b"10000"]), b":1\r\n");
         assert_eq!(
@@ -934,11 +934,11 @@ mod tests {
             b"*1\r\n$3\r\n123\r\n"
         );
         assert_eq!(run(&store, &[b"DEL", b"m"]), b":1\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     }
     #[test]
     fn legacy_hmset_zmscore_and_lex_ranges_match_redis_replies() {
-        let store = Store::new(128);
+        let store = ShardExecutor::new(128);
         assert_eq!(
             run(&store, &[b"HMSET", b"h", b"a", b"1", b"b", b"2"]),
             b"+OK\r\n"

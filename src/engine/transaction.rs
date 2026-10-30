@@ -1,13 +1,12 @@
 //! `WATCH` snapshots and atomic `EXEC` execution.
 //!
-//! A store-wide read/write gate separates ordinary commands from a transaction:
-//! every normal command holds the read side, while `EXEC` holds the write side
-//! for the whole queued batch. `WATCH` compares bounded per-key mutation versions
-//! captured under the same gate, so a check cannot race the execution it guards.
+//! One owner executes each ordinary command or complete EXEC as a synchronous
+//! turn. No other data operation can interleave with WATCH validation and the
+//! queued batch; no shared transaction lock is needed. Cross-owner execution
+//! is not implemented by this single-owner increment.
 
-use super::Store;
+use super::ShardExecutor;
 use super::data::Data;
-use std::sync::RwLockReadGuard;
 
 /// Opaque conflict snapshot for one connection's watched keys.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -61,11 +60,10 @@ pub enum TransactionOutcome {
     InternalError,
 }
 
-impl Store {
-    /// Capture every requested key under the same gate used by `EXEC`.
+impl ShardExecutor {
+    /// Capture every requested key in one non-interleaved owner turn.
     pub fn watch_snapshot(&self, keys: &[&[u8]]) -> Option<WatchState> {
-        let _gate: RwLockReadGuard<'_, ()> = self.transaction_gate.read().ok()?;
-        let mut data = self.data.write().ok()?;
+        let mut data = self.data.try_borrow_mut().ok()?;
         let now = self.clock.now_ms().max(0);
         for key in keys {
             data.expire_key(key, now);
@@ -93,12 +91,8 @@ impl Store {
         watches: &WatchState,
         output: &mut Vec<u8>,
     ) -> TransactionOutcome {
-        let Ok(_gate) = self.transaction_gate.write() else {
-            super::internal_error(output);
-            return TransactionOutcome::InternalError;
-        };
         let start = output.len();
-        let Ok(data) = self.data.read() else {
+        let Ok(data) = self.data.try_borrow() else {
             super::internal_error(output);
             return TransactionOutcome::InternalError;
         };
@@ -115,7 +109,7 @@ impl Store {
             let arguments: Vec<&[u8]> = command.iter().map(Vec::as_slice).collect();
             let marks = self.journal_marks();
             let command_start = output.len();
-            action = self.execute_locked(&arguments, output);
+            action = self.execute_command(&arguments, output);
             self.commit_journal(marks, &arguments, output, command_start);
             if action == super::Action::Close {
                 break;

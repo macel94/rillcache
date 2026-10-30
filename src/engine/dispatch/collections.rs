@@ -4,10 +4,10 @@
 //! their shared `ZADD` / `ZRANGE` arms intentionally resolve to the extended
 //! handler first, matching the pre-split central dispatch.
 
-use super::super::{Action, Store};
+use super::super::{Action, ShardExecutor};
 
 pub(super) fn execute(
-    store: &Store,
+    store: &ShardExecutor,
     _command: &[u8],
     arguments: &[&[u8]],
     output: &mut Vec<u8>,
