@@ -212,4 +212,104 @@ mod tests {
         );
         assert_eq!(store.shard_for(b"key"), 0);
     }
+
+    #[test]
+    fn stores_isolate_data_even_when_the_same_key_routes_to_zero() {
+        let first = Store::new(1024);
+        let second = Store::new(1024);
+        assert_eq!(first.shard_for(b"shared"), second.shard_for(b"shared"));
+
+        let mut output = Vec::new();
+        first.execute(&[b"SET", b"shared", b"first"], &mut output);
+        assert_eq!(output, b"+OK\r\n");
+        output.clear();
+        second.execute(&[b"GET", b"shared"], &mut output);
+        assert_eq!(output, b"$-1\r\n");
+        output.clear();
+        second.execute(&[b"SET", b"shared", b"second"], &mut output);
+        assert_eq!(output, b"+OK\r\n");
+        output.clear();
+        first.execute(&[b"GET", b"shared"], &mut output);
+        assert_eq!(output, b"$5\r\nfirst\r\n");
+    }
+
+    #[test]
+    fn concurrent_store_callers_keep_independent_keys_and_atomic_multi_key_views() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let store = Arc::new(Store::new(1024 * 1024));
+        let start = Arc::new(Barrier::new(5));
+        let done = Arc::new(AtomicBool::new(false));
+        let observations = Arc::new(AtomicUsize::new(0));
+
+        let observer = {
+            let store = Arc::clone(&store);
+            let start = Arc::clone(&start);
+            let done = Arc::clone(&done);
+            let observations = Arc::clone(&observations);
+            std::thread::spawn(move || {
+                start.wait();
+                while !done.load(Ordering::Acquire) {
+                    let mut output = Vec::new();
+                    store.execute(&[b"MGET", b"left", b"right"], &mut output);
+                    assert!(
+                        output == b"*2\r\n$1\r\n0\r\n$1\r\n0\r\n"
+                            || output == b"*2\r\n$1\r\n1\r\n$1\r\n1\r\n",
+                        "reader observed a partial MSET: {output:?}"
+                    );
+                    observations.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        };
+
+        let mut output = Vec::new();
+        store.execute(&[b"MSET", b"left", b"0", b"right", b"0"], &mut output);
+        assert_eq!(output, b"+OK\r\n");
+
+        let writers = (0..4)
+            .map(|worker| {
+                let store = Arc::clone(&store);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    for index in 0..250 {
+                        let value = ((index + worker) % 2).to_string();
+                        let mut output = Vec::new();
+                        store.execute(
+                            &[
+                                b"MSET",
+                                b"left",
+                                value.as_bytes(),
+                                b"right",
+                                value.as_bytes(),
+                            ],
+                            &mut output,
+                        );
+                        assert_eq!(output, b"+OK\r\n");
+
+                        let key = format!("worker:{worker}:{index}");
+                        output.clear();
+                        store.execute(&[b"SET", key.as_bytes(), value.as_bytes()], &mut output);
+                        assert_eq!(output, b"+OK\r\n");
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        done.store(true, Ordering::Release);
+        observer.join().unwrap();
+        assert!(observations.load(Ordering::Relaxed) > 0);
+
+        for worker in 0..4 {
+            for index in 0..250 {
+                let key = format!("worker:{worker}:{index}");
+                let mut output = Vec::new();
+                store.execute(&[b"GET", key.as_bytes()], &mut output);
+                assert!(output == b"$1\r\n0\r\n" || output == b"$1\r\n1\r\n");
+            }
+        }
+    }
 }
