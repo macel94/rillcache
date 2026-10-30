@@ -40,9 +40,17 @@ mod multikey;
 mod notify;
 mod options;
 mod pubsub;
+// Recovered multi-owner work, not yet wired: kept for the next session.
+#[cfg(any())]
 mod mailbox;
+// Recovered multi-owner work, not yet wired: kept for the next session.
+#[cfg(any())]
 mod owner_actor;
+// Recovered multi-owner work, not yet wired: kept for the next session.
+#[cfg(any())]
 mod partition;
+// Recovered multi-owner work, not yet wired: kept for the next session.
+#[cfg(any())]
 mod router;
 mod scan;
 mod sha256;
@@ -55,10 +63,6 @@ mod string_ranges;
 mod transaction;
 mod unsupported;
 mod xxh3;
-pub(crate) use mailbox::{ByteBudget, Credit, MailboxError, OwnerSender, ReplyReceiver, owner_mailbox, reply_channel};
-pub(crate) use owner_actor::{Control, OwnerError};
-pub(crate) use partition::{LayoutError, OwnerId, PartitionLayout};
-pub(crate) use router::{MultiOwner, RouterError, RouterSizing};
 pub use acl_log::AclLogEntry;
 
 /// Verify a per-line audit HMAC with a shared 16..=1024-byte key.
