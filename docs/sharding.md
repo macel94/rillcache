@@ -11,18 +11,26 @@ The migration must stay inside the repository's existing rules:
 
 - `#![forbid(unsafe_code)]` on every target. No raw pointers, FFI, allocator or
   atomic-pointer tricks.
-- The only external crate exception is `rustls` and its transitive set, enforced
-  by `tests/policy.rs`. `core_affinity`, `tokio`, `bytes`, `hashbrown`, `flume`
-  and `crossbeam` are therefore unavailable.
-- `std::collections::HashMap` is the safe per-shard map; `std::sync::mpsc`'s
-  bounded `sync_channel` is the owner-thread mailbox and the oneshot reply.
+- The approved external crates are Tokio, core_affinity, Mio and rustls with
+  their transitive dependencies, enforced by `tests/policy.rs` and vendored for
+  offline builds. Additional crates remain prohibited.
+- `std::collections::HashMap` is the intended safe per-shard map. Tokio's bounded
+  `mpsc` channels and `oneshot` replies are intended for cross-shard routing.
 - Borrowed `&[u8]` parsing remains the zero-copy boundary; the protocol already
   dispatches small argument lists without allocating.
-- Core pinning is **external**: run under `taskset -c 0-3 …` or a cgroup cpuset.
-  `std` exposes no affinity API, and adding a crate would require relaxing the
-  dependency policy. The process does not claim to pin itself.
+- Fixed I/O lanes each run a Tokio current-thread runtime and use bounded Tokio
+  mailboxes. They attempt safe `core_affinity` pinning to distinct discovered
+  logical CPU IDs; this does not infer physical-core topology, affinity failure
+  falls back to OS scheduling, and lanes beyond the discovered CPU set remain
+  unpinned.
 
 ## Current seam
+
+Tokio is currently used by the optional fixed-worker I/O path for its per-lane
+current-thread runtime, bounded client-transfer channel and timer-driven polling.
+The default Unix plain-TCP path remains the existing Mio readiness reactor; the
+`Store` still has one lock-backed shard. Neither path yet provides shard-owned
+storage or cross-shard routing.
 
 `src/engine/shard.rs` provides:
 
@@ -63,8 +71,8 @@ separated from the execution change:
   not atomicity.
 - The append-only journal has one global order; per-shard writers need a
   sequencer or replay can diverge.
-- Blocking list/zset/stream waiters must be shard-owned, and the session loop
-  must poll both its socket and the reply channel without `tokio`.
+- Blocking list/zset/stream waiters must be shard-owned, and the Tokio session
+  loop must poll both its socket and shard replies without blocking its executor.
 - `SCAN` cursors must encode a shard id; expiry, `maxmemory` eviction accounting
   and keyspace notifications are currently global.
 - The existing `transaction_gate` read lock is taken by every command; moving

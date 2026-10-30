@@ -25,7 +25,7 @@ before/after regressions, CPU costs and raw records remain visible.
 
 ## Project vision
 
-The initial goal was a useful Redis-compatible server using Rust’s standard library and runtime. The reviewed dependency exceptions are now rustls for TLS and Mio for kernel readiness, with their required transitive crates vendored for offline builds. Over time, the project may explore newer and more advanced functionality, including streams and richer pub/sub capabilities.
+The goal is a useful Redis-compatible server implemented in safe Rust. Its reviewed dependencies are Tokio for current-thread runtimes/channels, core_affinity for worker CPU placement, Mio for the existing readiness path, and rustls for TLS, with required transitive crates vendored for offline builds.
 
 Compatibility and behavior will be guided by tests, with the aim of making the server dependable and understandable rather than merely checking off features.
 
@@ -41,8 +41,8 @@ This is a collaboration between a human and AI:
 ## Constraints
 
 - **Language:** Rust
-- **Dependencies:** None beyond the Rust standard library and runtime, including tests and benchmarks
-- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. The explicit dependency exceptions are rustls and Mio, plus their required transitive crates, vendored for offline builds. Application code contains no unsafe blocks or handwritten FFI; standard-library and dependency implementation internals are outside that application-code policy. Default Unix plain TCP uses bounded Mio readiness (epoll on Linux); fixed-worker and TLS modes retain their existing execution paths.
+- **Dependencies:** Only reviewed Tokio, core_affinity, Mio and rustls dependencies and their vendored transitives, including tests and benchmarks
+- **Safety:** Safe application Rust only; `unsafe_code = "forbid"` for every project target. No project-authored FFI or native extensions. Tokio, core_affinity, Mio and rustls plus their required transitive crates are vendored for offline builds. Application code contains no unsafe blocks or handwritten FFI; dependency implementation internals are outside that application-code policy. The optional fixed-worker path now uses pinned Tokio current-thread I/O lanes; shard-owned storage and migration of the default Mio path remain future steps.
 - **Compatibility target:** Redis protocol and behavior, developed incrementally
 - **Performance:** Aim to outperform current Redis/Valkey implementations, demonstrated by reproducible measurements—not assumed from the language choice.
 
