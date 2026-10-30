@@ -42,12 +42,17 @@ fn plain_exit_cannot_destroy_owner_under_an_admitted_tls_request() {
             tls_cert_file: Some(fixture("server.crt")),
             tls_key_file: Some(fixture("server.key")),
             worker_threads: workers,
+            io_mode: IoMode::Tokio,
             ..Config::default()
         };
         let mut server = Server::bind(config).unwrap();
         server.store = Store::with_clock(1024, clock.clone());
         let services = server.store.test_services();
         let handle = server.spawn().unwrap();
+        if workers.is_none() {
+            assert!(handle.scheduling_policy().readiness_io);
+            assert!(handle.scheduling_policy().tokio_compatibility_owner);
+        }
         let mut plain = TcpStream::connect(handle.local_addr()).unwrap();
         plain
             .set_read_timeout(Some(Duration::from_secs(3)))
@@ -129,15 +134,26 @@ fn plain_exit_cannot_destroy_owner_under_an_admitted_tls_request() {
 #[cfg(unix)]
 #[test]
 fn one_socket_worker_executes_complete_transactions_without_bridge_crossings() {
-    for workers in [None, Some(1)] {
+    // The published default engine and the opt-in async engine must both run
+    // complete transactions without a data-bridge crossing.
+    for io_mode in [IoMode::Mio, IoMode::Tokio] {
         let server = Server::bind(Config {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            worker_threads: workers,
+            worker_threads: None,
+            io_mode,
             ..Config::default()
         })
         .unwrap();
         let services = server.store.test_services();
         let handle = server.spawn().unwrap();
+        assert!(handle.scheduling_policy().readiness_io);
+        if io_mode == IoMode::Tokio {
+            assert!(handle.scheduling_policy().tokio_transport);
+            assert_eq!(handle.scheduling_policy().tokio_worker_threads, 1);
+            assert!(!handle.scheduling_policy().tokio_compatibility_owner);
+        } else {
+            assert!(!handle.scheduling_policy().tokio_transport);
+        }
         let mut peer = TcpStream::connect(handle.local_addr()).unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         peer.write_all(b"SET a old\r\nMULTI\r\nMSET a new b new\r\nINCR a\r\nEXEC\r\nMGET a b\r\n")

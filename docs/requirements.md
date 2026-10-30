@@ -9,9 +9,11 @@ increments; it is not a claim of full Redis compatibility.
   pointer manipulation, custom allocator, native extension or build script.
   Safe standard-library APIs are allowed; the standard library/runtime/OS have
   internals outside this project's code and are not claimed to contain no unsafe.
-- **Explicit external Rust dependency exceptions:** rustls for TLS and Mio for
-  kernel readiness, with required transitive crates vendored for offline builds.
-  No other build, development, test or benchmark dependency is permitted. The
+- **Explicit external Rust dependency exceptions:** rustls for TLS, Tokio for
+  asynchronous plain-TCP execution, Mio as Tokio's readiness backend, and
+  `core_affinity` for safe best-effort worker pinning, with required transitive
+  crates vendored for offline builds. No other build, development, test or
+  benchmark dependency is permitted. The
   dependency-policy test inspects all targets/features and rejects packages
   outside this allowlist. Application code remains unsafe-free; as with the
   standard library, dependency implementation internals are outside that boundary.

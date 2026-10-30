@@ -551,9 +551,20 @@ fn report(
         }
         (None, None) => {
             let policy = scheduling.expect("embedded scheduling policy");
-            if policy.readiness_io {
-                "{\"mode\":\"mio-readiness\",\"workers\":1,\"readiness_policy_version\":1}"
-                    .to_owned()
+            if policy.readiness_io && !policy.tokio_transport {
+                "{\"mode\":\"mio-readiness\",\"readiness_io\":true}".to_owned()
+            } else if policy.readiness_io {
+                format!(
+                    "{{\"mode\":\"tokio-current-thread\",\"workers\":{},\"network_runtime_threads\":{},\"accept_runtime_shared\":true,\"cold_io_service_threads\":1,\"storage_execution\":{},\"compatibility_data_owner_threads\":{}}}",
+                    policy.tokio_worker_threads,
+                    policy.tokio_worker_threads,
+                    quoted(if policy.tokio_compatibility_owner {
+                        "compatibility-bridge"
+                    } else {
+                        "local-owner"
+                    }),
+                    usize::from(policy.tokio_compatibility_owner)
+                )
             } else {
                 format!(
                     "{{\"mode\":\"thread-per-client\",\"workers\":null,\"single_reply_yield\":{},\"client_handoff_idle_us\":{},\"client_handoff_policy_version\":{},\"client_handoff_max_epoch_ms\":{},\"client_handoff_lanes\":{}}}",
@@ -869,6 +880,9 @@ mod tests {
         let options = Options::default();
         let policy = rillcache::server::SchedulingPolicy {
             readiness_io: false,
+            tokio_transport: false,
+            tokio_worker_threads: 0,
+            tokio_compatibility_owner: false,
             active_poll_us: 0,
             run_quantum_us: 0,
             single_reply_yield: true,
@@ -923,8 +937,24 @@ mod tests {
         assert!(text.contains("\"client_handoff_policy_version\":0"));
         assert!(text.contains("\"client_handoff_max_epoch_ms\":0"));
         assert!(text.contains("\"client_handoff_lanes\":0"));
+        let mio = rillcache::server::SchedulingPolicy {
+            readiness_io: true,
+            tokio_transport: false,
+            ..policy
+        };
+        let text = report(
+            "127.0.0.1:1".parse().unwrap(),
+            &options,
+            &[],
+            None,
+            Some(mio),
+        );
+        assert!(text.contains("\"mode\":\"mio-readiness\""));
+        assert!(!text.contains("network_runtime_threads"));
         let readiness = rillcache::server::SchedulingPolicy {
             readiness_io: true,
+            tokio_transport: true,
+            tokio_worker_threads: 3,
             ..policy
         };
         let text = report(
@@ -934,8 +964,26 @@ mod tests {
             None,
             Some(readiness),
         );
-        assert!(text.contains("\"mode\":\"mio-readiness\""));
-        assert!(text.contains("\"readiness_policy_version\":1"));
+        assert!(text.contains("\"mode\":\"tokio-current-thread\""));
+        assert!(text.contains("\"workers\":3"));
+        assert!(text.contains("\"network_runtime_threads\":3"));
+        assert!(text.contains("\"accept_runtime_shared\":true"));
+        assert!(text.contains("\"cold_io_service_threads\":1"));
+        assert!(text.contains("\"storage_execution\":\"local-owner\""));
+        assert!(text.contains("\"compatibility_data_owner_threads\":0"));
+        let compatibility = rillcache::server::SchedulingPolicy {
+            tokio_compatibility_owner: true,
+            ..readiness
+        };
+        let text = report(
+            "127.0.0.1:1".parse().unwrap(),
+            &options,
+            &[],
+            None,
+            Some(compatibility),
+        );
+        assert!(text.contains("\"storage_execution\":\"compatibility-bridge\""));
+        assert!(text.contains("\"compatibility_data_owner_threads\":1"));
         assert!(!text.contains("\"mode\":\"thread-per-client\""));
         assert!(!text.contains("\"client_handoff_policy_version\""));
     }

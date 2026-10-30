@@ -5,8 +5,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 ## Policy and transport
 
 - **R01 (ubiquitous):** The project shall compile with unsafe project code forbidden
-  and only the explicitly authorized rustls/Mio dependency graphs, vendored and
-  allowlisted across all targets/features. No application unsafe code or FFI is
+  and only the reviewed rustls/Tokio/CPU-affinity dependency graphs, vendored
+  and allowlisted across all targets/features. No application unsafe code or FFI is
   introduced by using their safe APIs.
 - **R10 (event-driven):** When a complete supported RESP2 command is received, the
   server shall execute it once and return one correctly framed response.
@@ -30,32 +30,76 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R19 (state-driven):** While a client performs no socket I/O for the configured
   inactivity timeout, the server shall release that connection.
 
-## Default Unix readiness I/O (S-MIO)
+## Default Unix Tokio plain-TCP execution (S-TOKIO-NET)
 
-- **R-MIO1:** When default plain TCP runs on Unix, the server shall use one Mio
-  readiness loop (epoll on Linux), without a per-client thread or busy lease scan.
-  Fixed workers, TLS and the non-Unix managed-client fallback remain available.
-- **R-MIO2:** When readiness is delivered, bounded read/command/write and accept
-  quanta shall retain runnable work until WouldBlock. Interrupted I/O shall not
-  discard readiness; spurious events shall not imply successful I/O. Pending
-  output shall add writable interest and remove it when drained.
-- **R-MIO3:** While commands are blocked/paused or clients receive pushes, bounded
-  timer servicing shall deliver replies without another socket-input edge.
-  Peer EOF behind buffered deferred commands shall release registration/accounting.
-- **R-MIO4:** When descriptors close/reuse or shutdown/error occurs, monotonically
-  distinct tokens shall reject stale events, registrations shall be removed
-  before sockets close, and all owned connections/workers shall be cleaned/joined.
-  Recycled directory slots shall stay bounded by peak simultaneous clients;
-  queued slot references shall validate the full token before service or removal.
-  Admission, frame limits, inactivity, expiry and command accounting remain intact.
-- **R-MIO5:** When measured, metadata shall identify readiness rather than leases.
-  Significant throughput gains are a hypothesis, not an acceptance exemption;
-  every original and four-CPU protected comparison remains mandatory.
+- **R-TOKIO-NET1:** When plain TCP runs on Unix without persistence, ACL files or
+  synchronous audit sinks and the operator explicitly selects the async engine,
+  the server shall serve local sockets on runtime zero and route remote sockets through bounded channels to current-thread Tokio
+  runtimes; socket reads and writes shall be async operations, not blocking
+  calls or a wrapper around the former Mio connection loop. Fixed-worker mode,
+  TLS, persistence/ACL-file/audit and portable non-Unix fallbacks remain available.
+  The proven readiness reactor shall remain the default because the protected
+  gate measures the default mode and the async engine does not win every
+  pipeline-1 condition; selection shall be explicit configuration.
+- **R-TOKIO-NET2:** When a route queue is full, acceptance shall apply bounded
+  backpressure; the server shall not create an unbounded connection-task queue.
+  Client admission, input-frame limits and response buffering shall remain bounded.
+- **R-TOKIO-NET3:** While sessions use auth/ACL, transactions/WATCH, pub/sub,
+  MONITOR, blocking commands, pause or persistence, they shall use the published
+  common Session/execution behavior, ordering and accounting. Ordinary eligible
+  plaintext shall co-locate one !Send executor with its socket runtime and make
+  zero local data-bridge submissions. Compatibility Store waits shall execute
+  outside async runtimes on bounded admission, not synchronously block them.
+- **R-TOKIO-NET4:** When idle timeout, peer cancellation, protocol error, SHUTDOWN,
+  server-handle shutdown or worker failure occurs, connection registration and
+  resources shall be released and every owned runtime worker shall be joined.
+- **R-TOKIO-NET5:** When remote worker threads start, the server shall attempt
+  safe best-effort CPU affinity to distinct allowed logical IDs when supported;
+  failure shall leave scheduling to the OS and shall not prevent startup.
+  Runtime zero shall preserve its calling thread's launcher-owned affinity mask,
+  including when it is the CLI process leader. Subprocess tests shall verify the
+  mask before/after traffic and confinement of remote threads to the launch
+  cpuset. Affinity shall not be described as guaranteed or as physical-core proof.
+- **R-TOKIO-NET6:** Native TLS shall remain on its existing TLS accept/session
+  path; only the default plaintext TCP path is migrated. Existing TLS wire and
+  shutdown behavior shall continue to pass all-mode tests.
+- **R-TOKIO-NET7:** When measured, metadata shall identify the Tokio default
+  runtime. Performance remains subject to every original and four-CPU protected
+  comparison; async architecture alone is not evidence of a throughput win.
+- **R-TOKIO-NET8:** On eligible ordinary Unix plaintext, acceptance, bounded
+  client tasks and the published one-owner executor shall share one runtime.
+  Mixed TLS compatibility may start additional network runtimes only within the
+  captured effective-CPU budget; it shall not claim multiple data owners.
+  Append-only persistence, ACL files and
+  synchronous audit sinks shall retain the non-Tokio fallback until both their
+  blocking work and lock-held disk waits are isolated. ACL and paused resumption
+  shall use one separately accounted, bounded, joined cold-I/O service; its
+  permit shall precede retaining an extra request frame and shall survive waiter
+  cancellation until the job finishes. Complete compatibility operations and
+  maintenance shall use that service rather than synchronously wait on Store.
+  Local bridge/Data lifetime shall outlive admitted cold jobs, including a
+  cancelled reply waiter. Metadata shall distinguish local vs compatibility data
+  execution and account for network, cold and external data-owner threads.
+  EXEC shall retain the existing rejection of queued ACL session commands.
+  Tests shall cover actual one-effective-CPU thread count, fallback selection,
+  and healthy same-runtime GET progress during delayed cold service work.
+- **R-TOKIO-NET9:** Acceptance, per-client tasks and routing shall remain bounded
+  and fair under slow readers and sustained connections, while cancellation
+  closes sockets before all local tasks and remote worker threads are joined.
+  Async networking shall not move synchronous disk maintenance onto a Tokio
+  runtime. Tests shall cover full local task/remote routing capacity, pending
+  connection retention, healthy-client progress, byte backpressure, service
+  saturation, failure and shutdown. The 64 KiB output batch threshold shall not
+  be described as a hard limit on one atomic command reply or total RSS.
+
+Implementation decisions, current shared-Store limits and target sequencing are
+self-contained in [the transport increment](../async-transport.md).
 
 ## Legacy fallback admission waits (S-ACCEPTWAIT)
 
-These requirements describe the managed-client fallback. Default Unix plain TCP
-is superseded by S-MIO; its acceptor waits through the readiness selector.
+These requirements describe the managed-client fallback. Eligible default Unix
+plain TCP uses S-TOKIO-NET; persistence/ACL-file/audit configurations and portable
+platforms retain timeout-based fallback admission.
 
 - **R-ACCEPT1 (state-driven):** While the default plain Linux acceptor is idle,
   it shall use a positive 10 ms kernel receive-timeout target before enabling
@@ -80,7 +124,7 @@ is superseded by S-MIO; its acceptor waits through the readiness selector.
 
 - **R60 (optional feature):** Where `--threads N` is supplied for N in 1..64,
   the server shall create exactly N managed I/O/execution workers, independent of
-  client count. Without the option it shall use S-MIO on Unix and the managed
+  client count. Without the option it shall use S-TOKIO-NET on Unix and the managed
   thread-per-client fallback elsewhere. In the legacy fallback, S21 may lend
   busy-client I/O between those existing per-client workers; it
   does not replace their admission/thread-count contract or add a permanent lane.

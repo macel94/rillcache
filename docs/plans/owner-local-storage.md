@@ -6,6 +6,13 @@ It implements the one-worker step of the completed target design reviewed on
 2026-10-30 (target document SHA256
 `326db47d02465156f8011f4b7a557ba5c2daa7018074963f574e5d0b950a9add`).
 
+Transport follow-up: this describes published PR #144's Mio/cold-control
+baseline. PR #143 wires the same local executor into default Tokio sockets and
+adds bounded cold/compatibility services. References below to retained Mio and
+future Tokio/cold services are historical to that storage increment; current
+topology, isolation limits and thread counts are in
+[the transport increment](../async-transport.md).
+
 ## Story and boundary
 
 As a user of the existing server, I can run its entire supported command surface
