@@ -42,11 +42,10 @@ mod multikey;
 mod notify;
 mod options;
 mod pubsub;
-// Recovered multi-owner work, not yet wired: kept for the next session.
+// Needs the lost async bridge traits and Control::Decide reply type.
 #[cfg(any())]
 mod owner_actor;
-// Recovered multi-owner work, not yet wired: kept for the next session.
-#[cfg(any())]
+#[cfg(test)]
 mod partition;
 // Recovered multi-owner work, not yet wired: kept for the next session.
 #[cfg(any())]
