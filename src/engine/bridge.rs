@@ -59,6 +59,7 @@ fallback!(ListMoveOutcome, ListMoveOutcome::JournalError);
 fallback!(ZSetPopOutcome, ZSetPopOutcome::JournalError);
 fallback!(XReadGroupOutcome, XReadGroupOutcome::JournalError);
 fallback!(Vec<u8>, b"-ERR internal store error\r\n".to_vec());
+fallback!(Vec<(Vec<u8>, super::data::Entry)>, Vec::new());
 fallback!(
     (Action, Vec<u8>),
     (Action::Continue, b"-ERR internal store error\r\n".to_vec())
@@ -199,6 +200,29 @@ impl Store {
 
     pub(crate) fn ensure_external_owner(&self) {
         self.call(|_| ());
+    }
+
+    /// Shared control-plane handle. A multi-owner router must use the identical
+    /// `ServerServices` so auth, clients, pub/sub and the journal stay common.
+    pub(crate) fn shared_services(&self) -> Arc<ServerServices> {
+        Arc::clone(&self.services)
+    }
+
+    /// Move replayed append-only state out of the compatibility owner so the
+    /// multi-owner router can seed its workers. The journal itself is untouched;
+    /// a rewrite still publishes one coherent snapshot from the router barrier.
+    pub(crate) fn take_initial_entries(&self) -> Vec<(Vec<u8>, super::data::Entry)> {
+        self.call(|executor| {
+            let mut data = executor.data.borrow_mut();
+            let mut keys: Vec<Vec<u8>> = data.entries.keys().cloned().collect();
+            keys.sort_unstable();
+            let entries = keys
+                .into_iter()
+                .filter_map(|key| data.gather_entry(&key).map(|entry| (key, entry)))
+                .collect();
+            data.flush();
+            entries
+        })
     }
 
     pub(crate) fn owner_status(&self) -> std::io::Result<()> {

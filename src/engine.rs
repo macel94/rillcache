@@ -40,6 +40,10 @@ mod multikey;
 mod notify;
 mod options;
 mod pubsub;
+mod mailbox;
+mod owner_actor;
+mod partition;
+mod router;
 mod scan;
 mod sha256;
 mod shard;
@@ -51,6 +55,10 @@ mod string_ranges;
 mod transaction;
 mod unsupported;
 mod xxh3;
+pub(crate) use mailbox::{ByteBudget, Credit, MailboxError, OwnerSender, ReplyReceiver, owner_mailbox, reply_channel};
+pub(crate) use owner_actor::{Control, OwnerError};
+pub(crate) use partition::{LayoutError, OwnerId, PartitionLayout};
+pub(crate) use router::{MultiOwner, RouterError, RouterSizing};
 pub use acl_log::AclLogEntry;
 
 /// Verify a per-line audit HMAC with a shared 16..=1024-byte key.
@@ -149,6 +157,41 @@ pub struct Stats {
     pub audit_syslog_write_failures: u64,
 }
 
+/// Aggregated keyspace accounting used by INFO/MEMORY/STATS. Each owner computes
+/// its own live keys, expiry deadlines, payload and lifecycle counters; the
+/// multi-owner router sums them under one barrier instead of reading another
+/// worker's `Data`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DatasetStats {
+    pub(crate) live_keys: usize,
+    pub(crate) expiring_keys: usize,
+    pub(crate) subexpiry_keys: usize,
+    pub(crate) ttl_sum: u64,
+    pub(crate) ttl_count: u64,
+    pub(crate) payload_bytes: usize,
+    pub(crate) peak_payload_bytes: usize,
+    pub(crate) expired_keys: u64,
+    pub(crate) expired_subkeys: u64,
+    pub(crate) evicted_keys: u64,
+}
+impl DatasetStats {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.live_keys = self.live_keys.saturating_add(other.live_keys);
+        self.expiring_keys = self.expiring_keys.saturating_add(other.expiring_keys);
+        self.subexpiry_keys = self.subexpiry_keys.saturating_add(other.subexpiry_keys);
+        self.ttl_sum = self.ttl_sum.saturating_add(other.ttl_sum);
+        self.ttl_count = self.ttl_count.saturating_add(other.ttl_count);
+        self.payload_bytes = self.payload_bytes.saturating_add(other.payload_bytes);
+        self.peak_payload_bytes = self.peak_payload_bytes.max(other.peak_payload_bytes);
+        self.expired_keys = self.expired_keys.saturating_add(other.expired_keys);
+        self.expired_subkeys = self.expired_subkeys.saturating_add(other.expired_subkeys);
+        self.evicted_keys = self.evicted_keys.saturating_add(other.evicted_keys);
+    }
+    pub(crate) fn avg_ttl(&self) -> u64 {
+        self.ttl_sum.checked_div(self.ttl_count).unwrap_or(0)
+    }
+}
+
 #[doc(hidden)]
 pub struct ServerServices {
     #[cfg(test)]
@@ -158,6 +201,11 @@ pub struct ServerServices {
     router: shard::ShardRouter,
     eviction_policy: std::sync::atomic::AtomicU8,
     max_payload_bytes: std::sync::atomic::AtomicUsize,
+    /// Global payload admitted by every owner, used as a local credit bound.
+    payload_committed: std::sync::atomic::AtomicUsize,
+    /// Set once a multi-owner router (not a single local owner) serves requests.
+    multi_owner: std::sync::atomic::AtomicBool,
+    dataset_override: std::sync::Mutex<Option<DatasetStats>>,
     error_dialect: RwLock<ErrorDialect>,
     collection_config: RwLock<CollectionConfig>,
     clock: Arc<dyn Clock>,
@@ -209,6 +257,8 @@ pub(crate) struct ShardExecutor {
     services: Arc<ServerServices>,
     data: std::cell::RefCell<Data>,
     notification_epoch: std::cell::Cell<u64>,
+    /// Last payload total this owner contributed to the shared credit counter.
+    published_payload: std::cell::Cell<usize>,
     _local: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
@@ -237,6 +287,9 @@ impl ServerServices {
             router: shard::ShardRouter::new(1).expect("single-owner layout"),
             eviction_policy: std::sync::atomic::AtomicU8::new(0),
             max_payload_bytes: std::sync::atomic::AtomicUsize::new(max_payload_bytes),
+            payload_committed: std::sync::atomic::AtomicUsize::new(0),
+            multi_owner: std::sync::atomic::AtomicBool::new(false),
+            dataset_override: std::sync::Mutex::new(None),
             error_dialect: RwLock::new(ErrorDialect::default()),
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
@@ -863,6 +916,7 @@ impl ShardExecutor {
             ),
             services,
             data: std::cell::RefCell::new(data),
+            published_payload: std::cell::Cell::new(0),
             _local: std::marker::PhantomData,
         }
     }
@@ -875,6 +929,54 @@ impl ShardExecutor {
         }
         data.eviction = self.eviction_policy();
         data.set_collect_events(self.journal.is_some() || self.notifications_enabled());
+        // A single local owner enforces the whole budget itself. A multi-owner
+        // worker admits against shared credit instead; a reduction then blocks
+        // growth and is reclaimed by the router's global budget path.
+        if !self.services.multi_owner.load(Ordering::Acquire) {
+            let limit = self.max_payload_bytes.load(Ordering::Relaxed);
+            if limit > 0 && data.payload_bytes > limit {
+                data.enforce_budget(limit);
+            }
+        }
+    }
+
+    /// Publish this owner's payload contribution into the shared credit total.
+    /// Called after every owner turn and scoped control operation.
+    pub(crate) fn sync_payload_credit(&self) {
+        if !self.services.multi_owner.load(Ordering::Acquire) {
+            return;
+        }
+        let mine = self
+            .data
+            .try_borrow()
+            .map(|data| data.payload_bytes)
+            .unwrap_or(0);
+        let previous = self.published_payload.replace(mine);
+        if mine > previous {
+            self.services
+                .payload_committed
+                .fetch_add(mine - previous, Ordering::AcqRel);
+        } else if previous > mine {
+            self.services
+                .payload_committed
+                .fetch_sub(previous - mine, Ordering::AcqRel);
+        }
+    }
+
+    /// Local admission maximum: this owner's current payload plus the free part
+    /// of the shared budget. One owner can never spend another owner's space.
+    pub(crate) fn payload_limit(&self) -> usize {
+        let limit = self.max_payload_bytes.load(Ordering::Relaxed);
+        if limit == 0 || !self.services.multi_owner.load(Ordering::Acquire) {
+            return limit;
+        }
+        let mine = self
+            .data
+            .try_borrow()
+            .map(|data| data.payload_bytes)
+            .unwrap_or(0);
+        let committed = self.services.payload_committed.load(Ordering::Acquire);
+        mine.saturating_add(limit.saturating_sub(committed.min(limit)))
     }
 
     pub fn purge_expired(&self, limit: usize) -> usize {
@@ -966,10 +1068,53 @@ impl ShardExecutor {
     }
 
     pub fn stats(&self) -> Stats {
-        let lifecycle = self.data.try_borrow().map_or((0, 0, 0), |data| {
-            (data.expired_keys, data.expired_subkeys, data.evicted_keys)
-        });
-        self.stats_from_counters(lifecycle)
+        let dataset = self.dataset_stats();
+        self.stats_from_counters((dataset.expired_keys, dataset.expired_subkeys, dataset.evicted_keys))
+    }
+
+    /// Owner-local dataset accounting, ignoring any published aggregate.
+    pub(crate) fn local_dataset_stats(&self) -> DatasetStats {
+        let Ok(data) = self.data.try_borrow() else {
+            return DatasetStats::default();
+        };
+        let now = self.clock.now_ms().max(0);
+        let mut stats = DatasetStats {
+            payload_bytes: data.payload_bytes,
+            peak_payload_bytes: data.peak_payload_bytes(),
+            expired_keys: data.expired_keys,
+            expired_subkeys: data.expired_subkeys,
+            evicted_keys: data.evicted_keys,
+            ..DatasetStats::default()
+        };
+        for entry in data.entries.values().filter(|entry| entry.alive(now)) {
+            stats.live_keys += 1;
+            stats.subexpiry_keys += usize::from(!entry.field_ttl.is_empty());
+            if let Some(deadline) = entry.expires {
+                stats.expiring_keys += 1;
+                stats.ttl_count += 1;
+                stats.ttl_sum = stats
+                    .ttl_sum
+                    .saturating_add(u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0));
+            }
+        }
+        stats
+    }
+
+    /// Accounting visible to INFO/MEMORY/STATS. A multi-owner router publishes a
+    /// coherent aggregate for the duration of one informational command.
+    pub(crate) fn dataset_stats(&self) -> DatasetStats {
+        if let Ok(guard) = self.dataset_override.lock()
+            && let Some(stats) = *guard
+        {
+            return stats;
+        }
+        self.local_dataset_stats()
+    }
+
+    pub(crate) fn publish_dataset(&self, stats: Option<DatasetStats>) {
+        if let Ok(mut guard) = self.dataset_override.lock() {
+            *guard = stats;
+        }
     }
 
     pub fn reset_stats(&self) -> bool {

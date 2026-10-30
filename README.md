@@ -188,6 +188,10 @@ bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` opti
 It is already multithreaded by default (one managed worker per client). Optional
 `--threads 1` or `--threads N` selects exactly 1..64 shared I/O/execution workers
 plus the accept/control thread; idle clients do not occupy an entire worker.
+An opt-in `--storage-owners N` (`1..=64`) moves data execution itself onto `N`
+owned workers with whole-owner routing and cross-owner transactions; see
+[multi-owner execution](docs/plans/multi-owner-execution.md) for its exact
+semantics and limits. One owner, the default, keeps the shipped zero-hop path.
 
 **Durability completeness is explicitly deferred for the current phase.** The
 append-only journal remains available and tested, but it is best-effort: there is

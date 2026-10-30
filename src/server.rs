@@ -167,6 +167,9 @@ pub struct Config {
     /// None: Unix Mio readiness, managed blocking-client fallback elsewhere.
     /// Some(1..=64): the existing fixed I/O/execution lanes.
     pub worker_threads: Option<usize>,
+    /// Opt-in multi-owner data execution. `None` or `Some(1)` keeps the proven
+    /// one-owner path; `Some(2..=64)` starts that many owned data workers.
+    pub storage_owners: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
     pub max_data_bytes: usize,
     pub limits: Limits,
@@ -219,6 +222,7 @@ impl std::fmt::Debug for Config {
             .field("auth_source_limit", &self.auth_source_limit)
             .field("auth_source_window_ms", &self.auth_source_window_ms)
             .field("worker_threads", &self.worker_threads)
+            .field("storage_owners", &self.storage_owners)
             .field("max_data_bytes", &self.max_data_bytes)
             .field("limits", &self.limits)
             .field("idle_timeout", &self.idle_timeout)
@@ -260,6 +264,7 @@ impl Default for Config {
             auth_source_limit: 0,
             auth_source_window_ms: 60_000,
             worker_threads: None,
+            storage_owners: None,
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
@@ -292,6 +297,9 @@ impl Config {
             .worker_threads
             .is_some_and(|count| !(1..=64).contains(&count))
             || self.max_clients == 0
+            || self.storage_owners.is_some_and(|count| !(1..=64).contains(&count))
+            || (self.storage_owners.is_some_and(|count| count > 1)
+                && (self.worker_threads.is_some() || self.tls_bind_addr.is_some() || !cfg!(unix)))
             || self.auth_failure_limit > 10_000
             || self.auth_source_limit > 10_000
             || self.auth_source_window_ms == 0
@@ -342,7 +350,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
+                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, TLS needs a distinct bind address plus certificate and key, multi-owner execution needs the Unix readiness reactor without --threads or TLS, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         Ok(())

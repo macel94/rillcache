@@ -172,7 +172,7 @@ pub(super) struct Consumer {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ConsumerGroup {
+pub(crate) struct ConsumerGroup {
     pub last_delivered: StreamId,
     pub consumers: BTreeMap<Vec<u8>, Consumer>,
     pub pending: BTreeMap<StreamId, Pending>,
@@ -276,6 +276,68 @@ fn push_lifecycle(queue: &mut VecDeque<Vec<u8>>, key: &[u8]) {
 }
 
 impl Data {
+    /// Build owner-local state from owned key entries. Used only by the
+    /// multi-owner transaction scratch executor, which receives cloned entries
+    /// for the keys one command may touch; no entry ever moves between owners.
+    pub(super) fn from_entries(entries: Vec<(Vec<u8>, Entry)>, eviction: EvictionPolicy) -> Self {
+        let mut data = Self {
+            eviction,
+            ..Self::default()
+        };
+        for (key, entry) in entries {
+            data.field_ttls = data.field_ttls.saturating_add(entry.field_ttl.len());
+            if let Some(at) = entry.expires {
+                data.expirations.insert((at, key.clone()));
+            }
+            data.payload_bytes = data
+                .payload_bytes
+                .saturating_add(key.len() + entry.payload_len);
+            data.entries.insert(key, entry);
+        }
+        data
+    }
+
+    /// Clone one key for a transaction gather. The owner keeps its entry and its
+    /// version; gathering is a read and must not perturb expiry or accounting.
+    pub(super) fn gather_entry(&self, key: &[u8]) -> Option<Entry> {
+        self.entries.get(key).cloned()
+    }
+
+    /// Install the transaction result for exactly one key, advancing the
+    /// version once so same-value writes still invalidate `WATCH`.
+    pub(super) fn scatter_entry(&mut self, key: &[u8], entry: Option<Entry>, now: i64) {
+        match entry {
+            Some(entry) => {
+                let previous = self
+                    .entries
+                    .get(key)
+                    .map_or(0, |old| key.len() + old.payload_len);
+                let total = self
+                    .payload_bytes
+                    .saturating_sub(previous)
+                    .saturating_add(key.len() + entry.payload_len);
+                self.put_owned(key, entry, total, now);
+            }
+            None => {
+                self.remove(key);
+            }
+        }
+    }
+
+    /// Keys mutated since construction of a scratch executor, in stable order.
+    /// The scratch executor starts empty, so a tracked version marks a key the
+    /// command actually wrote, including a same-value write.
+    pub(super) fn touched_keys(&self) -> Vec<Vec<u8>> {
+        let mut keys: Vec<Vec<u8>> = self
+            .entries
+            .keys()
+            .filter(|key| self.versions.contains_key(*key))
+            .cloned()
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
     /// True while a key evicted during the current command is pending publication.
     pub(super) fn was_evicted(&self, key: &[u8]) -> bool {
         self.evicted_events

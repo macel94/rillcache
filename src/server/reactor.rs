@@ -4,7 +4,7 @@
 
 use super::pool::Client;
 use super::*;
-use crate::engine::{BridgeInbox, Execution, ServerServices, StoreHandle};
+use crate::engine::{BridgeInbox, Execution, MultiOwner, ServerServices, StoreHandle};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -346,6 +346,17 @@ pub(super) fn serve(
             stopping,
         )
     }
+}
+
+/// Opt-in multi-owner execution. The socket loop owns a shared router handle;
+/// data workers are separate joined threads started by `MultiOwner::start`.
+pub(super) fn serve_multi(
+    listener: TcpListener,
+    config: Config,
+    router: Arc<MultiOwner>,
+    stopping: Arc<AtomicBool>,
+) -> io::Result<()> {
+    serve_with(listener, config, Rc::new(router), None, stopping)
 }
 
 fn serve_with<E: Execution>(

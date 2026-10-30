@@ -1,7 +1,10 @@
 # Owner-local storage: first usable execution increment
 
 Status: **one owner, not multi-owner/thread-per-core completion**. This document
-owns the design and limits of this PR; review does not depend on another worktree.
+owns the design and limits of the merged one-owner increment; review does not
+depend on another worktree. The opt-in multi-owner mode built on top of it is
+described separately in
+[multi-owner execution](multi-owner-execution.md).
 It implements the one-worker step of the completed target design reviewed on
 2026-10-30 (target document SHA256
 `326db47d02465156f8011f4b7a557ba5c2daa7018074963f574e5d0b950a9add`).
@@ -141,7 +144,11 @@ remains failed evidence. Its test-only head is not retried as this implementatio
   all 20 original and all 10 official four-CPU medians must strictly beat Valkey.
   Preserve losses and invalid evidence; do not retry unchanged candidates.
 
-Multi-owner routing/reservations, cancellation, global budget credits, joined
-asynchronous journal/cold services and scaling evidence remain required before
-claiming the completed thread-per-core target. Independent fan-out, per-shard
-quotas and whole-Data lending are not substitutes for that work.
+Opt-in multi-owner routing, whole-owner reservations and cross-owner
+transactions now exist in
+[multi-owner execution](multi-owner-execution.md); that document lists what is
+still not claimed there (asynchronous socket tasks, TLS/fixed-worker routing,
+key-level scheduling, affinity/NUMA and any scaling evidence). Asynchronous cold
+services, per-shard quotas, whole-Data lending and the completed thread-per-core
+default remain out of scope. Independent fan-out and whole-Data lending are not
+substitutes for that work.
