@@ -48,9 +48,13 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-TOKIO-NET4:** When idle timeout, peer cancellation, protocol error, SHUTDOWN,
   server-handle shutdown or worker failure occurs, connection registration and
   resources shall be released and every owned runtime worker shall be joined.
-- **R-TOKIO-NET5:** When worker threads start, the server shall attempt safe
-  best-effort CPU affinity when supported; failure shall leave scheduling to the
-  OS and shall not prevent startup. Affinity shall not be described as guaranteed.
+- **R-TOKIO-NET5:** When remote worker threads start, the server shall attempt
+  safe best-effort CPU affinity to distinct allowed logical IDs when supported;
+  failure shall leave scheduling to the OS and shall not prevent startup.
+  Runtime zero shall preserve its calling thread's launcher-owned affinity mask,
+  including when it is the CLI process leader. Subprocess tests shall verify the
+  mask before/after traffic and confinement of remote threads to the launch
+  cpuset. Affinity shall not be described as guaranteed or as physical-core proof.
 - **R-TOKIO-NET6:** Native TLS shall remain on its existing TLS accept/session
   path; only the default plaintext TCP path is migrated. Existing TLS wire and
   shutdown behavior shall continue to pass all-mode tests.

@@ -4,64 +4,183 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
+use std::sync::mpsc::{self, Receiver};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-struct OwnedChild(Child);
-impl Drop for OwnedChild {
+struct Process {
+    child: Child,
+    logger: Option<JoinHandle<()>>,
+    lines: Receiver<String>,
+    addr: String,
+}
+
+impl Drop for Process {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(logger) = self.logger.take() {
+            logger.join().unwrap();
+        }
     }
+}
+
+impl Process {
+    fn start(core: Option<core_affinity::CoreId>) -> Self {
+        // Restrict a disposable launcher thread when requested; its child
+        // inherits that mask. Never change the harness thread's affinity or
+        // require an external taskset. None tests the full inherited mask.
+        let mut child = thread::spawn(move || {
+            if let Some(core) = core {
+                assert!(core_affinity::set_for_current(core));
+            }
+            Command::new(env!("CARGO_BIN_EXE_rillcache"))
+                .args(["--bind", "127.0.0.1:0"])
+                .stderr(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .join()
+        .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (sender, lines) = mpsc::channel();
+        let logger = thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                if sender.send(line.unwrap()).is_err() {
+                    break;
+                }
+            }
+        });
+        // Construct the owner before any assertion, so failure also reaps the
+        // child and joins the stderr reader.
+        let mut process = Self {
+            child,
+            logger: Some(logger),
+            lines,
+            addr: String::new(),
+        };
+        let line = process.lines.recv_timeout(Duration::from_secs(5)).unwrap();
+        process.addr = line
+            .split("listening on ")
+            .nth(1)
+            .expect("listener address")
+            .trim()
+            .to_owned();
+        process
+    }
+
+    fn connect(&self) -> TcpStream {
+        let stream = TcpStream::connect(&self.addr).unwrap();
+        stream.set_nodelay(true).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream
+    }
+
+    fn shutdown(&mut self, stream: &mut TcpStream) {
+        stream.write_all(b"*1\r\n$8\r\nSHUTDOWN\r\n").unwrap();
+        // Protocol SHUTDOWN closes without a success reply (existing contract).
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shutdown did not join all threads"
+            );
+            thread::yield_now();
+        }
+        self.logger.take().unwrap().join().unwrap();
+    }
+}
+
+fn affinity(status: &str) -> Vec<usize> {
+    let list = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+        .expect("procfs affinity")
+        .trim();
+    list.split(',')
+        .flat_map(|part| {
+            let (first, last) = part.split_once('-').unwrap_or((part, part));
+            first.parse::<usize>().unwrap()..=last.parse::<usize>().unwrap()
+        })
+        .collect()
+}
+
+fn process_affinity(pid: u32) -> Vec<usize> {
+    affinity(&std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap())
+}
+
+fn ping(stream: &mut TcpStream) {
+    stream.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+    let mut pong = [0u8; 7];
+    stream.read_exact(&mut pong).unwrap();
+    assert_eq!(&pong, b"+PONG\r\n");
+}
+
+#[test]
+fn runtime_zero_preserves_launch_mask_before_and_after_traffic() {
+    let expected = process_affinity(std::process::id());
+    let mut process = Process::start(None);
+    let mut stream = process.connect();
+    ping(&mut stream); // proves runtime startup, not merely TCP handshake
+    assert_eq!(
+        process_affinity(process.child.id()),
+        expected,
+        "runtime zero must not narrow the launcher-owned process-leader mask"
+    );
+    for _ in 0..32 {
+        stream
+            .write_all(b"*2\r\n$3\r\nGET\r\n$7\r\nmissing\r\n")
+            .unwrap();
+        let mut missing = [0; 5];
+        stream.read_exact(&mut missing).unwrap();
+        assert_eq!(&missing, b"$-1\r\n");
+    }
+    assert_eq!(process_affinity(process.child.id()), expected);
+    // Pinning remote workers must never escape the inherited cpuset; successful
+    // singleton pins use distinct IDs. Failure may retain the launcher mask.
+    let mut pinned = Vec::new();
+    for task in std::fs::read_dir(format!("/proc/{}/task", process.child.id())).unwrap() {
+        let task = task.unwrap().path();
+        let status = std::fs::read_to_string(task.join("status")).unwrap();
+        let mask = affinity(&status);
+        assert!(mask.iter().all(|id| expected.contains(id)));
+        let name = std::fs::read_to_string(task.join("comm")).unwrap();
+        if name.starts_with("rillcache-tokio") && mask.len() == 1 {
+            assert!(
+                !pinned.contains(&mask[0]),
+                "remote workers must not wrap CPU IDs"
+            );
+            pinned.push(mask[0]);
+        }
+    }
+    process.shutdown(&mut stream);
 }
 
 #[test]
 fn one_effective_cpu_runs_one_network_runtime_plus_one_joined_cold_service() {
     let core = core_affinity::get_core_ids().unwrap()[0];
-    // Pin a disposable launcher thread; its child inherits that mask. Never
-    // change the test harness thread's affinity or require an external taskset.
-    let child = thread::spawn(move || {
-        assert!(core_affinity::set_for_current(core));
-        Command::new(env!("CARGO_BIN_EXE_rillcache"))
-            .args(["--bind", "127.0.0.1:0"])
-            .stderr(Stdio::piped())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap()
-    })
-    .join()
-    .unwrap();
-    let mut child = OwnedChild(child);
-    let stderr = child.0.stderr.take().unwrap();
-    let (sender, receiver) = mpsc::channel();
-    let logger = thread::spawn(move || {
-        for line in BufReader::new(stderr).lines() {
-            if sender.send(line.unwrap()).is_err() {
-                break;
-            }
-        }
-    });
-    let line = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
-    let addr = line
-        .split("listening on ")
-        .nth(1)
-        .expect("listener address");
-    let mut stream = TcpStream::connect(addr).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    stream.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
-    let mut pong = [0u8; 7];
-    stream.read_exact(&mut pong).unwrap();
-    assert_eq!(&pong, b"+PONG\r\n");
-    let affinity = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
-    assert!(affinity.contains("Tokio runtime 0"), "{affinity}");
+    let mut process = Process::start(Some(core));
+    let mut stream = process.connect();
+    ping(&mut stream);
+    assert_eq!(process_affinity(process.child.id()), [core.id]);
+    let affinity = process.lines.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(
+        affinity.contains("Tokio runtime 0 preserves launcher affinity"),
+        "{affinity}"
+    );
 
-    let tasks = std::fs::read_dir(format!("/proc/{}/task", child.0.id())).unwrap();
+    let tasks = std::fs::read_dir(format!("/proc/{}/task", process.child.id())).unwrap();
     let mut names: Vec<_> = tasks
         .map(|task| {
             std::fs::read_to_string(task.unwrap().path().join("comm"))
@@ -73,8 +192,7 @@ fn one_effective_cpu_runs_one_network_runtime_plus_one_joined_cold_service() {
     names.sort();
     assert_eq!(names, ["rillcache", "rillcache-cold-"]);
 
-    // Exercise the disk-capable command on the service, including mixed-case
-    // dispatch and ordered pipeline continuation on the sole network runtime.
+    // Exercise mixed-case ACL dispatch and ordered continuation on runtime zero.
     stream
         .write_all(b"*3\r\n$3\r\naCl\r\n$7\r\nGENPASS\r\n$1\r\n8\r\n*1\r\n$4\r\nPING\r\n")
         .unwrap();
@@ -83,20 +201,6 @@ fn one_effective_cpu_runs_one_network_runtime_plus_one_joined_cold_service() {
     assert_eq!(&result[..4], b"$2\r\n");
     assert!(result[4..6].iter().all(u8::is_ascii_hexdigit));
     assert_eq!(&result[6..], b"\r\n+PONG\r\n");
-    stream.write_all(b"*1\r\n$8\r\nSHUTDOWN\r\n").unwrap();
-    // Protocol SHUTDOWN closes without a success reply (existing contract).
-    assert_eq!(stream.read(&mut [0]).unwrap(), 0);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let Some(status) = child.0.try_wait().unwrap() {
-            assert!(status.success());
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "shutdown did not join all threads"
-        );
-        thread::yield_now();
-    }
-    logger.join().unwrap();
+    assert_eq!(process_affinity(process.child.id()), [core.id]);
+    process.shutdown(&mut stream);
 }

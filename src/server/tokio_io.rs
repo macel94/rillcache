@@ -219,7 +219,7 @@ fn serve_with_task_limit(
             let thread = thread::Builder::new()
                 .name(format!("rillcache-tokio-{worker_index}"))
                 .spawn(move || {
-                    pin_worker(worker_index, core);
+                    pin_remote_worker(worker_index, core);
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?;
@@ -227,7 +227,14 @@ fn serve_with_task_limit(
                 })?;
             lanes.push(Lane { sender, thread });
         }
-        pin_worker(0, cores.first().copied());
+        // Runtime zero can be the CLI process leader. Its affinity belongs to
+        // the launcher: narrowing it changes the externally observed cpuset
+        // contract (and also changes this calling thread after run returns).
+        // Only remote network threads attempt per-worker affinity.
+        let _ = writeln!(
+            io::stderr().lock(),
+            "rillcache: Tokio runtime 0 preserves launcher affinity"
+        );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -244,7 +251,8 @@ fn serve_with_task_limit(
     result.and(join(cold_thread))
 }
 
-fn pin_worker(index: usize, core: Option<core_affinity::CoreId>) {
+fn pin_remote_worker(index: usize, core: Option<core_affinity::CoreId>) {
+    debug_assert!(index > 0, "runtime zero preserves its launcher's affinity");
     let applied = core.is_some_and(core_affinity::set_for_current);
     // Diagnostics must not crash a server whose launcher's stderr pipe closed.
     let _ = writeln!(

@@ -68,10 +68,16 @@ placement remains launcher-owned, not inferred by the load generator.
 TLS, when configured, separately retains its existing accept thread and managed
 client threads. Fixed-worker mode is unchanged and separately accounted.
 
-Distinct allowed logical CPU IDs are attempted once per network worker using
-safe `core_affinity`; IDs are never modulo-wrapped. Startup stderr records each
-attempt and success/failure. A missing ID or failed pin leaves OS scheduling in
-control. Affinity does not imply physical-core independence or a performance win.
+Runtime zero preserves the calling thread's **launcher-owned affinity mask**.
+For CLI execution this is the process leader: pinning it to one CPU would change
+its externally observable cpuset contract, even if other workers still had the
+original mask. There is no extra accept/coordinator thread to avoid this issue.
+Only remote network workers attempt distinct allowed logical CPU IDs using safe
+`core_affinity`; IDs are never modulo-wrapped. Startup stderr records runtime
+zero's preserved mask policy and each remote attempt's success/failure. A missing
+ID or failed pin leaves OS scheduling in control. Affinity does not imply
+physical-core independence or a performance win. Cgroup quota discovery and
+launcher cpusets are not rewritten by the server.
 
 ## Disk/maintenance fallback
 
@@ -150,8 +156,10 @@ Requirements R-TOKIO-NET1–9 are in
 - bounded cold-service saturation: healthy GET (which takes the data/transaction
   gate) progresses on the same sole runtime, not just gate-bypassing PING;
   ACL-in-MULTI rejection/EXECABORT and task panic preserve semantics and joins;
-- Linux subprocess restricted to one allowed CPU: exactly the main network
-  runtime plus one cold thread, GENPASS/pipeline correctness, and protocol stop;
+- Linux subprocess with the full inherited mask: runtime-zero/process-leader
+  mask unchanged before/after traffic, remote worker masks stay within the launch
+  cpuset with distinct successful pins; one-CPU subprocess: exactly one network
+  runtime plus one cold thread, GENPASS/pipeline correctness and protocol stop;
 - existing all-mode binary/fragmented pipelines, blocked clients, pub/sub,
   persistence, audit, ACL, TLS, and shutdown suites.
 
@@ -162,7 +170,17 @@ Prior four-CPU run [41039159717](https://github.com/macel94/rillcache/actions/ru
 failed 5/10: every P=1 case lost while every P=16 case passed. It is preserved,
 not retried or relabeled. Async networking does not fix a failed gate by definition.
 
-The subsequent local 72-sample advisory control/candidate cohort overlapped a
+Fresh head `444e526` runs
+[41049312936](https://github.com/macel94/rillcache/actions/runs/41049312936) and
+[41049312759](https://github.com/macel94/rillcache/actions/runs/41049312759) both
+failed **setup affinity validation**, not numeric throughput comparisons. The
+four-CPU raw server identity records requested CPUs `[0,1,2,3]` but the leader's
+observed mask `[0]`; both manifests are incomplete, with zero measured records.
+This diagnosed runtime-zero pinning regression is fixed by preserving its launch
+mask. The failures remain retained; neither gate/harness is modified or retried
+on unchanged source.
+
+The local 72-sample advisory control/candidate cohort overlapped a
 full CI build in another worktree on the same host. It is explicitly
 **contention-affected and inconclusive for causal throughput claims**, not a
 controlled speedup result. All rows and raw samples are retained, including
