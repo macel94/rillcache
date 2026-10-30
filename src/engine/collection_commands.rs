@@ -8,7 +8,7 @@
 use super::collection_config::CollectionConfig;
 use super::data::{Collection, Data, Entry};
 use super::options::{NOT_INTEGER, OOM, SYNTAX, parse_integer};
-use super::{Store, arity, integer, internal_error, wrong_type};
+use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::Write;
@@ -21,7 +21,7 @@ const MAX_HGETEX_REPLY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_HASH_FIELD_DEADLINE_MS: i64 = ((1i64 << 48) - 1) >> 2;
 static RANDOM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-impl Store {
+impl ShardExecutor {
     /// Returns false without touching output for commands owned by another module.
     pub(super) fn execute_collection_commands(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let Some(command) = args.first() else {
@@ -1241,7 +1241,7 @@ fn ordered_zset(items: Vec<(&[u8], f64)>, reverse: bool) -> Vec<(Vec<u8>, f64)> 
     ordered
 }
 
-impl Store {
+impl ShardExecutor {
     fn execute_hash_extended(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let command = args.first().expect("nonempty command");
         if command.eq_ignore_ascii_case(b"HRANDFIELD") {
@@ -1289,7 +1289,7 @@ impl Store {
         } else {
             None
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1380,7 +1380,7 @@ impl Store {
             return;
         }
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1448,7 +1448,7 @@ impl Store {
     }
 }
 
-impl Store {
+impl ShardExecutor {
     fn hash_expire(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let name = if args
             .first()
@@ -1522,7 +1522,7 @@ impl Store {
             return;
         }
         let fields = &args[fields_start..];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1619,7 +1619,7 @@ impl Store {
             return;
         }
         let fields = &args[4..];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1687,7 +1687,7 @@ impl Store {
             return;
         }
         let fields = &args[4..];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1736,7 +1736,7 @@ impl Store {
             .as_chunks::<2>()
             .0;
         let fields: Vec<&[u8]> = pairs.iter().map(|pair| pair[0]).collect();
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1835,7 +1835,7 @@ impl Store {
         let count = options.field_count;
         let fields = &args[options.fields_start..options.fields_start + count];
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1918,7 +1918,7 @@ impl Store {
             return;
         }
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -1966,7 +1966,7 @@ impl Store {
 
     fn hash_del(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2025,7 +2025,7 @@ impl Store {
     }
 
     fn hash_exists(&self, args: &[&[u8]], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2077,7 +2077,7 @@ impl Store {
     }
 
     fn hash_incr_integer(&self, key: &[u8], field: &[u8], amount: i64, out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2130,7 +2130,7 @@ impl Store {
     }
 
     fn hash_incr_float(&self, key: &[u8], field: &[u8], amount: f64, out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2187,7 +2187,7 @@ impl Store {
     }
 
     fn hash_mget(&self, args: &[&[u8]], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2213,7 +2213,7 @@ impl Store {
     }
 
     fn hash_keys_values(&self, args: &[&[u8]], fields: bool, out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2242,7 +2242,7 @@ impl Store {
     }
 
     fn hash_strlen(&self, args: &[&[u8]], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2264,7 +2264,7 @@ impl Store {
     }
 }
 
-impl Store {
+impl ShardExecutor {
     fn execute_list_extended(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
         let command = args.first().expect("nonempty command");
         if command.eq_ignore_ascii_case(b"LPOS") {
@@ -2364,7 +2364,7 @@ impl Store {
                 return;
             }
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2454,7 +2454,7 @@ impl Store {
                 return;
             }
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2529,7 +2529,7 @@ impl Store {
             out.extend_from_slice(b"-ERR syntax error\r\n");
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2666,7 +2666,7 @@ impl Store {
     }
 
     fn list_index(&self, args: &[&[u8]], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2705,7 +2705,7 @@ impl Store {
             return;
         };
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2753,7 +2753,7 @@ impl Store {
             return;
         };
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2819,7 +2819,7 @@ impl Store {
 
     fn list_set(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2865,7 +2865,7 @@ impl Store {
             return;
         };
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2922,7 +2922,7 @@ impl Store {
 
     fn list_push_existing(&self, args: &[&[u8]], left: bool, out: &mut Vec<u8>) {
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -2987,10 +2987,10 @@ fn owned_set(data: &mut Data, key: &[u8], now: i64) -> Result<Option<BTreeSet<Ve
     }
 }
 
-impl Store {
+impl ShardExecutor {
     fn set_remove(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3041,7 +3041,7 @@ impl Store {
     }
 
     fn set_mismember(&self, args: &[&[u8]], out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3072,7 +3072,7 @@ impl Store {
 
     fn set_move(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let (source, destination, member) = (args[1], args[2], args[3]);
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3167,7 +3167,7 @@ impl Store {
     }
 
     fn set_algebra(&self, args: &[&[u8]], operation: &str, out: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3224,7 +3224,7 @@ impl Store {
                 return;
             }
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3256,7 +3256,7 @@ impl Store {
 
     fn set_store(&self, args: &[&[u8]], operation: &str, out: &mut Vec<u8>) {
         let destination = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3333,7 +3333,7 @@ impl Store {
             None
         };
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3407,7 +3407,7 @@ impl Store {
         } else {
             None
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3495,7 +3495,7 @@ fn owned_zset(data: &mut Data, key: &[u8], now: i64) -> Result<Option<HashMap<Ve
     }
 }
 
-impl Store {
+impl ShardExecutor {
     fn zset_add_extra(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let mut nx = false;
         let mut xx = false;
@@ -3559,7 +3559,7 @@ impl Store {
             pairs.push((normalize_score(score), pair[1]));
         }
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3648,7 +3648,7 @@ impl Store {
 
     fn zset_remove(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3704,7 +3704,7 @@ impl Store {
         };
         let key = args[1];
         let member = args[3];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3747,7 +3747,7 @@ impl Store {
             out.extend_from_slice(b"-ERR syntax error\r\n");
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3806,7 +3806,7 @@ impl Store {
             out.extend_from_slice(b"-ERR syntax error\r\n");
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3869,7 +3869,7 @@ impl Store {
             out.extend_from_slice(b"-ERR min or max is not a float\r\n");
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -3938,7 +3938,7 @@ impl Store {
                 return;
             }
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4092,7 +4092,7 @@ impl Store {
 
     fn zset_pop_single(&self, args: &[&[u8]], max: bool, out: &mut Vec<u8>) {
         let keys = &args[1..args.len() - 1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4109,7 +4109,7 @@ impl Store {
                 return;
             }
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4257,7 +4257,7 @@ impl Store {
         };
         let source = if store { args[2] } else { args[1] };
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4353,7 +4353,7 @@ impl Store {
         else {
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4520,7 +4520,7 @@ impl Store {
                 return;
             }
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4558,7 +4558,7 @@ impl Store {
             out.extend_from_slice(b"-ERR min or max not valid string range item\r\n");
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4588,7 +4588,7 @@ impl Store {
             return;
         };
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4647,7 +4647,7 @@ impl Store {
         } else {
             None
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4734,7 +4734,7 @@ impl Store {
             Range::Rank(start, stop)
         };
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4831,7 +4831,7 @@ impl Store {
             1
         };
         let key = args[1];
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
             return;
         };
@@ -4903,7 +4903,7 @@ impl Store {
 mod tests {
     use super::*;
 
-    fn run(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn run(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         store.execute(args, &mut out);
         out
@@ -4911,7 +4911,7 @@ mod tests {
 
     #[test]
     fn combined_hash_commands_cover_conditions_and_ttls() {
-        let store = Store::new(4096);
+        let store = ShardExecutor::new(4096);
         assert_eq!(
             run(&store, &[b"HSETEX", b"h", b"FIELDS", b"1", b"a", b"1"]),
             b":1\r\n"
@@ -4974,7 +4974,7 @@ mod tests {
 
     #[test]
     fn hash_mutations_cover_existence_counters_and_removal() {
-        let store = Store::new(4096);
+        let store = ShardExecutor::new(4096);
         assert_eq!(run(&store, &[b"HSETNX", b"h", b"f", b"1"]), b":1\r\n");
         assert_eq!(run(&store, &[b"HSETNX", b"h", b"f", b"2"]), b":0\r\n");
         assert_eq!(run(&store, &[b"HEXISTS", b"h", b"f"]), b":1\r\n");
@@ -4994,12 +4994,12 @@ mod tests {
         assert_eq!(run(&store, &[b"PEXPIRE", b"h", b"100"]), b":1\r\n");
         assert_eq!(run(&store, &[b"HDEL", b"h", b"f"]), b":1\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"h"]), b"+none\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     }
 
     #[test]
     fn hash_integer_and_float_failures_are_atomic() {
-        let store = Store::new(128);
+        let store = ShardExecutor::new(128);
         assert_eq!(run(&store, &[b"HSET", b"h", b"n", b"not"]), b":1\r\n");
         assert_eq!(
             run(&store, &[b"HINCRBY", b"h", b"n", b"1"]),
@@ -5030,7 +5030,7 @@ mod tests {
 
     #[test]
     fn list_mutations_preserve_order_and_ttl() {
-        let store = Store::new(4096);
+        let store = ShardExecutor::new(4096);
         assert_eq!(
             run(&store, &[b"RPUSH", b"l", b"a", b"b", b"a", b"c"]),
             b":4\r\n"
@@ -5069,7 +5069,7 @@ mod tests {
 
     #[test]
     fn list_empty_results_and_bad_indexes_do_not_corrupt_state() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(
             run(&store, &[b"LTRIM", b"missing", b"0", b"-1"]),
             b"+OK\r\n"
@@ -5082,12 +5082,12 @@ mod tests {
         assert_eq!(run(&store, &[b"RPUSH", b"l", b"a"]), b":1\r\n");
         assert_eq!(run(&store, &[b"LTRIM", b"l", b"1", b"5"]), b"+OK\r\n");
         assert_eq!(run(&store, &[b"EXISTS", b"l"]), b":0\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     }
 
     #[test]
     fn set_mutations_algebra_and_cardinality_work() {
-        let store = Store::new(4096);
+        let store = ShardExecutor::new(4096);
         assert_eq!(run(&store, &[b"SADD", b"a", b"1", b"2", b"3"]), b":3\r\n");
         assert_eq!(run(&store, &[b"SADD", b"b", b"2", b"3", b"4"]), b":3\r\n");
         assert_eq!(
@@ -5120,7 +5120,7 @@ mod tests {
 
     #[test]
     fn set_pop_and_random_member_are_bounded_and_remove_empties() {
-        let store = Store::new(4096);
+        let store = ShardExecutor::new(4096);
         assert_eq!(run(&store, &[b"SPOP", b"missing"]), b"$-1\r\n");
         assert_eq!(run(&store, &[b"SPOP", b"missing", b"2"]), b"*0\r\n");
         assert_eq!(run(&store, &[b"SADD", b"s", b"a", b"b"]), b":2\r\n");
@@ -5135,7 +5135,7 @@ mod tests {
 
     #[test]
     fn sorted_set_mutations_options_ranges_and_pops_work() {
-        let store = Store::new(8192);
+        let store = ShardExecutor::new(8192);
         assert_eq!(
             run(&store, &[b"ZADD", b"z", b"1", b"a", b"2", b"b"]),
             b":2\r\n"
@@ -5198,7 +5198,7 @@ mod tests {
 
     #[test]
     fn sorted_set_accepts_infinite_scores_but_rejects_nan() {
-        let store = Store::new(4096);
+        let store = ShardExecutor::new(4096);
         assert_eq!(
             run(&store, &[b"ZADD", b"z", b"inf", b"high", b"-inf", b"low"]),
             b":2\r\n"
@@ -5220,7 +5220,7 @@ mod tests {
 
     #[test]
     fn sorted_set_zpop_and_zadd_incr_follow_reply_shapes() {
-        let store = Store::new(4096);
+        let store = ShardExecutor::new(4096);
         assert_eq!(run(&store, &[b"ZPOPMIN", b"missing"]), b"*0\r\n");
         assert_eq!(
             run(&store, &[b"ZADD", b"z", b"1", b"a", b"2", b"b"]),
@@ -5247,7 +5247,7 @@ mod tests {
 
     #[test]
     fn wrong_types_and_oom_are_atomic_for_new_mutations() {
-        let store = Store::new(16);
+        let store = ShardExecutor::new(16);
         assert_eq!(run(&store, &[b"SET", b"s", b"x"]), b"+OK\r\n");
         for command in [
             &[b"HDEL".as_slice(), b"s", b"f"][..],
@@ -5270,15 +5270,15 @@ mod tests {
             );
         }
         assert_eq!(run(&store, &[b"GET", b"s"]), b"$1\r\nx\r\n");
-        let store = Store::new(18);
+        let store = ShardExecutor::new(18);
         assert_eq!(run(&store, &[b"SET", b"s", b"x"]), b"+OK\r\n");
         assert_eq!(
             run(&store, &[b"HSET", b"h", b"f", b"99999999999999"]),
             b":1\r\n"
         );
-        let before = store.data.read().unwrap().payload_bytes;
+        let before = store.data.try_borrow().unwrap().payload_bytes;
         assert!(run(&store, &[b"HINCRBY", b"h", b"f", b"1"]).starts_with(b"-OOM"));
-        assert_eq!(store.data.read().unwrap().payload_bytes, before);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, before);
         assert_eq!(
             run(&store, &[b"HGET", b"h", b"f"]),
             b"$14\r\n99999999999999\r\n"

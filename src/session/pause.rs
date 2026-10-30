@@ -1,6 +1,7 @@
 //! CLIENT PAUSE command deferral for one connection.
 
-use crate::engine::{Action, Store, is_write_command};
+use crate::engine::Execution;
+use crate::engine::{Action, is_write_command};
 
 use super::Session;
 
@@ -16,7 +17,7 @@ impl Session {
 
     /// Execute the single command deferred by CLIENT PAUSE once the pause no
     /// longer applies. Returns `None` while the connection must stay paused.
-    pub fn poll_paused(&mut self, store: &Store) -> Option<(Vec<u8>, Action)> {
+    pub(crate) fn poll_paused_on<E: Execution>(&mut self, store: &E) -> Option<(Vec<u8>, Action)> {
         self.paused.as_ref()?;
         let waiting = {
             let paused = self.paused.as_ref()?;
@@ -29,11 +30,11 @@ impl Session {
         let paused = self.paused.take()?;
         let arguments: Vec<&[u8]> = paused.arguments.iter().map(Vec::as_slice).collect();
         let mut output = Vec::new();
-        let action = self.execute(store, &arguments, &mut output);
+        let action = self.execute_on(store, &arguments, &mut output);
         Some((output, action))
     }
 
-    pub(super) fn command_paused(&self, store: &Store, arguments: &[&[u8]]) -> bool {
+    pub(super) fn command_paused<E: Execution>(&self, store: &E, arguments: &[&[u8]]) -> bool {
         let Some(writes_only) = store.client_pause_mode() else {
             return false;
         };
@@ -54,7 +55,7 @@ impl Session {
 
     /// Defer this command while a CLIENT PAUSE applies. Returns `true` when the
     /// command was stored instead of executed.
-    pub(super) fn pause_command(&mut self, store: &Store, arguments: &[&[u8]]) -> bool {
+    pub(super) fn pause_command<E: Execution>(&mut self, store: &E, arguments: &[&[u8]]) -> bool {
         if self.paused.is_some() || !self.command_paused(store, arguments) {
             return false;
         }

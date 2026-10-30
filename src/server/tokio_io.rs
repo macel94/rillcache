@@ -1,11 +1,13 @@
-//! Async plaintext transport over the existing shared Store, not data ownership.
+//! Async transport over the published local-owner / Store compatibility APIs.
 
 #[cfg(test)]
 #[path = "tokio_io_tests.rs"]
 mod tests;
 
 use super::*;
+use crate::engine::{Execution, ServerServices, ShardExecutor};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioListener, TcpStream as TokioStream};
@@ -32,7 +34,7 @@ struct Accepted {
 
 struct ClientRegistration {
     id: u64,
-    store: Arc<Store>,
+    store: Arc<ServerServices>,
     controls: Controls,
 }
 
@@ -51,6 +53,21 @@ struct Lane {
     thread: JoinHandle<io::Result<()>>,
 }
 
+// Tokio catches task panics. Publish fail-stop while unwinding, before another
+// local task can observe Data after a partially executed owner turn.
+struct FailureStop {
+    stopping: Arc<AtomicBool>,
+    controls: Controls,
+}
+impl Drop for FailureStop {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.stopping.store(true, Ordering::Release);
+            close_controls(&self.controls);
+        }
+    }
+}
+
 struct Context {
     config: Config,
     store: Arc<Store>,
@@ -61,6 +78,13 @@ struct Context {
 }
 
 impl Context {
+    fn failure_guard(&self) -> FailureStop {
+        FailureStop {
+            stopping: Arc::clone(&self.stopping),
+            controls: Arc::clone(&self.controls),
+        }
+    }
+
     fn stopped(&self) -> bool {
         self.stopping.load(Ordering::Acquire) || self.store.shutdown_requested()
     }
@@ -70,12 +94,25 @@ impl Context {
         close_controls(&self.controls);
     }
 
-    fn spawn(self: &Arc<Self>, tasks: &mut Tasks, accepted: Accepted) {
+    fn spawn(
+        self: &Arc<Self>,
+        tasks: &mut Tasks,
+        accepted: Accepted,
+        executor: Option<Rc<ShardExecutor>>,
+    ) {
         let context = Arc::clone(self);
-        tasks.spawn(async move {
+        tasks.spawn_local(async move {
+            let _failure = context.failure_guard();
             let _registration = accepted.registration;
             let stream = TokioStream::from_std(accepted.stream)?;
-            serve_connection(stream, accepted.session, accepted.pubsub, &context).await
+            serve_connection(
+                stream,
+                accepted.session,
+                accepted.pubsub,
+                &context,
+                executor,
+            )
+            .await
         });
     }
 }
@@ -101,6 +138,8 @@ struct ColdExecutor {
 enum ColdOperation<'a> {
     Command(&'a [u8]),
     Paused,
+    Blocked,
+    Maintenance,
 }
 
 impl ColdExecutor {
@@ -123,8 +162,10 @@ impl ColdExecutor {
         }
         let frame = match operation {
             ColdOperation::Command(frame) => Some(frame.to_vec()),
-            ColdOperation::Paused => None,
+            ColdOperation::Paused | ColdOperation::Blocked | ColdOperation::Maintenance => None,
         };
+        let blocked = matches!(operation, ColdOperation::Blocked);
+        let maintenance = matches!(operation, ColdOperation::Maintenance);
         let mut owned_session = std::mem::take(session);
         let mut owned_output = std::mem::take(output);
         let store = Arc::clone(&context.store);
@@ -138,6 +179,14 @@ impl ColdExecutor {
                 })
                 .expect("previously validated cold frame")
                 .map(|(action, _)| action)
+            } else if maintenance {
+                store.purge_expired(128);
+                None
+            } else if blocked {
+                owned_session.poll_blocked(&store).map(|reply| {
+                    owned_output.extend_from_slice(&reply);
+                    Action::Continue
+                })
             } else {
                 owned_session.poll_paused(&store).map(|(reply, action)| {
                     owned_output.extend_from_slice(&reply);
@@ -188,10 +237,20 @@ fn serve_with_task_limit(
     let cores = core_affinity::get_core_ids().unwrap_or_default();
     let workers = workers.clamp(1, 64);
     let controls = Arc::new(Mutex::new(HashMap::new()));
+    // Compatibility modes have one published synchronous Store owner. Start it
+    // outside any async runtime; all later bridge calls use the cold service.
+    if workers > 1 || config.tls_bind_addr.is_some() {
+        store.ensure_external_owner();
+    }
     let (sender, mut receiver) = mpsc::channel::<ColdJob>(1);
+    let cold_failure = FailureStop {
+        stopping: Arc::clone(&stopping),
+        controls: Arc::clone(&controls),
+    };
     let cold_thread = thread::Builder::new()
         .name("rillcache-cold-io".into())
         .spawn(move || {
+            let _failure = cold_failure;
             while let Some(job) = receiver.blocking_recv() {
                 job();
             }
@@ -223,7 +282,8 @@ fn serve_with_task_limit(
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?;
-                    runtime.block_on(worker(receiver, worker_context))
+                    tokio::task::LocalSet::new()
+                        .block_on(&runtime, worker(receiver, worker_context))
                 })?;
             lanes.push(Lane { sender, thread });
         }
@@ -238,7 +298,10 @@ fn serve_with_task_limit(
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(accept_loop(listener, Arc::clone(&context), &lanes))
+        tokio::task::LocalSet::new().block_on(
+            &runtime,
+            accept_with_storage(listener, Arc::clone(&context), &lanes),
+        )
     })();
     context.stop();
     let mut result = result;
@@ -287,10 +350,65 @@ async fn join_tasks(tasks: &mut Tasks) -> io::Result<()> {
     result
 }
 
+async fn accept_with_storage(
+    listener: TcpListener,
+    context: Arc<Context>,
+    lanes: &[Lane],
+) -> io::Result<()> {
+    // Install !Send Data on the actual socket thread. Mixed TLS or multiple
+    // network runtimes use the compatibility owner, never several Data copies.
+    let local = if lanes.is_empty() && context.config.tls_bind_addr.is_none() {
+        context.store.install_local()
+    } else {
+        None
+    };
+    let (executor, driver) = if let Some((executor, inbox)) = local {
+        let executor = Rc::new(executor);
+        let owner = Rc::clone(&executor);
+        let finished = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&finished);
+        let failure_context = Arc::clone(&context);
+        let driver = tokio::task::spawn_local(async move {
+            let _failure = failure_context.failure_guard();
+            // Cold paused-command resumption can use the external bridge.
+            // Service it on this same owner without blocking a network task,
+            // including while client tasks are being joined on shutdown.
+            while !stop.load(Ordering::Acquire) {
+                inbox.drain(owner.as_ref());
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            inbox.drain(owner.as_ref());
+        });
+        (Some(executor), Some((finished, driver)))
+    } else {
+        (None, None)
+    };
+    let mut result = accept_loop(listener, Arc::clone(&context), lanes, executor).await;
+    if let Some((finished, driver)) = driver {
+        // A task panic/cancellation can drop its reply receiver while a cold
+        // job still owns session state. Keep the local bridge/Data alive until
+        // that job releases its permit, not merely until socket tasks join.
+        let drained = context.cold.permit.acquire().await;
+        if drained.is_err() {
+            result = result.and(Err(io::Error::other(
+                "cold service admission closed during drain",
+            )));
+        }
+        finished.store(true, Ordering::Release);
+        if let Err(error) = driver.await {
+            result = result.and(Err(io::Error::other(format!(
+                "local Store bridge task failed: {error}"
+            ))));
+        }
+    }
+    result
+}
+
 async fn accept_loop(
     listener: TcpListener,
     context: Arc<Context>,
     lanes: &[Lane],
+    executor: Option<Rc<ShardExecutor>>,
 ) -> io::Result<()> {
     let listener = TokioListener::from_std(listener)?;
     let mut tasks = Tasks::new();
@@ -310,7 +428,19 @@ async fn accept_loop(
             if maintenance.elapsed() >= MAINTENANCE_TICK {
                 // Journal/audit configurations use the proven fallback. No
                 // sync/rewrite or other filesystem maintenance runs here.
-                context.store.purge_expired(128);
+                if let Some(executor) = &executor {
+                    executor.purge_expired(128);
+                } else {
+                    context
+                        .cold
+                        .run(
+                            &mut Session::new(),
+                            &mut Vec::new(),
+                            &context,
+                            ColdOperation::Maintenance,
+                        )
+                        .await?;
+                }
                 maintenance = Instant::now();
             }
             turns += 1;
@@ -330,7 +460,11 @@ async fn accept_loop(
                         if tasks.len() >= context.task_limit {
                             continue;
                         }
-                        context.spawn(&mut tasks, pending.take().expect("pending client"));
+                        context.spawn(
+                            &mut tasks,
+                            pending.take().expect("pending client"),
+                            executor.clone(),
+                        );
                     } else {
                         match lanes[index - 1]
                             .sender
@@ -384,7 +518,7 @@ async fn accept_loop(
             // error path unregisters and releases its control descriptor.
             let registration = ClientRegistration {
                 id,
-                store: Arc::clone(&context.store),
+                store: context.store.services_handle(),
                 controls: Arc::clone(&context.controls),
             };
             context
@@ -427,7 +561,7 @@ async fn worker(mut receiver: mpsc::Receiver<Accepted>, context: Arc<Context>) -
                 continue;
             }
             match tokio::time::timeout(POLL_TICK, receiver.recv()).await {
-                Ok(Some(accepted)) => context.spawn(&mut tasks, accepted),
+                Ok(Some(accepted)) => context.spawn(&mut tasks, accepted, None),
                 Ok(None) => return Ok(()),
                 Err(_) => {}
             }
@@ -490,9 +624,9 @@ async fn serve_connection(
     mut session: Session,
     pubsub: Receiver<Vec<u8>>,
     context: &Context,
+    executor: Option<Rc<ShardExecutor>>,
 ) -> io::Result<()> {
     let config = &context.config;
-    let store = &context.store;
     let mut input = Vec::with_capacity(8192.min(config.limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; MAX_READ];
@@ -511,10 +645,17 @@ async fn serve_connection(
                 Err(_) => break,
             }
         }
-        if session.is_blocked()
-            && let Some(reply) = session.poll_blocked(store)
-        {
-            output.extend_from_slice(&reply);
+        if session.is_blocked() {
+            if let Some(executor) = &executor {
+                if let Some(reply) = session.poll_blocked_on(executor.as_ref()) {
+                    output.extend_from_slice(&reply);
+                }
+            } else {
+                context
+                    .cold
+                    .run(&mut session, &mut output, context, ColdOperation::Blocked)
+                    .await?;
+            }
         }
         if session.is_paused()
             && let Some(Action::Close) = context
@@ -529,6 +670,9 @@ async fn serve_connection(
             write_reply(&mut stream, &output, config.idle_timeout).await?;
             output.clear();
             activity = Instant::now();
+            if context.stopped() {
+                return Ok(());
+            }
         }
 
         if !session.is_blocked() && !session.is_paused() {
@@ -537,11 +681,15 @@ async fn serve_connection(
             for _ in 0..COMMAND_QUANTUM {
                 let mut cold = false;
                 match dispatch_request(&input[consumed..], config.limits, |args| {
-                    cold = cold_command(args);
+                    cold = executor.is_none() || cold_command(args);
                     if cold || args.is_empty() {
                         Action::Continue
                     } else {
-                        session.execute(store, args, &mut output)
+                        session.execute_on(
+                            executor.as_ref().expect("local executor").as_ref(),
+                            args,
+                            &mut output,
+                        )
                     }
                 }) {
                     Ok(Some((mut action, used))) => {
@@ -556,6 +704,9 @@ async fn serve_connection(
                                 )
                                 .await?
                                 .expect("complete cold command");
+                            if context.stopped() {
+                                return Ok(());
+                            }
                         }
                         consumed += used;
                         if action == Action::Close {
@@ -623,7 +774,10 @@ async fn serve_connection(
         if wait.is_zero() {
             return Ok(());
         }
-        match tokio::time::timeout(wait, stream.read(&mut chunk[..room])).await {
+        let read = stream.read(&mut chunk[..room]);
+        #[cfg(test)]
+        let read = tests::observe_read_wait(read);
+        match tokio::time::timeout(wait, read).await {
             Err(_) if asynchronous => continue,
             Err(_) => return Ok(()),
             Ok(Ok(0)) => {

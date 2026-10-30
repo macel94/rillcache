@@ -553,8 +553,15 @@ fn report(
             let policy = scheduling.expect("embedded scheduling policy");
             if policy.readiness_io {
                 format!(
-                    "{{\"mode\":\"tokio-current-thread\",\"workers\":{},\"network_runtime_threads\":{},\"accept_runtime_shared\":true,\"cold_io_service_threads\":1}}",
-                    policy.tokio_worker_threads, policy.tokio_worker_threads
+                    "{{\"mode\":\"tokio-current-thread\",\"workers\":{},\"network_runtime_threads\":{},\"accept_runtime_shared\":true,\"cold_io_service_threads\":1,\"storage_execution\":{},\"compatibility_data_owner_threads\":{}}}",
+                    policy.tokio_worker_threads,
+                    policy.tokio_worker_threads,
+                    quoted(if policy.tokio_compatibility_owner {
+                        "compatibility-bridge"
+                    } else {
+                        "local-owner"
+                    }),
+                    usize::from(policy.tokio_compatibility_owner)
                 )
             } else {
                 format!(
@@ -872,6 +879,7 @@ mod tests {
         let policy = rillcache::server::SchedulingPolicy {
             readiness_io: false,
             tokio_worker_threads: 0,
+            tokio_compatibility_owner: false,
             active_poll_us: 0,
             run_quantum_us: 0,
             single_reply_yield: true,
@@ -943,6 +951,21 @@ mod tests {
         assert!(text.contains("\"network_runtime_threads\":3"));
         assert!(text.contains("\"accept_runtime_shared\":true"));
         assert!(text.contains("\"cold_io_service_threads\":1"));
+        assert!(text.contains("\"storage_execution\":\"local-owner\""));
+        assert!(text.contains("\"compatibility_data_owner_threads\":0"));
+        let compatibility = rillcache::server::SchedulingPolicy {
+            tokio_compatibility_owner: true,
+            ..readiness
+        };
+        let text = report(
+            "127.0.0.1:1".parse().unwrap(),
+            &options,
+            &[],
+            None,
+            Some(compatibility),
+        );
+        assert!(text.contains("\"storage_execution\":\"compatibility-bridge\""));
+        assert!(text.contains("\"compatibility_data_owner_threads\":1"));
         assert!(!text.contains("\"mode\":\"thread-per-client\""));
         assert!(!text.contains("\"client_handoff_policy_version\""));
     }

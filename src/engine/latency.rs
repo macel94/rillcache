@@ -5,7 +5,8 @@
 //! reclamation. There is no fork, AOF-fsync, eviction-cycle or replication
 //! latency source, so those series are never fabricated.
 
-use super::Store;
+#[cfg(test)]
+use super::ShardExecutor;
 use crate::protocol::encode_bulk;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::Ordering;
@@ -26,7 +27,7 @@ struct Series {
     max: u64,
 }
 
-impl Store {
+impl super::ServerServices {
     pub(crate) fn latency_threshold_ms(&self) -> u64 {
         self.latency_monitor_threshold_ms.load(Ordering::Relaxed)
     }
@@ -255,7 +256,7 @@ mod tests {
 
     #[test]
     fn samples_are_thresholded_bounded_and_report_latest_and_max() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert!(!store.latency_enabled());
         store.record_latency(COMMAND_EVENT, Duration::from_millis(5));
         assert_eq!(store.latency.read().unwrap().series.len(), 0);
@@ -299,7 +300,7 @@ mod tests {
 
     #[test]
     fn history_and_latest_use_resp2_shapes() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         store.set_latency_threshold_ms(1);
         store.record_latency(COMMAND_EVENT, Duration::from_millis(2));
         let mut output = Vec::new();

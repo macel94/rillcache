@@ -1,13 +1,13 @@
 use super::data::Entry;
 use super::options::{NOT_INTEGER, OOM, parse_integer};
-use super::{Store, arity, integer, internal_error, wrong_type};
+use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
 
 const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
 const RANGE_LIMIT: &[u8] = b"-ERR string exceeds maximum allowed size (proto-max-bulk-len)\r\n";
 const OFFSET_RANGE: &[u8] = b"-ERR offset is out of range\r\n";
 
-impl Store {
+impl ShardExecutor {
     /// Handles byte-string length, append, indexed ranges and replacement.
     pub(super) fn execute_string_ranges(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> bool {
         let Some(command) = arguments.first() else {
@@ -53,7 +53,7 @@ impl Store {
     }
 
     fn append(&self, key: &[u8], suffix: &[u8], output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -96,7 +96,7 @@ impl Store {
     }
 
     fn strlen(&self, key: &[u8], output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -118,7 +118,7 @@ impl Store {
             output.extend_from_slice(NOT_INTEGER);
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -168,7 +168,7 @@ impl Store {
             output.extend_from_slice(OFFSET_RANGE);
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn append_and_setrange_keep_live_expiry() {
         let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-        let store = Store::with_clock(64, clock.clone());
+        let store = ShardExecutor::with_clock(64, clock.clone());
         let mut out = Vec::new();
         store.execute(&[b"SET", b"k", b"a", b"PX", b"5"], &mut out);
         assert_eq!(out, b"+OK\r\n");
@@ -246,6 +246,6 @@ mod tests {
         out.clear();
         store.execute_string_ranges(&[b"STRLEN", b"k"], &mut out);
         assert_eq!(out, b":0\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     }
 }

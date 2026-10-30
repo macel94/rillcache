@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "complete": true,
+  "kind": "advisory-default-one-cpu-ab",
+  "created": "2026-10-30T11:29:36.998378+00:00",
+  "baseline_source": {
+    "commit": "f0d7d186f01e74323cb7dfee19a99829de13b3af",
+    "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "provenance": "lock-backed release binary frozen before the rejected lease build; see baseline-binaries.sha256"
+  },
+  "candidate_source": {
+    "base_sha": "f0d7d186f01e74323cb7dfee19a99829de13b3af",
+    "tracked_diff_sha256": "4d8c6fc05329fd2332e5ef903d0d7db5fd82cb54103618e273a3d09a466f0b36",
+    "untracked_files_sha256": {
+      "docs/plans/owner-local-storage.md": "8800a6001371be9c43eed93d152a43975021877278e72bf6b4e8495cc39e0f5d",
+      "src/engine/bridge.rs": "3ccb639aa4d3ccccfaa8d0fdeffd6549f51d443faa87bf63dac6dda20c8a7878",
+      "src/engine/bridge/tests.rs": "c0fc8a8f53b97d9d26ff4f5cde5486f03f5d4a3e8dc4543fdef5980b0a9b69b4",
+      "src/server/storage_ownership_tests.rs": "a6cb93ac0a5bfe82a02484690d69e883554b103135173e03db6dae09d3038bc2"
+    },
+    "combined_patch_sha256": "d43ebec74434757e858a49d76c468ed7e981de373ee551a5405dcd5a3e9e08d8"
+  },
+  "binary_sha256": {
+    "before": "16b2af8224231c22c741d105d4377126dd2d678245109242059bc7aeae3b0fa6",
+    "after": "78b952d746722a8d3c17d89fae5de038f6b1b5298368355c1bec571f18fb0176",
+    "client": "beec7920cdbe4ea43a5fe7b5ee1d415d0dfb2f6314357e6d9838ae9f19575042"
+  },
+  "allowed_cpus": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "server_cpus": [
+    0
+  ],
+  "client_cpus": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "cpu_overlap": false,
+  "hardware_sha256": "8999f2cb43e1995c6085aab0be915795b4b573a0b0a90355381c2358430f5afd",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1\n",
+  "build": "cargo build --locked --offline --release --bins, normal checked-in release profile",
+  "runs": 3,
+  "requests": {
+    "1": 20000,
+    "16": 100000
+  },
+  "instrumentation": "none; ordinary client procfs accounting only",
+  "scope": "default Unix plain TCP, one logical server CPU, 8 clients, 1024 keys, 64-byte values, 1000 warmups/client; shared agent host, not isolated performance hardware; no Valkey/multi-core claim",
+  "measurement_order": [
+    "one-cpu-default-pipeline-1-run-1-before",
+    "one-cpu-default-pipeline-1-run-1-after",
+    "one-cpu-default-pipeline-1-run-2-after",
+    "one-cpu-default-pipeline-1-run-2-before",
+    "one-cpu-default-pipeline-1-run-3-before",
+    "one-cpu-default-pipeline-1-run-3-after",
+    "one-cpu-default-pipeline-16-run-1-before",
+    "one-cpu-default-pipeline-16-run-1-after",
+    "one-cpu-default-pipeline-16-run-2-after",
+    "one-cpu-default-pipeline-16-run-2-before",
+    "one-cpu-default-pipeline-16-run-3-before",
+    "one-cpu-default-pipeline-16-run-3-after"
+  ],
+  "records": 60,
+  "evidence_sha256": {
+    "contention-provenance.json": "0fabbc6ef346f1c2f2d9732b1cbd29dd0066aa9faae2d16b04f30c7a036286ed",
+    "hardware.json": "8999f2cb43e1995c6085aab0be915795b4b573a0b0a90355381c2358430f5afd",
+    "one-cpu-default-pipeline-1-run-1-after.json": "092c4804dd3e6c4f1d57f5c00fd41474783fe7503e9781dabee0171a17e5bed6",
+    "one-cpu-default-pipeline-1-run-1-before.json": "70f04d5634a2b8e46ae59100235a545d30ce1e5f3879618ac32b463f4dfc025f",
+    "one-cpu-default-pipeline-1-run-2-after.json": "17b49005900161ca26264feb33d4b335b73e4ec1607882751c569311bcdb7447",
+    "one-cpu-default-pipeline-1-run-2-before.json": "8b95a7feeb7a5bba036fd204dfe31b040a97731b2bad9166961f8eb6068bc50c",
+    "one-cpu-default-pipeline-1-run-3-after.json": "0199f0c0688a2f32c6b07c1079c50b448ae06cc4304afc4fb515daf1d04f23dc",
+    "one-cpu-default-pipeline-1-run-3-before.json": "2789c3410f8d7555a27831dde7a7f066520e413ebe3813e7000a3a4e0f5083d4",
+    "one-cpu-default-pipeline-16-run-1-after.json": "b74547215cfc218da2415719f9dd4ec0f4a87531aa4c110e38f9ba194016f2c0",
+    "one-cpu-default-pipeline-16-run-1-before.json": "61e278d630629054fc8198192382fffc2c56d3850a1d19126018ddb2f6169e8f",
+    "one-cpu-default-pipeline-16-run-2-after.json": "53333b08077ec81fc8dc1fddeea8a05b2c4cd84d7d6773abd491773a7f5b73eb",
+    "one-cpu-default-pipeline-16-run-2-before.json": "6b264939c34a5ecff2d1dcfa6feaaac61f21286219437b7e0a0e4ad95c5a21a7",
+    "one-cpu-default-pipeline-16-run-3-after.json": "e650178443d82ce9bc9de2433f8ea82c407e2835ab66c1e23c6d6d3d4f285479",
+    "one-cpu-default-pipeline-16-run-3-before.json": "f21aeefb8a79c8eb2b78a797c32bcb4fcaa14e8b3227ec38367f96c3ec9a0b0c"
+  },
+  "summary_sha256": "6a245c2e436ae87108a3e0bdf5baea9e9796cd292da4a016d914606e99ddcce7",
+  "contention_affected": true,
+  "controlled_causal_evidence": false,
+  "contention_provenance": "contention-provenance.json",
+  "summary_as_generated_sha256": "817e179b1a14d718511e70f93a0fc93e2ba4cf39bd21ba0cc5714bf40bc9cf93"
+}

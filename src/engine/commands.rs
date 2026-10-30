@@ -2,7 +2,7 @@ use super::data::Entry;
 use super::*;
 use options::{Condition, ExpireFlags, NOT_INTEGER, OOM, SetOptions, parse_integer};
 
-impl Store {
+impl ShardExecutor {
     pub(super) fn delex(&self, arguments: &[&[u8]], delifeq: bool, output: &mut Vec<u8>) {
         let name = if delifeq { "delifeq" } else { "delex" };
         if (delifeq && arguments.len() != 3)
@@ -11,7 +11,7 @@ impl Store {
             arity(name, output);
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -68,7 +68,7 @@ impl Store {
     }
 
     pub(super) fn digest(&self, key: &[u8], output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -96,7 +96,7 @@ impl Store {
         }
     }
     pub(super) fn get(&self, key: &[u8], output: &mut Vec<u8>) {
-        let Ok(data) = self.data.read() else {
+        let Ok(data) = self.data.try_borrow() else {
             internal_error(output);
             return;
         };
@@ -111,8 +111,8 @@ impl Store {
             return;
         }
         drop(data);
-        // Recheck under an exclusive lock: never delete a concurrent replacement.
-        let Ok(mut data) = self.data.write() else {
+        // End the immutable borrow before rechecking and removing expired state.
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -133,7 +133,7 @@ impl Store {
     }
 
     pub(super) fn exists(&self, keys: &[&[u8]], output: &mut Vec<u8>) {
-        let Ok(data) = self.data.read() else {
+        let Ok(data) = self.data.try_borrow() else {
             internal_error(output);
             return;
         };
@@ -151,7 +151,7 @@ impl Store {
             return;
         }
         drop(data);
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -176,7 +176,7 @@ impl Store {
         numeric_reply: bool,
         output: &mut Vec<u8>,
     ) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -291,7 +291,7 @@ impl Store {
     }
 
     pub(super) fn getdel(&self, key: &[u8], output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -314,7 +314,7 @@ impl Store {
     }
 
     pub(super) fn getex(&self, key: &[u8], options: SetOptions<'_>, output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -349,7 +349,7 @@ impl Store {
     }
 
     pub(super) fn ttl(&self, key: &[u8], milliseconds: bool, absolute: bool, output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -375,7 +375,7 @@ impl Store {
     }
 
     pub(super) fn persist(&self, key: &[u8], output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -429,7 +429,7 @@ impl Store {
             .expect("Vec write");
             return;
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -479,7 +479,7 @@ impl Store {
         } else {
             amount
         };
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };

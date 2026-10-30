@@ -1,195 +1,171 @@
 # Async plaintext transport increment (PR #143)
 
-Status: transport implementation over the existing **shared `Store`**. This is
-not shard-owned execution, lock-free storage, a multi-core scaling result, or
-performance acceptance. The independent storage/ownership migration is not a
-prerequisite for this usable increment.
+Status: usable async transport on the **published one-owner storage API**, not
+complete multi-owner/thread-per-core execution or performance acceptance. The
+storage implementation was published in PR #144 (`9a4df76`); this PR owns its
+complete transport wiring without an unpublished sibling dependency.
 
-## Story and boundary
+## Story and target sequencing
 
-As an operator, I can serve default Unix plaintext TCP through actual async
-sockets within the effective CPU budget, without a slow socket, saturated
-handoff, or synchronous filesystem work stalling every network task.
+As an operator, I can use default Unix async plaintext sockets without blocking
+socket calls or synchronous Store-bridge waits on their runtime, preserving the
+complete existing command surface, bounded admission and joined shutdown.
 
-This implements the transport stage of the target architecture. Its relevant
-sequencing decisions are reproduced here so review does not depend on another
-unpublished worktree:
+Relevant target-design decisions are reproduced here for self-contained review:
 
-1. Deliver actual async plaintext reads/writes while retaining shared storage;
-   remove disk work from runtimes or keep those configurations on the proven
-   fallback. Count accept, network, and service threads separately. Test one
-   effective CPU, fairness, byte backpressure, cancellation, and joined stop.
-2. True owner-local execution is separate: construct data on its worker, never
-   transfer/lend it, and dispatch local ordinary commands directly without a
-   data-channel hop or global transaction/data lock. Do not introduce a dedicated
-   data thread behind each network runtime or a partial command subset default.
-3. Complete multi-owner execution must include atomic multi-key/EXEC/WATCH,
-   blocking semantics, bounded control/data/byte admission, accounting, journal
-   order, administration, and joined shutdown before promotion. Independent
-   fan-out is not atomic execution. Never depend on an unpublished sibling.
-4. Promotion/scaling claims require fresh matched 1/2/4-CPU evidence, including
-   hot-key/cross-owner costs, CPU, tails and regressions, plus both unchanged
-   protected Valkey gates. A runtime swap alone is not evidence of a win.
+1. Transport may be delivered independently, with honest storage scope. Remove
+   blocking disk work from runtimes or retain the proven fallback. Count network,
+   accept, data-owner and cold-service threads separately. Verify one effective
+   CPU, fairness, byte backpressure, cancellation and joined stop.
+2. A one-worker socket/data owner must execute ordinary local commands directly,
+   without a data-channel hop or a data/transaction lock. Keep the proven
+   one-owner mode as default until complete multi-owner execution passes. Never
+   introduce an unnecessary data thread behind each I/O thread.
+3. Multi-owner promotion requires atomic multi-key/EXEC/WATCH, blocking semantics,
+   global accounting, bounded control/data/bytes, journal order and joined
+   failure/shutdown together. Independent fan-out and whole-Data lending are not
+   substitutes. No partial command subset default or unpublished sibling wiring.
+4. Throughput/scaling claims need matched evidence, CPU/tails and every loss,
+   plus both unchanged protected gates. Runtime replacement is not a speed claim.
 
-## Execution and thread accounting
+## Local-owner path and effective CPU accounting
 
-`Server::bind` captures `std::thread::available_parallelism()` once, before any
-pinning. The pinned Rust 1.99.1 Linux implementation takes the minimum of the
-calling thread's allowed affinity and discoverable cgroup CPU quotas, including
-ancestor quotas. Other platforms retain the standard library's documented
-limits. Discovery is a hint, not a reservation or physical-core count; unknown
-capacity selects one runtime. The network budget is clamped to 1..=64.
+Published `Store` is now a synchronous compatibility bridge, not the former
+lock-backed keyspace. Calling it directly from Tokio would block a runtime.
+Accordingly, ordinary eligible plaintext preserves the published **one-owner
+default**: one current-thread Tokio runtime owns both its sockets and
+`Rc<ShardExecutor>`. Acceptance shares runtime zero. `Session::execute_on` and
+blocked-command polling use the complete common executor directly. All command
+families, observers, auth/ACL, transactions, expiry and accounting retain their
+published implementations. No Data borrow crosses an await.
 
-Runtime zero accepts connections **and** runs local client tasks. Only N−1
-additional current-thread Tokio network threads are created. Each connection is
-assigned once; ordinary command dispatch is synchronous `Session`/shared-`Store`
-execution on that runtime, not a channel round trip per command. Shared data and
-transaction locks can still block runtimes; this is not ownership isolation.
+`ShardExecutor` contains `RefCell<Data>` and is !Send/!Sync. It is installed,
+accessed and dropped on the socket thread. A `LocalSet`/local JoinSet prevents its
+migration. Ordinary network commands make zero bridge submissions; an inherited
+regression verifies complete EXEC/error semantics, zero crossings and same-thread
+owner construction/destruction. This is one executing shard, not a sharded server.
+Shared control-plane locks remain.
 
-There is **one additional, bounded, joined cold-I/O service thread**. ACL commands
-(including GENPASS's `/dev/urandom` read) and paused-command resumption execute
-there with the original Session observation/authorization epilogues. Ordinary
-requests and EXEC do not use it. Existing Session queueing rejects ACL commands
-inside MULTI, so EXEC cannot perform ACL file I/O; this rejection and EXECABORT
-behavior are regression-tested, not silently changed.
-A single async permit is acquired before copying a cold frame or moving session/
-reply state. The job owns the permit until completion, even if its receiver goes
-away. At most one cold operation retains an extra frame (bounded by
-`max_frame_bytes`); there is no unbounded blocking-pool/task queue. This
-compatibility service is not a global database actor.
+The one-owner choice is a semantic reconciliation with published storage, not a
+benchmark-only switch. One network runtime is within the effective CPU budget;
+it does not claim to use every allowed core. The previous N-runtime/shared-Store
+implementation and failed measurements remain in history. Multi-owner execution
+is still separate work.
 
-Thus one effective CPU has one network runtime plus one cold service, not two
-network runtimes. `Server::spawn` uses its managed accept thread as runtime zero;
-CLI `run` uses the calling thread. `SchedulingPolicy::tokio_worker_threads`
-reports **all network runtimes including acceptance**, not the service count.
-Embedded benchmark metadata additionally reports `network_runtime_threads`,
-`accept_runtime_shared: true`, and `cold_io_service_threads: 1`; external-server
-placement remains launcher-owned, not inferred by the load generator.
-TLS, when configured, separately retains its existing accept thread and managed
-client threads. Fixed-worker mode is unchanged and separately accounted.
+Mixed native TLS retains one external shared data owner for both frontends.
+Its plaintext side may use N current-thread Tokio network runtimes, where N is
+captured once by `available_parallelism` before any affinity changes and clamped
+to 1..=64. Rust 1.99.1 Linux uses the minimum discoverable affinity/cgroup quota;
+this is a hint, not a reservation or physical-core count. Only N−1 remote network
+threads are added; acceptance shares runtime zero. Each connection is assigned
+once. Complete compatibility Session dispatch, blocked/paused polling and data
+maintenance go through the bounded cold service **outside** network runtimes;
+the published Store bridge never synchronously waits on an async runtime.
 
-Runtime zero preserves the calling thread's **launcher-owned affinity mask**.
-For CLI execution this is the process leader: pinning it to one CPU would change
-its externally observable cpuset contract, even if other workers still had the
-original mask. There is no extra accept/coordinator thread to avoid this issue.
-Only remote network workers attempt distinct allowed logical CPU IDs using safe
-`core_affinity`; IDs are never modulo-wrapped. Startup stderr records runtime
-zero's preserved mask policy and each remote attempt's success/failure. A missing
-ID or failed pin leaves OS scheduling in control. Affinity does not imply
-physical-core independence or a performance win. Cgroup quota discovery and
-launcher cpusets are not rewritten by the server.
+Thread accounting:
 
-## Disk/maintenance fallback
+| Configuration | Network runtimes | Cold service | Additional data owner | Other frontend threads |
+| --- | ---: | ---: | ---: | --- |
+| Eligible ordinary plaintext | 1, including acceptance | 1 | 0 | none |
+| Mixed TLS plaintext compatibility | N, including acceptance | 1 | 1 shared with TLS | existing TLS accept/client threads |
+| Persistence/ACL-file/audit, fixed lanes, non-Unix | existing fallback | no Tokio cold service | published compatibility/local-mode policy | existing accept/workers/TLS as configured |
 
-Append-only persistence, ACL-file configuration, or synchronous audit file/UDP
-sinks select the existing managed-client plaintext path instead of Tokio. Their
-synchronous append, sync, rewrite and audit behavior is preserved until proper
-offloading is implemented. ACL SAVE/LOAD holds the auth write lock during file
-I/O: merely moving the syscall to another thread would still block runtime
-authorization, so ACL-file configurations deliberately stay on fallback. Without
-an ACL file, SAVE/LOAD return their existing NoAclFile error without disk I/O;
-GENPASS does not hold a transaction/data/auth guard while reading randomness.
-This is an intentional configuration boundary, not a hidden disk-isolation
-claim. Non-Unix
-plaintext and native TLS also retain their previous socket machinery. Startup
-ACL/key/certificate loading occurs before network runtimes are started.
+`SchedulingPolicy` captures network count and compatibility selection. Embedded
+benchmark JSON explicitly reports `network_runtime_threads`,
+`accept_runtime_shared`, `cold_io_service_threads`, `storage_execution` and
+`compatibility_data_owner_threads`; external placement remains launcher-owned.
 
-The async accept loop only performs the existing bounded in-memory expiry pass
-(128 keys, 100 ms scheduling target). It does not call journal sync or rewrite.
-The shared store may still serialize work, including work from fallback/TLS
-clients. Neither disk latency nor long atomic commands acquire a new hard
-real-time bound.
+Runtime zero preserves its calling thread's **launcher-owned affinity mask**,
+including when it is the CLI process leader. Only remote compatibility network
+workers attempt distinct allowed logical IDs via safe `core_affinity`, without
+modulo wrapping. Missing/failed pins retain OS scheduling. Nonfatal diagnostics
+record this policy and remote results. No cpuset/quota is rewritten.
 
-## Admission, bytes and fairness
+## Disk boundary, cold service and bridge lifetime
 
-- The client registry's configured max-client admission bounds total plaintext
-  registrations. Each worker task set is explicitly capped by the startup
-  `max_clients` value; a 32-socket routing mailbox alone is not a task bound.
-  A runtime increase of CONFIG maxclients does not grow this startup task bound;
-  excess admitted sockets backpressure routing until capacity returns.
-- Remote mailboxes contain sockets/session registrations, **not parsed request
-  frames**. They are capped at 32 entries each. At most one pending accepted
-  socket is retained by the acceptor when all lanes are full. It is retried
-  round-robin without loss; no further socket is accepted until it is routed.
-  Maintenance, worker failure and stop are checked at most each 10 ms wait,
-  subject to scheduler/command slack. Existing healthy tasks remain runnable.
-- Each connection input is hard-capped by `max_frame_bytes`, with reads of at
-  most 16 KiB. Deferred/MULTI state retains the existing Session limits. There is
-  no unbounded queue of owned data requests on this transport path.
-- Dispatch stops after 64 commands or a 64 KiB output batch, and yields between
-  buffered quanta. An existing atomic command/push can exceed 64 KiB; this is a
-  **soft batch threshold, not a hard maximum reply size or total RSS bound**.
-  Atomic reply size remains determined by existing command/data/frame limits.
-  No following command executes and no further input is read while that reply
-  is blocked. Writes use at most 64 KiB chunks with yields between chunks and a
-  total configured write deadline. One slow reader cannot accumulate its whole
-  pipeline of replies in userspace.
-- Pub/sub retains the existing bounded message queue and slow-consumer policy;
-  message capacity is not misrepresented as a 64 KiB byte bound. Push size is
-  constrained by existing request/command limits. This increment does not add a
-  process-wide network-memory reservation mechanism.
+AOF, ACL-file and synchronous audit file/UDP configurations retain the proven
+non-Tokio plaintext path. ACL SAVE/LOAD holds an auth write lock across file I/O;
+moving only that syscall would still indirectly block runtime authorization.
+Startup ACL/key/certificate loading happens before runtimes start. Native TLS
+retains its existing socket machinery and published compatibility owner.
 
-## Cancellation and failure
+Eligible async paths have one bounded joined cold service for ACL (GENPASS reads
+`/dev/urandom`) and paused resumption; compatibility paths also execute complete
+Session operations there. One async permit is acquired **before** copying a
+frame or moving session/reply state, and is owned by the admitted job until it
+finishes, even if its reply receiver disappears. At most one extra owned frame
+is retained, bounded by `max_frame_bytes`. There is no unbounded blocking pool.
+Ordinary local requests and EXEC do not use this service. Existing Session
+queueing rejects ACL inside MULTI; its error/EXECABORT contract is unchanged.
 
-On stop/error: close acceptance; set the shared stop flag; shut down registered
-socket control clones; drop the pending accepted socket and queued registrations;
-join every local task and every remote worker; close/drain the cold queue; join
-its service. Worker/task failures propagate, while ordinary socket errors stay
-connection-local. A failed join never skips joining the remaining tasks/threads.
+The local owner's external bridge inbox is serviced in bounded turns on that
+same runtime (1 ms scheduling target) for cold paused resumption. This is not an
+ordinary local-command hop. Its driver stays alive through socket-task joins
+and drains outstanding cold admission before Data is destroyed, including when
+a cold reply waiter was cancelled. The cold thread is then closed and joined.
+Mixed TLS's shared external owner outlives both frontends and their cold work.
 
-Already admitted cold jobs finish; dropping an async waiter is not cancellation
-of a filesystem syscall. There is no hard shutdown deadline for a hung kernel
-filesystem call. Tests use a controlled delayed service to verify that the
-network remains runnable and stop does not silently detach the service.
-Protocol-error draining has one total deadline rather than a new deadline per
-chunk, preventing an indefinitely streaming peer from holding teardown open.
+The local expiry pass removes at most 128 keys on a 100 ms scheduling target.
+Compatibility data maintenance runs on the cold service. No async accept loop
+calls synchronous journal sync/rewrite or waits on Store data operations.
+Shared control locks, long atomic commands, fallback clients and a hung OS file
+syscall can still delay progress/shutdown; no hard real-time deadline is claimed.
 
-## Acceptance and evidence
+## Admission, bytes, fairness and stop
 
-Requirements R-TOKIO-NET1–9 are in
-[policy and transport](requirements/policy-and-transport.md). Tests include:
+- Explicit active-task caps supplement the registry's max-client admission and
+  32-socket remote mailboxes. Mailboxes retain sockets/session registrations, not
+  parsed data frames. At most one pending accepted socket is retained when all
+  lanes are full; it is retried round-robin, not dropped on capacity return.
+  Existing healthy tasks and lifecycle checks continue during saturation.
+- Per-connection input is capped by `max_frame_bytes`; reads are at most 16 KiB.
+  Existing Session/MULTI limits remain; no stronger aggregate transaction-byte or
+  process-wide network-memory budget is invented.
+- Dispatch stops after 64 commands or a 64 KiB output batch, yielding between
+  buffered quanta. One existing atomic reply/push may exceed 64 KiB: this is a
+  **soft batch threshold, not a hard reply-size or total RSS limit**. No following
+  command executes and no input is read while that reply is backpressured.
+  Writes use 64 KiB chunks/yields and one configured total write deadline.
+- Pub/sub retains existing bounded message queues and slow-consumer policy;
+  message capacity is not a 64 KiB byte claim. Protocol-error drain has one total
+  deadline, not a renewed deadline per incoming chunk.
+- Stop closes acceptance and registered socket controls before joining tasks,
+  dropping pending/queued registrations, joining remote workers, draining cold
+  work/bridge lifetime, and joining services. Panics propagate; an earlier join
+  error does not skip other joins. Aborting a waiter does not cancel file work.
 
-- tiny per-worker task limits and full remote mailboxes: pending-client retention,
-  healthy-client progress, capacity return, and joined stop with idle clients;
-- a one-runtime slow reader: later pipeline mutation is not executed while its
-  large preceding replies are blocked;
-- bounded cold-service saturation: healthy GET (which takes the data/transaction
-  gate) progresses on the same sole runtime, not just gate-bypassing PING;
-  ACL-in-MULTI rejection/EXECABORT and task panic preserve semantics and joins;
-- Linux subprocess with the full inherited mask: runtime-zero/process-leader
-  mask unchanged before/after traffic, remote worker masks stay within the launch
-  cpuset with distinct successful pins; one-CPU subprocess: exactly one network
-  runtime plus one cold thread, GENPASS/pipeline correctness and protocol stop;
-- existing all-mode binary/fragmented pipelines, blocked clients, pub/sub,
-  persistence, audit, ACL, TLS, and shutdown suites.
+## Tests and evidence
 
-`make test`, `make ci`, and the live policy audit remain required before review.
-Hosted acceptance remains all **20 original** and **10 official four-CPU** strict
-median wins on the up-to-date exact head, with all 14 live-required contexts.
-Prior four-CPU run [41039159717](https://github.com/macel94/rillcache/actions/runs/41039159717)
-failed 5/10: every P=1 case lost while every P=16 case passed. It is preserved,
-not retried or relabeled. Async networking does not fix a failed gate by definition.
+Deterministic tests cover tiny local/remote capacity, retained pending clients,
+healthy progress, slow-reader pipeline side-effect suppression, service
+saturation with same-runtime healthy GET, task failure, owner lifetime and
+all-mode binary/protocol/blocking/pubsub/TLS/persistence/audit semantics.
+Subprocess tests verify inherited mask preservation, one-CPU 1+1 thread count,
+and separately counted mixed-TLS compatibility workers within their cpuset.
 
-Fresh head `444e526` runs
-[41049312936](https://github.com/macel94/rillcache/actions/runs/41049312936) and
-[41049312759](https://github.com/macel94/rillcache/actions/runs/41049312759) both
-failed **setup affinity validation**, not numeric throughput comparisons. The
-four-CPU raw server identity records requested CPUs `[0,1,2,3]` but the leader's
-observed mask `[0]`; both manifests are incomplete, with zero measured records.
-This diagnosed runtime-zero pinning regression is fixed by preserving its launch
-mask. The failures remain retained; neither gate/harness is modified or retried
-on unchanged source.
+The pre-main `b85d2d2` head passed 13/14 contexts, including all 20 original
+medians. Its official four-CPU run
+[41053623142](https://github.com/macel94/rillcache/actions/runs/41053623142)
+completed **8/10**, losing PING/P1 and NX-existing/P1. It is not retried or reused
+as acceptance for reconciled source. Earlier numeric loss 41039159717 and setup
+affinity failures 41049312936/41049312759 also remain preserved.
 
-The local 72-sample advisory control/candidate cohort overlapped a
-full CI build in another worktree on the same host. It is explicitly
-**contention-affected and inconclusive for causal throughput claims**, not a
-controlled speedup result. All rows and raw samples are retained, including
-one-CPU SET/P1 −26.2% and PING/P16 −41.8%. Under its predeclared rejection rule,
-that screen does not support performance promotion. Host interference prevents
-attribution, not preservation of losses; no winning-sample selection or
-unchanged required-gate retry follows. The PR evidence reports the entire table.
+Two local advisory cohorts remain visible, with all raw rows/CPU/tails and source
+identities in the owning worktree ledger and PR evidence. The first 72-sample
+cohort overlapped full CI and is causally inconclusive (including SET/P1 −26.2%
+and PING/P16 −41.8%). The read-timer diagnostic found one new timeout per P1 read
+versus 16× amortization at P16; its reusable-timer candidate reduced construction
+to one per connection. But its matched normal-release screen failed its
+predeclared rule: detected cargo/version-tool overlap and only 1/3 paired NX/P1
+rate wins. That candidate is preserved and **reverted**, not promoted or called
+a throughput win. Test-only diagnostic counters are absent from normal builds.
 
-Sources: [Rust capacity API](https://doc.rust-lang.org/1.99.1/std/thread/fn.available_parallelism.html),
-[version-matched Linux implementation](https://github.com/rust-lang/rust/blob/58cf8f9c3/library/std/src/sys/thread/unix.rs),
-[Tokio 1.54.1 bounded channel](https://docs.rs/tokio/1.54.1/tokio/sync/mpsc/index.html),
+Fresh `make ci`, live protection and all 14 protected contexts remain required
+on the up-to-date exact source. All **20 original** and **10 official four-CPU**
+medians must strictly beat Valkey; no loss, stale pass, bypass, or unchanged retry
+qualifies. This is transport delivery, not completion of the full target.
+
+Sources: [published owner design](plans/owner-local-storage.md),
+[Rust capacity implementation](https://github.com/rust-lang/rust/blob/58cf8f9c3/library/std/src/sys/thread/unix.rs),
+[Tokio 1.54.1 LocalSet](https://docs.rs/tokio/1.54.1/tokio/task/struct.LocalSet.html),
 [protected PR gates](pr-quality-gate.md).

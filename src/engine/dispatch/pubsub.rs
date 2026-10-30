@@ -3,10 +3,10 @@
 //! Connection-scoped subscription commands stay in `session.rs`; only the
 //! store-wide fire-and-forget publish operations are dispatched here.
 
-use super::super::{Action, Store, arity, integer};
+use super::super::{Action, ShardExecutor, arity, integer};
 
 pub(super) fn execute(
-    store: &Store,
+    store: &ShardExecutor,
     command: &[u8],
     arguments: &[&[u8]],
     output: &mut Vec<u8>,

@@ -1,5 +1,6 @@
 //! MULTI/EXEC/DISCARD/WATCH queueing and transaction state.
 
+use crate::engine::Execution;
 use std::io::Write;
 
 use crate::engine::{Access, Action, Store, TransactionOutcome, WatchState};
@@ -31,9 +32,9 @@ impl Session {
         }
     }
 
-    pub(super) fn exec(
+    pub(super) fn exec<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         arguments: &[&[u8]],
         output: &mut Vec<u8>,
     ) -> Action {
@@ -105,7 +106,12 @@ impl Session {
         }
     }
 
-    pub(super) fn watch(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn watch<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         if arguments.len() < 2 {
             arity("watch", output);
         } else if self.multi.is_some() {

@@ -1,8 +1,9 @@
 //! Command routing, authorization ordering and RESP3 reply adaptation.
 
+use crate::engine::Execution;
 use std::io::Write;
 
-use crate::engine::{Access, Action, Store, WatchState, XReadGroupStart, parse_xreadgroup};
+use crate::engine::{Access, Action, WatchState, XReadGroupStart, parse_xreadgroup};
 use crate::protocol::encode_bulk;
 
 use super::Protocol;
@@ -12,9 +13,9 @@ use super::command::{allows_subscriber_command, arity, command_name, is_auth_exe
 use super::reply::convert_resp2_reply;
 
 impl Session {
-    pub(super) fn execute_inner(
+    pub(super) fn execute_inner<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         arguments: &[&[u8]],
         output: &mut Vec<u8>,
     ) -> Action {
@@ -276,9 +277,9 @@ impl Session {
         self.execute_store(store, arguments, output)
     }
 
-    pub(super) fn execute_store(
+    pub(super) fn execute_store<E: Execution>(
         &self,
-        store: &Store,
+        store: &E,
         arguments: &[&[u8]],
         output: &mut Vec<u8>,
     ) -> Action {

@@ -8,7 +8,7 @@ use std::time::{SystemTime as RandomSystemTime, UNIX_EPOCH as RANDOM_EPOCH};
 static RANDOMKEY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const MAX_GLOB_STEPS: usize = 4_000_000;
 
-impl Store {
+impl ShardExecutor {
     /// Execute keyspace commands; return false without touching output if unknown.
     pub(super) fn execute_keyspace(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> bool {
         let Some(command) = arguments.first() else {
@@ -89,7 +89,7 @@ impl Store {
     }
 
     fn key_type(&self, key: &[u8], output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -145,7 +145,7 @@ impl Store {
             output.extend_from_slice(b"-ERR source and destination objects are the same\r\n");
             return;
         }
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -181,7 +181,7 @@ impl Store {
     }
 
     fn keys(&self, pattern: &[u8], output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -201,7 +201,7 @@ impl Store {
     }
 
     fn random_key(&self, output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -230,7 +230,7 @@ impl Store {
     }
 
     fn touch(&self, keys: &[&[u8]], output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -247,7 +247,7 @@ impl Store {
     }
 
     fn dbsize(&self, output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -263,7 +263,7 @@ impl Store {
         only_if_absent: bool,
         output: &mut Vec<u8>,
     ) {
-        let Ok(mut data) = self.data.write() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -477,7 +477,7 @@ mod tests {
         }
     }
 
-    fn call(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn call(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(store.execute(args, &mut out), Action::Continue);
         out
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn commands_are_binary_safe_and_touch_counts_duplicates() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         assert_eq!(call(&store, &[b"TYPE", b"\xff\0"]), b"+none\r\n");
         store.set(
             b"\xff\0",
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn rename_preserves_ttl_and_oom_is_atomic() {
         let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-        let store = Store::with_clock(7, clock.clone());
+        let store = ShardExecutor::with_clock(7, clock.clone());
         store.set(
             b"a",
             b"123",
@@ -527,12 +527,12 @@ mod tests {
             &mut Vec::new(),
         );
         assert!(call(&store, &[b"RENAME", b"a", b"long"]).starts_with(b"-OOM"));
-        assert_eq!(store.data.read().unwrap().payload_bytes, 6);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 6);
         assert_eq!(call(&store, &[b"RENAME", b"a", b"b"]), b"+OK\r\n");
         assert_eq!(
             store
                 .data
-                .read()
+                .try_borrow()
                 .unwrap()
                 .entries
                 .get(b"b".as_slice())
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn rename_variants_handle_missing_existing_and_self_keys() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         assert_eq!(
             call(&store, &[b"RENAMENX", b"missing", b"dst"]),
             b"-ERR no such key\r\n"
@@ -571,16 +571,16 @@ mod tests {
         assert_eq!(call(&store, &[b"RENAME", b"src", b"src"]), b"+OK\r\n");
         assert_eq!(call(&store, &[b"RENAMENX", b"src", b"src"]), b":0\r\n");
         assert_eq!(call(&store, &[b"RENAME", b"src", b"dst"]), b"+OK\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 4);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 4);
     }
 
-    fn exec(store: &Store, args: &[&[u8]]) -> Vec<u8> {
+    fn exec(store: &ShardExecutor, args: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(store.execute(args, &mut out), Action::Continue);
         out
     }
 
-    fn seed(store: &Store, key: &[u8], stream: bool, deadline: &[u8]) {
+    fn seed(store: &ShardExecutor, key: &[u8], stream: bool, deadline: &[u8]) {
         if stream {
             assert_eq!(
                 exec(store, &[b"XADD", key, b"1", b"f", b"v\0"]),
@@ -609,7 +609,7 @@ mod tests {
             // Legal spare capacities act as ownership sentinels. A deep clone
             // preserves contents but not these capacities; no allocator hook or
             // pointer arithmetic is needed to distinguish it from a move.
-            let mut data = store.data.write().unwrap();
+            let mut data = store.data.try_borrow_mut().unwrap();
             let tree = data.entries.get_mut(key).unwrap().stream.as_mut().unwrap();
             for entry in tree.entries.values_mut() {
                 entry.fields.reserve_exact(3);
@@ -666,10 +666,10 @@ mod tests {
         for typed in [false, true] {
             for command in [b"RENAME".as_slice(), b"RENAMENX"] {
                 let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-                let store = Store::with_clock(7, clock.clone());
+                let store = ShardExecutor::with_clock(7, clock.clone());
                 seed(&store, b"a", typed, b"1100");
                 let (before, buffers, index) = {
-                    let data = store.data.read().unwrap();
+                    let data = store.data.try_borrow().unwrap();
                     let entry = &data.entries[b"a".as_slice()];
                     (entry.clone(), capacities(entry), data.expirations.clone())
                 };
@@ -679,7 +679,7 @@ mod tests {
                 assert_eq!(exec(&store, &[b"RENAME", b"a", b"a"]), b"+OK\r\n");
                 assert_eq!(exec(&store, &[b"RENAMENX", b"a", b"a"]), b":0\r\n");
                 {
-                    let data = store.data.read().unwrap();
+                    let data = store.data.try_borrow().unwrap();
                     assert_eq!(data.entries.len(), 1);
                     assert_eq!(data.entries[b"a".as_slice()], before);
                     assert_eq!(capacities(&data.entries[b"a".as_slice()]), buffers);
@@ -694,7 +694,7 @@ mod tests {
                 // Four-byte destination + three-byte payload exactly fits.
                 assert_eq!(exec(&store, &[command, b"a", b"long"]), expected);
                 {
-                    let data = store.data.read().unwrap();
+                    let data = store.data.try_borrow().unwrap();
                     assert_eq!(data.entries.len(), 1);
                     assert_eq!(data.entries[b"long".as_slice()], before);
                     assert_eq!(capacities(&data.entries[b"long".as_slice()]), buffers);
@@ -705,7 +705,7 @@ mod tests {
                 assert_eq!(exec(&store, &[b"PTTL", b"long"]), b":0\r\n");
                 clock.0.store(1101, Ordering::SeqCst);
                 assert_eq!(call(&store, &[b"DBSIZE"]), b":0\r\n");
-                let data = store.data.read().unwrap();
+                let data = store.data.try_borrow().unwrap();
                 assert_eq!(data.payload_bytes, 0);
                 assert!(data.expirations.is_empty());
             }
@@ -716,11 +716,11 @@ mod tests {
     fn rename_nx_rejection_and_replacement_preserve_owned_state_and_expiry_index() {
         for typed in [false, true] {
             let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-            let store = Store::with_clock(12, clock.clone());
+            let store = ShardExecutor::with_clock(12, clock.clone());
             seed(&store, b"a", typed, b"1200");
             seed(&store, b"b", !typed, b"1100");
             let (source, buffers, destination, index) = {
-                let data = store.data.read().unwrap();
+                let data = store.data.try_borrow().unwrap();
                 (
                     data.entries[b"a".as_slice()].clone(),
                     capacities(&data.entries[b"a".as_slice()]),
@@ -730,7 +730,7 @@ mod tests {
             };
             assert_eq!(call(&store, &[b"RENAMENX", b"a", b"b"]), b":0\r\n");
             {
-                let data = store.data.read().unwrap();
+                let data = store.data.try_borrow().unwrap();
                 assert_eq!(data.entries[b"a".as_slice()], source);
                 assert_eq!(capacities(&data.entries[b"a".as_slice()]), buffers);
                 assert_eq!(data.entries[b"b".as_slice()], destination);
@@ -739,7 +739,7 @@ mod tests {
             }
             assert_eq!(call(&store, &[b"RENAME", b"a", b"b"]), b"+OK\r\n");
             {
-                let data = store.data.read().unwrap();
+                let data = store.data.try_borrow().unwrap();
                 assert_eq!(data.entries.len(), 1);
                 assert_eq!(data.entries[b"b".as_slice()], source);
                 assert_eq!(capacities(&data.entries[b"b".as_slice()]), buffers);
@@ -756,7 +756,7 @@ mod tests {
     #[test]
     fn expired_destination_is_absent_but_expired_source_is_not_renamed() {
         let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-        let store = Store::with_clock(12, clock.clone());
+        let store = ShardExecutor::with_clock(12, clock.clone());
         seed(&store, b"a", true, b"1200");
         seed(&store, b"b", false, b"1100");
         clock.0.store(1101, Ordering::SeqCst);
@@ -767,7 +767,7 @@ mod tests {
             call(&store, &[b"RENAME", b"b", b"a"]),
             b"-ERR no such key\r\n"
         );
-        let data = store.data.read().unwrap();
+        let data = store.data.try_borrow().unwrap();
         assert!(data.entries.is_empty());
         assert!(data.expirations.is_empty());
         assert_eq!(data.payload_bytes, 0);
@@ -777,22 +777,22 @@ mod tests {
     fn copy_admission_replace_and_expiry_keep_an_independent_value() {
         for typed in [false, true] {
             let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-            let store = Store::with_clock(12, clock.clone());
+            let store = ShardExecutor::with_clock(12, clock.clone());
             seed(&store, b"a", typed, b"1200");
             seed(&store, b"b", !typed, b"1100");
-            let before = store.data.read().unwrap().entries.clone();
-            let index = store.data.read().unwrap().expirations.clone();
+            let before = store.data.try_borrow().unwrap().entries.clone();
+            let index = store.data.try_borrow().unwrap().expirations.clone();
             assert_eq!(call(&store, &[b"COPY", b"a", b"longer"]), options::OOM);
             assert_eq!(call(&store, &[b"COPY", b"a", b"b"]), b":0\r\n");
             {
-                let data = store.data.read().unwrap();
+                let data = store.data.try_borrow().unwrap();
                 assert_eq!(data.entries, before);
                 assert_eq!(data.expirations, index);
                 assert_eq!(data.payload_bytes, 8);
             }
             assert_eq!(call(&store, &[b"COPY", b"a", b"b", b"REPLACE"]), b":1\r\n");
             {
-                let data = store.data.read().unwrap();
+                let data = store.data.try_borrow().unwrap();
                 assert_eq!(data.entries[b"a".as_slice()], data.entries[b"b".as_slice()]);
                 assert_eq!(data.payload_bytes, 8);
                 assert_eq!(
@@ -808,7 +808,7 @@ mod tests {
                 assert_eq!(exec(&store, &[b"GET", b"b"]), b"$3\r\nv\0x\r\n");
             }
             assert_eq!(
-                store.data.read().unwrap().entries[b"b".as_slice()],
+                store.data.try_borrow().unwrap().entries[b"b".as_slice()],
                 before[b"a".as_slice()]
             );
             // Expiring the destination's old deadline must not remove the copy.
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn copy_is_deep_type_aware_expiry_preserving_and_atomic() {
         let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-        let store = Store::with_clock(25, clock.clone());
+        let store = ShardExecutor::with_clock(25, clock.clone());
         assert_eq!(call(&store, &[b"RPUSH", b"src", b"one", b"two"]), b":2\r\n");
         assert_eq!(call(&store, &[b"PEXPIRE", b"src", b"5000"]), b":1\r\n");
         assert_eq!(call(&store, &[b"COPY", b"src", b"dst"]), b":1\r\n");
@@ -865,12 +865,12 @@ mod tests {
         clock.0.store(6001, Ordering::SeqCst);
         assert_eq!(call(&store, &[b"TYPE", b"dst"]), b"+none\r\n");
 
-        let atomic = Store::new(20);
+        let atomic = ShardExecutor::new(20);
         assert_eq!(call(&atomic, &[b"RPUSH", b"s", b"123456789"]), b":1\r\n");
         assert_eq!(call(&atomic, &[b"SET", b"dst", b"x"]), b"+OK\r\n");
-        let before = atomic.data.read().unwrap().payload_bytes;
+        let before = atomic.data.try_borrow().unwrap().payload_bytes;
         assert!(call(&atomic, &[b"COPY", b"s", b"dst", b"REPLACE"]).starts_with(b"-OOM"));
-        assert_eq!(atomic.data.read().unwrap().payload_bytes, before);
+        assert_eq!(atomic.data.try_borrow().unwrap().payload_bytes, before);
         assert_eq!(call(&atomic, &[b"GET", b"dst"]), b"$1\r\nx\r\n");
         assert_eq!(call(&atomic, &[b"TYPE", b"s"]), b"+list\r\n");
     }
@@ -878,7 +878,7 @@ mod tests {
     #[test]
     fn copy_reclaims_unrelated_expired_payload_before_reporting_oom() {
         let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-        let store = Store::with_clock(12, clock.clone());
+        let store = ShardExecutor::with_clock(12, clock.clone());
         assert_eq!(call(&store, &[b"RPUSH", b"s", b"1234"]), b":1\r\n");
         assert_eq!(
             call(&store, &[b"SET", b"x", b"123456", b"PX", b"1"]),
@@ -890,13 +890,13 @@ mod tests {
             call(&store, &[b"LRANGE", b"d", b"0", b"-1"]),
             b"*1\r\n$4\r\n1234\r\n"
         );
-        assert_eq!(store.data.read().unwrap().payload_bytes, 10);
-        assert!(store.data.read().unwrap().expirations.is_empty());
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 10);
+        assert!(store.data.try_borrow().unwrap().expirations.is_empty());
     }
 
     #[test]
     fn copy_clones_set_hash_and_sorted_set_contents_independently() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         assert_eq!(call(&store, &[b"SADD", b"set", b"one"]), b":1\r\n");
         assert_eq!(call(&store, &[b"COPY", b"set", b"set-copy"]), b":1\r\n");
         assert_eq!(call(&store, &[b"SADD", b"set", b"two"]), b":1\r\n");
@@ -936,7 +936,7 @@ mod tests {
 
     #[test]
     fn keys_globs_are_binary_safe_and_pathological_inputs_are_bounded() {
-        let store = Store::new(128_000);
+        let store = ShardExecutor::new(128_000);
         for key in [b"alpha".as_slice(), b"alps", b"a?", b"a*", b"a\\"] {
             store.set(
                 key,
@@ -1002,7 +1002,7 @@ mod tests {
 
     #[test]
     fn randomkey_handles_empty_and_selects_beyond_the_first_key() {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         assert_eq!(call(&store, &[b"RANDOMKEY"]), b"$-1\r\n");
         for key in [b"foo".as_slice(), b"bar"] {
             store.set(
@@ -1030,7 +1030,7 @@ mod tests {
     #[test]
     fn typed_entries_share_admin_string_guards_accounting_and_expiry() {
         let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-        let store = Store::with_clock(10_000, clock.clone());
+        let store = ShardExecutor::with_clock(10_000, clock.clone());
         for create in [
             &[b"RPUSH".as_slice(), b"l", b"value"][..],
             &[b"SADD".as_slice(), b"s", b"value"][..],
@@ -1081,7 +1081,7 @@ mod tests {
             b"*5\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n"
         );
         {
-            let data = store.data.read().unwrap();
+            let data = store.data.try_borrow().unwrap();
             assert_eq!(data.payload_bytes, 40);
             for entry in data.entries.values() {
                 let actual = if let Some(collection) = &entry.collection {
@@ -1094,19 +1094,19 @@ mod tests {
         }
         clock.0.store(1011, Ordering::SeqCst);
         assert_eq!(call(&store, &[b"DBSIZE"]), b":0\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
-        assert!(store.data.read().unwrap().expirations.is_empty());
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
+        assert!(store.data.try_borrow().unwrap().expirations.is_empty());
         call(&store, &[b"RPUSH", b"l", b"value"]);
         call(&store, &[b"XADD", b"x", b"1", b"field", b"value"]);
         assert_eq!(call(&store, &[b"FLUSHALL", b"ASYNC"]), b"+OK\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
         assert_eq!(call(&store, &[b"CONFIG", b"RESETSTAT"]), b"+OK\r\n");
     }
 
     #[test]
     fn msetex_replaces_collections_with_exact_ttl_accounting_and_atomic_oom() {
         let clock = Arc::new(TestClock(AtomicI64::new(1000)));
-        let store = Store::with_clock(16, clock);
+        let store = ShardExecutor::with_clock(16, clock);
         assert_eq!(call(&store, &[b"RPUSH", b"a", b"1234"]), b":1\r\n");
         assert_eq!(call(&store, &[b"HSET", b"b", b"f", b"123"]), b":1\r\n");
         assert_eq!(call(&store, &[b"PEXPIRE", b"a", b"50"]), b":1\r\n");
@@ -1130,7 +1130,7 @@ mod tests {
             )
             .starts_with(b"-OOM")
         );
-        assert_eq!(store.data.read().unwrap().payload_bytes, 10);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 10);
         assert_eq!(call(&store, &[b"TYPE", b"a"]), b"+list\r\n");
         assert_eq!(call(&store, &[b"TYPE", b"b"]), b"+hash\r\n");
         assert_eq!(call(&store, &[b"PTTL", b"a"]), b":50\r\n");
@@ -1143,7 +1143,7 @@ mod tests {
             ),
             b":1\r\n"
         );
-        assert_eq!(store.data.read().unwrap().payload_bytes, 8);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 8);
         assert_eq!(
             call(&store, &[b"MGET", b"a", b"b"]),
             b"*2\r\n$3\r\none\r\n$3\r\ntwo\r\n"
@@ -1152,12 +1152,12 @@ mod tests {
         assert_eq!(call(&store, &[b"PTTL", b"b"]), b":100\r\n");
         assert_eq!(call(&store, &[b"SADD", b"s", b"item"]), b":1\r\n");
         assert_eq!(call(&store, &[b"DELEX", b"s"]), b":1\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 8);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 8);
     }
 
     #[test]
     fn unknown_command_leaves_output_untouched() {
-        let store = Store::new(10);
+        let store = ShardExecutor::new(10);
         let mut output = b"prefix".to_vec();
         assert!(!store.execute_keyspace(&[b"NOTKEYSPACE"], &mut output));
         assert_eq!(output, b"prefix");

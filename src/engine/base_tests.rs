@@ -1,6 +1,6 @@
 use super::*;
 
-fn execute(store: &Store, arguments: &[&[u8]]) -> Vec<u8> {
+fn execute(store: &ShardExecutor, arguments: &[&[u8]]) -> Vec<u8> {
     let mut output = Vec::new();
     assert_eq!(store.execute(arguments, &mut output), Action::Continue);
     output
@@ -8,7 +8,7 @@ fn execute(store: &Store, arguments: &[&[u8]]) -> Vec<u8> {
 
 #[test]
 fn binary_values_overwrite_and_missing_values_are_distinct() {
-    let store = Store::new(100);
+    let store = ShardExecutor::new(100);
     assert_eq!(execute(&store, &[b"gEt", b"\xff"]), b"$-1\r\n");
     assert_eq!(execute(&store, &[b"sEt", b"\xff", b"\0\r\n"]), b"+OK\r\n");
     assert_eq!(execute(&store, &[b"GET", b"\xff"]), b"$3\r\n\0\r\n\r\n");
@@ -18,7 +18,7 @@ fn binary_values_overwrite_and_missing_values_are_distinct() {
 
 #[test]
 fn duplicates_match_redis_semantics() {
-    let store = Store::new(100);
+    let store = ShardExecutor::new(100);
     execute(&store, &[b"SET", b"key", b"value"]);
     assert_eq!(
         execute(&store, &[b"EXISTS", b"key", b"key", b"missing"]),
@@ -33,7 +33,7 @@ fn duplicates_match_redis_semantics() {
 
 #[test]
 fn payload_budget_is_atomic_and_reclaimed_on_overwrite_and_delete() {
-    let store = Store::new(5);
+    let store = ShardExecutor::new(5);
     assert_eq!(execute(&store, &[b"SET", b"k", b"1234"]), b"+OK\r\n");
     assert!(execute(&store, &[b"SET", b"k", b"12345"]).starts_with(b"-OOM"));
     assert_eq!(execute(&store, &[b"GET", b"k"]), b"$4\r\n1234\r\n");
@@ -41,13 +41,13 @@ fn payload_budget_is_atomic_and_reclaimed_on_overwrite_and_delete() {
     assert_eq!(execute(&store, &[b"SET", b"k", b"1"]), b"+OK\r\n");
     assert_eq!(execute(&store, &[b"SET", b"x", b"12"]), b"+OK\r\n");
     assert_eq!(execute(&store, &[b"DEL", b"k", b"x"]), b":2\r\n");
-    assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     assert_eq!(execute(&store, &[b"SET", b"new", b"12"]), b"+OK\r\n");
 }
 
 #[test]
 fn errors_do_not_mutate_data_or_inject_resp_frames() {
-    let store = Store::new(100);
+    let store = ShardExecutor::new(100);
     assert_eq!(
         execute(&store, &[b"SET", b"k", b"v", b"UNSUPPORTED", b"1"]),
         b"-ERR syntax error\r\n"
@@ -76,7 +76,7 @@ fn errors_do_not_mutate_data_or_inject_resp_frames() {
 #[test]
 fn conditional_sets_distinguish_missing_existing_and_empty_values() {
     for key in [b"".as_slice(), b"\0\xff"] {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         assert_eq!(execute(&store, &[b"SET", key, b"no", b"XX"]), b"$-1\r\n");
         assert_eq!(execute(&store, &[b"GET", key]), b"$-1\r\n");
         assert_eq!(execute(&store, &[b"SET", key, b"", b"nX"]), b"+OK\r\n");
@@ -95,7 +95,7 @@ fn conditional_sets_distinguish_missing_existing_and_empty_values() {
 
 #[test]
 fn identical_conditional_flags_may_repeat() {
-    let store = Store::new(100);
+    let store = ShardExecutor::new(100);
     assert_eq!(
         execute(&store, &[b"SET", b"k", b"first", b"NX", b"nx"]),
         b"+OK\r\n"
@@ -129,7 +129,7 @@ fn all_set_options_are_validated_even_when_a_condition_would_reject() {
         &[b"KEEPTTL", b"EX", b"1"],
     ];
     for present in [false, true] {
-        let store = Store::new(100);
+        let store = ShardExecutor::new(100);
         if present {
             execute(&store, &[b"SET", b"k", b"old"]);
         }
@@ -155,27 +155,27 @@ fn all_set_options_are_validated_even_when_a_condition_would_reject() {
 
 #[test]
 fn conditional_rejection_does_not_consume_payload_budget() {
-    let store = Store::new(5);
+    let store = ShardExecutor::new(5);
     assert_eq!(execute(&store, &[b"SET", b"k", b"1234", b"NX"]), b"+OK\r\n");
     for arguments in [
         [b"SET".as_slice(), b"k", b"123456", b"NX"],
         [b"SET".as_slice(), b"missing", b"123456", b"XX"],
     ] {
         assert_eq!(execute(&store, &arguments), b"$-1\r\n");
-        assert_eq!(store.data.read().unwrap().payload_bytes, 5);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 5);
     }
     assert!(execute(&store, &[b"SET", b"k", b"12345", b"XX"]).starts_with(b"-OOM"));
     assert_eq!(execute(&store, &[b"GET", b"k"]), b"$4\r\n1234\r\n");
     assert_eq!(execute(&store, &[b"SET", b"k", b"1", b"XX"]), b"+OK\r\n");
     assert_eq!(execute(&store, &[b"SET", b"x", b"12", b"NX"]), b"+OK\r\n");
-    assert_eq!(store.data.read().unwrap().payload_bytes, 5);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 5);
     assert_eq!(execute(&store, &[b"DEL", b"k", b"x"]), b":2\r\n");
-    assert_eq!(store.data.read().unwrap().payload_bytes, 0);
+    assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
 }
 
 #[test]
 fn digest_and_value_digest_conditions_match_native_xxh3() {
-    let store = Store::new(4096);
+    let store = ShardExecutor::new(4096);
     let redis_vector = b"v8lf0c11xh8ymlqztfd3eeq16kfn4sspw7fqmnuuq3k3t75em5wdizgcdw7uc26nnf961u2jkfzkjytls2kwlj7626sd";
     assert_eq!(execute(&store, &[b"SET", b"foo", redis_vector]), b"+OK\r\n");
     assert_eq!(
@@ -233,7 +233,7 @@ fn digest_and_value_digest_conditions_match_native_xxh3() {
 
 #[test]
 fn delex_and_delifeq_are_atomic_value_comparisons() {
-    let store = Store::new(128);
+    let store = ShardExecutor::new(128);
     assert_eq!(
         execute(&store, &[b"DELEX", b"missing", b"IFDEQ", b"bad"]),
         b":0\r\n"
@@ -256,7 +256,7 @@ fn delex_and_delifeq_are_atomic_value_comparisons() {
 
 #[test]
 fn ping_echo_and_quit() {
-    let store = Store::new(100);
+    let store = ShardExecutor::new(100);
     assert_eq!(execute(&store, &[b"PING"]), b"+PONG\r\n");
     assert_eq!(execute(&store, &[b"PING", b""]), b"$0\r\n\r\n");
     assert_eq!(execute(&store, &[b"ECHO", b"a\0b"]), b"$3\r\na\0b\r\n");

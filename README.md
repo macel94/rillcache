@@ -185,11 +185,13 @@ support credential operations and policy debugging. See
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
 bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
-On Unix, default plaintext TCP uses current-thread Tokio runtimes sized to the
-bind-time effective CPU hint (1..=64), with acceptance sharing runtime zero and
-one additional bounded cold-I/O service thread. Storage is still shared and
-synchronous, not shard-owned. Persistence/ACL-file/audit configurations, native TLS and
-non-Unix defaults retain their previous socket paths. See the complete
+On Unix, eligible default plaintext TCP co-locates one current-thread Tokio
+socket runtime and the published one-owner executor, plus one bounded cold-I/O
+service thread. Ordinary local commands have no data-bridge hop; this is not
+multi-owner/thread-per-core execution. Mixed TLS uses an explicitly accounted
+compatibility owner with bridge calls kept off async runtimes. Persistence,
+ACL-file/audit configurations, native TLS sockets and non-Unix defaults retain
+their previous socket paths. See the complete
 [transport decisions, bounds and lifecycle](docs/async-transport.md).
 Optional `--threads 1` or `--threads N` selects exactly 1..64 existing shared
 I/O/execution workers plus the accept/control thread; idle clients do not occupy

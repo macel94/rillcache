@@ -22,7 +22,7 @@ fn start(mut config: Config) -> ServerHandle {
 }
 
 #[test]
-fn default_tokio_runtime_budget_matches_effective_cpu_capacity() {
+fn default_local_owner_uses_one_runtime_within_effective_cpu_budget() {
     if std::env::var("RILLCACHE_TEST_THREADS").as_deref() != Ok("0") {
         return;
     }
@@ -34,7 +34,8 @@ fn default_tokio_runtime_budget_matches_effective_cpu_capacity() {
             .unwrap_or(1)
             .clamp(1, 64);
         assert!(server.scheduling_policy().readiness_io);
-        assert_eq!(server.scheduling_policy().tokio_worker_threads, expected);
+        assert_eq!(server.scheduling_policy().tokio_worker_threads, 1);
+        assert!(server.scheduling_policy().tokio_worker_threads <= expected);
         server.shutdown().unwrap();
     }
 }

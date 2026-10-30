@@ -1,9 +1,9 @@
 //! Channel, pattern, shard and MONITOR subscription state and delivery.
 
+use crate::engine::Execution;
 use std::io::Write;
 use std::sync::mpsc::SyncSender;
 
-use crate::engine::Store;
 use crate::protocol::encode_bulk;
 
 use super::Protocol;
@@ -34,15 +34,15 @@ impl Session {
         self.pubsub_shard_channels.len()
     }
 
-    pub(super) fn refresh_pubsub_protocol(&self, store: &Store) {
+    pub(super) fn refresh_pubsub_protocol<E: Execution>(&self, store: &E) {
         if self.is_subscribed() {
             store.pubsub_set_resp3(self.id, self.protocol == Protocol::Resp3);
         }
     }
 
-    pub(super) fn subscribe(
+    pub(super) fn subscribe<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         names: &[&[u8]],
         pattern: bool,
         output: &mut Vec<u8>,
@@ -73,7 +73,12 @@ impl Session {
         }
     }
 
-    pub(super) fn subscribe_shard(&mut self, store: &Store, names: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn subscribe_shard<E: Execution>(
+        &mut self,
+        store: &E,
+        names: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         if names.is_empty() {
             arity("ssubscribe", output);
             return;
@@ -94,9 +99,9 @@ impl Session {
         }
     }
 
-    pub(super) fn unsubscribe_shard(
+    pub(super) fn unsubscribe_shard<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         names: &[&[u8]],
         output: &mut Vec<u8>,
     ) {
@@ -134,9 +139,9 @@ impl Session {
         output.extend_from_slice(b"\r\n");
     }
 
-    pub(super) fn unsubscribe(
+    pub(super) fn unsubscribe<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         names: &[&[u8]],
         pattern: bool,
         output: &mut Vec<u8>,
@@ -188,7 +193,12 @@ impl Session {
         output.extend_from_slice(b"\r\n");
     }
 
-    pub(super) fn publish(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn publish<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         if arguments.len() != 3 {
             arity("publish", output);
             return;
@@ -197,7 +207,12 @@ impl Session {
         let _ = write!(output, ":{delivered}\r\n");
     }
 
-    pub(super) fn spublish(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn spublish<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         if arguments.len() != 3 {
             arity("spublish", output);
             return;
@@ -206,7 +221,12 @@ impl Session {
         let _ = write!(output, ":{delivered}\r\n");
     }
 
-    pub(super) fn pubsub(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn pubsub<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         let Some(subcommand) = arguments.first() else {
             arity("pubsub", output);
             return;
@@ -266,7 +286,12 @@ impl Session {
         output.extend_from_slice(b"*2\r\n$4\r\npong\r\n");
         encode_bulk(Some(arguments.first().copied().unwrap_or(b"")), output);
     }
-    pub(super) fn monitor(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn monitor<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         if arguments.len() != 1 {
             arity("monitor", output);
             return;

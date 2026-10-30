@@ -42,9 +42,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   backpressure; the server shall not create an unbounded connection-task queue.
   Client admission, input-frame limits and response buffering shall remain bounded.
 - **R-TOKIO-NET3:** While sessions use auth/ACL, transactions/WATCH, pub/sub,
-  MONITOR, blocking commands, pause, or persistence, they shall continue using
-  the same Store and Session behavior, ordering and accounting as other modes.
-  Async socket waits shall not block a runtime thread.
+  MONITOR, blocking commands, pause or persistence, they shall use the published
+  common Session/execution behavior, ordering and accounting. Ordinary eligible
+  plaintext shall co-locate one !Send executor with its socket runtime and make
+  zero local data-bridge submissions. Compatibility Store waits shall execute
+  outside async runtimes on bounded admission, not synchronously block them.
 - **R-TOKIO-NET4:** When idle timeout, peer cancellation, protocol error, SHUTDOWN,
   server-handle shutdown or worker failure occurs, connection registration and
   resources shall be released and every owned runtime worker shall be joined.
@@ -61,14 +63,20 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-TOKIO-NET7:** When measured, metadata shall identify the Tokio default
   runtime. Performance remains subject to every original and four-CPU protected
   comparison; async architecture alone is not evidence of a throughput win.
-- **R-TOKIO-NET8:** On the Unix default path, the accept loop shall share runtime
-  zero with bounded local client tasks; only the remaining effective-CPU budget
-  may start remote Tokio runtime threads. Append-only persistence, ACL files and
+- **R-TOKIO-NET8:** On eligible ordinary Unix plaintext, acceptance, bounded
+  client tasks and the published one-owner executor shall share one runtime.
+  Mixed TLS compatibility may start additional network runtimes only within the
+  captured effective-CPU budget; it shall not claim multiple data owners.
+  Append-only persistence, ACL files and
   synchronous audit sinks shall retain the non-Tokio fallback until both their
   blocking work and lock-held disk waits are isolated. ACL and paused resumption
   shall use one separately accounted, bounded, joined cold-I/O service; its
-  permit shall precede retaining an extra
-  request frame and shall survive waiter cancellation until the job finishes.
+  permit shall precede retaining an extra request frame and shall survive waiter
+  cancellation until the job finishes. Complete compatibility operations and
+  maintenance shall use that service rather than synchronously wait on Store.
+  Local bridge/Data lifetime shall outlive admitted cold jobs, including a
+  cancelled reply waiter. Metadata shall distinguish local vs compatibility data
+  execution and account for network, cold and external data-owner threads.
   EXEC shall retain the existing rejection of queued ACL session commands.
   Tests shall cover actual one-effective-CPU thread count, fallback selection,
   and healthy same-runtime GET progress during delayed cold service work.

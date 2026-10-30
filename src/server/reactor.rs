@@ -4,10 +4,12 @@
 
 use super::pool::Client;
 use super::*;
+use crate::engine::{BridgeInbox, Execution, ServerServices, StoreHandle};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::fd::AsRawFd;
+use std::rc::Rc;
 
 const LISTENER: Token = Token(0);
 const ACCEPT_QUANTUM: usize = 64;
@@ -26,7 +28,7 @@ struct ReadyKey {
 struct Connection {
     token: Token,
     client: Client,
-    store: Arc<Store>,
+    store: Arc<ServerServices>,
     queued: bool,
     asynchronous: bool,
     writable: bool,
@@ -40,7 +42,7 @@ impl Drop for Connection {
     }
 }
 
-struct Reactor {
+struct Reactor<E: Execution> {
     poll: Poll,
     listener: TcpListener,
     // Only kernel-event routing hashes tokens. Productive turns use indexed
@@ -53,12 +55,13 @@ struct Reactor {
     next_token: usize,
     accept_ready: bool,
     config: Config,
-    store: Arc<Store>,
+    store: Rc<E>,
+    inbox: Option<BridgeInbox>,
     admitted: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
 }
 
-impl Drop for Reactor {
+impl<E: Execution> Drop for Reactor<E> {
     fn drop(&mut self) {
         // Cloned administration handles can keep an open-file description alive.
         // Deregister before closing any registered socket, including on errors.
@@ -70,7 +73,7 @@ impl Drop for Reactor {
     }
 }
 
-impl Reactor {
+impl<E: Execution> Reactor<E> {
     fn enqueue(&mut self, key: ReadyKey) {
         if let Some(connection) = self.clients.get_mut(key.slot).and_then(Option::as_mut)
             && connection.token == key.token
@@ -151,7 +154,7 @@ impl Reactor {
                     shutdown_on_drop: true,
                     pubsub: receiver,
                 },
-                store: Arc::clone(&self.store),
+                store: self.store.services_handle(),
                 queued: false,
                 asynchronous: false,
                 writable: false,
@@ -201,7 +204,7 @@ impl Reactor {
             }
         }
         let retry_before_dispatch = client.retry_io;
-        let Some(made_progress) = client.poll(&self.store, &self.config, chunk)? else {
+        let Some(made_progress) = client.poll(self.store.as_ref(), &self.config, chunk)? else {
             return Ok(None);
         };
         progress |= made_progress;
@@ -245,6 +248,9 @@ impl Reactor {
         let mut maintenance = Instant::now();
         let mut asynchronous = maintenance;
         while !self.stopping.load(Ordering::Acquire) && !self.store.shutdown_requested() {
+            if let Some(inbox) = &self.inbox {
+                inbox.drain(self.store.as_ref());
+            }
             let now = Instant::now();
             if now.duration_since(maintenance) >= MAINTENANCE_TICK {
                 let _ = self.store.journal_sync();
@@ -329,6 +335,26 @@ pub(super) fn serve(
     store: Arc<Store>,
     stopping: Arc<AtomicBool>,
 ) -> io::Result<()> {
+    if let Some((executor, inbox)) = store.install_local() {
+        serve_with(listener, config, Rc::new(executor), Some(inbox), stopping)
+    } else {
+        serve_with(
+            listener,
+            config,
+            Rc::new(StoreHandle(store)),
+            None,
+            stopping,
+        )
+    }
+}
+
+fn serve_with<E: Execution>(
+    listener: TcpListener,
+    config: Config,
+    store: Rc<E>,
+    inbox: Option<BridgeInbox>,
+    stopping: Arc<AtomicBool>,
+) -> io::Result<()> {
     let poll = Poll::new()?;
     let fd = listener.as_raw_fd();
     poll.registry()
@@ -345,6 +371,7 @@ pub(super) fn serve(
         accept_ready: false,
         config,
         store,
+        inbox,
         admitted: Arc::new(AtomicUsize::new(0)),
         stopping,
     }
@@ -355,17 +382,18 @@ pub(super) fn serve(
 mod tests {
     use super::*;
 
-    fn fixture() -> Reactor {
+    fn fixture() -> Reactor<crate::engine::ShardExecutor> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let config = Config::default();
-        let store = Arc::new(Store::new(config.max_data_bytes));
+        let store = Rc::new(crate::engine::ShardExecutor::new(config.max_data_bytes));
         store.set_max_clients(128);
         Reactor {
             poll: Poll::new().unwrap(),
             listener,
             config,
             store,
+            inbox: None,
             tokens: HashMap::new(),
             clients: Vec::new(),
             free_slots: Vec::new(),
@@ -391,7 +419,7 @@ mod tests {
         assert_eq!(reactor.tokens.len(), peers.len());
         assert!(!reactor.accept_ready);
         assert_eq!(reactor.ready.len(), peers.len());
-        let store = Arc::clone(&reactor.store);
+        let store = reactor.store.services();
         drop(reactor);
         assert_eq!(
             store.connected_clients(),

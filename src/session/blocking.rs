@@ -1,10 +1,11 @@
 //! Deferred blocking commands, their deadlines and wakeup polling.
 
+use crate::engine::Execution;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
 use crate::engine::{
-    ListMoveOutcome, ListPopOutcome, PopOutcome, Store, StreamId, UnblockMode, XReadGroupOptions,
+    ListMoveOutcome, ListPopOutcome, PopOutcome, StreamId, UnblockMode, XReadGroupOptions,
     XReadGroupOutcome, XReadGroupStart, XReadOutcome, ZSetPopOutcome, blocking_lmpop_reply,
     blocking_reply, blocking_zpop_reply, list_move_reply, parse_bzmpop_timeout, parse_list_mpop,
     parse_mpop, parse_side, parse_xread, xread_reply, xreadgroup_reply, zset_pop_single_reply,
@@ -61,11 +62,16 @@ pub(super) enum BlockedKind {
 }
 
 impl Session {
-    pub(super) fn sync_blocked(&self, store: &Store) {
+    pub(super) fn sync_blocked<E: Execution>(&self, store: &E) {
         store.set_client_blocked(self.id, self.blocked.is_some());
     }
 
-    pub(super) fn record_slowlog(&self, store: &Store, arguments: &[&[u8]], started: Instant) {
+    pub(super) fn record_slowlog<E: Execution>(
+        &self,
+        store: &E,
+        arguments: &[&[u8]],
+        started: Instant,
+    ) {
         if !store.slowlog_enabled() {
             return;
         }
@@ -76,9 +82,9 @@ impl Session {
             )
         });
     }
-    pub(super) fn blocking(
+    pub(super) fn blocking<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         arguments: &[&[u8]],
         left: bool,
         output: &mut Vec<u8>,
@@ -123,9 +129,9 @@ impl Session {
         self.sync_blocked(store);
     }
 
-    pub(super) fn blocking_lmpop(
+    pub(super) fn blocking_lmpop<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         arguments: &[&[u8]],
         output: &mut Vec<u8>,
     ) {
@@ -175,9 +181,9 @@ impl Session {
         self.sync_blocked(store);
     }
 
-    pub(super) fn blocking_list_move(
+    pub(super) fn blocking_list_move<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         arguments: &[&[u8]],
         output: &mut Vec<u8>,
     ) {
@@ -243,9 +249,9 @@ impl Session {
         self.sync_blocked(store);
     }
 
-    pub(super) fn blocking_zpop(
+    pub(super) fn blocking_zpop<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         arguments: &[&[u8]],
         output: &mut Vec<u8>,
     ) {
@@ -295,9 +301,9 @@ impl Session {
         self.sync_blocked(store);
     }
 
-    pub(super) fn blocking_zset_single(
+    pub(super) fn blocking_zset_single<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         arguments: &[&[u8]],
         max: bool,
         output: &mut Vec<u8>,
@@ -343,7 +349,12 @@ impl Session {
         self.sync_blocked(store);
     }
 
-    pub(super) fn xread(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn xread<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         let options = match parse_xread(arguments) {
             Ok(options) => options,
             Err(error) => {
@@ -383,9 +394,9 @@ impl Session {
         self.sync_blocked(store);
     }
 
-    pub(super) fn blocking_xreadgroup(
+    pub(super) fn blocking_xreadgroup<E: Execution>(
         &mut self,
-        store: &Store,
+        store: &E,
         options: &XReadGroupOptions<'_>,
         output: &mut Vec<u8>,
     ) {
@@ -422,7 +433,7 @@ impl Session {
 
     /// Poll a blocked pop. Returns one complete reply when it succeeded, failed or
     /// timed out, or `None` while the connection must remain blocked.
-    pub fn poll_blocked(&mut self, store: &Store) -> Option<Vec<u8>> {
+    pub(crate) fn poll_blocked_on<E: Execution>(&mut self, store: &E) -> Option<Vec<u8>> {
         self.blocked.as_ref()?;
         if let Some(mode) = store.take_unblock(self.id) {
             self.blocked = None;
@@ -549,7 +560,12 @@ impl Session {
         Some(reply)
     }
 
-    pub(super) fn waitaof(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn waitaof<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         if arguments.len() != 4 {
             arity("waitaof", output);
             return;

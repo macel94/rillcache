@@ -16,6 +16,8 @@ use std::path::PathBuf;
 mod accept;
 mod handoff;
 mod pool;
+#[cfg(test)]
+mod storage_ownership_tests;
 mod tls;
 #[cfg(unix)]
 mod tokio_io;
@@ -51,6 +53,8 @@ pub struct SchedulingPolicy {
     /// Total network runtimes, including the accept/runtime-zero thread.
     /// One additional bounded cold-I/O service thread is accounted separately.
     pub tokio_worker_threads: usize,
+    /// Tokio sockets use the external storage owner (mixed TLS), not local Data.
+    pub tokio_compatibility_owner: bool,
     pub active_poll_us: u64,
     pub run_quantum_us: u64,
     pub single_reply_yield: bool,
@@ -94,6 +98,7 @@ impl SchedulingPolicy {
         Self {
             readiness_io: false,
             tokio_worker_threads: 0,
+            tokio_compatibility_owner: false,
             active_poll_us: if workers.is_some() {
                 FIXED_WORKER_ACTIVE_POLL_US
             } else {
@@ -166,8 +171,9 @@ pub struct Config {
     pub auth_source_limit: usize,
     /// Per-source failure window and lockout duration in milliseconds.
     pub auth_source_window_ms: u64,
-    /// None: Unix Tokio current-thread runtimes, managed blocking-client fallback
-    /// elsewhere. Some(1..=64): the existing fixed I/O/execution lanes.
+    /// None: one colocated Unix Tokio socket/data owner by default; mixed TLS
+    /// uses bounded async compatibility networking. Cold configurations and
+    /// non-Unix retain managed blocking clients. Some(1..=64): fixed lanes.
     pub worker_threads: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
     pub max_data_bytes: usize,
@@ -490,9 +496,17 @@ impl Server {
         if tokio_plain_transport_enabled(&config) {
             policy = SchedulingPolicy {
                 readiness_io: true,
-                // Capture the affinity/quota-aware hint once, BEFORE any
-                // runtime thread pins itself to a single logical CPU.
-                tokio_worker_threads: capacity.unwrap_or(1).clamp(1, 64),
+                // Published storage currently has one data owner. Preserve
+                // direct socket/owner colocation by default, rather than make
+                // multiple runtimes synchronously wait on Store's bridge.
+                // Mixed TLS uses the external compatibility owner and async
+                // cold-service admission, within the effective network budget.
+                tokio_worker_threads: if config.tls_bind_addr.is_some() {
+                    capacity.unwrap_or(1).clamp(1, 64)
+                } else {
+                    1
+                },
+                tokio_compatibility_owner: config.tls_bind_addr.is_some(),
                 active_poll_us: 0,
                 run_quantum_us: 0,
                 single_reply_yield: false,
@@ -558,6 +572,12 @@ impl Server {
             store,
         } = self;
         let store = Arc::new(store);
+        // A local reactor may exit before TLS users finish. Mixed transports
+        // therefore share the joined external owner, never a reactor-owned inbox.
+        if tls_listener.is_some() {
+            store.ensure_external_owner();
+        }
+
         let tls_thread = match (tls_listener, tls_acceptor) {
             (Some(listener), Some(acceptor)) => {
                 let config = config.clone();
@@ -582,14 +602,20 @@ impl Server {
                 Arc::clone(&store),
             )
         } else {
-            serve_plain(listener, config, store, Arc::clone(&stopping), policy)
+            serve_plain(
+                listener,
+                config,
+                Arc::clone(&store),
+                Arc::clone(&stopping),
+                policy,
+            )
         };
         stopping.store(true, Ordering::Release);
         let tls_result = match tls_thread {
             Some(thread) => join_result(thread),
             None => Ok(()),
         };
-        result.and(tls_result)
+        result.and(tls_result).and(store.owner_status())
     }
 }
 

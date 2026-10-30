@@ -1,9 +1,9 @@
 //! Redis Streams commands (`X*`).
 
-use super::super::{Action, Store};
+use super::super::{Action, ShardExecutor};
 
 pub(super) fn execute(
-    store: &Store,
+    store: &ShardExecutor,
     _command: &[u8],
     arguments: &[&[u8]],
     output: &mut Vec<u8>,

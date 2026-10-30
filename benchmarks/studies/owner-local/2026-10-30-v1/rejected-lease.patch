@@ -1,0 +1,420 @@
+diff --git a/docs/requirements/next-stories.md b/docs/requirements/next-stories.md
+index a0bd89d..5dc3307 100644
+--- a/docs/requirements/next-stories.md
++++ b/docs/requirements/next-stories.md
+@@ -29,8 +29,8 @@ Not implemented or implied by the completed increments:
+    a safe readiness boundary before speculative sharding; retain idle CPU,
+    backpressure, shutdown and multi-key atomicity gates. Unsafe project code and
+    external Rust dependencies outside the vendored rustls exception remain forbidden.
+-   The routing/facade seam is in place ([sharding](sharding.md)); owner-thread and
+-   multi-shard execution remain unimplemented.
++   The routing/facade seam and single-shard owner-managed storage lease are in
++   place ([sharding](sharding.md)); multi-shard execution remains unimplemented.
+ 5. Controlled-hardware performance budgets and repeated current-release comparisons;
+    later, richer types, pub/sub and additional stream capabilities driven by product judgment.
+ 
+diff --git a/docs/sharding.md b/docs/sharding.md
+index d3f38fb..7e2557e 100644
+--- a/docs/sharding.md
++++ b/docs/sharding.md
+@@ -1,9 +1,12 @@
+-# Shared-nothing keyspace migration (increment 1)
++# Shared-nothing keyspace migration (increments 1–2)
+ 
+-Status: **routing seam only**. The server still owns one keyspace shard guarded
+-by `RwLock`. This increment adds the routing contract and the `Keyspace`
+-facade; it does not claim a sharded or lock-free server, and it does not change
+-wire behavior.
++Status: **one owner-managed shard**. `Store` now routes all keys to shard `0`
++and its `Keyspace` owns one `Data` value on a dedicated thread. A bounded
++`sync_channel` grants an exclusive, linear lease to existing command code and
++receives the value back when the guard drops. This preserves the command API and
++wire behavior while replacing shared `RwLock<Data>` storage with exclusive
++ownership transfers. It is not multi-shard execution, lock-free access, or a
++claim that command logic itself runs on the owner thread.
+ 
+ ## Enforced constraints
+ 
+@@ -28,49 +31,59 @@ The migration must stay inside the repository's existing rules:
+ 
+ - `ShardRouter`: power-of-two shard counts in `1..=64`, a process-random seed,
+   and `xxh3` plus a SplitMix64 finalizer for the masked index.
+-- `Keyspace`: owns the current `RwLock<Data>` and exposes `read`, `write` and
+-  `try_write`, so the existing command modules keep compiling unchanged.
++- `Keyspace`: owns the shard's `Data` on a named thread, with a bounded mailbox
++  and one-shot grant/return channels. RAII read/write guards transfer the single
++  owned value to a caller and return it on drop; a separate `RwLock<()>` keeps
++  read/write/try-write exclusion semantics. Mailbox or owner failure returns a
++  typed error, and dropping the keyspace joins the owner thread.
+ - `Store::shard_count()` and `Store::shard_for(key)`: public introspection of
+   the active layout.
+ 
+-With one shard the mask is zero, so every key routes to shard `0`; the routing
+-hash is still computed and tested so the contract does not change when the
+-owner-thread step lands. The seed is stable for the process lifetime so every
+-worker agrees on ownership, but random across restarts so client-controlled keys
+-cannot deliberately target one shard. Each shard's `HashMap` keeps its own
+-randomized hasher.
++The active layout remains one shard, so every key routes to `0`. Configurable
++router tests still cover power-of-two layouts through 64, seeded stability and
++key distribution. The process seed is stable for the process lifetime and random
++across restarts. A single owner-managed `Data` still includes global expiry,
++accounting, WATCH/version and journal metadata; no per-shard copies exist.
+ 
+ ## Why this order
+ 
+-A message hop per single-key command is a real cost, and the mandatory Valkey
+-gate requires strict wins rather than neutral refactors. The seam is therefore
+-separated from the execution change:
+-
+-1. **Routing and facade (this increment).** No behavior change.
+-2. **One owner thread.** Move `Data` and the transaction gate behind a bounded
+-   mailbox; benchmark before accepting.
+-3. **Multiple shards, single-key commands.** Fan out `MGET`/`DEL`/`EXISTS`;
+-   keep atomic multi-key commands on a coordinator.
+-4. **Atomic multi-key.** Prepare/commit in deterministic shard order, then
+-   `MULTI`/`EXEC`/`WATCH`, blocking commands and `SCAN` cursors.
+-5. **Cross-cutting ownership.** Journal sequencer, global eviction budget,
+-   pub/sub and `MONITOR` routing, joined shutdown.
++A mailbox/lease hop per data access is a real cost, and the mandatory Valkey
++gate requires strict wins rather than neutral refactors. The increments remain
++separate so the tradeoff and semantics are measurable:
++
++1. **Routing and facade.** Complete: deterministic routing and Store
++   introspection; active count remains one.
++2. **One owner-managed shard.** Complete: bounded mailbox, exclusive ownership
++   leases, typed stopped/busy errors, and joined owner shutdown. Existing global
++   transaction and journal sequencing remain in place; no wire behavior changes.
++3. **Multiple owner shards.** Not implemented. Partitioning `Data` must first
++   separate global from per-key state and route command operations without
++   breaking multi-key atomicity.
++4. **Cross-shard atomicity and waiters.** Not implemented: deterministic
++   prepare/commit for multi-key commands, `MULTI`/`EXEC`/`WATCH`, blocking
++   commands and shard-aware `SCAN` cursors.
++5. **Cross-cutting ownership.** Not implemented: journal sequencing, global
++   eviction budget, pub/sub and `MONITOR` routing, and maintenance coordination.
+ 
+ ## Hazards that remain
+ 
+-- `MSET`/`MSETEX`, `RENAME`, `COPY`, transactions and `WATCH` need an explicit
+-  commit protocol once keys live in different owners. Independent messages are
+-  not atomicity.
++- The owner thread is a custodian, not a command executor: each access transfers
++  the owned `Data` value to the caller and back. This keeps current APIs intact
++  but serializes access and adds mailbox cost; both hosted performance gates
++  remain mandatory for every implementation head.
++- The active layout is still one shard. `MSET`/`MSETEX`, `RENAME`, `COPY`,
++  transactions and `WATCH` are atomic today under the existing global gates;
++  they need an explicit commit protocol once keys live in different owners.
+ - The append-only journal has one global order; per-shard writers need a
+   sequencer or replay can diverge.
+ - Blocking list/zset/stream waiters must be shard-owned, and the session loop
+   must poll both its socket and the reply channel without `tokio`.
+ - `SCAN` cursors must encode a shard id; expiry, `maxmemory` eviction accounting
+   and keyspace notifications are currently global.
+-- The existing `transaction_gate` read lock is taken by every command; moving
+-  only `Data` would leave that contention in place.
++- The existing `transaction_gate` read lock is taken by every command and is
++  retained; moving only `Data` does not eliminate that contention.
+ 
+-## EARS acceptance for this increment
++## EARS acceptance for increments 1–2
+ 
+ - **Ubiquitous:** While the layout has one shard, the server shall route every
+   key, including empty, binary and multi-kilobyte keys, to shard `0`.
+@@ -82,6 +95,15 @@ separated from the execution change:
+   to the same shard; a different seed shall be able to change ownership.
+ - **Ubiquitous:** Routing shall use only safe, allocation-free computation over
+   the borrowed key bytes.
++- **State-driven:** While a lease exists, exactly one guard shall own the shard's
++  `Data`; when the guard drops, ownership shall return to the owner thread before
++  the next lease is granted.
++- **Unwanted behavior:** If the mailbox/owner has stopped, acquisition shall
++  return a typed error; `try_write` shall report busy instead of waiting.
++- **State-driven:** When a keyspace is dropped with no outstanding leases, the
++  owner thread shall stop and be joined; owner failure shall not panic callers.
++- **Ubiquitous:** Existing command code shall retain expiry, payload-budget,
++  eviction, WATCH/version and journal ordering under the exclusive lease.
+ 
+ ## Verification
+ 
+diff --git a/src/engine.rs b/src/engine.rs
+index 9cef316..378c856 100644
+--- a/src/engine.rs
++++ b/src/engine.rs
+@@ -148,9 +148,9 @@ pub struct Stats {
+ }
+ 
+ pub struct Store {
+-    /// Single keyspace facade. The server currently owns one lock-backed
+-    /// shard; the owner-thread increment replaces the internals of `Keyspace`,
+-    /// not these call sites.
++    /// Single keyspace facade. One owner thread retains the active shard's
++    /// Data between exclusive ownership leases; multi-shard execution remains a
++    /// separate increment.
+     data: Keyspace,
+     max_payload_bytes: std::sync::atomic::AtomicUsize,
+     error_dialect: ErrorDialect,
+diff --git a/src/engine/shard.rs b/src/engine/shard.rs
+index 05f5c16..f83ed04 100644
+--- a/src/engine/shard.rs
++++ b/src/engine/shard.rs
+@@ -9,7 +9,8 @@
+ //! random so client-controlled keys cannot deliberately target one shard; it is
+ //! stable for the process lifetime so every worker agrees on ownership.
+ 
+-use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockResult};
++use std::ops::{Deref, DerefMut};
++use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard, mpsc};
+ 
+ use super::data::Data;
+ 
+@@ -87,35 +88,188 @@ impl ShardRouter {
+     }
+ }
+ 
+-/// The single keyspace facade used by `Store`.
+-///
+-/// Call sites keep using `read`/`write`/`try_write`. The owner-thread
+-/// increment replaces the body of this type with bounded channel dispatch; the
+-/// command modules do not need to know which representation is active.
++/// Failure to communicate with the keyspace owner.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum OwnerError {
++    /// The owner thread stopped or its bounded mailbox closed.
++    Stopped,
++    /// A non-blocking acquisition could not take the lease.
++    Busy,
++}
++
++impl std::fmt::Display for OwnerError {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str(match self {
++            Self::Stopped => "keyspace owner stopped",
++            Self::Busy => "keyspace owner is busy",
++        })
++    }
++}
++
++impl std::error::Error for OwnerError {}
++
++type OwnerResult<T> = Result<T, OwnerError>;
++
++type ReturnData = mpsc::SyncSender<Data>;
++
++type LeaseGateRead<'a> = RwLockReadGuard<'a, ()>;
++type LeaseGateWrite<'a> = RwLockWriteGuard<'a, ()>;
++
++/// A read lease on the single active shard. The owned Data value is returned
++/// to its owner thread when this guard is dropped.
++pub(super) struct KeyspaceReadGuard<'a> {
++    data: Option<Data>,
++    owner: ReturnData,
++    _gate: LeaseGateRead<'a>,
++}
++
++impl Deref for KeyspaceReadGuard<'_> {
++    type Target = Data;
++    fn deref(&self) -> &Self::Target {
++        self.data.as_ref().expect("live keyspace lease")
++    }
++}
++
++impl Drop for KeyspaceReadGuard<'_> {
++    fn drop(&mut self) {
++        if let Some(data) = self.data.take() {
++            let _ = self.owner.send(data);
++        }
++    }
++}
++
++/// An exclusive lease on the single active shard.
++pub(super) struct KeyspaceWriteGuard<'a> {
++    data: Option<Data>,
++    owner: ReturnData,
++    _gate: LeaseGateWrite<'a>,
++}
++
++impl Deref for KeyspaceWriteGuard<'_> {
++    type Target = Data;
++    fn deref(&self) -> &Self::Target {
++        self.data.as_ref().expect("live keyspace lease")
++    }
++}
++
++impl DerefMut for KeyspaceWriteGuard<'_> {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        self.data.as_mut().expect("live keyspace lease")
++    }
++}
++
++impl Drop for KeyspaceWriteGuard<'_> {
++    fn drop(&mut self) {
++        if let Some(data) = self.data.take() {
++            let _ = self.owner.send(data);
++        }
++    }
++}
++
++enum OwnerRequest {
++    Acquire {
++        grant: mpsc::SyncSender<Data>,
++        returned: mpsc::Receiver<Data>,
++    },
++    Stop,
++    #[cfg(test)]
++    Fail,
++}
++
++/// The keyspace owner is the sole long-lived owner of Data. Callers receive a
++/// linear, lock-compatible lease and return ownership on guard drop; no shared
++/// reference or mutable alias to Data crosses the mailbox.
+ pub(super) struct Keyspace {
+-    data: RwLock<Data>,
++    requests: mpsc::SyncSender<OwnerRequest>,
++    owner: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
++    lease_gate: RwLock<()>,
+     router: ShardRouter,
++    #[cfg(test)]
++    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+ }
+ 
+ impl Keyspace {
+-    /// One lock-backed shard: today's behavior with the routing seam in place.
++    /// Start one bounded-mailbox owner for the current single-shard layout.
+     pub(super) fn single() -> Self {
++        const MAILBOX_CAPACITY: usize = 64;
++        let (requests, receiver) = mpsc::sync_channel(MAILBOX_CAPACITY);
++        #[cfg(test)]
++        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
++        #[cfg(test)]
++        let owner_stopped = std::sync::Arc::clone(&stopped);
++        let owner = std::thread::Builder::new()
++            .name("rillcache-keyspace-owner".to_owned())
++            .spawn(move || {
++                let mut data = Data::default();
++                while let Ok(request) = receiver.recv() {
++                    match request {
++                        OwnerRequest::Acquire { grant, returned } => {
++                            let leased = std::mem::take(&mut data);
++                            if grant.send(leased).is_err() {
++                                break;
++                            }
++                            let Ok(returned_data) = returned.recv() else {
++                                break;
++                            };
++                            data = returned_data;
++                        }
++                        OwnerRequest::Stop => break,
++                        #[cfg(test)]
++                        OwnerRequest::Fail => panic!("injected keyspace owner failure"),
++                    }
++                }
++                #[cfg(test)]
++                owner_stopped.store(true, std::sync::atomic::Ordering::Release);
++            })
++            .expect("start keyspace owner thread");
+         Self {
+-            data: RwLock::new(Data::default()),
++            requests,
++            owner: std::sync::Mutex::new(Some(owner)),
++            lease_gate: RwLock::new(()),
+             router: ShardRouter::new(1).expect("one shard is a valid layout"),
++            #[cfg(test)]
++            stopped,
+         }
+     }
+ 
+-    pub(super) fn read(&self) -> LockResult<RwLockReadGuard<'_, Data>> {
+-        self.data.read()
++    fn acquire(&self) -> OwnerResult<(Data, ReturnData)> {
++        let (grant, granted) = mpsc::sync_channel(1);
++        let (return_data, returned) = mpsc::sync_channel(1);
++        self.requests
++            .send(OwnerRequest::Acquire { grant, returned })
++            .map_err(|_| OwnerError::Stopped)?;
++        let data = granted.recv().map_err(|_| OwnerError::Stopped)?;
++        Ok((data, return_data))
++    }
++
++    pub(super) fn read(&self) -> OwnerResult<KeyspaceReadGuard<'_>> {
++        let gate = self.lease_gate.read().map_err(|_| OwnerError::Stopped)?;
++        let (data, owner) = self.acquire()?;
++        Ok(KeyspaceReadGuard {
++            data: Some(data),
++            owner,
++            _gate: gate,
++        })
+     }
+ 
+-    pub(super) fn write(&self) -> LockResult<RwLockWriteGuard<'_, Data>> {
+-        self.data.write()
++    pub(super) fn write(&self) -> OwnerResult<KeyspaceWriteGuard<'_>> {
++        let gate = self.lease_gate.write().map_err(|_| OwnerError::Stopped)?;
++        let (data, owner) = self.acquire()?;
++        Ok(KeyspaceWriteGuard {
++            data: Some(data),
++            owner,
++            _gate: gate,
++        })
+     }
+ 
+-    pub(super) fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, Data>> {
+-        self.data.try_write()
++    pub(super) fn try_write(&self) -> OwnerResult<KeyspaceWriteGuard<'_>> {
++        let gate = self.lease_gate.try_write().map_err(|_| OwnerError::Busy)?;
++        let (data, owner) = self.acquire()?;
++        Ok(KeyspaceWriteGuard {
++            data: Some(data),
++            owner,
++            _gate: gate,
++        })
+     }
+ 
+     pub(super) fn shard_for(&self, key: &[u8]) -> usize {
+@@ -125,6 +279,27 @@ impl Keyspace {
+     pub(super) fn shard_count(&self) -> usize {
+         self.router.count()
+     }
++
++    #[cfg(test)]
++    fn fail_owner_for_test(&self) {
++        let _ = self.requests.send(OwnerRequest::Fail);
++        if let Ok(mut owner) = self.owner.lock()
++            && let Some(owner) = owner.take()
++        {
++            let _ = owner.join();
++        }
++    }
++}
++
++impl Drop for Keyspace {
++    fn drop(&mut self) {
++        let _ = self.requests.send(OwnerRequest::Stop);
++        if let Ok(owner) = self.owner.get_mut()
++            && let Some(owner) = owner.take()
++        {
++            let _ = owner.join();
++        }
++    }
+ }
+ 
+ fn process_seed() -> u64 {
+@@ -312,4 +487,17 @@ mod tests {
+             }
+         }
+     }
++
++    #[test]
++    fn owner_failure_is_reported_and_drop_joins_a_healthy_owner() {
++        let failed = Keyspace::single();
++        failed.fail_owner_for_test();
++        assert_eq!(failed.read().err(), Some(OwnerError::Stopped));
++        drop(failed);
++
++        let healthy = Keyspace::single();
++        let stopped = std::sync::Arc::clone(&healthy.stopped);
++        drop(healthy);
++        assert!(stopped.load(std::sync::atomic::Ordering::Acquire));
++    }
+ }

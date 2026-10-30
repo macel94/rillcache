@@ -27,6 +27,10 @@ impl Drop for Process {
 
 impl Process {
     fn start(core: Option<core_affinity::CoreId>) -> Self {
+        Self::start_with_tls(core, false)
+    }
+
+    fn start_with_tls(core: Option<core_affinity::CoreId>, mixed: bool) -> Self {
         // Restrict a disposable launcher thread when requested; its child
         // inherits that mask. Never change the harness thread's affinity or
         // require an external taskset. None tests the full inherited mask.
@@ -34,8 +38,22 @@ impl Process {
             if let Some(core) = core {
                 assert!(core_affinity::set_for_current(core));
             }
-            Command::new(env!("CARGO_BIN_EXE_rillcache"))
-                .args(["--bind", "127.0.0.1:0"])
+            let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+            command.args(["--bind", "127.0.0.1:0"]);
+            if mixed {
+                command
+                    .args(["--tls-bind", "127.0.0.2:0", "--tls-cert-file"])
+                    .arg(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/tests/fixtures/tls/server.crt"
+                    ))
+                    .arg("--tls-key-file")
+                    .arg(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/tests/fixtures/tls/server.key"
+                    ));
+            }
+            command
                 .stderr(Stdio::piped())
                 .stdout(Stdio::null())
                 .spawn()
@@ -61,6 +79,7 @@ impl Process {
             addr: String::new(),
         };
         let line = process.lines.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(line.contains("listening on "), "server startup: {line}");
         process.addr = line
             .split("listening on ")
             .nth(1)
@@ -164,6 +183,36 @@ fn runtime_zero_preserves_launch_mask_before_and_after_traffic() {
             pinned.push(mask[0]);
         }
     }
+    process.shutdown(&mut stream);
+}
+
+#[test]
+fn mixed_tls_compatibility_workers_preserve_launch_cpuset_and_are_counted() {
+    let expected = process_affinity(std::process::id());
+    let budget = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .clamp(1, 64);
+    let mut process = Process::start_with_tls(None, true);
+    let mut stream = process.connect();
+    ping(&mut stream);
+    assert_eq!(process_affinity(process.child.id()), expected);
+    let mut tasks = 0;
+    let mut pinned = Vec::new();
+    for task in std::fs::read_dir(format!("/proc/{}/task", process.child.id())).unwrap() {
+        let task = task.unwrap().path();
+        let status = std::fs::read_to_string(task.join("status")).unwrap();
+        let mask = affinity(&status);
+        assert!(mask.iter().all(|id| expected.contains(id)));
+        let name = std::fs::read_to_string(task.join("comm")).unwrap();
+        if name.starts_with("rillcache-tokio") && mask.len() == 1 {
+            assert!(!pinned.contains(&mask[0]));
+            pinned.push(mask[0]);
+        }
+        tasks += 1;
+    }
+    // N network runtimes + bounded cold service + shared data owner + TLS accept.
+    assert_eq!(tasks, budget + 3);
     process.shutdown(&mut stream);
 }
 

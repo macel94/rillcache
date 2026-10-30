@@ -1,5 +1,73 @@
 use super::*;
 
+static READ_WAITS: AtomicUsize = AtomicUsize::new(0);
+static READ_PENDING_WAITS: AtomicUsize = AtomicUsize::new(0);
+// Manual diagnostic only: no counters/wrapper in production builds. A pending
+// read causes Timeout to poll Sleep, but cooperative budget exhaustion means
+// this is an upper bound on registrations, NOT an exact timer-driver counter.
+pub(super) async fn observe_read_wait<F: std::future::Future>(future: F) -> F::Output {
+    READ_WAITS.fetch_add(1, Ordering::Relaxed);
+    let mut future = std::pin::pin!(future);
+    let mut observed_pending = false;
+    std::future::poll_fn(|cx| {
+        let result = future.as_mut().poll(cx);
+        if result.is_pending() && !observed_pending {
+            observed_pending = true;
+            READ_PENDING_WAITS.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    })
+    .await
+}
+
+#[test]
+#[ignore = "manual mechanism diagnostic; not a throughput benchmark"]
+fn diagnose_read_timeout_construction_ping_p1_and_p16() {
+    const CLIENTS: usize = 8;
+    const PER_CLIENT: usize = 8192;
+    for pipeline in [1, 16] {
+        let mut server = TestServer::start(1, 128);
+        let ready = Arc::new(std::sync::Barrier::new(CLIENTS + 1));
+        let start = Arc::new(std::sync::Barrier::new(CLIENTS + 1));
+        let mut clients = Vec::new();
+        for _ in 0..CLIENTS {
+            let mut stream = server.connect();
+            let ready = Arc::clone(&ready);
+            let start = Arc::clone(&start);
+            clients.push(thread::spawn(move || {
+                ping(&mut stream);
+                ready.wait();
+                start.wait();
+                let request = b"*1\r\n$4\r\nPING\r\n".repeat(pipeline);
+                let expected = b"+PONG\r\n".repeat(pipeline);
+                let mut actual = vec![0; expected.len()];
+                for _ in 0..PER_CLIENT / pipeline {
+                    stream.write_all(&request).unwrap();
+                    stream.read_exact(&mut actual).unwrap();
+                    assert_eq!(actual, expected);
+                }
+                stream // keep alive until after counter snapshot
+            }));
+        }
+        ready.wait();
+        let waits_before = READ_WAITS.load(Ordering::Relaxed);
+        let pending_before = READ_PENDING_WAITS.load(Ordering::Relaxed);
+        start.wait();
+        let streams: Vec<_> = clients
+            .into_iter()
+            .map(|client| client.join().unwrap())
+            .collect();
+        let waits = READ_WAITS.load(Ordering::Relaxed) - waits_before;
+        let pending = READ_PENDING_WAITS.load(Ordering::Relaxed) - pending_before;
+        println!(
+            "READ_DIAGNOSTIC {{\"pipeline\":{pipeline},\"commands\":{},\"read_timeout_constructions\":{waits},\"unique_pending_read_waits\":{pending},\"scope\":\"test-instrumented counts, not throughput or exact timer registrations\"}}",
+            CLIENTS * PER_CLIENT
+        );
+        server.shutdown();
+        drop(streams);
+    }
+}
+
 struct TestServer {
     addr: SocketAddr,
     store: Arc<Store>,
@@ -219,7 +287,8 @@ fn cold_io_saturation_leaves_runtime_runnable_and_shutdown_joins_the_service() {
             .enable_all()
             .build()
             .unwrap();
-        let result = runtime.block_on(accept_loop(listener, context, &[]));
+        let result = tokio::task::LocalSet::new()
+            .block_on(&runtime, accept_with_storage(listener, context, &[]));
         service.join().unwrap();
         done_sender.send(result).unwrap();
     });
@@ -262,6 +331,27 @@ fn cold_io_saturation_leaves_runtime_runnable_and_shutdown_joins_the_service() {
     network.join().unwrap();
     assert_eq!(store.connected_clients(), 0);
     assert_eq!(permit.available_permits(), 1);
+}
+
+#[test]
+fn panic_publishes_stop_and_closes_controls_before_task_reaping() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let (control, _) = listener.accept().unwrap();
+    let controls = Arc::new(Mutex::new(HashMap::from([(1, control)])));
+    let stopping = Arc::new(AtomicBool::new(false));
+    let guard = FailureStop {
+        stopping: Arc::clone(&stopping),
+        controls,
+    };
+    let result = std::panic::catch_unwind(move || {
+        let _guard = guard;
+        panic!("injected owner task failure");
+    });
+    assert!(result.is_err());
+    assert!(stopping.load(Ordering::Acquire));
+    assert_eq!(peer.read(&mut [0]).unwrap(), 0);
 }
 
 #[test]

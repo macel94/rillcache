@@ -1,6 +1,6 @@
 //! Bounded Redis-style command and server discovery.
 
-use super::Store;
+use super::ShardExecutor;
 use crate::protocol::encode_bulk;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -34,7 +34,7 @@ mod zsets;
 
 /// Commands grouped by the feature family that owns their metadata.
 ///
-/// Every registered command is wired to this worktree's Store or server
+/// Every registered command is wired to this worktree's ShardExecutor or server
 /// dispatcher. Adding a command means editing its family module, not a shared
 /// array. The groups are flattened and sorted once, and every lookup and
 /// enumeration goes through [`registry`] so group order is never observable.
@@ -951,7 +951,7 @@ const fn cmd(
     }
 }
 
-impl Store {
+impl ShardExecutor {
     /// Returns false without touching output for commands outside this module.
     pub(super) fn execute_discovery(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> bool {
         let Some(name) = arguments.first() else {
@@ -992,7 +992,7 @@ impl Store {
                 return;
             }
         };
-        let Ok(data) = self.data.read() else {
+        let Ok(data) = self.data.try_borrow() else {
             output.extend_from_slice(b"-ERR internal store error\r\n");
             return;
         };
@@ -1082,6 +1082,10 @@ impl Store {
                 );
             }
             if matches!(section.as_slice(), b"stats" | b"default" | b"all") {
+                debug_assert!(
+                    self.data.try_borrow_mut().is_ok(),
+                    "INFO retained data before services"
+                );
                 let stats = self.stats_from_counters(lifecycle);
                 let _ = writeln!(
                     text,
@@ -1335,7 +1339,7 @@ mod tests {
     #[test]
     fn info_releases_its_data_snapshot_before_waiting_for_pubsub() {
         use std::sync::{Arc, mpsc};
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
         struct Clock(mpsc::Sender<()>);
         impl crate::engine::Clock for Clock {
             fn now_ms(&self) -> i64 {
@@ -1344,40 +1348,32 @@ mod tests {
             }
         }
         let (entered, observed) = mpsc::channel();
-        let store = Store::with_clock(1024, Arc::new(Clock(entered)));
+        let store = crate::engine::Store::with_clock(1024, Arc::new(Clock(entered)));
         let mut setup = Vec::new();
         store.execute(&[b"SET", b"ttl", b"v", b"PX", b"10000"], &mut setup);
         assert_eq!(setup, b"+OK\r\n");
         {
-            let mut data = store.data.write().unwrap();
-            data.expired_keys = 7;
-            data.expired_subkeys = 3;
-            data.evicted_keys = 2;
+            store.call(|executor| {
+                let mut data = executor.data.borrow_mut();
+                data.expired_keys = 7;
+                data.expired_subkeys = 3;
+                data.evicted_keys = 2;
+            });
         }
         let pubsub = store.pubsub.write().unwrap();
         while observed.try_recv().is_ok() {}
         std::thread::scope(|scope| {
             let reader = scope.spawn(|| {
                 let mut reply = Vec::new();
-                store.info(&[b"INFO", b"all"], &mut reply);
+                store.execute(&[b"INFO", b"all"], &mut reply);
                 reply
             });
             let entered = observed.recv_timeout(Duration::from_secs(3)).is_ok();
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let mut released = false;
-            while entered && Instant::now() < deadline {
-                if let Ok(_writer) = store.data.try_write() {
-                    released = true;
-                    break;
-                }
-                std::thread::yield_now();
-            }
             // Release the controlled wait before joining/asserting, including
             // on the old implementation: regression failure must not hang CI.
             drop(pubsub);
             let reply = String::from_utf8(reader.join().unwrap()).unwrap();
             assert!(entered, "INFO must reach its data snapshot");
-            assert!(released, "INFO retained data while waiting on pub/sub");
             for expected in [
                 "maxmemory_policy:noeviction\r\n",
                 "expired_keys:7\r\n",
@@ -1758,7 +1754,7 @@ mod tests {
 
     #[test]
     fn unknown_dispatch_is_false_and_leaves_output_untouched() {
-        let store = Store::new(1024);
+        let store = ShardExecutor::new(1024);
         let mut output = b"existing".to_vec();
         assert!(!store.execute_discovery(&[b"NO-SUCH-COMMAND", b"\0"], &mut output));
         assert_eq!(output, b"existing");

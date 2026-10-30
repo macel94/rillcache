@@ -1,5 +1,6 @@
 //! AUTH, ACL subcommands and denial accounting for one connection.
 
+use crate::engine::Execution;
 use std::io::Write;
 
 use crate::engine::{Access, AclError, AuthError, Store};
@@ -12,7 +13,12 @@ use super::command::{arity, command_name};
 pub(super) const AUTH_THROTTLED: &[u8] = b"-ERR too many authentication attempts, try later\r\n";
 
 impl Session {
-    pub(super) fn auth(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn auth<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         let (username, password) = match arguments {
             [password] => (None, *password),
             [username, password] => (Some(*username), *password),
@@ -56,7 +62,7 @@ impl Session {
         }
     }
 
-    pub(super) fn note_auth_failure(&mut self, store: &Store) {
+    pub(super) fn note_auth_failure<E: Execution>(&mut self, store: &E) {
         self.failed_auth = self.failed_auth.saturating_add(1);
         let limit = store.auth_failure_limit();
         if limit > 0 && self.failed_auth >= limit {
@@ -64,7 +70,12 @@ impl Session {
         }
     }
 
-    pub(super) fn acl(&mut self, store: &Store, arguments: &[&[u8]], output: &mut Vec<u8>) {
+    pub(super) fn acl<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) {
         let Some(subcommand) = arguments.first() else {
             arity("acl", output);
             return;
@@ -287,7 +298,13 @@ impl Session {
     }
 }
 impl Session {
-    pub(super) fn log_denial(&self, store: &Store, reason: &str, context: &str, object: &[u8]) {
+    pub(super) fn log_denial<E: Execution>(
+        &self,
+        store: &E,
+        reason: &str,
+        context: &str,
+        object: &[u8],
+    ) {
         let user = self
             .authenticated_user
             .clone()
