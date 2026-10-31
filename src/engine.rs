@@ -192,6 +192,14 @@ impl DatasetStats {
 }
 
 #[doc(hidden)]
+/// Snapshot of the enabled observation collectors, read with one load.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Observers {
+    pub slowlog: bool,
+    pub latency: bool,
+    pub commandstats: bool,
+}
+
 pub struct ServerServices {
     #[cfg(test)]
     owner_events: std::sync::Mutex<Vec<(&'static str, std::thread::ThreadId)>>,
@@ -251,6 +259,9 @@ pub struct ServerServices {
     shutdown_requested: AtomicBool,
     owner_failed: AtomicBool,
     commandstats_enabled: AtomicBool,
+    /// Bit set of enabled observation collectors, so the per-command epilogue
+    /// makes one load instead of one per collector.
+    observer_word: std::sync::atomic::AtomicU32,
     command_stats: Vec<CommandStat>,
 }
 
@@ -358,6 +369,7 @@ impl ServerServices {
             shutdown_requested: AtomicBool::new(false),
             owner_failed: AtomicBool::new(false),
             commandstats_enabled: AtomicBool::new(false),
+            observer_word: std::sync::atomic::AtomicU32::new(0),
             command_stats: (0..discovery::command_count())
                 .map(|_| CommandStat::default())
                 .collect(),
@@ -524,7 +536,38 @@ impl ServerServices {
     }
 
     pub fn commandstats_enabled(&self) -> bool {
-        self.commandstats_enabled.load(Ordering::Relaxed)
+        self.observer_word.load(Ordering::Relaxed) & Self::OBSERVER_COMMANDSTATS != 0
+    }
+
+    const OBSERVER_SLOWLOG: u32 = 1;
+    const OBSERVER_LATENCY: u32 = 2;
+    const OBSERVER_COMMANDSTATS: u32 = 4;
+
+    /// All observation collectors in one load.
+    pub(crate) fn observers(&self) -> Observers {
+        let word = self.observer_word.load(Ordering::Relaxed);
+        Observers {
+            slowlog: word & Self::OBSERVER_SLOWLOG != 0,
+            latency: word & Self::OBSERVER_LATENCY != 0,
+            commandstats: word & Self::OBSERVER_COMMANDSTATS != 0,
+        }
+    }
+
+    /// Recompute the collector bit set from the individual settings.
+    pub(crate) fn refresh_observers(&self) {
+        let mut word = 0;
+        if self.slowlog_threshold_us.load(Ordering::Relaxed) >= 0
+            && self.slowlog_max_len.load(Ordering::Relaxed) > 0
+        {
+            word |= Self::OBSERVER_SLOWLOG;
+        }
+        if self.latency_monitor_threshold_ms.load(Ordering::Relaxed) > 0 {
+            word |= Self::OBSERVER_LATENCY;
+        }
+        if self.commandstats_enabled.load(Ordering::Relaxed) {
+            word |= Self::OBSERVER_COMMANDSTATS;
+        }
+        self.observer_word.store(word, Ordering::Relaxed);
     }
 
     pub fn set_commandstats_enabled(&self, enabled: bool) {
@@ -532,6 +575,7 @@ impl ServerServices {
         if enabled && !previous {
             self.reset_command_statistics();
         }
+        self.refresh_observers();
     }
 
     fn reset_command_statistics(&self) {
