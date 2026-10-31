@@ -130,11 +130,11 @@ impl Session {
         // Use the common observation/error-accounting epilogue in every
         // collector configuration. execute_inner already specializes ordinary
         // commands after the normal authorization and subscriber checks.
-        if self.pause_command(store, arguments) {
+        // One load covers every hot-path gate: pause, collectors and monitor.
+        let observers = store.observers();
+        if observers.paused && self.pause_command(store, arguments) {
             return Action::Continue;
         }
-        // One load for every collector instead of one per collector.
-        let observers = store.observers();
         let (slowlog, latency) = arguments.first().map_or((false, false), |command| {
             let queued = self.multi.is_some() && !command.eq_ignore_ascii_case(b"EXEC");
             (!queued && observers.slowlog, !queued && observers.latency)
