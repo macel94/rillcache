@@ -276,6 +276,9 @@ pub(crate) struct ShardExecutor {
     data: std::cell::RefCell<Data>,
     notification_epoch: std::cell::Cell<u64>,
     config_epoch: std::cell::Cell<u64>,
+    /// Cached from the configuration epoch: whether any observer can consume
+    /// per-command effects, so the hot path never reloads those atomics.
+    effects_enabled: std::cell::Cell<bool>,
     /// Last payload total this owner contributed to the shared credit counter.
     published_payload: std::cell::Cell<usize>,
     _local: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -988,6 +991,7 @@ impl ShardExecutor {
                 services.notification_epoch.load(Ordering::Acquire),
             ),
             config_epoch: std::cell::Cell::new(u64::MAX),
+            effects_enabled: std::cell::Cell::new(false),
             services,
             #[cfg(test)]
             owner_thread,
@@ -1014,6 +1018,7 @@ impl ShardExecutor {
                 services.notification_epoch.load(Ordering::Acquire),
             ),
             config_epoch: std::cell::Cell::new(u64::MAX),
+            effects_enabled: std::cell::Cell::new(false),
             services,
             #[cfg(test)]
             owner_thread,
@@ -1032,7 +1037,9 @@ impl ShardExecutor {
             data.clear_lifecycle();
         }
         data.eviction = self.eviction_policy();
-        data.set_collect_events(self.journal.is_some() || self.notifications_enabled());
+        let collect = self.journal.is_some() || self.notifications_enabled();
+        self.effects_enabled.set(collect);
+        data.set_collect_events(collect);
         // A single local owner enforces the whole budget itself. A multi-owner
         // worker admits against shared credit instead; a reduction then blocks
         // growth and is reclaimed by the router's global budget path.
@@ -1113,7 +1120,7 @@ impl ShardExecutor {
         if self.config_epoch.replace(epoch) != epoch {
             self.refresh_data_config();
         }
-        if self.journal.is_some() || self.notifications_enabled() {
+        if self.effects_enabled.get() {
             let marks = self.journal_marks();
             let start = output.len();
             let action = self.execute_command(arguments, output);
@@ -1128,6 +1135,9 @@ impl ShardExecutor {
     }
 
     fn publish_lifecycle_events(&self) {
+        if !self.effects_enabled.get() {
+            return;
+        }
         let flags = self.notify_flags();
         // No lifecycle classes means there is nothing to deliver. Avoid taking
         // a mutable data borrow on every command just to discard queued keys.
