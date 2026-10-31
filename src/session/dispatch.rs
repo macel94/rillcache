@@ -31,16 +31,13 @@ impl Session {
             return self.reset(store, arguments, output);
         }
         if !is_auth_exempt(command) {
-            let authentication_required = store.authentication_required();
+            let (authentication_required, acl_restricted) = store.security();
             if authentication_required && self.authenticated_user.is_none() {
                 self.log_denial(store, "noauth", "toplevel", command);
                 output.extend_from_slice(b"-NOAUTH Authentication required.\r\n");
                 return Action::Continue;
             }
-            if authentication_required
-                || store.acl_restricted()
-                || self.authenticated_user.is_some()
-            {
+            if authentication_required || acl_restricted || self.authenticated_user.is_some() {
                 match store.authorize(self.authenticated_user.as_deref(), arguments) {
                     Access::Allowed => {}
                     Access::NoAuth => {
