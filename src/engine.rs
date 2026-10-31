@@ -192,6 +192,16 @@ impl DatasetStats {
 }
 
 #[doc(hidden)]
+/// Snapshot of the enabled observation collectors, read with one load.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Observers {
+    pub slowlog: bool,
+    pub latency: bool,
+    pub commandstats: bool,
+    pub paused: bool,
+    pub monitor: bool,
+}
+
 pub struct ServerServices {
     #[cfg(test)]
     owner_events: std::sync::Mutex<Vec<(&'static str, std::thread::ThreadId)>>,
@@ -253,6 +263,9 @@ pub struct ServerServices {
     shutdown_requested: AtomicBool,
     owner_failed: AtomicBool,
     commandstats_enabled: AtomicBool,
+    /// Bit set of enabled observation collectors, so the per-command epilogue
+    /// makes one load instead of one per collector.
+    observer_word: std::sync::atomic::AtomicU32,
     command_stats: Vec<CommandStat>,
 }
 
@@ -366,6 +379,7 @@ impl ServerServices {
             shutdown_requested: AtomicBool::new(false),
             owner_failed: AtomicBool::new(false),
             commandstats_enabled: AtomicBool::new(false),
+            observer_word: std::sync::atomic::AtomicU32::new(0),
             command_stats: (0..discovery::command_count())
                 .map(|_| CommandStat::default())
                 .collect(),
@@ -553,7 +567,51 @@ impl ServerServices {
     }
 
     pub fn commandstats_enabled(&self) -> bool {
-        self.commandstats_enabled.load(Ordering::Relaxed)
+        self.observer_word.load(Ordering::Relaxed) & Self::OBSERVER_COMMANDSTATS != 0
+    }
+
+    const OBSERVER_SLOWLOG: u32 = 1;
+    const OBSERVER_LATENCY: u32 = 2;
+    const OBSERVER_COMMANDSTATS: u32 = 4;
+    const OBSERVER_PAUSED: u32 = 8;
+    const OBSERVER_MONITOR: u32 = 16;
+
+    /// All observation collectors in one load.
+    pub(crate) fn observers(&self) -> Observers {
+        let word = self.observer_word.load(Ordering::Relaxed);
+        Observers {
+            slowlog: word & Self::OBSERVER_SLOWLOG != 0,
+            latency: word & Self::OBSERVER_LATENCY != 0,
+            commandstats: word & Self::OBSERVER_COMMANDSTATS != 0,
+            paused: word & Self::OBSERVER_PAUSED != 0,
+            monitor: word & Self::OBSERVER_MONITOR != 0,
+        }
+    }
+
+    /// Recompute the collector bit set from the individual settings.
+    pub(crate) fn refresh_observers(&self) {
+        let mut word = 0;
+        if self.slowlog_threshold_us.load(Ordering::Relaxed) >= 0
+            && self.slowlog_max_len.load(Ordering::Relaxed) > 0
+        {
+            word |= Self::OBSERVER_SLOWLOG;
+        }
+        if self.latency_monitor_threshold_ms.load(Ordering::Relaxed) > 0 {
+            word |= Self::OBSERVER_LATENCY;
+        }
+        if self.commandstats_enabled.load(Ordering::Relaxed) {
+            word |= Self::OBSERVER_COMMANDSTATS;
+        }
+        // A stale "paused"/"monitoring" bit only costs the real check below; a
+        // missing bit would skip work that must happen, so both are recomputed
+        // from their authoritative counters.
+        if self.client_pause.load(Ordering::Relaxed) != 0 {
+            word |= Self::OBSERVER_PAUSED;
+        }
+        if self.monitor_count.load(Ordering::Relaxed) != 0 {
+            word |= Self::OBSERVER_MONITOR;
+        }
+        self.observer_word.store(word, Ordering::Relaxed);
     }
 
     pub fn set_commandstats_enabled(&self, enabled: bool) {
@@ -561,6 +619,7 @@ impl ServerServices {
         if enabled && !previous {
             self.reset_command_statistics();
         }
+        self.refresh_observers();
     }
 
     fn reset_command_statistics(&self) {
@@ -789,6 +848,7 @@ impl ServerServices {
         };
         monitors.insert(id, sender);
         self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+        self.refresh_observers();
         true
     }
 
@@ -798,13 +858,14 @@ impl ServerServices {
         };
         if monitors.remove(&id).is_some() {
             self.monitor_count.store(monitors.len(), Ordering::Relaxed);
+            self.refresh_observers();
         }
     }
 
     /// Stream one received command to every monitor except its source. A full
     /// monitor queue drops this line rather than blocking the command path.
     pub fn monitor_command(&self, source: u64, arguments: &[&[u8]]) {
-        if self.monitor_count.load(Ordering::Relaxed) == 0 {
+        if !self.observers().monitor {
             return;
         }
         let address = self.client_address(source).unwrap_or_else(|| "?:0".into());

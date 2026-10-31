@@ -37,16 +37,18 @@ impl super::ServerServices {
     }
 
     pub(crate) fn slowlog_enabled(&self) -> bool {
-        self.slowlog_threshold_us() >= 0 && self.slowlog_max_len() > 0
+        self.observers().slowlog
     }
 
     pub(crate) fn set_slowlog_threshold_us(&self, value: i64) {
         self.slowlog_threshold_us.store(value, Ordering::Relaxed);
+        self.refresh_observers();
     }
 
     pub(crate) fn set_slowlog_max_len(&self, value: usize) {
         let value = value.min(MAX_MAX_LEN);
         self.slowlog_max_len.store(value, Ordering::Relaxed);
+        self.refresh_observers();
         if let Ok(mut entries) = self.slowlog.write() {
             while entries.len() > value {
                 entries.pop_back();
