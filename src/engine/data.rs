@@ -201,7 +201,7 @@ impl Stream {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Entry {
+pub(crate) struct Entry {
     pub value: Vec<u8>,
     pub collection: Option<Collection>,
     pub stream: Option<Stream>,

@@ -35,18 +35,14 @@ mod introspection;
 mod journal;
 mod keyspace;
 mod latency;
-#[cfg(test)]
 mod mailbox;
 mod monitor;
 mod multikey;
 mod notify;
 mod options;
-#[cfg(test)]
 mod owner_actor;
-#[cfg(test)]
 mod partition;
 mod pubsub;
-#[cfg(test)]
 mod router;
 mod scan;
 mod sha256;
@@ -94,9 +90,10 @@ pub use journal::FsyncPolicy;
 pub use notify::{Category as NotifyCategory, NotifyFlags};
 mod bridge;
 pub use bridge::Store;
-pub(crate) use bridge::{BridgeInbox, Execution, StoreHandle};
+pub(crate) use bridge::{BridgeInbox, Execution, Request, StoreHandle};
+pub(crate) use router::{MultiOwner, RouterSizing};
 pub(crate) use streams::{
-    XReadGroupOptions, XReadGroupOutcome, XReadGroupStart, XReadOutcome, parse_xread,
+    XReadGroupOptions, XReadGroupOutcome, XReadGroupStart, XReadOptions, XReadOutcome, parse_xread,
     parse_xreadgroup, xread_reply, xreadgroup_reply,
 };
 pub(crate) use transaction::WatchToken;

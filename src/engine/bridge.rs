@@ -59,6 +59,7 @@ fallback!(ListMoveOutcome, ListMoveOutcome::JournalError);
 fallback!(ZSetPopOutcome, ZSetPopOutcome::JournalError);
 fallback!(XReadGroupOutcome, XReadGroupOutcome::JournalError);
 fallback!(Vec<u8>, b"-ERR internal store error\r\n".to_vec());
+fallback!(Vec<(Vec<u8>, super::data::Entry)>, Vec::new());
 fallback!(
     (Action, Vec<u8>),
     (Action::Continue, b"-ERR internal store error\r\n".to_vec())
@@ -129,6 +130,25 @@ impl std::ops::Deref for Store {
 }
 
 impl Store {
+    /// Shared control plane handle: auth, clients, pub/sub and the journal stay
+    /// common while data execution moves to owners.
+    pub(crate) fn services_handle(&self) -> Arc<ServerServices> {
+        Arc::clone(&self.services)
+    }
+
+    /// Move replayed append-only state into the owners before they serve. The
+    /// journal itself is untouched and still rewrites one coherent snapshot.
+    pub(crate) fn take_initial_entries(&self) -> Vec<(Vec<u8>, super::data::Entry)> {
+        self.call(|executor| {
+            let mut data = executor.data.borrow_mut();
+            let mut keys: Vec<Vec<u8>> = data.entries.keys().cloned().collect();
+            keys.sort_unstable();
+            keys.into_iter()
+                .filter_map(|key| data.gather_entry(&key).map(|entry| (key, entry)))
+                .collect()
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn test_services(&self) -> Arc<ServerServices> {
         Arc::clone(&self.services)
