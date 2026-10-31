@@ -313,7 +313,10 @@ fn three_real_owner_threads_hold_disjoint_data_and_fence_partial_visibility() {
                 .unwrap();
         }
         for (index, sender) in senders.iter().enumerate() {
-            let (answer, reply) = reply_channel(replies.reserve(0).await.unwrap());
+            // The owner acknowledges the turn and reports the observed key count
+            // on separate channels: one ack, one typed result.
+            let (ack, ack_reply) = reply_channel(replies.reserve(0).await.unwrap());
+            let (count, count_reply) = reply_channel(replies.reserve(0).await.unwrap());
             sender
                 .control
                 .reserve(0)
@@ -322,7 +325,7 @@ fn three_real_owner_threads_hold_disjoint_data_and_fence_partial_visibility() {
                 .send_with(|| Control::Read {
                     id,
                     now: 0,
-                    reply: answer,
+                    reply: ack,
                     op: Box::new(move |executor, _now| {
                         let data = executor.data.borrow();
                         assert_eq!(data.entries.len(), 1);
@@ -331,10 +334,11 @@ fn three_real_owner_threads_hold_disjoint_data_and_fence_partial_visibility() {
                                 .keys()
                                 .all(|key| layout.owner_for(key).index() == index)
                         );
-                        let _ = reply.send(data.entries.len());
+                        let _ = count.send(data.entries.len());
                     }),
                 });
-            assert_eq!(*reply.recv().await.unwrap(), 1);
+            assert_eq!(*count_reply.recv().await.unwrap(), 1);
+            ack_reply.recv().await.unwrap().unwrap();
         }
         for sender in &senders {
             ack(sender, &replies, |reply| Control::Decide { id, reply })

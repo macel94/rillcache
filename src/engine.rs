@@ -41,12 +41,11 @@ mod monitor;
 mod multikey;
 mod notify;
 mod options;
-mod pubsub;
-// Needs the lost async bridge traits and Control::Decide reply type.
-#[cfg(any())]
+#[cfg(test)]
 mod owner_actor;
 #[cfg(test)]
 mod partition;
+mod pubsub;
 // Recovered multi-owner work, not yet wired: kept for the next session.
 #[cfg(any())]
 mod router;
@@ -257,6 +256,10 @@ pub struct ServerServices {
 /// The Rc marker makes the entire executor !Send and !Sync.
 pub(crate) struct ShardExecutor {
     services: Arc<ServerServices>,
+    /// Thread that constructed this executor; asserted on drop in tests so
+    /// several owner threads can exist without sharing one event order.
+    #[cfg(test)]
+    owner_thread: std::thread::ThreadId,
     data: std::cell::RefCell<Data>,
     notification_epoch: std::cell::Cell<u64>,
     /// Last payload total this owner contributed to the shared credit counter.
@@ -904,11 +907,13 @@ impl ShardExecutor {
     }
     pub(crate) fn with_services(services: Arc<ServerServices>) -> Self {
         #[cfg(test)]
+        let owner_thread = std::thread::current().id();
+        #[cfg(test)]
         services
             .owner_events
             .lock()
             .unwrap()
-            .push(("construct", std::thread::current().id()));
+            .push(("construct", owner_thread));
         let mut data = Data::default();
         data.eviction = services.eviction_policy();
         data.set_collect_events(services.notifications_enabled());
@@ -917,6 +922,8 @@ impl ShardExecutor {
                 services.notification_epoch.load(Ordering::Acquire),
             ),
             services,
+            #[cfg(test)]
+            owner_thread,
             data: std::cell::RefCell::new(data),
             published_payload: std::cell::Cell::new(0),
             _local: std::marker::PhantomData,
