@@ -210,6 +210,8 @@ pub struct ServerServices {
     clock: Arc<dyn Clock>,
     auth: RwLock<Auth>,
     auth_required: AtomicBool,
+    /// Bit set of the authorization state consulted on every command.
+    security_word: std::sync::atomic::AtomicU32,
     acl_restricted: AtomicBool,
     journal: Option<std::sync::Mutex<journal::Journal>>,
     journal_limits: Limits,
@@ -320,6 +322,9 @@ impl ServerServices {
             collection_config: RwLock::new(CollectionConfig::default()),
             clock,
             auth_required: AtomicBool::new(auth.required()),
+            security_word: std::sync::atomic::AtomicU32::new(
+                (if auth.required() { 1 } else { 0 }) | (if auth.restricted() { 2 } else { 0 }),
+            ),
             acl_restricted: AtomicBool::new(auth.restricted()),
             auth: RwLock::new(auth),
             journal: None,
@@ -384,8 +389,21 @@ impl ServerServices {
 
     /// Whether this store requires authentication for data/admin commands.
     /// The atomic fast path keeps the common benchmark path lock-free.
+    const SECURITY_AUTH_REQUIRED: u32 = 1;
+    const SECURITY_ACL_RESTRICTED: u32 = 2;
+
+    /// Authorization state in one load: required authentication and whether any
+    /// user/rule restriction exists.
+    pub(crate) fn security(&self) -> (bool, bool) {
+        let word = self.security_word.load(Ordering::Acquire);
+        (
+            word & Self::SECURITY_AUTH_REQUIRED != 0,
+            word & Self::SECURITY_ACL_RESTRICTED != 0,
+        )
+    }
+
     pub fn authentication_required(&self) -> bool {
-        self.auth_required.load(Ordering::Acquire)
+        self.security().0
     }
 
     pub fn authenticate(&self, username: Option<&[u8]>, password: &[u8]) -> Result<(), AuthError> {
@@ -406,7 +424,7 @@ impl ServerServices {
     /// True when any user/rule/key restriction exists, so command authorization
     /// cannot use the lock-free open-server path.
     pub fn acl_restricted(&self) -> bool {
-        self.acl_restricted.load(Ordering::Acquire)
+        self.security().1
     }
 
     pub fn authorize(&self, user: Option<&[u8]>, arguments: &[&[u8]]) -> Access {
@@ -476,6 +494,14 @@ impl ServerServices {
 
     fn refresh_auth_flags(&self, auth: &Auth) {
         self.auth_required.store(auth.required(), Ordering::Release);
+        let mut word = 0;
+        if auth.required() {
+            word |= Self::SECURITY_AUTH_REQUIRED;
+        }
+        if auth.restricted() {
+            word |= Self::SECURITY_ACL_RESTRICTED;
+        }
+        self.security_word.store(word, Ordering::Release);
         self.acl_restricted
             .store(auth.restricted(), Ordering::Release);
     }
