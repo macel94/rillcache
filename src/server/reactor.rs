@@ -17,6 +17,12 @@ const RUN_QUANTUM: usize = 256;
 const STOP_TICK: Duration = Duration::from_millis(10);
 const ASYNC_TICK: Duration = Duration::from_millis(1);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
+/// After a productive pass the next request for a client we just answered is
+/// usually already in flight. One short timed wait lets the kernel absorb it,
+/// which avoids a sleep/wake cycle per command at pipeline 1. It replaces a
+/// blocking wait rather than adding one, and it only runs when the runnable
+/// queue is empty, so an idle server still parks for the full stop tick.
+const FAST_WAIT: Duration = Duration::from_micros(8);
 
 /// An index is reusable, but its full, non-recycled selector token is not.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -242,6 +248,27 @@ impl<E: Execution> Reactor<E> {
         Ok(Some(runnable))
     }
 
+    /// Turn readiness events into queued work. Tokens are validated against the
+    /// live connection, so a recycled slot never services a stale event.
+    fn ingest(&mut self, events: &Events) {
+        for event in events {
+            let token = event.token();
+            if token == LISTENER {
+                self.accept_ready = true;
+            } else if let Some(&slot) = self.tokens.get(&token) {
+                if let Some(connection) = self
+                    .clients
+                    .get_mut(slot)
+                    .and_then(Option::as_mut)
+                    .filter(|connection| connection.token == token)
+                {
+                    connection.read_closed |= event.is_read_closed();
+                }
+                self.enqueue(ReadyKey { slot, token });
+            }
+        }
+    }
+
     fn run(&mut self) -> io::Result<()> {
         let mut events = Events::with_capacity(1024);
         let mut chunk = [0; 16 * 1024];
@@ -284,6 +311,9 @@ impl<E: Execution> Reactor<E> {
                 }
                 asynchronous = now;
             }
+            // The listener is polled on every pass: a queued connection or a new
+            // client must never wait behind a sustained pipeline. A zero timeout
+            // keeps that pass non-blocking while work is already queued.
             let timeout = if self.accept_ready || !self.ready.is_empty() {
                 Duration::ZERO
             } else if self.asynchronous.is_empty() {
@@ -296,32 +326,25 @@ impl<E: Execution> Reactor<E> {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
             }
-            for event in &events {
-                let token = event.token();
-                if token == LISTENER {
-                    self.accept_ready = true;
-                } else if let Some(&slot) = self.tokens.get(&token) {
-                    if let Some(connection) = self
-                        .clients
-                        .get_mut(slot)
-                        .and_then(Option::as_mut)
-                        .filter(|connection| connection.token == token)
-                    {
-                        connection.read_closed |= event.is_read_closed();
-                    }
-                    self.enqueue(ReadyKey { slot, token });
-                }
-            }
+            self.ingest(&events);
             if self.accept_ready {
                 self.accept()?;
             }
+            let mut serviced = 0usize;
             for _ in 0..RUN_QUANTUM {
                 let Some(key) = self.ready.pop_front() else {
                     break;
                 };
                 match self.service(key, &mut chunk) {
-                    Ok(Some(_)) => {}
+                    Ok(Some(_)) => serviced += 1,
                     Ok(None) | Err(_) => self.remove(key),
+                }
+            }
+            if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
+                match self.poll.poll(&mut events, Some(FAST_WAIT)) {
+                    Ok(()) => self.ingest(&events),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error),
                 }
             }
         }
