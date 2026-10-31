@@ -195,6 +195,10 @@ accounted compatibility owner with bridge calls kept off async runtimes.
 Persistence, ACL-file/audit configurations, native TLS sockets and non-Unix
 platforms retain their previous socket paths. See the complete
 [transport decisions, bounds and lifecycle](docs/async-transport.md).
+An opt-in `--storage-owners N` (`1..=64`) moves data execution itself onto `N`
+owned workers with whole-owner routing and cross-owner transactions; see
+[multi-owner execution](docs/plans/multi-owner-execution.md) for its exact
+semantics and limits. One owner, the default, keeps the shipped zero-hop path.
 Optional `--threads 1` or `--threads N` selects exactly 1..64 existing shared
 I/O/execution workers plus the accept/control thread; idle clients do not occupy
 an entire worker.

@@ -193,6 +193,9 @@ pub struct Config {
     pub worker_threads: Option<usize>,
     /// Explicit plain-TCP engine opt-in; `IoMode::Mio` is the default.
     pub io_mode: IoMode,
+    /// Opt-in multi-owner data execution. `None` or `Some(1)` keeps the proven
+    /// one-owner path; `Some(2..=64)` starts that many owned data workers.
+    pub storage_owners: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
     pub max_data_bytes: usize,
     pub limits: Limits,
@@ -246,6 +249,7 @@ impl std::fmt::Debug for Config {
             .field("auth_source_window_ms", &self.auth_source_window_ms)
             .field("worker_threads", &self.worker_threads)
             .field("io_mode", &self.io_mode)
+            .field("storage_owners", &self.storage_owners)
             .field("max_data_bytes", &self.max_data_bytes)
             .field("limits", &self.limits)
             .field("idle_timeout", &self.idle_timeout)
@@ -288,6 +292,7 @@ impl Default for Config {
             auth_source_window_ms: 60_000,
             worker_threads: None,
             io_mode: IoMode::default(),
+            storage_owners: None,
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
@@ -352,6 +357,9 @@ impl Config {
                 .as_ref()
                 .is_some_and(|path| path.as_os_str().is_empty())
             || (self.audit_hmac_key_file.is_some() && self.audit_hmac_keyring_file.is_some())
+            || self
+                .storage_owners
+                .is_some_and(|count| !(1..=64).contains(&count))
             || self.tls_handshake_timeout.is_zero()
             || (self.tls_bind_addr.is_none()
                 && (self.tls_cert_file.is_some()
@@ -653,6 +661,19 @@ fn serve_plain(
     stopping: Arc<AtomicBool>,
     policy: SchedulingPolicy,
 ) -> io::Result<()> {
+    #[cfg(unix)]
+    if let Some(owners) = config.storage_owners.filter(|owners| *owners > 1) {
+        let sizing = crate::engine::RouterSizing::for_limits(
+            store.max_clients(),
+            config.limits.max_frame_bytes,
+        );
+        let router = crate::engine::MultiOwner::start(store.services_handle(), owners, sizing)
+            .map_err(|error| io::Error::other(format!("multi-owner start failed: {error}")))?;
+        router
+            .seed(store.take_initial_entries())
+            .map_err(|error| io::Error::other(format!("multi-owner seed failed: {error}")))?;
+        return reactor::serve_multi(listener, config, router, stopping);
+    }
     #[cfg(unix)]
     if policy.tokio_transport {
         return tokio_io::serve(

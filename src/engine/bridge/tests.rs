@@ -5,11 +5,14 @@ use std::time::Duration;
 
 impl Drop for ShardExecutor {
     fn drop(&mut self) {
-        let mut events = self.services.owner_events.lock().unwrap();
         let current = std::thread::current().id();
-        assert_eq!(events[0], ("construct", current));
+        assert_eq!(self.owner_thread, current, "Data must drop on its owner");
         assert!(self.data.try_borrow_mut().is_ok(), "borrow survived a turn");
-        events.push(("drop", current));
+        self.services
+            .owner_events
+            .lock()
+            .unwrap()
+            .push(("drop", current));
     }
 }
 

@@ -5,7 +5,7 @@
 mod tests;
 
 use super::*;
-use crate::engine::{Execution, ServerServices, ShardExecutor};
+use crate::engine::{ServerServices, ShardExecutor};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Mutex;
