@@ -229,6 +229,7 @@ impl MultiOwner {
         services
             .multi_owner
             .store(true, std::sync::atomic::Ordering::Release);
+        services.bump_config();
         let layout = PartitionLayout::from_router(owners, router);
         let requests = ByteBudget::new(sizing.request_bytes).map_err(RouterError::Mailbox)?;
         let replies = ByteBudget::new(sizing.reply_bytes).map_err(RouterError::Mailbox)?;

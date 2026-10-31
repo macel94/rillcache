@@ -220,6 +220,10 @@ pub struct ServerServices {
     monitor_count: std::sync::atomic::AtomicUsize,
     notifications: std::sync::atomic::AtomicU32,
     notification_epoch: std::sync::atomic::AtomicU64,
+    /// Bumped by every setting the owner caches (notifications, eviction,
+    /// collect-events, payload limit, owner mode), so the per-command fast path
+    /// can check one atomic instead of reloading each of them.
+    config_epoch: std::sync::atomic::AtomicU64,
     acl_log: RwLock<std::collections::VecDeque<acl_log::AclLogEntry>>,
     audit_log: std::sync::Mutex<Option<audit::AuditLog>>,
     audit_log_write_failures: std::sync::atomic::AtomicU64,
@@ -260,6 +264,7 @@ pub(crate) struct ShardExecutor {
     owner_thread: std::thread::ThreadId,
     data: std::cell::RefCell<Data>,
     notification_epoch: std::cell::Cell<u64>,
+    config_epoch: std::cell::Cell<u64>,
     /// Last payload total this owner contributed to the shared credit counter.
     published_payload: std::cell::Cell<usize>,
     _local: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -323,6 +328,7 @@ impl ServerServices {
             monitor_count: std::sync::atomic::AtomicUsize::new(0),
             notifications: std::sync::atomic::AtomicU32::new(0),
             notification_epoch: std::sync::atomic::AtomicU64::new(0),
+            config_epoch: std::sync::atomic::AtomicU64::new(0),
             acl_log: RwLock::new(std::collections::VecDeque::new()),
             audit_log: std::sync::Mutex::new(None),
             audit_log_write_failures: std::sync::atomic::AtomicU64::new(0),
@@ -660,8 +666,14 @@ impl ServerServices {
             guard.reset(source);
         }
     }
+    /// Invalidate the per-owner configuration cache.
+    pub(crate) fn bump_config(&self) {
+        self.config_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+
     pub fn set_eviction_policy(&self, policy: EvictionPolicy) -> bool {
         self.eviction_policy.store(policy as u8, Ordering::Release);
+        self.bump_config();
         true
     }
 
@@ -695,6 +707,8 @@ impl ServerServices {
         appendfilename: &str,
         policy: FsyncPolicy,
     ) -> bool {
+        // Attaching or detaching the journal changes what an owner collects.
+        self.bump_config();
         self.aof_config.write().is_ok_and(|mut config| {
             config.appendonly = appendonly;
             config.appendfilename = appendfilename.to_string();
@@ -727,6 +741,7 @@ impl ServerServices {
     pub fn set_notify_flags(&self, flags: NotifyFlags) {
         self.notifications.store(flags.bits(), Ordering::Release);
         self.notification_epoch.fetch_add(1, Ordering::AcqRel);
+        self.bump_config();
     }
 
     pub fn notify_flags(&self) -> NotifyFlags {
@@ -928,6 +943,7 @@ impl ShardExecutor {
             notification_epoch: std::cell::Cell::new(
                 services.notification_epoch.load(Ordering::Acquire),
             ),
+            config_epoch: std::cell::Cell::new(u64::MAX),
             services,
             #[cfg(test)]
             owner_thread,
@@ -953,6 +969,7 @@ impl ShardExecutor {
             notification_epoch: std::cell::Cell::new(
                 services.notification_epoch.load(Ordering::Acquire),
             ),
+            config_epoch: std::cell::Cell::new(u64::MAX),
             services,
             #[cfg(test)]
             owner_thread,
@@ -964,6 +981,8 @@ impl ShardExecutor {
 
     fn refresh_data_config(&self) {
         let mut data = self.data.borrow_mut();
+        let epoch = self.services.config_epoch.load(Ordering::Acquire);
+        self.config_epoch.set(epoch);
         let epoch = self.services.notification_epoch.load(Ordering::Acquire);
         if self.notification_epoch.replace(epoch) != epoch {
             data.clear_lifecycle();
@@ -1046,7 +1065,10 @@ impl ShardExecutor {
     /// survives socket I/O. The compatibility owner preserves global journal
     /// ordering through mutation, capture and append before its next turn.
     pub fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        self.refresh_data_config();
+        let epoch = self.services.config_epoch.load(Ordering::Acquire);
+        if self.config_epoch.replace(epoch) != epoch {
+            self.refresh_data_config();
+        }
         if self.journal.is_some() || self.notifications_enabled() {
             let marks = self.journal_marks();
             let start = output.len();
@@ -1204,6 +1226,7 @@ impl ShardExecutor {
     pub fn set_payload_limit(&self, limit: usize) -> bool {
         self.refresh_data_config();
         self.max_payload_bytes.store(limit, Ordering::Relaxed);
+        self.bump_config();
         self.data.try_borrow_mut().is_ok_and(|mut data| {
             data.enforce_budget(limit);
             true
