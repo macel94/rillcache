@@ -2,7 +2,7 @@ use super::eviction::EvictionPolicy;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Collection {
+pub(crate) enum Collection {
     ListPack(VecDeque<Vec<u8>>),
     ListQuick(VecDeque<VecDeque<Vec<u8>>>),
     Set(BTreeSet<Vec<u8>>),
@@ -159,14 +159,14 @@ pub(crate) struct StreamEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Pending {
+pub(crate) struct Pending {
     pub consumer: Vec<u8>,
     pub deliveries: u64,
     pub delivered_at: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Consumer {
+pub(crate) struct Consumer {
     pub seen_at: i64,
     pub pending: BTreeMap<StreamId, Pending>,
 }
@@ -179,7 +179,7 @@ pub(crate) struct ConsumerGroup {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct Stream {
+pub(crate) struct Stream {
     pub entries: BTreeMap<StreamId, StreamEntry>,
     pub last_generated: StreamId,
     pub entries_added: u64,
@@ -244,7 +244,7 @@ pub(super) const MAX_TRACKED_VERSIONS: usize = 65_536;
 const MAX_JOURNAL_EVENTS: usize = 65_536;
 
 #[derive(Default)]
-pub(super) struct Data {
+pub(crate) struct Data {
     pub entries: HashMap<Vec<u8>, Entry>,
     pub payload_bytes: usize,
     peak_payload_bytes: usize,

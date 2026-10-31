@@ -1,3 +1,4 @@
+#![allow(dead_code)] // multi-owner internals; diagnostics wiring is incremental
 //! Bounded cross-owner admission. Message slots, retained input bytes and reply
 //! bytes are separate resources; no argument copy is made before admission.
 //!
@@ -37,6 +38,12 @@ struct BudgetInner {
     bytes_capacity: usize,
     messages_capacity: usize,
 }
+/// `take` runs behind `&self`; this keeps the single `Arc` clone explicit.
+fn self_arc(inner: &BudgetInner) -> Arc<BudgetInner> {
+    let _ = inner;
+    unreachable!("budget take clones through the stored Arc")
+}
+
 impl BudgetInner {
     fn release(&self, bytes: usize, messages: usize) {
         if let Ok(mut state) = self.state.lock() {
@@ -80,13 +87,6 @@ impl BudgetInner {
     fn is_closed(&self) -> bool {
         self.state.lock().map(|state| state.closed).unwrap_or(true)
     }
-}
-
-/// `take` needs the enclosing `Arc`; this helper only exists so the borrow is
-/// explicit at the one call site instead of threading `&Arc<Self>` everywhere.
-fn self_arc(inner: &BudgetInner) -> Arc<BudgetInner> {
-    // Safety-free alternative: the caller stores the Arc; see `Budget::take`.
-    unreachable!("replaced by Budget::take (inner={})", inner.bytes_capacity)
 }
 
 #[derive(Clone)]
@@ -354,12 +354,14 @@ pub(crate) enum Incoming<D: Send, C: Send> {
     Data(Envelope<D>),
     Control(Envelope<C>),
 }
+pub(crate) type MailboxParts<D, C> = (OwnerSender<D, C>, OwnerInbox<D, C>);
+
 pub(crate) fn owner_mailbox<D: Send, C: Send>(
     data_messages: usize,
     data_bytes: usize,
     control_messages: usize,
     control_bytes: usize,
-) -> Result<(OwnerSender<D, C>, OwnerInbox<D, C>), MailboxError> {
+) -> Result<MailboxParts<D, C>, MailboxError> {
     let (data, data_receiver) = lane(data_messages, data_bytes)?;
     let (control, control_receiver) = lane(control_messages, control_bytes)?;
     Ok((

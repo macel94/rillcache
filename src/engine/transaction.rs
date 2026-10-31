@@ -146,6 +146,7 @@ impl ShardExecutor {
     /// Run queued commands without the WATCH re-check. The multi-owner router
     /// validates every participant's watches under one reservation and then
     /// replays the batch on this executor.
+    #[allow(dead_code)] // test-only today
     pub(crate) fn execute_batch_without_watch(
         &self,
         commands: &[Vec<Vec<u8>>],

@@ -1,3 +1,4 @@
+#![allow(dead_code)] // multi-owner internals; diagnostics wiring is incremental
 //! Multi-owner routing and whole-owner transaction reservations.
 //!
 //! Data stays on its owner thread. A command whose keys all belong to one owner
@@ -223,6 +224,11 @@ impl MultiOwner {
             ShardRouter::new(partitions).map_err(|_| RouterError::Layout(LayoutError::NoOwners))?;
         // One shared layout: diagnostics and routing can never disagree.
         services.set_router(router);
+        // Owners publish their payload totals into the shared credit counter, so
+        // the configured budget stays a process-wide limit rather than per owner.
+        services
+            .multi_owner
+            .store(true, std::sync::atomic::Ordering::Release);
         let layout = PartitionLayout::from_router(owners, router);
         let requests = ByteBudget::new(sizing.request_bytes).map_err(RouterError::Mailbox)?;
         let replies = ByteBudget::new(sizing.reply_bytes).map_err(RouterError::Mailbox)?;
@@ -719,7 +725,7 @@ impl MultiOwner {
         output: &mut Vec<u8>,
     ) -> Result<Action, RouterError> {
         let borrowed: Vec<&[u8]> = args.iter().map(Vec::as_slice).collect();
-        let keys = super::discovery::key_arguments(&borrowed[0], &borrowed);
+        let keys = super::discovery::key_arguments(borrowed[0], &borrowed);
         let mut by_owner: BTreeMap<usize, Vec<Vec<u8>>> = BTreeMap::new();
         for key in keys {
             by_owner
@@ -1340,7 +1346,27 @@ impl Execution for MultiOwner {
     }
 
     fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
-        self.execute_blocking(arguments, output)
+        // Informational commands see one coherent cross-owner aggregate; the
+        // override is cleared immediately so no stale total can be observed.
+        let informational = arguments.first().is_some_and(|command| {
+            [b"INFO".as_slice(), b"MEMORY", b"STATS", b"DBSIZE"]
+                .iter()
+                .any(|name| command.eq_ignore_ascii_case(name))
+        });
+        if informational {
+            let mut total = DatasetStats::default();
+            for owner in self.layout.owners() {
+                if let Ok(stats) = self.owner_op(owner, |executor| executor.local_dataset_stats()) {
+                    total.merge(stats);
+                }
+            }
+            self.services.publish_dataset(Some(total));
+        }
+        let action = self.execute_blocking(arguments, output);
+        if informational {
+            self.services.publish_dataset(None);
+        }
+        action
     }
     fn watch_snapshot(&self, keys: &[&[u8]]) -> Option<WatchState> {
         self.watch_snapshot_blocking(keys)
@@ -1427,26 +1453,6 @@ impl Execution for MultiOwner {
         if let Ok(reply) = self.forward(OwnerId::new(0), args) {
             output.extend_from_slice(&reply.bytes);
         }
-    }
-}
-
-impl MultiOwner {
-    fn services_handle(&self) -> Arc<ServerServices> {
-        Arc::clone(&self.services)
-    }
-    fn run_request(&self, request: super::bridge::Request) {
-        let _ = self.owner_op(OwnerId::new(0), move |executor| {
-            request(executor);
-        });
-    }
-    fn journal_sync(&self) -> std::io::Result<()> {
-        self.journal_sync_blocking()
-    }
-    fn purge_expired(&self, limit: usize) -> usize {
-        self.purge_expired_blocking(limit)
-    }
-    fn auto_rewrite_if_due(&self) -> bool {
-        self.auto_rewrite_blocking()
     }
 }
 

@@ -140,7 +140,7 @@ impl Store {
     /// journal itself is untouched and still rewrites one coherent snapshot.
     pub(crate) fn take_initial_entries(&self) -> Vec<(Vec<u8>, super::data::Entry)> {
         self.call(|executor| {
-            let mut data = executor.data.borrow_mut();
+            let data = executor.data.borrow();
             let mut keys: Vec<Vec<u8>> = data.entries.keys().cloned().collect();
             keys.sort_unstable();
             keys.into_iter()

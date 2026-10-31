@@ -1,3 +1,4 @@
+#![allow(dead_code)] // multi-owner internals; diagnostics wiring is incremental
 //! Worker-local owner execution and whole-owner reservation state machine.
 //!
 //! No state transition awaits. The actor only awaits inbox readiness between
@@ -10,10 +11,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+#[cfg(test)]
+use super::Action;
+#[cfg(test)]
 use super::data::Data;
 use super::mailbox::{Incoming, OwnerInbox, ReplySender, RetainedBytes};
 use super::partition::{OwnerId, PartitionLayout};
-use super::{Action, ServerServices, ShardExecutor};
+use super::{ServerServices, ShardExecutor};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ReservationId(u64);
@@ -220,6 +224,7 @@ impl OwnerCore {
     ) -> Result<(), OwnerError> {
         self.reservation(id)?;
         operation(&self.executor, now);
+        self.executor.sync_payload_credit();
         Ok(())
     }
 

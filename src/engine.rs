@@ -185,6 +185,7 @@ impl DatasetStats {
         self.expired_subkeys = self.expired_subkeys.saturating_add(other.expired_subkeys);
         self.evicted_keys = self.evicted_keys.saturating_add(other.evicted_keys);
     }
+    #[allow(dead_code)] // surfaced by a later INFO field
     pub(crate) fn avg_ttl(&self) -> u64 {
         self.ttl_sum.checked_div(self.ttl_count).unwrap_or(0)
     }
@@ -272,6 +273,14 @@ impl std::ops::Deref for ShardExecutor {
 }
 
 impl ServerServices {
+    /// Publish one coherent cross-owner dataset aggregate for the duration of an
+    /// informational command; `None` clears it again.
+    pub(crate) fn publish_dataset(&self, stats: Option<DatasetStats>) {
+        if let Ok(mut guard) = self.dataset_override.lock() {
+            *guard = stats;
+        }
+    }
+
     /// Publish the fixed startup layout so diagnostics and routing agree.
     pub(crate) fn set_router(&self, router: shard::ShardRouter) {
         if let Ok(mut shared) = self.router.write() {
@@ -695,6 +704,7 @@ impl ServerServices {
     }
 
     /// Current payload-budget limit in key and value bytes.
+    #[allow(dead_code)] // test-only today
     pub(super) fn payload_limit(&self) -> usize {
         self.max_payload_bytes.load(Ordering::Relaxed)
     }
@@ -996,6 +1006,7 @@ impl ShardExecutor {
 
     /// Local admission maximum: this owner's current payload plus the free part
     /// of the shared budget. One owner can never spend another owner's space.
+    #[allow(dead_code)] // test-only today
     pub(crate) fn payload_limit(&self) -> usize {
         let limit = self.max_payload_bytes.load(Ordering::Relaxed);
         if limit == 0 || !self.services.multi_owner.load(Ordering::Acquire) {
@@ -1144,12 +1155,6 @@ impl ShardExecutor {
             return stats;
         }
         self.local_dataset_stats()
-    }
-
-    pub(crate) fn publish_dataset(&self, stats: Option<DatasetStats>) {
-        if let Ok(mut guard) = self.dataset_override.lock() {
-            *guard = stats;
-        }
     }
 
     pub fn reset_stats(&self) -> bool {

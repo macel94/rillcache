@@ -1,3 +1,4 @@
+#![allow(dead_code)] // multi-owner internals; diagnostics wiring is incremental
 //! Immutable virtual-partition placement. Layouts are shared, Data is not.
 //!
 //! The router keeps its power-of-two partition contract while worker counts may
