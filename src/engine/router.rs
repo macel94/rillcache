@@ -28,8 +28,8 @@ use super::owner_actor::{Control, DataWork, OwnerActor, OwnerCore, OwnerError, R
 use super::partition::{LayoutError, OwnerId, PartitionLayout};
 use super::shard::{MAX_SHARDS, ShardRouter};
 use super::{
-    Action, DatasetStats, Execution, ImmediateExecution, ServerServices, ShardExecutor, Stats,
-    TransactionOutcome, WatchState, WatchToken,
+    Action, DatasetStats, Execution, ServerServices, ShardExecutor, Stats, TransactionOutcome,
+    WatchState, WatchToken,
 };
 
 /// Largest scratch key set retained for one multi-owner command. Independent of
@@ -222,9 +222,7 @@ impl MultiOwner {
         let router =
             ShardRouter::new(partitions).map_err(|_| RouterError::Layout(LayoutError::NoOwners))?;
         // One shared layout: diagnostics and routing can never disagree.
-        if let Ok(mut shared) = services.router.write() {
-            *shared = router;
-        }
+        services.set_router(router);
         let layout = PartitionLayout::from_router(owners, router);
         let requests = ByteBudget::new(sizing.request_bytes).map_err(RouterError::Mailbox)?;
         let replies = ByteBudget::new(sizing.reply_bytes).map_err(RouterError::Mailbox)?;
@@ -475,8 +473,10 @@ impl MultiOwner {
         receiver: ReplyReceiver<Result<T, OwnerError>>,
     ) -> Result<T, RouterError> {
         match receiver.blocking_recv() {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(error)) => Err(RouterError::Owner(error)),
+            Ok(value) => match value.into_inner() {
+                Ok(inner) => Ok(inner),
+                Err(error) => Err(RouterError::Owner(error)),
+            },
             Err(_) => Err(self.fail()),
         }
     }
@@ -506,16 +506,21 @@ impl MultiOwner {
                 let _ = self.unlock_abort(id, &granted);
                 return Err(error);
             }
-            match receiver.blocking_recv() {
-                Ok(Ok(())) => granted.push(owner),
-                Ok(Err(error)) => {
-                    let _ = self.unlock_abort(id, &granted);
-                    return Err(RouterError::Owner(error));
-                }
+            let granted_ok = match receiver.blocking_recv() {
+                Ok(value) => match value.into_inner() {
+                    Ok(()) => true,
+                    Err(error) => {
+                        let _ = self.unlock_abort(id, &granted);
+                        return Err(RouterError::Owner(error));
+                    }
+                },
                 Err(_) => {
                     let _ = self.unlock_abort(id, &granted);
                     return Err(self.fail());
                 }
+            };
+            if granted_ok {
+                granted.push(owner);
             }
         }
         Ok(granted)
@@ -523,20 +528,20 @@ impl MultiOwner {
 
     fn unlock_finish(&self, id: ReservationId, owners: &[OwnerId]) -> Result<(), RouterError> {
         for owner in owners {
-            self.control_ack(owner, |reply| Control::Decide { id, reply })?;
+            self.control_ack(*owner, |reply| Control::Decide { id, reply })?;
         }
         for owner in owners {
-            self.control_apply_noop(owner, id)?;
+            self.control_apply_noop(*owner, id)?;
         }
         for owner in owners {
-            self.control_ack(owner, |reply| Control::Release { id, reply })?;
+            self.control_ack(*owner, |reply| Control::Release { id, reply })?;
         }
         Ok(())
     }
 
     fn unlock_abort(&self, id: ReservationId, owners: &[OwnerId]) -> Result<(), RouterError> {
         for owner in owners {
-            self.control_ack(owner, |reply| Control::Abort { id, reply })?;
+            self.control_ack(*owner, |reply| Control::Abort { id, reply })?;
         }
         Ok(())
     }
@@ -557,8 +562,8 @@ impl MultiOwner {
                 other => RouterError::Mailbox(other),
             })?
             .send_with(|| make(sender));
-        let result = self.await_reply(receiver)?;
-        result.map_err(RouterError::Owner)
+        self.await_reply(receiver)?;
+        Ok(())
     }
 
     fn control_apply_noop(&self, owner: OwnerId, id: ReservationId) -> Result<(), RouterError> {
@@ -578,9 +583,9 @@ impl MultiOwner {
                 reply: sender,
                 op: Box::new(|_, _| Ok(())),
             });
-        match self.await_reply(receiver)? {
-            Ok(()) | Err(OwnerError::AlreadyApplied) => Ok(()),
-            Err(error) => Err(RouterError::Owner(error)),
+        match self.await_reply(receiver) {
+            Ok(()) | Err(RouterError::Owner(OwnerError::AlreadyApplied)) => Ok(()),
+            Err(error) => Err(error),
         }
     }
 
@@ -615,13 +620,9 @@ impl MultiOwner {
                 reply: ack_sender,
                 op: Box::new(move |executor, now| {
                     let _ = value_sender.send(Ok(operation(executor, now)));
-                    Ok(())
                 }),
             });
-        match self.await_reply(ack_receiver)? {
-            Ok(()) => {}
-            Err(error) => return Err(RouterError::Owner(error)),
-        }
+        self.await_reply(ack_receiver)?;
         self.await_reply(value_receiver)
     }
 
@@ -1320,13 +1321,31 @@ fn write_bulk_array(values: &[Vec<u8>], output: &mut Vec<u8>) {
 // -- trait implementations ------------------------------------------------
 
 impl Execution for MultiOwner {
-    async fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
+    fn services_handle(&self) -> Arc<ServerServices> {
+        Arc::clone(&self.services)
+    }
+    fn run_request(&self, request: super::bridge::Request) {
+        let _ = self.owner_op(OwnerId::new(0), move |executor| {
+            request(executor);
+        });
+    }
+    fn journal_sync(&self) -> std::io::Result<()> {
+        self.journal_sync_blocking()
+    }
+    fn purge_expired(&self, limit: usize) -> usize {
+        self.purge_expired_blocking(limit)
+    }
+    fn auto_rewrite_if_due(&self) -> bool {
+        self.auto_rewrite_blocking()
+    }
+
+    fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action {
         self.execute_blocking(arguments, output)
     }
-    async fn watch_snapshot(&self, keys: &[&[u8]]) -> Option<WatchState> {
+    fn watch_snapshot(&self, keys: &[&[u8]]) -> Option<WatchState> {
         self.watch_snapshot_blocking(keys)
     }
-    async fn execute_transaction(
+    fn execute_transaction(
         &self,
         commands: &[Vec<Vec<u8>>],
         watches: &WatchState,
@@ -1334,24 +1353,19 @@ impl Execution for MultiOwner {
     ) -> TransactionOutcome {
         self.execute_transaction_blocking(commands, watches, output)
     }
-    async fn blocking_pop(&self, keys: &[&[u8]], left: bool) -> super::PopOutcome {
+    fn blocking_pop(&self, keys: &[&[u8]], left: bool) -> super::PopOutcome {
         match self.scratch_outcome(keys, |scratch| scratch.blocking_pop(keys, left)) {
             Ok(outcome) => outcome,
             Err(_) => super::PopOutcome::JournalError,
         }
     }
-    async fn blocking_lmpop(
-        &self,
-        keys: &[&[u8]],
-        left: bool,
-        count: usize,
-    ) -> super::ListPopOutcome {
+    fn blocking_lmpop(&self, keys: &[&[u8]], left: bool, count: usize) -> super::ListPopOutcome {
         match self.scratch_outcome(keys, |scratch| scratch.blocking_lmpop(keys, left, count)) {
             Ok(outcome) => outcome,
             Err(_) => super::ListPopOutcome::JournalError,
         }
     }
-    async fn blocking_list_move(
+    fn blocking_list_move(
         &self,
         source: &[u8],
         destination: &[u8],
@@ -1366,18 +1380,13 @@ impl Execution for MultiOwner {
             Err(_) => super::ListMoveOutcome::JournalError,
         }
     }
-    async fn blocking_zpop(
-        &self,
-        keys: &[&[u8]],
-        max: bool,
-        count: usize,
-    ) -> super::ZSetPopOutcome {
+    fn blocking_zpop(&self, keys: &[&[u8]], max: bool, count: usize) -> super::ZSetPopOutcome {
         match self.scratch_outcome(keys, |scratch| scratch.blocking_zpop(keys, max, count)) {
             Ok(outcome) => outcome,
             Err(_) => super::ZSetPopOutcome::JournalError,
         }
     }
-    async fn xread_start(
+    fn xread_start(
         &self,
         options: &super::streams::XReadOptions<'_>,
     ) -> Option<(Vec<super::StreamId>, super::XReadOutcome)> {
@@ -1385,7 +1394,7 @@ impl Execution for MultiOwner {
             .ok()
             .flatten()
     }
-    async fn xread_once(
+    fn xread_once(
         &self,
         keys: &[&[u8]],
         starts: &[super::StreamId],
@@ -1395,7 +1404,7 @@ impl Execution for MultiOwner {
             .ok()
             .flatten()
     }
-    async fn blocking_xreadgroup(
+    fn blocking_xreadgroup(
         &self,
         options: &super::XReadGroupOptions<'_>,
     ) -> super::XReadGroupOutcome {
@@ -1406,7 +1415,7 @@ impl Execution for MultiOwner {
             Err(_) => super::XReadGroupOutcome::JournalError,
         }
     }
-    async fn waitaof_probe(&self, local: i64, replicas: i64) -> Result<(u64, u64), &'static [u8]> {
+    fn waitaof_probe(&self, local: i64, replicas: i64) -> Result<(u64, u64), &'static [u8]> {
         match self.owner_op(OwnerId::new(0), move |executor| {
             executor.waitaof_probe(local, replicas)
         }) {
@@ -1414,14 +1423,14 @@ impl Execution for MultiOwner {
             Err(_) => Err(b"owner unavailable"),
         }
     }
-    async fn shutdown_command(&self, args: &[&[u8]], output: &mut Vec<u8>) {
+    fn shutdown_command(&self, args: &[&[u8]], output: &mut Vec<u8>) {
         if let Ok(reply) = self.forward(OwnerId::new(0), args) {
             output.extend_from_slice(&reply.bytes);
         }
     }
 }
 
-impl ImmediateExecution for MultiOwner {
+impl MultiOwner {
     fn services_handle(&self) -> Arc<ServerServices> {
         Arc::clone(&self.services)
     }

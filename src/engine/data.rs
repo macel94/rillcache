@@ -328,12 +328,10 @@ impl Data {
     /// The scratch executor starts empty, so a tracked version marks a key the
     /// command actually wrote, including a same-value write.
     pub(super) fn touched_keys(&self) -> Vec<Vec<u8>> {
-        let mut keys: Vec<Vec<u8>> = self
-            .entries
-            .keys()
-            .filter(|key| self.versions.contains_key(*key))
-            .cloned()
-            .collect();
+        // A scratch executor starts with no versions, so every tracked version
+        // marks a write, including a delete (the key is gone from `entries` but
+        // its version was still advanced) and a same-value write.
+        let mut keys: Vec<Vec<u8>> = self.versions.keys().cloned().collect();
         keys.sort_unstable();
         keys
     }

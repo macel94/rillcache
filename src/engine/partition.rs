@@ -9,6 +9,10 @@ use super::shard::{MAX_SHARDS, ShardRouter};
 pub(crate) struct OwnerId(usize);
 
 impl OwnerId {
+    pub(crate) fn new(index: usize) -> Self {
+        Self(index)
+    }
+
     pub(crate) fn index(self) -> usize {
         self.0
     }

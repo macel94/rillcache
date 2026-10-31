@@ -46,8 +46,7 @@ mod owner_actor;
 #[cfg(test)]
 mod partition;
 mod pubsub;
-// Recovered multi-owner work, not yet wired: kept for the next session.
-#[cfg(any())]
+#[cfg(test)]
 mod router;
 mod scan;
 mod sha256;
@@ -100,6 +99,7 @@ pub(crate) use streams::{
     XReadGroupOptions, XReadGroupOutcome, XReadGroupStart, XReadOutcome, parse_xread,
     parse_xreadgroup, xread_reply, xreadgroup_reply,
 };
+pub(crate) use transaction::WatchToken;
 pub use transaction::{TransactionOutcome, WatchState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,7 +199,7 @@ pub struct ServerServices {
     owner_events: std::sync::Mutex<Vec<(&'static str, std::thread::ThreadId)>>,
     #[cfg(test)]
     bridge_submissions: std::sync::atomic::AtomicUsize,
-    router: shard::ShardRouter,
+    router: RwLock<shard::ShardRouter>,
     eviction_policy: std::sync::atomic::AtomicU8,
     max_payload_bytes: std::sync::atomic::AtomicUsize,
     /// Global payload admitted by every owner, used as a local credit bound.
@@ -275,6 +275,13 @@ impl std::ops::Deref for ShardExecutor {
 }
 
 impl ServerServices {
+    /// Publish the fixed startup layout so diagnostics and routing agree.
+    pub(crate) fn set_router(&self, router: shard::ShardRouter) {
+        if let Ok(mut shared) = self.router.write() {
+            *shared = router;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn owner_trace(&self) -> Vec<(&'static str, std::thread::ThreadId)> {
         self.owner_events.lock().unwrap().clone()
@@ -289,7 +296,7 @@ impl ServerServices {
             owner_events: std::sync::Mutex::new(Vec::new()),
             #[cfg(test)]
             bridge_submissions: std::sync::atomic::AtomicUsize::new(0),
-            router: shard::ShardRouter::new(1).expect("single-owner layout"),
+            router: RwLock::new(shard::ShardRouter::new(1).expect("single-owner layout")),
             eviction_policy: std::sync::atomic::AtomicU8::new(0),
             max_payload_bytes: std::sync::atomic::AtomicUsize::new(max_payload_bytes),
             payload_committed: std::sync::atomic::AtomicUsize::new(0),
@@ -695,10 +702,10 @@ impl ServerServices {
         self.max_payload_bytes.load(Ordering::Relaxed)
     }
     pub fn shard_for(&self, key: &[u8]) -> usize {
-        self.router.shard_for(key)
+        self.router.read().map_or(0, |router| router.shard_for(key))
     }
     pub fn shard_count(&self) -> usize {
-        self.router.count()
+        self.router.read().map_or(1, |router| router.count())
     }
     pub fn eviction_policy(&self) -> EvictionPolicy {
         match self.eviction_policy.load(Ordering::Acquire) {
@@ -905,6 +912,24 @@ impl ShardExecutor {
     pub(crate) fn services(&self) -> Arc<ServerServices> {
         Arc::clone(&self.services)
     }
+    /// Scratch executor over a private, already-cloned key set. Used by the
+    /// multi-owner router to run one command on a fenced snapshot.
+    pub(crate) fn with_data(services: Arc<ServerServices>, data: Data) -> Self {
+        #[cfg(test)]
+        let owner_thread = std::thread::current().id();
+        Self {
+            notification_epoch: std::cell::Cell::new(
+                services.notification_epoch.load(Ordering::Acquire),
+            ),
+            services,
+            #[cfg(test)]
+            owner_thread,
+            data: std::cell::RefCell::new(data),
+            published_payload: std::cell::Cell::new(0),
+            _local: std::marker::PhantomData,
+        }
+    }
+
     pub(crate) fn with_services(services: Arc<ServerServices>) -> Self {
         #[cfg(test)]
         let owner_thread = std::thread::current().id();

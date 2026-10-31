@@ -192,10 +192,10 @@ fn blocking_pop_wakes_across_owners_and_disconnect_reclaims_registration() {
         .find(|key| layout.owner_for(key) != layout.owner_for(a))
         .unwrap();
     let keys = [a.as_slice(), b.as_slice()];
-    let outcome = futures_lite_block_on(router.blocking_pop(&keys, true));
+    let outcome = router.blocking_pop(&keys, true);
     assert_eq!(outcome, super::super::PopOutcome::Empty);
     assert_eq!(call(&router, &[b"LPUSH", &b, b"wakeup"]), b":1\r\n");
-    let outcome = futures_lite_block_on(router.blocking_pop(&keys, true));
+    let outcome = router.blocking_pop(&keys, true);
     match outcome {
         super::super::PopOutcome::Value { key, value } => {
             assert_eq!(key, b);

@@ -195,6 +195,8 @@ impl ByteBudget {
     }
 }
 
+pub(crate) type ByteCredit = Credit;
+
 pub(crate) struct Credit {
     inner: Arc<BudgetInner>,
     bytes: usize,
@@ -304,6 +306,13 @@ impl<T: Send> LaneSender<T> {
         self.bytes.slots()
     }
 }
+impl<T: Send> LaneSender<T> {
+    /// Close admission for new work; admitted messages are still delivered.
+    pub(crate) fn close(&self) {
+        self.bytes.close();
+    }
+}
+
 impl<T: Send> LaneReceiver<T> {
     pub(crate) fn poll_recv(
         &mut self,
@@ -434,6 +443,61 @@ impl<T: RetainedBytes, E: RetainedBytes> RetainedBytes for Result<T, E> {
             Ok(value) => value.retained_bytes(),
             Err(error) => error.retained_bytes(),
         }
+    }
+}
+impl RetainedBytes for super::XReadGroupOutcome {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+impl RetainedBytes for super::blocking::PopOutcome {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+impl RetainedBytes for super::collection_commands::ListPopOutcome {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+impl RetainedBytes for super::collection_commands::ListMoveOutcome {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+impl RetainedBytes for super::collection_commands::ZSetPopOutcome {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+impl RetainedBytes for super::streams::XReadOutcome {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+impl RetainedBytes for (u64, u64) {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+impl RetainedBytes for &'static [u8] {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+impl RetainedBytes for (Vec<super::data::StreamId>, super::streams::XReadOutcome) {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+impl<T: RetainedBytes> RetainedBytes for Option<T> {
+    fn retained_bytes(&self) -> Option<usize> {
+        self.as_ref().and_then(RetainedBytes::retained_bytes)
+    }
+}
+impl RetainedBytes for std::io::Error {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(0)
     }
 }
 impl RetainedBytes for MailboxError {
