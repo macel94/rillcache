@@ -376,11 +376,16 @@ impl<D: Send, C: Send> Clone for OwnerSender<D, C> {
         }
     }
 }
+// CONTROL retains burst priority, but cannot indefinitely postpone admitted
+// DATA on an unfenced owner. This is a turn bound, not a wall-clock deadline.
+const CONTROL_BURST_LIMIT: usize = 8;
+
 pub(crate) struct OwnerInbox<D: Send, C: Send> {
     data: LaneReceiver<D>,
     control: LaneReceiver<C>,
     data_closed: bool,
     control_closed: bool,
+    control_turns: usize,
 }
 pub(crate) enum Incoming<D: Send, C: Send> {
     Data(Envelope<D>),
@@ -403,30 +408,50 @@ pub(crate) fn owner_mailbox<D: Send, C: Send>(
             control: control_receiver,
             data_closed: false,
             control_closed: false,
+            control_turns: 0,
         },
     ))
 }
 impl<D: Send, C: Send> OwnerInbox<D, C> {
+    fn poll_data(&mut self, cx: &mut std::task::Context<'_>) -> Option<Envelope<D>> {
+        if !self.data_closed {
+            match self.data.poll_recv(cx) {
+                std::task::Poll::Ready(Some(message)) => {
+                    self.control_turns = 0;
+                    return Some(message);
+                }
+                std::task::Poll::Ready(None) => self.data_closed = true,
+                std::task::Poll::Pending => {}
+            }
+        }
+        None
+    }
+
     pub(crate) async fn next(&mut self, data_enabled: bool) -> Option<Incoming<D, C>> {
         std::future::poll_fn(|cx| {
             use std::task::Poll;
+            let data_first = data_enabled && self.control_turns >= CONTROL_BURST_LIMIT;
+            if data_first && let Some(message) = self.poll_data(cx) {
+                return Poll::Ready(Some(Incoming::Data(message)));
+            }
             if !self.control_closed {
                 match self.control.poll_recv(cx) {
                     Poll::Ready(Some(message)) => {
+                        self.control_turns = self
+                            .control_turns
+                            .saturating_add(1)
+                            .min(CONTROL_BURST_LIMIT);
                         return Poll::Ready(Some(Incoming::Control(message)));
                     }
                     Poll::Ready(None) => self.control_closed = true,
                     Poll::Pending => {}
                 }
             }
-            if data_enabled && !self.data_closed {
-                match self.data.poll_recv(cx) {
-                    Poll::Ready(Some(message)) => {
-                        return Poll::Ready(Some(Incoming::Data(message)));
-                    }
-                    Poll::Ready(None) => self.data_closed = true,
-                    Poll::Pending => {}
-                }
+            if data_enabled
+                && !data_first
+                && let Some(message) = self.poll_data(cx)
+            {
+                return Poll::Ready(Some(Incoming::Data(message)));
             }
             if self.control_closed && (self.data_closed || !data_enabled) {
                 Poll::Ready(None)
