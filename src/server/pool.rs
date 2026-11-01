@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::session::Session;
 
 const QUANTUM: usize = 64;
-const OUTPUT_CHUNK: usize = 64 * 1024;
+pub(super) const OUTPUT_CHUNK: usize = 64 * 1024;
 
 struct PollWindow {
     until: Instant,
@@ -144,10 +144,33 @@ impl Client {
         config: &Config,
         chunk: &mut [u8],
     ) -> io::Result<Option<bool>> {
+        self.poll_inner::<E, false>(store, config, chunk)
+    }
+
+    #[cfg(unix)]
+    pub(super) fn poll_buffered<E: Execution>(
+        &mut self,
+        store: &E,
+        config: &Config,
+        chunk: &mut [u8],
+    ) -> io::Result<Option<bool>> {
+        self.poll_inner::<E, true>(store, config, chunk)
+    }
+
+    fn flush_mode<const BUFFERED: bool>(&mut self) -> io::Result<bool> {
+        if BUFFERED { Ok(false) } else { self.flush() }
+    }
+
+    fn poll_inner<E: Execution, const BUFFERED: bool>(
+        &mut self,
+        store: &E,
+        config: &Config,
+        chunk: &mut [u8],
+    ) -> io::Result<Option<bool>> {
         // Like blocking I/O, service already-ready input/output before declaring
         // inactivity; scheduler delay must not discard buffered commands.
         self.retry_io = false;
-        let mut progress = self.flush()?;
+        let mut progress = self.flush_mode::<BUFFERED>()?;
         if self.closing {
             return Ok(if self.output.is_empty() {
                 None
@@ -170,7 +193,7 @@ impl Client {
                 }
             }
             if pushed > 0 {
-                progress |= self.flush()?;
+                progress |= self.flush_mode::<BUFFERED>()?;
             }
         }
         if self.session.is_blocked() {
@@ -179,7 +202,7 @@ impl Client {
                 progress = true;
             }
             if !self.output.is_empty() {
-                progress |= self.flush()?;
+                progress |= self.flush_mode::<BUFFERED>()?;
             }
             if self.session.is_blocked() {
                 if self.eof {
@@ -272,7 +295,7 @@ impl Client {
         } else if consumed > 0 {
             self.input.drain(..consumed);
         }
-        progress |= self.flush()?;
+        progress |= self.flush_mode::<BUFFERED>()?;
         if self.closing || !self.output.is_empty() || !need_input {
             return Ok(self.open(progress, config.idle_timeout));
         }

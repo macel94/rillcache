@@ -95,7 +95,7 @@ Thread accounting:
 
 | Configuration | Network runtimes | Cold service | Additional data owner | Other frontend threads |
 | --- | ---: | ---: | ---: | --- |
-| Default `--io-mode mio` | Mio readiness reactor | none | 0 (local owner) | none |
+| Default `--io-mode mio` | 1 Mio read/data owner | none | 0 (local owner) | 0/1 [batched transmit worker](batched-transmit.md), captured at bind |
 | `--io-mode tokio`, eligible plaintext | 1, including acceptance | 1 | 0 | none |
 | Mixed TLS plaintext compatibility | N, including acceptance | 1 | 1 shared with TLS | existing TLS accept/client threads |
 | Persistence/ACL-file/audit, fixed lanes, non-Unix | existing fallback | no Tokio cold service | published compatibility/local-mode policy | existing accept/workers/TLS as configured |

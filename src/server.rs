@@ -26,6 +26,8 @@ mod tls;
 #[cfg(unix)]
 mod tokio_io;
 mod topology;
+#[cfg(unix)]
+mod transmit;
 
 /// One-CPU busy clients may briefly lend I/O to an existing managed client thread.
 pub const CLIENT_HANDOFF_IDLE_US: u64 = 50;
@@ -65,6 +67,8 @@ pub enum IoMode {
 pub struct SchedulingPolicy {
     /// Default Unix plain-TCP sockets use a readiness-based engine.
     pub readiness_io: bool,
+    /// Additional batched transmit workers; never storage/command owners.
+    pub mio_write_threads: usize,
     /// Tokio is the selected readiness engine instead of the Mio reactor.
     pub tokio_transport: bool,
     /// Total network runtimes, including the accept/runtime-zero thread.
@@ -114,6 +118,7 @@ impl SchedulingPolicy {
             && capacity.is_some_and(|cpus| (1..=CLIENT_HANDOFF_MAX_CPUS).contains(&cpus));
         Self {
             readiness_io: false,
+            mio_write_threads: 0,
             tokio_transport: false,
             tokio_worker_threads: 0,
             tokio_compatibility_owner: false,
@@ -528,6 +533,7 @@ impl Server {
             // Both engines are readiness based; Tokio is opted into explicitly.
             policy = SchedulingPolicy {
                 readiness_io: true,
+                mio_write_threads: 0,
                 tokio_transport: false,
                 tokio_worker_threads: 0,
                 tokio_compatibility_owner: false,
@@ -552,6 +558,13 @@ impl Server {
                 1
             };
             policy.tokio_compatibility_owner = config.tls_bind_addr.is_some();
+        }
+        if policy.readiness_io
+            && !policy.tokio_transport
+            && config.storage_owners.is_none_or(|owners| owners == 1)
+            && capacity.is_some_and(|cpus| cpus >= 2)
+        {
+            policy.mio_write_threads = 1;
         }
         Ok(Self {
             listener,
@@ -688,7 +701,7 @@ fn serve_plain(
     }
     #[cfg(unix)]
     if policy.readiness_io {
-        return reactor::serve(listener, config, store, stopping);
+        return reactor::serve(listener, config, store, stopping, policy.mio_write_threads);
     }
     // A failed/unsupported setup leaves the original nonblocking fallback.
     // Keep the existing idle backoff, maintenance checks and joined shutdown.

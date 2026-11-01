@@ -186,7 +186,11 @@ Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
 bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
 On Unix, plaintext TCP defaults to the proven Mio readiness reactor with the
-published owner-local executor. `--io-mode tokio` opts into an async engine that
+published owner-local executor. With at least two effective CPUs, its one-owner
+path adds one joined [batched transmit worker](docs/batched-transmit.md): socket
+reads and command/data execution stay local; only batches of ready reply buffers
+may be written on the helper. Lone replies and full-queue fallback stay inline.
+`--io-mode tokio` opts into an async engine that
 co-locates one current-thread Tokio socket runtime with the same executor plus one
 bounded cold-I/O service thread; ordinary local commands still have no
 data-bridge hop. It is opt-in because measured pipeline-1 conditions do not all

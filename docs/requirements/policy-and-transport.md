@@ -95,6 +95,29 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 Implementation decisions, current shared-Store limits and target sequencing are
 self-contained in [the transport increment](../async-transport.md).
 
+## Bounded batched transmit (S-MIO-TX)
+
+- **R-MIOTX1 (state-driven):** Where default one-owner Mio networking captures at
+  least two effective CPUs, it shall start at most one additional transmit worker.
+  Reads, sessions and Data shall remain on their original owner. Captured policy
+  and embedded benchmark metadata shall count the helper separately.
+- **R-MIOTX2 (event-driven):** When at least two valid ready outputs share a
+  reactor turn, it may transfer their existing owned buffers in one bounded,
+  nonblocking batch. A lone output or full work queue shall use inline writes.
+  Each connection shall have at most one write in flight; no later command or
+  push may execute while that connection's buffer is owned by the helper.
+- **R-MIOTX3 (event-driven):** When a write completes partially, blocks, is
+  interrupted, fails or belongs to a stale token, the reactor shall preserve the
+  unsent offset, writable readiness, retry/close behavior and full-generation
+  identity. A worker turn shall write at most the existing 64 KiB chunk per job.
+- **R-MIOTX4 (event-driven):** When startup/run/shutdown fails, all original
+  sockets shall be closed and every started helper joined. The helper shall
+  never block waiting for socket capacity or for completion-channel capacity.
+  Control/observer/authentication/expiry/accounting and the one-CPU, fixed-worker,
+  Tokio, TLS socket, non-Unix and multi-owner execution paths shall retain their
+  existing command semantics. Tests shall cover lone/batched output, bounded
+  admission, partial writes, stale tokens, errors, backpressure and joined stop.
+
 ## Owner mailbox fairness (S-OWNER-FAIR)
 
 - **R-OWNERFAIR1 (state-driven):** While an unfenced owner has admitted DATA
