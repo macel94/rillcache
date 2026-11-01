@@ -16,7 +16,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: pr-multicpu-valkey-${{ github.event.pull_request.number || inputs.pull_request }}
+  group: pr-multicpu-valkey-${{ github.event.pull_request.number || inputs.pull_request }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:

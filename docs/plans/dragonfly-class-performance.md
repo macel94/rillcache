@@ -49,6 +49,14 @@ official ten-second samples. Rillcache must strictly beat Dragonfly in all ten
 medians. The check name and required-context inventory remain unchanged, so no
 new live ruleset bypass or advisory-only workflow is introduced.
 
+The same change adds a plain-state bare-`PING` fast path in the session boundary.
+It retains command accounting, MONITOR delivery, pause handling and SLOWLOG/
+latency/commandstats observation, but skips the generic command dispatcher and
+connection-control probes when authentication/ACL restrictions, subscriptions,
+transactions, blocking and pause are all absent. This targets the only row that
+was inside shared-runner noise in the first Dragonfly cohort without weakening
+the comparison.
+
 Dragonfly is an optional external benchmark target under the Business Source
 License 1.1. It is not a Cargo dependency, vendored source, release-archive file
 or container component. CI downloads the official binary over HTTPS, verifies

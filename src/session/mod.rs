@@ -134,6 +134,44 @@ impl Session {
         output: &mut Vec<u8>,
     ) -> Action {
         let start = output.len();
+        // Bare PING in a plain RESP session is the hottest command. Keep the
+        // exact authorization, pause, monitor and observer behavior, but skip
+        // the generic command dispatcher and its connection-control probes.
+        if arguments.len() == 1
+            && arguments[0].eq_ignore_ascii_case(b"PING")
+            && self.multi.is_none()
+            && !self.is_subscribed()
+            && !self.monitoring
+            && !self.is_blocked()
+            && !self.is_paused()
+            && store.security() == (false, false)
+            && !self.pause_command(store, arguments)
+        {
+            store.record_command(self.id);
+            store.monitor_command(self.id, arguments);
+            let slowlog = store.slowlog_enabled();
+            let latency = store.latency_enabled();
+            let commandstats = store.commandstats_enabled();
+            let started = (slowlog || latency || commandstats).then(Instant::now);
+            let reply_start = output.len();
+            output.extend_from_slice(b"+PONG\r\n");
+            if let Some(started) = started {
+                let reply = &output[reply_start..];
+                if latency || commandstats {
+                    let elapsed = started.elapsed();
+                    if commandstats {
+                        store.record_command_stats(arguments.first().copied(), elapsed, reply);
+                    }
+                    if latency {
+                        store.record_command_latency(elapsed);
+                    }
+                }
+                if slowlog {
+                    self.record_slowlog(store, arguments, started);
+                }
+            }
+            return Action::Continue;
+        }
         // Use the common observation/error-accounting epilogue in every
         // collector configuration. execute_inner already specializes ordinary
         // commands after the normal authorization and subscriber checks.
