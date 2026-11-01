@@ -109,13 +109,22 @@ outside-repository no-index diff fallback from changing generated version metada
 on every build. Archive identity comes from the pinned SHA-256, not this synthetic
 metadata. CI verifies unchanged reference binary digests across all profiles.
 
-Pins are in [`benchmarks/targets.mk`](../benchmarks/targets.mk): Redis 8.10.2 and
-Valkey 9.1.2, checked against upstream latest stable releases during bootstrap.
-They are reproducible pins, not a promise to remain “latest” forever. Before a
-published performance claim, check upstream releases again, update version and
-archive SHA-256 together, and preserve results from both old and new versions.
-Checksum pinning detects changed downloads; it is not a claim of signature
-verification or upstream authenticity beyond the HTTPS download source.
+Pins are in [`benchmarks/targets.mk`](../benchmarks/targets.mk): Redis 8.10.2,
+Valkey 9.1.2 and the optional CI Dragonfly 2.0.2 x86_64 release, checked against
+upstream latest stable releases during bootstrap. They are reproducible pins, not
+a promise to remain “latest” forever. Before a published performance claim, check
+upstream releases again, update version and archive SHA-256 together, and preserve
+results from both old and new versions. Checksum pinning detects changed downloads;
+it is not a claim of signature verification or upstream authenticity beyond the
+HTTPS download source.
+
+Dragonfly is used only by the optional same-setup CI comparison, under its BSL
+1.1 non-production terms. It is not a Cargo dependency, vendored source, release
+archive member or container component. The workflow verifies the official binary
+archive hash, records the license notice and hashes with the evidence, and keeps
+the binary out of tracked source and artifacts. See
+[`benchmarks/notices/README.txt`](../benchmarks/notices/README.txt) and
+[`plans/dragonfly-class-performance.md`](plans/dragonfly-class-performance.md).
 
 Optional overrides:
 
