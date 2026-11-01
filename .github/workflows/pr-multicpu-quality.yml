@@ -121,11 +121,23 @@ jobs:
       - name: Download checksum-pinned Dragonfly release and its BSL notice
         id: dragonfly
         working-directory: base
+        env:
+          BASE_SOURCE: ${{ steps.context.outputs.base }}
+          CANDIDATE_DIR: ${{ github.workspace }}/candidate
         run: |
           directory="$RUNNER_TEMP/dragonfly-tools"
           mkdir -p "$directory"
-          version=$(awk '$1 == "DRAGONFLY_VERSION" {print $3}' benchmarks/targets.mk)
-          expected=$(awk '$1 == "DRAGONFLY_SHA256" {print $3}' benchmarks/targets.mk)
+          pins=benchmarks/targets.mk
+          notice=benchmarks/notices/Dragonfly-BSL-1.1.txt
+          if ! grep -q '^DRAGONFLY_VERSION' "$pins"; then
+            # Only this exact pre-installation protected main can bootstrap the
+            # new pin and notice from the candidate tree.
+            [[ "$BASE_SOURCE" == e4f5a13496f680386084c0e35fb5c94283d5b4aa ]]
+            pins="$CANDIDATE_DIR/benchmarks/targets.mk"
+            notice="$CANDIDATE_DIR/benchmarks/notices/Dragonfly-BSL-1.1.txt"
+          fi
+          version=$(awk '$1 == "DRAGONFLY_VERSION" {print $3}' "$pins")
+          expected=$(awk '$1 == "DRAGONFLY_SHA256" {print $3}' "$pins")
           url="https://github.com/dragonflydb/dragonfly/releases/download/v${version}/dragonfly-x86_64.tar.gz"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
@@ -136,7 +148,7 @@ jobs:
           binary=$(find "$directory" -maxdepth 1 -type f -name 'dragonfly*' ! -name '*.tar.gz' | head -1)
           [[ -n "$binary" && -x "$binary" ]]
           mv "$binary" "$directory/dragonfly"
-          cp benchmarks/notices/Dragonfly-BSL-1.1.txt "$directory/Dragonfly-BSL-1.1.txt"
+          cp "$notice" "$directory/Dragonfly-BSL-1.1.txt"
           sha256sum "$directory/dragonfly" "$directory/Dragonfly-BSL-1.1.txt" > "$directory/hashes.sha256"
           "$directory/dragonfly" --version > "$directory/version.txt" 2>&1
           grep -qi "dragonfly.*v${version}" "$directory/version.txt"
