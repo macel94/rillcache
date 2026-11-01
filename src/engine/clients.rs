@@ -75,7 +75,10 @@ impl super::ServerServices {
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return,
+                Ok(_) => {
+                    self.refresh_observers();
+                    return;
+                }
                 Err(observed) => current = observed,
             }
         }
@@ -83,6 +86,7 @@ impl super::ServerServices {
 
     pub(crate) fn unpause_clients(&self) {
         self.client_pause.store(0, Ordering::Relaxed);
+        self.refresh_observers();
     }
 
     /// Returns `Some(writes_only)` while a pause is active.

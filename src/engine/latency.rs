@@ -33,12 +33,13 @@ impl super::ServerServices {
     }
 
     pub(crate) fn latency_enabled(&self) -> bool {
-        self.latency_threshold_ms() > 0
+        self.observers().latency
     }
 
     pub(crate) fn set_latency_threshold_ms(&self, value: u64) {
         self.latency_monitor_threshold_ms
             .store(value, Ordering::Relaxed);
+        self.refresh_observers();
     }
 
     /// Record one measured event if it reached the configured millisecond
