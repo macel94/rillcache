@@ -57,6 +57,7 @@ struct Reactor<E: Execution> {
     clients: Vec<Option<Connection>>,
     free_slots: Vec<usize>,
     ready: VecDeque<ReadyKey>,
+    probes: VecDeque<ReadyKey>,
     asynchronous: HashSet<ReadyKey>,
     next_token: usize,
     accept_ready: bool,
@@ -155,6 +156,7 @@ impl<E: Execution> Reactor<E> {
                     closing: false,
                     eof: false,
                     retry_io: false,
+                    read_short: false,
                     activity: Instant::now(),
                     _permit: Some(Permit::acquire(&self.admitted)),
                     shutdown_on_drop: true,
@@ -243,7 +245,22 @@ impl<E: Execution> Reactor<E> {
         if runnable {
             // Own the continuation here: no second token lookup/queue admission.
             connection.queued = true;
-            self.ready.push_back(key);
+            if client.read_short
+                && client.input.is_empty()
+                && client.output.is_empty()
+                && !client.eof
+                && !client.closing
+                && !needs_async
+                && !retry_before_dispatch
+                && !client.retry_io
+            {
+                // A short read is NOT proof of WouldBlock. Keep ownership and
+                // service this probe after the next selector wait even if no
+                // new edge arrives. Only known-empty local work may wait.
+                self.probes.push_back(key);
+            } else {
+                self.ready.push_back(key);
+            }
         }
         Ok(Some(runnable))
     }
@@ -267,6 +284,22 @@ impl<E: Execution> Reactor<E> {
                 self.enqueue(ReadyKey { slot, token });
             }
         }
+    }
+
+    fn next_timeout(&self) -> Duration {
+        if self.accept_ready || !self.ready.is_empty() {
+            Duration::ZERO
+        } else if !self.probes.is_empty() {
+            FAST_WAIT
+        } else if self.asynchronous.is_empty() {
+            STOP_TICK
+        } else {
+            ASYNC_TICK
+        }
+    }
+
+    fn resume_probes(&mut self) {
+        self.ready.append(&mut self.probes);
     }
 
     fn run(&mut self) -> io::Result<()> {
@@ -314,37 +347,26 @@ impl<E: Execution> Reactor<E> {
             // The listener is polled on every pass: a queued connection or a new
             // client must never wait behind a sustained pipeline. A zero timeout
             // keeps that pass non-blocking while work is already queued.
-            let timeout = if self.accept_ready || !self.ready.is_empty() {
-                Duration::ZERO
-            } else if self.asynchronous.is_empty() {
-                STOP_TICK
-            } else {
-                ASYNC_TICK
-            };
+            let timeout = self.next_timeout();
             match self.poll.poll(&mut events, Some(timeout)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
             }
             self.ingest(&events);
+            // Never require a second edge to drain a short read: timeout and
+            // spurious wakes resume the retained probes just like real events.
+            self.resume_probes();
             if self.accept_ready {
                 self.accept()?;
             }
-            let mut serviced = 0usize;
             for _ in 0..RUN_QUANTUM {
                 let Some(key) = self.ready.pop_front() else {
                     break;
                 };
                 match self.service(key, &mut chunk) {
-                    Ok(Some(_)) => serviced += 1,
+                    Ok(Some(_)) => {}
                     Ok(None) | Err(_) => self.remove(key),
-                }
-            }
-            if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
-                match self.poll.poll(&mut events, Some(FAST_WAIT)) {
-                    Ok(()) => self.ingest(&events),
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return Err(error),
                 }
             }
         }
@@ -389,6 +411,7 @@ fn serve_with<E: Execution>(
         clients: Vec::new(),
         free_slots: Vec::new(),
         ready: VecDeque::new(),
+        probes: VecDeque::new(),
         asynchronous: HashSet::new(),
         next_token: 1,
         accept_ready: false,
@@ -421,12 +444,71 @@ mod tests {
             clients: Vec::new(),
             free_slots: Vec::new(),
             ready: VecDeque::new(),
+            probes: VecDeque::new(),
             asynchronous: HashSet::new(),
             next_token: 1,
             accept_ready: true,
             admitted: Arc::new(AtomicUsize::new(0)),
             stopping: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    #[test]
+    fn a_short_read_probe_runs_without_a_second_edge_then_parks_after_wouldblock() {
+        let mut reactor = fixture();
+        let mut peer = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        peer.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+        reactor.accept().unwrap();
+        let key = reactor.ready.pop_front().unwrap();
+        assert_eq!(reactor.service(key, &mut [0; 1024]).unwrap(), Some(true));
+        assert!(reactor.ready.is_empty());
+        assert_eq!(
+            reactor.probes.iter().copied().collect::<Vec<_>>(),
+            vec![key]
+        );
+        assert_eq!(reactor.next_timeout(), FAST_WAIT);
+        let mut pong = [0; 7];
+        peer.read_exact(&mut pong).unwrap();
+        assert_eq!(&pong, b"+PONG\r\n");
+        peer.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+        // Do not ingest any event. Even a timeout/spurious wake must service
+        // the retained token; short reads are never treated as drained.
+        reactor.resume_probes();
+        assert_eq!(reactor.ready.pop_front(), Some(key));
+        assert_eq!(reactor.service(key, &mut [0; 1024]).unwrap(), Some(true));
+        peer.read_exact(&mut pong).unwrap();
+        assert_eq!(&pong, b"+PONG\r\n");
+        reactor.resume_probes();
+        assert_eq!(reactor.ready.pop_front(), Some(key));
+        assert_eq!(reactor.service(key, &mut [0; 1024]).unwrap(), Some(false));
+        assert!(reactor.ready.is_empty() && reactor.probes.is_empty());
+        assert_eq!(reactor.next_timeout(), STOP_TICK);
+    }
+
+    #[test]
+    fn a_full_read_keeps_an_immediate_continuation_and_stale_probes_cannot_close_reused_slots() {
+        let mut reactor = fixture();
+        let mut peer = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
+        peer.write_all(b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPING\r\n")
+            .unwrap();
+        reactor.accept().unwrap();
+        let old = reactor.ready.pop_front().unwrap();
+        assert_eq!(reactor.service(old, &mut [0; 14]).unwrap(), Some(true));
+        assert!(reactor.probes.is_empty());
+        assert_eq!(reactor.next_timeout(), Duration::ZERO);
+        assert_eq!(reactor.ready.pop_front(), Some(old));
+        assert_eq!(reactor.service(old, &mut [0; 1024]).unwrap(), Some(true));
+        assert_eq!(reactor.probes.front(), Some(&old));
+        reactor.remove(old);
+        let _replacement = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
+        reactor.accept().unwrap();
+        let token = reactor.clients[old.slot].as_ref().unwrap().token;
+        assert_ne!(token, old.token);
+        reactor.resume_probes();
+        assert_eq!(reactor.service(old, &mut [0; 1024]).unwrap(), None);
+        reactor.remove(old);
+        assert_eq!(reactor.clients[old.slot].as_ref().unwrap().token, token);
     }
 
     #[test]

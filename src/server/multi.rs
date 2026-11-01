@@ -263,6 +263,7 @@ impl Reactor {
                     closing: false,
                     eof: false,
                     retry_io: false,
+                    read_short: false,
                     activity: Instant::now(),
                     _permit: Some(Permit::acquire(&self.admitted)),
                     shutdown_on_drop: true,

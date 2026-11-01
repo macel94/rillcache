@@ -13,6 +13,23 @@ compatibility work. It retains 84 checked component samples, controls, CPU profi
 losses and limits. It is not a replacement native comparison or an optimization
 claim; the historical profiles below remain labeled with their original baseline.
 
+## Current Mio read-probe scheduling (S-MIO-PROBE)
+
+The one-owner reactor separates known runnable work from drain probes after a
+successful short socket read. Only a connection with no remaining local buffers,
+close/EOF, asynchronous session or interrupted-I/O work may use the existing
+short productive wait. Full reads and buffered work still continue immediately.
+A short read is only a scheduling hint: its complete token remains queued until
+WouldBlock. Every probe resumes after the selector returns, including timeouts
+or spurious wakes without a new edge, so unread bytes cannot be stranded.
+
+This lets the kernel absorb a client's next in-flight request before an empty
+receive probe, without adding a thread, changing a timer value, bypassing session
+checks or replacing the data owner. The selector runs once before each bounded
+service turn. A final WouldBlock releases the probe and restores ordinary idle
+parking. Platform timer rounding and scheduler slack remain; correctness and the
+unchanged native gates, not the hypothesis alone, determine acceptance.
+
 ## Historical Mio readiness implementation (S-MIO; superseded)
 
 This preceding increment used the reviewed Mio dependency to replace default

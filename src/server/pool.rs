@@ -54,6 +54,8 @@ pub(super) struct Client {
     pub(super) eof: bool,
     /// EINTR is not WouldBlock: readiness owners must retain their runnable token.
     pub(super) retry_io: bool,
+    /// Scheduling hint only: short reads still retain a drain continuation.
+    pub(super) read_short: bool,
     pub(super) activity: Instant,
     pub(super) _permit: Option<Permit>,
     pub(super) shutdown_on_drop: bool,
@@ -107,6 +109,7 @@ impl Client {
 
     /// At most one bounded socket read per client/pass.
     pub(super) fn receive(&mut self, limits: Limits, chunk: &mut [u8]) -> io::Result<bool> {
+        self.read_short = false;
         let room = (limits.max_frame_bytes - self.input.len()).min(chunk.len());
         if room == 0 {
             self.output
@@ -120,6 +123,7 @@ impl Client {
                 Ok(true)
             }
             Ok(size) => {
+                self.read_short = size < room;
                 self.input.extend_from_slice(&chunk[..size]);
                 self.activity = Instant::now();
                 Ok(true)
@@ -398,6 +402,7 @@ pub(super) fn serve(
                 closing: false,
                 eof: false,
                 retry_io: false,
+                read_short: false,
                 activity: Instant::now(),
                 _permit: Some(Permit::acquire(&admitted)),
                 shutdown_on_drop: true,
@@ -573,6 +578,7 @@ mod tests {
                 closing: false,
                 eof: false,
                 retry_io: false,
+                read_short: false,
                 activity: Instant::now(),
                 _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
                 shutdown_on_drop: true,
@@ -663,6 +669,7 @@ mod tests {
             closing: false,
             eof: false,
             retry_io: false,
+            read_short: false,
             activity: Instant::now() - Duration::from_secs(2),
             _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
             shutdown_on_drop: true,

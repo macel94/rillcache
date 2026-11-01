@@ -95,6 +95,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 Implementation decisions, current shared-Store limits and target sequencing are
 self-contained in [the transport increment](../async-transport.md).
 
+## Deferred readiness read probes (S-MIO-PROBE)
+
+- **R-MIOPROBE1 (state-driven):** When a successful short socket read leaves
+  no buffered input/output, EOF/close, asynchronous session work or interrupted
+  I/O to service, the Mio reactor may defer its drain continuation until the
+  next selector pass using the existing short productive-wait target. Full
+  reads, buffered work, retryable interrupts and listener work shall remain
+  immediately runnable; no timer value, CPU budget or command-specific mode
+  shall select the optimization.
+- **R-MIOPROBE2 (event-driven):** When the selector returns, even with no new
+  edge or after a timeout/spurious wake, every retained read probe shall rejoin
+  runnable work. A short read shall never be treated as proof of WouldBlock.
+  Existing full-token validation, per-turn quanta and drain-until-WouldBlock
+  ownership shall remain intact; after a final empty read, idle clients park.
+- **R-MIOPROBE3 (ubiquitous):** Tests shall cover no-second-edge progress,
+  productive-to-idle transition, full-read immediacy, stale slot reuse, binary
+  fragmentation, backpressure, EOF and joined shutdown. Existing maintenance,
+  asynchronous-session and stop targets retain normal timer-rounding/scheduling
+  slack; this is not a hard real-time response deadline.
+
 ## Owner mailbox fairness (S-OWNER-FAIR)
 
 - **R-OWNERFAIR1 (state-driven):** While an unfenced owner has admitted DATA
