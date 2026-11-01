@@ -70,7 +70,7 @@ impl Drop for Client {
 }
 
 impl Client {
-    fn flush(&mut self) -> io::Result<bool> {
+    pub(super) fn flush(&mut self) -> io::Result<bool> {
         if self.sent == self.output.len() {
             self.output.clear();
             self.sent = 0;
@@ -101,7 +101,7 @@ impl Client {
         }
     }
 
-    fn open(&self, progress: bool, timeout: Duration) -> Option<bool> {
+    pub(super) fn open(&self, progress: bool, timeout: Duration) -> Option<bool> {
         (progress || self.activity.elapsed() < timeout).then_some(progress)
     }
 

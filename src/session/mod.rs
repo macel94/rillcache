@@ -25,7 +25,8 @@ mod observability_tests;
 #[cfg(test)]
 mod tests;
 
-use crate::engine::Execution;
+use crate::engine::{DeferredCommand, Execution};
+pub(crate) use dispatch::DeferredOutcome;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,6 +66,10 @@ pub struct Session {
     pubsub_shard_channels: BTreeSet<Vec<u8>>,
     blocked: Option<Blocked>,
     paused: Option<PausedCommand>,
+    /// True only while the multi-owner reactor offers commands for deferral.
+    defer_enabled: bool,
+    /// Set by `execute_store` when the current command was handed to an owner.
+    deferred: Option<DeferredCommand>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +105,8 @@ impl Session {
             pubsub_shard_channels: BTreeSet::new(),
             blocked: None,
             paused: None,
+            defer_enabled: false,
+            deferred: None,
         }
     }
     /// Record the accepted peer's IP for per-source authentication throttling.
@@ -152,6 +159,11 @@ impl Session {
         let started = (observed || may_enable).then(Instant::now);
         let reply_start = output.len();
         let action = self.execute_inner(store, arguments, output);
+        // A deferred command produces no reply yet; the socket loop records its
+        // slowlog entry and error from the owner reply in pipeline order.
+        if self.deferred.is_some() {
+            return action;
+        }
         if let Some(started) = started {
             let reply = &output[reply_start..];
             if latency || (store.commandstats_enabled() && reply != b"+QUEUED\r\n") {

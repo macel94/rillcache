@@ -405,11 +405,33 @@ impl Store {
     }
 }
 
+/// An ordinary single-owner command that can be handed to an owner worker
+/// without blocking the socket thread. Only the multi-owner router produces
+/// one; every other execution boundary reports `None` from [`Execution::defer`].
+#[derive(Debug)]
+pub(crate) struct DeferredCommand {
+    pub(crate) owner: usize,
+    /// Shared with the owner request so slowlog can keep the original arguments
+    /// for a late completion without copying the payload.
+    pub(crate) arguments: Arc<Vec<Vec<u8>>>,
+}
+
 /// The session's complete data boundary. All other session operations use the
 /// identical shared services through Deref, including its observation epilogue.
 pub(crate) trait Execution: std::ops::Deref<Target = ServerServices> {
     fn services_handle(&self) -> Arc<ServerServices>;
     fn run_request(&self, request: Request);
+
+    /// Whether this command can be executed by a deferred owner batch without
+    /// changing the reply's meaning. The default boundary answers `false`.
+    fn can_defer(&self, _arguments: &[&[u8]]) -> bool {
+        false
+    }
+    /// Copy a deferrable command so it can run on its owner after the socket
+    /// thread has moved on. `None` keeps the synchronous `execute` path.
+    fn defer(&self, _arguments: &[&[u8]]) -> Option<DeferredCommand> {
+        None
+    }
 
     fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> Action;
     fn watch_snapshot(&self, keys: &[&[u8]]) -> Option<WatchState>;

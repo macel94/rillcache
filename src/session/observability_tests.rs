@@ -127,3 +127,15 @@ fn plain_success_replies_and_observers_remain_consistent_in_resp2_and_resp3() {
         }
     }
 }
+
+#[test]
+fn deferred_reply_conversion_keeps_resp3_framing_and_prefix() {
+    let session = Session {
+        protocol: Protocol::Resp3,
+        ..Session::new()
+    };
+    let mut output = b"prefix:".to_vec();
+    let start = session.append_deferred_reply(&mut output, b"$-1\r\n");
+    assert_eq!(&output[..7], b"prefix:");
+    assert_eq!(&output[start..], b"_\r\n");
+}

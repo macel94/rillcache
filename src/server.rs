@@ -15,6 +15,8 @@ use std::path::PathBuf;
 
 mod accept;
 mod handoff;
+#[cfg(unix)]
+mod multi;
 mod pool;
 #[cfg(unix)]
 mod reactor;
@@ -672,7 +674,7 @@ fn serve_plain(
         router
             .seed(store.take_initial_entries())
             .map_err(|error| io::Error::other(format!("multi-owner seed failed: {error}")))?;
-        return reactor::serve_multi(listener, config, router, stopping);
+        return multi::serve(listener, config, router, stopping);
     }
     #[cfg(unix)]
     if policy.tokio_transport {
