@@ -1,4 +1,4 @@
-name: PR154 matched selector diagnosis
+name: PR154 owned syscall and CPU diagnosis
 
 # Diagnostic branch only. No PR, required-check, publisher or privileged path.
 on:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr154-selector-diagnosis
+  group: pr154-owned-profile-diagnosis
   cancel-in-progress: false
 
 env:
@@ -34,21 +34,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates time util-linux
-      - name: Matched main, failed source, selector candidate and Dragonfly
-        run: python3 -u scripts/pr154-selector-study.py
-      - name: Publish every normal result and rejection
+      - name: Owned failed-source and Dragonfly profiles only, no normal retry
+        run: python3 -u scripts/pr154-owned-profiles.py
+      - name: Label instrumentation scope
         if: always()
-        run: |
-          if [[ -f target/selector-study/summary.md ]]; then
-            tee -a "$GITHUB_STEP_SUMMARY" < target/selector-study/summary.md
-          else
-            printf 'Diagnostic incomplete; no performance conclusion.\n' >> "$GITHUB_STEP_SUMMARY"
-          fi
+        run: printf 'Owned-process instrumented diagnosis only; not normal throughput or merge acceptance.\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Retain raw evidence including failures, never Dragonfly binaries
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pr154-selector-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/selector-study/
+          name: pr154-owned-profiles-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/owned-profiles/
           retention-days: 30
           if-no-files-found: warn

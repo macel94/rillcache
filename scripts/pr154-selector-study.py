@@ -96,13 +96,14 @@ def check(directory):
     return manifest
 
 
-def build(binaries):
+def build(binaries, variants=None):
     tree = Path(os.environ['RUNNER_TEMP']) / 'selector-app-source'
     tree.mkdir()
     N.OUT = OUT
     N.BIN = Path(os.environ['RUNNER_TEMP']) / 'selector-frozen'
     N.BIN.mkdir()
-    for variant, source in SOURCES.items():
+    for variant in variants or SOURCES:
+        source = SOURCES[variant]
         resolved = subprocess.check_output(['git', 'rev-parse', source + '^{commit}'], cwd=ROOT).decode().strip()
         assert re.fullmatch('[0-9a-f]{40}', source) and resolved == source
         assert not subprocess.check_output(['git', 'diff', '--diff-filter=D', '--name-only',
@@ -184,7 +185,8 @@ def main():
             print('normal', name, flush=True)
             role = 'dragonfly' if variant == 'dragonfly' else 'rillcache'
             mapping = {role: manifest['binaries'][variant], 'generator': manifest['binaries']['generator']}
-            result = G.sample(mapping, role, workload, pipeline, cpus, clients, OUT / name)
+            G.sample(mapping, role, workload, pipeline, cpus, clients, OUT / name)
+            result = G.read_json(OUT / name / 'sample.json')
             manifest['records'].append(dict(workload=workload, pipeline=pipeline, run=run, variant=variant,
                                             directory=name, result=result))
             G.save(OUT / 'manifest.json', manifest)
