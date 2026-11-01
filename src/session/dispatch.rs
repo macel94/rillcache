@@ -3,7 +3,9 @@
 use crate::engine::Execution;
 use std::io::Write;
 
-use crate::engine::{Access, Action, WatchState, XReadGroupStart, parse_xreadgroup};
+use crate::engine::{
+    Access, Action, DeferredCommand, WatchState, XReadGroupStart, parse_xreadgroup,
+};
 use crate::protocol::encode_bulk;
 
 use super::Protocol;
@@ -12,7 +14,122 @@ use super::client::select;
 use super::command::{allows_subscriber_command, arity, command_name, is_auth_exempt};
 use super::reply::convert_resp2_reply;
 
+/// Commands whose reply or connection state is produced by the session itself,
+/// plus blocking/pub-sub operations. They always keep the synchronous path so a
+/// deferred batch can never reorder or swallow a local effect.
+fn is_connection_command(command: &[u8]) -> bool {
+    [
+        b"RESET".as_slice(),
+        b"MULTI",
+        b"EXEC",
+        b"DISCARD",
+        b"WATCH",
+        b"UNWATCH",
+        b"QUIT",
+        b"MONITOR",
+        b"WAITAOF",
+        b"SHUTDOWN",
+        b"SUBSCRIBE",
+        b"PSUBSCRIBE",
+        b"UNSUBSCRIBE",
+        b"PUNSUBSCRIBE",
+        b"SSUBSCRIBE",
+        b"SUNSUBSCRIBE",
+        b"BLPOP",
+        b"BRPOP",
+        b"BLMPOP",
+        b"BLMOVE",
+        b"BRPOPLPUSH",
+        b"BZPOPMIN",
+        b"BZPOPMAX",
+        b"BZMPOP",
+        b"XREAD",
+        b"XREADGROUP",
+        b"PUBLISH",
+        b"SPUBLISH",
+        b"PUBSUB",
+        b"PING",
+        b"HELLO",
+        b"CLIENT",
+        b"SELECT",
+        b"AUTH",
+        b"ACL",
+    ]
+    .iter()
+    .any(|name| command.eq_ignore_ascii_case(name))
+}
+
+/// Result of one command offered to a deferred execution boundary.
+pub(crate) enum DeferredOutcome {
+    /// The command used the ordinary local/blocking path and already wrote its reply.
+    Complete(Action),
+    /// The command was copied for an owner batch and has not produced a reply yet.
+    Deferred {
+        command: DeferredCommand,
+        action: Action,
+    },
+}
+
 impl Session {
+    /// True when this command may be handed to an owner worker without changing
+    /// reply order, observer accounting or connection-local state. Callers that
+    /// still need the exact reply must use [`Self::execute_deferred_on`].
+    pub(crate) fn may_defer<E: Execution>(&self, store: &E, arguments: &[&[u8]]) -> bool {
+        if self.multi.is_some()
+            || self.is_subscribed()
+            || self.monitoring
+            || self.is_blocked()
+            || self.is_paused()
+            || store.latency_enabled()
+            || store.commandstats_enabled()
+        {
+            return false;
+        }
+        let Some(command) = arguments.first() else {
+            return false;
+        };
+        !is_connection_command(command) && store.can_defer(arguments)
+    }
+
+    /// Execute one parsed command, allowing `store.defer` to hand ordinary
+    /// single-owner work to a worker. The caller owns completion ordering.
+    pub(crate) fn execute_deferred_on<E: Execution>(
+        &mut self,
+        store: &E,
+        arguments: &[&[u8]],
+        output: &mut Vec<u8>,
+    ) -> DeferredOutcome {
+        debug_assert!(!self.defer_enabled);
+        self.defer_enabled = true;
+        self.deferred = None;
+        let action = self.execute_on(store, arguments, output);
+        self.defer_enabled = false;
+        match self.deferred.take() {
+            Some(command) => DeferredOutcome::Deferred { command, action },
+            None => DeferredOutcome::Complete(action),
+        }
+    }
+
+    /// Append an owner reply in its original pipeline position, applying the
+    /// session's RESP3 conversion. Returns the reply start for error accounting.
+    pub(crate) fn append_deferred_reply(&self, output: &mut Vec<u8>, reply: &[u8]) -> usize {
+        let start = output.len();
+        output.extend_from_slice(reply);
+        self.convert_reply(start, output);
+        start
+    }
+
+    /// Record the original command once its deferred reply arrives. The start
+    /// time is captured by the socket loop, so queue/hop time is included.
+    pub(crate) fn record_deferred_slowlog<E: Execution>(
+        &self,
+        store: &E,
+        arguments: &[&[u8]],
+        started: std::time::Instant,
+    ) {
+        self.record_slowlog(store, arguments, started);
+    }
+
     pub(super) fn execute_inner<E: Execution>(
         &mut self,
         store: &E,
@@ -277,11 +394,24 @@ impl Session {
     }
 
     pub(super) fn execute_store<E: Execution>(
-        &self,
+        &mut self,
         store: &E,
         arguments: &[&[u8]],
         output: &mut Vec<u8>,
     ) -> Action {
+        if self.defer_enabled
+            && self.multi.is_none()
+            && !self.is_subscribed()
+            && !self.monitoring
+            && !self.is_blocked()
+            && !self.is_paused()
+            && !store.latency_enabled()
+            && !store.commandstats_enabled()
+            && let Some(command) = store.defer(arguments)
+        {
+            self.deferred = Some(command);
+            return Action::Continue;
+        }
         let start = output.len();
         let action = store.execute(arguments, output);
         self.convert_reply(start, output);

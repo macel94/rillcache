@@ -29,8 +29,8 @@ use super::owner_actor::{Control, DataWork, OwnerActor, OwnerCore, OwnerError, R
 use super::partition::{LayoutError, OwnerId, PartitionLayout};
 use super::shard::{MAX_SHARDS, ShardRouter};
 use super::{
-    Action, DatasetStats, Execution, ServerServices, ShardExecutor, Stats, TransactionOutcome,
-    WatchState, WatchToken,
+    Action, DatasetStats, DeferredCommand, Execution, ServerServices, ShardExecutor, Stats,
+    TransactionOutcome, WatchState, WatchToken,
 };
 
 /// Largest scratch key set retained for one multi-owner command. Independent of
@@ -47,6 +47,7 @@ pub(crate) struct RouterSizing {
     pub control_bytes: usize,
     pub request_bytes: usize,
     pub reply_bytes: usize,
+    pub deferred_reply_bytes: usize,
     pub reply_per_request: usize,
 }
 
@@ -59,6 +60,13 @@ impl RouterSizing {
         let reply = max_frame_bytes
             .saturating_mul(16)
             .clamp(1 << 20, 512 * 1024 * 1024);
+        // Deferred batches must not hold the synchronous control/data reply
+        // budget, or maintenance and cross-owner commands could wait behind
+        // replies the reactor has not drained yet. They get their own bounded
+        // budget, sized for one full pipeline per admitted client.
+        let deferred_reply = max_frame_bytes
+            .saturating_mul(max_clients.clamp(16, 4096))
+            .clamp(1 << 20, 512 * 1024 * 1024);
         Self {
             data_messages: concurrency,
             data_bytes: request,
@@ -66,6 +74,7 @@ impl RouterSizing {
             control_bytes: 1 << 20,
             request_bytes: request,
             reply_bytes: reply,
+            deferred_reply_bytes: deferred_reply,
             reply_per_request: max_frame_bytes.min(reply),
         }
     }
@@ -114,6 +123,33 @@ impl RetainedBytes for CommandReply {
     fn retained_bytes(&self) -> Option<usize> {
         Some(self.bytes.capacity())
     }
+}
+impl RetainedBytes for Vec<CommandReply> {
+    fn retained_bytes(&self) -> Option<usize> {
+        Some(self.iter().map(|reply| reply.bytes.capacity()).sum())
+    }
+}
+
+/// One admitted owner batch whose reply the socket loop polls without blocking.
+pub(crate) struct DeferredBatch {
+    owner: OwnerId,
+    positions: Vec<usize>,
+    receiver: ReplyReceiver<Result<Vec<CommandReply>, OwnerError>>,
+}
+impl DeferredBatch {
+    pub(crate) fn owner(&self) -> OwnerId {
+        self.owner
+    }
+    pub(crate) fn positions(&self) -> &[usize] {
+        &self.positions
+    }
+}
+
+/// Result of one nonblocking batch admission. A full lane returns the original
+/// commands so the socket loop can retry without copying them again.
+pub(crate) enum DeferredSubmission {
+    Submitted(DeferredBatch),
+    Full(Vec<std::sync::Arc<Vec<Vec<u8>>>>),
 }
 
 #[derive(Clone, Debug)]
@@ -164,7 +200,10 @@ pub(crate) struct MultiOwner {
     owners: Vec<OwnerLink>,
     requests: ByteBudget,
     replies: ByteBudget,
+    deferred_replies: ByteBudget,
     reply_per_request: usize,
+    batch_commands: usize,
+    batch_bytes: usize,
     next_reservation: AtomicU64,
     random_owner: AtomicU64,
     stopped: AtomicBool,
@@ -233,6 +272,13 @@ impl MultiOwner {
         let layout = PartitionLayout::from_router(owners, router);
         let requests = ByteBudget::new(sizing.request_bytes).map_err(RouterError::Mailbox)?;
         let replies = ByteBudget::new(sizing.reply_bytes).map_err(RouterError::Mailbox)?;
+        let deferred_replies =
+            ByteBudget::new(sizing.deferred_reply_bytes).map_err(RouterError::Mailbox)?;
+        // One batch reply must fit the deferred reply budget, and one batch
+        // request must fit the request/data capacity. Splitting beyond these
+        // limits would be a second hop, so the caller caps a deferred run.
+        let batch_commands = (sizing.deferred_reply_bytes / sizing.reply_per_request).clamp(1, 64);
+        let batch_bytes = sizing.request_bytes;
         let mut links = Vec::with_capacity(owners);
         for owner in layout.owners() {
             let (sender, inbox) = super::mailbox::owner_mailbox::<DataWork, Control>(
@@ -269,7 +315,10 @@ impl MultiOwner {
             owners: links,
             requests,
             replies,
+            deferred_replies,
             reply_per_request: sizing.reply_per_request,
+            batch_commands,
+            batch_bytes,
             next_reservation: AtomicU64::new(1),
             random_owner: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
@@ -346,6 +395,7 @@ impl MultiOwner {
         }
         self.requests.close();
         self.replies.close();
+        self.deferred_replies.close();
         first
     }
 
@@ -353,6 +403,11 @@ impl MultiOwner {
         self.services.owner_failed.store(true, Ordering::Release);
         self.services.request_shutdown();
         RouterError::Stopped
+    }
+
+    /// Publish fail-stop for a deferred connection that saw a router error.
+    pub(crate) fn poison(&self) -> RouterError {
+        self.fail()
     }
 
     fn link(&self, owner: OwnerId) -> Result<&OwnerLink, RouterError> {
@@ -383,6 +438,10 @@ impl MultiOwner {
     }
 
     fn classify(&self, args: &[&[u8]]) -> Classification {
+        self.classify_args(args)
+    }
+
+    fn classify_args(&self, args: &[&[u8]]) -> Classification {
         let Some(name) = args.first() else {
             return Classification::Shared;
         };
@@ -421,6 +480,122 @@ impl MultiOwner {
             && args
                 .first()
                 .is_some_and(|name| super::discovery::is_write_command(name))
+    }
+
+    /// Largest deferred run the reactor may hand to this router. The limits are
+    /// per batch, not per pipeline, because the reactor splits runs by owner.
+    pub(crate) fn defer_limits(&self) -> (usize, usize) {
+        (self.batch_commands, self.batch_bytes)
+    }
+
+    /// Whether this is an ordinary single-owner key command. Multi-owner atomic,
+    /// global and keyless shared commands keep the synchronous path: they are
+    /// rare and act as ordering barriers around a deferred run.
+    pub(crate) fn can_defer(&self, args: &[&[u8]]) -> bool {
+        matches!(
+            self.classify_args(args),
+            Classification::Owners(owners) if owners.len() == 1
+        )
+    }
+
+    pub(crate) fn prepare_deferred(&self, args: &[&[u8]]) -> Option<DeferredCommand> {
+        let owner = match self.classify_args(args) {
+            Classification::Owners(owners) if owners.len() == 1 => owners[0],
+            _ => return None,
+        };
+        Some(DeferredCommand {
+            owner: owner.index(),
+            arguments: Arc::new(args.iter().map(|arg| arg.to_vec()).collect()),
+        })
+    }
+
+    /// Submit one ordered owner batch. A full lane returns the commands untouched;
+    /// the caller retains them and retries without consuming more input.
+    pub(crate) fn try_submit_batch(
+        &self,
+        owner: OwnerId,
+        positions: Vec<usize>,
+        commands: Vec<std::sync::Arc<Vec<Vec<u8>>>>,
+    ) -> Result<DeferredSubmission, RouterError> {
+        debug_assert_eq!(positions.len(), commands.len());
+        if commands.is_empty() {
+            return Ok(DeferredSubmission::Full(commands));
+        }
+        let bytes: usize = commands
+            .iter()
+            .flat_map(|command| command.iter())
+            .map(|argument| argument.len())
+            .sum();
+        let Some(input) = self
+            .requests
+            .try_reserve(bytes)
+            .map_err(|error| match error {
+                MailboxError::Closed | MailboxError::TooLarge => self.fail(),
+                other => RouterError::Mailbox(other),
+            })?
+        else {
+            return Ok(DeferredSubmission::Full(commands));
+        };
+        let reply_bytes = self.reply_per_request.saturating_mul(commands.len());
+        let Some(reply) = self
+            .deferred_replies
+            .try_reserve(reply_bytes)
+            .map_err(|error| match error {
+                MailboxError::Closed | MailboxError::TooLarge => self.fail(),
+                other => RouterError::Mailbox(other),
+            })?
+        else {
+            return Ok(DeferredSubmission::Full(commands));
+        };
+        let (sender, receiver) = reply_channel::<Result<Vec<CommandReply>, OwnerError>>(reply);
+        let Some(admission) =
+            self.link(owner)?
+                .sender
+                .data
+                .try_reserve(bytes)
+                .map_err(|error| match error {
+                    MailboxError::Closed => self.fail(),
+                    other => RouterError::Mailbox(other),
+                })?
+        else {
+            return Ok(DeferredSubmission::Full(commands));
+        };
+        admission.send_with(|| {
+            let input = input;
+            Box::new(move |executor: &ShardExecutor| {
+                let mut replies = Vec::with_capacity(commands.len());
+                for command in commands {
+                    let borrowed: Vec<&[u8]> = command.iter().map(Vec::as_slice).collect();
+                    let mut bytes = Vec::new();
+                    let action = executor.execute(&borrowed, &mut bytes);
+                    replies.push(CommandReply { action, bytes });
+                }
+                let _ = sender.send(Ok(replies));
+                drop(input);
+            }) as DataWork
+        });
+        Ok(DeferredSubmission::Submitted(DeferredBatch {
+            owner,
+            positions,
+            receiver,
+        }))
+    }
+
+    /// Poll one admitted batch without blocking. A closed reply channel is a
+    /// failed owner, never a retryable state.
+    pub(crate) fn try_finish_batch(
+        &self,
+        batch: &mut DeferredBatch,
+    ) -> Result<Option<Vec<CommandReply>>, RouterError> {
+        match batch.receiver.try_recv() {
+            Ok(None) => Ok(None),
+            Ok(Some(value)) => match value.into_inner() {
+                Ok(replies) => Ok(Some(replies)),
+                Err(error) => Err(RouterError::Owner(error)),
+            },
+            Err(MailboxError::Closed) => Err(self.fail()),
+            Err(error) => Err(RouterError::Mailbox(error)),
+        }
     }
 
     // -- owner round trips -------------------------------------------------
@@ -1214,6 +1389,14 @@ impl MultiOwner {
     }
 
     pub(crate) fn auto_rewrite_blocking(&self) -> bool {
+        // Probe without taking the global barrier: building a snapshot from
+        // every owner is only justified when a rewrite is actually due.
+        if !self
+            .owner_op(OwnerId::new(0), |executor| executor.auto_rewrite_due())
+            .unwrap_or(false)
+        {
+            return false;
+        }
         // Rewriting builds one coherent snapshot from every owner under a
         // barrier; per-owner rewrites would publish a partial keyspace.
         let owners = self.all_owners();
@@ -1330,6 +1513,12 @@ fn write_bulk_array(values: &[Vec<u8>], output: &mut Vec<u8>) {
 impl Execution for MultiOwner {
     fn services_handle(&self) -> Arc<ServerServices> {
         Arc::clone(&self.services)
+    }
+    fn can_defer(&self, arguments: &[&[u8]]) -> bool {
+        MultiOwner::can_defer(self, arguments)
+    }
+    fn defer(&self, arguments: &[&[u8]]) -> Option<DeferredCommand> {
+        self.prepare_deferred(arguments)
     }
     fn run_request(&self, request: super::bridge::Request) {
         let _ = self.owner_op(OwnerId::new(0), move |executor| {

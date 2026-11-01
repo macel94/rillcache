@@ -138,6 +138,29 @@ impl ByteBudget {
             messages,
         })
     }
+    /// Nonblocking form for the readiness socket loop: a full lane reports
+    /// `None` so the caller can keep servicing other connections instead of
+    /// parking the whole reactor on one admission.
+    pub(crate) fn try_reserve(&self, bytes: usize) -> Result<Option<Credit>, MailboxError> {
+        if bytes > self.inner.bytes_capacity {
+            return Err(MailboxError::TooLarge);
+        }
+        let mut state = self.inner.state.lock().map_err(|_| MailboxError::Closed)?;
+        if state.closed {
+            return Err(MailboxError::Closed);
+        }
+        let messages = usize::from(self.inner.messages_capacity > 0);
+        if state.bytes < bytes || state.messages < messages {
+            return Ok(None);
+        }
+        state.bytes -= bytes;
+        state.messages -= messages;
+        Ok(Some(Credit {
+            inner: Arc::clone(&self.inner),
+            bytes,
+            messages,
+        }))
+    }
     pub(crate) async fn reserve(&self, bytes: usize) -> Result<Credit, MailboxError> {
         if bytes > self.inner.bytes_capacity {
             return Err(MailboxError::TooLarge);
@@ -299,6 +322,15 @@ impl<T: Send> LaneSender<T> {
             sender: self.sender.clone(),
             credit,
         })
+    }
+
+    /// Nonblocking admission used by deferred owner batches. `None` means the
+    /// lane is full, not closed; the caller retains the work and retries.
+    pub(crate) fn try_reserve(&self, bytes: usize) -> Result<Option<Admission<T>>, MailboxError> {
+        Ok(self.bytes.try_reserve(bytes)?.map(|credit| Admission {
+            sender: self.sender.clone(),
+            credit,
+        }))
     }
 
     #[cfg(test)]
@@ -568,6 +600,16 @@ impl<T: RetainedBytes> ReplyReceiver<T> {
         self.receiver
             .blocking_recv()
             .map_err(|_| MailboxError::Closed)?
+    }
+    /// Nonblocking readiness check for a deferred owner batch. The reply credit
+    /// is released when the returned value is consumed or dropped.
+    pub(crate) fn try_recv(&mut self) -> Result<Option<ReplyValue<T>>, MailboxError> {
+        match self.receiver.try_recv() {
+            Ok(Ok(value)) => Ok(Some(value)),
+            Ok(Err(error)) => Err(error),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => Ok(None),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Err(MailboxError::Closed),
+        }
     }
 }
 
