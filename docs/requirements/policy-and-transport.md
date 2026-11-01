@@ -5,7 +5,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 ## Policy and transport
 
 - **R01 (ubiquitous):** The project shall compile with unsafe project code forbidden
-  and only the reviewed rustls/Tokio/CPU-affinity dependency graphs, vendored
+  and only the explicit rustls/Tokio/Mio/CPU-affinity and authorized Linux Compio
+  dependency graphs, vendored
   and allowlisted across all targets/features. No application unsafe code or FFI is
   introduced by using their safe APIs.
 - **R10 (event-driven):** When a complete supported RESP2 command is received, the
@@ -30,7 +31,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R19 (state-driven):** While a client performs no socket I/O for the configured
   inactivity timeout, the server shall release that connection.
 
-## Default Unix Tokio plain-TCP execution (S-TOKIO-NET)
+## Opt-in Unix Tokio plain-TCP execution (S-TOKIO-NET)
 
 - **R-TOKIO-NET1:** When plain TCP runs on Unix without persistence, ACL files or
   synchronous audit sinks and the operator explicitly selects the async engine,
@@ -38,9 +39,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   runtimes; socket reads and writes shall be async operations, not blocking
   calls or a wrapper around the former Mio connection loop. Fixed-worker mode,
   TLS, persistence/ACL-file/audit and portable non-Unix fallbacks remain available.
-  The proven readiness reactor shall remain the default because the protected
-  gate measures the default mode and the async engine does not win every
-  pipeline-1 condition; selection shall be explicit configuration.
+  Tokio shall remain explicitly selected: its historical default candidate did
+  not win every protected pipeline-1 condition. Automatic completion selection
+  is separately specified by S-COMPIO; no historical pass substitutes for it.
 - **R-TOKIO-NET2:** When a route queue is full, acceptance shall apply bounded
   backpressure; the server shall not create an unbounded connection-task queue.
   Client admission, input-frame limits and response buffering shall remain bounded.
@@ -63,8 +64,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-TOKIO-NET6:** Native TLS shall remain on its existing TLS accept/session
   path; only the default plaintext TCP path is migrated. Existing TLS wire and
   shutdown behavior shall continue to pass all-mode tests.
-- **R-TOKIO-NET7:** When measured, metadata shall identify the Tokio default
-  runtime. Performance remains subject to every original and four-CPU protected
+- **R-TOKIO-NET7:** When measured, metadata shall identify the actually selected
+  Tokio runtime. Performance remains subject to every original and four-CPU protected
   comparison; async architecture alone is not evidence of a throughput win.
 - **R-TOKIO-NET8:** On eligible ordinary Unix plaintext, acceptance, bounded
   client tasks and the published one-owner executor shall share one runtime.
@@ -94,6 +95,33 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 Implementation decisions, current shared-Store limits and target sequencing are
 self-contained in [the transport increment](../async-transport.md).
+
+## Linux owned-buffer completion TCP (S-COMPIO)
+
+- **R-COMPIO1:** When auto mode uses eligible Linux plain TCP and io_uring
+  initialization succeeds, sockets and the complete ordinary Session executor
+  shall share one local owner. Explicit Mio/Tokio choices shall remain available;
+  unsupported auto configurations or kernels shall retain the existing frontend.
+  Explicit unsupported Compio shall fail rather than silently change its mode.
+- **R-COMPIO2:** While completion I/O is pending, its Vec shall remain owned until
+  completion. Control ticks shall retain pending accepts/reads, and unblocking
+  shall resume buffered commands without additional peer input. Capability
+  detection shall not change caller affinity or interrupt unrelated caller I/O.
+- **R-COMPIO3:** Reads, dispatch/write quanta, input limits, active tasks, idle/
+  write deadlines and cold admission shall remain bounded. Backpressured output
+  shall prevent later command side effects; the soft 64 KiB batch threshold
+  shall not be described as a hard atomic-reply or process-memory limit.
+- **R-COMPIO4:** When shutdown, disconnect or task failure occurs, socket controls
+  shall close before client-task joins; admitted cold work and its local bridge/
+  Data shall outlive cancellation and be drained before the cold thread joins.
+  Common auth, observers, atomicity, error and payload accounting shall remain.
+- **R-COMPIO5:** When recorded, metadata shall distinguish actual completion,
+  readiness and compatibility modes. Compio shall remain the pinned minimal
+  Linux dependency exception with application unsafe code forbidden. A runtime
+  replacement shall still require all forty fresh protected performance wins and
+  all fourteen current required contexts, not a reduced or historical gate.
+
+See [completion transport bounds and selection](../completion-transport.md).
 
 ## Owner mailbox fairness (S-OWNER-FAIR)
 

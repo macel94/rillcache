@@ -1,0 +1,77 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.4](https://github.com/compio-rs/compio/compare/compio-executor-v0.1.3...compio-executor-v0.1.4) - 2026-08-14
+
+### Added
+
+- instrument tasks for `tokio-console` ([#987](https://github.com/compio-rs/compio/pull/987))
+- name spawned tasks ([#1004](https://github.com/compio-rs/compio/pull/1004))
+
+### Changed
+
+- skip empty sync-queue drains with a pending counter ([#976](https://github.com/compio-rs/compio/pull/976))
+
+### Fixed
+
+- *(runtime, executor)* re-export `JoinError` ([#1005](https://github.com/compio-rs/compio/pull/1005))
+
+### Other
+
+- format `cfg_select!` bodies ([#990](https://github.com/compio-rs/compio/pull/990))
+
+## 0.1.3 - 2026-07-06
+
+### Added
+
+- *(executor)* implement is_finished for JoinHandle ([#958](https://github.com/compio-rs/compio/pull/958))
+
+## 0.1.2 - 2026-06-14
+
+### Fixed
+
+- *(executor)* remove is_scheduling() guard from Remote::schedule ([#949](https://github.com/compio-rs/compio/pull/949))
+
+## [0.1.1](https://github.com/compio-rs/compio/compare/compio-executor-v0.1.0...compio-executor-v0.1.1) - 2026-06-01
+
+### Fixed
+
+- *(executor)* reduce panic on drop ([#937](https://github.com/compio-rs/compio/pull/937))
+
+## 0.1.0 - 2026-05-27
+
+### Changed
+
+- replace `cfg_if` with `cfg_select` ([#925](https://github.com/compio-rs/compio/pull/925))
+
+## 0.1.0-rc.2 - 2026-05-15
+
+### Added
+
+- *(driver,executor,runtime)* [**breaking**] remove notify-always ([#902](https://github.com/compio-rs/compio/pull/902))
+- *(executor)* implement `std::io::Error` conversion for `JoinError` ([#918](https://github.com/compio-rs/compio/pull/918))
+
+### Fixed
+
+- *(executor)* avoid abort on drop ([#901](https://github.com/compio-rs/compio/pull/901))
+
+## 0.1.0-rc.1 - 2026-04-20
+
+### Added
+
+- [**breaking**] compio-executor ([#790](https://github.com/compio-rs/compio/pull/790))
+
+### Changed
+
+- *(executor)* [**breaking**] v3 ([#840](https://github.com/compio-rs/compio/pull/840))
+- [**breaking**] rename all "canceled" to "cancelled" ([#826](https://github.com/compio-rs/compio/pull/826))
+
+### Fixed
+
+- *(executor)* uaf ([#850](https://github.com/compio-rs/compio/pull/850))

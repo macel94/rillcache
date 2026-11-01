@@ -1,0 +1,29 @@
+default_job = "clippy-loom"
+env.CARGO_TERM_COLOR = "always"
+
+[jobs.clippy-loom]
+command = ["cargo", "clippy"]
+env.RUSTFLAGS = "--cfg loom"
+need_stdout = false
+
+[jobs.test]
+command = [
+    "cargo", "nextest", "run",
+    "--hide-progress-bar", "--failure-output", "final"
+]
+need_stdout = true
+analyzer = "nextest"
+
+[jobs.doc]
+command = ["cargo", "doc", "--no-deps"]
+need_stdout = false
+
+[jobs.doc-open]
+command = ["cargo", "doc", "--no-deps", "--open"]
+need_stdout = false
+on_success = "back"
+
+[keybindings]
+c = "job:clippy-loom"
+d = "job:doc-open"
+t = "job:test"

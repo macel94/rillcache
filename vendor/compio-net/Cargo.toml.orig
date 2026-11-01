@@ -1,0 +1,59 @@
+[package]
+name = "compio-net"
+version = "0.12.5"
+description = "Networking IO for compio"
+categories = ["asynchronous", "network-programming"]
+keywords = ["async", "net"]
+readme = "README.md"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
+
+[dependencies]
+# Workspace dependencies
+compio-buf = { workspace = true }
+compio-driver = { workspace = true }
+compio-io = { workspace = true, features = ["ancillary"] }
+compio-runtime = { workspace = true }
+
+either = "1.9.0"
+futures-util = { workspace = true }
+once_cell = { workspace = true }
+socket2 = { workspace = true }
+synchrony = { workspace = true }
+pin-project-lite = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+widestring = { workspace = true }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+] }
+synchrony = { workspace = true, features = ["async_flag"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# Shared dev dependencies for all platforms
+[dev-dependencies]
+compio-macros = { workspace = true }
+compio-runtime = { workspace = true, features = ["time"] }
+futures-channel = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+# Nightly features
+once_cell_try = []
+sanitize = []
+nightly = ["once_cell_try", "sanitize"]
+sync = []

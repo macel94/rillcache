@@ -1,0 +1,113 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## 0.10.1 - 2026-06-14
+
+### Added
+
+- *(runtime)* poll-based API for PollFd ([#944](https://github.com/compio-rs/compio/pull/944))
+- *(buf,io)* sync with latest read-buf API ([#950](https://github.com/compio-rs/compio/pull/950))
+
+### Other
+
+- release ([#940](https://github.com/compio-rs/compio/pull/940))
+
+## 0.10.0 - 2026-05-27
+
+### Added
+
+- *(io,net)* [**breaking**] expose recvmsg return flags ([#935](https://github.com/compio-rs/compio/pull/935))
+
+### Changed
+
+- replace `cfg_if` with `cfg_select` ([#925](https://github.com/compio-rs/compio/pull/925))
+- use FutureExt if possible ([#923](https://github.com/compio-rs/compio/pull/923))
+
+## 0.10.0-rc.2 - 2026-05-15
+
+### Added
+
+- *(io)* [**breaking**] use shared ref in *_at ([#907](https://github.com/compio-rs/compio/pull/907))
+- *(io,net)* async zerocopy write traits ([#898](https://github.com/compio-rs/compio/pull/898))
+
+### Fixed
+
+- *(io)* avoid livelock between flush and shutdown ([#912](https://github.com/compio-rs/compio/pull/912))
+
+## 0.10.0-rc.1 - 2026-04-20
+
+### Added
+
+- *(io,tls)* [**breaking**] require `Splittable` for `AsyncStream` ([#874](https://github.com/compio-rs/compio/pull/874))
+- *(io)* make `SyncStream` splittable ([#862](https://github.com/compio-rs/compio/pull/862))
+- *(net)* multi & managed for recvfrom & recvmsg ([#838](https://github.com/compio-rs/compio/pull/838))
+- *(io)* add SyncStream::into_parts ([#847](https://github.com/compio-rs/compio/pull/847))
+- *(io)* ancillary managed trait ([#843](https://github.com/compio-rs/compio/pull/843))
+- *(io)* read-multi traits ([#732](https://github.com/compio-rs/compio/pull/732))
+- *(io)* copy-bidirectional ([#800](https://github.com/compio-rs/compio/pull/800))
+- *(io)* add traits for reading/writing with ancillary data ([#717](https://github.com/compio-rs/compio/pull/717))
+- *(io)* fix ancillary API to avoid UB ([#737](https://github.com/compio-rs/compio/pull/737))
+- *(io)* allow create a stream out of AsyncRead for BytesFramed ([#767](https://github.com/compio-rs/compio/pull/767))
+- *(io)* make bytes optional ([#750](https://github.com/compio-rs/compio/pull/750))
+- *(io)* added bytes and framed helper methods to AsyncReadExt/AsyncWriteExt ([#752](https://github.com/compio-rs/compio/pull/752))
+- *(runtime)* `submit_multi` ([#743](https://github.com/compio-rs/compio/pull/743))
+- *(io)* add BytesFramed support ([#749](https://github.com/compio-rs/compio/pull/749))
+- *(ws)* futures compat ([#713](https://github.com/compio-rs/compio/pull/713))
+- *(io)* add duplex forwarding for BufReader/BufWriter ([#695](https://github.com/compio-rs/compio/pull/695))
+
+### Changed
+
+- *(ws)* [**breaking**] futures compat ([#875](https://github.com/compio-rs/compio/pull/875))
+- *(io)* optimize waker array ([#878](https://github.com/compio-rs/compio/pull/878))
+- *(io)* accept multiple buffer types in AncillaryBuilder ([#795](https://github.com/compio-rs/compio/pull/795))
+- [**breaking**] buffer pool & managed IO ([#820](https://github.com/compio-rs/compio/pull/820))
+- *(signal)* runtime agnostic ([#797](https://github.com/compio-rs/compio/pull/797))
+- *(io,tls,ws)* [**breaking**] use pin-project-lite ([#720](https://github.com/compio-rs/compio/pull/720))
+- *(io,quic)* move quic Ancillary to io ([#734](https://github.com/compio-rs/compio/pull/734))
+- *(io,net)* move cmsg to io ancillary ([#730](https://github.com/compio-rs/compio/pull/730))
+
+### Fixed
+
+- *(io)* fix bytes feature and warnings ([#779](https://github.com/compio-rs/compio/pull/779))
+- *(lint)* fix ambiguity linter error in compio-io ([#777](https://github.com/compio-rs/compio/pull/777))
+- *(io)* make also bytes method on AsyncReadExt/AsyncWriteExt feature gated ([#766](https://github.com/compio-rs/compio/pull/766))
+- unused_features ([#739](https://github.com/compio-rs/compio/pull/739))
+- *(tls,io)* multiple native-tls issues ([#698](https://github.com/compio-rs/compio/pull/698))
+- *(io)* flush manually in poll_close ([#681](https://github.com/compio-rs/compio/pull/681))
+- *(driver)* the fusion driver with polling variant ([#670](https://github.com/compio-rs/compio/pull/670))
+
+### Other
+
+- remove "authors" field in metadata ([#711](https://github.com/compio-rs/compio/pull/711))
+
+## [0.9.0](https://github.com/compio-rs/compio/compare/v0.17.0...v0.18.0) - 2026-01-28
+
+### Added
+
+- *(io)* [**breaking**] support generic buffer for `Framed` ([#642](https://github.com/compio-rs/compio/pull/642))
+- *(buf)* add `reserve{,exact}` to `IoBufMut` ([#578](https://github.com/compio-rs/compio/pull/578))
+- [**breaking**] fs & net feature ([#564](https://github.com/compio-rs/compio/pull/564))
+
+### Changed
+
+- *(io)* [**breaking**] use synchrony for split ([#640](https://github.com/compio-rs/compio/pull/640))
+- *(io)* [**breaking**] enable fallible frame extraction ([#631](https://github.com/compio-rs/compio/pull/631))
+- *(buf)* rename as_slice to as_init ([#594](https://github.com/compio-rs/compio/pull/594))
+- set_buf_init ([#579](https://github.com/compio-rs/compio/pull/579))
+- *(buf)* better IoBuf ([#555](https://github.com/compio-rs/compio/pull/555))
+
+### Fixed
+
+- *(io)* document mismatch from behavior ([#557](https://github.com/compio-rs/compio/pull/557))
+
+### Other
+
+- deploy docs ([#641](https://github.com/compio-rs/compio/pull/641))
+- deny `rustdoc::broken_intra_doc_links` ([#574](https://github.com/compio-rs/compio/pull/574))
+- fix intra doc links ([#554](https://github.com/compio-rs/compio/pull/554))

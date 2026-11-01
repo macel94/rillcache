@@ -1,0 +1,106 @@
+[package]
+name = "compio-driver"
+version = "0.12.5"
+description = "Low-level driver for compio"
+categories = ["asynchronous"]
+keywords = ["async", "iocp", "io-uring"]
+readme = "README.md"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
+
+[dependencies]
+# Workspace dependencies
+compio-buf = { workspace = true }
+compio-log = { workspace = true }
+
+compio-send-wrapper = { workspace = true }
+
+# Utils
+flume = { workspace = true, default-features = false }
+futures-util = { workspace = true }
+socket2 = { workspace = true, features = ["all"] }
+thin-cell = { workspace = true, features = ["weak"] }
+synchrony = { workspace = true, features = ["waker_slot"] }
+bitflags = { version = "2.11.0" }
+paste = { workspace = true }
+mod_use = { workspace = true }
+rustix = { workspace = true, features = ["net"] }
+
+# Windows specific dependencies
+[target.'cfg(windows)'.dependencies]
+once_cell = { workspace = true }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+] }
+
+# Linux specific dependencies
+[target.'cfg(target_os = "linux")'.dependencies]
+compile_warning = { version = "0.1.0", optional = true }
+io-uring = { version = "0.7.13", optional = true }
+once_cell = { workspace = true, optional = true }
+polling = { version = "3.3.0", optional = true }
+rustix = { workspace = true }
+linux-raw-sys = { version = "0.12.1", optional = true }
+
+# Other platform dependencies
+[target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
+polling = "3.3.0"
+
+[target.'cfg(unix)'.dependencies]
+smallvec = { workspace = true, features = ["union"] }
+crossbeam-queue = { workspace = true }
+libc = { workspace = true }
+rustix = { workspace = true, features = ["fs", "pipe"] }
+
+[dev-dependencies]
+nix = { workspace = true, features = ["mman"] }
+
+[build-dependencies]
+cfg_aliases = { workspace = true }
+
+[features]
+default = ["io-uring"]
+io-uring = [
+    "rustix/mm",
+    "rustix/event",
+    "rustix/system",
+    "linux-raw-sys/io_uring",
+    "dep:io-uring",
+    "dep:once_cell",
+]
+polling = ["dep:polling"]
+
+sync = []
+
+io-uring-sqe128 = []
+io-uring-cqe32 = []
+
+iocp-global = []
+iocp-wait-packet = []
+
+# Nightly features
+once_cell_try = []
+proc_macro_diagnostic = ["dep:compile_warning"]
+nightly = ["once_cell_try", "proc_macro_diagnostic"]
+
+[[test]]
+name = "buffer_pool"

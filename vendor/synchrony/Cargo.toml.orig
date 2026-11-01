@@ -1,0 +1,36 @@
+[package]
+name = "synchrony"
+version = "0.1.9"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/compio-rs/synchrony"
+description = "A library that provides both sync and unsync versions of common synchronization primitives."
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+futures-util = { version = "0.3.31", default-features = false, optional = true }
+event-listener = { version = "5.4.1", default-features = false, optional = true }
+local-event = { version = "0.1.1", default-features = false, optional = true }
+see = { version = "0.1.1", optional = true }
+slab = { version = "0.4.11", optional = true }
+
+
+[features]
+watch = ["dep:see"]
+mutex = ["dep:slab"]
+waker_slot = ["dep:futures-util"]
+event = ["dep:event-listener", "dep:local-event"]
+bilock = ["waker_slot"]
+async_flag = ["waker_slot"]
+
+[target.'cfg(loom)'.dependencies]
+loom = { version = "0.7.2", features = ["futures"] }
+
+[dev-dependencies]
+futures = { version = "0.3.31", features = ["executor"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

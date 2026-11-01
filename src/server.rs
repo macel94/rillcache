@@ -14,6 +14,8 @@ use crate::session::Session;
 use std::path::PathBuf;
 
 mod accept;
+#[cfg(target_os = "linux")]
+mod compio_io;
 mod handoff;
 #[cfg(unix)]
 mod multi;
@@ -53,9 +55,13 @@ pub const FIXED_WORKER_RUN_POLICY_VERSION: u64 = 2;
 /// default; async Tokio is an explicit opt-in with a documented P1 trade-off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IoMode {
-    /// Mio readiness reactor with the published owner-local executor (default).
+    /// Prefer eligible Linux completion I/O when supported; otherwise Mio.
     #[default]
+    Auto,
+    /// Mio readiness reactor with the published owner-local executor.
     Mio,
+    /// Require the Linux io_uring completion transport (eligible plain TCP).
+    Compio,
     /// Current-thread Tokio sockets, opted into with `--io-mode tokio`.
     Tokio,
 }
@@ -65,6 +71,8 @@ pub enum IoMode {
 pub struct SchedulingPolicy {
     /// Default Unix plain-TCP sockets use a readiness-based engine.
     pub readiness_io: bool,
+    /// Linux io_uring completions on one socket/data owner, plus one cold service.
+    pub completion_transport: bool,
     /// Tokio is the selected readiness engine instead of the Mio reactor.
     pub tokio_transport: bool,
     /// Total network runtimes, including the accept/runtime-zero thread.
@@ -114,6 +122,7 @@ impl SchedulingPolicy {
             && capacity.is_some_and(|cpus| (1..=CLIENT_HANDOFF_MAX_CPUS).contains(&cpus));
         Self {
             readiness_io: false,
+            completion_transport: false,
             tokio_transport: false,
             tokio_worker_threads: 0,
             tokio_compatibility_owner: false,
@@ -193,7 +202,7 @@ pub struct Config {
     /// `io_mode` is `Tokio`); cold configurations and non-Unix retain managed
     /// blocking clients. Some(1..=64): fixed I/O/execution lanes.
     pub worker_threads: Option<usize>,
-    /// Explicit plain-TCP engine opt-in; `IoMode::Mio` is the default.
+    /// Plain-TCP selection; Auto prefers eligible Linux completion I/O.
     pub io_mode: IoMode,
     /// Opt-in multi-owner data execution. `None` or `Some(1)` keeps the proven
     /// one-owner path; `Some(2..=64)` starts that many owned data workers.
@@ -454,6 +463,17 @@ impl Config {
     }
 }
 
+fn completion_configuration_eligible(config: &Config) -> bool {
+    cfg!(target_os = "linux")
+        && config.worker_threads.is_none()
+        && config.storage_owners.is_none_or(|owners| owners == 1)
+        && config.tls_bind_addr.is_none()
+        && !config.appendonly
+        && config.aclfile.is_none()
+        && config.audit_log.is_none()
+        && config.audit_syslog.is_none()
+}
+
 fn tokio_plain_transport_enabled(config: &Config) -> bool {
     cfg!(unix)
         && config.worker_threads.is_none()
@@ -528,6 +548,7 @@ impl Server {
             // Both engines are readiness based; Tokio is opted into explicitly.
             policy = SchedulingPolicy {
                 readiness_io: true,
+                completion_transport: false,
                 tokio_transport: false,
                 tokio_worker_threads: 0,
                 tokio_compatibility_owner: false,
@@ -552,6 +573,27 @@ impl Server {
                 1
             };
             policy.tokio_compatibility_owner = config.tls_bind_addr.is_some();
+        }
+        let wants_completion = matches!(config.io_mode, IoMode::Auto | IoMode::Compio);
+        let completion = wants_completion && completion_configuration_eligible(&config) && {
+            #[cfg(target_os = "linux")]
+            {
+                compio_io::available()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                false
+            }
+        };
+        if config.io_mode == IoMode::Compio && !completion {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Compio requires eligible Linux plain TCP and available io_uring; use auto or mio for fallback",
+            ));
+        }
+        if wants_completion && completion {
+            policy.completion_transport = true;
+            policy.readiness_io = false;
         }
         Ok(Self {
             listener,
@@ -675,6 +717,10 @@ fn serve_plain(
             .seed(store.take_initial_entries())
             .map_err(|error| io::Error::other(format!("multi-owner seed failed: {error}")))?;
         return multi::serve(listener, config, router, stopping);
+    }
+    #[cfg(target_os = "linux")]
+    if policy.completion_transport {
+        return compio_io::serve(listener, config, store, stopping);
     }
     #[cfg(unix)]
     if policy.tokio_transport {
@@ -1280,7 +1326,7 @@ mod tests {
     #[test]
     fn tokio_plain_transport_is_opt_in_and_off_for_cold_configurations() {
         let default = Config::default();
-        assert_eq!(default.io_mode, IoMode::Mio);
+        assert_eq!(default.io_mode, IoMode::Auto);
         assert!(!tokio_plain_transport_enabled(&default));
 
         let tokio = Config {

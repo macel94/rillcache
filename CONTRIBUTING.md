@@ -36,9 +36,10 @@ ordinary implementation PRs have no blanket approving-review quota. See the
    [bounded development cycle](docs/development-cycle.md).
    `make fmt` applies formatting. All Cargo checks/builds use the pinned toolchain,
    lockfile and offline mode. Explicit external dependency exceptions are rustls,
-   Tokio for async plain-TCP networking, and `core_affinity` for safe best-effort
-   affinity, with required transitive crates vendored for offline builds and
-   enforced by the dependency-policy test. Tokio uses Mio internally.
+   Tokio/Mio for async/readiness networking, Linux Compio 0.19.2 for owned-buffer
+   completion TCP, and `core_affinity` for safe best-effort affinity, with required
+   transitive crates vendored for offline builds and enforced by the dependency
+   policy test. Compio has only runtime/net/io-uring/time features enabled.
 5. Capture the relevant `make bench`/`make compare` evidence. The separate mandatory
    PR gate applies a scoped shared-runner throughput threshold, not a stable-hardware
    SLO or universal win. Preserve uncertainty, CPU/tails and losses; never trade
@@ -75,9 +76,9 @@ runtime are permitted; their implementation internals are outside this policy.
 
 `make ci` is identical locally and on GitHub: formatting, all-target Clippy,
 unit/integration/policy tests, release build, validated TCP smoke, core benchmarks.
-The fast path has no third-party crates, containers, services or secrets to set
-up. No target cache is transferred: for this tiny dependency-free project that
-would add overhead; revisit only with measured evidence.
+Vendored crates build offline; no external container, service or secret is
+required for this path. No target cache is transferred; revisit that choice only
+with measured evidence.
 
 GitHub main builds deliver checksummed Linux binaries as short-lived Actions
 artifacts. Verify the archive using its adjacent SHA-256 file, extract it, then

@@ -551,7 +551,9 @@ fn report(
         }
         (None, None) => {
             let policy = scheduling.expect("embedded scheduling policy");
-            if policy.readiness_io && !policy.tokio_transport {
+            if policy.completion_transport {
+                "{\"mode\":\"compio-io-uring\",\"completion_io\":true,\"network_runtime_threads\":1,\"accept_runtime_shared\":true,\"cold_io_service_threads\":1,\"storage_execution\":\"local-owner\",\"compatibility_data_owner_threads\":0}".to_owned()
+            } else if policy.readiness_io && !policy.tokio_transport {
                 "{\"mode\":\"mio-readiness\",\"readiness_io\":true}".to_owned()
             } else if policy.readiness_io {
                 format!(
@@ -880,6 +882,7 @@ mod tests {
         let options = Options::default();
         let policy = rillcache::server::SchedulingPolicy {
             readiness_io: false,
+            completion_transport: false,
             tokio_transport: false,
             tokio_worker_threads: 0,
             tokio_compatibility_owner: false,
@@ -951,6 +954,24 @@ mod tests {
         );
         assert!(text.contains("\"mode\":\"mio-readiness\""));
         assert!(!text.contains("network_runtime_threads"));
+        let completion = rillcache::server::SchedulingPolicy {
+            readiness_io: false,
+            completion_transport: true,
+            ..policy
+        };
+        let text = report(
+            "127.0.0.1:1".parse().unwrap(),
+            &options,
+            &[],
+            None,
+            Some(completion),
+        );
+        assert!(text.contains("\"mode\":\"compio-io-uring\""));
+        assert!(text.contains("\"network_runtime_threads\":1"));
+        assert!(text.contains("\"accept_runtime_shared\":true"));
+        assert!(text.contains("\"cold_io_service_threads\":1"));
+        assert!(text.contains("\"compatibility_data_owner_threads\":0"));
+        assert!(!text.contains("mio-readiness"));
         let readiness = rillcache::server::SchedulingPolicy {
             readiness_io: true,
             tokio_transport: true,

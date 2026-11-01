@@ -7,23 +7,22 @@ use std::time::Duration;
 use rillcache::protocol::encode_request;
 use rillcache::{Config, Server, ServerHandle};
 
-/// Mode matrix: proven default, opt-in async engine, and fixed workers.
-const MODES: [(Option<usize>, bool); 4] = [
-    (None, false),
-    (None, true),
-    (Some(1), false),
-    (Some(4), false),
+use rillcache::server::IoMode;
+
+/// Automatic selection, both explicit existing engines, and fixed workers.
+const MODES: [(Option<usize>, IoMode); 5] = [
+    (None, IoMode::Auto),
+    (None, IoMode::Mio),
+    (None, IoMode::Tokio),
+    (Some(1), IoMode::Mio),
+    (Some(4), IoMode::Mio),
 ];
 
-fn start(workers: Option<usize>, async_io: bool) -> ServerHandle {
+fn start(workers: Option<usize>, io_mode: IoMode) -> ServerHandle {
     Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         worker_threads: workers,
-        io_mode: if async_io {
-            rillcache::server::IoMode::Tokio
-        } else {
-            rillcache::server::IoMode::Mio
-        },
+        io_mode,
         ..Config::default()
     })
     .unwrap()

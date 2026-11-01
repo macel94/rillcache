@@ -25,7 +25,7 @@ before/after regressions, CPU costs and raw records remain visible.
 
 ## Project vision
 
-The initial goal was a useful Redis-compatible server using Rust’s standard library and runtime. The reviewed dependency exceptions include rustls for TLS, Tokio for default Unix plain-TCP async execution, and `core_affinity` for best-effort safe worker pinning, with required transitive crates vendored for offline builds. The non-Unix portable fallback and TLS session path remain separately managed.
+The initial goal was a useful Redis-compatible server using Rust’s standard library and runtime. Explicit dependency exceptions include rustls for TLS, Tokio/Mio for async/readiness networking, Compio 0.19.2 for Linux owned-buffer completion TCP, and `core_affinity` for best-effort safe worker pinning, with required transitive crates vendored for offline builds. Portable fallback and TLS session paths remain separately managed.
 
 Compatibility and behavior will be guided by tests, with the aim of making the server dependable and understandable rather than merely checking off features.
 
@@ -42,7 +42,7 @@ This is a collaboration between a human and AI:
 
 - **Language:** Rust
 - **Dependencies:** None beyond the Rust standard library and runtime, including tests and benchmarks
-- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No FFI or native extensions. The explicit dependency exceptions are rustls, Tokio and `core_affinity`, plus their required transitive crates, vendored for offline builds. Tokio uses Mio as its internal readiness backend. Application code contains no unsafe blocks or handwritten FFI; standard-library and dependency implementation internals are outside that application-code policy. Default Unix plain TCP uses bounded async Tokio worker runtimes; TLS and fixed-worker modes retain their separately managed execution paths.
+- **Safety:** Safe Rust only; `unsafe_code = "forbid"` for every project target. No application FFI or native extensions. Only the explicit rustls, Tokio/Mio, Linux Compio and `core_affinity` dependency exceptions and required vendored transitives are permitted. Compio enables only runtime/net/io-uring/time. Standard-library and dependency implementation internals are outside the unsafe-free application-code boundary. TLS and fixed-worker modes retain their separately managed execution paths.
 - **Compatibility target:** Redis protocol and behavior, developed incrementally
 - **Performance:** Aim to outperform current Redis/Valkey implementations, demonstrated by reproducible measurements—not assumed from the language choice.
 
@@ -185,8 +185,13 @@ support credential operations and policy debugging. See
 Ordered mixed-protocol pipelines and fragmented requests; concurrent clients,
 payload/connection/request limits and inactivity timeouts. Conservative request
 bounds can be raised with finite `--max-bulk-bytes` and `--max-frame-bytes` options.
-On Unix, plaintext TCP defaults to the proven Mio readiness reactor with the
-published owner-local executor. `--io-mode tokio` opts into an async engine that
+`--io-mode auto` is the default: eligible Linux plaintext uses Compio io_uring
+completion TCP with the published local-owner executor; unavailable rings and
+unsupported configurations keep the existing frontend. `--io-mode mio` forces
+readiness and `--io-mode compio` requires eligible, supported Linux completion
+I/O rather than silently falling back. See [completion selection, ownership and
+shutdown](docs/completion-transport.md); architecture alone is no speed claim.
+`--io-mode tokio` opts into an async engine that
 co-locates one current-thread Tokio socket runtime with the same executor plus one
 bounded cold-I/O service thread; ordinary local commands still have no
 data-bridge hop. It is opt-in because measured pipeline-1 conditions do not all

@@ -1,0 +1,79 @@
+[package]
+name = "compio-runtime"
+version = "0.12.6"
+description = "High-level runtime for compio"
+categories = ["asynchronous"]
+keywords = ["async", "runtime"]
+readme = "README.md"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+# Workspace dependencies
+compio-executor = { workspace = true }
+compio-driver = { workspace = true }
+compio-buf = { workspace = true }
+compio-log = { workspace = true }
+compio-io = { workspace = true, optional = true }
+
+criterion = { workspace = true, optional = true }
+compio-send-wrapper = { workspace = true }
+futures-util = { workspace = true, features = ["io"] }
+scoped-tls = { workspace = true }
+pin-project-lite = { workspace = true }
+synchrony = { workspace = true, features = ["event"] }
+
+# Windows specific dependencies
+[target.'cfg(windows)'.dependencies]
+compio-io = { workspace = true, features = ["compat"] }
+windows-sys = { workspace = true, features = [
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
+
+# Unix specific dependencies
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+core-foundation = "0.10.0"
+block2 = "0.6.0"
+
+[target.'cfg(any(windows, target_os = "macos"))'.dev-dependencies]
+synchrony = { workspace = true, features = ["async_flag"] }
+
+[features]
+time = []
+async-fd = ["dep:compio-io"]
+# Instrumentation for `tokio-console`. See the `console` module.
+console = ["compio-executor/console"]
+
+current_thread_id = []
+sanitize = []
+read_buf = []
+nightly = ["current_thread_id", "read_buf", "sanitize"]
+
+[[test]]
+name = "custom_loop"
+required-features = ["time"]
+
+[[test]]
+name = "event"
+
+[[test]]
+name = "drop"
+required-features = ["time"]
+
+
+[[test]]
+name = "panic"
+required-features = ["time"]

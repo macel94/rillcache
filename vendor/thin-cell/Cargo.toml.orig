@@ -1,0 +1,23 @@
+[package]
+name = "thin-cell"
+version = "0.2.1"
+edition = "2024"
+authors = ["George Miao <gm@miao.dev>"]
+description = "A compact, single-threaded smart pointer combining reference counting and interior mutability"
+license = "MIT"
+repository = "https://github.com/compio-rs/thin-cell"
+documentation = "https://docs.rs/thin-cell"
+homepage = "https://github.com/compio-rs/thin-cell"
+keywords = ["rc", "refcell", "smart-pointer", "interior-mutability", "thin"]
+categories = ["data-structures", "memory-management"]
+readme = "README.md"
+
+[features]
+weak = []
+
+[dependencies]
+synchrony = "0.1.7"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

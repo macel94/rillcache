@@ -1,7 +1,9 @@
 # Async plaintext transport increment (PR #143)
 
-Status: **opt-in** async transport on the published one-owner storage API. The
-default plain-TCP engine remains the proven Mio readiness reactor. This is not
+Status: Tokio remains **opt-in** on the published one-owner storage API.
+Automatic Linux completion/Mio selection is documented separately in
+[completion transport](completion-transport.md). This document preserves the
+Tokio-specific design and historical promotion losses below. This is not
 complete multi-owner/thread-per-core execution, and it is not a performance
 acceptance claim. Storage was published in PR #144 (`9a4df76`); this PR owns the
 complete transport wiring without an unpublished sibling dependency.
@@ -29,7 +31,8 @@ dearer per round trip than the inline readiness loop.
 The protected gate measures the **default** server mode, and published `main`
 already passes both gates. Making async the default would therefore turn passing
 pipeline-1 conditions into failures. It is consequently **not promoted**: the
-default stays Mio, and async is selected explicitly with `--io-mode tokio`. The
+default stayed Mio at that checkpoint, and Tokio remains explicitly selected
+with `--io-mode tokio`. The
 evidence above is reported as realized, including the losses; `cf76884` is not
 retried. A future promotion would need a source change that wins every condition,
 not a gate, workload or threshold change.
@@ -95,7 +98,7 @@ Thread accounting:
 
 | Configuration | Network runtimes | Cold service | Additional data owner | Other frontend threads |
 | --- | ---: | ---: | ---: | --- |
-| Default `--io-mode mio` | Mio readiness reactor | none | 0 (local owner) | none |
+| Explicit `--io-mode mio` | Mio readiness reactor | none | 0 (local owner) | none |
 | `--io-mode tokio`, eligible plaintext | 1, including acceptance | 1 | 0 | none |
 | Mixed TLS plaintext compatibility | N, including acceptance | 1 | 1 shared with TLS | existing TLS accept/client threads |
 | Persistence/ACL-file/audit, fixed lanes, non-Unix | existing fallback | no Tokio cold service | published compatibility/local-mode policy | existing accept/workers/TLS as configured |
@@ -190,7 +193,7 @@ predeclared rule: detected cargo/version-tool overlap and only 1/3 paired NX/P1
 rate wins. That candidate is preserved and **reverted**, not promoted or called
 a throughput win. Test-only diagnostic counters are absent from normal builds.
 
-`make test` covers the default Mio engine in all three worker modes, and
+`make test` covers automatic selection and both fixed-worker modes, and
 `make test-async` runs the transport suites plus a constrained one-CPU run through
 the opt-in engine; both are part of `make check`/`make ci`.
 

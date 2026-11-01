@@ -1,0 +1,286 @@
+[package]
+name = "compio"
+version = "0.19.2"
+description = "Completion based async runtime"
+categories = ["asynchronous", "filesystem", "network-programming"]
+keywords = ["async", "fs", "iocp", "io-uring", "net"]
+readme = "../README.md"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
+
+# Shared dependencies for all platforms
+[dependencies]
+# Workspace dependencies
+compio-buf = { workspace = true }
+compio-driver = { workspace = true }
+compio-runtime = { workspace = true, optional = true }
+compio-macros = { workspace = true, optional = true }
+compio-fs = { workspace = true, optional = true }
+compio-io = { workspace = true, optional = true }
+compio-net = { workspace = true, optional = true }
+compio-signal = { workspace = true, optional = true }
+compio-dispatcher = { workspace = true, optional = true }
+compio-log = { workspace = true }
+compio-tls = { workspace = true, optional = true }
+compio-process = { workspace = true, optional = true }
+compio-quic = { workspace = true, optional = true }
+compio-ws = { workspace = true, optional = true }
+compio-compat = { workspace = true, optional = true }
+compio-actor = { workspace = true, optional = true }
+
+# Shared dev dependencies for all platforms
+[dev-dependencies]
+compio-buf = { workspace = true, features = ["bumpalo"] }
+compio-runtime = { workspace = true, features = ["criterion"] }
+compio-macros = { workspace = true }
+
+console-subscriber = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio"] }
+futures-channel = { workspace = true }
+futures-executor = { workspace = true }
+futures-util = { workspace = true }
+rand = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "rt",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+widestring = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
+# Unix specific dev dependencies
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["fs"] }
+libc = { workspace = true }
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dev-dependencies]
+monoio = { version = "0.2.2", default-features = false, features = ["iouring"] }
+
+[features]
+default = ["runtime", "io-uring"]
+io-uring = ["compio-driver/io-uring"]
+polling = ["compio-driver/polling"]
+
+actor = ["dep:compio-actor"]
+io = ["dep:compio-io"]
+io-compat = ["io", "compio-io/compat", "compio-quic?/io-compat"]
+io-ancillary = ["io", "compio-io/ancillary"]
+io-codec-serde-json = ["io", "compio-io/codec-serde-json"]
+fs = ["dep:compio-fs", "runtime", "io"]
+fs-dir = ["fs", "compio-fs/dir"]
+net = ["dep:compio-net", "runtime", "io"]
+runtime = ["dep:compio-runtime"]
+async-fd = ["runtime", "compio-runtime/async-fd"]
+macros = ["dep:compio-macros", "runtime"]
+signal = ["dep:compio-signal", "runtime"]
+time = ["compio-runtime/time", "runtime"]
+dispatcher = ["dep:compio-dispatcher", "runtime"]
+tls = ["dep:compio-tls"]
+native-tls = ["tls", "compio-tls/native-tls", "compio-ws?/native-tls"]
+rustls = ["tls", "compio-tls/rustls", "compio-ws?/rustls"]
+rustls-platform-verifier = [
+    "rustls",
+    "compio-quic?/platform-verifier",
+    "compio-ws?/rustls-platform-verifier",
+]
+rustls-native-certs = [
+    "rustls",
+    "compio-quic?/native-certs",
+    "compio-ws?/rustls-native-certs",
+]
+webpki-roots = [
+    "rustls",
+    "compio-quic?/webpki-roots",
+    "compio-ws?/webpki-roots",
+]
+process = ["dep:compio-process"]
+quic = ["dep:compio-quic"]
+h3 = ["quic", "compio-quic/h3"]
+ws = ["dep:compio-ws"]
+ws-connect = ["ws", "compio-ws/connect"]
+
+# A full set of features, without implementation-specific ones.
+all = [
+    "actor",
+    "io",
+    "io-ancillary",
+    "io-compat",
+    "io-codec-serde-json",
+    "runtime",
+    "async-fd",
+    "fs",
+    "fs-dir",
+    "net",
+    "time",
+    "macros",
+    "signal",
+    "dispatcher",
+    "native-tls",
+    "rustls",
+    "rustls-platform-verifier",
+    "rustls-native-certs",
+    "webpki-roots",
+    "process",
+    "quic",
+    "h3",
+    "ws",
+    "ws-connect",
+]
+
+# Re-exports
+arrayvec = ["compio-buf/arrayvec"]
+smallvec = ["compio-buf/smallvec"]
+bumpalo = ["compio-buf/bumpalo"]
+bytes = ["compio-buf/bytes", "compio-io?/bytes"]
+memmap2 = ["compio-buf/memmap2"]
+
+# Benches
+criterion = ["compio-runtime?/criterion"]
+real_blackbox = ["criterion", "criterion/real_blackbox"]
+
+# Synchronization primitives
+sync = [
+    "compio-driver/sync",
+    "compio-quic?/sync",
+    "compio-io?/sync",
+    "compio-net/sync",
+]
+
+# Driver implementations
+io-uring-sqe128 = ["compio-driver/io-uring-sqe128"]
+io-uring-cqe32 = ["compio-driver/io-uring-cqe32"]
+iocp-global = ["compio-driver/iocp-global"]
+iocp-wait-packet = ["compio-driver/iocp-wait-packet"]
+
+# Ancillary
+bytemuck = ["compio-io?/bytemuck"]
+
+# QUIC
+qlog = ["compio-quic?/qlog"]
+windows-gro = ["compio-quic?/windows-gro"]
+
+# TLS
+py-dynamic-openssl = ["tls", "compio-tls/py-dynamic-openssl"]
+ring = ["tls", "compio-tls/ring", "compio-quic?/ring", "compio-ws?/ring"]
+native-tls-vendored = [
+    "compio-tls/native-tls-vendored",
+    "compio-ws?/native-tls-vendored",
+]
+
+# Runtime compatibility layers
+compat = ["dep:compio-compat"]
+compat-tokio = ["compat", "compio-compat/tokio"]
+compat-futures = ["compat", "compio-compat/futures"]
+compat-all = ["compat-tokio", "compat-futures"]
+
+# Logging
+enable_log = ["compio-log/enable_log"]
+
+# Instrumentation for `tokio-console`. See `compio::runtime::console`.
+console = [
+    "compio-runtime/console",
+    "compio-dispatcher?/console",
+    "compio-quic?/console",
+    "compio-compat?/console",
+    "runtime",
+]
+
+# Nightly features
+allocator_api = ["compio-buf/allocator_api", "compio-io?/allocator_api"]
+current_thread_id = ["compio-runtime?/current_thread_id"]
+linux_pidfd = ["compio-process?/linux_pidfd"]
+once_cell_try = [
+    "compio-driver/once_cell_try",
+    "compio-net?/once_cell_try",
+    "compio-signal?/once_cell_try",
+]
+proc_macro_diagnostic = ["compio-driver/proc_macro_diagnostic"]
+read_buf = [
+    "compio-buf/read_buf",
+    "compio-io?/read_buf",
+    "compio-runtime?/read_buf",
+    "compio-tls?/read_buf",
+    "compio-fs?/read_buf",
+]
+try_trait_v2 = ["compio-buf/try_trait_v2"]
+windows_by_handle = ["compio-fs?/windows_by_handle"]
+nightly = [
+    "allocator_api",
+    "current_thread_id",
+    "linux_pidfd",
+    "once_cell_try",
+    "proc_macro_diagnostic",
+    "read_buf",
+    "try_trait_v2",
+    "windows_by_handle",
+]
+
+[[example]]
+name = "basic"
+required-features = ["macros", "fs"]
+
+[[example]]
+name = "named_pipe"
+required-features = ["macros", "fs"]
+
+[[example]]
+name = "net"
+required-features = ["macros", "net"]
+
+[[example]]
+name = "unix"
+required-features = ["macros", "net"]
+
+[[example]]
+name = "resolve"
+required-features = ["macros", "net"]
+
+[[example]]
+name = "tick"
+required-features = ["time", "signal", "macros"]
+
+[[example]]
+name = "dispatcher"
+required-features = ["macros", "dispatcher", "sync", "net"]
+
+[[example]]
+name = "console"
+required-features = ["console", "time", "net", "dispatcher", "sync"]
+
+[[bench]]
+name = "fs"
+harness = false
+required-features = ["fs"]
+
+[[bench]]
+name = "net"
+harness = false
+# Windows also benchmarks named pipes, which require fs features, so we include those as well.
+required-features = ["fs", "net"]
+
+[[test]]
+name = "runtime"
+required-features = ["fs", "net", "macros"]
+
+[[test]]
+name = "accept"
+required-features = ["net", "macros"]
+
+[[test]]
+name = "macros"
+required-features = ["macros"]

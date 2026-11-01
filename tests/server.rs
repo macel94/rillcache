@@ -15,21 +15,29 @@ fn start(mut config: Config) -> ServerHandle {
             "0" => config.worker_threads = None,
             "1" => config.worker_threads = Some(1),
             "4" => config.worker_threads = Some(4),
-            // Opt-in async engine coverage; the production default is Mio.
+            "mio" => {
+                config.worker_threads = None;
+                config.io_mode = rillcache::server::IoMode::Mio;
+            }
+            "compio" => {
+                config.worker_threads = None;
+                config.io_mode = rillcache::server::IoMode::Compio;
+            }
+            // Keep explicit Tokio coverage independent of automatic selection.
             "tokio" => {
                 config.worker_threads = None;
                 config.io_mode = rillcache::server::IoMode::Tokio;
             }
-            _ => panic!("test mode must be 0, 1, 4 or tokio"),
+            _ => panic!("test mode must be 0, 1, 4, mio, compio or tokio"),
         }
     }
     Server::bind(config).unwrap().spawn().unwrap()
 }
 
 #[test]
-fn default_engine_is_mio_and_tokio_is_explicit() {
+fn automatic_and_explicit_transport_selection_is_reported_truthfully() {
     let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
-    if mode != "0" && mode != "tokio" {
+    if !matches!(mode.as_str(), "0" | "mio" | "compio" | "tokio") {
         return;
     }
     let server = start(Config::default());
@@ -44,8 +52,16 @@ fn default_engine_is_mio_and_tokio_is_explicit() {
             .clamp(1, 64);
         assert!(policy.tokio_worker_threads <= expected);
     } else {
-        assert_eq!(Config::default().io_mode, rillcache::server::IoMode::Mio);
-        assert!(policy.readiness_io);
+        assert_eq!(Config::default().io_mode, rillcache::server::IoMode::Auto);
+        if mode == "compio" {
+            assert!(policy.completion_transport);
+            assert!(!policy.readiness_io);
+        } else if mode == "mio" {
+            assert!(policy.readiness_io);
+            assert!(!policy.completion_transport);
+        } else if cfg!(unix) {
+            assert_ne!(policy.readiness_io, policy.completion_transport);
+        }
         assert!(!policy.tokio_transport);
         assert_eq!(policy.tokio_worker_threads, 0);
     }

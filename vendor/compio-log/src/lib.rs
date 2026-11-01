@@ -1,0 +1,40 @@
+#![doc(
+    html_logo_url = "https://github.com/compio-rs/compio-logo/raw/refs/heads/master/generated/colored-bold.svg"
+)]
+#![doc(
+    html_favicon_url = "https://github.com/compio-rs/compio-logo/raw/refs/heads/master/generated/colored-bold.svg"
+)]
+
+#[doc(hidden)]
+pub use tracing as __tracing;
+#[cfg_attr(not(feature = "enable_log"), doc(hidden))]
+pub use tracing::*;
+
+#[cfg(not(feature = "enable_log"))]
+pub mod dummy;
+
+#[cfg(feature = "enable_log")]
+#[macro_export]
+macro_rules! instrument {
+    ($lvl:expr, $name:expr, $($fields:tt)*) => {
+        let _guard = $crate::span!(target:module_path!(), $lvl, $name, $($fields)*).entered();
+    };
+    ($lvl:expr, $name:expr) => {
+        let _guard = $crate::span!(target:module_path!(), $lvl, $name).entered();
+    };
+}
+
+#[cfg(not(feature = "enable_log"))]
+#[macro_export]
+macro_rules! instrument {
+    ($lvl:expr, $name:expr, $($fields:tt)*) => {
+        if false {
+            let _guard = $crate::span!(target:module_path!(), $lvl, $name, $($fields)*).entered();
+        }
+    };
+    ($lvl:expr, $name:expr) => {
+        if false {
+            let _guard = $crate::span!(target:module_path!(), $lvl, $name).entered();
+        }
+    };
+}
