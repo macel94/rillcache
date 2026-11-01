@@ -95,6 +95,22 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 Implementation decisions, current shared-Store limits and target sequencing are
 self-contained in [the transport increment](../async-transport.md).
 
+## Owner mailbox fairness (S-OWNER-FAIR)
+
+- **R-OWNERFAIR1 (state-driven):** While an unfenced owner has admitted DATA
+  ready, its inbox shall deliver DATA after at most eight consecutive CONTROL
+  deliveries. A DATA delivery resets the burst; an idle or cancelled receive
+  shall not reset it. An empty DATA lane shall not delay ready CONTROL.
+- **R-OWNERFAIR2 (state-driven):** While an owner is fenced, its inbox shall
+  never deliver DATA, even after the CONTROL burst is exhausted. Reservation,
+  release, abort and stop traffic shall retain independent CONTROL admission.
+- **R-OWNERFAIR3 (event-driven):** When a fairness DATA turn occurs with CONTROL
+  ready, the inbox shall restore CONTROL priority on the next delivery, retain
+  FIFO order within each lane, and preserve admission credits and joined stop.
+  This is a mailbox delivery-count bound, not a wall-clock deadline or an OS
+  scheduling guarantee. Tests shall cover sustained traffic in both lanes,
+  fenced work, empty lanes, cancelled receives and a real owner actor.
+
 ## Legacy fallback admission waits (S-ACCEPTWAIT)
 
 These requirements describe the managed-client fallback. Eligible default Unix
