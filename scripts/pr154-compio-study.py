@@ -142,13 +142,15 @@ def check(directory):
     return manifest
 
 
-def build(binaries):
+def build(binaries, variants=None):
     tree = Path(os.environ['RUNNER_TEMP']) / 'compio-app-source'
     tree.mkdir()
     N.OUT = OUT
     N.BIN = Path(os.environ['RUNNER_TEMP']) / 'compio-frozen'
     N.BIN.mkdir()
     for variant, source in SOURCES.items():
+        if variants is not None and variant not in variants:
+            continue
         assert subprocess.check_output(['git', 'rev-parse', source + '^{commit}'], cwd=ROOT).decode().strip() == source
         assert not subprocess.check_output(['git', 'diff', '--diff-filter=D', '--name-only',
                                             SOURCES['main'], source], cwd=ROOT), 'archive overlay has deletions'

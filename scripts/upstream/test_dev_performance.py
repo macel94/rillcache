@@ -96,7 +96,12 @@ class NativeEvidenceTests(unittest.TestCase):
                 self.assertIn('syscalls:sys_exit_readv', argv)
                 self.assertIn('syscalls:sys_enter_readv', argv)
                 self.assertIn('syscalls:sys_enter_sched_yield', argv)
-                self.assertEqual(argv.count('--filter'), 3)
+                self.assertEqual(argv.count('--filter'), 5)
+                self.assertEqual(argv.count('ret == -11'), 3)
+                self.assertEqual(argv.count('io_uring:io_uring_submit_req'), 3)
+                self.assertIn('opcode == 26', argv)
+                self.assertIn('opcode == 27', argv)
+                self.assertIn('syscalls:sys_enter_io_uring_enter', argv)
                 self.assertEqual(argv[argv.index('-p') + 1], str(pid))
                 self.assertNotIn('-a', argv)
 

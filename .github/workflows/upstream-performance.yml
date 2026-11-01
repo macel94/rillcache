@@ -1,6 +1,6 @@
-name: PR154 matched Compio completion screen
+name: PR154 separate owned Compio profiles
 
-# Isolated read-only diagnostic branch; no PR or required-check/publisher path.
+# Instrumentation only, not another normal sample or protected gate attempt.
 on:
   workflow_dispatch:
 
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr154-compio-screen
+  group: pr154-compio-owned-profiles
   cancel-in-progress: false
 
 env:
@@ -17,44 +17,36 @@ env:
   SOURCE_HEAD_SHA: ${{ github.sha }}
 
 jobs:
-  compare:
-    if: github.ref == 'refs/heads/diagnostic/pr154-compio-study'
+  profile:
+    if: github.ref == 'refs/heads/diagnostic/pr154-compio-profiles'
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Offline diagnostic helper tests
+      - name: Offline diagnostic and owned-process helper tests
         run: |
           python3 scripts/pr154-compio-study.py --self-test
           python3 -m unittest discover -s scripts/upstream -p 'test_dev_performance.py' -v
-      - name: Native prerequisites without host tuning
+      - name: Native prerequisites, no host/kernel/security tuning
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates time util-linux
-      - name: Require actual completion correctness before normal traffic
+      - name: Fresh frozen builds and separate owned-PID captures only
         run: |
           git diff --exit-code bf0ed14da3f14f7a5b77ee98d437e370747ad9ed -- Cargo.toml Cargo.lock src/ tests/ vendor/
-          RILLCACHE_REQUIRE_COMPIO=1 cargo test --locked --offline --lib server::compio_io::tests
-          RILLCACHE_TEST_THREADS=compio cargo test --locked --offline --test server --test readiness --test network_modes
-      - name: Frozen matched uninstrumented normal-release screen
-        run: |
-          python3 -u scripts/pr154-compio-study.py
-          python3 scripts/pr154-compio-study.py --check target/compio-study
-      - name: Publish all medians including losses
+          python3 -u scripts/pr154-compio-profiles.py
+          python3 scripts/pr154-compio-profiles.py --check target/compio-profiles
+      - name: Label instrumented scope without a throughput win
         if: always()
-        run: |
-          if [[ -f target/compio-study/summary.md ]]; then
-            tee -a "$GITHUB_STEP_SUMMARY" < target/compio-study/summary.md
-          fi
-          printf 'One matched advisory cohort; not all40/all14 protected acceptance. No profiles mixed into normal traffic.\n' >> "$GITHUB_STEP_SUMMARY"
-      - name: Retain evidence including failures, never frozen/Dragonfly binaries
+        run: printf 'Separate owned-process profiles only; no normal screen rerun and no protected performance acceptance.\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain raw captures and failures, never frozen/Dragonfly binaries
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pr154-compio-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/compio-study/
+          name: pr154-compio-profiles-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/compio-profiles/
           retention-days: 30
           if-no-files-found: warn
