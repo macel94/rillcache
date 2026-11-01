@@ -90,10 +90,13 @@ pub use journal::FsyncPolicy;
 pub use notify::{Category as NotifyCategory, NotifyFlags};
 mod bridge;
 pub use bridge::Store;
-pub(crate) use bridge::{BridgeInbox, Execution, Request, StoreHandle};
-pub(crate) use router::{MultiOwner, RouterSizing};
+pub(crate) use bridge::{BridgeInbox, DeferredCommand, Execution, StoreHandle};
+pub(crate) use partition::OwnerId;
+pub(crate) use router::{
+    CommandReply, DeferredBatch, DeferredSubmission, MultiOwner, RouterError, RouterSizing,
+};
 pub(crate) use streams::{
-    XReadGroupOptions, XReadGroupOutcome, XReadGroupStart, XReadOptions, XReadOutcome, parse_xread,
+    XReadGroupOptions, XReadGroupOutcome, XReadGroupStart, XReadOutcome, parse_xread,
     parse_xreadgroup, xread_reply, xreadgroup_reply,
 };
 pub(crate) use transaction::WatchToken;

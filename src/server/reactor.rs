@@ -4,7 +4,7 @@
 
 use super::pool::Client;
 use super::*;
-use crate::engine::{BridgeInbox, Execution, MultiOwner, ServerServices, StoreHandle};
+use crate::engine::{BridgeInbox, Execution, ServerServices, StoreHandle};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -368,121 +368,6 @@ pub(super) fn serve(
             None,
             stopping,
         )
-    }
-}
-
-/// Multi-owner execution: the socket loop drives the router, which owns the
-/// data workers. Every command still runs through the same session boundary.
-pub(super) fn serve_multi(
-    listener: TcpListener,
-    config: Config,
-    router: std::sync::Arc<MultiOwner>,
-    stopping: Arc<AtomicBool>,
-) -> io::Result<()> {
-    serve_with(
-        listener,
-        config,
-        Rc::new(RouterHandle(router)),
-        None,
-        stopping,
-    )
-}
-
-/// `Arc` wrapper so the socket loop can hold the shared router while it still
-/// satisfies the execution boundary (a plain `Arc<T>` is not `Deref<Target =
-/// ServerServices>`).
-pub(super) struct RouterHandle(pub(super) std::sync::Arc<MultiOwner>);
-
-impl std::ops::Deref for RouterHandle {
-    type Target = ServerServices;
-    fn deref(&self) -> &ServerServices {
-        &self.0
-    }
-}
-
-impl Execution for RouterHandle {
-    fn services_handle(&self) -> std::sync::Arc<ServerServices> {
-        Execution::services_handle(&*self.0)
-    }
-    fn run_request(&self, request: crate::engine::Request) {
-        Execution::run_request(&*self.0, request)
-    }
-    fn execute(&self, arguments: &[&[u8]], output: &mut Vec<u8>) -> crate::engine::Action {
-        Execution::execute(&*self.0, arguments, output)
-    }
-    fn watch_snapshot(&self, keys: &[&[u8]]) -> Option<crate::engine::WatchState> {
-        Execution::watch_snapshot(&*self.0, keys)
-    }
-    fn execute_transaction(
-        &self,
-        commands: &[Vec<Vec<u8>>],
-        watches: &crate::engine::WatchState,
-        output: &mut Vec<u8>,
-    ) -> crate::engine::TransactionOutcome {
-        Execution::execute_transaction(&*self.0, commands, watches, output)
-    }
-    fn blocking_pop(&self, keys: &[&[u8]], left: bool) -> crate::engine::PopOutcome {
-        Execution::blocking_pop(&*self.0, keys, left)
-    }
-    fn blocking_lmpop(
-        &self,
-        keys: &[&[u8]],
-        left: bool,
-        count: usize,
-    ) -> crate::engine::ListPopOutcome {
-        Execution::blocking_lmpop(&*self.0, keys, left, count)
-    }
-    fn blocking_list_move(
-        &self,
-        source: &[u8],
-        destination: &[u8],
-        from_left: bool,
-        to_left: bool,
-    ) -> crate::engine::ListMoveOutcome {
-        Execution::blocking_list_move(&*self.0, source, destination, from_left, to_left)
-    }
-    fn blocking_zpop(
-        &self,
-        keys: &[&[u8]],
-        max: bool,
-        count: usize,
-    ) -> crate::engine::ZSetPopOutcome {
-        Execution::blocking_zpop(&*self.0, keys, max, count)
-    }
-    fn xread_start(
-        &self,
-        options: &crate::engine::XReadOptions<'_>,
-    ) -> Option<(Vec<crate::engine::StreamId>, crate::engine::XReadOutcome)> {
-        Execution::xread_start(&*self.0, options)
-    }
-    fn xread_once(
-        &self,
-        keys: &[&[u8]],
-        starts: &[crate::engine::StreamId],
-        count: usize,
-    ) -> Option<crate::engine::XReadOutcome> {
-        Execution::xread_once(&*self.0, keys, starts, count)
-    }
-    fn blocking_xreadgroup(
-        &self,
-        options: &crate::engine::XReadGroupOptions<'_>,
-    ) -> crate::engine::XReadGroupOutcome {
-        Execution::blocking_xreadgroup(&*self.0, options)
-    }
-    fn waitaof_probe(&self, local: i64, replicas: i64) -> Result<(u64, u64), &'static [u8]> {
-        Execution::waitaof_probe(&*self.0, local, replicas)
-    }
-    fn journal_sync(&self) -> std::io::Result<()> {
-        Execution::journal_sync(&*self.0)
-    }
-    fn purge_expired(&self, limit: usize) -> usize {
-        Execution::purge_expired(&*self.0, limit)
-    }
-    fn auto_rewrite_if_due(&self) -> bool {
-        Execution::auto_rewrite_if_due(&*self.0)
-    }
-    fn shutdown_command(&self, args: &[&[u8]], output: &mut Vec<u8>) {
-        Execution::shutdown_command(&*self.0, args, output)
     }
 }
 

@@ -265,3 +265,43 @@ fn futures_lite_block_on<T>(future: impl std::future::Future<Output = T>) -> T {
         .unwrap();
     runtime.block_on(future)
 }
+
+#[test]
+fn deferred_replies_cannot_starve_synchronous_maintenance() {
+    let router = router(2);
+    let owner = router.layout().owner_for(b"budget");
+    let commands: Vec<_> = (0..64)
+        .map(|index| {
+            std::sync::Arc::new(vec![
+                b"SET".to_vec(),
+                b"budget".to_vec(),
+                format!("value:{index}").into_bytes(),
+            ])
+        })
+        .collect();
+    let mut batch = match router
+        .try_submit_batch(owner, (0..64).collect(), commands)
+        .unwrap()
+    {
+        DeferredSubmission::Submitted(batch) => batch,
+        DeferredSubmission::Full(_) => panic!("test sizing should fit one full batch"),
+    };
+    // The deferred budget is now fully reserved by this batch. A synchronous
+    // maintenance request must still make progress on its own reply budget.
+    let worker = Arc::clone(&router);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        sender.send(worker.journal_sync_blocking()).unwrap();
+    });
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("maintenance must not wait behind deferred replies")
+        .unwrap();
+    for _ in 0..1_000 {
+        if router.try_finish_batch(&mut batch).unwrap().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    router.shutdown().unwrap();
+}

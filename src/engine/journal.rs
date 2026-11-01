@@ -502,9 +502,9 @@ impl ShardExecutor {
         }
     }
 
-    /// Rewrite the journal as a complete state snapshot within a synchronous
-    /// compatibility-owner turn; no append can interleave with replacement.
-    pub fn auto_rewrite_if_due(&self) -> bool {
+    /// Cheap probe for the multi-owner router: never builds a snapshot when no
+    /// rewrite is configured or due.
+    pub(crate) fn auto_rewrite_due(&self) -> bool {
         let percentage = self.auto_aof_rewrite_percentage();
         if percentage == 0 {
             return false;
@@ -513,13 +513,22 @@ impl ShardExecutor {
         let Some(journal) = self.journal.as_ref() else {
             return false;
         };
-        let due = journal
+        journal
             .lock()
-            .is_ok_and(|journal| journal.auto_rewrite_due(percentage, min_size));
-        if !due {
+            .is_ok_and(|journal| journal.auto_rewrite_due(percentage, min_size))
+    }
+
+    /// Rewrite the journal as a complete state snapshot within a synchronous
+    /// compatibility-owner turn; no append can interleave with replacement.
+    pub fn auto_rewrite_if_due(&self) -> bool {
+        if !self.auto_rewrite_due() {
             return false;
         }
-
+        let percentage = self.auto_aof_rewrite_percentage();
+        let min_size = self.auto_aof_rewrite_min_size();
+        let Some(journal) = self.journal.as_ref() else {
+            return false;
+        };
         let due = journal
             .lock()
             .is_ok_and(|journal| journal.auto_rewrite_due(percentage, min_size));
