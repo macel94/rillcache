@@ -44,8 +44,10 @@ class GateTests(unittest.TestCase):
     def test_official_generator_options_and_conditional_commands(self):
         for w in gate.WORKLOADS:
             for p in gate.PIPELINES:
-                args = gate.generator_argv("/dragonfly-benchmark", 1234, w, p, None, [4, 5])
-                self.assertEqual(["taskset", "-c", "4,5", "/dragonfly-benchmark"], args[:4])
+                args = gate.generator_argv("/valkey-benchmark", 1234, w, p, None, [4, 5])
+                self.assertEqual(["taskset", "-c", "4,5", "/valkey-benchmark"], args[:4])
+                # Its executable is the official Valkey generator; it is not
+                # either compared server and never selects a Valkey server role.
                 self.assertEqual(gate.workload_command(w), args[args.index("--") + 1:])
                 for flag, expected in (("--duration", "10"), ("-P", str(p)), ("-c", "8"),
                                        ("-r", "1024"), ("--seed", "42"), ("--threads", "2")):
@@ -54,9 +56,85 @@ class GateTests(unittest.TestCase):
                     self.assertEqual(expected, args[index + 1])
                 self.assertNotIn("rillcache-bench", " ".join(args))
                 self.assertNotIn("-n", args)
-                warmup = gate.generator_argv("/dragonfly-benchmark", 1234, w, p, gate.WARMUP, [4, 5])
+                warmup = gate.generator_argv("/valkey-benchmark", 1234, w, p, gate.WARMUP, [4, 5])
                 self.assertNotIn("--duration", warmup)
                 self.assertEqual("8000", warmup[warmup.index("-n") + 1])
+
+    def test_only_rillcache_and_dragonfly_are_compared_server_roles(self):
+        rillcache = gate.server_argv('/candidate', 'rillcache', 1234, [0, 1, 2, 3], Path('/run'))
+        dragonfly = gate.server_argv('/dragonfly', 'dragonfly', 1234, [0, 1, 2, 3], Path('/run'))
+        self.assertEqual(rillcache[3:], ['/candidate', '--bind', '127.0.0.1:1234'])
+        self.assertIn('--proactor_threads', dragonfly)
+        self.assertNotIn('--proactor_threads', rillcache)
+        with self.assertRaisesRegex(ValueError, 'server role'):
+            gate.server_argv('/valkey', 'valkey', 1234, [0, 1, 2, 3], Path('/run'))
+        for valid in ('rillcache 0.1.0', 'rillcache 1.2.3-rc.1', 'rillcache 1.2.3+build', 'rillcache 1.2.3-rc.1+build'):
+            gate.validate_candidate_version(valid)
+        for wrong in ('Valkey server v=9.1.2', 'valkey-benchmark 9.1.2', 'dragonfly v2.0.2',
+                      'rillcache', 'rillcache 0.1.0\nValkey', None, True):
+            with self.subTest(version=wrong), self.assertRaisesRegex(ValueError, 'not Rillcache'):
+                gate.validate_candidate_version(wrong)
+
+    def test_mislabeled_valkey_candidate_fails_before_timed_traffic(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            argv = [str(HARNESS)]
+            for role in ('candidate', 'dragonfly', 'generator'):
+                binary = root / role
+                binary.write_text(role)
+                argv += ['--' + role, str(binary)]
+            for role in ('base-source', 'head-source', 'candidate-source'):
+                argv += ['--' + role, 'a' * 40]
+            license_path = root / 'notice.txt'
+            license_path.write_text('Dragonfly Business Source License 1.1\nDragonflyDB, Ltd.\n')
+            output = root / 'evidence'
+            argv += ['--dragonfly-version', '2.0.2', '--license', str(license_path), '--out', str(output)]
+            with mock.patch.object(sys, 'argv', argv), \
+                 mock.patch.object(os, 'sched_getaffinity', return_value={0, 1, 2, 3}), \
+                 mock.patch.object(gate.subprocess, 'check_output', side_effect=lambda argv, **_: (
+                     b'Valkey server v=9.1.2\n' if Path(argv[0]).name == 'candidate'
+                     else b'Dragonfly v2.0.2\n')), \
+                 mock.patch.object(gate.subprocess, 'Popen') as popen, \
+                 mock.patch.object(gate, 'sample', side_effect=AssertionError(
+                     'timed traffic reached for a mislabeled Valkey candidate')) as sample:
+                with self.assertRaisesRegex(ValueError, 'not Rillcache'):
+                    gate.main()
+                popen.assert_not_called()
+                sample.assert_not_called()
+            manifest = gate.read_json(output / 'manifest.json')
+            self.assertFalse(manifest['complete'])
+            self.assertFalse(manifest['gate_passed'])
+            self.assertEqual(manifest['candidate_binary_version'], 'Valkey server v=9.1.2')
+
+    def test_workflow_builds_one_rillcache_for_both_comparisons_and_runs_after_valkey_loss(self):
+        root = Path(__file__).resolve().parents[1]
+        text = (root / '.github/workflows/pr-multicpu-quality.yml').read_text()
+        self.assertIn('build --locked --offline --release --bin rillcache', text)
+        self.assertEqual(text.count('--candidate "$RUNNER_TEMP/valkey-multicpu-tools/candidate"'), 2)
+        step = text.split('      - name: Measure Rillcache against Dragonfly in all ten conditions\n', 1)[1].split('      - name:', 1)[0]
+        self.assertIn("!cancelled() && steps.candidate.outcome == 'success'", step)
+        self.assertIn("steps.dragonfly.outcome == 'success'", step)
+        self.assertIn('--generator "$RUNNER_TEMP/valkey-multicpu-tools/valkey-benchmark"', step)
+        self.assertIn('--dragonfly "$RUNNER_TEMP/dragonfly-tools/dragonfly"', step)
+        self.assertIn('sha256sum --check --status', step)
+        self.assertNotIn('--valkey ', step)
+        self.assertNotIn('continue-on-error:', text)
+
+    def test_runtime_children_do_not_receive_workflow_credentials(self):
+        proc = mock.Mock(pid=1234)
+        proc.poll.return_value = None
+        client = mock.MagicMock()
+        client.__enter__.return_value.call.return_value = b'PONG'
+        with tempfile.TemporaryDirectory() as name, \
+             mock.patch.dict(os.environ, {'GH_TOKEN': 'must-not-be-forwarded'}), \
+             mock.patch.object(gate.subprocess, 'Popen', return_value=proc) as popen, \
+             mock.patch.object(gate, 'Client', return_value=client), \
+             mock.patch.object(os, 'sched_getaffinity', return_value={0, 1, 2, 3}), \
+             mock.patch.object(gate, 'terminate', return_value=0):
+            with gate.owned_server('/candidate', 'rillcache', [0, 1, 2, 3], Path(name)):
+                pass
+        self.assertEqual(set(popen.call_args.kwargs['env']), {'PATH', 'LANG', 'LC_ALL'})
+        self.assertEqual(popen.call_args.kwargs['env']['LC_ALL'], 'C')
 
     def test_ten_strict_medians_no_single_loss_tie_or_best_sample_escape(self):
         rows = gate.evaluate(self.samples())
@@ -173,7 +251,8 @@ class GateTests(unittest.TestCase):
                         server_cpus=cpus, client_cpus=cpus, runs=3, workloads=gate.WORKLOADS,
                         pipelines=gate.PIPELINES, duration_seconds=10, warmup_requests=8000,
                         launch_directory="/original/runner/gate", binaries=binaries,
-                        binary_sha256={v: "a" * 64 for v in binaries}, base_source="a" * 40,
+                        binary_sha256={v: char * 64 for v, char in zip(binaries, "abc")},
+                        candidate_binary_version="rillcache 0.1.0", base_source="a" * 40,
                         head_source="b" * 40, candidate_source="c" * 40, order=[], evidence_sha256={})
         for identity in gate.identities():
             w, p, r, v = identity
@@ -216,7 +295,10 @@ class GateTests(unittest.TestCase):
             self.assertTrue(all(r["passed"] for r in gate.load_cohort(root)))
             for key, value in (("complete", False), ("gate_passed", False), ("server_cpus", [0]),
                                ("runs", True), ("head_source", "invalid"), ("order", []), ("evidence_sha256", {}),
-                               ("schema_version", 0), ("duration_seconds", 1), ("warmup_requests", 1),
+                               ("schema_version", 0), ("schema_version", 1), ("duration_seconds", 1), ("warmup_requests", 1),
+                               ("candidate_binary_version", "Valkey server v=9.1.2"),
+                               ("candidate_binary_version", None),
+                               ("binary_sha256", {v: "a" * 64 for v in manifest["binaries"]}),
                                ("dragonfly_version", "2.0"), ("license_sha256", "0" * 64),
                                ("license_path", "/tmp/license.txt")):
                 bad = copy.deepcopy(manifest)

@@ -94,7 +94,7 @@ jobs:
           harness="$GITHUB_WORKSPACE/base/scripts/pr-dragonfly-performance.py"
           if [[ ! -f "$harness" ]]; then
             # Only this exact pre-installation protected main can bootstrap.
-            [[ "$BASE_SOURCE" == e4f5a13496f680386084c0e35fb5c94283d5b4aa ]]
+            [[ "$BASE_SOURCE" == acc875c57a5c09f82c28ef086a87c3ac9223faad ]]
             harness="$GITHUB_WORKSPACE/candidate/scripts/pr-dragonfly-performance.py"
           fi
           echo "path=$harness" >> "$GITHUB_OUTPUT"
@@ -132,7 +132,7 @@ jobs:
           if ! grep -q '^DRAGONFLY_VERSION' "$pins"; then
             # Only this exact pre-installation protected main can bootstrap the
             # new pin and notice from the candidate tree.
-            [[ "$BASE_SOURCE" == e4f5a13496f680386084c0e35fb5c94283d5b4aa ]]
+            [[ "$BASE_SOURCE" == acc875c57a5c09f82c28ef086a87c3ac9223faad ]]
             pins="$CANDIDATE_DIR/benchmarks/targets.mk"
             notice="$CANDIDATE_DIR/benchmarks/notices/Dragonfly-BSL-1.1.txt"
           fi
@@ -154,13 +154,18 @@ jobs:
           grep -qi "dragonfly.*v${version}" "$directory/version.txt"
           printf 'version=%s\nurl=%s\nsha256=%s\n' "$version" "$url" "$expected" > "$directory/pin.json"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Build the candidate normally with the same pinned compiler
+      - name: Build the Rillcache candidate normally with the same pinned compiler
+        id: candidate
         working-directory: candidate
         env:
           TOOLCHAIN: ${{ steps.tools.outputs.toolchain }}
         run: |
           cargo "+$TOOLCHAIN" build --locked --offline --release --bin rillcache
           cp target/release/rillcache "$RUNNER_TEMP/valkey-multicpu-tools/candidate"
+          target/release/rillcache --version > "$RUNNER_TEMP/valkey-multicpu-tools/candidate-version.txt"
+          grep -Eq '^rillcache [0-9]+\.[0-9]+\.[0-9]+' "$RUNNER_TEMP/valkey-multicpu-tools/candidate-version.txt"
+          hash=$(sha256sum "$RUNNER_TEMP/valkey-multicpu-tools/candidate" | awk '{print $1}')
+          echo "sha256=$hash" >> "$GITHUB_OUTPUT"
       - name: Measure all ten conditions with the official benchmark and four server CPUs
         env:
           HARNESS: ${{ steps.harness.outputs.path }}
@@ -191,13 +196,16 @@ jobs:
           else
             printf 'Four-CPU Valkey gate failed before a complete valid cohort was available. No performance pass.\n' >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Measure the same ten conditions against Dragonfly
+      - name: Measure Rillcache against Dragonfly in all ten conditions
+        if: ${{ !cancelled() && steps.candidate.outcome == 'success' && steps.dragonfly.outcome == 'success' }}
         env:
+          RILLCACHE_SHA256: ${{ steps.candidate.outputs.sha256 }}
           HARNESS: ${{ steps.dragonfly-harness.outputs.path }}
           BASE_SOURCE: ${{ steps.context.outputs.base }}
           HEAD_SOURCE: ${{ steps.context.outputs.head }}
           DRAGONFLY_VERSION: ${{ steps.dragonfly.outputs.version }}
         run: |
+          printf '%s  %s\n' "$RILLCACHE_SHA256" "$RUNNER_TEMP/valkey-multicpu-tools/candidate" | sha256sum --check --status
           python3 "$HARNESS" \
             --candidate "$RUNNER_TEMP/valkey-multicpu-tools/candidate" \
             --dragonfly "$RUNNER_TEMP/dragonfly-tools/dragonfly" \
@@ -236,6 +244,12 @@ jobs:
               cp "$RUNNER_TEMP/dragonfly-tools/$file" "evidence/dragonfly/$file"
             fi
           done
+          if [[ -f "$RUNNER_TEMP/valkey-multicpu-tools/candidate-version.txt" ]]; then
+            cp "$RUNNER_TEMP/valkey-multicpu-tools/candidate-version.txt" evidence/dragonfly/
+          fi
+          if [[ -f evidence/environment.txt ]]; then
+            cp evidence/environment.txt evidence/dragonfly/
+          fi
       - name: Preserve Dragonfly raw measurements and license evidence even on failure
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

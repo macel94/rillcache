@@ -160,6 +160,24 @@ The check context, job count and required-context inventory remain unchanged; a
 Dragonfly loss fails the existing `Valkey 4-CPU performance gate` job rather than
 adding an advisory check.
 
+This is **Rillcache versus Dragonfly**, not Valkey versus Dragonfly.
+`valkey-benchmark` is only the common traffic generator. CI builds Rillcache with
+`cargo build --locked --offline --release --bin rillcache`, freezes that binary's
+SHA-256, and uses the same executable in both the separate Valkey comparison and
+the Dragonfly comparison. Before Dragonfly traffic, the frozen hash is checked
+again. Schema 2 records and independently validates the candidate's actual
+`rillcache X.Y.Z` version output and requires distinct Rillcache, Dragonfly and
+generator hashes; a mislabeled Valkey candidate fails before timed traffic.
+Schema-1 evidence lacks this version guarantee and is not accepted by schema 2;
+retain it with its original validator, never relabel it as a new pass.
+
+Provided the candidate and Dragonfly were built/installed successfully, the
+Dragonfly comparison still runs when the separate Valkey comparison loses.
+Neither failure is masked: every completed loss and any incomplete cohort fails
+the same required job. The installing PR's bootstrap remains restricted to exact
+pre-installation protected main `acc875c57a5c09f82c28ef086a87c3ac9223faad`;
+a later missing base harness or pin fails closed.
+
 Dragonfly is an optional external benchmark target under BSL 1.1, not a Cargo
 dependency, vendored source, release-archive file or container component. CI
 executes the official binary only for non-production benchmarking, keeps it out

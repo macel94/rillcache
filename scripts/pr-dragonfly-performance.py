@@ -35,7 +35,8 @@ VALUE = b"v" * 64
 REPLACEMENT = b"w" * 64
 WARMUP = 8000
 DURATION_SECONDS = 10
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+RUNTIME_ENV = {"PATH": os.environ["PATH"], "LANG": "C", "LC_ALL": "C"}
 SHA = r"[0-9a-f]{40}"
 CSV_HEADER = ["test", "rps", "avg_latency_ms", "min_latency_ms", "p50_latency_ms",
               "p95_latency_ms", "p99_latency_ms", "max_latency_ms"]
@@ -124,7 +125,14 @@ def validate_dataset(port, workload, *, preload=False, after=False):
         return {"validated_keys": KEYSPACE, "ping": True}
 
 
+def validate_candidate_version(version):
+    ensure(type(version) is str and re.fullmatch(
+        r"rillcache [0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version),
+        "candidate executable is not Rillcache")
+
+
 def server_argv(binary, variant, port, cpus, directory):
+    ensure(variant in ("rillcache", "dragonfly"), "unsupported compared-server role")
     if variant == "rillcache":
         args = [str(binary), "--bind", f"127.0.0.1:{port}"]
     else:
@@ -142,7 +150,8 @@ def owned_server(binary, variant, cpus, directory):
     port = available_port()
     argv = server_argv(binary, variant, port, cpus, directory)
     with (directory / "server.log").open("wb") as log:
-        proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                                env=RUNTIME_ENV)
         identity = {"argv": argv, "port": port, "pid": proc.pid, "cpus": cpus}
         try:
             deadline = time.monotonic() + 10
@@ -204,7 +213,7 @@ def sample(binaries, variant, workload, pipeline, cpus, client_cpus, directory):
                 argv = generator_argv(binaries["generator"], port, workload, pipeline, count, client_cpus)
                 before = process_stats(proc.pid)
                 start = time.monotonic()
-                command(argv, directory / phase, timeout=180)
+                command(argv, directory / phase, timeout=180, env=RUNTIME_ENV)
                 metrics = read_generator(directory / phase, workload, argv)
                 elapsed = time.monotonic() - start
                 after = process_stats(proc.pid)
@@ -254,7 +263,7 @@ def evaluate(samples):
 
 def summary(rows):
     wins = sum(row["passed"] for row in rows)
-    text = ["# Dragonfly same-setup comparison: four-CPU PR gate", "",
+    text = ["# Rillcache vs Dragonfly: four-CPU PR gate", "",
             f"**{'PASS' if wins == 10 else 'FAIL'}: {wins}/10 medians strictly faster than Dragonfly.**", "",
             "Same pinned, unmodified valkey-benchmark for both default-mode servers; exactly four logical server CPUs. "
             "Eight clients, two generator threads, 1024 random keys, 64-byte values, seed 42, 8000 warmup commands, "
@@ -267,7 +276,7 @@ def summary(rows):
             "Shared-runner noise/client contention can block this scoped gate; no universal superiority claim. "
             "Dragonfly is an optional non-production benchmark target under BSL 1.1; its official binary is downloaded "
             "from the pinned release, verified by SHA-256, and excluded from tracked source and evidence artifacts.", "",
-            "| Workload | P | Rillcache median [min–max] req/s | Dragonfly median [min–max] req/s | p99 ms R/V | Gate |",
+            "| Workload | P | Rillcache median [min–max] req/s | Dragonfly median [min–max] req/s | p99 ms R/D | Gate |",
             "| --- | ---: | ---: | ---: | ---: | --- |"]
     for row in rows:
         a, b = row["rillcache"], row["dragonfly"]
@@ -289,7 +298,9 @@ def load_cohort(directory):
            and type(manifest["warmup_requests"]) is int and manifest["warmup_requests"] == WARMUP, "gate policy differs")
     ensure(all(re.fullmatch(SHA, manifest[k]) for k in ("base_source", "head_source", "candidate_source")), "invalid source identity")
     ensure(set(manifest["binary_sha256"]) == {"rillcache", "dragonfly", "generator"}
-           and all(re.fullmatch(r"[0-9a-f]{64}", v) for v in manifest["binary_sha256"].values()), "invalid binary hashes")
+           and all(re.fullmatch(r"[0-9a-f]{64}", v) for v in manifest["binary_sha256"].values())
+           and len(set(manifest["binary_sha256"].values())) == 3, "invalid or reused binary roles")
+    validate_candidate_version(manifest.get("candidate_binary_version"))
     ensure(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", manifest["dragonfly_version"])
            and re.fullmatch(r"[0-9a-f]{64}", manifest["license_sha256"]), "invalid Dragonfly pin or license")
     ensure(manifest["license_path"] == "license.txt", "license evidence path differs")
@@ -354,7 +365,15 @@ def main():
                     "dragonfly": str(Path(args.dragonfly).resolve(strict=True)),
                     "generator": str(Path(args.generator).resolve(strict=True))}
         hashes = {name: digest(path) for name, path in binaries.items()}
-        version = subprocess.check_output([binaries["dragonfly"], "--version"], timeout=10).decode().strip()
+        manifest.update(binaries=binaries, binary_sha256=hashes)
+        ensure(len(set(hashes.values())) == 3, "compared server and generator binaries must be distinct")
+        candidate_version = subprocess.check_output(
+            [binaries["rillcache"], "--version"], stderr=subprocess.STDOUT,
+            timeout=10, env=RUNTIME_ENV).decode().strip()
+        manifest["candidate_binary_version"] = candidate_version
+        validate_candidate_version(candidate_version)
+        version = subprocess.check_output([binaries["dragonfly"], "--version"], timeout=10,
+                                          env=RUNTIME_ENV).decode().strip()
         plain_version = re.sub(r"\x1b\[[0-9;]*m", "", version)
         ensure(re.search(r"\bdragonfly\s+v?" + re.escape(args.dragonfly_version) + r"(?:-|\s|$)",
                          plain_version, re.I), "Dragonfly version differs from protected pin")
