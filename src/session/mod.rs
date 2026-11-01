@@ -145,7 +145,7 @@ impl Session {
             && !self.is_blocked()
             && !self.is_paused()
             && store.security() == (false, false)
-            && !self.pause_command(store, arguments)
+            && !self.command_paused(store, arguments)
         {
             store.record_command(self.id);
             store.monitor_command(self.id, arguments);
