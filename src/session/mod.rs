@@ -137,20 +137,19 @@ impl Session {
         // Use the common observation/error-accounting epilogue in every
         // collector configuration. execute_inner already specializes ordinary
         // commands after the normal authorization and subscriber checks.
-        if self.pause_command(store, arguments) {
+        // One load covers every hot-path gate: pause, collectors and monitor.
+        let observers = store.observers();
+        if observers.paused && self.pause_command(store, arguments) {
             return Action::Continue;
         }
         let (slowlog, latency) = arguments.first().map_or((false, false), |command| {
             let queued = self.multi.is_some() && !command.eq_ignore_ascii_case(b"EXEC");
-            (
-                !queued && store.slowlog_enabled(),
-                !queued && store.latency_enabled(),
-            )
+            (!queued && observers.slowlog, !queued && observers.latency)
         });
         // CONFIG, or EXEC containing a queued CONFIG, can enable commandstats
         // during this dispatch. Check these cold exceptions only if no observer
         // already needs a timer; an individually queued CONFIG changes nothing.
-        let observed = slowlog || latency || store.commandstats_enabled();
+        let observed = slowlog || latency || observers.commandstats;
         let may_enable = !observed
             && arguments.first().is_some_and(|name| {
                 name.eq_ignore_ascii_case(b"EXEC")

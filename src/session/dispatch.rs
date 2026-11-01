@@ -141,7 +141,9 @@ impl Session {
             return Action::Continue;
         };
         store.record_command(self.id);
-        store.monitor_command(self.id, arguments);
+        if store.observers().monitor {
+            store.monitor_command(self.id, arguments);
+        }
         if command.eq_ignore_ascii_case(b"RESET") {
             return self.reset(store, arguments, output);
         }
