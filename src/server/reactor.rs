@@ -22,7 +22,6 @@ const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
 /// which avoids a sleep/wake cycle per command at pipeline 1. It replaces a
 /// blocking wait rather than adding one, and it only runs when the runnable
 /// queue is empty, so an idle server still parks for the full stop tick.
-const FAST_WAIT: Duration = Duration::from_micros(8);
 
 /// An index is reusable, but its full, non-recycled selector token is not.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -330,23 +329,19 @@ impl<E: Execution> Reactor<E> {
             if self.accept_ready {
                 self.accept()?;
             }
-            let mut serviced = 0usize;
             for _ in 0..RUN_QUANTUM {
                 let Some(key) = self.ready.pop_front() else {
                     break;
                 };
                 match self.service(key, &mut chunk) {
-                    Ok(Some(_)) => serviced += 1,
+                    Ok(Some(_)) => {}
                     Ok(None) | Err(_) => self.remove(key),
                 }
             }
-            if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
-                match self.poll.poll(&mut events, Some(FAST_WAIT)) {
-                    Ok(()) => self.ingest(&events),
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return Err(error),
-                }
-            }
+            // Select once per turn, at the top of the next iteration. A second
+            // wait here would ingest events only to immediately poll again
+            // before servicing them. The normal idle wait wakes on readiness;
+            // queued continuations still receive a nonblocking selector pass.
         }
         Ok(())
     }
