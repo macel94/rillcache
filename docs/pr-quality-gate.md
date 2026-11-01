@@ -149,6 +149,32 @@ and binary hashes, environment and summaries survive failures in 30-day artifact
 Offline validation: `python3 scripts/test-multicpu-performance.py`. Actual comparative
 performance remains Actions-only; mocked/replayed tests are not performance wins.
 
+### Same-setup Dragonfly comparison
+
+The same required four-CPU job also runs a Dragonfly comparison. It downloads the
+official checksum-pinned Dragonfly `v2.0.2` x86_64 release, verifies the archive
+SHA-256, and runs the identical five commands at P1/P16 with the same official
+`valkey-benchmark`, 8 clients, 1024 random keys, 64-byte values, 8,000 warmups and
+ten-second samples. Rillcache must strictly beat Dragonfly in all ten medians.
+The check context, job count and required-context inventory remain unchanged; a
+Dragonfly loss fails the existing `Valkey 4-CPU performance gate` job rather than
+adding an advisory check.
+
+Dragonfly is an optional external benchmark target under BSL 1.1, not a Cargo
+dependency, vendored source, release-archive file or container component. CI
+executes the official binary only for non-production benchmarking, keeps it out
+of tracked source and artifacts, and retains the pinned license notice and hashes
+with the raw evidence. The policy is recorded in
+[`plans/dragonfly-class-performance.md`](plans/dragonfly-class-performance.md) and
+[`benchmarks/notices/Dragonfly-BSL-1.1.txt`](../benchmarks/notices/Dragonfly-BSL-1.1.txt).
+
+Offline checks:
+
+```sh
+python3 scripts/test-dragonfly-performance.py
+python3 scripts/pr-dragonfly-performance.py --check /path/to/dragonfly-gate
+```
+
 ## Automated report PRs
 
 The manual/weekly comparison and genuine Copilot review retain their separate
@@ -186,8 +212,10 @@ python3 scripts/test-pr-policy.py
 python3 -m unittest scripts.test_pr_gate_policy -v
 python3 scripts/pr_gate_policy.py --live
 python3 scripts/test-multicpu-performance.py
+python3 scripts/test-dragonfly-performance.py
 python3 scripts/pr-performance-gate.py --check /path/to/original-gate
 python3 scripts/pr-multicpu-performance.py --check /path/to/four-cpu-gate
+python3 scripts/pr-dragonfly-performance.py --check /path/to/dragonfly-gate
 ```
 
 The first suite includes archived real-cohort replay, single loss/tie rejection,
