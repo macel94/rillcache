@@ -1,32 +1,14 @@
-name: Upstream generator performance
+name: PR154 matched Compio completion screen
 
-# Intentionally separate from PR compatibility and the existing required gate.
+# Isolated read-only diagnostic branch; no PR or required-check/publisher path.
 on:
   workflow_dispatch:
-    inputs:
-      study:
-        description: 'Advisory matched PING screening on the isolated rillcache-perf runner'
-        type: boolean
-        default: false
-      study_base:
-        description: 'Exact baseline source SHA (study only)'
-        type: string
-      study_candidate:
-        description: 'Exact candidate source SHA (study only)'
-        type: string
-      study_hardware_sha256:
-        description: 'Preselected hardware/software fingerprint; mismatch fails before builds'
-        type: string
-      study_profiles:
-        description: 'Add separate owned-process P1 profiles after normal screening'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: upstream-performance-${{ github.ref }}
+  group: pr154-compio-screen
   cancel-in-progress: false
 
 env:
@@ -36,81 +18,43 @@ env:
 
 jobs:
   compare:
-    if: ${{ !inputs.study }}
-    name: Same-runner Redis Valkey Rillcache comparison
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    if: github.ref == 'refs/heads/diagnostic/pr154-compio-study'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Lightweight harness tests
-        run: python3 -m unittest discover -s scripts/upstream -p 'test_*.py' -v
-      - name: Native build, Tcl and resource-accounting prerequisites
+          fetch-depth: 0
+      - name: Offline diagnostic helper tests
+        run: |
+          python3 scripts/pr154-compio-study.py --self-test
+          python3 -m unittest discover -s scripts/upstream -p 'test_dev_performance.py' -v
+      - name: Native prerequisites without host tuning
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config tcl curl ca-certificates time util-linux
-      - uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: target/upstream-downloads
-          key: upstream-source-v1-${{ hashFiles('ci/upstream/pins.json') }}
-      - name: Build exact Cargo release target and both pinned native core servers
-        run: python3 scripts/upstream/prepare.py
-      - name: Sequential matched load, warmup and six rotating-order repetitions
-        run: python3 scripts/upstream/performance.py
-      - name: Preserve raw measurements, failures, build logs and environment metadata
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates time util-linux
+      - name: Require actual completion correctness before normal traffic
+        run: |
+          git diff --exit-code bf0ed14da3f14f7a5b77ee98d437e370747ad9ed -- Cargo.toml Cargo.lock src/ tests/ vendor/
+          RILLCACHE_REQUIRE_COMPIO=1 cargo test --locked --offline --lib server::compio_io::tests
+          RILLCACHE_TEST_THREADS=compio cargo test --locked --offline --test server --test readiness --test network_modes
+      - name: Frozen matched uninstrumented normal-release screen
+        run: |
+          python3 -u scripts/pr154-compio-study.py
+          python3 scripts/pr154-compio-study.py --check target/compio-study
+      - name: Publish all medians including losses
+        if: always()
+        run: |
+          if [[ -f target/compio-study/summary.md ]]; then
+            tee -a "$GITHUB_STEP_SUMMARY" < target/compio-study/summary.md
+          fi
+          printf 'One matched advisory cohort; not all40/all14 protected acceptance. No profiles mixed into normal traffic.\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain evidence including failures, never frozen/Dragonfly binaries
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: upstream-performance-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/upstream/evidence/
-          retention-days: 30
-          if-no-files-found: warn
-
-  study:
-    if: inputs.study
-    name: Fixed-host matched PING screening
-    runs-on: [self-hosted, Linux, X64, rillcache-perf]
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Require the preselected host before builds or measurements
-        env:
-          EXPECTED_HARDWARE: ${{ inputs.study_hardware_sha256 }}
-        run: |
-          mkdir -p target/upstream/evidence/dev-performance-preflight
-          python3 scripts/dev_hardware.py --expected-fingerprint "$EXPECTED_HARDWARE" \
-            > target/upstream/evidence/dev-performance-preflight/hardware.json
-      - name: Lightweight harness tests
-        run: python3 -m unittest discover -s scripts/upstream -p 'test_*.py' -v
-      - uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: target/upstream-downloads
-          key: upstream-source-v1-${{ hashFiles('ci/upstream/pins.json') }}
-      - name: Cache independently verified reference builds for the fixed host
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: target/dev-reference-cache
-          key: dev-reference-v1-${{ inputs.study_hardware_sha256 }}-${{ hashFiles('Makefile', 'benchmarks/targets.mk', 'ci/upstream/pins.json') }}
-      - name: Matched P1 and P16 screening; profiles only when requested
-        env:
-          STUDY_BASE: ${{ inputs.study_base }}
-          STUDY_CANDIDATE: ${{ inputs.study_candidate }}
-          EXPECTED_HARDWARE: ${{ inputs.study_hardware_sha256 }}
-          STUDY_PROFILES: ${{ inputs.study_profiles }}
-        run: |
-          profile_args=()
-          if [[ "$STUDY_PROFILES" == true ]]; then profile_args=(--profiles); fi
-          python3 scripts/dev-performance.py --base "$STUDY_BASE" --candidate "$STUDY_CANDIDATE" \
-            --expected-hardware "$EXPECTED_HARDWARE" "${profile_args[@]}"
-          python3 scripts/dev-performance.py --check target/upstream/evidence/dev-performance
-      - name: Preserve raw screening evidence and all failures
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: dev-performance-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/upstream/evidence/
+          name: pr154-compio-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/compio-study/
           retention-days: 30
           if-no-files-found: warn
