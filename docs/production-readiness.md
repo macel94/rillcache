@@ -2,11 +2,12 @@
 
 Production drop-in compatibility is the goal, **not the current release status**.
 A command subset and passing microbenchmarks are insufficient to make that claim.
-This plan keeps the README's missing capabilities visible until independently
-verified. No unsafe code, FFI, custom allocator or arbitrary external Rust
-dependency is permitted, including in tests. The sole exception is rustls and the
-transitive crates required to build it, vendored for offline builds. Optional
-external interoperability tools remain outside the application dependency graph.
+The [compatibility guide](compatibility.md) summarizes what works; this plan
+keeps the remaining capabilities visible until independently verified. No unsafe
+application Rust, handwritten FFI, custom allocator or unapproved external Rust
+dependency is permitted, including in tests. The reviewed runtime/TLS/affinity
+exceptions and offline vendoring policy live in [Contributing](../CONTRIBUTING.md).
+Optional external interoperability tools remain outside the application dependency graph.
 
 ## Current phase scope: durability deferred
 
