@@ -6,6 +6,13 @@ on:
     - cron: '17 5 * * *'
   workflow_dispatch:
     inputs:
+      reactor_profile:
+        description: 'Separate owned PING/GET P1 CPU/syscall captures; never normal throughput evidence'
+        type: boolean
+        default: false
+      profile_source:
+        description: 'Exact application source SHA for instrumented captures'
+        type: string
       reactor_diagnostic:
         description: 'Same-job hosted baseline/candidate PING and GET diagnostic, not fixed-host screening or a gate'
         type: boolean
@@ -48,8 +55,50 @@ env:
   SOURCE_HEAD_SHA: ${{ github.sha }}
 
 jobs:
+  reactor-profile:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reactor_profile }}
+    name: Owned instrumented PING GET P1 diagnosis
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Lightweight diagnostic tests
+        run: python3 -m unittest discover -s scripts/upstream -p 'test_*.py' -v
+      - name: Native build and observation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-upgrade --no-install-recommends build-essential pkg-config tcl curl ca-certificates util-linux linux-tools-generic
+      - name: Freeze allocated machine identity before builds
+        id: machine
+        run: |
+          mkdir -p target/upstream/evidence/profile-preflight
+          python3 scripts/dev_hardware.py > target/upstream/evidence/profile-preflight/hardware.json
+          python3 -c 'import json; print("fingerprint=" + json.load(open("target/upstream/evidence/profile-preflight/hardware.json"))["fingerprint"])' >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: target/upstream-downloads
+          key: reactor-profile-source-v1-${{ hashFiles('ci/upstream/pins.json') }}
+      - name: Verify profiler access before builds and capture only owned targets
+        env:
+          APPLICATION_SOURCE: ${{ inputs.profile_source }}
+          HARDWARE: ${{ steps.machine.outputs.fingerprint }}
+        run: |
+          python3 scripts/reactor-profile.py --source "$APPLICATION_SOURCE" --expected-hardware "$HARDWARE"
+          python3 scripts/reactor-profile.py --check target/upstream/evidence/reactor-profile
+      - name: Retain instrumented traces and failures separately from normal evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reactor-profile-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/upstream/evidence/
+          retention-days: 30
+          if-no-files-found: warn
+
   reactor-diagnostic:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reactor_diagnostic }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reactor_diagnostic && !inputs.reactor_profile }}
     name: Same-job reactor baseline candidate diagnostic
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -91,7 +140,7 @@ jobs:
           if-no-files-found: warn
 
   daily:
-    if: ${{ !inputs.reactor_diagnostic && !inputs.study && (github.event_name == 'schedule' || inputs.daily) }}
+    if: ${{ !inputs.reactor_profile && !inputs.reactor_diagnostic && !inputs.study && (github.event_name == 'schedule' || inputs.daily) }}
     name: Daily Rillcache Redis Valkey Dragonfly Garnet comparison
     runs-on: ubuntu-latest
     timeout-minutes: 100
@@ -127,7 +176,7 @@ jobs:
           if-no-files-found: warn
 
   compare:
-    if: ${{ github.event_name != 'schedule' && !inputs.reactor_diagnostic && !inputs.study && !inputs.daily }}
+    if: ${{ github.event_name != 'schedule' && !inputs.reactor_profile && !inputs.reactor_diagnostic && !inputs.study && !inputs.daily }}
     name: Same-runner Redis Valkey Rillcache comparison
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -159,7 +208,7 @@ jobs:
           if-no-files-found: warn
 
   study:
-    if: inputs.study && !inputs.reactor_diagnostic
+    if: inputs.study && !inputs.reactor_diagnostic && !inputs.reactor_profile
     name: Fixed-host matched PING screening
     runs-on: [self-hosted, Linux, X64, rillcache-perf]
     timeout-minutes: 35

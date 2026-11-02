@@ -55,7 +55,7 @@
     "upstream-performance.yml": {
       "events": ["schedule", "workflow_dispatch"],
       "jobs": {},
-      "non_pr_reason": "Daily five-server comparisons, manual legacy study, same-job hosted reactor diagnostics and opt-in fixed-host screening; none substitutes for any mandatory PR performance gate."
+      "non_pr_reason": "Daily five-server comparisons, manual legacy study, same-job hosted reactor diagnostics, separate owned-process instrumented profiles and opt-in fixed-host screening; none substitutes for any mandatory PR performance gate."
     }
   }
 }

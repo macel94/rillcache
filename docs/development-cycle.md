@@ -79,6 +79,29 @@ the candidate/harness revision named in their manifest: the first 72-sample
 protocol remains separate evidence, not relabeled as the later 108-sample scope.
 No agent-host native load/profiling.
 
+### Separate owned-process P1 profiles
+
+Manual `reactor_profile=true` with an exact `profile_source` selects a separate
+hosted CPU/syscall diagnosis, suppressing normal/daily/study jobs. It probes perf
+and tracepoint permissions **before** builds, then uses normal release binaries,
+the pinned official generator, 64-byte values, eight clients/two generator
+threads, PING/GET P1 and four shared logical CPUs. Each 20-second instrumented
+load contains an eight-second server/generator capture. CPU-clock samples,
+read/receive EAGAIN and read/write/writev/sendmsg/epoll/futex counters, process
+user/system ticks, raw CSV, build/hardware hashes and joined lifecycle records
+are retained. Root perf collectors have isolated owned groups and bounded
+privileged cleanup. Valkey binary exports include its COPYING notice.
+
+These captures are **not normal throughput qualification**. Their rates cannot
+clear a failed gate, prove a speedup or replace a matched uninstrumented control.
+Missing permissions, tracepoints, samples or incomplete/corrupt evidence fail
+closed with retained diagnostics, not invented profiles. Revalidate the complete
+artifact with the matching harness revision:
+
+```sh
+python3 scripts/reactor-profile.py --check PATH/reactor-profile
+```
+
 ```sh
 gh workflow run upstream-performance.yml --ref BRANCH \
   -f reactor_diagnostic=true -f reactor_base=EXACT_BASE_SHA

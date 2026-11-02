@@ -214,10 +214,12 @@ def profiler_jobs(perf, cpu_event, mode, server_pid, generator_pid, directory):
                 argv = prefix + ['stat', '-x', ';', '--no-big-num', '-e', 'syscalls:sys_exit_recvfrom',
                                  '--filter', 'ret == -11', '-e', 'syscalls:sys_exit_read', '--filter', 'ret == -11',
                                  '-e', 'syscalls:sys_exit_readv', '--filter', 'ret == -11']
-                for event in ['sys_enter_recvfrom', 'sys_enter_read', 'sys_enter_readv', 'sys_enter_sendto', 'sys_enter_write',
+                for event in ['sys_enter_recvfrom', 'sys_enter_read', 'sys_enter_readv', 'sys_enter_sendto', 'sys_enter_write', 'sys_enter_writev',
                               'sys_enter_ioctl', 'sys_enter_futex', 'sys_enter_sched_yield', 'sys_enter_epoll_wait',
                               'sys_enter_accept4', 'sys_enter_accept', 'sys_enter_nanosleep', 'sys_enter_clock_nanosleep']:
                     argv += ['-e', 'syscalls:' + event]
+                argv += ['-e', 'syscalls:sys_enter_sendmsg', '-e', 'syscalls:sys_enter_recvmsg',
+                         '-e', 'syscalls:sys_exit_recvmsg', '--filter', 'ret == -11']
                 argv += ['-e', 'task-clock,context-switches', '-p', str(pid),
                          '-o', str(directory / f'{role}-syscalls.txt'), '--', 'sleep', '8']
             else:
