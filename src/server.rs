@@ -544,9 +544,20 @@ impl Server {
                 tokio_transport: false,
                 tokio_worker_threads: 0,
                 tokio_compatibility_owner: false,
-                socket_workers: config
-                    .socket_workers
-                    .unwrap_or_else(|| capacity.unwrap_or(1).clamp(1, 4)),
+                socket_workers: if config.appendonly
+                    || config.aclfile.is_some()
+                    || config.audit_log.is_some()
+                    || config.audit_syslog.is_some()
+                    || config.tls_bind_addr.is_some()
+                {
+                    // These paths need the external/bridge owner or cold setup;
+                    // keep the single reactor and report it accurately.
+                    1
+                } else {
+                    config
+                        .socket_workers
+                        .unwrap_or_else(|| capacity.unwrap_or(1).clamp(1, 4))
+                },
                 active_poll_us: 0,
                 run_quantum_us: 0,
                 single_reply_yield: false,
