@@ -266,6 +266,39 @@ met its rejection condition; its implementation is reverted and the evidence is
 recorded here. The branch, commits and both artifact summaries are retained. This
 document is the only surviving change from that branch.
 
+### 2.9 Pipeline-1 ping variance and the four-CPU client/server overlap
+
+The merged owner-migration runtime has now produced three four-CPU cohorts with
+the same binary and gate. They differ only in run placement and host noise:
+
+| Cohort | P1 ping Rillcache | Valkey | Delta | p99 R/V |
+| --- | ---: | ---: | ---: | ---: |
+| PR #159 merge run | 117,430.7 | 114,097.1 | +2.92% | 0.095/0.127 |
+| PR #160 docs-only | 110,968.0 | 114,032.6 | −2.69% | — |
+| PR #164 docs-only | 112,894.7 | 115,545.1 | −2.29% | 0.103/0.119 |
+
+One pass and two losses inside ±3% for an unchanged runtime. The failing #164
+head still had a lower p99 than Valkey and passed Dragonfly 10/10 and every other
+Valkey row, so this is not a tail or data-path regression.
+
+The failing artifact's manifest explains the mechanism:
+`client_cpus: [0, 1, 2, 3]`, `server_cpus: [0, 1, 2, 3]`. The runner has no
+disjoint client CPUs, so two generator threads share all four CPUs with the
+server. The merged runtime then has six runnable threads (four reactors plus two
+generators) where Valkey has three (one server plus two generators). The extra
+reactors compete with the load generator; the eight-reactor candidate made the
+same contention much worse (−22.4%). The gate text already intends disjoint
+client CPUs "when available"; this host cannot provide them.
+
+**Verdict:** the P1 ping row is a gate-topology and shared-runner variance
+limitation for this configuration, not a proven server deficit. Do not tune the
+reactor count again on this evidence: more reactors lost badly and fewer reactors
+are a different experiment without a measured mechanism. A defensible next step
+is either a gate runner with disjoint client CPUs (CI/policy change, owner
+review) or a different scheduling mechanism that does not add runnable server
+threads. The docs-only record must not be re-pushed repeatedly to fish for a
+noise pass.
+
 ## 3. Per-component comparison with Redis and Valkey
 
 Pins: Valkey `9.1.2` and Redis `8.10.2` source tags, as in
@@ -864,6 +897,13 @@ current roadmap; individual phases are separate increments.
   Valkey but still lost Dragonfly PING; the eight-reactor response then lost P1
   ping to both and is rejected. The remaining P1 question needs a different
   scheduling mechanism, not a larger thread count.
+- The four-CPU runner used for the recent cohorts has `client_cpus` equal to
+  `server_cpus` (`[0,1,2,3]`), so the load generator shares the server CPUs.
+  That biases a multi-reactor server against a single-thread competitor and puts
+  the P1 ping row inside a ±3% run-to-run band for an unchanged runtime
+  (section 2.9). A disjoint-client-CPU runner would measure the server's lower
+  p99 without generator contention; changing the runner is a CI/policy decision,
+  not a server tuning knob.
 - Cross-client write coalescing (4.5) remains unproven; do not add it
   speculatively. The resumable parser (4.2) is deprioritized because incomplete
   frames do not rescan payload bytes; revisit only with large-argument evidence.
