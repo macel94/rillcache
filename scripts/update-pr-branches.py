@@ -28,6 +28,14 @@ ACTIONS_APP_ID = 15368
 # the same head; those runs must not become sticky failed evidence. Genuine
 # failure/timed_out/startup_failure conclusions remain failed evidence.
 NON_VERDICT_CONCLUSIONS = frozenset({"cancelled", "stale"})
+# A known exact-head test failure is an expected blocked PR, not an updater
+# malfunction. It stays sticky and forbids refresh/retry; it is never a pass.
+GATE_FAILURE_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure"})
+NON_ERROR_OUTCOMES = frozenset({
+    "skipped", "failed_gate", "waiting_existing_check", "update_pending",
+    "draft_updated", "draft_current", "waiting", "checks_passed",
+    "checks_dispatched", "deferred",
+})
 SHA = re.compile(r"^[0-9a-f]{40}$")
 MAX_PAGES = 10
 PAGE_SIZE = 100
@@ -285,7 +293,8 @@ class Updater:
                            and run.get("conclusion") != "success"), None)
             if failed is not None:
                 _, detail = self.check_identity(failed, workflow)
-                return "failed", detail
+                state = "failed_gate" if failed.get("conclusion") in GATE_FAILURE_CONCLUSIONS else "failed"
+                return state, detail
             active = next((run for run in runs if run.get("status") != "completed"), None)
             if active is not None:
                 _, detail = self.check_identity(active, workflow)
@@ -354,8 +363,11 @@ class Updater:
                 # do not update it merely to get a new merge SHA/check identity.
                 for workflow in REQUIRED:
                     prior = self.runs_for_head(pr, workflow, head)
-                    if any(run.get("status") == "completed" and run.get("conclusion") != "success" for run in prior):
-                        outcome.update(status="failed_gate", base=main, head=head,
+                    failed = next((run for run in prior if run.get("status") == "completed"
+                                   and run.get("conclusion") != "success"), None)
+                    if failed is not None:
+                        state = "failed_gate" if failed.get("conclusion") in GATE_FAILURE_CONCLUSIONS else "failed"
+                        outcome.update(status=state, base=main, head=head,
                                        detail=f"{workflow} failed for this exact source head; no automatic retry")
                         return outcome
                     if any(run.get("status") != "completed" for run in prior):
@@ -518,6 +530,11 @@ def write_reports(outcomes: list[dict]) -> None:
         lines.append(f"Refreshed this pass: {', '.join(f'#{n}' for n in refreshed) if refreshed else 'none'}")
         lines.append(f"Deferred to a later pass: {len(deferred)}"
                      + (f" ({', '.join(f'#{n}' for n in deferred)})" if deferred else ""))
+        blocked = [item.get("number") for item in outcomes if item.get("status") == "failed_gate"]
+        lines.append(f"Blocked by failed required checks: {len(blocked)}"
+                     + (f" ({', '.join(f'#{n}' for n in blocked)})" if blocked else ""))
+        lines.append("Blocked PRs retain their failed checks and source heads; no automatic retry or refresh. "
+                     "This is an expected reconciliation result, not a successful PR gate.")
         lines.append("")
         lines.append("At most one successful branch refresh is performed per pass, so a rebased head "
                      "does not stampede the required checks. Deferred PRs stay stale only until a "
@@ -537,12 +554,15 @@ def main() -> int:
         outcomes = updater.reconcile()
         write_reports(outcomes)
         print(json.dumps(outcomes, sort_keys=True))
-        blocking = {"error", "api_error", "failed", "failed_gate", "conflict_or_race", "identity_race",
-                    "identity_ambiguous", "consent_revoked", "dispatch_uncertain",
-                    "untrusted_workflow", "update_uncertain", "not_current"}
-        # "deferred" is the expected serialized-queue state, not a failure: the
-        # PR stays queued for a later pass and its branch is untouched.
-        return 1 if any(item.get("status") in blocking for item in outcomes) else 0
+        if any(item.get("status") == "failed_gate" for item in outcomes):
+            # Static text only: untrusted PR/API metadata cannot inject Actions
+            # annotations. The structured report retains each failed identity.
+            print("::warning title=PRs blocked by failed required checks::"
+                  "Required checks remain failed; no automatic retry or replacement check identity was requested. "
+                  "See the per-PR summary and artifact. This is not a passing PR gate.")
+        # Reconciliation health is separate from PR acceptance. Genuine API,
+        # trust/identity/check errors and unknown future states fail closed.
+        return 1 if any(item.get("status") not in NON_ERROR_OUTCOMES for item in outcomes) else 0
     except ApiError as exc:
         print(f"PR updater failed closed: {exc}", file=sys.stderr)
         return 2

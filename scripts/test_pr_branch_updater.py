@@ -376,7 +376,7 @@ class UpdaterTests(unittest.TestCase):
         self.api.workflows["ci.yml"] = [self.source_run(conclusion="failure"), self.source_run(run_id=2)]
         self.api.checks[C] = [self.successful_check()]
         state, detail = self.updater.ensure_workflow(p, "ci.yml", C, A)
-        self.assertEqual(state, "failed")
+        self.assertEqual(state, "failed_gate")
         self.assertIn("no automatic retry", detail)
         self.assertFalse(any(call[0] == "POST" for call in self.api.calls))
 
@@ -432,7 +432,7 @@ class UpdaterTests(unittest.TestCase):
         ]
         self.api.checks[C] = [self.successful_check()]
         state, detail = self.updater.ensure_workflow(p, "ci.yml", C, A)
-        self.assertEqual(state, "failed")
+        self.assertEqual(state, "failed_gate")
         self.assertIn("no automatic retry", detail)
 
     def test_earlier_active_run_blocks_stale_refresh_after_a_later_success(self):
@@ -555,7 +555,7 @@ class UpdaterTests(unittest.TestCase):
             "head_sha": C, "head_branch": "feature/1", "status": "completed", "conclusion": "failure",
             "check_suite_id": 5, "created_at": "2026-10-26T00:00:00Z",
         })
-        self.assertEqual(self.updater.process(p)["status"], "failed")
+        self.assertEqual(self.updater.process(p)["status"], "failed_gate")
         self.assertFalse(any(c[0] == "POST" for c in self.api.calls))
         p["head"]["sha"] = D
         self.api.prs[1] = p
@@ -596,6 +596,60 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(data["pull_requests"][0]["number"], 3)
             self.assertIn("\\|", summary.read_text())
 
+    def test_cli_reports_known_gate_blockers_without_failed_automation_or_mutations(self):
+        for stale in (False, True):
+            for conclusion in ("failure", "timed_out", "startup_failure"):
+                with self.subTest(stale=stale, conclusion=conclusion), tempfile.TemporaryDirectory() as tmp:
+                    api = FakeAPI([pull(head=B)])
+                    api.main = D
+                    if not stale:
+                        api.current.add((D, B))
+                    api.workflows["ci.yml"] = [self.source_run(head=B, conclusion=conclusion)]
+                    artifact, summary = Path(tmp) / "outcomes.json", Path(tmp) / "summary.md"
+                    before = json.dumps(api.prs, sort_keys=True)
+                    output = io.StringIO()
+                    with patch.dict(os.environ, {"GITHUB_REPOSITORY": mod.REPO, "GITHUB_EVENT_NAME": "push",
+                                                 "GITHUB_TOKEN": "test-token", "PR_UPDATE_OUTCOMES": str(artifact),
+                                                 "GITHUB_STEP_SUMMARY": str(summary)}), \
+                            patch.object(mod, "GitHub", return_value=api), patch("sys.stdout", output):
+                        code = mod.main()
+                    self.assertEqual(code, 0, "expected blocked PR is not an updater malfunction")
+                    data = json.loads(artifact.read_text())
+                    self.assertEqual(data["pull_requests"][0]["status"], "failed_gate")
+                    self.assertEqual(data["pull_requests"][0]["head"], B)
+                    self.assertIn("::warning", output.getvalue())
+                    self.assertIn("Blocked by failed required checks: 1 (#1)", summary.read_text())
+                    self.assertEqual(json.dumps(api.prs, sort_keys=True), before)
+                    self.assertFalse(any(c[0] in {"PUT", "POST"} for c in api.calls))
+
+    def test_cli_operational_errors_and_unknown_outcomes_still_fail_closed(self):
+        statuses = ("error", "api_error", "failed", "conflict_or_race", "identity_race",
+                    "identity_ambiguous", "consent_revoked", "dispatch_uncertain",
+                    "untrusted_workflow", "update_uncertain", "not_current", "unknown_future_status")
+        with tempfile.TemporaryDirectory() as tmp:
+            for status in statuses:
+                with self.subTest(status=status), \
+                        patch.dict(os.environ, {"GITHUB_REPOSITORY": mod.REPO, "GITHUB_EVENT_NAME": "push",
+                                                "GITHUB_TOKEN": "test-token", "PR_UPDATE_OUTCOMES": str(Path(tmp) / "out.json"),
+                                                "GITHUB_STEP_SUMMARY": str(Path(tmp) / "summary.md")}), \
+                        patch.object(mod.Updater, "reconcile", return_value=[
+                            {"number": 1, "status": "failed_gate"}, {"number": 2, "status": status}]), \
+                        patch("sys.stdout", io.StringIO()):
+                    self.assertEqual(mod.main(), 1)
+
+    def test_non_verdict_invalid_check_conclusions_are_not_expected_gate_blockers(self):
+        for stale in (False, True):
+            for conclusion in ("neutral", "skipped", "unknown"):
+                with self.subTest(stale=stale, conclusion=conclusion):
+                    api = FakeAPI([pull(head=B)])
+                    api.main = D
+                    if not stale:
+                        api.current.add((D, B))
+                    api.workflows["ci.yml"] = [self.source_run(head=B, conclusion=conclusion)]
+                    outcome = mod.Updater(api).process(api.prs[1])
+                    self.assertEqual(outcome["status"], "failed")
+                    self.assertFalse(any(c[0] in {"PUT", "POST"} for c in api.calls))
+
     def test_cli_rejects_pr_event_and_wrong_repo_before_api_access(self):
         with patch.dict(os.environ, {"GITHUB_REPOSITORY": mod.REPO, "GITHUB_EVENT_NAME": "pull_request", "GITHUB_TOKEN": "secret"}):
             self.assertEqual(mod.main(), 2)
@@ -604,6 +658,11 @@ class UpdaterTests(unittest.TestCase):
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_updater_and_regressions_have_explicit_code_owner_coverage(self):
+        owners = (ROOT / ".github/CODEOWNERS").read_text().splitlines()
+        self.assertIn("/scripts/update-pr-branches.py @macel94", owners)
+        self.assertIn("/scripts/test_pr_branch_updater.py @macel94", owners)
+
     def test_only_read_only_self_tests_run_on_pr_events_and_writer_is_main_trusted(self):
         workflow = (ROOT / ".github/workflows/pr-branch-updater.yml").read_text()
         self.assertIn("pull_request:", workflow)

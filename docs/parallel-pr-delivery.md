@@ -126,6 +126,24 @@ is restricted to main; non-main dispatch runs only read-only policy tests.
 Failures/races remain visible rather than being
 retried until green.
 
+### Reconciliation health is not PR acceptance
+
+When an exact-head run concludes `failure`, `timed_out` or `startup_failure`,
+the updater shall retain `failed_gate` in the per-PR artifact/summary, emit an
+Actions warning and leave the branch and failed required checks untouched.
+This expected blocked-PR outcome does **not** fail the unrelated main-push
+reconciliation job. It is never a passing PR check, permission to merge or a
+reason to refresh/retry that source. Both stale and already-current heads obey
+the same rule; an earlier failure remains sticky after a later success.
+
+If API, workflow trust, source/check identity, conflict/race or uncertain
+mutation errors occur, the updater shall still exit nonzero. Missing/invalid
+check evidence and unknown outcome states fail closed, not as expected gate
+blockers. A warning for one blocked PR cannot hide another PR's operational
+error. Read-only PR self-tests, all 14 protected contexts, all 40 strict median
+wins, review requirements and the serialized one-refresh limit are unchanged.
+This reporting correction is active only after its protected PR merges.
+
 ### Security and event boundary
 
 - No `pull_request_target` trigger is used. The PR-event job has only
@@ -164,7 +182,9 @@ automation does not retry failed gates, resolve conflicts, or bypass protection.
 Check the `PR branch updater` Actions run's summary and
 `pr-branch-updater-<run-id>` artifact for per-PR outcomes. A failed candidate
 must receive a genuine owner fix or explicit investigation; do not re-run its
-Valkey gate until the failure is resolved. Workflow-file changes are owned by
+Valkey gate until the failure is resolved. A green reconciliation run with a
+`failed_gate` warning means the updater correctly left that PR blocked, not that
+the failed performance result has been accepted. Workflow-file changes are owned by
 `@macel94`; this PR needs the configured code-owner review before protected
 merge. Do not claim the workflow is deployed before it actually merges.
 
