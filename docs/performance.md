@@ -62,6 +62,9 @@ before/after experiment.
 
 ## Find results or measure your workload
 
+- [Daily five-server comparison](daily-benchmarks.md): same-host Rillcache, Redis,
+  Valkey, Dragonfly and Garnet results, all pairwise comparisons and per-workload
+  reference rankings; separate from protected PR acceptance.
 - [Benchmark dashboard](../benchmarks/README.md): published reports and retained per-run history.
 - [Methodology](benchmarks.md): parameters, validation, timing and native process ownership.
 - [Runtime and hot paths](hot-paths.md): architecture, measured decisions and trade-offs.

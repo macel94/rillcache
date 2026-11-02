@@ -11,6 +11,7 @@ project's front page.
 | Store the first key, build locally or change a limit | [Getting started](getting-started.md) |
 | Check whether an application's commands will work | [Compatibility](compatibility.md) |
 | Inspect measured throughput and its scope | [Performance](performance.md) |
+| Compare all five servers in the daily run | [Daily benchmarks](daily-benchmarks.md) |
 | Understand remaining production work | [Production readiness](production-readiness.md) |
 | Find every remaining production blocker | [Production readiness gaps](production-readiness-gaps.md) |
 

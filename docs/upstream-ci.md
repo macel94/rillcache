@@ -7,14 +7,17 @@ The original gate requires all 20 scoped medians; the latter uses the official
 `valkey-benchmark` and requires all 10 four-CPU workload/pipeline medians to win.
 The four-CPU context, compatibility build and all six Tcl matrix checks are now
 live-required: [full Actions gate audit](actions-gate-audit.md). The separate
-manual performance workflow is not a PR gate. These workflows do not grant full
+daily/manual performance workflow is not a PR gate. Its daily job compares all
+five servers, including Dragonfly and Garnet; see [daily benchmarks](daily-benchmarks.md). These workflows do not grant full
 Redis/Valkey compatibility, production readiness, or a universal performance claim.
 
 ## Run and inspect
 
 - `.github/workflows/upstream-compatibility.yml`: every PR and manual dispatch.
-- `.github/workflows/upstream-performance.yml`: **manual dispatch only**, separate
-  from compatibility. No matrix splits the three-server benchmark across runners.
+- `.github/workflows/upstream-performance.yml`: **daily at 05:17 UTC and manual**,
+  separate from compatibility. The default daily job compares all five servers
+  on one runner; `daily=false` retains the legacy three-server study below.
+  The new daily schedule is active only after its protected PR merges to main.
 - Actions UI: select the workflow, **Run workflow**, choose the task branch.
   With an authenticated CLI: `gh workflow run upstream-compatibility.yml --ref BRANCH`
   or `gh workflow run upstream-performance.yml --ref BRANCH`. A new manual-only
@@ -151,7 +154,11 @@ missing prerequisite, incomplete unit or zero executed tests cannot pass.
 Wrapper exit 1 means candidate failure; exit 2 means invalid native control or
 infrastructure. Raw child exit codes are independently retained in command JSON.
 
-## Manual matched performance contract
+## Legacy manual matched performance contract
+
+Select `daily=false` for this preceding three-server contract. The new default
+five-server contract, generator and CPU budget are documented separately in
+[daily benchmarks](daily-benchmarks.md); results from the two are not interchangeable.
 
 The same pinned Redis `redis-benchmark` binary is used unchanged for every server,
 not Rillcache's Rust benchmark client and not one client per reference. Fixed

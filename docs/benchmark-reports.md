@@ -1,8 +1,11 @@
 # Automatic benchmark reports
 
 Read **[current performance](../benchmarks/README.md)** directly in the repository.
-The root README links to it. Full manual/weekly comparative runs propose report
-PRs under the [PR-only main/test/Valkey policy](pr-quality-gate.md). After the
+The root README links to it. Legacy manual Rust-generator comparative runs propose
+report PRs under the [PR-only main/test/Valkey policy](pr-quality-gate.md). The
+[dedicated daily five-server comparison](daily-benchmarks.md) instead publishes
+its own Actions summary and raw artifact; it does not replace this report format
+or create an automated report PR. After the
 required checks/reviews and protected merge, they publish:
 
 - `benchmarks/README.md`: the latest workflow run/review-attempt's performance page.

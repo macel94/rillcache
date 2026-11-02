@@ -13,6 +13,9 @@
 /scripts/test-multicpu-performance.py @macel94
 /scripts/upstream/common.py @macel94
 /scripts/upstream/performance.py @macel94
+/scripts/upstream/daily.py @macel94
+/scripts/upstream/daily_prepare.py @macel94
+/ci/daily-pins.json @macel94
 /scripts/compare-builds.py @macel94
 /scripts/publish-report-pr.sh @macel94
 /scripts/test-pr-policy.py @macel94
