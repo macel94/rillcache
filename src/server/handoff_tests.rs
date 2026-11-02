@@ -17,7 +17,7 @@ pub(super) fn pair(input: Vec<u8>) -> (Client, TcpStream) {
         .unwrap();
     (
         Client {
-            stream,
+            stream: ClientSocket::direct(stream),
             session: Session::new(),
             input,
             output: Vec::new(),

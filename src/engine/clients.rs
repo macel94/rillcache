@@ -3,6 +3,7 @@
 #[cfg(test)]
 use super::ShardExecutor;
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -18,7 +19,7 @@ pub struct ClientRecord {
     pub(super) user: Option<Vec<u8>>,
     pub(super) created: Instant,
     pub(super) blocked: std::sync::atomic::AtomicBool,
-    pub(super) control: Option<TcpStream>,
+    pub(super) control: Option<Arc<TcpStream>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +118,16 @@ impl super::ServerServices {
         addr: SocketAddr,
         laddr: SocketAddr,
         control: TcpStream,
+    ) {
+        self.register_shared_client(id, addr, laddr, Arc::new(control));
+    }
+
+    pub(crate) fn register_shared_client(
+        &self,
+        id: u64,
+        addr: SocketAddr,
+        laddr: SocketAddr,
+        control: Arc<TcpStream>,
     ) {
         if let Ok(mut clients) = self.clients.write() {
             clients.insert(
@@ -255,8 +266,8 @@ impl super::ServerServices {
             .find(|snapshot| snapshot.id == id)
     }
 
-    /// Close every listed client except `skip`. Controls are cloned under the
-    /// registry lock and shut down after it is released.
+    /// Close every listed client except `skip`. Shared controls are moved out
+    /// under the registry lock and shut down after it is released.
     pub fn client_kill_ids(&self, ids: &[u64], skip: u64) -> usize {
         let controls = {
             let Ok(mut clients) = self.clients.write() else {
@@ -269,9 +280,8 @@ impl super::ServerServices {
                 }
                 if let Some(record) = clients.remove(id)
                     && let Some(control) = record.control
-                    && let Ok(clone) = control.try_clone()
                 {
-                    controls.push(clone);
+                    controls.push(control);
                 }
             }
             controls

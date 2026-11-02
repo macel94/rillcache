@@ -424,3 +424,9 @@ platforms retain timeout-based fallback admission.
   timeout, max clients, session isolation and joined shutdown. Documentation
   shall state that no key is sharded, no per-command owner hop is added, and that
   protected-gate evidence decides any throughput claim.
+- **R-SOCKET4 (event-driven):** When managed Linux TCP receives bytes through the
+  owned stream descriptor, it shall preserve binary input, WouldBlock, EOF,
+  interruption and half-close behavior, the original selector descriptor and
+  existing descriptor budget. Writes shall retain standard TCP SIGPIPE handling;
+  shared client controls shall still cancel both directions and join shutdown.
+  Non-Linux, borrowed legacy handoff and TLS receive paths shall remain unchanged.

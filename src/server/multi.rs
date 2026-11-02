@@ -7,6 +7,7 @@
 //! in request order, including local commands that fall back to the synchronous
 //! path.
 
+use super::client_socket::ClientSocket;
 use super::pool::Client;
 use super::*;
 use crate::engine::{
@@ -241,7 +242,7 @@ impl Reactor {
                 .next_token
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("readiness token space exhausted"))?;
-            let control = stream.try_clone()?;
+            let (stream, control) = ClientSocket::new(stream)?;
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
             session.set_peer(peer);
@@ -251,7 +252,7 @@ impl Reactor {
                 .registry()
                 .register(&mut SourceFd(&fd), token, Interest::READABLE)?;
             self.store
-                .register_client(session.id(), peer, stream.local_addr()?, control);
+                .register_shared_client(session.id(), peer, stream.local_addr()?, control);
             let connection = Connection {
                 token,
                 client: Client {
