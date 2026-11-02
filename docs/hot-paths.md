@@ -13,6 +13,21 @@ compatibility work. It retains 84 checked component samples, controls, CPU profi
 losses and limits. It is not a replacement native comparison or an optimization
 claim; the historical profiles below remain labeled with their original baseline.
 
+## Cache-separated process command counters
+
+Process command counts remain exact relaxed atomic increments, sharded by client
+ID into 64 slots. Each slot now has 128-byte alignment and stride rather than
+packing eight-byte atomics together. This separates concurrent reactor writes on
+common 64/128-byte cache geometries; it does not eliminate collisions between
+client IDs mapped to the same slot or promise a particular CPU cache layout.
+The storage grows from 512 to 8192 bytes per service instance (7680 extra bytes,
+excluding any enclosing-struct padding). INFO still sums every slot and
+`CONFIG RESETSTAT` still clears every slot; no commands are sampled or deferred.
+Tests check actual allocation layout, concurrent distinct/colliding IDs, reset
+and reuse, and exact socket-level PING totals at P1/P16 with one/four reactors.
+This is a source-level false-sharing fix, not a measured throughput claim. The
+unchanged current-head Valkey gates remain the merge acceptance criteria.
+
 ## Historical Mio readiness implementation (S-MIO; superseded)
 
 This preceding increment used the reviewed Mio dependency to replace default

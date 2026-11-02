@@ -46,7 +46,9 @@ Prefer a native binary? See [building from source](docs/getting-started.md#build
 
 Rillcache is **early-stage**: use it for development and evaluation on rebuildable
 data. Full Redis drop-in compatibility and production readiness are still in
-progress; the [compatibility guide](docs/compatibility.md) explains what works today.
+progress; the [canonical gap checklist](docs/production-readiness-gaps.md) records
+every remaining blocker, and the [compatibility guide](docs/compatibility.md)
+explains what works today.
 
 Try it, report unexpected behavior, or help shape what comes next.
 [Contributing](CONTRIBUTING.md) explains the AI-led development process, tests and

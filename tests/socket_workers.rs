@@ -95,6 +95,55 @@ fn default_plain_tcp_uses_owner_migration_workers_and_serves_wire() {
 }
 
 #[test]
+fn concurrent_ping_accounting_and_reset_are_exact_with_one_or_four_reactors() {
+    fn total(peer: &mut Peer) -> u64 {
+        peer.send(&[b"INFO", b"stats"]);
+        let info = String::from_utf8(peer.bulk()).unwrap();
+        info.lines()
+            .find_map(|line| line.strip_prefix("total_commands_processed:"))
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    for workers in [1, 4] {
+        let server = start(Some(workers));
+        assert_eq!(server.scheduling_policy().socket_workers, workers);
+        let mut admin = Peer::new(&server);
+        for pipeline in [1, 16] {
+            let peers: Vec<_> = (0..8).map(|_| Peer::new(&server)).collect();
+            admin.send(&[b"CONFIG", b"RESETSTAT"]);
+            assert_eq!(admin.line(), b"+OK\r\n");
+            let barrier = std::sync::Barrier::new(peers.len());
+            std::thread::scope(|scope| {
+                for mut peer in peers {
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let mut frame = Vec::new();
+                        for _ in 0..pipeline {
+                            encode_request(&[b"PING"], &mut frame);
+                        }
+                        barrier.wait();
+                        for _ in 0..64 / pipeline {
+                            peer.0.get_mut().write_all(&frame).unwrap();
+                            for _ in 0..pipeline {
+                                assert_eq!(peer.line(), b"+PONG\r\n");
+                            }
+                        }
+                    });
+                }
+            });
+            // Includes this INFO command; there is no sampled/batched accounting.
+            assert_eq!(total(&mut admin), 8 * 64 + 1);
+            admin.send(&[b"CONFIG", b"RESETSTAT"]);
+            assert_eq!(admin.line(), b"+OK\r\n");
+            assert_eq!(total(&mut admin), 1);
+        }
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn explicit_one_worker_keeps_owner_local_path() {
     let server = start(Some(1));
     assert_eq!(server.scheduling_policy().socket_workers, 1);

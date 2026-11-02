@@ -5,9 +5,10 @@ Rillcache has a native TLS 1.3 listener implemented with
 OpenSSL, no cgo and no separate TLS sidecar. TLS is part of the server process and
 uses the normal RESP session/worker path.
 
-The repository dependency policy allows **rustls and the transitive crates
-required to build it** as its sole external-dependency exception. The crates are
-vendored for offline builds. Project code remains `unsafe_code = "forbid"`.
+The repository dependency policy allows **rustls**, **Tokio** (with Mio as its
+readiness backend) and **`core_affinity`**, plus the transitive crates required
+to build them. The crates are vendored for offline builds. Application code
+remains `unsafe_code = "forbid"`.
 
 ## Protocol scope
 

@@ -98,7 +98,8 @@ intersection; a NaN intermediate or aggregate score becomes zero, matching Redis
 variants replace the destination atomically, clear its TTL and delete it when the
 result is empty. `ZMPOP numkeys key [key ...] MIN|MAX [COUNT count]` pops from the
 first non-empty key, returns `[key, [[member, score], ...]]`, deletes emptied keys
-and preserves remaining TTL; blocking `BZMPOP` is unsupported. `SPOP`,
+and preserves remaining TTL; blocking `BZMPOP` is supported and covered by wire
+tests. `SPOP`,
 `SRANDMEMBER`, `ZRANDMEMBER` and `ZPOPMIN`/`ZPOPMAX` use
 bounded local randomness;
 Redis does not promise a particular random member. Negative `ZRANDMEMBER` counts

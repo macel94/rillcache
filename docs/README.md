@@ -12,6 +12,7 @@ project's front page.
 | Check whether an application's commands will work | [Compatibility](compatibility.md) |
 | Inspect measured throughput and its scope | [Performance](performance.md) |
 | Understand remaining production work | [Production readiness](production-readiness.md) |
+| Find every remaining production blocker | [Production readiness gaps](production-readiness-gaps.md) |
 
 ## Run and operate
 
