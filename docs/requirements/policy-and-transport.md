@@ -408,10 +408,11 @@ platforms retain timeout-based fallback admission.
 - **R-SOCKET1 (event-driven):** When Rillcache starts plain Unix TCP without fixed
   workers, TLS-only routing, Tokio or multi-owner execution, it shall run
   `min(4, allowed CPUs)` reactors by default; `--socket-workers 1..16` shall
-  override that count. One reactor shall keep the owner-local data executor and
-  all data commands; worker reactors shall own disjoint accepted connections and
-  execute only bare connection-local commands. `--socket-workers 1` shall retain
-  the single owner-local reactor.
+  override that count. One reactor shall be the only acceptor, keep the
+  owner-local data executor and all data commands, and assign new connections
+  round-robin; worker reactors shall own their assigned connections and execute
+  only bare connection-local commands. `--socket-workers 1` shall retain the
+  single owner-local reactor.
 - **R-SOCKET2 (state-driven):** Before a worker executes the first data command on
   a connection, it shall flush prior replies, deregister the socket, transfer the
   session and unparsed input, and hand the connection to the owner reactor, which

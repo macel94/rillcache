@@ -77,6 +77,35 @@ impl Drop for Connection {
     }
 }
 
+/// A client in transit between reactors. Dropping it (failed send/shutdown)
+/// unregisters the client exactly once; a successful attach takes it out.
+struct PendingClient {
+    client: Option<Client>,
+    services: Arc<ServerServices>,
+}
+
+impl PendingClient {
+    fn new(client: Client, services: Arc<ServerServices>) -> Self {
+        Self {
+            client: Some(client),
+            services,
+        }
+    }
+
+    fn take(&mut self) -> Client {
+        self.client.take().expect("pending client already taken")
+    }
+}
+
+impl Drop for PendingClient {
+    fn drop(&mut self) {
+        if let Some(client) = &self.client {
+            self.services.pubsub_remove_client(client.session.id());
+            self.services.unregister_client(client.session.id());
+        }
+    }
+}
+
 struct Reactor<E: Execution> {
     poll: Poll,
     listener: TcpListener,
@@ -98,9 +127,13 @@ struct Reactor<E: Execution> {
     maintenance: bool,
     /// Worker reactors stop before data commands and send the connection here.
     worker: bool,
-    migrate: Option<Sender<Client>>,
-    incoming: Option<Receiver<Client>>,
+    migrate: Option<Sender<PendingClient>>,
+    incoming: Option<Receiver<PendingClient>>,
     waker: Option<Arc<Waker>>,
+    /// Owner only: round-robin lanes to worker accept inboxes and their wakers.
+    accept_lanes: Vec<Sender<PendingClient>>,
+    accept_wakers: Vec<Arc<Waker>>,
+    next_accept: usize,
 }
 
 impl<E: Execution> Drop for Reactor<E> {
@@ -164,60 +197,48 @@ impl<E: Execution> Reactor<E> {
                 let _ = stream.shutdown(Shutdown::Both);
                 continue;
             }
-            let token = Token(self.next_token);
-            self.next_token = self
-                .next_token
-                .checked_add(1)
-                .ok_or_else(|| io::Error::other("readiness token space exhausted"))?;
-            let control = stream.try_clone()?;
-            let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
-            let mut session = Session::new();
-            session.set_peer(peer);
-            session.set_pubsub_sender(sender);
-            let fd = stream.as_raw_fd();
-            self.poll
-                .registry()
-                .register(&mut SourceFd(&fd), token, Interest::READABLE)?;
-            self.store
-                .register_client(session.id(), peer, stream.local_addr()?, control);
-            let connection = Connection {
-                token,
-                client: Some(Client {
-                    stream,
-                    session,
-                    input: Vec::with_capacity(8192.min(self.config.limits.max_frame_bytes)),
-                    output: Vec::with_capacity(8192),
-                    sent: 0,
-                    closing: false,
-                    eof: false,
-                    retry_io: false,
-                    activity: Instant::now(),
-                    _permit: Some(Permit::acquire(&self.admitted)),
-                    shutdown_on_drop: true,
-                    pubsub: receiver,
-                }),
-                store: self.store.services_handle(),
-                queued: false,
-                asynchronous: false,
-                writable: false,
-                read_closed: false,
-            };
-            let slot = match self.free_slots.pop() {
-                Some(slot) => {
-                    debug_assert!(self.clients[slot].is_none());
-                    self.clients[slot] = Some(connection);
-                    slot
+            let client = self.make_client(stream, peer)?;
+            let total = self.accept_lanes.len() + 1;
+            let lane = self.next_accept % total;
+            self.next_accept = (self.next_accept + 1) % total;
+            if lane == 0 || self.accept_lanes.is_empty() {
+                self.attach(PendingClient::new(client, self.store.services_handle()))?;
+            } else {
+                let pending = PendingClient::new(client, self.store.services_handle());
+                if self.accept_lanes[lane - 1].send(pending).is_ok()
+                    && let Some(waker) = self.accept_wakers.get(lane - 1)
+                {
+                    let _ = waker.wake();
                 }
-                None => {
-                    self.clients.push(Some(connection));
-                    self.clients.len() - 1
-                }
-            };
-            self.tokens.insert(token, slot);
-            self.enqueue(ReadyKey { slot, token });
+            }
         }
         // Keep accept readiness after a bounded batch, even without another edge.
         Ok(())
+    }
+
+    fn make_client(&mut self, stream: TcpStream, peer: SocketAddr) -> io::Result<Client> {
+        let control = stream.try_clone()?;
+        let local = stream.local_addr()?;
+        let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
+        let mut session = Session::new();
+        session.set_peer(peer);
+        session.set_pubsub_sender(sender);
+        self.store
+            .register_client(session.id(), peer, local, control);
+        Ok(Client {
+            stream,
+            session,
+            input: Vec::with_capacity(8192.min(self.config.limits.max_frame_bytes)),
+            output: Vec::with_capacity(8192),
+            sent: 0,
+            closing: false,
+            eof: false,
+            retry_io: false,
+            activity: Instant::now(),
+            _permit: Some(Permit::acquire(&self.admitted)),
+            shutdown_on_drop: true,
+            pubsub: receiver,
+        })
     }
 
     fn service(&mut self, key: ReadyKey, chunk: &mut [u8]) -> io::Result<Served> {
@@ -343,10 +364,8 @@ impl<E: Execution> Reactor<E> {
         let fd = client.stream.as_raw_fd();
         let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
         if let Some(sender) = &self.migrate {
-            if let Err(error) = sender.send(client) {
-                let client = error.0;
-                self.store.pubsub_remove_client(client.session.id());
-                self.store.unregister_client(client.session.id());
+            let pending = PendingClient::new(client, self.store.services_handle());
+            if sender.send(pending).is_err() {
                 return;
             }
             if let Some(waker) = &self.waker {
@@ -358,7 +377,8 @@ impl<E: Execution> Reactor<E> {
         }
     }
 
-    fn attach(&mut self, client: Client) -> io::Result<()> {
+    fn attach(&mut self, mut pending: PendingClient) -> io::Result<()> {
+        let client = pending.take();
         let token = Token(self.next_token);
         self.next_token = self
             .next_token
@@ -558,9 +578,11 @@ pub(super) fn serve_shared(
     let fd = listener.as_raw_fd();
     poll.registry()
         .register(&mut SourceFd(&fd), LISTENER, Interest::READABLE)?;
-    let waker = Arc::new(Waker::new(poll.registry(), WAKER)?);
+    let owner_waker = Arc::new(Waker::new(poll.registry(), WAKER)?);
     let admitted = Arc::new(AtomicUsize::new(0));
-    let (migrate, incoming) = std::sync::mpsc::channel::<Client>();
+    let (migrate, incoming) = std::sync::mpsc::channel::<PendingClient>();
+    let mut accept_lanes = Vec::with_capacity(workers - 1);
+    let mut accept_wakers = Vec::with_capacity(workers - 1);
     let mut handles = Vec::with_capacity(workers - 1);
     for index in 1..workers {
         let listener = listener.try_clone()?;
@@ -569,7 +591,9 @@ pub(super) fn serve_shared(
         let stop = Arc::clone(&stopping);
         let admitted = Arc::clone(&admitted);
         let migrate = migrate.clone();
-        let waker = Arc::clone(&waker);
+        let owner_waker = Arc::clone(&owner_waker);
+        let (accept_tx, accept_rx) = std::sync::mpsc::channel::<PendingClient>();
+        let (waker_tx, waker_rx) = std::sync::mpsc::sync_channel(1);
         let handle = thread::Builder::new()
             .name(format!("rillcache-worker-{index}"))
             .spawn(move || {
@@ -579,14 +603,21 @@ pub(super) fn serve_shared(
                     store,
                     stop.clone(),
                     admitted,
+                    accept_rx,
                     migrate,
-                    waker,
+                    owner_waker,
+                    waker_tx,
                 );
                 if result.is_err() {
                     stop.store(true, Ordering::Release);
                 }
                 result
             })?;
+        let worker_waker = waker_rx
+            .recv()
+            .map_err(|_| io::Error::other("worker reactor failed to publish its waker"))?;
+        accept_lanes.push(accept_tx);
+        accept_wakers.push(worker_waker);
         handles.push(handle);
     }
     drop(migrate);
@@ -610,6 +641,9 @@ pub(super) fn serve_shared(
         migrate: None,
         incoming: Some(incoming),
         waker: None,
+        accept_lanes,
+        accept_wakers,
+        next_accept: 0,
     };
     let result = reactor.run();
     stopping.store(true, Ordering::Release);
@@ -628,19 +662,25 @@ pub(super) fn serve_shared(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve_worker(
     listener: TcpListener,
     config: Config,
     store: Arc<Store>,
     stopping: Arc<AtomicBool>,
     admitted: Arc<AtomicUsize>,
-    migrate: Sender<Client>,
-    waker: Arc<Waker>,
+    accept: Receiver<PendingClient>,
+    migrate: Sender<PendingClient>,
+    owner_waker: Arc<Waker>,
+    waker_tx: std::sync::mpsc::SyncSender<Arc<Waker>>,
 ) -> io::Result<()> {
     let poll = Poll::new()?;
-    let fd = listener.as_raw_fd();
-    poll.registry()
-        .register(&mut SourceFd(&fd), LISTENER, Interest::READABLE)?;
+    let waker = Arc::new(Waker::new(poll.registry(), WAKER)?);
+    waker_tx
+        .send(Arc::clone(&waker))
+        .map_err(|_| io::Error::other("owner stopped during worker startup"))?;
+    // Only the owner accepts. The worker listener clone is held for lifetime
+    // symmetry but stays unregistered.
     Reactor {
         poll,
         listener,
@@ -659,8 +699,11 @@ fn serve_worker(
         maintenance: false,
         worker: true,
         migrate: Some(migrate),
-        incoming: None,
-        waker: Some(waker),
+        incoming: Some(accept),
+        waker: Some(owner_waker),
+        accept_lanes: Vec::new(),
+        accept_wakers: Vec::new(),
+        next_accept: 0,
     }
     .run()
 }
@@ -698,6 +741,9 @@ fn serve_with<E: Execution>(
         migrate: None,
         incoming: None,
         waker: None,
+        accept_lanes: Vec::new(),
+        accept_wakers: Vec::new(),
+        next_accept: 0,
     }
     .run()
 }
@@ -732,6 +778,9 @@ mod tests {
             migrate: None,
             incoming: None,
             waker: None,
+            accept_lanes: Vec::new(),
+            accept_wakers: Vec::new(),
+            next_accept: 0,
         }
     }
 

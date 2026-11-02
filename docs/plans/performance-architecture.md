@@ -460,8 +460,10 @@ revive it without a different readiness mechanism and fresh gate evidence.
 
 ### 4.8 Owner-migration socket workers (implemented, gates pending)
 
-One reactor keeps the owner-local executor, maintenance and every data command.
-The other reactors own disjoint accepted connections and execute only bare
+One reactor is the only acceptor, keeps the owner-local executor, maintenance and
+every data command, and assigns new connections round-robin to the other reactors
+so a shared-listener wakeup cannot skew connection-local work onto one worker. The
+other reactors own their assigned connections and execute only bare
 connection-local commands (PING/ECHO/QUIT). Before the first data command a worker
 flushes prior replies, deregisters the socket, transfers the session and unparsed
 input, and hands the connection to the owner, which registers it and continues in

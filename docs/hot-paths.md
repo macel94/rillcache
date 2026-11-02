@@ -408,9 +408,11 @@ PING/P1 but loses the data-command P1 and every P16 row. Copying io_uring or
 shard hops is outside this project's safe boundary.
 
 The default plain Unix TCP path starts `min(4, allowed CPUs)` reactors
-(`--socket-workers 1..16` overrides). One reactor keeps the published owner-local
-executor and all data commands. The other reactors own disjoint accepted
-connections and execute only bare connection-local commands (PING/ECHO/QUIT);
+(`--socket-workers 1..16` overrides). One reactor is the only acceptor, keeps the
+published owner-local executor and all data commands, and assigns new connections
+round-robin so a shared-listener wakeup cannot skew PING onto one worker. The
+other reactors own their assigned connections and execute only bare
+connection-local commands (PING/ECHO/QUIT);
 before the first data command they flush replies, deregister the socket, transfer
 the session/input and hand the connection to the owner reactor, which registers
 and continues it in order. `--socket-workers 1` keeps the previous single
