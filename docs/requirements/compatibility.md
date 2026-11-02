@@ -61,16 +61,19 @@ negotiate RESP2/RESP3, and the connection retains its negotiated mode and common
 ID`, `SETNAME`, `GETNAME`, `SETINFO LIB-NAME|LIB-VER`, `INFO`, `SELECT 0` and
 `RESET`.
 The RESP3 reply subset covers the current commands' simple strings, errors,
-integers, bulk strings/arrays, and nulls; null bulk and null array frames are
-converted by frame boundaries, preserving binary payloads. See
-[client sessions](../client-sessions.md) for limits and response details. Real
-redis-cli/library handshake interoperability is not yet verified.
+integers, bulk strings/arrays, nulls and the push frames used by pub/sub; other
+RESP3 types are not implemented. See [client sessions](../client-sessions.md) for
+limits and response details. Pinned `redis-cli` RESP2/RESP3/AUTH/metadata interop
+is covered; Python, Node.js and Go client libraries remain unverified in the
+[canonical gap list](../production-readiness-gaps.md).
 
-Deliberately not supported: empty/null request arrays, other RESP3 types and
-pushes, commands beyond the documented collection/stream subsets, nonzero SELECT
-indices, TLS hardening (SNI/hot reload/OCSP), RDB/AOF-rewrite compatibility, replication, clustering,
-sharded pub/sub, keyspace notifications and scripts. Cluster mode,
-multi-database, and arbitrary Redis AOF/RDB files are not accepted.
+Deliberately not supported: empty/null request arrays, RESP3 types beyond the
+current command subset, commands beyond the documented collection/stream subsets,
+nonzero SELECT indices, TLS hardening (SNI/hot reload/OCSP), RDB/AOF-rewrite
+interoperability, replication, clustering and scripts. Sharded pub/sub and
+keyspace notifications are implemented as standalone, at-most-once surfaces, not
+as cluster-routed or durable delivery. Cluster mode, multi-database and arbitrary
+Redis AOF/RDB files are not accepted.
 Single-password and multi-user ACL-file authentication are supported with
 `AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors,
 read/write key modes, first-argument command rules, `ACL LOG`/`DRYRUN`/`GENPASS`

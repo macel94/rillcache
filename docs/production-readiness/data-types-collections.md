@@ -1,5 +1,7 @@
 # Data types and command surface: Collections, bitmaps and geospatial
 
+Open items are tracked in the canonical [production-readiness gaps](../production-readiness-gaps.md); this file records current behavior and boundaries, not a second checklist.
+
 Part of the [production-readiness plan](../production-readiness.md). This file owns
 the `Collections, bitmaps and geospatial` clauses of the `Data types and command surface` capability row. The
 original row began with the lead-in `Implemented S37/S39/S40/S42/S44/S45/S46/S47/S48/S49/S50/S51/S52/S53/S54/S55/S56/S57/S58/S59/S60/S61/S62/S63/S64/S65/S66/S67/S68/S69/S70/S71/S72/S73/S74/S75/S-HC: `; it applies to every clause below.

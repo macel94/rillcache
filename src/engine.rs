@@ -10,6 +10,14 @@ use crate::protocol::{Limits, encode_bulk};
 
 const COMMAND_COUNTER_SHARDS: usize = 64;
 
+// Different clients can execute on different reactors. Adjacent eight-byte
+// atomics would still contend on the same cache line despite logical sharding.
+// 128-byte spacing also separates paired 64-byte lines on common prefetchers;
+// this is a fixed layout choice, not a claim about every CPU's cache geometry.
+#[repr(align(128))]
+#[derive(Default)]
+struct CommandCounter(std::sync::atomic::AtomicU64);
+
 mod acl_log;
 mod administration;
 mod audit;
@@ -246,7 +254,7 @@ pub struct ServerServices {
     audit_syslog: std::sync::Mutex<Option<audit_syslog::SyslogSink>>,
     audit_syslog_write_failures: std::sync::atomic::AtomicU64,
     connections_received: std::sync::atomic::AtomicU64,
-    commands_processed: [std::sync::atomic::AtomicU64; COMMAND_COUNTER_SHARDS],
+    commands_processed: [CommandCounter; COMMAND_COUNTER_SHARDS],
     rejected_connections: std::sync::atomic::AtomicU64,
     slowlog: std::sync::RwLock<std::collections::VecDeque<slowlog::SlowlogEntry>>,
     slowlog_next_id: std::sync::atomic::AtomicU64,
@@ -360,7 +368,7 @@ impl ServerServices {
             audit_syslog: std::sync::Mutex::new(None),
             audit_syslog_write_failures: std::sync::atomic::AtomicU64::new(0),
             connections_received: std::sync::atomic::AtomicU64::new(0),
-            commands_processed: std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)),
+            commands_processed: std::array::from_fn(|_| CommandCounter::default()),
             rejected_connections: std::sync::atomic::AtomicU64::new(0),
             slowlog: std::sync::RwLock::new(std::collections::VecDeque::new()),
             slowlog_next_id: std::sync::atomic::AtomicU64::new(0),
@@ -533,7 +541,9 @@ impl ServerServices {
 
     pub fn record_command(&self, client_id: u64) {
         let shard = (client_id as usize) % COMMAND_COUNTER_SHARDS;
-        self.commands_processed[shard].fetch_add(1, Ordering::Relaxed);
+        self.commands_processed[shard]
+            .0
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record one network command dispatch. `reply` is only the bytes produced
@@ -666,7 +676,7 @@ impl ServerServices {
             total_commands_processed: self
                 .commands_processed
                 .iter()
-                .map(|counter| counter.load(Ordering::Relaxed))
+                .map(|counter| counter.0.load(Ordering::Relaxed))
                 .sum(),
             rejected_connections: self.rejected_connections.load(Ordering::Relaxed),
             expired_keys,
@@ -1285,7 +1295,7 @@ impl ShardExecutor {
         }
         self.connections_received.store(0, Ordering::Relaxed);
         for counter in &self.commands_processed {
-            counter.store(0, Ordering::Relaxed);
+            counter.0.store(0, Ordering::Relaxed);
         }
         self.rejected_connections.store(0, Ordering::Relaxed);
         self.reset_command_statistics();
@@ -1353,6 +1363,9 @@ fn wrong_type(output: &mut Vec<u8>) {
     );
 }
 
+#[cfg(test)]
+#[path = "engine/command_counter_tests.rs"]
+mod command_counter_tests;
 #[cfg(test)]
 #[path = "engine/conditional_tests.rs"]
 mod conditional_tests;
