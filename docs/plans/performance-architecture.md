@@ -15,8 +15,9 @@ Round-robin accept distribution then failed the Dragonfly gate at the old
 `min(4, CPUs)` count (PR #161), and the follow-up `2 × CPUs` count, capped at
 eight, failed both four-CPU gates on pipeline-1 ping (PR #164, section 2.8). The
 eight-reactor count is rejected; this document now records that evidence without
-a runtime change. A gate pass on one head never substitutes for a fresh head, and
-every dependency still needs explicit review.
+a runtime change. A later refresh onto the isolated command counters passed both
+four-CPU gates (section 2.10). A gate pass on one head never substitutes for a
+fresh head, and every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -300,6 +301,37 @@ review) or a different scheduling mechanism that does not add runnable server
 threads. The docs-only record must not be re-pushed repeatedly to fish for a
 noise pass.
 
+### 2.10 Post-refresh cohort: command-counter isolation and a both-gates pass
+
+Main then advanced to `9692e07`, which pads each of the 64 sharded command
+counters to a 128-byte boundary instead of packing eight adjacent atomics into a
+cache line. The docs-only performance record was refreshed onto that runtime
+(head `c1564aa`, base `9692e07`) and passed every required context:
+
+| Gate | P1 ping Rillcache | Competitor | Delta | P1 p99 R/C | P16 ping Rillcache | Competitor | Delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Valkey 9.1.2 | 112,884.5 | 105,144.5 | +7.36% | 0.111/0.151 | 1,550,105.6 | 1,024,718.4 | +51.3% |
+| Dragonfly 2.0.2 | 111,035.5 | 95,328.0 | +16.48% | 0.111/0.103 | 1,558,257.6 | 1,097,716.8 | +42.0% |
+
+Both comparisons passed 10/10, the original gate passed, and the four-CPU runner
+still had `client_cpus == server_cpus == [0,1,2,3]`. The margin is therefore not
+explained by disjoint client placement.
+
+The plausible mechanism is false sharing: connection-local PING/ECHO run on
+several reactors, and every command increments `total_commands_processed`
+through a shard chosen by client id. Eight adjacent 8-byte atomics shared one
+64-byte line, so different reactors could invalidate each other even though the
+logical counters were disjoint. A 128-byte stride removes that cross-reactor
+line ping-pong; it is a safe-Rust layout change with no allocator, dependency or
+wire change. It also explains why the effect is largest on the multi-reactor P1
+ping rows and small on data rows, which execute on one owner.
+
+Limit: one passing cohort does not isolate the counter change from host noise,
+and the previous ±band still means a future head can fail the same row. The
+claim supported here is that the refreshed runtime passed both four-CPU
+comparisons with a larger P1 ping margin, consistent with the false-sharing
+mechanism; it is not a universal or permanent win.
+
 ## 3. Per-component comparison with Redis and Valkey
 
 Pins: Valkey `9.1.2` and Redis `8.10.2` source tags, as in
@@ -455,11 +487,22 @@ size; revisit only with a large-keyspace measurement.
   ([`session/mod.rs`](../../src/session/mod.rs)). Every command then takes the
   transaction-gate read lock and the data read/write lock even when no journal,
   transaction or observer is active.
+- **Command counters are a multi-reactor cost the C servers do not have.** Valkey
+  and Redis update `stat_numcommands` on one execution thread, so a plain integer
+  is enough. Rillcache's connection-local PING/ECHO run on several reactors, and
+  every command increments a 64-way sharded atomic chosen by client id. Before
+  PR #165 the 8-byte atomics were packed eight per cache line, so independent
+  reactors could invalidate each other's line even though the counters were
+  logically disjoint. The 128-byte stride removes that false sharing; it is the
+  only measured mechanism in this review that targets P1 ping without adding
+  runnable threads (section 2.10).
 
 **Verdict:** adapt by collapsing the observer/mode checks into one atomically
 published mode word (4.3) and by making the transaction gate a fast no-op when no
 exclusive operation is registered (4.4). Do not copy the full command table
-abstraction; the current split is easier to keep out of the hot path.
+abstraction; the current split is easier to keep out of the hot path. Keep
+cross-reactor mutable counters cache-line separated when they are updated per
+command.
 
 ### 3.6 Threading model
 
@@ -871,6 +914,10 @@ current roadmap; individual phases are separate increments.
   and Dragonfly 9/10 (ping P1 −9.3%). Artifacts retained under
   `/root/perf-evidence/pr164/` in the development environment; branch commits
   retained, runtime change reverted, design record kept here.
+- Post-refresh pass (section 2.10): PR #164 head `c1564aa` on base `9692e07`,
+  original gate run 41473631832 PASS, four-CPU run 41473631873 PASS Valkey 10/10
+  (ping P1 +7.36%) and Dragonfly 10/10 (ping P1 +16.48%); artifacts under
+  `/root/perf-evidence/pr164/four-cpu-pass/`; merged as `f28fe60`.
 - Development loop: `make dev-check` for editing feedback, `make test` after a
   complete logical change and `make ci` before review, per
   [development-cycle](../development-cycle.md). Local screens never replace the
@@ -891,10 +938,11 @@ current roadmap; individual phases are separate increments.
   outside it. It compares Valkey and Dragonfly; Redis 8.10.2 is pinned in the
   source analysis and the older one-CPU study, not in the required four-CPU
   comparison, so a Redis four-CPU loss would not be visible to the gate.
-- The remaining measured P1 gap is against Dragonfly on fast hosts; it is
-  host-sensitive and still fails the strict median on some cohorts. Readiness was
-  necessary but not sufficient, and the rejected drain probe shows that syscall
-  counts alone are not a throughput proxy. Round-robin at four reactors improved
+- The P1 ping row is host-sensitive. The refreshed runtime passed both four-CPU
+  comparisons (section 2.10), but identical binaries have also lost that row by
+  up to 4.32% on the same shared runner (section 2.9). Readiness was necessary
+  but not sufficient, and the rejected drain probe shows that syscall counts
+  alone are not a throughput proxy. Round-robin at four reactors improved
   Valkey but still lost Dragonfly PING; the eight-reactor response then lost P1
   ping to both and is rejected. The remaining P1 question needs a different
   scheduling mechanism, not a larger thread count.
