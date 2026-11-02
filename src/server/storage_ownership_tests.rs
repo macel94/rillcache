@@ -141,6 +141,9 @@ fn one_socket_worker_executes_complete_transactions_without_bridge_crossings() {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             worker_threads: None,
             io_mode,
+            // This test pins the single owner-local reactor path; the shared
+            // multi-reactor default is covered by the readiness and policy tests.
+            socket_workers: Some(1),
             ..Config::default()
         })
         .unwrap();
