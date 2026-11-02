@@ -16,8 +16,11 @@ Round-robin accept distribution then failed the Dragonfly gate at the old
 eight, failed both four-CPU gates on pipeline-1 ping (PR #164, section 2.8). The
 eight-reactor count is rejected; this document now records that evidence without
 a runtime change. A later refresh onto the isolated command counters passed both
-four-CPU gates twice (section 2.10). A gate pass on one head never substitutes for
-a fresh head, and every dependency still needs explicit review.
+four-CPU gates twice (section 2.10), and a separate manual cohort shows no
+measured rate loss to Redis or Valkey on five workloads, with the remaining gap
+in CPU efficiency and scheduler churn (section 2.11). A gate pass on one head
+never substitutes for a fresh head, and every dependency still needs explicit
+review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -340,6 +343,50 @@ twice with larger P1 ping margins, consistent with the false-sharing mechanism;
 it is not a universal or permanent win. Section 4.10 records the matched A/B
 needed to establish causality.
 
+### 2.11 Manual cohort: throughput position and scheduling churn
+
+A separate manual benchmark run (41477114469, tested source `9692e07`, 180
+validated records, three repetitions, AMD EPYC 9V45, Redis 8.10.2 and Valkey
+9.1.2 with the pinned generator) measured the same five commands at P1/P16 and
+one-core budgets. It is **not** the protected gate and its generated report is
+not merged; the deterministic tables are retained at
+`/root/perf-evidence/manual-41477114469/report.md`.
+
+| Workload | Rillcache | Redis | Valkey | Rill lead vs Redis/Valkey |
+| --- | ---: | ---: | ---: | --- |
+| P1 ping cmd/s | 139,341 | 111,925 | 112,235 | +24.5% / +24.1% |
+| P1 set cmd/s | 117,182 | 110,191 | 106,825 | +6.3% / +9.7% |
+| P1 get cmd/s | 119,947 | 110,609 | 108,514 | +8.4% / +10.5% |
+| P16 ping cmd/s | 2,177,772 | 1,451,854 | 1,384,859 | +50.0% / +57.3% |
+| P16 set cmd/s | 1,526,766 | 1,158,289 | 1,030,536 | +31.8% / +48.2% |
+
+Rillcache also had the lower P1 ping batch p99 (68.9 µs versus 93.1 and 90.2).
+On this cohort it does not lose a measured throughput row to Redis or Valkey.
+The remaining gap is efficiency and scheduling, and it is concentrated exactly
+where the multi-reactor design runs connection-local commands:
+
+| Metric, P1 ping | Rillcache | Redis | Valkey |
+| --- | ---: | ---: | ---: |
+| CPU (% of one logical CPU) | 119.8 | 100.5 | 99.4 |
+| CPU µs/command | 8.60 | 9.00 | 8.80 |
+| Voluntary context switches/command | 0.0859 | 0.00006 | 0.00017 |
+| Involuntary context switches/command | 0.0143 | 0.00003 | 0.00006 |
+
+P1 data rows are near one CPU and about 0.0028 voluntary switches/command, so
+the churn is specific to the connection-local PING path, not the owner-local
+data path. P16 ping also uses 121.9% CPU because it can execute on several
+reactors. The mechanism is the owner-plus-worker reactor model: a P1 ping can
+involve an accept/wakeup and the 8 µs `FAST_WAIT` absorption per reactor, while
+Redis and Valkey keep one thread and do not pay cross-thread wakeups. The extra
+run-able thread demand is what becomes a loss when the benchmark generator
+shares the same CPUs (section 2.9).
+
+**Verdict:** do not add reactors to chase P1 ping. The measured next target is
+wakeup/spin cost, not parser or storage work: the server already wins rate and
+tail, but uses 20% more CPU and ~1,400x the voluntary switches on the hot
+connection-local row. Candidate 4.11 specifies the diagnostic and its rejection
+condition.
+
 ## 3. Per-component comparison with Redis and Valkey
 
 Pins: Valkey `9.1.2` and Redis `8.10.2` source tags, as in
@@ -573,8 +620,9 @@ Each candidate names its mechanism, expected effect, cost/risk and acceptance
 evidence. Section 4.1 and the mode-word work (4.3) are implemented; 4.2 was
 deprioritized after analysis, 4.5 is partially implemented, 4.6 is deferred,
 4.7 is a rejected experiment, 4.8 is merged with its reactor count rejected,
-4.9 is a TTL-only candidate that is not implemented, and 4.10 is a diagnostic
-A/B for the already-merged counter layout.
+4.9 is a TTL-only candidate that is not implemented, 4.10 is a diagnostic
+A/B for the already-merged counter layout, and 4.11 is a wakeup/spin diagnostic
+motivated by the manual scheduler counters.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -754,6 +802,40 @@ Acceptance if completed: the matched A/B establishes direction or rejects the
 mechanism, all raw samples and CPU placement are retained, and both protected
 gates still pass on any resulting head. This is a diagnosis of an already-merged
 change, not a new runtime candidate.
+
+### 4.11 Reactor wakeup/spin budget (diagnostic, not implemented)
+
+Mechanism: section 2.11 measures about 0.086 voluntary plus 0.014 involuntary
+context switches per P1 ping, against ~0.0001 for the single-thread servers,
+while Rillcache still wins rate and p99. The 8 µs `FAST_WAIT` absorption after a
+productive pass and the owner/worker wakeups are the plausible sources. A
+candidate should reduce wakeups or spin CPU only when a reactor is multiplexing
+multiple clients, or park immediately instead of spinning when another reactor
+already has runnable work.
+
+Prediction: the voluntary-switch rate and P1 ping CPU% fall materially, with
+rate and p99 unchanged or better. The effect should be strongest with several
+connection-local clients per reactor and absent with one client or one reactor.
+A negative result (fewer switches but lower rate or worse p99) means the spin is
+buying latency and must stay.
+
+Baseline and method: freeze current and candidate binaries, alternate on one
+host and one CPU placement, use the same pinned generator and at least three
+rotated repetitions, and retain per-command scheduler counters
+(`sched_switch`, `epoll_wait`, receive/send-class syscalls), raw JSON and spreads.
+Run both the default reactor count and `--socket-workers 1`. Do not compare
+numbers from different hosts or substitute a single local screen for a gate.
+
+Rejection condition: any original-gate loss, any Valkey/Dragonfly four-CPU loss,
+a P1 p99 regression beyond AC5, or no measured reduction in the switch/CPU
+counters. The earlier drain-probe experiment (4.7) shows that removing a
+user-space readiness batch can lose more than it saves, so this candidate must
+keep the absorption path when it is doing useful work.
+
+Acceptance if implemented: deterministic reactor scheduling tests, no lost
+wakeups or ordering regressions, joined shutdown, the matched A/B above, and both
+protected gates on the final head. Until the diagnostic shows the spin is the
+cost, this remains a hypothesis, not a runtime change.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -964,6 +1046,13 @@ current roadmap; individual phases are separate increments.
   artifacts under `/root/perf-evidence/pr169/four-cpu/`; merged as `ffa2181`.
 - Counter-layout A/B (section 4.10): not yet run; requires frozen packed and
   padded binaries on one host, both reactor counts, and raw samples.
+- Manual cohort (section 2.11): run 41477114469 against source `9692e07`,
+  180 validated records, Redis/Valkey/Rillcache five workloads at P1/P16 and
+  one-core; deterministic tables retained at
+  `/root/perf-evidence/manual-41477114469/report.md`. The generated report PR is
+  not a gate and was not merged into this record.
+- Wakeup/spin diagnostic (section 4.11): not yet run; requires frozen binaries,
+  scheduler/syscall counters and the same protected gate on any resulting head.
 - Development loop: `make dev-check` for editing feedback, `make test` after a
   complete logical change and `make ci` before review, per
   [development-cycle](../development-cycle.md). Local screens never replace the
@@ -982,8 +1071,12 @@ current roadmap; individual phases are separate increments.
   short three-sample medians. It is a merge policy, not a statistical proof or a
   production SLO; mixed TTLs, large values, saturation and tail SLOs remain
   outside it. It compares Valkey and Dragonfly; Redis 8.10.2 is pinned in the
-  source analysis and the older one-CPU study, not in the required four-CPU
-  comparison, so a Redis four-CPU loss would not be visible to the gate.
+  source analysis and the manual cohort (section 2.11), not in the required
+  four-CPU comparison, so a Redis four-CPU loss would not be visible to the gate.
+  The manual cohort shows Rillcache ahead on all five measured workloads at
+  P1/P16, but it is not a gate and does not cover unseen commands or mixed
+  workloads. The remaining measured gaps against Redis/Valkey are CPU efficiency
+  and scheduler churn, not rate or tail on those rows.
 - The P1 ping row is host-sensitive. The refreshed runtime passed both four-CPU
   comparisons twice (section 2.10), but earlier identical binaries also lost that
   row by up to 4.32% on the same shared runner (section 2.9). Readiness was
