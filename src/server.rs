@@ -41,6 +41,9 @@ pub const CLIENT_HANDOFF_MAX_EPOCH_MS: u64 = 100;
 /// v2 requires recent reply activity before creating a new handoff epoch.
 pub const CLIENT_HANDOFF_POLICY_VERSION: u64 = 2;
 
+/// Total admitted asynchronous remote Session/buffer turns, not commands or bytes.
+pub const TOKIO_OWNER_TURN_CAPACITY: usize = 32;
+
 /// Fixed workers keep polling briefly after progress, then return to idle parking.
 /// This is bounded active polling, not readiness notification or free CPU work.
 pub const FIXED_WORKER_ACTIVE_POLL_US: u64 = 50;
@@ -49,12 +52,13 @@ pub const FIXED_WORKER_RUN_QUANTUM_US: u64 = 100;
 /// v2 starts a fresh run interval after a voluntary yield/park returns.
 pub const FIXED_WORKER_RUN_POLICY_VERSION: u64 = 2;
 
-/// Plain-TCP engine selected at bind time. The proven readiness reactor is the
-/// default; async Tokio is an explicit opt-in with a documented P1 trade-off.
+/// Plain-TCP engine selected from immutable bind-time configuration/capacity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IoMode {
-    /// Mio readiness reactor with the published owner-local executor (default).
+    /// Eligible multi-CPU Unix async networking; otherwise existing Mio/fallback.
     #[default]
+    Auto,
+    /// Explicit Mio readiness reactor with the published owner-local executor.
     Mio,
     /// Current-thread Tokio sockets, opted into with `--io-mode tokio`.
     Tokio,
@@ -193,7 +197,7 @@ pub struct Config {
     /// `io_mode` is `Tokio`); cold configurations and non-Unix retain managed
     /// blocking clients. Some(1..=64): fixed I/O/execution lanes.
     pub worker_threads: Option<usize>,
-    /// Explicit plain-TCP engine opt-in; `IoMode::Mio` is the default.
+    /// Automatic topology-aware plain TCP, or an explicit Mio/Tokio choice.
     pub io_mode: IoMode,
     /// Opt-in multi-owner data execution. `None` or `Some(1)` keeps the proven
     /// one-owner path; `Some(2..=64)` starts that many owned data workers.
@@ -455,9 +459,13 @@ impl Config {
 }
 
 fn tokio_plain_transport_enabled(config: &Config) -> bool {
+    config.io_mode == IoMode::Tokio && tokio_plain_configuration_eligible(config)
+}
+
+fn tokio_plain_configuration_eligible(config: &Config) -> bool {
     cfg!(unix)
         && config.worker_threads.is_none()
-        && config.io_mode == IoMode::Tokio
+        && config.storage_owners.is_none_or(|owners| owners == 1)
         && !config.appendonly
         // ACL SAVE/LOAD hold the auth write lock during filesystem I/O;
         // offloading the syscall alone would still stall runtime authorization.
@@ -540,17 +548,15 @@ impl Server {
         } else if policy.client_handoff_lanes > 1 {
             policy = policy.with_smt_disabled(topology::smt_disabled());
         }
-        if tokio_plain_transport_enabled(&config) {
+        let automatic_parallel = config.io_mode == IoMode::Auto
+            && capacity.is_some_and(|count| count >= 2)
+            && config.tls_bind_addr.is_none()
+            && tokio_plain_configuration_eligible(&config);
+        if tokio_plain_transport_enabled(&config) || automatic_parallel {
             policy.tokio_transport = true;
-            // Published storage currently has one data owner. Preserve direct
-            // socket/owner colocation rather than make runtimes wait on the
-            // Store bridge. Mixed TLS uses the external compatibility owner
-            // and async cold-service admission within the network budget.
-            policy.tokio_worker_threads = if config.tls_bind_addr.is_some() {
-                capacity.unwrap_or(1).clamp(1, 64)
-            } else {
-                1
-            };
+            // Runtime zero accepts, serves and owns the only Data. Remote
+            // sockets await bounded owned batches, never synchronous Store.
+            policy.tokio_worker_threads = capacity.unwrap_or(1).clamp(1, 64);
             policy.tokio_compatibility_owner = config.tls_bind_addr.is_some();
         }
         Ok(Self {
@@ -1280,7 +1286,7 @@ mod tests {
     #[test]
     fn tokio_plain_transport_is_opt_in_and_off_for_cold_configurations() {
         let default = Config::default();
-        assert_eq!(default.io_mode, IoMode::Mio);
+        assert_eq!(default.io_mode, IoMode::Auto);
         assert!(!tokio_plain_transport_enabled(&default));
 
         let tokio = Config {

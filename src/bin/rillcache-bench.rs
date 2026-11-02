@@ -554,8 +554,10 @@ fn report(
             if policy.readiness_io && !policy.tokio_transport {
                 "{\"mode\":\"mio-readiness\",\"readiness_io\":true}".to_owned()
             } else if policy.readiness_io {
+                let async_owner =
+                    policy.tokio_worker_threads > 1 && !policy.tokio_compatibility_owner;
                 format!(
-                    "{{\"mode\":\"tokio-current-thread\",\"workers\":{},\"network_runtime_threads\":{},\"accept_runtime_shared\":true,\"cold_io_service_threads\":1,\"storage_execution\":{},\"compatibility_data_owner_threads\":{}}}",
+                    "{{\"mode\":\"tokio-current-thread\",\"workers\":{},\"network_runtime_threads\":{},\"accept_runtime_shared\":true,\"cold_io_service_threads\":1,\"storage_execution\":{},\"compatibility_data_owner_threads\":{},\"remote_dispatch\":{},\"owner_turn_capacity\":{}}}",
                     policy.tokio_worker_threads,
                     policy.tokio_worker_threads,
                     quoted(if policy.tokio_compatibility_owner {
@@ -563,7 +565,15 @@ fn report(
                     } else {
                         "local-owner"
                     }),
-                    usize::from(policy.tokio_compatibility_owner)
+                    usize::from(policy.tokio_compatibility_owner),
+                    quoted(if async_owner {
+                        "async-owned-batches"
+                    } else if policy.tokio_compatibility_owner {
+                        "compatibility-cold"
+                    } else {
+                        "direct-local"
+                    }),
+                    usize::from(async_owner) * rillcache::server::TOKIO_OWNER_TURN_CAPACITY
                 )
             } else {
                 format!(
@@ -971,6 +981,8 @@ mod tests {
         assert!(text.contains("\"cold_io_service_threads\":1"));
         assert!(text.contains("\"storage_execution\":\"local-owner\""));
         assert!(text.contains("\"compatibility_data_owner_threads\":0"));
+        assert!(text.contains("\"remote_dispatch\":\"async-owned-batches\""));
+        assert!(text.contains("\"owner_turn_capacity\":32"));
         let compatibility = rillcache::server::SchedulingPolicy {
             tokio_compatibility_owner: true,
             ..readiness
@@ -984,6 +996,8 @@ mod tests {
         );
         assert!(text.contains("\"storage_execution\":\"compatibility-bridge\""));
         assert!(text.contains("\"compatibility_data_owner_threads\":1"));
+        assert!(text.contains("\"remote_dispatch\":\"compatibility-cold\""));
+        assert!(text.contains("\"owner_turn_capacity\":0"));
         assert!(!text.contains("\"mode\":\"thread-per-client\""));
         assert!(!text.contains("\"client_handoff_policy_version\""));
     }

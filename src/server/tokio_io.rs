@@ -1,5 +1,7 @@
 //! Async transport over the published local-owner / Store compatibility APIs.
 
+#[path = "tokio_owner.rs"]
+mod owner;
 #[cfg(test)]
 #[path = "tokio_io_tests.rs"]
 mod tests;
@@ -24,6 +26,21 @@ const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
 type Controls = Arc<Mutex<HashMap<u64, TcpStream>>>;
 type Tasks = JoinSet<io::Result<()>>;
 type ColdJob = Box<dyn FnOnce() + Send>;
+
+// Rare protocol-close reply ownership, not a per-command acknowledgement. A
+// scheduled delay before a remote writer runs must not close its socket early.
+struct StopReply(Arc<AtomicUsize>);
+impl StopReply {
+    fn new(pending: &Arc<AtomicUsize>) -> Self {
+        pending.fetch_add(1, Ordering::AcqRel);
+        Self(Arc::clone(pending))
+    }
+}
+impl Drop for StopReply {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 struct Accepted {
     stream: TcpStream,
@@ -57,11 +74,13 @@ struct Lane {
 // local task can observe Data after a partially executed owner turn.
 struct FailureStop {
     stopping: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
     controls: Controls,
 }
 impl Drop for FailureStop {
     fn drop(&mut self) {
         if thread::panicking() {
+            self.failed.store(true, Ordering::Release);
             self.stopping.store(true, Ordering::Release);
             close_controls(&self.controls);
         }
@@ -72,8 +91,11 @@ struct Context {
     config: Config,
     store: Arc<Store>,
     stopping: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
+    stop_replies: Arc<AtomicUsize>,
     controls: Controls,
     cold: ColdExecutor,
+    owner: Option<owner::Sender>,
     task_limit: usize,
 }
 
@@ -81,6 +103,7 @@ impl Context {
     fn failure_guard(&self) -> FailureStop {
         FailureStop {
             stopping: Arc::clone(&self.stopping),
+            failed: Arc::clone(&self.failed),
             controls: Arc::clone(&self.controls),
         }
     }
@@ -145,7 +168,7 @@ enum ColdOperation<'a> {
 impl ColdExecutor {
     async fn run(
         &self,
-        session: &mut Session,
+        session: &mut owner::SessionSlot,
         output: &mut Vec<u8>,
         context: &Context,
         operation: ColdOperation<'_>,
@@ -166,11 +189,14 @@ impl ColdExecutor {
         };
         let blocked = matches!(operation, ColdOperation::Blocked);
         let maintenance = matches!(operation, ColdOperation::Maintenance);
-        let mut owned_session = std::mem::take(session);
+        let mut owned_session = session.take();
         let mut owned_output = std::mem::take(output);
         let store = Arc::clone(&context.store);
         let limits = context.config.limits;
         let (sender, receiver) = oneshot::channel();
+        // Compatibility/paused execution can publish SHUTDOWN off-runtime.
+        // Register before execution; carry ownership back to the actual writer.
+        let stop_reply = StopReply::new(&context.stop_replies);
         let job = Box::new(move || {
             let _permit = permit;
             let action = if let Some(frame) = frame {
@@ -193,15 +219,18 @@ impl ColdExecutor {
                     action
                 })
             };
-            let _ = sender.send((owned_session, owned_output, action));
+            let _ = sender.send((owned_session, owned_output, action, stop_reply));
         });
         if self.sender.send(job).await.is_err() {
             context.stop();
             return Err(io::Error::other("cold executor exited unexpectedly"));
         }
         match receiver.await {
-            Ok((returned_session, returned_output, action)) => {
-                *session = returned_session;
+            Ok((returned_session, returned_output, action, stop_reply)) => {
+                session.restore(returned_session);
+                if action == Some(Action::Close) && context.store.shutdown_requested() {
+                    session.hold_stop_reply(stop_reply);
+                }
                 *output = returned_output;
                 Ok(action)
             }
@@ -234,32 +263,68 @@ fn serve_with_task_limit(
     workers: usize,
     task_limit: usize,
 ) -> io::Result<()> {
+    serve_with_cold_service(
+        listener,
+        config,
+        store,
+        stopping,
+        workers,
+        task_limit,
+        |mut receive| {
+            while let Some(job) = receive.blocking_recv() {
+                job();
+            }
+        },
+    )
+}
+
+fn serve_with_cold_service<F>(
+    listener: TcpListener,
+    config: Config,
+    store: Arc<Store>,
+    stopping: Arc<AtomicBool>,
+    workers: usize,
+    task_limit: usize,
+    service: F,
+) -> io::Result<()>
+where
+    F: FnOnce(mpsc::Receiver<ColdJob>) + Send + 'static,
+{
     let cores = core_affinity::get_core_ids().unwrap_or_default();
     let workers = workers.clamp(1, 64);
     let controls = Arc::new(Mutex::new(HashMap::new()));
     // Compatibility modes have one published synchronous Store owner. Start it
     // outside any async runtime; all later bridge calls use the cold service.
-    if workers > 1 || config.tls_bind_addr.is_some() {
+    if config.tls_bind_addr.is_some() {
         store.ensure_external_owner();
     }
-    let (sender, mut receiver) = mpsc::channel::<ColdJob>(1);
+    let (sender, receiver) = mpsc::channel::<ColdJob>(1);
+    let failed = Arc::new(AtomicBool::new(false));
     let cold_failure = FailureStop {
         stopping: Arc::clone(&stopping),
+        failed: Arc::clone(&failed),
         controls: Arc::clone(&controls),
     };
     let cold_thread = thread::Builder::new()
         .name("rillcache-cold-io".into())
         .spawn(move || {
             let _failure = cold_failure;
-            while let Some(job) = receiver.blocking_recv() {
-                job();
-            }
+            service(receiver);
         })?;
+    let (owner, owner_receive) = if workers > 1 && config.tls_bind_addr.is_none() {
+        let (sender, receive) = owner::channel();
+        (Some(sender), Some(receive))
+    } else {
+        (None, None)
+    };
     let context = Arc::new(Context {
         config,
         store,
         stopping,
+        failed,
+        stop_replies: Arc::new(AtomicUsize::new(0)),
         controls,
+        owner,
         cold: ColdExecutor {
             sender,
             permit: Arc::new(Semaphore::new(1)),
@@ -295,12 +360,23 @@ fn serve_with_task_limit(
             io::stderr().lock(),
             "rillcache: Tokio runtime 0 preserves launcher affinity"
         );
+        let _ = writeln!(
+            io::stderr().lock(),
+            "rillcache: Tokio topology networks={} local_data_owner={} owner_turn_capacity={}",
+            workers,
+            context.config.tls_bind_addr.is_none(),
+            if context.owner.is_some() {
+                owner::CAPACITY
+            } else {
+                0
+            }
+        );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         tokio::task::LocalSet::new().block_on(
             &runtime,
-            accept_with_storage(listener, Arc::clone(&context), &lanes),
+            accept_with_storage(listener, Arc::clone(&context), &lanes, owner_receive),
         )
     })();
     context.stop();
@@ -354,53 +430,89 @@ async fn accept_with_storage(
     listener: TcpListener,
     context: Arc<Context>,
     lanes: &[Lane],
+    owner_receive: Option<mpsc::Receiver<owner::Job>>,
 ) -> io::Result<()> {
-    // Install !Send Data on the actual socket thread. Mixed TLS or multiple
-    // network runtimes use the compatibility owner, never several Data copies.
-    let local = if lanes.is_empty() && context.config.tls_bind_addr.is_none() {
+    // Network runtime zero owns the only !Send Data even with remote sockets.
+    // Mixed TLS alone keeps the existing published compatibility owner.
+    let local = if context.config.tls_bind_addr.is_none() {
         context.store.install_local()
     } else {
         None
     };
+    let finished = Arc::new(AtomicBool::new(false));
     let (executor, driver) = if let Some((executor, inbox)) = local {
         let executor = Rc::new(executor);
         let owner = Rc::clone(&executor);
-        let finished = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&finished);
         let failure_context = Arc::clone(&context);
         let driver = tokio::task::spawn_local(async move {
             let _failure = failure_context.failure_guard();
-            // Cold paused-command resumption can use the external bridge.
-            // Service it on this same owner without blocking a network task,
-            // including while client tasks are being joined on shutdown.
+            let mut inbox = Some(inbox);
             while !stop.load(Ordering::Acquire) {
-                inbox.drain(owner.as_ref());
+                if failure_context.failed.load(Ordering::Acquire) {
+                    inbox.take();
+                }
+                if let Some(inbox) = &inbox {
+                    inbox.drain(owner.as_ref());
+                }
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
-            inbox.drain(owner.as_ref());
+            if let Some(inbox) = inbox {
+                inbox.drain(owner.as_ref());
+            }
         });
-        (Some(executor), Some((finished, driver)))
+        (Some(executor), Some(driver))
     } else {
         (None, None)
     };
-    let mut result = accept_loop(listener, Arc::clone(&context), lanes, executor).await;
-    if let Some((finished, driver)) = driver {
-        // A task panic/cancellation can drop its reply receiver while a cold
-        // job still owns session state. Keep the local bridge/Data alive until
-        // that job releases its permit, not merely until socket tasks join.
+    let owner_driver = match (owner_receive, &executor) {
+        (Some(receive), Some(executor)) => Some(tokio::task::spawn_local(owner::drive(
+            receive,
+            Rc::clone(executor),
+            Arc::clone(&context),
+            Arc::clone(&finished),
+        ))),
+        (Some(_), None) => return Err(io::Error::other("async transport owner was not installed")),
+        (None, _) => None,
+    };
+    let mut result = accept_loop(listener, Arc::clone(&context), lanes, executor.clone()).await;
+    // Remote tasks may still await an admitted owner/cold result. Keep this
+    // runtime driving both inboxes until EVERY remote runtime has finished;
+    // joining a live worker synchronously here would deadlock that response.
+    while lanes.iter().any(|lane| !lane.thread.is_finished()) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    if let Some(owner) = &context.owner {
+        let drained = owner.permit.acquire_many(owner::CAPACITY as u32).await;
+        if drained.is_err() {
+            result = result.and(Err(io::Error::other("async owner credit drain failed")));
+        }
+    }
+    if driver.is_some() {
         let drained = context.cold.permit.acquire().await;
         if drained.is_err() {
             result = result.and(Err(io::Error::other(
                 "cold service admission closed during drain",
             )));
         }
-        finished.store(true, Ordering::Release);
-        if let Err(error) = driver.await {
-            result = result.and(Err(io::Error::other(format!(
-                "local Store bridge task failed: {error}"
-            ))));
-        }
     }
+    finished.store(true, Ordering::Release);
+    if let Some(driver) = owner_driver
+        && let Err(error) = driver.await
+    {
+        result = result.and(Err(io::Error::other(format!(
+            "async owner task failed: {error}"
+        ))));
+    }
+    if let Some(driver) = driver
+        && let Err(error) = driver.await
+    {
+        result = result.and(Err(io::Error::other(format!(
+            "local Store bridge task failed: {error}"
+        ))));
+    }
+    // executor remains rooted here until workers, cold credit and drivers join.
+    drop(executor);
     result
 }
 
@@ -434,7 +546,7 @@ async fn accept_loop(
                     context
                         .cold
                         .run(
-                            &mut Session::new(),
+                            &mut owner::SessionSlot::new(Session::new()),
                             &mut Vec::new(),
                             &context,
                             ColdOperation::Maintenance,
@@ -538,8 +650,15 @@ async fn accept_loop(
         }
     }
     .await;
-    // Stop and close BEFORE joining: read/write/paused/blocked tasks, and remote
-    // lanes saturated with admitted clients, must all observe cancellation.
+    // Wait for owned stop replies, not an arbitrary scheduling grace period.
+    // Each actual writer gets at most POLL_TICK once scheduled; external stop
+    // or failure interrupts the wait immediately and closes all controls.
+    while context.store.shutdown_requested()
+        && context.stop_replies.load(Ordering::Acquire) > 0
+        && !context.stopping.load(Ordering::Acquire)
+    {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
     context.stop();
     drop(pending);
     drop(listener);
@@ -568,7 +687,11 @@ async fn worker(mut receiver: mpsc::Receiver<Accepted>, context: Arc<Context>) -
         }
     }
     .await;
-    context.stop();
+    // Runtime zero owns protocol-stop grace; a remote worker must not close
+    // another lane's just-returned response before that bounded flush window.
+    if !context.store.shutdown_requested() || context.stopping.load(Ordering::Acquire) {
+        context.stop();
+    }
     drop(receiver); // drop queued registrations before joining active tasks
     result.and(join_tasks(&mut tasks).await)
 }
@@ -619,14 +742,95 @@ fn cold_command(args: &[&[u8]]) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case(b"ACL"))
 }
 
+async fn process_input(
+    session: &mut owner::SessionSlot,
+    input: &mut Vec<u8>,
+    output: &mut Vec<u8>,
+    context: &Context,
+    executor: Option<&ShardExecutor>,
+) -> io::Result<owner::Outcome> {
+    if input.is_empty() {
+        return Ok(owner::Outcome::Read);
+    }
+    if let Some(executor) = executor {
+        let outcome = owner::batch(
+            session,
+            input,
+            output,
+            context.config.limits,
+            executor,
+            &context.stopping,
+        );
+        if outcome == owner::Outcome::Close && context.store.shutdown_requested() {
+            session.hold_stop_reply(StopReply::new(&context.stop_replies));
+        }
+        return Ok(outcome);
+    }
+    if let Some(owner) = &context.owner {
+        return owner
+            .run(session, input, output, context, owner::Operation::Batch)
+            .await;
+    }
+    // Existing mixed-TLS compatibility path. Complete synchronous Store waits
+    // remain outside every network runtime on the bounded cold service.
+    let mut consumed = 0;
+    let mut outcome = owner::Outcome::Buffered;
+    for _ in 0..COMMAND_QUANTUM {
+        if context.stopped() {
+            outcome = owner::Outcome::Stopped;
+            break;
+        }
+        match dispatch_request(&input[consumed..], context.config.limits, |_| {
+            Action::Continue
+        }) {
+            Ok(Some((_, used))) => {
+                let action = context
+                    .cold
+                    .run(
+                        session,
+                        output,
+                        context,
+                        ColdOperation::Command(&input[consumed..consumed + used]),
+                    )
+                    .await?
+                    .expect("complete compatibility frame");
+                consumed += used;
+                if action == Action::Close {
+                    outcome = owner::Outcome::Close;
+                    break;
+                }
+                if session.is_blocked() || session.is_paused() || output.len() >= OUTPUT_QUANTUM {
+                    break;
+                }
+            }
+            Ok(None) => {
+                outcome = owner::Outcome::Read;
+                break;
+            }
+            Err(error) => {
+                write!(output, "-ERR Protocol error: {error}\r\n")?;
+                outcome = owner::Outcome::ProtocolError;
+                break;
+            }
+        }
+    }
+    if consumed == input.len() {
+        input.clear();
+    } else if consumed > 0 {
+        input.drain(..consumed);
+    }
+    Ok(outcome)
+}
+
 async fn serve_connection(
     mut stream: TokioStream,
-    mut session: Session,
+    session: Session,
     pubsub: Receiver<Vec<u8>>,
     context: &Context,
     executor: Option<Rc<ShardExecutor>>,
 ) -> io::Result<()> {
     let config = &context.config;
+    let mut session = owner::SessionSlot::new(session);
     let mut input = Vec::with_capacity(8192.min(config.limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; MAX_READ];
@@ -650,6 +854,20 @@ async fn serve_connection(
                 if let Some(reply) = session.poll_blocked_on(executor.as_ref()) {
                     output.extend_from_slice(&reply);
                 }
+            } else if let Some(owner) = &context.owner {
+                if owner
+                    .run(
+                        &mut session,
+                        &mut input,
+                        &mut output,
+                        context,
+                        owner::Operation::Blocked,
+                    )
+                    .await?
+                    == owner::Outcome::Stopped
+                {
+                    return Ok(());
+                }
             } else {
                 context
                     .cold
@@ -663,11 +881,21 @@ async fn serve_connection(
                 .run(&mut session, &mut output, context, ColdOperation::Paused)
                 .await?
         {
-            write_reply(&mut stream, &output, config.idle_timeout).await?;
+            write_reply(
+                &mut stream,
+                &output,
+                session.reply_timeout(config.idle_timeout),
+            )
+            .await?;
             return Ok(());
         }
         if !output.is_empty() {
-            write_reply(&mut stream, &output, config.idle_timeout).await?;
+            write_reply(
+                &mut stream,
+                &output,
+                session.reply_timeout(config.idle_timeout),
+            )
+            .await?;
             output.clear();
             activity = Instant::now();
             if context.stopped() {
@@ -676,69 +904,57 @@ async fn serve_connection(
         }
 
         if !session.is_blocked() && !session.is_paused() {
-            let mut consumed = 0usize;
-            let mut need_input = false;
-            for _ in 0..COMMAND_QUANTUM {
-                let mut cold = false;
-                match dispatch_request(&input[consumed..], config.limits, |args| {
-                    cold = executor.is_none() || cold_command(args);
-                    if cold || args.is_empty() {
-                        Action::Continue
-                    } else {
-                        session.execute_on(
-                            executor.as_ref().expect("local executor").as_ref(),
-                            args,
+            let outcome = process_input(
+                &mut session,
+                &mut input,
+                &mut output,
+                context,
+                executor.as_deref(),
+            )
+            .await?;
+            let need_input = outcome == owner::Outcome::Read;
+            let close = match outcome {
+                owner::Outcome::Cold(used) => {
+                    let action = context
+                        .cold
+                        .run(
+                            &mut session,
                             &mut output,
+                            context,
+                            ColdOperation::Command(&input[..used]),
                         )
-                    }
-                }) {
-                    Ok(Some((mut action, used))) => {
-                        if cold {
-                            action = context
-                                .cold
-                                .run(
-                                    &mut session,
-                                    &mut output,
-                                    context,
-                                    ColdOperation::Command(&input[consumed..consumed + used]),
-                                )
-                                .await?
-                                .expect("complete cold command");
-                            if context.stopped() {
-                                return Ok(());
-                            }
-                        }
-                        consumed += used;
-                        if action == Action::Close {
-                            write_reply(&mut stream, &output, config.idle_timeout).await?;
-                            return Ok(());
-                        }
-                        if session.is_blocked()
-                            || session.is_paused()
-                            || output.len() >= OUTPUT_QUANTUM
-                        {
-                            break;
-                        }
-                    }
-                    Ok(None) => {
-                        need_input = true;
-                        break;
-                    }
-                    Err(error) => {
-                        write!(output, "-ERR Protocol error: {error}\r\n")?;
-                        close_after_reply(&mut stream, &output, config.idle_timeout).await?;
-                        return Ok(());
-                    }
+                        .await?
+                        .expect("complete cold command");
+                    input.drain(..used);
+                    action == Action::Close
                 }
-            }
-            if consumed > 0 {
-                input.drain(..consumed);
+                owner::Outcome::Close => true,
+                owner::Outcome::ProtocolError => {
+                    close_after_reply(&mut stream, &output, config.idle_timeout).await?;
+                    return Ok(());
+                }
+                owner::Outcome::Stopped => return Ok(()),
+                _ => false,
+            };
+            if close {
+                write_reply(
+                    &mut stream,
+                    &output,
+                    session.reply_timeout(config.idle_timeout),
+                )
+                .await?;
+                return Ok(());
             }
             // No new dispatch/read while reply bytes are backpressured. The
             // 64 KiB batch bound can be exceeded by ONE existing atomic reply;
             // it is not a dishonest hard maximum or a change to wire semantics.
             if !output.is_empty() {
-                write_reply(&mut stream, &output, config.idle_timeout).await?;
+                write_reply(
+                    &mut stream,
+                    &output,
+                    session.reply_timeout(config.idle_timeout),
+                )
+                .await?;
                 output.clear();
                 activity = Instant::now();
             }

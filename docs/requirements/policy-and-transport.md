@@ -33,14 +33,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 ## Default Unix Tokio plain-TCP execution (S-TOKIO-NET)
 
 - **R-TOKIO-NET1:** When plain TCP runs on Unix without persistence, ACL files or
-  synchronous audit sinks and the operator explicitly selects the async engine,
+  synchronous audit sinks and the operator selects Tokio explicitly or auto
+  selects eligible multi-CPU plaintext,
   the server shall serve local sockets on runtime zero and route remote sockets through bounded channels to current-thread Tokio
   runtimes; socket reads and writes shall be async operations, not blocking
   calls or a wrapper around the former Mio connection loop. Fixed-worker mode,
   TLS, persistence/ACL-file/audit and portable non-Unix fallbacks remain available.
-  The proven readiness reactor shall remain the default because the protected
-  gate measures the default mode and the async engine does not win every
-  pipeline-1 condition; selection shall be explicit configuration.
+  One-CPU automatic mode shall retain Mio; explicit Mio shall remain available.
+  The historical one-runtime losing cohort shall not substitute for fresh
+  acceptance of the asynchronous owner-turn source.
 - **R-TOKIO-NET2:** When a route queue is full, acceptance shall apply bounded
   backpressure; the server shall not create an unbounded connection-task queue.
   Client admission, input-frame limits and response buffering shall remain bounded.
@@ -63,11 +64,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-TOKIO-NET6:** Native TLS shall remain on its existing TLS accept/session
   path; only the default plaintext TCP path is migrated. Existing TLS wire and
   shutdown behavior shall continue to pass all-mode tests.
-- **R-TOKIO-NET7:** When measured, metadata shall identify the Tokio default
-  runtime. Performance remains subject to every original and four-CPU protected
+- **R-TOKIO-NET7:** When measured, metadata shall identify the actually selected
+  network runtimes and data execution. Performance remains subject to every original and four-CPU protected
   comparison; async architecture alone is not evidence of a throughput win.
-- **R-TOKIO-NET8:** On eligible ordinary Unix plaintext, acceptance, bounded
-  client tasks and the published one-owner executor shall share one runtime.
+- **R-TOKIO-NET8:** On eligible ordinary Unix plaintext, acceptance, local client
+  tasks and the one-owner executor shall share runtime zero. Additional network
+  runtimes shall use bounded asynchronous owned turns on that same executor.
   Mixed TLS compatibility may start additional network runtimes only within the
   captured effective-CPU budget; it shall not claim multiple data owners.
   Append-only persistence, ACL files and
@@ -94,6 +96,33 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 Implementation decisions, current shared-Store limits and target sequencing are
 self-contained in [the transport increment](../async-transport.md).
+
+## Asynchronous single-owner network turns (S-ASYNC-OWNER)
+
+- **R-ASYNCOWNER1:** When eligible multi-CPU auto or explicit Tokio runs, runtime
+  zero shall accept, serve and own the only local Data. Remote network runtimes
+  shall await complete owned Session/input/output turns, not share Data, create
+  another data owner or synchronously wait on Store/cold execution for ordinary
+  commands. Single-CPU auto and explicit Mio shall retain the existing frontend.
+- **R-ASYNCOWNER2:** Before transferring a remote turn, the sender shall acquire
+  bounded credit. At most32 turns shall be admitted, each dispatching at most64
+  commands or the existing soft64KiB output threshold. Pipelines shall not create
+  one IPC frame/copy per command; existing atomic reply/transaction limits remain.
+- **R-ASYNCOWNER3:** When a queued waiter is revoked before execution, its turn
+  shall not perform later data side effects; credit shall remain held until work
+  finishes or drops. Late results shall not orphan pub/sub/client registrations.
+- **R-ASYNCOWNER4:** While output is backpressured, no later command side effects
+  shall execute. Auth, observers/error accounting, transactions, blocked/paused
+  resumption and push delivery shall retain the complete common Session behavior.
+- **R-ASYNCOWNER5:** On stop/failure, sockets shall close before joins and the
+  local owner/inboxes shall outlive all remote-network and admitted cold work.
+  Failure shall prevent subsequent data turns; all runtimes/services shall join.
+- **R-ASYNCOWNER6:** Metadata and actual process tests shall distinguish network
+  count, runtime-zero acceptance, local vs compatibility data, cold service and
+  bounded owner credit. Launcher affinity and inherited CPU budgets shall remain;
+  every original/four-CPU Valkey and Dragonfly comparison shall still be required.
+
+See [owned-turn selection and lifecycle](../async-owner-turns.md).
 
 ## Owner mailbox fairness (S-OWNER-FAIR)
 

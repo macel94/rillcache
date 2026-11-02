@@ -166,6 +166,37 @@ fn pong(stream: &mut TcpStream) {
 }
 
 #[test]
+fn parallel_socket_workers_keep_one_local_owner_and_zero_ordinary_bridge_crossings() {
+    let mut server = TestServer::start(2, 128);
+    let services = server.store.test_services();
+    let network_zero = server.thread.as_ref().unwrap().thread().id();
+    let mut local = server.connect();
+    ping(&mut local);
+    let mut remote = server.connect();
+    remote
+        .write_all(b"SET a old\r\nMULTI\r\nMSET a new b new\r\nINCR a\r\nEXEC\r\nMGET a b\r\n")
+        .unwrap();
+    let expected = b"+OK\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n-ERR value is not an integer or out of range\r\n*2\r\n$3\r\nnew\r\n$3\r\nnew\r\n";
+    let mut output = vec![0; expected.len()];
+    remote.read_exact(&mut output).unwrap();
+    assert_eq!(output, expected);
+    assert_eq!(
+        services.bridge_count(),
+        0,
+        "ordinary remote turns used the synchronous Store bridge"
+    );
+    assert_eq!(
+        services.owner_trace()[0].1,
+        network_zero,
+        "Data was not colocated with accepting runtime zero"
+    );
+    server.shutdown();
+    let trace = services.owner_trace();
+    assert_eq!(trace.len(), 2);
+    assert_eq!(trace[0].1, trace[1].1);
+}
+
+#[test]
 fn saturated_local_admission_retains_pending_client_until_capacity_returns() {
     let mut server = TestServer::start(1, 1);
     let mut active = server.connect();
@@ -221,8 +252,14 @@ fn saturated_remote_queue_and_local_tasks_keep_progress_and_join_every_registrat
 }
 
 #[test]
-fn slow_reply_stops_pipeline_side_effects_and_joins_on_one_runtime() {
-    let mut server = TestServer::start(1, 128);
+fn slow_reply_stops_pipeline_side_effects_and_joins_on_local_and_remote_runtimes() {
+    for workers in [1, 2] {
+        slow_reply_on_workers(workers);
+    }
+}
+
+fn slow_reply_on_workers(workers: usize) {
+    let mut server = TestServer::start(workers, 128);
     let value = vec![b'x'; 1024 * 1024];
     let mut setup = server.connect();
     let mut request = Vec::new();
@@ -246,6 +283,94 @@ fn slow_reply_stops_pipeline_side_effects_and_joins_on_one_runtime() {
     let mut missing = [0; 5];
     setup.read_exact(&mut missing).unwrap();
     assert_eq!(&missing, b"$-1\r\n");
+    server.shutdown();
+}
+
+#[test]
+fn remote_cold_work_keeps_the_local_bridge_alive_until_every_network_worker_joins() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let store = Arc::new(Store::new(1024 * 1024));
+    let network_store = Arc::clone(&store);
+    let cold_store = Arc::clone(&store);
+    let stopping = Arc::new(AtomicBool::new(false));
+    let network_stop = Arc::clone(&stopping);
+    let (entered_send, entered) = sync_channel(1);
+    let (release_send, release) = sync_channel(1);
+    let (bridge_send, bridge) = sync_channel(1);
+    let (done_send, done) = sync_channel(1);
+    let network = thread::spawn(move || {
+        let result = serve_with_cold_service(
+            listener,
+            Config::default(),
+            network_store,
+            network_stop,
+            2,
+            128,
+            move |mut receive| {
+                if let Some(job) = receive.blocking_recv() {
+                    // Actual admitted work retains cold credit while a controlled
+                    // filesystem stand-in waits. Only then use the owner bridge.
+                    entered_send.send(()).unwrap();
+                    release.recv().unwrap();
+                    let mut reply = Vec::new();
+                    cold_store.execute(&[b"SET", b"finished-cold", b"v"], &mut reply);
+                    bridge_send.send(reply).unwrap();
+                    job();
+                }
+                while let Some(job) = receive.blocking_recv() {
+                    job();
+                }
+            },
+        );
+        done_send.send(result).unwrap();
+    });
+    let connect = || {
+        let socket = TcpStream::connect(address).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        socket
+    };
+    let mut local = connect();
+    ping(&mut local);
+    let mut remote = connect();
+    remote.write_all(b"ACL WHOAMI\r\n").unwrap();
+    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    for _ in 0..8 {
+        ping(&mut local);
+    }
+    stopping.store(true, Ordering::Release);
+    let premature = done.recv_timeout(Duration::from_millis(20));
+    release_send.send(()).unwrap();
+    let completed = done.recv_timeout(Duration::from_secs(3));
+    let bridge_reply = bridge.recv_timeout(Duration::from_secs(3));
+    network.join().unwrap();
+    assert!(
+        matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+        "shutdown abandoned admitted remote work: {premature:?}"
+    );
+    completed
+        .expect("remote socket tasks and cold service must join")
+        .unwrap();
+    assert_eq!(bridge_reply.unwrap(), b"+OK\r\n");
+    assert_eq!(store.connected_clients(), 0);
+}
+
+#[test]
+fn protocol_shutdown_on_a_remote_lane_flushes_prior_pipeline_replies_and_joins() {
+    let mut server = TestServer::start(2, 128);
+    let mut local = server.connect();
+    ping(&mut local);
+    let mut remote = server.connect();
+    remote.write_all(b"PING\r\nSHUTDOWN\r\nPING\r\n").unwrap();
+    let mut output = Vec::new();
+    remote.read_to_end(&mut output).unwrap();
+    assert_eq!(output, b"+PONG\r\n");
     server.shutdown();
 }
 
@@ -274,7 +399,10 @@ fn cold_io_saturation_leaves_runtime_runnable_and_shutdown_joins_the_service() {
         config: Config::default(),
         store: Arc::clone(&store),
         stopping: Arc::clone(&stopping),
+        failed: Arc::new(AtomicBool::new(false)),
+        stop_replies: Arc::new(AtomicUsize::new(0)),
         controls: Arc::new(Mutex::new(HashMap::new())),
+        owner: None,
         cold: ColdExecutor {
             sender,
             permit: Arc::clone(&permit),
@@ -288,7 +416,7 @@ fn cold_io_saturation_leaves_runtime_runnable_and_shutdown_joins_the_service() {
             .build()
             .unwrap();
         let result = tokio::task::LocalSet::new()
-            .block_on(&runtime, accept_with_storage(listener, context, &[]));
+            .block_on(&runtime, accept_with_storage(listener, context, &[], None));
         service.join().unwrap();
         done_sender.send(result).unwrap();
     });
@@ -341,8 +469,10 @@ fn panic_publishes_stop_and_closes_controls_before_task_reaping() {
     let (control, _) = listener.accept().unwrap();
     let controls = Arc::new(Mutex::new(HashMap::from([(1, control)])));
     let stopping = Arc::new(AtomicBool::new(false));
+    let failed = Arc::new(AtomicBool::new(false));
     let guard = FailureStop {
         stopping: Arc::clone(&stopping),
+        failed: Arc::clone(&failed),
         controls,
     };
     let result = std::panic::catch_unwind(move || {
@@ -351,6 +481,7 @@ fn panic_publishes_stop_and_closes_controls_before_task_reaping() {
     });
     assert!(result.is_err());
     assert!(stopping.load(Ordering::Acquire));
+    assert!(failed.load(Ordering::Acquire));
     assert_eq!(peer.read(&mut [0]).unwrap(), 0);
 }
 

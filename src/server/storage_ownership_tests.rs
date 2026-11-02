@@ -133,7 +133,7 @@ fn plain_exit_cannot_destroy_owner_under_an_admitted_tls_request() {
 
 #[cfg(unix)]
 #[test]
-fn one_socket_worker_executes_complete_transactions_without_bridge_crossings() {
+fn local_owner_executes_complete_transactions_without_bridge_crossings() {
     // The published default engine and the opt-in async engine must both run
     // complete transactions without a data-bridge crossing.
     for io_mode in [IoMode::Mio, IoMode::Tokio] {
@@ -149,7 +149,13 @@ fn one_socket_worker_executes_complete_transactions_without_bridge_crossings() {
         assert!(handle.scheduling_policy().readiness_io);
         if io_mode == IoMode::Tokio {
             assert!(handle.scheduling_policy().tokio_transport);
-            assert_eq!(handle.scheduling_policy().tokio_worker_threads, 1);
+            assert_eq!(
+                handle.scheduling_policy().tokio_worker_threads,
+                thread::available_parallelism()
+                    .map(usize::from)
+                    .unwrap_or(1)
+                    .clamp(1, 64)
+            );
             assert!(!handle.scheduling_policy().tokio_compatibility_owner);
         } else {
             assert!(!handle.scheduling_policy().tokio_transport);

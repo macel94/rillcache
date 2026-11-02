@@ -15,36 +15,42 @@ fn start(mut config: Config) -> ServerHandle {
             "0" => config.worker_threads = None,
             "1" => config.worker_threads = Some(1),
             "4" => config.worker_threads = Some(4),
-            // Opt-in async engine coverage; the production default is Mio.
+            "mio" => {
+                config.worker_threads = None;
+                config.io_mode = rillcache::server::IoMode::Mio;
+            }
+            // Explicit async coverage independent of automatic selection.
             "tokio" => {
                 config.worker_threads = None;
                 config.io_mode = rillcache::server::IoMode::Tokio;
             }
-            _ => panic!("test mode must be 0, 1, 4 or tokio"),
+            _ => panic!("test mode must be 0, 1, 4, mio or tokio"),
         }
     }
     Server::bind(config).unwrap().spawn().unwrap()
 }
 
 #[test]
-fn default_engine_is_mio_and_tokio_is_explicit() {
+fn automatic_and_explicit_network_selection_reports_captured_topology() {
     let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
-    if mode != "0" && mode != "tokio" {
+    if !matches!(mode.as_str(), "0" | "mio" | "tokio") {
         return;
     }
     let server = start(Config::default());
     let policy = server.scheduling_policy();
-    if mode == "tokio" {
+    if mode == "tokio"
+        || mode == "0" && thread::available_parallelism().is_ok_and(|n| n.get() >= 2) && cfg!(unix)
+    {
         assert!(policy.readiness_io);
         assert!(policy.tokio_transport);
-        assert_eq!(policy.tokio_worker_threads, 1);
         let expected = thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1)
             .clamp(1, 64);
-        assert!(policy.tokio_worker_threads <= expected);
+        assert_eq!(policy.tokio_worker_threads, expected);
+        assert!(!policy.tokio_compatibility_owner);
     } else {
-        assert_eq!(Config::default().io_mode, rillcache::server::IoMode::Mio);
+        assert_eq!(Config::default().io_mode, rillcache::server::IoMode::Auto);
         assert!(policy.readiness_io);
         assert!(!policy.tokio_transport);
         assert_eq!(policy.tokio_worker_threads, 0);

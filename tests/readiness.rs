@@ -142,6 +142,40 @@ fn deferred_replies_and_pushes_wake_without_new_input_on_the_waiting_socket() {
 }
 
 #[test]
+fn unblocking_and_pause_expiry_resume_buffered_commands_without_more_input() {
+    let server = start();
+    let mut waiter = Peer::new(&server);
+    let mut actor = Peer::new(&server);
+    let mut pipeline = Vec::new();
+    encode_request(&[b"BLPOP", b"q", b"0"], &mut pipeline);
+    encode_request(&[b"INCR", b"after-block"], &mut pipeline);
+    waiter.0.get_mut().write_all(&pipeline).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        actor.send(&[b"INFO", b"clients"]);
+        if String::from_utf8(actor.bulk())
+            .unwrap()
+            .contains("blocked_clients:1\r\n")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    actor.send(&[b"LPUSH", b"q", b"v"]);
+    actor.exact(b":1\r\n");
+    waiter.exact(b"*2\r\n$1\r\nq\r\n$1\r\nv\r\n:1\r\n");
+    actor.send(&[b"CLIENT", b"PAUSE", b"50", b"ALL"]);
+    actor.exact(b"+OK\r\n");
+    pipeline.clear();
+    encode_request(&[b"INCR", b"after-pause"], &mut pipeline);
+    encode_request(&[b"PING"], &mut pipeline);
+    waiter.0.get_mut().write_all(&pipeline).unwrap();
+    waiter.exact(b":1\r\n+PONG\r\n");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn fin_behind_a_blocked_pipeline_releases_the_registered_client() {
     let server = start();
     let mut peer = Peer::new(&server);
