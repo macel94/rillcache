@@ -57,6 +57,38 @@ Keep **one** canonical checkpoint (about 300–600 words) and one append-only JS
 experiment ledger outside tracked source, linking raw evidence and historical
 failures. Keep old checkpoints as historical, not competing current state.
 
+## Same-job hosted reactor diagnostic
+
+For a PING/GET scheduling candidate, the read-only manual upstream workflow also
+accepts `reactor_diagnostic=true` and an exact `reactor_base` SHA. It tests the
+checked-out candidate against fresh production-release baseline and Valkey
+controls on the **same allocated hosted runner**, with default and one-worker
+Rillcache modes, P1/P16, and three Latin-rotated repetitions (72 ten-second
+samples). Capture the allocated hardware/software fingerprint **before builds**;
+require it unchanged afterward. Do not select/rerun a hardware cohort for wins.
+This is not the isolated fixed-host study below, dedicated hardware, or a gate.
+
+The build helper package-cleans the application before each same-path rebuild,
+requires real compilation and freezes both binaries. Raw CSV, executable hashes,
+source/argv/affinity/lifecycle identity and /proc CPU plus matched-thread scheduler
+snapshots are retained. Counters bracket, rather than instrument, timed traffic;
+thread churn yields unknown scheduler coverage, not invented zero switches.
+Shared-runner noise remains; a subset improvement cannot replace current-head
+required checks or support a universal win. No agent-host native load/profiling.
+
+```sh
+gh workflow run upstream-performance.yml --ref BRANCH \
+  -f reactor_diagnostic=true -f reactor_base=EXACT_BASE_SHA
+python3 scripts/reactor-study.py --check /path/to/reactor-study
+```
+
+The selector consolidation candidate preserves its absorption timeout rather
+than guessing a spin budget: vendored Mio 1.2.4's Linux selector rounds positive
+sub-millisecond waits upward, so the nominal 8 us request is **1 ms**, not an
+8 us busy spin. One selector call per round avoids re-polling just-ingested
+readiness while retaining edge-triggered WouldBlock probes and bounded quanta.
+The diagnostic workflow is not deployed on main before its protected PR merges.
+
 ## Fixed-host advisory screening
 
 `scripts/dev-performance.py` reuses the tested owned-process diagnostic. It is

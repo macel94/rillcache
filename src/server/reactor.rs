@@ -19,12 +19,22 @@ const RUN_QUANTUM: usize = 256;
 const STOP_TICK: Duration = Duration::from_millis(10);
 const ASYNC_TICK: Duration = Duration::from_millis(1);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
-/// After a productive pass the next request for a client we just answered is
-/// usually already in flight. One short timed wait lets the kernel absorb it,
-/// which avoids a sleep/wake cycle per command at pipeline 1. It replaces a
-/// blocking wait rather than adding one, and it only runs when the runnable
-/// queue is empty, so an idle server still parks for the full stop tick.
+/// Briefly absorb the next request after servicing a burst, then use the idle
+/// timeout if no work arrives. Actual timeout resolution is platform-dependent:
+/// Mio 1.2.4 rounds this up to one millisecond on Linux; it is not an 8 us spin.
 const FAST_WAIT: Duration = Duration::from_micros(8);
+
+fn wait_timeout(runnable: bool, asynchronous: bool, absorb_next: bool) -> Duration {
+    if runnable {
+        Duration::ZERO
+    } else if absorb_next {
+        FAST_WAIT
+    } else if asynchronous {
+        ASYNC_TICK
+    } else {
+        STOP_TICK
+    }
+}
 
 /// An index is reusable, but its full, non-recycled selector token is not.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -427,6 +437,7 @@ impl<E: Execution> Reactor<E> {
         let mut chunk = [0; 16 * 1024];
         let mut maintenance = Instant::now();
         let mut asynchronous = maintenance;
+        let mut absorb_next = false;
         while !self.stopping.load(Ordering::Acquire) && !self.store.shutdown_requested() {
             if let Some(inbox) = &self.inbox {
                 inbox.drain(self.store.as_ref());
@@ -472,13 +483,13 @@ impl<E: Execution> Reactor<E> {
             // The listener is polled on every pass: a queued connection or a new
             // client must never wait behind a sustained pipeline. A zero timeout
             // keeps that pass non-blocking while work is already queued.
-            let timeout = if self.accept_ready || !self.ready.is_empty() {
-                Duration::ZERO
-            } else if self.asynchronous.is_empty() {
-                STOP_TICK
-            } else {
-                ASYNC_TICK
-            };
+            // Consume a one-shot wait intent here, rather than polling at the
+            // bottom and polling ZERO again before servicing that same readiness.
+            let timeout = wait_timeout(
+                self.accept_ready || !self.ready.is_empty(),
+                !self.asynchronous.is_empty(),
+                std::mem::take(&mut absorb_next),
+            );
             match self.poll.poll(&mut events, Some(timeout)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -499,13 +510,7 @@ impl<E: Execution> Reactor<E> {
                     Ok(Served::Migrated) => {}
                 }
             }
-            if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
-                match self.poll.poll(&mut events, Some(FAST_WAIT)) {
-                    Ok(()) => self.ingest(&events),
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return Err(error),
-                }
-            }
+            absorb_next = serviced > 0 && self.ready.is_empty() && !self.accept_ready;
         }
         Ok(())
     }
@@ -732,6 +737,32 @@ mod tests {
             migrate: None,
             incoming: None,
             waker: None,
+        }
+    }
+
+    #[test]
+    fn runnable_work_always_overrides_absorption_and_timer_waits() {
+        for asynchronous in [false, true] {
+            for absorb in [false, true] {
+                assert_eq!(wait_timeout(true, asynchronous, absorb), Duration::ZERO);
+            }
+        }
+    }
+
+    #[test]
+    fn absorption_is_one_shot_and_idle_and_async_fallbacks_are_preserved() {
+        for asynchronous in [false, true] {
+            let mut absorb_next = true;
+            assert_eq!(
+                wait_timeout(false, asynchronous, std::mem::take(&mut absorb_next)),
+                FAST_WAIT
+            );
+            // No serviced client rearms the intent after an empty selector turn.
+            assert_eq!(
+                wait_timeout(false, asynchronous, std::mem::take(&mut absorb_next)),
+                if asynchronous { ASYNC_TICK } else { STOP_TICK }
+            );
+            assert!(!absorb_next);
         }
     }
 

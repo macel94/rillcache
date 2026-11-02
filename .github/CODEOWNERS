@@ -17,6 +17,7 @@
 /scripts/upstream/daily_prepare.py @macel94
 /ci/daily-pins.json @macel94
 /scripts/compare-builds.py @macel94
+/scripts/reactor-study.py @macel94
 /scripts/publish-report-pr.sh @macel94
 /scripts/test-pr-policy.py @macel94
 /src/bin/rillcache-bench.rs @macel94
