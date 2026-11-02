@@ -18,9 +18,10 @@ eight-reactor count is rejected; this document now records that evidence without
 a runtime change. A later refresh onto the isolated command counters passed both
 four-CPU gates twice (section 2.10), and a separate manual cohort shows no
 measured rate loss to Redis or Valkey on five workloads, with the remaining gap
-in CPU efficiency and scheduler churn (section 2.11). A gate pass on one head
-never substitutes for a fresh head, and every dependency still needs explicit
-review.
+in CPU efficiency and scheduler churn (section 2.11). Cross-candidate gate
+results show that changing the reactor count is not a reliable P1 fix
+(section 2.12). A gate pass on one head never substitutes for a fresh head, and
+every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -386,6 +387,40 @@ wakeup/spin cost, not parser or storage work: the server already wins rate and
 tail, but uses 20% more CPU and ~1,400x the voluntary switches on the hot
 connection-local row. Candidate 4.11 specifies the diagnostic and its rejection
 condition.
+
+### 2.12 Cross-candidate synthesis: P1 ping is not a reactor-count problem
+
+Three independent owners tested reactor counts around the merged four-reactor
+default. The implementations are separate; only their published four-CPU gate
+evidence is compared here. Absolute rates come from different hosts and must not
+be compared across rows.
+
+| Default at four CPUs | Head | P1 ping Rillcache | Valkey | Delta | Other losses | Dragonfly |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| one reactor, co-located | PR #167 `d291cad` | 107,707.0 | 108,572.5 | −0.80% | P1 GET −0.11% | PASS 10/10 |
+| two reactors | PR #172 `c7904c6` | 150,489.2 | 152,652.7 | −1.42% | none | PASS 10/10 |
+| four reactors | merged default, four cohorts | 107,787.9–117,430.7 | 112,658.8–115,545.1 | −4.32% to +2.92% | none | PASS 10/10* |
+| eight reactors | PR #164 `e790299` | 85,675.7 | 110,402.4 | −22.4% | none; Dragonfly also failed P1 ping only | FAIL 9/10 |
+
+\*The four-reactor Dragonfly comparison passed 10/10 on every cohort; the table's
+Dragonfly column is about the candidate's own head.
+
+The two-reactor head produced by far the highest absolute P1 rate (150k) and
+still lost the strict Valkey median by 1.42%, with a better p99 (0.071 versus
+0.095 ms). The one-reactor head cut scheduler churn but lost ping and GET
+narrowly. Eight reactors is the only case with a mechanistic, large loss:
+eight server reactors plus two generator threads exceed four CPUs badly. Four
+reactors sits in a ±4% band and has passed both gates repeatedly.
+
+**Verdict:** stop tuning the reactor count to clear the Valkey P1 ping median.
+One, two, four and eight reactors have all failed that row on at least one head;
+the sign is not monotonic in reactor count, and the two-reactor result shows the
+row can stay negative even when absolute rate and p99 are much better. The
+merged four-reactor default remains because it carries the most passing
+evidence, not because four is provably optimal. The next valid work is the
+matched fixed-host diagnostic (counters and wakeup mechanisms) or a gate runner
+with disjoint client CPUs; another default-count change would be an unmeasured
+knob turn.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -835,7 +870,9 @@ keep the absorption path when it is doing useful work.
 Acceptance if implemented: deterministic reactor scheduling tests, no lost
 wakeups or ordering regressions, joined shutdown, the matched A/B above, and both
 protected gates on the final head. Until the diagnostic shows the spin is the
-cost, this remains a hypothesis, not a runtime change.
+cost, this remains a hypothesis, not a runtime change. Section 2.12 records why
+another default reactor count is not an acceptable substitute for this
+diagnostic.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -929,6 +966,7 @@ free tuning change.
 | Copying level-triggered `epoll` semantics | Requires raw `epoll` FFI in project code (safe-Rust violation) or a new selector dependency; Mio's edge-triggered probe is load-bearing, as PR #155 showed. |
 | Copying Valkey's I/O-thread reply copy avoidance | Depends on encoded-buffer reference tracking and an I/O-thread pool; no gate evidence that the current copy path is the remaining cost. |
 | Starting more connection-local reactors than CPUs (`2 × CPUs`, max eight) | Failed both four-CPU gates on P1 ping (Valkey −22.4%, Dragonfly −9.3%) while data rows passed; the extra threads oversubscribe the four-CPU budget (section 2.8). |
+| Tuning the default reactor count to clear Valkey P1 ping | One, two, four and eight reactors have each failed that row on some head; the sign is not monotonic and the two-reactor head lost 1.42% despite the highest absolute rate and better p99. See section 2.12. |
 | RDB/replication work as a performance fix | Out of scope and unrelated to the measured P1 gap. |
 | Eliding the edge-triggered empty-receive drain probe (PR #155) | Cut receive syscalls ~16% locally but lost two Valkey P1 medians; the probe is also a user-space readiness batch. See 2.6/4.7. |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
@@ -1053,6 +1091,11 @@ current roadmap; individual phases are separate increments.
   not a gate and was not merged into this record.
 - Wakeup/spin diagnostic (section 4.11): not yet run; requires frozen binaries,
   scheduler/syscall counters and the same protected gate on any resulting head.
+- Cross-candidate count evidence (section 2.12): PR #167 one reactor, four-CPU run
+  41518853948 (Valkey 8/10, P1 ping −0.80%, P1 GET −0.11%; Dragonfly 10/10);
+  PR #172 two reactors, run 41544908472 (Valkey 9/10, P1 ping −1.42%; Dragonfly
+  10/10). Artifacts retained under `/root/perf-evidence/pr167/` and `pr172/`.
+  Both are other owners' open PRs; only their published gate results are used.
 - Development loop: `make dev-check` for editing feedback, `make test` after a
   complete logical change and `make ci` before review, per
   [development-cycle](../development-cycle.md). Local screens never replace the
@@ -1079,13 +1122,14 @@ current roadmap; individual phases are separate increments.
   and scheduler churn, not rate or tail on those rows.
 - The P1 ping row is host-sensitive. The refreshed runtime passed both four-CPU
   comparisons twice (section 2.10), but earlier identical binaries also lost that
-  row by up to 4.32% on the same shared runner (section 2.9). Readiness was
-  necessary but not sufficient, and the rejected drain probe shows that syscall
-  counts
-  alone are not a throughput proxy. Round-robin at four reactors improved
-  Valkey but still lost Dragonfly PING; the eight-reactor response then lost P1
-  ping to both and is rejected. The remaining P1 question needs a different
-  scheduling mechanism, not a larger thread count.
+  row by up to 4.32% on the same shared runner (section 2.9). One-, two-, four-
+  and eight-reactor defaults have each failed it on some head; the sign is not
+  monotonic (section 2.12). Readiness was necessary but not sufficient, and the
+  rejected drain probe shows that syscall counts alone are not a throughput
+  proxy. Round-robin at four reactors improved Valkey but still lost Dragonfly
+  PING; the eight-reactor response then lost P1 ping to both and is rejected. The
+  remaining P1 question needs a different scheduling mechanism, not another
+  reactor count.
 - The four-CPU runner used for the recent cohorts has `client_cpus` equal to
   `server_cpus` (`[0,1,2,3]`), so the load generator shares the server CPUs.
   That biases a multi-reactor server against a single-thread competitor and puts
