@@ -386,3 +386,25 @@ platforms retain timeout-based fallback admission.
   visibly with a diagnostic when no client is available unless
   `RILLCACHE_REQUIRE_REDIS_CLI=1` is set. Language-client suites, richer protocol
   negotiation and nonzero database selection remain separate increments.
+
+## Owner-migration socket workers (S-SOCKET-WORKERS)
+
+- **R-SOCKET1 (event-driven):** When Rillcache starts plain Unix TCP without fixed
+  workers, TLS-only routing, Tokio or multi-owner execution, it shall run
+  `min(4, allowed CPUs)` reactors by default; `--socket-workers 1..16` shall
+  override that count. One reactor shall keep the owner-local data executor and
+  all data commands; worker reactors shall own disjoint accepted connections and
+  execute only bare connection-local commands. `--socket-workers 1` shall retain
+  the single owner-local reactor.
+- **R-SOCKET2 (state-driven):** Before a worker executes the first data command on
+  a connection, it shall flush prior replies, deregister the socket, transfer the
+  session and unparsed input, and hand the connection to the owner reactor, which
+  shall register it and continue in reply order. Only the owner shall run
+  journal/expiry/rewrite maintenance; admission, stop state and shutdown joining
+  shall be shared and bounded; a connection shall never be owned by two reactors.
+- **R-SOCKET3 (ubiquitous):** Tests shall cover default and explicit reactor
+  counts, PING/SET/GET and mixed pipelines, session state across migration,
+  transactions, pub/sub, blocking commands, large/backpressured output, idle
+  timeout, max clients, session isolation and joined shutdown. Documentation
+  shall state that no key is sharded, no per-command owner hop is added, and that
+  protected-gate evidence decides any throughput claim.
