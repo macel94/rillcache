@@ -239,7 +239,22 @@ impl<E: Execution> Reactor<E> {
                 .reregister(&mut SourceFd(&fd), key.token, interest)?;
             connection.writable = writable;
         }
-        let runnable = progress || retry_before_dispatch || client.retry_io;
+        // Edge-triggered Linux stream reads are drained when `read` returns
+        // fewer bytes than the requested chunk, so a completed pipeline-1
+        // request does not need an immediate empty receive. A full chunk (or
+        // EINTR) keeps the token runnable, as do buffered commands, pending
+        // output and asynchronous delivery. Other Unix targets keep the
+        // conservative drain-until-WouldBlock requeue.
+        let keep_running = if cfg!(target_os = "linux") {
+            progress
+                && (client.closing
+                    || !client.input.is_empty()
+                    || !client.output.is_empty()
+                    || connection.asynchronous)
+        } else {
+            progress
+        };
+        let runnable = retry_before_dispatch || client.retry_io || keep_running;
         if runnable {
             // Own the continuation here: no second token lookup/queue admission.
             connection.queued = true;
@@ -485,23 +500,79 @@ mod tests {
     }
 
     #[test]
-    fn productive_turn_owns_exactly_one_runnable_continuation() {
+    fn productive_turn_keeps_a_continuation_only_while_work_remains() {
         let mut reactor = fixture();
         let _peer = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
         reactor.accept().unwrap();
         let key = reactor.ready.pop_front().unwrap();
-        reactor.clients[key.slot]
-            .as_mut()
-            .unwrap()
-            .client
-            .input
-            .extend_from_slice(b"PING\r\n");
-        assert_eq!(reactor.service(key, &mut [0; 1024]).unwrap(), Some(true));
+        // More than one command quantum leaves buffered input behind.
+        for _ in 0..65 {
+            reactor.clients[key.slot]
+                .as_mut()
+                .unwrap()
+                .client
+                .input
+                .extend_from_slice(b"*1\r\n$4\r\nPING\r\n");
+        }
+        assert_eq!(reactor.service(key, &mut [0; 16384]).unwrap(), Some(true));
         assert!(reactor.clients[key.slot].as_ref().unwrap().queued);
         assert_eq!(reactor.ready.iter().copied().collect::<Vec<_>>(), vec![key]);
         reactor.enqueue(key);
         assert_eq!(reactor.ready.len(), 1);
         assert!(reactor.asynchronous.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn short_complete_request_waits_for_the_next_readiness_edge() {
+        use std::io::{Read, Write};
+        let mut reactor = fixture();
+        let mut peer = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        peer.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+        reactor.accept().unwrap();
+        let key = reactor.ready.pop_front().unwrap();
+        let mut chunk = [0; 16 * 1024];
+        assert_eq!(reactor.service(key, &mut chunk).unwrap(), Some(false));
+        assert!(!reactor.clients[key.slot].as_ref().unwrap().queued);
+        assert!(reactor.ready.is_empty());
+        let mut reply = [0; 7];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"+PONG\r\n");
+        // A later request is delivered by a new edge, not by spinning on EAGAIN.
+        peer.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+        reactor.enqueue(key);
+        assert_eq!(reactor.service(key, &mut chunk).unwrap(), Some(false));
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"+PONG\r\n");
+        // A short QUIT must retain one continuation so the socket is closed
+        // after its +OK is flushed, exactly like a pipelined close.
+        peer.write_all(b"*1\r\n$4\r\nQUIT\r\n").unwrap();
+        reactor.enqueue(key);
+        assert_eq!(reactor.service(key, &mut chunk).unwrap(), Some(true));
+        assert_eq!(reactor.service(key, &mut chunk).unwrap(), None);
+    }
+
+    #[test]
+    fn full_chunk_read_retains_the_drain_continuation() {
+        use std::io::Write;
+        let mut reactor = fixture();
+        let mut peer = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
+        // One incomplete bulk larger than the 16 KiB reactor chunk forces a
+        // full read without a complete command.
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$20000\r\n");
+        frame.resize(frame.len() + 20_000, b'v');
+        peer.write_all(&frame).unwrap();
+        reactor.accept().unwrap();
+        let key = reactor.ready.pop_front().unwrap();
+        assert_eq!(
+            reactor.service(key, &mut [0; 16 * 1024]).unwrap(),
+            Some(true)
+        );
+        let connection = reactor.clients[key.slot].as_ref().unwrap();
+        assert!(connection.client.retry_io, "full read must stay runnable");
+        assert!(!connection.client.input.is_empty());
     }
 
     #[test]

@@ -386,3 +386,22 @@ platforms retain timeout-based fallback admission.
   visibly with a diagnostic when no client is available unless
   `RILLCACHE_REQUIRE_REDIS_CLI=1` is set. Language-client suites, richer protocol
   negotiation and nonzero database selection remain separate increments.
+
+## Linux short-read drain elision (S-DRAIN)
+
+- **R-DRAIN1 (event-driven):** When a Linux readiness reactor's bounded socket
+  read returns fewer bytes than the requested chunk and the connection has no
+  buffered input, pending output or asynchronous delivery state, the reactor
+  shall wait for the next readiness edge instead of immediately re-queueing an
+  empty receive for that connection.
+- **R-DRAIN2 (state-driven):** A read that fills the requested chunk, an
+  interrupted read, buffered input, pending output, a closing connection or
+  asynchronous blocked/paused/subscribed/monitoring state shall retain the
+  runnable continuation. Targets other than Linux shall keep the conservative
+  drain-until-`WouldBlock` re-queue.
+- **R-DRAIN3 (ubiquitous):** Tests shall cover sequential short round trips,
+  fragmented frames, the command quantum, a full-chunk read, backpressure,
+  asynchronous delivery and joined shutdown. Documentation shall state that the
+  elision relies on Linux TCP short-read drain semantics, that other Unix targets
+  keep the conservative path, and that local syscall reductions are not a
+  throughput or gate result.

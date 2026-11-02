@@ -121,6 +121,11 @@ impl Client {
             }
             Ok(size) => {
                 self.input.extend_from_slice(&chunk[..size]);
+                // A full chunk may have left unread bytes in the socket. The
+                // reactor keeps such an edge-triggered connection runnable so
+                // it drains instead of waiting for a readiness edge that may
+                // never arrive. A short read is handled by the caller.
+                self.retry_io |= size == room;
                 self.activity = Instant::now();
                 Ok(true)
             }

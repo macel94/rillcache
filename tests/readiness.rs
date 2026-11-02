@@ -206,3 +206,20 @@ fn shutdown_joins_with_idle_incomplete_and_blocked_clients() {
     observer.ping();
     server.shutdown().unwrap();
 }
+
+#[test]
+fn repeated_short_round_trips_and_a_fragmented_frame_use_new_readiness_edges() {
+    let server = start();
+    let mut peer = Peer::new(&server);
+    for _ in 0..32 {
+        peer.ping();
+    }
+    // The first half cannot complete a command; the next write must be noticed
+    // by a fresh edge rather than by an immediate empty-receive probe.
+    peer.0.get_mut().write_all(b"*1\r\n$4\r\nPI").unwrap();
+    std::thread::sleep(Duration::from_millis(2));
+    peer.0.get_mut().write_all(b"NG\r\n").unwrap();
+    peer.exact(b"+PONG\r\n");
+    peer.ping();
+    server.shutdown().unwrap();
+}

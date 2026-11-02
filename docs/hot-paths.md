@@ -398,3 +398,29 @@ Release builds use fat LTO with one codegen unit while retaining overflow checks
 This is a general whole-program optimization for cross-module inlining of the
 session/store/RESP path, not a benchmark-specific mode or a safety relaxation.
 Build time increases; `make ci` still enforces the same tests and smoke benchmarks.
+
+## Linux short-read drain elision (S-DRAIN)
+
+The edge-triggered reactor used to re-queue a productive connection and then
+immediately issue another receive, even when the read had already drained the
+TCP receive queue. On Linux a stream read that returns fewer bytes than the
+requested chunk means no more bytes were queued at that instant; a later arrival
+produces a new readiness edge. The reactor therefore now keeps the continuation
+only when the read filled the chunk, was interrupted, or buffered input, pending
+output, a closing connection or asynchronous delivery remains. Other Unix
+targets keep the previous drain-until-`WouldBlock` behaviour. This is not a portable POSIX claim and it does
+not remove the edge-triggered drain requirement for full reads.
+
+A paired local debug-build syscall capture (throttled shared host, diagnostic
+only, 20,000 measured P1 PING commands plus 8,000 warmups on four server CPUs)
+recorded receive-class calls falling from about 1.7 to 1.0 per command, send
+calls unchanged at 1.0, and `epoll_wait` rising from about 0.92 to 1.06; total
+network syscalls fell by roughly 16%. The same host was too contended for a
+valid throughput comparison (release runs missed the client deadline), and the
+debug throughput pairs were inconclusive, including one slower candidate pair. The protected four-CPU gate is the only
+acceptance authority; a losing cohort is retained, not retried, and no
+throughput claim follows from the syscall counts.
+
+Tests cover repeated short round trips, a frame split across two writes, the
+64-command quantum, a full 16 KiB read, backpressure, asynchronous delivery and
+joined shutdown.
