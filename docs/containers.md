@@ -1,10 +1,10 @@
 # Thin Docker and Kubernetes delivery
 
-**Experimental cache—not production Redis compatibility.** Optional single-password
-or multi-user ACL-file authentication, native TLS 1.3 via rustls, and an opt-in
-append-only journal exist, but there is no RDB format, AOF rewrite, replication or
-graceful signal-driven shutdown. Keep the plaintext listener private even when
-TLS is enabled.
+Rillcache's image is ready for local evaluation, with optional passwords/ACLs,
+native TLS 1.3 and an append-only journal. Full production compatibility is still
+in progress: there is no RDB format, background/incremental rewrite, replication
+or graceful signal-driven drain. Keep the plaintext listener private even when
+TLS is enabled. [Production readiness](production-readiness.md) tracks the remaining work.
 Publishing an image does not deploy a service.
 
 ## Run it
@@ -55,8 +55,9 @@ docker run --rm --init -p 127.0.0.1:6379:6379 \
 `--appendfsync always` acknowledges only after fsync; `everysec` (default) can
 lose roughly a second; `no` only writes without an explicit sync. The root
 filesystem can stay read-only because only `/data` needs to be writable. There is no
-background or automatic rewrite; `BGREWRITEAOF` performs a synchronous full-state
-compaction that briefly pauses command service. Restart recovery ignores only an incomplete tail and fails visibly on
+background/incremental rewrite; `BGREWRITEAOF` performs a synchronous full-state
+compaction that briefly pauses command service. Configurable maintenance thresholds
+can trigger the same synchronous compaction. Restart recovery ignores only an incomplete tail and fails visibly on
 mid-file corruption. Stream consumer pending state is not restored. See
 [persistence](persistence.md).
 Rotate through authenticated `CONFIG SET requirepass` or by restarting with a new
@@ -71,7 +72,10 @@ The server defaults remain 128 clients, 64 MiB **key/value payload** and a
 30-second socket inactivity timeout. Payload is not RSS: keys, maps, allocator,
 threads, expiry indexes and sockets can make actual memory much larger. Adjust
 both application limits and runtime memory for the workload; the kernel can OOM-kill.
-The default worker mode remains thread-per-client, not an automatic core-count heuristic.
+Default Unix plain TCP uses up to four Mio socket reactors within the captured
+CPU budget; data connections migrate once to the local data owner. You do not
+need a worker override to get started. Advanced modes and their actual resource
+accounting are documented in [the runtime guide](hot-paths.md).
 
 ## What ships
 
@@ -137,7 +141,8 @@ Use one replica and `Recreate`: independent replicas do not share data, and a
 Service over several would randomly route keys to unrelated caches. With
 `--appendonly yes --dir /data`, an operator-supplied PersistentVolume can preserve
 the journal across container restarts, but the example manifest intentionally has
-no PVC and this subset has no replication, rewrite, backup or failover. Prefer a
+no PVC and this subset has no replication, background rewrite, validated
+backup/restore workflow or automatic failover. Prefer a
 digest-pinned image for repeatable deployments:
 use the `ghcr.io/macel94/rillcache@sha256:...` reference printed by the workflow
 in place of `:latest`. `latest` is a convenience main-build tag, not a stable release.

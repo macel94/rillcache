@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="mark-title mark-description">
+  <title id="mark-title">Rillcache mark</title>
+  <desc id="mark-description">Three flowing lines stacked like cache layers, on a rounded dark square.</desc>
+  <defs>
+    <linearGradient id="flow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#99f6e4"/>
+      <stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="104" height="104" rx="28" fill="#0f172a"/>
+  <g fill="none" stroke="url(#flow)" stroke-width="9" stroke-linecap="round">
+    <path d="M32 43 C42 34 52 34 64 43 S86 52 96 43"/>
+    <path d="M32 64 C42 55 52 55 64 64 S86 73 96 64"/>
+    <path d="M32 85 C42 76 52 76 64 85 S86 94 96 85"/>
+  </g>
+</svg>
