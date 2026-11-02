@@ -1,13 +1,18 @@
 # Performance architecture: measured gaps and candidate designs
 
 **Status: RESEARCH. This document changes no runtime behavior.** It records where
-Rillcache still lost to Redis and Valkey, what those projects actually do on the
-same paths, which designs this repository can adopt under its safety and dependency
-policy, and what evidence was required to accept them. The bounded Mio readiness
-reactor it analyses merged as PR #139 (`4a52fc0`) after passing both protected
-gates on its merge candidate (section 2.3). A gate pass on one head never
-substitutes for a fresh head, and the merged policy still constrains any further
-dependency.
+Rillcache lost to Redis and Valkey, what those projects actually do on the same
+paths, which designs the repository adopted or rejected under its safety and
+dependency policy, and what evidence was required. The bounded Mio readiness
+reactor merged as PR #139 (`4a52fc0`) after passing both protected gates on its
+merge candidate (section 2.3); this document merged as PR #141 (`f572bd8`).
+Later increments added opt-in Tokio transport, multi-owner execution, cached
+mode/authorization words and batched owner replies, and the required four-CPU job
+now also compares Dragonfly (sections 2.5–2.6). Two further runtime experiments —
+the short-read drain elision (#155) and shared-store socket workers (#157) — were
+measured and rejected (sections 2.6–2.7); the next multi-reactor design remains a
+candidate (section 4.8), not a default change. A gate pass on one head never
+substitutes for a fresh head, and every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -148,6 +153,73 @@ prediction at gate rates. The earlier `strace` study independently counted
 user-space poller without kernel readiness re-asks every borrowed socket, while
 the C servers ask the kernel once. That is the largest single architectural
 difference on the P1 path.
+
+### 2.5 Same-setup Dragonfly gate and host sensitivity
+
+PR #153 added a checksum-pinned Dragonfly v2.0.2 comparison to the same required
+four-CPU job: identical five commands, P1/P16, eight clients, 1024 random keys,
+64-byte values, 8,000 warmups, official ten-second samples and three alternating
+repetitions. Rillcache must strictly beat Dragonfly in all ten medians as well as
+Valkey's ten. The analysis and phased roadmap are in
+[Dragonfly-class performance](dragonfly-class-performance.md); Dragonfly is an
+external benchmark target, not a dependency.
+
+Measured cohorts show how much the P1 row depends on the host:
+
+| Cohort | Host scale (Rill P1 ping) | Valkey gate | Dragonfly gate | P1 ping detail |
+| --- | ---: | --- | --- | --- |
+| `d7ec5b3` | ~220k req/s | PASS 10/10 | **FAIL 9/10** | 220,157 vs 245,317 req/s (−10.3%), p99 0.087 vs 0.047 ms |
+| `6ba01b6` | ~115k req/s | PASS 10/10 | PASS 10/10 | P1 rows passed on the slower host |
+| PR #155 candidate | ~107k req/s | **FAIL 8/10** | PASS 10/10 | ping 106,001 vs 110,183 (−3.8%), get 110,054 vs 110,399 (−0.3%) |
+
+The only repeated Dragonfly loss is pipeline-1 `ping` on fast hosts, where
+per-request scheduling and syscall batching dominate; every pipelined row and all
+SET/GET/NX/XX P1 rows have large margins. The strict median rule still fails a
+cohort on that row. No threshold, workload or host substitution is permitted, so
+the row remains an explicit optimization and measurement target, not noise to be
+argued away.
+
+### 2.6 Short-read drain elision (PR #155, rejected)
+
+The kernel-readiness reactor re-queued a productive connection and then issued an
+immediate empty receive to confirm that an edge-triggered read had drained. A
+candidate skipped that probe after a short Linux read (full chunks, `EINTR`,
+buffered input/output, closing and asynchronous states still retained the
+continuation). A paired local debug capture measured receive-class syscalls
+falling from about 1.7 to 1.0 per command and total network syscalls by roughly
+16%, but local throughput was unusable on the contended host.
+
+The unchanged four-CPU gate rejected the candidate: Dragonfly passed 10/10, but
+Valkey failed 8/10 with ping P1 −3.8% and get P1 −0.3% (run 41368946995). The
+diagnosis is that the empty receive also acts as a user-space readiness batch for
+already-active clients: removing it shifts work to another `epoll_wait` wake and
+can add P1 latency. The syscall count alone was not a throughput proxy. The
+candidate was closed, its branch and artifacts were retained, and it was not
+rerun. This is a rejected option in section 7.
+
+### 2.7 Shared-store socket workers (PR #157, rejected)
+
+Candidate: default plain Unix TCP runs `min(4, CPUs)` independent Mio reactors,
+each owning disjoint connections over the existing locked Store; no sharding,
+migration, io_uring or dependency change. The original 20-case gate rejected it
+**12/20** (run 41380968312):
+
+| Budget | P | Workload | Rillcache | Valkey | Delta |
+| --- | ---: | --- | ---: | ---: | ---: |
+| inherited | 1 | ping | 160,813 | 105,100 | +53.0% |
+| inherited | 1 | set | 42,462 | 100,038 | -57.6% |
+| inherited | 1 | get | 42,669 | 100,584 | -57.6% |
+| inherited | 16 | set | 61,926 | 964,787 | -93.6% |
+| inherited | 16 | get | 62,069 | 1,086,520 | -94.3% |
+| one-cpu | 1 | set | 108,883 | 97,242 | +12.0% |
+| one-cpu | 16 | set | 1,398,149 | 953,753 | +46.6% |
+
+The PING result confirms that connection-local work scales across reactors. The
+data rows collapse because shared `StoreHandle`/bridge/lock execution is not the
+owner-local data path; the one-CPU budget selects one reactor, keeps the local
+executor, and passes every row. Diagnosis: multiple reactors are viable only for
+connection-local commands; data commands must stay on the owner-local executor.
+The PR was closed with its branch and evidence retained, not rerun or relabeled.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -291,7 +363,9 @@ execution must preserve multi-key atomicity and is explicitly deferred.
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
-evidence. Only 4.1 is implemented and merged; the rest are unstarted proposals.
+evidence. Section 4.1 and the mode-word work (4.3) are implemented; 4.2 was
+deprioritized after analysis, 4.5 is partially implemented, and 4.7 is a rejected
+experiment.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -307,7 +381,10 @@ the existing managed/blocking fallback; `--threads` keeps fixed lanes.
 Expected effect: replace per-socket empty `recv` probes with one kernel wait, so
 P1 four-CPU throughput stops losing to Valkey while P16 remains single-thread
 competitive. Measured at the merge candidate: 10/10 four-CPU wins and 20/20
-original wins (section 2.3). Risks: edge-triggered lost wakeups, stale token reuse, fairness
+original wins (section 2.3). Later increments kept the reactor as the default and
+added opt-in Tokio transport (#143), multi-owner execution (#145), configuration/
+observer/authorization mode words (#146–#149), next-request absorption (#150) and
+batched owner replies (#152). Risks: edge-triggered lost wakeups, stale token reuse, fairness
 under backpressure, async delivery latency, single-thread CPU ceiling, fd
 deregistration with cloned administration handles. Mitigations are the runnable
 queue, `EINTR` retry flag, token identity checks, readiness integration tests,
@@ -316,30 +393,33 @@ and the unchanged gate.
 Acceptance: both protected gates 20/20 and 10/10 on a fresh head; all 14 contexts;
 no lost/duplicated replies under fragmented, pipelined, half-closed and
 backpressured tests; joined shutdown; TLS/fixed/non-Unix behavior unchanged;
-dependency policy test and owner review for Mio.
+dependency policy test and owner review for the reviewed dependency exceptions.
 
-### 4.2 Resumable RESP parse state (planned)
+### 4.2 Resumable RESP parse state (deprioritized)
 
-Keep a bounded cursor (`consumed`, current argument index, expected bulk length)
-between reads so an incomplete large frame is not rescanned from byte zero. The
-existing complete-frame parser remains the entry point for the common case.
+The original concern was repeated scanning of a large incomplete frame. Source
+inspection showed that the parser does not scan payload bytes while incomplete:
+it re-reads only the small length headers and checks buffer length, so a single
+large value is not quadratic in bytes. The remaining cost is proportional to the
+number of argument headers per read, bounded by `max_arguments`. A resumable
+cursor would therefore add state and branches to the hot path without a measured
+large-argument workload showing a problem. Revisit only with such a measurement;
+the existing complete-frame fast path stays.
 
-Acceptance: bytes rescanned for one N-byte frame ≤ 2N; no change to malformed-frame
-errors, inline quoting, limits or execute-once behavior; a large-argument
-regression test measures read passes; no store-path or wire change.
+### 4.3 Single observer/mode word (implemented)
 
-### 4.3 Single observer/mode word (planned)
+The observer, security and authorization decisions now load one word rather than
+a chain of separate atomics (#148, #149), and configuration-dependent effects are
+cached behind one configuration epoch (#146, #147). The hot path still falls into
+the fully checked dispatcher whenever any collector, pause, monitor, subscriber
+or security bit is set.
 
-Publish auth, ACL, pause, slowlog, latency, commandstats, monitor, subscriber and
-transaction state into one `AtomicU32` mode word (or a small immutable snapshot)
-updated on transitions; the hot path loads it once and falls into the checked
-path when any bit is set.
+Acceptance met: the existing observer matrix, RESP2/RESP3, error accounting,
+slowlog/commandstats/latency and all-mode tests pass; no wire or dependency
+change. Further merging of per-session flags into the word is optional, not a
+current performance claim.
 
-Acceptance: identical behavior for every observer combination (existing matrix);
-store-path A/B shows a repeatable instruction/median improvement with raw samples;
-no wire or accounting change; no new dependency.
-
-### 4.4 Gate elision when no exclusive operation can run (planned, higher risk)
+### 4.4 Gate elision when no exclusive operation can run (not implemented, higher risk)
 
 Replace the unconditional transaction-gate `RwLock` read on every command with a
 fast path that skips it while no journal, MULTI/EXEC or exclusive maintenance is
@@ -351,10 +431,12 @@ Acceptance: a concurrency model note reviewed by the owner; deterministic tests
 for gate acquisition races; no atomicity/expiry/accounting regression; measured
 gain only if it survives both gates. Reject if the proof is not small.
 
-### 4.5 Cross-client write coalescing (deferred)
+### 4.5 Cross-client write coalescing (partially implemented)
 
-Collect ready clients' replies in one reactor iteration and write them after the
-batch (Valkey's `beforeSleep` shape) instead of writing inside each service call.
+PR #152 batches owner replies without blocking the reactor, which covers the
+multi-owner reply hop. Cross-client write coalescing on the default reactor
+(Valkey's `beforeSleep` shape) remains deferred: writing inside each service call
+is still the lower-latency P1 choice.
 Bounded by output bytes and client count. Risk: added latency and buffer growth;
 must not worsen P1 p99 or backpressure.
 
@@ -362,45 +444,77 @@ Acceptance: p99 not worse in any gate row; bounded memory; slow-reader and
 shutdown tests; only pursued if 4.1's evidence shows writes are the remaining
 cost.
 
-### 4.6 Sharded keyspace or parallel command execution (deferred, not planned)
+### 4.6 Sharded keyspace or parallel command execution (deferred)
 
-Sharding the map would reduce lock contention at P16 but complicates multi-key
-atomicity, expiry, WATCH and journal ordering. The gate already wins P16; this is
-not justified. It would require a separate design and proof.
+A deterministic routing seam (#140) and opt-in multi-owner execution (#145) now
+exist, but the default remains one owner because it is still the fastest verified
+mode. Sharding the live keyspace would complicate multi-key atomicity, expiry,
+WATCH and journal ordering; the roadmap in
+[Dragonfly-class performance](dragonfly-class-performance.md) treats multi-owner
+scaling as a separate phased program with its own acceptance, not as a default
+switch.
+
+### 4.7 Short-read drain elision (rejected)
+
+Mechanism, local syscall evidence, failed gate rows and diagnosis are in section
+2.6. The empty receive is retained: it is also a user-space readiness batch, and
+removing it shifted cost to `epoll_wait` and lost two Valkey P1 medians. Do not
+revive it without a different readiness mechanism and fresh gate evidence.
+
+### 4.8 Multi-reactor with one-time owner migration (specified, not implemented)
+
+One owner reactor keeps the local executor, maintenance and every data command.
+N−1 worker reactors accept connections and execute connection-local commands
+(PING/ECHO/QUIT). A connection migrates once to the owner when its first data
+command appears: prior replies flush, the unparsed input/session/buffers move,
+the fd is deregistered and registered on the owner, and reply order is preserved.
+PING scales across workers; SET/GET/P16 keep the proven owner-local data path.
+This is intentionally different from the rejected shared-store experiment and
+from per-command shard hops.
+
+Risks: migration ordering and pending-output/backpressure handling, accept
+distribution, max-client admission across reactors, idle-timeout maintenance, and
+joined shutdown with in-flight migrations. Acceptance: both protected gates, a
+migration/pipeline/session-state test matrix, no lost or reordered replies, no
+new dependency, no sharding/io_uring/unsafe code. Not started; it is a separate
+large default-path increment, not a documentation claim.
 
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
 | --- | --- | --- | --- | --- | --- |
-| `mio` | `=1.2.4` | kernel readiness (epoll/kqueue) with a safe API | yes | MIT | Unix; Windows code paths compile but are not used by the reactor |
-| `libc` | existing | already required by ring/rustls; also used by Mio | yes | MIT/Apache-2.0 | Unix |
-| `windows-sys` 0.61.2, `windows-link` | transitive | Mio's Windows backend only | yes | MIT/Apache-2.0 | Windows |
+| `mio` | `=1.2.4` | readiness backend for the default reactor and Tokio's I/O driver | yes | MIT | Unix; Windows code paths compile but are not used by the reactor |
+| `tokio` | `=1.54.1` | opt-in async plaintext transport, co-located with the owner executor | yes | MIT | Unix |
+| `core_affinity` | `=0.8.3` | safe best-effort worker pinning for the opt-in owner/transport modes | yes | MIT | Unix/Windows |
+| `libc` | existing | already required by ring/rustls and readiness crates | yes | MIT/Apache-2.0 | Unix |
+| `windows-sys` 0.61.2, `windows-link` | transitive | Mio/Tokio/core-affinity Windows backends only | yes | MIT/Apache-2.0 | Windows |
+| `bytes`, `socket2`, `pin-project-lite`, `num_cpus` | transitive | Tokio/net/affinity support; already allowlisted | yes | MIT/Apache-2.0 | build/target dependent |
 
 Policy impact (explicit, not incidental):
 
-- [`docs/requirements.md`](../requirements.md) now authorizes rustls and Mio with
-  their required transitive crates. This was a governance change: the
-  dependency-policy test, README/description, Cargo manifest and this design must
-  agree.
-- `tests/policy.rs` allowlists `mio`, `windows-link` and keeps every other
-  target/feature graph rejection. Vendoring keeps offline builds and checksum
-  verification; Mio has no build script; the application crate still forbids
-  unsafe code.
-- Dependency internals use `unsafe` FFI, exactly as the standard library and
-  rustls do. The project's safety claim is about project code and the reviewed,
-  vendored API boundary. This must be disclosed, not implied away.
-- CI/policy files are code-owner owned; the extension required the configured
+- [`docs/requirements.md`](../requirements.md) authorizes rustls, Tokio (with Mio
+  as its readiness backend) and `core_affinity`, plus required transitive crates.
+  This was a governance change: the dependency-policy test, README/description,
+  Cargo manifest and this design must agree.
+- `tests/policy.rs` allowlists the reviewed packages and keeps every other
+  target/feature graph rejection. Vendoring preserves offline builds and
+  checksum verification; the application crate still forbids unsafe code.
+- Dependency internals use `unsafe` FFI, exactly as the standard library does.
+  The project's safety claim is about project code and the reviewed, vendored API
+  boundary. This is disclosed, not implied away.
+- CI/policy files are code-owner owned; each extension required the configured
   review and cannot be self-approved or merged by bypass. Any further addition
   takes the same path.
 - Rejected libraries: direct `libc` epoll/io_uring (would put `unsafe` in project
-  code), `tokio`/`async-std`/`polling`/`nix` (larger runtime or same FFI with more
-  surface), `mimalloc`/`jemalloc` (allocator change), `dashmap`/`ahash` (storage/
-  hashing policy and multi-key semantics), any benchmark-only dependency.
+  code), alternative async runtimes (`async-std`, `smol`, `polling`, `nix`) with
+  more surface or no measured need, `mimalloc`/`jemalloc` (allocator change),
+  `dashmap`/`ahash` (storage/hashing policy and multi-key semantics), any
+  benchmark-only dependency.
 
-If the owner rejects the Mio exception, the fallback is the current portable
-polling/lease design with the bounded-probe candidates in 4.2–4.4; the four-CPU
-P1 gap then remains an explicit, documented boundary rather than a hidden
-relaxation.
+Operationally, the default remains the Mio one-owner reactor; Tokio transport,
+multi-owner execution and worker pinning are opt-in. TLS, fixed workers and
+non-Unix builds keep their existing fallbacks. A future default change needs the
+same native evidence and protected gates as any other runtime change.
 
 ## 6. Risks
 
@@ -442,6 +556,8 @@ relaxation.
 | Custom allocator or non-keyed/weak hash | Dependency/policy and HashDoS risk; no measured need at gate keyspace sizes. |
 | Zero-copy reply references / encoded buffers | Needs reference counting and unsafe-adjacent ownership; formatting is already allocation-free per reply. |
 | RDB/replication work as a performance fix | Out of scope and unrelated to the measured P1 gap. |
+| Eliding the edge-triggered empty-receive drain probe (PR #155) | Cut receive syscalls ~16% locally but lost two Valkey P1 medians; the probe is also a user-space readiness batch. See 2.6/4.7. |
+| Shared-store multi-reactor data execution (PR #157) | PING scaled +53% but data collapsed -57.6% at P1 and about -94% at P16; the owner-local executor is required. See 2.7/4.8. |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
 
 ## 8. Acceptance criteria (EARS)
@@ -478,9 +594,10 @@ frozen binaries and alternating order, with raw samples retained.
   readiness setup is used, behavior, limits and tests shall remain those of the
   existing implementation.
 - **AC9 (policy).** When the dependency graph is inspected for any
-  target/feature, only allowlisted packages shall appear; the application crate
-  shall keep `#![forbid(unsafe_code)]`; vendored offline builds and checksums shall
-  verify; CI/policy changes shall have owner review.
+  target/feature, only the reviewed rustls/Tokio/Mio/core-affinity packages and
+  their required transitives shall appear; the application crate shall keep
+  `#![forbid(unsafe_code)]`; vendored offline builds and checksums shall verify;
+  CI/policy changes shall have owner review.
 - **AC10 (evidence).** When a performance claim is published, it shall include
   source identities, runner/host, CPU placement, order, raw medians/spreads,
   tails, failures and limitations; no claim shall exceed the measured scope.
@@ -488,16 +605,28 @@ frozen binaries and alternating order, with raw samples retained.
   reads, the parser shall rescan at most the current incomplete argument, so total
   scanned bytes are O(frame) rather than O(K·frame); malformed/limit behavior
   shall be unchanged.
-- **AC12 (observers, when 4.3 is implemented).** When any observer, auth, ACL,
-  pause, MULTI or subscriber state is active, the checked path shall run and
-  accounting shall match the existing matrix; the fast path shall be used only
-  when the mode word says it is safe.
+- **AC12 (observers).** When any observer, auth, ACL, pause, MULTI or subscriber
+  state is active, the checked path shall run and accounting shall match the
+  existing matrix; the fast path shall be used only when the mode word says it is
+  safe.
+- **AC13 (Dragonfly).** When the unchanged four-CPU job compares Dragonfly, the
+  final head shall have a strictly higher median in all ten workload/pipeline
+  cases, with a losing row retained as failed evidence rather than explained
+  away; the Valkey comparison and original gate remain independently required.
+- **AC14 (owner migration, when 4.8 is implemented).** A connection shall change
+  reactor ownership at most once before its first data command, with prior replies
+  flushed and order preserved; PING/ECHO shall remain scalable on workers; data
+  commands shall execute on the owner-local executor; admission, idle timeout and
+  shutdown shall join every reactor and in-flight migration.
 
-INVEST story for the next implementation increment (Mio reactor finish):
-independent, small-to-medium, testable, and valuable on its own. Definition of
-done: AC1–AC10 as applicable, `make ci`, both gates, all 14 contexts, an
-up-to-date head, owner review for the dependency/policy change, and a concise
-evidence report that keeps every failed cohort.
+INVEST story for the next runtime increment (Dragonfly pipeline-1 margin):
+independently valuable and testable, with one recorded mechanism, prediction,
+matched baseline and rejection condition. Definition of done: AC1–AC10 and AC13
+as applicable, `make ci`, both performance gates, all 14 contexts, an up-to-date
+head, owner review for any dependency/policy change, and a concise evidence
+report that keeps every failed cohort. The phased multi-owner/socket-worker
+program in [Dragonfly-class performance](dragonfly-class-performance.md) is the
+current roadmap; individual phases are separate increments.
 
 ## 9. Reproduction and evidence map
 
@@ -507,6 +636,14 @@ evidence report that keeps every failed cohort.
   [`.github/pr-workflow-gates.json`](../../.github/pr-workflow-gates.json).
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
+- Dragonfly comparison: `python3 scripts/test-dragonfly-performance.py` and
+  `python3 scripts/pr-dragonfly-performance.py --check <artifact>`; the design
+  and phased roadmap are in [Dragonfly-class performance](dragonfly-class-performance.md).
+- Rejected short-read experiment: PR #155, gate run 41368946995 (Dragonfly 10/10,
+  Valkey 8/10), branch `perf/reactor-short-read-drain` retained.
+- Rejected shared-store socket workers: PR #157, original-gate run 41380968312
+  (12/20), branch `perf/socket-workers` retained; the bundle also contains the
+  design-doc update from the closed #156.
 - Development loop: `make dev-check` for editing feedback, `make test` after a
   complete logical change and `make ci` before review, per
   [development-cycle](../development-cycle.md). Local screens never replace the
@@ -525,15 +662,20 @@ evidence report that keeps every failed cohort.
   short three-sample medians. It is a merge policy, not a statistical proof or a
   production SLO; mixed TTLs, large values, saturation and tail SLOs remain
   outside it.
-- The four-CPU P1 gap at `d42d20c` is measured but host-sensitive; the Mio
-  candidate addresses the mechanism, not every workload.
-- Whether cross-client write coalescing (4.5) is worth its latency risk depends on
-  the post-readiness syscall profile; do not add it speculatively.
-- Whether the resumable parser (4.2) matters depends on large-argument traffic;
-  ordinary commands are already zero-allocation on the stack.
-- The Mio exception is now authorized and merged. The protected gates passed on
-  its merge candidate; a future head still needs fresh gates, and any further
-  dependency needs its own review. The portable fallback remains the documented
-  boundary for TLS, fixed workers and non-Unix builds.
+- The remaining measured P1 gap is against Dragonfly on fast hosts; it is
+  host-sensitive and still fails the strict median on some cohorts. Readiness was
+  necessary but not sufficient, and the rejected drain probe shows that syscall
+  counts alone are not a throughput proxy.
+- Cross-client write coalescing (4.5) remains unproven; do not add it
+  speculatively. The resumable parser (4.2) is deprioritized because incomplete
+  frames do not rescan payload bytes; revisit only with large-argument evidence.
+- The reviewed dependency exceptions are rustls, Tokio, Mio and
+  `core_affinity`, merged through their own PRs. A future head still needs fresh
+  gates, and any further dependency needs its own review. The portable fallback
+  remains the documented boundary for TLS, fixed workers and non-Unix builds.
+- The short-read elision and shared-store socket workers are rejected
+  experiments, not unfinished tasks: their branches and gate artifacts are
+  retained, and neither may be revived without a different mechanism and fresh
+  evidence. The next credible design is the one-time owner migration in 4.8.
 - Redis 8.10.2 and Valkey 9.1.2 are pins, not an evergreen "latest" claim; source
   links are immutable tags.
