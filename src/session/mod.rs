@@ -127,6 +127,36 @@ impl Session {
         self.poll_paused_on(store)
     }
 
+    pub(crate) fn has_transaction(&self) -> bool {
+        self.multi.is_some()
+    }
+
+    /// Commands a connection-owning worker reactor may execute without the
+    /// owner-local data executor. Everything else migrates to the owner.
+    pub(crate) fn is_local_command<E: Execution>(&self, store: &E, arguments: &[&[u8]]) -> bool {
+        let Some(command) = arguments.first() else {
+            return false;
+        };
+        (command.eq_ignore_ascii_case(b"PING")
+            || command.eq_ignore_ascii_case(b"ECHO")
+            || command.eq_ignore_ascii_case(b"QUIT"))
+            && self.multi.is_none()
+            && !self.is_subscribed()
+            && !self.monitoring
+            && !self.is_blocked()
+            && !self.is_paused()
+            && store.security() == (false, false)
+            && {
+                let observers = store.observers();
+                !observers.slowlog
+                    && !observers.latency
+                    && !observers.commandstats
+                    && !observers.paused
+                    && !observers.monitor
+            }
+            && !self.command_paused(store, arguments)
+    }
+
     pub(crate) fn execute_on<E: Execution>(
         &mut self,
         store: &E,

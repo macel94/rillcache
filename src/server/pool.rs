@@ -290,6 +290,139 @@ impl Client {
         }
         Ok(self.open(progress, config.idle_timeout))
     }
+
+    /// Worker-reactor pass: execute only bare connection-local commands, stop
+    /// before the first data command and report that the connection must move
+    /// to the owner-local executor. Buffered replies are flushed first; a
+    /// backpressured output keeps the connection here for one more pass.
+    pub(super) fn poll_local<E: Execution>(
+        &mut self,
+        store: &E,
+        config: &Config,
+        chunk: &mut [u8],
+    ) -> io::Result<LocalPoll> {
+        self.retry_io = false;
+        let mut progress = self.flush()?;
+        if self.closing {
+            return Ok(if self.output.is_empty() {
+                LocalPoll::Closed
+            } else {
+                LocalPoll::Progress(progress)
+            });
+        }
+        // A worker never owns transaction, subscription, blocking or pause
+        // state; migrate before touching it.
+        if self.session.has_transaction()
+            || self.session.is_subscribed()
+            || self.session.is_monitoring()
+            || self.session.is_blocked()
+            || self.session.is_paused()
+        {
+            return Ok(if self.output.is_empty() {
+                LocalPoll::Migrate
+            } else {
+                LocalPoll::Progress(progress)
+            });
+        }
+        if !self.output.is_empty() {
+            return Ok(LocalPoll::Progress(progress));
+        }
+        let read_first = self.input.is_empty() && !self.eof;
+        if read_first {
+            progress |= self.receive(config.limits, chunk)?;
+            if self.input.is_empty() || self.closing {
+                return Ok(match self.open(progress, config.idle_timeout) {
+                    Some(progress) => LocalPoll::Progress(progress),
+                    None => LocalPoll::Closed,
+                });
+            }
+        }
+        let mut consumed = 0;
+        let mut migrate = false;
+        let mut need_input = false;
+        for _ in 0..QUANTUM {
+            match dispatch_request(&self.input[consumed..], config.limits, |args| {
+                if args.is_empty() {
+                    return Action::Continue;
+                }
+                if !self.session.is_local_command(store, args) {
+                    migrate = true;
+                    return Action::Continue;
+                }
+                self.session.execute_on(store, args, &mut self.output)
+            }) {
+                Ok(Some((action, used))) => {
+                    if migrate {
+                        break;
+                    }
+                    consumed += used;
+                    progress = true;
+                    if action == Action::Close {
+                        self.closing = true;
+                        break;
+                    }
+                    if self.output.len() >= OUTPUT_CHUNK {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    need_input = true;
+                    break;
+                }
+                Err(error) => {
+                    write!(self.output, "-ERR Protocol error: {error}\r\n")?;
+                    self.closing = true;
+                    progress = true;
+                    break;
+                }
+            }
+        }
+        if consumed == self.input.len() {
+            self.input.clear();
+        } else if consumed > 0 {
+            self.input.drain(..consumed);
+        }
+        progress |= self.flush()?;
+        if migrate {
+            return Ok(if self.output.is_empty() {
+                LocalPoll::Migrate
+            } else {
+                LocalPoll::Progress(progress)
+            });
+        }
+        if self.closing {
+            return Ok(if self.output.is_empty() {
+                LocalPoll::Closed
+            } else {
+                LocalPoll::Progress(progress)
+            });
+        }
+        if !self.output.is_empty() || !need_input {
+            return Ok(LocalPoll::Progress(progress));
+        }
+        if self.eof {
+            if self.input.is_empty() {
+                return Ok(LocalPoll::Closed);
+            }
+            self.output
+                .extend_from_slice(b"-ERR Protocol error: unexpected end of stream\r\n");
+            self.closing = true;
+            return Ok(LocalPoll::Progress(true));
+        }
+        if !read_first {
+            progress |= self.receive(config.limits, chunk)?;
+        }
+        Ok(match self.open(progress, config.idle_timeout) {
+            Some(progress) => LocalPoll::Progress(progress),
+            None => LocalPoll::Closed,
+        })
+    }
+}
+
+pub(super) enum LocalPoll {
+    Closed,
+    Progress(bool),
+    Migrate,
 }
 
 struct Lane {

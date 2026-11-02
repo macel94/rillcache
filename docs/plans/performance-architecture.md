@@ -7,9 +7,10 @@ dependency policy, and what evidence was required. The bounded Mio readiness
 reactor merged as PR #139 (`4a52fc0`) after passing both protected gates on its
 merge candidate (section 2.3); this document merged as PR #141 (`f572bd8`).
 Later increments added opt-in Tokio transport, multi-owner execution, cached
-mode/authorization words, batched owner replies and shared-store socket workers
-(in review), and the required four-CPU job now also compares Dragonfly
-(sections 2.5–2.7). A gate pass on one head never
+mode/authorization words and batched owner replies; the required four-CPU job now
+also compares Dragonfly (sections 2.5–2.6). A shared-store socket-worker
+experiment was measured and rejected (section 2.7), and an owner-migration
+socket-worker implementation is in review (section 4.8). A gate pass on one head never
 substitutes for a fresh head, and every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
@@ -195,22 +196,27 @@ can add P1 latency. The syscall count alone was not a throughput proxy. The
 candidate was closed, its branch and artifacts were retained, and it was not
 rerun. This is a rejected option in section 7.
 
-### 2.7 Shared-store socket workers (in review)
+### 2.7 Shared-store socket workers (rejected)
 
-Dragonfly starts four io_uring proactor threads on the four-CPU gate; its
-connection-local PING scales across them, while SET/GET pay a shard hop and lose
-the data rows. Copying io_uring or shard hops is outside this project's safe
-boundary. The candidate instead runs `min(4, CPUs)` independent Mio reactors over
-the existing locked Store: each connection is owned by one reactor, no key is
-sharded, no connection migrates, and only reactor zero runs journal/expiry/
-rewrite maintenance. `--socket-workers 1` keeps the owner-local executor.
+The first multi-reactor attempt ran `min(4, CPUs)` independent Mio reactors over
+the existing locked Store, with no sharding, migration or dependency change. The
+original 20-case gate rejected it **12/20** (run 41380968312):
 
-Prediction: PING/ECHO P1 scales with reactors; SET/GET/P16 keep the existing
-locked-Store semantics and pay lock contention instead of a shard hop. Acceptance
-requires both protected gates (Valkey and Dragonfly) and the usual functional
-tests; local release timing on the shared host is not usable. This is a different
-mechanism from the rejected drain elision: it adds parallel connection owners
-rather than removing a readiness probe.
+| Budget | P | Workload | Rillcache | Valkey | Delta |
+| --- | ---: | --- | ---: | ---: | ---: |
+| inherited | 1 | ping | 160,813 | 105,100 | +53.0% |
+| inherited | 1 | set | 42,462 | 100,038 | -57.6% |
+| inherited | 1 | get | 42,669 | 100,584 | -57.6% |
+| inherited | 16 | set | 61,926 | 964,787 | -93.6% |
+| inherited | 16 | get | 62,069 | 1,086,520 | -94.3% |
+| one-cpu | 1 | set | 108,883 | 97,242 | +12.0% |
+| one-cpu | 16 | set | 1,398,149 | 953,753 | +46.6% |
+
+The PING result confirms that connection-local work scales across reactors. The
+data collapse shows that shared `StoreHandle`/bridge/lock execution is not the
+owner-local data path; the one-CPU budget selects one reactor, keeps the local
+executor, and passes every row. The PR was closed with its branch and artifacts
+retained, not rerun or relabeled.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -452,16 +458,26 @@ Mechanism, local syscall evidence, failed gate rows and diagnosis are in section
 removing it shifted cost to `epoll_wait` and lost two Valkey P1 medians. Do not
 revive it without a different readiness mechanism and fresh gate evidence.
 
-### 4.8 Shared-store socket reactors (in review)
+### 4.8 Owner-migration socket workers (implemented, gates pending)
 
-Mechanism, prediction and boundaries are in section 2.7. The implementation keeps
-the existing Store locks and wire behavior; it adds reactors, not dependencies,
-shards or FFI. Risks are lock contention on writes, shared-listener accept wakeups
-(thundering herd), duplicate maintenance (mitigated by one maintenance reactor),
-idle pollers and joined-shutdown coordination. Tests cover worker counts, PING/
-SET/GET, pipelines, large/backpressured input, blocked/pubsub, idle timeout, max
-clients, session isolation and shutdown. Reject or revise if either gate loses or
-if lock contention erases the data-row margins.
+One reactor keeps the owner-local executor, maintenance and every data command.
+The other reactors own disjoint accepted connections and execute only bare
+connection-local commands (PING/ECHO/QUIT). Before the first data command a worker
+flushes prior replies, deregisters the socket, transfers the session and unparsed
+input, and hands the connection to the owner, which registers it and continues in
+reply order. `--socket-workers 1` keeps the single owner-local reactor; fixed
+workers, TLS, Tokio and multi-owner paths are unchanged. No key is sharded and
+there is no per-command owner hop.
+
+The mechanism directly follows the rejected shared-store result: PING needs
+connection-local scaling, while data needs the owner-local executor. Risks are
+migration ordering with pending output, shared-listener accept distribution,
+admission across reactors, idle maintenance, and joined shutdown with in-flight
+transfers. Tests cover worker counts, PING/SET/GET and mixed pipelines, session
+state across migration, transactions, pub/sub, blocking commands,
+large/backpressured output, idle timeout, max clients, session isolation and
+shutdown. Acceptance remains both protected gates (Valkey and Dragonfly) plus
+the unchanged functional contexts; no throughput claim is made before they pass.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -596,12 +612,12 @@ frozen binaries and alternating order, with raw samples retained.
   final head shall have a strictly higher median in all ten workload/pipeline
   cases, with a losing row retained as failed evidence rather than explained
   away; the Valkey comparison and original gate remain independently required.
-- **AC14 (socket workers).** When plain TCP starts without fixed workers, TLS,
-  Tokio or multi-owner execution, the captured policy shall report the selected
-  reactor count; `--socket-workers 1` shall preserve the owner-local path; and
-  all workers shall own disjoint connections, share admission/stop state, run
-  maintenance once and join on shutdown. A throughput pass is valid only if both
-  protected gates pass.
+- **AC14 (owner migration).** When plain TCP starts with multiple reactors, a
+  connection shall change reactor ownership at most once before its first data
+  command, with prior replies flushed and order preserved; PING/ECHO shall remain
+  scalable on workers; data commands shall execute on the owner-local executor;
+  admission, idle timeout and shutdown shall join every reactor and in-flight
+  migration. A throughput pass is valid only if both protected gates pass.
 
 INVEST story for the next runtime increment (Dragonfly pipeline-1 margin):
 independently valuable and testable, with one recorded mechanism, prediction,

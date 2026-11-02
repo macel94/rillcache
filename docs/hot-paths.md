@@ -399,25 +399,33 @@ This is a general whole-program optimization for cross-module inlining of the
 session/store/RESP path, not a benchmark-specific mode or a safety relaxation.
 Build time increases; `make ci` still enforces the same tests and smoke benchmarks.
 
-## Shared-store socket workers (S-SOCKET-WORKERS)
+## Owner-migration socket workers (S-SOCKET-WORKERS)
 
 Dragonfly v2.0.2 starts four io_uring proactor threads on the four-CPU gate. Its
-connection-local PING scales across those threads, while SET/GET dispatch to a
-key owner and pay a hop; that matches the measured shape in which Dragonfly wins
+connection-local PING scales across them, while SET/GET dispatch to a key owner
+and pay a shard hop; that matches the measured shape in which Dragonfly wins
 PING/P1 but loses the data-command P1 and every P16 row. Copying io_uring or
 shard hops is outside this project's safe boundary.
 
-The default plain Unix TCP path now starts `min(4, allowed CPUs)` independent Mio
-reactors (`--socket-workers 1..16` overrides). Each reactor exclusively owns its
-accepted connections and shares the existing locked `Store`; there is no sharded
-keyspace, no connection migration and no new wire behavior. `--socket-workers 1`
-keeps the previous owner-local executor. Only reactor zero runs journal, expiry
-and rewrite maintenance; every reactor performs its own bounded reads, writes,
-idle-timeout checks and shutdown joining. Fixed workers, TLS, Tokio transport and
-multi-owner execution keep their existing paths.
+The default plain Unix TCP path starts `min(4, allowed CPUs)` reactors
+(`--socket-workers 1..16` overrides). One reactor keeps the published owner-local
+executor and all data commands. The other reactors own disjoint accepted
+connections and execute only bare connection-local commands (PING/ECHO/QUIT);
+before the first data command they flush replies, deregister the socket, transfer
+the session/input and hand the connection to the owner reactor, which registers
+and continues it in order. `--socket-workers 1` keeps the previous single
+owner-local reactor. There is no sharded keyspace, no per-command owner hop and
+no wire change.
 
-Prediction: connection-local P1 commands (PING/ECHO) scale with the number of
-reactors, while SET/GET/P16 keep the existing locked-Store semantics. The trade is
-RwLock contention on data commands and a shared-listener accept wake-up; the
-protected gates decide, and no throughput claim is made until they do. The local
-host remains too contended for a valid release comparison.
+A shared locked-Store version of this idea was measured and rejected first: PING
+scaled, but data commands collapsed because shared `StoreHandle`/bridge execution
+is not the owner-local path. The owner-migration split preserves both properties.
+Only the owner reactor runs journal/expiry/rewrite maintenance; every reactor
+bounds its own I/O, observes the shared stop flag and joins on shutdown. Fixed
+workers, TLS, Tokio transport and multi-owner execution keep their existing
+paths.
+
+Acceptance is the unchanged Valkey and Dragonfly four-CPU gates plus migration
+tests for ordering, session state, transactions, pub/sub, blocking commands,
+large/backpressured output, idle timeout and shutdown. No throughput claim is
+made from the contended development host.

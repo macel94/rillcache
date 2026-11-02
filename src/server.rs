@@ -72,8 +72,8 @@ pub struct SchedulingPolicy {
     pub tokio_worker_threads: usize,
     /// Tokio sockets use the external storage owner (mixed TLS), not local Data.
     pub tokio_compatibility_owner: bool,
-    /// Independent plain-TCP connection-owning reactors; 0 means not applicable.
-    /// More than one shares the locked Store instead of the owner-local executor.
+    /// Plain-TCP connection-owning reactors; 0 means not applicable. One reactor
+    /// owns data locally; additional workers migrate connections on first data use.
     pub socket_workers: usize,
     pub active_poll_us: u64,
     pub run_quantum_us: u64,
