@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="128" viewBox="0 0 500 128" role="img" aria-labelledby="logo-title logo-description">
+  <title id="logo-title">Rillcache</title>
+  <desc id="logo-description">Three flowing lines form a stack of cache layers beside the Rillcache wordmark.</desc>
+  <defs>
+    <linearGradient id="flow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#99f6e4"/>
+      <stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="104" height="104" rx="28" fill="#0f172a"/>
+  <g fill="none" stroke="url(#flow)" stroke-width="9" stroke-linecap="round">
+    <path d="M32 43 C42 34 52 34 64 43 S86 52 96 43"/>
+    <path d="M32 64 C42 55 52 55 64 64 S86 73 96 64"/>
+    <path d="M32 85 C42 76 52 76 64 85 S86 94 96 85"/>
+  </g>
+  <text id="wordmark" x="144" y="89" textLength="324" lengthAdjust="spacingAndGlyphs" fill="#158574" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="72" font-weight="700" letter-spacing="-3">rillcache</text>
+</svg>
