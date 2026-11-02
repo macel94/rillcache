@@ -414,6 +414,21 @@ This is a general whole-program optimization for cross-module inlining of the
 session/store/RESP path, not a benchmark-specific mode or a safety relaxation.
 Build time increases; `make ci` still enforces the same tests and smoke benchmarks.
 
+## Managed I/O activity clock
+
+The single-owner Mio frontend shares one completion timestamp across successful
+nonzero socket I/O in a bounded reactor turn. It tracks at most `RUN_QUANTUM`
+visited keys, checks their generation tokens and never scans idle slots or grows
+an unbounded queue. Pending fresh I/O cannot expire against an older timestamp;
+it is committed before migration. Outside a caller-owned turn, `Client::poll`
+coalesces receive/flush timestamps into one completion update. Standalone I/O
+outside a batch retains immediate updates.
+
+This is completion-of-I/O-processing bookkeeping, not an exact wire timestamp.
+Mere buffered/protocol progress, EOF and WouldBlock do not refresh inactivity;
+returned errors clear pending state. Idle timeout values, selector waits,
+command/I/O quanta and key-expiry clocks are unchanged.
+
 ## Owner-migration socket workers (S-SOCKET-WORKERS)
 
 Dragonfly v2.0.2 starts four io_uring proactor threads on the four-CPU gate. Its

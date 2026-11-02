@@ -12,6 +12,11 @@ use crate::session::Session;
 const QUANTUM: usize = 64;
 const OUTPUT_CHUNK: usize = 64 * 1024;
 
+#[cfg(test)]
+std::thread_local! {
+    static ACTIVITY_CLOCK_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct PollWindow {
     until: Instant,
     run_since: Instant,
@@ -55,6 +60,8 @@ pub(super) struct Client {
     /// EINTR is not WouldBlock: readiness owners must retain their runnable token.
     pub(super) retry_io: bool,
     pub(super) activity: Instant,
+    /// None outside a poll; Some tracks actual successful I/O in this pass.
+    pub(super) activity_batch: Option<bool>,
     pub(super) _permit: Option<Permit>,
     pub(super) shutdown_on_drop: bool,
     pub(super) pubsub: Receiver<Vec<u8>>,
@@ -70,6 +77,22 @@ impl Drop for Client {
 }
 
 impl Client {
+    #[inline]
+    fn activity_now() -> Instant {
+        #[cfg(test)]
+        ACTIVITY_CLOCK_READS.with(|reads| reads.set(reads.get() + 1));
+        Instant::now()
+    }
+
+    #[inline]
+    fn record_io_activity(&mut self) {
+        if let Some(pending) = self.activity_batch.as_mut() {
+            *pending = true;
+        } else {
+            self.activity = Self::activity_now();
+        }
+    }
+
     pub(super) fn flush(&mut self) -> io::Result<bool> {
         if self.sent == self.output.len() {
             self.output.clear();
@@ -81,7 +104,7 @@ impl Client {
             Ok(0) => Err(io::ErrorKind::WriteZero.into()),
             Ok(size) => {
                 self.sent += size;
-                self.activity = Instant::now();
+                self.record_io_activity();
                 if self.sent == self.output.len() {
                     self.output.clear();
                     self.sent = 0;
@@ -101,8 +124,18 @@ impl Client {
         }
     }
 
+    pub(super) fn finish_activity_batch(&mut self, timestamp: &mut Option<Instant>) {
+        if self.activity_batch == Some(true) {
+            self.activity = *timestamp.get_or_insert_with(Self::activity_now);
+            self.activity_batch = Some(false);
+        }
+    }
+
     pub(super) fn open(&self, progress: bool, timeout: Duration) -> Option<bool> {
-        (progress || self.activity.elapsed() < timeout).then_some(progress)
+        // I/O in this caller-owned turn has not been timestamped yet. It must
+        // not expire against an older timestamp before turn completion.
+        (progress || self.activity_batch == Some(true) || self.activity.elapsed() < timeout)
+            .then_some(progress)
     }
 
     /// At most one bounded socket read per client/pass.
@@ -121,7 +154,7 @@ impl Client {
             }
             Ok(size) => {
                 self.input.extend_from_slice(&chunk[..size]);
-                self.activity = Instant::now();
+                self.record_io_activity();
                 Ok(true)
             }
             Err(error)
@@ -138,7 +171,30 @@ impl Client {
     }
 
     /// None means closed; Some indicates whether this pass made progress.
+    #[inline]
     pub(super) fn poll<E: Execution>(
+        &mut self,
+        store: &E,
+        config: &Config,
+        chunk: &mut [u8],
+    ) -> io::Result<Option<bool>> {
+        let own_batch = self.activity_batch.is_none();
+        if own_batch {
+            self.activity_batch = Some(false);
+        }
+        let result = self.poll_inner(store, config, chunk);
+        // A reactor owns a wider bounded turn; fixed-worker/lease callers own
+        // only this pass. Neither mode timestamps buffered-only CPU progress.
+        if own_batch || result.is_err() {
+            self.finish_activity_batch(&mut None);
+        }
+        if own_batch {
+            self.activity_batch = None;
+        }
+        result
+    }
+
+    fn poll_inner<E: Execution>(
         &mut self,
         store: &E,
         config: &Config,
@@ -532,6 +588,7 @@ pub(super) fn serve(
                 eof: false,
                 retry_io: false,
                 activity: Instant::now(),
+                activity_batch: None,
                 _permit: Some(Permit::acquire(&admitted)),
                 shutdown_on_drop: true,
                 pubsub: receiver,
@@ -707,6 +764,7 @@ mod tests {
                 eof: false,
                 retry_io: false,
                 activity: Instant::now(),
+                activity_batch: None,
                 _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
                 shutdown_on_drop: true,
                 pubsub: std::sync::mpsc::sync_channel(1).1,
@@ -735,6 +793,7 @@ mod tests {
         }
         let store = Store::new(1024);
         let config = Config::default();
+        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
         assert_eq!(
             client.poll(&store, &config, &mut [0; 1024]).unwrap(),
             Some(true)
@@ -743,13 +802,160 @@ mod tests {
         peer.read_exact(&mut reply).unwrap();
         assert_eq!(&reply, b":1\r\n");
         assert!(client.input.is_empty());
+        assert!(client.activity_batch.is_none());
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
+        let stamped = client.activity;
         assert_eq!(
             client.poll(&store, &config, &mut [0; 1024]).unwrap(),
             Some(false)
         );
+        assert_eq!(client.activity, stamped);
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
         let mut output = Vec::new();
         store.execute(&[b"GET", b"counter"], &mut output);
         assert_eq!(output, b"$1\r\n1\r\n");
+    }
+
+    #[test]
+    fn buffered_only_progress_does_not_refresh_inactivity() {
+        let (mut client, _peer) = test_client(b"\r\n".to_vec());
+        let old = Instant::now() - Duration::from_secs(2);
+        client.activity = old;
+        let config = Config {
+            idle_timeout: Duration::from_secs(1),
+            ..Config::default()
+        };
+        let store = Store::new(1024);
+        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
+        assert_eq!(
+            client.poll(&store, &config, &mut [0; 128]).unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            client.activity, old,
+            "parsing an empty line is not socket I/O"
+        );
+        assert_eq!(client.poll(&store, &config, &mut [0; 128]).unwrap(), None);
+        assert!(client.activity_batch.is_none());
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 0));
+    }
+
+    #[test]
+    fn caller_owned_turn_shares_one_timestamp_and_cannot_expire_fresh_io() {
+        let (mut first, _first_peer) = test_client(Vec::new());
+        let (mut second, _second_peer) = test_client(Vec::new());
+        let old = Instant::now() - Duration::from_secs(2);
+        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
+        for client in [&mut first, &mut second] {
+            client.activity = old;
+            client.activity_batch = Some(false);
+            client.output.extend_from_slice(b"reply");
+            assert!(client.flush().unwrap());
+            assert_eq!(client.activity, old);
+            assert_eq!(client.open(false, Duration::from_millis(1)), Some(false));
+            let config = Config {
+                idle_timeout: Duration::from_millis(1),
+                ..Config::default()
+            };
+            assert_eq!(
+                client
+                    .poll(&Store::new(1024), &config, &mut [0; 128])
+                    .unwrap(),
+                Some(false)
+            );
+            assert_eq!(
+                client.activity_batch,
+                Some(true),
+                "a later visit must not discard pending I/O"
+            );
+        }
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 0));
+        let start = Instant::now();
+        let mut stamp = None;
+        first.finish_activity_batch(&mut stamp);
+        second.finish_activity_batch(&mut stamp);
+        assert!(first.activity >= start);
+        assert_eq!(first.activity, second.activity);
+        assert_eq!(first.activity_batch, Some(false));
+        assert_eq!(second.activity_batch, Some(false));
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
+        first.finish_activity_batch(&mut stamp);
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
+    }
+
+    #[test]
+    fn partial_input_updates_activity_without_a_reply() {
+        let (mut client, mut peer) = test_client(Vec::new());
+        let part = b"*1\r\n$4\r\nPI";
+        peer.write_all(part).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut buffer = [0; 64];
+        while !client
+            .stream
+            .peek(&mut buffer)
+            .is_ok_and(|n| n == part.len())
+        {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
+        let start = Instant::now();
+        assert_eq!(
+            client
+                .poll(&Store::new(1024), &Config::default(), &mut buffer)
+                .unwrap(),
+            Some(true)
+        );
+        assert!(client.activity >= start);
+        assert_eq!(client.input, part);
+        assert!(client.output.is_empty());
+        assert!(client.activity_batch.is_none());
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
+    }
+
+    #[test]
+    fn returned_io_error_clears_activity_batch_state() {
+        let (mut client, _peer) = test_client(Vec::new());
+        client.output.extend_from_slice(b"reply");
+        client.stream.shutdown(Shutdown::Both).unwrap();
+        let old = client.activity;
+        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
+        assert!(
+            client
+                .poll(&Store::new(1024), &Config::default(), &mut [0; 128])
+                .is_err()
+        );
+        assert!(client.activity_batch.is_none());
+        assert_eq!(client.activity, old);
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 0));
+    }
+
+    #[test]
+    fn standalone_io_keeps_immediate_activity_updates() {
+        let (mut client, mut peer) = test_client(Vec::new());
+        client.output.extend_from_slice(b"reply");
+        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
+        let start = Instant::now();
+        assert!(client.flush().unwrap());
+        assert!(client.activity >= start);
+        assert!(client.activity_batch.is_none());
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
+        peer.write_all(b"input").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut buffer = [0; 64];
+        while !client.stream.peek(&mut buffer).is_ok_and(|n| n == 5) {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        let start = Instant::now();
+        assert!(
+            client
+                .receive(Config::default().limits, &mut buffer)
+                .unwrap()
+        );
+        assert!(client.activity >= start);
+        assert!(client.activity_batch.is_none());
+        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 2));
     }
 
     #[test]
@@ -797,6 +1003,7 @@ mod tests {
             eof: false,
             retry_io: false,
             activity: Instant::now() - Duration::from_secs(2),
+            activity_batch: None,
             _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
             shutdown_on_drop: true,
             pubsub: std::sync::mpsc::sync_channel(1).1,

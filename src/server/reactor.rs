@@ -190,6 +190,7 @@ impl<E: Execution> Reactor<E> {
                     eof: false,
                     retry_io: false,
                     activity: Instant::now(),
+                    activity_batch: Some(false),
                     _permit: Some(Permit::acquire(&self.admitted)),
                     shutdown_on_drop: true,
                     pubsub: receiver,
@@ -335,9 +336,11 @@ impl<E: Execution> Reactor<E> {
         self.tokens.remove(&key.token);
         self.asynchronous.remove(&key);
         self.free_slots.push(key.slot);
-        let Some(client) = connection.client.take() else {
+        let Some(mut client) = connection.client.take() else {
             return;
         };
+        // Finish this owner's pending I/O before transferring the connection.
+        client.finish_activity_batch(&mut None);
         let fd = client.stream.as_raw_fd();
         let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
         if let Some(sender) = &self.migrate {
@@ -423,6 +426,8 @@ impl<E: Execution> Reactor<E> {
     fn run(&mut self) -> io::Result<()> {
         let mut events = Events::with_capacity(1024);
         let mut chunk = [0; 16 * 1024];
+        // At most RUN_QUANTUM keys, including duplicates; never scan idle slots.
+        let mut activity_clients = Vec::with_capacity(RUN_QUANTUM);
         let mut maintenance = Instant::now();
         let mut asynchronous = maintenance;
         while !self.stopping.load(Ordering::Acquire) && !self.store.shutdown_requested() {
@@ -488,15 +493,28 @@ impl<E: Execution> Reactor<E> {
             if self.accept_ready {
                 self.accept()?;
             }
+            activity_clients.clear();
             let mut serviced = 0usize;
             for _ in 0..RUN_QUANTUM {
                 let Some(key) = self.ready.pop_front() else {
                     break;
                 };
                 match self.service(key, &mut chunk) {
-                    Ok(Served::Runnable(_)) => serviced += 1,
+                    Ok(Served::Runnable(_)) => {
+                        serviced += 1;
+                        activity_clients.push(key);
+                    }
                     Ok(Served::Closed) | Err(_) => self.remove(key),
                     Ok(Served::Migrated) => {}
+                }
+            }
+            let mut activity_timestamp = None;
+            for key in &activity_clients {
+                if let Some(connection) = self.clients.get_mut(key.slot).and_then(Option::as_mut)
+                    && connection.token == key.token
+                    && let Some(client) = connection.client.as_mut()
+                {
+                    client.finish_activity_batch(&mut activity_timestamp);
                 }
             }
             if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
