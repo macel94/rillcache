@@ -126,6 +126,10 @@ impl<E: Execution> Drop for Reactor<E> {
 }
 
 impl<E: Execution> Reactor<E> {
+    fn single_reactor(&self) -> bool {
+        !self.worker && self.incoming.is_none()
+    }
+
     fn enqueue(&mut self, key: ReadyKey) {
         if let Some(connection) = self.clients.get_mut(key.slot).and_then(Option::as_mut)
             && connection.token == key.token
@@ -437,6 +441,9 @@ impl<E: Execution> Reactor<E> {
         let mut chunk = [0; 16 * 1024];
         let mut maintenance = Instant::now();
         let mut asynchronous = maintenance;
+        // Consolidation helped the co-located owner control, but increased
+        // multi-reactor wakeup churn. Preserve that explicit mode's wait path.
+        let co_located = self.single_reactor();
         let mut absorb_next = false;
         while !self.stopping.load(Ordering::Acquire) && !self.store.shutdown_requested() {
             if let Some(inbox) = &self.inbox {
@@ -488,7 +495,7 @@ impl<E: Execution> Reactor<E> {
             let timeout = wait_timeout(
                 self.accept_ready || !self.ready.is_empty(),
                 !self.asynchronous.is_empty(),
-                std::mem::take(&mut absorb_next),
+                co_located && std::mem::take(&mut absorb_next),
             );
             match self.poll.poll(&mut events, Some(timeout)) {
                 Ok(()) => {}
@@ -510,7 +517,19 @@ impl<E: Execution> Reactor<E> {
                     Ok(Served::Migrated) => {}
                 }
             }
-            absorb_next = serviced > 0 && self.ready.is_empty() && !self.accept_ready;
+            if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
+                if co_located {
+                    absorb_next = true;
+                } else {
+                    // Keep explicit parallel workers on their measured legacy
+                    // path; no global removal of their absorption poll.
+                    match self.poll.poll(&mut events, Some(FAST_WAIT)) {
+                        Ok(()) => self.ingest(&events),
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -738,6 +757,18 @@ mod tests {
             incoming: None,
             waker: None,
         }
+    }
+
+    #[test]
+    fn consolidation_never_selects_a_shared_owner_or_worker() {
+        let mut reactor = fixture();
+        assert!(reactor.single_reactor());
+        reactor.worker = true;
+        assert!(!reactor.single_reactor());
+        reactor.worker = false;
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        reactor.incoming = Some(receiver);
+        assert!(!reactor.single_reactor());
     }
 
     #[test]

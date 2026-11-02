@@ -422,14 +422,21 @@ and pay a shard hop; that matches the measured shape in which Dragonfly wins
 PING/P1 but loses the data-command P1 and every P16 row. Copying io_uring or
 shard hops is outside this project's safe boundary.
 
-The default plain Unix TCP path starts `min(4, allowed CPUs)` reactors
-(`--socket-workers 1..16` overrides). One reactor keeps the published owner-local
-executor and all data commands. The other reactors own disjoint accepted
+The default plain Unix TCP path co-locates I/O with the single published data
+owner. `--socket-workers 2..16` explicitly opts into parallel connection-local
+I/O; `--socket-workers 1` makes the default count explicit. This avoids spending
+extra runnable reactor CPU on low-fanout traffic; it is not a universal scaling
+claim. Measure higher concurrency before selecting a parallel count.
+
+In explicit parallel mode, one reactor keeps the owner-local executor and all
+data commands. The other reactors own disjoint accepted
 connections and execute only bare connection-local commands (PING/ECHO/QUIT);
 before the first data command they flush replies, deregister the socket, transfer
 the session/input and hand the connection to the owner reactor, which registers
-and continues it in order. `--socket-workers 1` keeps the previous single
-owner-local reactor. There is no sharded keyspace, no per-command owner hop and
+and continues it in order. The single-reactor path consolidates selector waits;
+explicit parallel mode retains its measured legacy absorption path after global
+consolidation regressed PING in the matched control. There is no sharded keyspace,
+no per-command owner hop and
 no wire change.
 
 A shared locked-Store version of this idea was measured and rejected first: PING

@@ -82,8 +82,8 @@ def fixture(root):
 class ReactorStudyTests(unittest.TestCase):
     def test_balanced_complete_scope_includes_both_failing_commands_and_controls(self):
         ids = list(R.identities())
-        self.assertEqual(72, len(ids))
-        self.assertEqual(72, len(set(ids)))
+        self.assertEqual(108, len(ids))
+        self.assertEqual(108, len(set(ids)))
         for mode in R.MODES:
             for workload in R.WORKLOADS:
                 for pipeline in R.PIPELINES:
@@ -96,6 +96,8 @@ class ReactorStudyTests(unittest.TestCase):
         one = R.server_argv("/binary", "candidate", "one-worker", 1234, [0, 1, 2, 3], Path("/tmp/sample"))
         self.assertNotIn("--socket-workers", default)
         self.assertEqual(default + ["--socket-workers", "1"], one)
+        self.assertEqual(default + ["--socket-workers", "4"], R.server_argv(
+            "/binary", "candidate", "four-workers", 1234, [0, 1, 2, 3], Path("/tmp/sample")))
         self.assertEqual(R.server_argv("/valkey", "valkey", "default", 1234, [0, 1, 2, 3], Path("/tmp/sample")),
                          R.server_argv("/valkey", "valkey", "one-worker", 1234, [0, 1, 2, 3], Path("/tmp/sample")))
 

@@ -20,7 +20,7 @@ G = runpy.run_path(str(ROOT / "scripts/pr-dragonfly-performance.py"))
 C = D.COMMON
 OUT = ROOT / "target/upstream/evidence/reactor-study"
 VARIANTS = ("baseline", "candidate", "valkey")
-MODES = ("default", "one-worker")
+MODES = ("default", "one-worker", "four-workers")
 WORKLOADS = ("ping", "get")
 PIPELINES = (1, 16)
 SAFE_ENV = {"PATH": os.environ["PATH"], "LANG": "C", "LC_ALL": "C"}
@@ -78,8 +78,8 @@ def resources(before, after, elapsed):
 def server_argv(binary, variant, mode, port, cpus, directory):
     # Keep the protected Valkey launcher, with a one-worker Rillcache control.
     args = D.G["server_argv"](binary, "valkey" if variant == "valkey" else "rillcache", port, cpus, directory)
-    if variant != "valkey" and mode == "one-worker":
-        args += ["--socket-workers", "1"]
+    if variant != "valkey" and mode in ("one-worker", "four-workers"):
+        args += ["--socket-workers", "1" if mode == "one-worker" else "4"]
     return args
 
 
@@ -164,8 +164,8 @@ def rows_for(samples):
 
 def report(rows):
     text = ["# Same-job reactor A/B diagnostic — NOT a merge gate", "",
-            "72 uninstrumented ten-second samples; baseline/candidate/Valkey in three Latin-rotated repetitions; "
-            "PING/GET P1/P16, default vs one Rillcache socket worker, same shared four logical CPUs and official generator. "
+            "108 uninstrumented ten-second samples; baseline/candidate/Valkey in three Latin-rotated repetitions; "
+            "PING/GET P1/P16, default vs explicit one/four Rillcache socket workers, same shared four logical CPUs and official generator. "
             "Hardware/software fingerprint is captured BEFORE building and checked unchanged afterward; hosted runners "
             "are not dedicated/stable hardware. This is distinct from isolated fixed-host screening.", "",
             "| Mode | Workload | P | Server | Median [min–max] req/s | p99 ms | CPU seconds | Voluntary / involuntary switches/s |",

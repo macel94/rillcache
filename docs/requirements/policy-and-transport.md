@@ -407,7 +407,7 @@ platforms retain timeout-based fallback admission.
 
 - **R-SOCKET1 (event-driven):** When Rillcache starts plain Unix TCP without fixed
   workers, TLS-only routing, Tokio or multi-owner execution, it shall run
-  `min(4, allowed CPUs)` reactors by default; `--socket-workers 1..16` shall
+  one I/O/data-owner reactor by default; `--socket-workers 1..16` shall
   override that count. One reactor shall keep the owner-local data executor and
   all data commands; worker reactors shall own disjoint accepted connections and
   execute only bare connection-local commands. `--socket-workers 1` shall retain
@@ -424,3 +424,8 @@ platforms retain timeout-based fallback admission.
   timeout, max clients, session isolation and joined shutdown. Documentation
   shall state that no key is sharded, no per-command owner hop is added, and that
   protected-gate evidence decides any throughput claim.
+- **R-SOCKET4 (state-driven):** While the network uses the single co-located
+  reactor, a productive empty turn shall request one absorption wait at the next
+  selector entry; idle turns shall return to the stop/async timer. Runnable and
+  accept work shall override waits. Explicit parallel reactors shall retain their
+  legacy absorption path; no edge-triggered drain probe may be omitted.

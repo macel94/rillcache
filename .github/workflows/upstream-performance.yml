@@ -74,7 +74,7 @@ jobs:
         with:
           path: target/upstream-downloads
           key: reactor-source-v1-${{ hashFiles('ci/upstream/pins.json') }}
-      - name: Fresh production builds and matched P1 P16 default and one-worker controls
+      - name: Fresh production builds and matched P1 P16 default and explicit one/four-worker controls
         env:
           BASE: ${{ inputs.reactor_base }}
           HARDWARE: ${{ steps.machine.outputs.fingerprint }}

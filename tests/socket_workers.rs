@@ -63,15 +63,12 @@ impl Peer {
 }
 
 #[test]
-fn default_plain_tcp_uses_owner_migration_workers_and_serves_wire() {
+fn default_plain_tcp_colocates_io_and_data_and_serves_wire() {
     let server = start(None);
-    let cpus = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1);
     assert_eq!(
         server.scheduling_policy().socket_workers,
-        cpus.clamp(1, 4),
-        "default reactor count follows the allowed CPU hint"
+        1,
+        "default I/O stays on the single data owner; parallel reactors are explicit"
     );
     assert_eq!(server.scheduling_policy().client_handoff_lanes, 0);
 
@@ -158,7 +155,7 @@ fn explicit_one_worker_keeps_owner_local_path() {
 
 #[test]
 fn migration_preserves_session_state_transactions_and_pipelines() {
-    let server = start(None);
+    let server = start(Some(4));
     let mut peer = Peer::new(&server);
     peer.send(&[b"CLIENT", b"SETNAME", b"mover"]);
     assert_eq!(peer.line(), b"+OK\r\n");
@@ -190,7 +187,7 @@ fn migration_preserves_session_state_transactions_and_pipelines() {
 
 #[test]
 fn pubsub_and_blocking_connections_are_owned_by_the_owner_reactor() {
-    let server = start(None);
+    let server = start(Some(4));
     let mut subscriber = Peer::new(&server);
     subscriber.send(&[b"SUBSCRIBE", b"chan"]);
     assert_eq!(subscriber.line(), b"*3\r\n");
@@ -218,7 +215,7 @@ fn pubsub_and_blocking_connections_are_owned_by_the_owner_reactor() {
 
 #[test]
 fn large_local_echo_backpressure_then_data_migration_stays_ordered() {
-    let server = start(None);
+    let server = start(Some(4));
     let mut peer = Peer::new(&server);
     let value = vec![b'x'; 512 * 1024];
     let mut frame = Vec::new();

@@ -720,10 +720,12 @@ revive it without a different readiness mechanism and fresh gate evidence.
 
 ### 4.8 Owner-migration socket workers and accept distribution (merged; count rejected)
 
-One reactor is the only acceptor, keeps the owner-local executor, maintenance and
-every data command, and assigns new connections round-robin to the other reactors
-so a shared-listener wakeup cannot skew connection-local work onto one worker. The
-merged default remains `min(4, allowed CPUs)`. A `2 × allowed CPUs` count, capped
+The implemented parallel mode keeps one owner-local executor, maintenance and
+every data command; workers accept disjoint connections from the shared listener.
+The round-robin accept-distribution experiment below was rejected. The earlier
+merged default was `min(4, allowed CPUs)`; the co-location candidate instead uses
+one I/O/data-owner reactor by default and keeps explicit `--socket-workers 2..16`
+parallel mode. A `2 × allowed CPUs` count, capped
 at eight, was measured and rejected on pipeline-1 ping (section 2.8). The other
 reactors own their assigned connections and execute only bare
 connection-local commands (PING/ECHO/QUIT). Before the first data command a worker
@@ -810,8 +812,11 @@ sub-millisecond timeout upward: `FAST_WAIT` requests 8 us but reaches
 `epoll_wait` as 1 ms, not a user-space spin. Earlier "spin" descriptions above
 are hypotheses, not measured spin time. The single-poll candidate instead moves
 the absorption wait to the next round's sole selector call, avoiding a second
-ZERO poll before servicing readiness; it retains the same timeout, draining and
-quanta. Its [matched hosted diagnostic](../development-cycle.md#same-job-hosted-reactor-diagnostic)
+ZERO poll before servicing readiness. Its first global trial was rejected:
+PING/P1 was -0.09% and PING/P16 p99 +31%, despite GET/P1 +3.14% (run
+41500430375). The subsequent co-location candidate restricts consolidation to
+the single-reactor path; explicit parallel mode keeps its original absorption
+wait, timeout, draining and quanta. Its [matched hosted diagnostic](../development-cycle.md#same-job-hosted-reactor-diagnostic)
 is distinct from the isolated fixed-host screening lane and from protected gates.
 
 Mechanism: section 2.11 measures about 0.086 voluntary plus 0.014 involuntary
