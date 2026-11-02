@@ -1,5 +1,7 @@
 # Multithreaded execution
 
+Open items are tracked in the canonical [production-readiness gaps](../production-readiness-gaps.md); this file records current behavior and boundaries, not a second checklist.
+
 Part of the [production-readiness plan](../production-readiness.md). This file owns
 the capability row so independent feature increments edit only their own area.
 

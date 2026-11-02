@@ -4,7 +4,9 @@ Rillcache's image is ready for local evaluation, with optional passwords/ACLs,
 native TLS 1.3 and an append-only journal. Full production compatibility is still
 in progress: there is no RDB format, background/incremental rewrite, replication
 or graceful signal-driven drain. Keep the plaintext listener private even when
-TLS is enabled. [Production readiness](production-readiness.md) tracks the remaining work.
+TLS is enabled. [Production readiness](production-readiness.md) tracks the
+remaining work; the [canonical gap checklist](production-readiness-gaps.md) is the
+authoritative list.
 Publishing an image does not deploy a service.
 
 ## Run it

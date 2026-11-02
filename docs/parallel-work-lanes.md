@@ -36,13 +36,13 @@ permanent code ownership. Pick one lane per task and record it in the PR.
 | `streams` | `src/engine/streams.rs`, `docs/streams.md`, `tests/streams*.rs` | stream commands, consumer groups, blocking stream reads |
 | `collections` | `src/engine/collections.rs`, `collection_commands.rs`, `collection_config.rs`, `sort.rs`, `geo.rs`, `bitfield.rs` | lists, sets, hashes, sorted sets, geo, sort, bitfields |
 | `strings-keyspace` | `src/engine/data.rs`, `keyspace.rs`, `multikey.rs`, `string_algorithms.rs`, `string_ranges.rs`, `scan.rs`, `eviction.rs` | strings, expiry, keyspace, scan, payload budget |
-| `security-clients` | `src/engine/auth.rs`, `acl_log.rs`, `clients.rs` | authentication, ACLs, client registry and kills |
+| `security-clients` | `src/engine/auth.rs`, `acl_log.rs`, `clients.rs`, `docs/security.md`, `docs/tls.md` | authentication, ACLs, client registry and kills, transport security |
 | `persistence` | `src/engine/journal.rs`, `docs/persistence.md` | append-only journal, replay, rewrite and fsync |
 | `observability-admin` | `src/engine/slowlog.rs`, `latency.rs`, `monitor.rs`, `administration.rs`, `introspection.rs`, `unsupported.rs` | INFO, stats, slowlog, latency, monitor, admin surfaces |
 | `pubsub` | `src/engine/pubsub.rs`, `docs/pubsub.md` | publish/subscribe, notifications delivery, sharded channels |
 | `io-server` | `src/server.rs`, `src/server/pool.rs`, `src/protocol.rs`, `src/bin/**` | listener, pool, worker handoff, protocol framing |
-| `surface` | `src/engine.rs`, `src/engine/shard.rs`, `src/session.rs`, `src/engine/discovery/mod.rs`, `docs/requirements.md`, `docs/requirements/**`, `docs/production-readiness.md`, `docs/sharding.md`, `README.md`, `tests/discovery.rs`, `tests/core_dispatch.rs` | cross-cutting dispatch, session state, registry and requirement indexes, keyspace routing seam |
-| `tooling` | `scripts/**`, `.github/**`, `Makefile`, `Cargo.toml`, `benchmarks/**` | gates, automation, tooling and benchmark harness |
+| `surface` | `src/engine.rs`, `src/engine/shard.rs`, `src/session.rs`, `src/engine/discovery/mod.rs`, `docs/requirements.md`, `docs/requirements/**`, `docs/README.md`, `docs/compatibility.md`, `docs/production-readiness.md`, `docs/production-readiness-gaps.md`, `docs/production-readiness/**`, `docs/sharding.md`, `README.md`, `tests/discovery.rs`, `tests/core_dispatch.rs` | cross-cutting dispatch, session state, registry and requirement indexes, keyspace routing seam, canonical production-readiness gaps |
+| `tooling` | `scripts/**`, `.github/**`, `Makefile`, `Cargo.toml`, `benchmarks/**`, `compose.yaml`, `deploy/**`, `docs/containers.md` | gates, automation, tooling, benchmark harness and container delivery |
 
 After the command registry is split into `src/engine/discovery/<family>.rs`, those
 family files belong to the matching feature lane. Only `discovery/mod.rs` stays a

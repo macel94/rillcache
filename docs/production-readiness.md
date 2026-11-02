@@ -2,10 +2,13 @@
 
 Production drop-in compatibility is the goal, **not the current release status**.
 A command subset and passing microbenchmarks are insufficient to make that claim.
-The [compatibility guide](compatibility.md) summarizes what works; this plan
-keeps the remaining capabilities visible until independently verified. No unsafe
-application Rust, handwritten FFI, custom allocator or unapproved external Rust
-dependency is permitted, including in tests. The reviewed runtime/TLS/affinity
+The [compatibility guide](compatibility.md) summarizes what works. The
+authoritative, itemized list of remaining work is
+[production readiness gaps](production-readiness-gaps.md); this file is the gate
+map and delivery plan and must not maintain a second open-gap list. The area files
+below describe current boundaries and point back to the canonical checklist. No
+unsafe application Rust, handwritten FFI, custom allocator or unapproved external
+Rust dependency is permitted, including in tests. The reviewed runtime/TLS/affinity
 exceptions and offline vendoring policy live in [Contributing](../CONTRIBUTING.md).
 Optional external interoperability tools remain outside the application dependency graph.
 

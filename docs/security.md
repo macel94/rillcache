@@ -192,6 +192,10 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 
 ## Deliberate limits
 
+The authoritative open security list is in
+[production readiness gaps](production-readiness-gaps.md). The boundary below
+describes current behavior, not a second checklist.
+
 - **Not full Redis ACL.** Remaining subcommand-specific categories beyond the
   bounded `CLIENT`/`MEMORY`/`OBJECT`/`ACL`/`COMMAND`/`XGROUP`/`XINFO`/`CONFIG`/
   `LATENCY`/`SLOWLOG`/`PUBSUB` overrides,
@@ -202,8 +206,10 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported.
-  Channel patterns gate PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE, but
-  sharded pub/sub and keyspace notifications do not exist. `PUBSUB` introspection
+  Channel patterns gate PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE.
+  Sharded pub/sub is a separate standalone namespace and keyspace notifications
+  are process-local and at-most-once; neither is cluster-routed or durable.
+  `PUBSUB` introspection
   is category-governed rather than channel-pattern-filtered, so it can reveal channel
   names to a user allowed to run `@pubsub`. `CLIENT LIST`/`KILL` reveal connection
   addresses/names/users and terminate sessions; grant the CLIENT command only to
@@ -219,9 +225,10 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
 - **No tenant isolation at the process/network level.** All users share one
   in-memory keyspace and one process. ACL permissions do not create separate
   databases, memory budgets, CPU budgets or network identities.
-- **Native TLS via rustls.** The project has one explicit dependency exception:
-  rustls and the transitive crates required to build it, vendored for offline
-  builds. Native TLS 1.3 is terminated in-process; there is no OpenSSL, cgo or
+- **Native TLS via rustls.** The reviewed dependency exceptions are rustls,
+  Tokio (with Mio as its readiness backend) and `core_affinity`, plus their
+  required transitive crates, vendored for offline builds. Native TLS 1.3 is
+  terminated in-process; there is no OpenSSL, cgo or
   sidecar. TLS 1.2 and older are rejected, and HTTP/2 or HTTP/3 are not offered
   because Redis clients speak RESP. The plaintext listener still exists and must
   be bound to loopback/private space or firewalled. See [native TLS](tls.md).
@@ -249,9 +256,10 @@ live connections immediately. `ACL WHOAMI` is available to any authenticated use
   mode-`0400` secret mount. Files are read at startup and by explicit `ACL LOAD`;
   later password rotation uses authenticated `CONFIG SET`, and user changes use
   `ACL SETUSER` plus `ACL SAVE`.
-- **No persistence.** The password is not written to disk and does not survive a
-  restart unless the deployment supplies the flag/file again. The server also has
-  no data persistence or replication.
+- **Credential persistence is separate from data persistence.** The password is
+  not written to disk and does not survive a restart unless the deployment
+  supplies the flag/file again. Data persistence is opt-in append-only journaling;
+  replication is not implemented.
 - **Single-process scope.** This is process-local admission control. It does not
   provide distributed identity, failover, fencing tokens or protection against a
   host/container administrator.

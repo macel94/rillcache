@@ -54,10 +54,12 @@ show what has actually been checked, including exclusions and failures.
   and each command's limits. `MGET` replies are capped to prevent duplicate-key amplification.
 - **Security features are not a production certification.** Authentication and
   TLS must be configured; independent hardening and operational validation are
-  still needed. See [security](security.md) and the [readiness plan](production-readiness.md).
+  still needed. See [security](security.md) and the
+  [canonical gap checklist](production-readiness-gaps.md).
 
 These boundaries are documented rather than emulated with invented topology,
-storage or ownership information. The [requirements](requirements.md) and
-[production-readiness plan](production-readiness.md) track the remaining work.
+storage or ownership information. The [requirements](requirements.md) and the
+[canonical production-readiness gap checklist](production-readiness-gaps.md)
+track the remaining work.
 
 [Documentation home](README.md) · [Get started](getting-started.md)

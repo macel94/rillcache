@@ -13,6 +13,8 @@
 
 ## Limits and status
 
-This increment implements only APPEND, STRLEN, GETRANGE, and SETRANGE. SUBSTR is intentionally omitted. Strings are binary-safe. Redis's 512 MiB string ceiling is enforced independently of the configured payload budget (64 MiB by default). A stored value/full GET reply is bounded by the configured store payload budget; GETRANGE encodes only the selected slice. Wire tests store/read a 900 KiB value and verify an eight-byte range reply. Payload accounting is not an RSS cap. No attempt is made to allocate a huge replacement before budget admission. Expiration visibility follows the Store clock and mutation retains a live key's TTL. This is not a complete Redis string surface or production compatibility claim.
+This increment implements APPEND, STRLEN, GETRANGE, SETRANGE and the `SUBSTR`
+alias of GETRANGE. Strings are binary-safe. Redis's 512 MiB string ceiling is
+enforced independently of the configured payload budget (64 MiB by default). A stored value/full GET reply is bounded by the configured store payload budget; GETRANGE encodes only the selected slice. Wire tests store/read a 900 KiB value and verify an eight-byte range reply. Payload accounting is not an RSS cap. No attempt is made to allocate a huge replacement before budget admission. Expiration visibility follows the Store clock and mutation retains a live key's TTL. This is not a complete Redis string surface or production compatibility claim.
 
 The normal RESP request-size limit can be lower than the string limit. Native upstream behavior was probed against the repository's Redis 8.10.2 reference for malformed integers, negative offsets, empty SETRANGE and maximum size; official Redis command references: [APPEND](https://redis.io/docs/latest/commands/append/), [STRLEN](https://redis.io/docs/latest/commands/strlen/), [GETRANGE](https://redis.io/docs/latest/commands/getrange/), [SETRANGE](https://redis.io/docs/latest/commands/setrange/).
