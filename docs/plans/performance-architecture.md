@@ -16,8 +16,8 @@ Round-robin accept distribution then failed the Dragonfly gate at the old
 eight, failed both four-CPU gates on pipeline-1 ping (PR #164, section 2.8). The
 eight-reactor count is rejected; this document now records that evidence without
 a runtime change. A later refresh onto the isolated command counters passed both
-four-CPU gates (section 2.10). A gate pass on one head never substitutes for a
-fresh head, and every dependency still needs explicit review.
+four-CPU gates twice (section 2.10). A gate pass on one head never substitutes for
+a fresh head, and every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -301,7 +301,7 @@ review) or a different scheduling mechanism that does not add runnable server
 threads. The docs-only record must not be re-pushed repeatedly to fish for a
 noise pass.
 
-### 2.10 Post-refresh cohort: command-counter isolation and a both-gates pass
+### 2.10 Post-refresh cohorts: command-counter isolation and two both-gates passes
 
 Main then advanced to `9692e07`, which pads each of the 64 sharded command
 counters to a 128-byte boundary instead of packing eight adjacent atomics into a
@@ -312,6 +312,13 @@ cache line. The docs-only performance record was refreshed onto that runtime
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Valkey 9.1.2 | 112,884.5 | 105,144.5 | +7.36% | 0.111/0.151 | 1,550,105.6 | 1,024,718.4 | +51.3% |
 | Dragonfly 2.0.2 | 111,035.5 | 95,328.0 | +16.48% | 0.111/0.103 | 1,558,257.6 | 1,097,716.8 | +42.0% |
+
+The next docs head (`4f0ed0c`, PR #169, base `f28fe60`) repeated the result on
+the same runtime: Valkey 10/10 with P1 ping 114,615.3 vs 111,403.2 (+2.88%),
+p99 0.103/0.127; Dragonfly 10/10 with 106,109.3 vs 92,961.5 (+14.14%),
+p99 0.119/0.111; the original gate passed again. Two consecutive heads now pass
+both four-CPU comparisons, versus one pass and three losses in the four cohorts
+before the counter change (section 2.9).
 
 Both comparisons passed 10/10, the original gate passed, and the four-CPU runner
 still had `client_cpus == server_cpus == [0,1,2,3]`. The margin is therefore not
@@ -326,11 +333,12 @@ line ping-pong; it is a safe-Rust layout change with no allocator, dependency or
 wire change. It also explains why the effect is largest on the multi-reactor P1
 ping rows and small on data rows, which execute on one owner.
 
-Limit: one passing cohort does not isolate the counter change from host noise,
-and the previous ±band still means a future head can fail the same row. The
-claim supported here is that the refreshed runtime passed both four-CPU
-comparisons with a larger P1 ping margin, consistent with the false-sharing
-mechanism; it is not a universal or permanent win.
+Limit: two passing cohorts do not isolate the counter change from host noise,
+and the prior band means a future head can still fail the same row. The claim
+supported here is that the refreshed runtime passed both four-CPU comparisons
+twice with larger P1 ping margins, consistent with the false-sharing mechanism;
+it is not a universal or permanent win. Section 4.10 records the matched A/B
+needed to establish causality.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -564,8 +572,9 @@ with no new dependency. It is candidate 4.9, not part of this increment.
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
 evidence. Section 4.1 and the mode-word work (4.3) are implemented; 4.2 was
 deprioritized after analysis, 4.5 is partially implemented, 4.6 is deferred,
-4.7 is a rejected experiment, 4.8 is merged with its reactor count rejected, and
-4.9 is a TTL-only candidate that is not implemented.
+4.7 is a rejected experiment, 4.8 is merged with its reactor count rejected,
+4.9 is a TTL-only candidate that is not implemented, and 4.10 is a diagnostic
+A/B for the already-merged counter layout.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -713,6 +722,38 @@ Acceptance if implemented: deterministic tests cover a key expiring between two
 commands but not within one, a pass that refreshes the snapshot, injectable test
 clocks, and the same expiry/accounting behavior; the matched local A/B shows
 fewer clock calls; both protected gates still pass.
+
+### 4.10 Command-counter padding A/B (diagnostic, not implemented)
+
+Mechanism: PR #165 changed the 64 sharded `total_commands_processed` atomics from
+packed 8-byte entries to 128-byte-spaced entries. The two post-refresh cohorts
+passed both four-CPU gates with larger P1 ping margins (section 2.10), but a
+gate pass cannot separate the layout effect from shared-runner variance.
+
+Prediction: on the same host, with an otherwise identical binary, the 128-byte
+layout should have lower P1 ping cost than the packed layout only when several
+connection-local reactors execute PING/ECHO. With `--socket-workers 1` the
+counters are written by one reactor, so the difference should disappear. The
+effect should also be absent on data-only P1 rows, which execute on the owner.
+A hardware-counter check (cache-to-cache transfers or store-buffer contention on
+the counter lines) is supporting evidence, not a throughput proxy.
+
+Baseline and method: freeze both binaries (`scripts/compare-builds.py`), alternate
+them on one host and one CPU placement, use the same client and at least three
+rotated repetitions, and retain raw JSON plus spread. Run both reactor counts
+(1 and the default) to test the interaction. Do not compare numbers from
+different hosts or from the protected runner.
+
+Rejection condition: no difference outside the measured spread at multiple
+reactors, or a difference that persists with one reactor (which would point at
+something other than cross-reactor false sharing). A rejected A/B leaves the
+layout change in place only if the gates remain green; it does not justify a new
+layout knob.
+
+Acceptance if completed: the matched A/B establishes direction or rejects the
+mechanism, all raw samples and CPU placement are retained, and both protected
+gates still pass on any resulting head. This is a diagnosis of an already-merged
+change, not a new runtime candidate.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -918,6 +959,11 @@ current roadmap; individual phases are separate increments.
   original gate run 41473631832 PASS, four-CPU run 41473631873 PASS Valkey 10/10
   (ping P1 +7.36%) and Dragonfly 10/10 (ping P1 +16.48%); artifacts under
   `/root/perf-evidence/pr164/four-cpu-pass/`; merged as `f28fe60`.
+- Repeated post-refresh pass: PR #169 head `4f0ed0c`, four-CPU run 41482049139
+  PASS Valkey 10/10 (ping P1 +2.88%) and Dragonfly 10/10 (ping P1 +14.14%);
+  artifacts under `/root/perf-evidence/pr169/four-cpu/`; merged as `ffa2181`.
+- Counter-layout A/B (section 4.10): not yet run; requires frozen packed and
+  padded binaries on one host, both reactor counts, and raw samples.
 - Development loop: `make dev-check` for editing feedback, `make test` after a
   complete logical change and `make ci` before review, per
   [development-cycle](../development-cycle.md). Local screens never replace the
@@ -939,9 +985,10 @@ current roadmap; individual phases are separate increments.
   source analysis and the older one-CPU study, not in the required four-CPU
   comparison, so a Redis four-CPU loss would not be visible to the gate.
 - The P1 ping row is host-sensitive. The refreshed runtime passed both four-CPU
-  comparisons (section 2.10), but identical binaries have also lost that row by
-  up to 4.32% on the same shared runner (section 2.9). Readiness was necessary
-  but not sufficient, and the rejected drain probe shows that syscall counts
+  comparisons twice (section 2.10), but earlier identical binaries also lost that
+  row by up to 4.32% on the same shared runner (section 2.9). Readiness was
+  necessary but not sufficient, and the rejected drain probe shows that syscall
+  counts
   alone are not a throughput proxy. Round-robin at four reactors improved
   Valkey but still lost Dragonfly PING; the eight-reactor response then lost P1
   ping to both and is rejected. The remaining P1 question needs a different
