@@ -681,8 +681,15 @@ current roadmap; individual phases are separate increments.
   short three-sample medians. It is a merge policy, not a statistical proof or a
   production SLO; mixed TTLs, large values, saturation and tail SLOs remain
   outside it.
-- The four-CPU gate now passes all ten medians against both Valkey and Dragonfly
-  (P1 ping +2.9% and +25.2%; section 2.8). The remaining gaps are outside that
+- Round-robin accept distribution was implemented as a follow-up and measured:
+  it raised the Valkey P1 ping margin to **+14.5%** (Valkey PASS 10/10) but
+  Dragonfly still won the PING rows on that fast host (P1 −7.0%, P16 −2.1%;
+  Dragonfly 8/10), while every data row passed. It was closed without merge
+  (PR #161); the remaining fast-host Dragonfly PING gap is the io_uring/proactor
+  boundary, not accept skew. The merged #159 gate remains green on its own run.
+- The four-CPU gate passes all ten medians against both Valkey and Dragonfly on
+  the merged head (P1 ping +2.9% and +25.2%; section 2.8); fast-host Dragonfly
+  PING remains host-sensitive as above. The remaining gaps are outside that
   gate: many-core/multi-owner scaling, large values, mixed TTL/traffic, tail
   distributions on controlled hosts, storage/hash costs, and large-frame parsing
   only if a measured workload requires it. Do not infer universal superiority.
