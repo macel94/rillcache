@@ -9,9 +9,13 @@ merge candidate (section 2.3); this document merged as PR #141 (`f572bd8`).
 Later increments added opt-in Tokio transport, multi-owner execution, cached
 mode/authorization words and batched owner replies; the required four-CPU job now
 also compares Dragonfly (sections 2.5–2.6). A shared-store socket-worker
-experiment was measured and rejected (section 2.7), and an owner-migration
-socket-worker implementation is in review (section 4.8). A gate pass on one head never
-substitutes for a fresh head, and every dependency still needs explicit review.
+experiment was measured and rejected (section 2.7); owner-migration socket workers
+merged as PR #159 (`31a6006`) after both four-CPU gates passed (section 4.8).
+Round-robin accept distribution then failed the Dragonfly gate at the old
+`min(4, CPUs)` count (PR #161), and the current candidate starts `2 × CPUs`
+reactors, capped at eight, so each of the eight P1 clients can own a reactor
+(section 2.8). A gate pass on one head never substitutes for a fresh head, and
+every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -218,6 +222,32 @@ owner-local data path; the one-CPU budget selects one reactor, keeps the local
 executor, and passes every row. The PR was closed with its branch and artifacts
 retained, not rerun or relabeled.
 
+### 2.8 Eight connection-local reactors (candidate in review)
+
+Owner-migration then kept the owner-local data path and moved only PING/ECHO/QUIT
+to worker reactors. PR #159 (`31a6006`) passed Valkey 10/10 and Dragonfly 10/10,
+but the P1 PING margin against Valkey was only +2.9% on that host. A follow-up
+made the owner the only acceptor and distributed new connections round-robin
+(PR #161, `1401a79`). At the old `min(4, CPUs)` count it passed Valkey 10/10 but
+failed Dragonfly 8/10 (run
+[41420512129](https://github.com/macel94/rillcache/actions/runs/41420512129)):
+ping P1 was −7.0% and ping P16 −2.1%, while the four data P1 and four data P16
+rows still won. That is consistent with eight P1 clients sharing four reactors,
+two clients per reactor, so two clients still serialize on one event loop.
+
+The current candidate keeps round-robin distribution and changes the default to
+`2 × allowed CPUs` reactors capped at eight (one on a single CPU). On the
+four-CPU gate that is eight lanes: the owner plus seven workers, one lane per P1
+client. Data connections still migrate once to the owner-local executor, so no
+data command gains a shard or per-command hop. Prediction: P1 PING throughput
+rises because the eight connection-local clients no longer share four loops;
+P1 SET/GET/NX/XX are unchanged or slightly better because they still execute on
+the owner. Rejection condition: any original-gate loss, any Valkey or Dragonfly
+four-CPU loss, a P1 p99 regression beyond AC5, or a migration/shutdown failure.
+The host still has only four CPUs, so eight mostly-parked reactors may instead
+add scheduler and wakeup cost; the protected gates, not the thread count, decide.
+Gates are pending and no throughput claim is made here.
+
 ## 3. Per-component comparison with Redis and Valkey
 
 Pins: Valkey `9.1.2` and Redis `8.10.2` source tags, as in
@@ -249,10 +279,24 @@ copied into this repository.
   receive-class work above. The merged reactor now supplies kernel readiness on
   default Unix plain TCP; the fallback remains for TLS, fixed workers and
   non-Unix builds.
+- **Triggering mode is a real difference, not a tuning detail.** Redis and Valkey
+  register `EPOLLIN`/`EPOLLOUT` without `EPOLLET`
+  ([`valkey ae_epoll.c#L83`](https://github.com/valkey-io/valkey/blob/9.1.2/src/ae_epoll.c#L83),
+  [`redis ae_epoll.c#L64`](https://github.com/redis/redis/blob/8.10.2/src/ae_epoll.c#L64)),
+  so the kernel keeps reporting a socket until its queue is drained. The vendored
+  Mio selector always adds `EPOLLET`
+  ([`selector/epoll.rs#L130`](../../vendor/mio/src/sys/unix/selector/epoll.rs#L130)),
+  which is why Rillcache re-queues a productive client and probes once more for
+  `WouldBlock`: under edge-triggered readiness that probe is the correctness
+  mechanism, not redundant work. Replacing it with level-triggered semantics
+  would require raw `epoll_ctl`/`epoll_wait` (unsafe FFI, rejected) or a selector
+  dependency whose level-triggered behavior is part of the reviewed API. This is
+  the structural explanation for the PR #155 result in section 2.6.
 
 **Verdict:** the kernel-readiness idea was copied and adapted to a reviewed safe
 wrapper (Mio, section 4.1). Raw `epoll` with `unsafe` and busy polling by default
-were rejected.
+were rejected. Level-triggered copying remains unavailable without a policy
+change, and the measured drain-elision attempt confirms the probe is load-bearing.
 
 ### 3.2 Reply construction and write coalescing
 
@@ -266,6 +310,13 @@ were rejected.
   [`server.c#L1812`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L1812)).
   Small numeric/status replies use shared objects. Valkey 9.1 adds reply
   reference/encoded-buffer machinery for copy avoidance on the I/O-thread path.
+  Both servers also cap a single event at `NET_MAX_WRITES_PER_EVENT` (64 KiB) so a
+  fast client with a huge reply cannot monopolize the loop
+  ([`valkey networking.c#L2838`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L2838),
+  [`redis networking.c#L2887`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L2887));
+  Valkey enables copy avoidance from seven I/O threads by default through the
+  hidden `min-io-threads-avoid-copy-reply` setting
+  ([`valkey config.c#L3386`](https://github.com/valkey-io/valkey/blob/9.1.2/src/config.c#L3386)).
 - **Redis** has the same 16 KiB buffer + reply list + `writev` shape and defers
   writes to `handleClientsWithPendingWrites`
   ([`networking.c#L514`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L514),
@@ -279,8 +330,11 @@ were rejected.
 
 **Verdict:** the formatting and allocation posture is already competitive; do
 not add shared-object tables or encoded-buffer references (they need reference
-counting and unsafe/ownership machinery). A read-only/batched-write experiment is
-a later, separate candidate (4.5) and must not worsen P1 tails.
+counting and unsafe/ownership machinery). Rillcache's bounded output chunks and
+soft backpressure already prevent one client from monopolizing a pass, so the
+64 KiB per-event cap is a design confirmation rather than a missing mechanism.
+Cross-client deferred flushing (`beforeSleep` shape) is a later, separate
+candidate (4.5) and must not worsen P1 tails.
 
 ### 3.3 Parsing
 
@@ -290,7 +344,12 @@ a later, separate candidate (4.5) and must not worsen P1 tails.
   it defer execution without reparsing
   ([`networking.c#L4237`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L4237),
   [`networking.c#L4299`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L4299)).
-- **Redis** follows the same incremental multibulk/inline state machine.
+- **Redis** follows the same incremental multibulk/inline state machine. Its
+  8.10 parser builds a `pendingCommand` and separates read handling from
+  `processInputBuffer`, while Valkey 9.1 keeps a `cmd_queue` so pipelined
+  commands are consumed without reparsing
+  ([`redis networking.c#L3690`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L3690),
+  [`valkey networking.c#L4237`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L4237)).
 - **Rillcache** parses complete frames from a contiguous input vector, borrowing
   slices; up to eight arguments live on the stack and larger commands use bounded
   fallback storage ([`protocol.rs#L76`](../../src/protocol.rs#L76)). It has no
@@ -310,7 +369,11 @@ is in scope; do not copy the C object/refcount parser.
   [`dict.c#L327`](https://github.com/valkey-io/valkey/blob/9.1.2/src/dict.c#L327),
   [`redis dict.c#L299`](https://github.com/redis/redis/blob/8.10.2/src/dict.c#L299)).
   String values use embstr/int/raw encodings; expiry lives in a dedicated
-  expires structure and is checked on lookup.
+  expires structure and is checked on lookup. Valkey 9.1 moved the main keyspace
+  to a `kvstore` and rehashes it in bounded time slices during cron
+  ([`valkey server.c#L1325`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L1325));
+  Redis 8.10 keeps the dict step-on-access model
+  ([`redis dict.c#L471`](https://github.com/redis/redis/blob/8.10.2/src/dict.c#L471)).
 - **Rillcache** uses `std::collections::HashMap<Vec<u8>, Entry>` with the
   standard randomized SipHash hasher and one `RwLock<Data>`; expiry is an ordered
   `BTreeSet<(i64, Vec<u8>)>` and every mutation records a WATCH version
@@ -329,7 +392,11 @@ size; revisit only with a large-keyspace measurement.
 - **Valkey/Redis** look up the command once in a command table, then run `call()`
   which updates counters and optional slowlog/latency/commandstats hooks. Most
   hooks are cheap flags or no-ops on the benchmark path
-  ([`server.c` `call()`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L3830)).
+  ([`valkey server.c#L3830`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L3830),
+  [`valkey lookupCommand`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L3480),
+  [`redis call`](https://github.com/redis/redis/blob/8.10.2/src/server.c#L3992)).
+  The lookup itself is a dict probe of the command name (case-insensitive sds
+  hash), not a linear scan.
 - **Rillcache** has an inlined PING/GET/SET/ECHO path that avoids family routing
   and the transaction gate, but it first evaluates a chain of about a dozen
   mode/observer atomics and four case-insensitive command comparisons
@@ -357,12 +424,53 @@ abstraction; the current split is easier to keep out of the hot path.
 portable fallback remain; an io-thread pool was not imported. Any parallel command
 execution must preserve multi-key atomicity and is explicitly deferred.
 
+### 3.7 Clock, expiry and command-time snapshots
+
+- **Valkey/Redis** cache wall-clock milliseconds in the event loop and refresh the
+  snapshot when an execution unit starts. Every command uses
+  `commandTimeSnapshot()` instead of calling `gettimeofday`/`clock_gettime` again,
+  which also keeps a multi-key command from seeing two different "now" values
+  ([`valkey server.c#L332`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L332),
+  [`valkey enterExecutionUnit`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L1367),
+  [`redis commandTimeSnapshot`](https://github.com/redis/redis/blob/8.10.2/src/server.c#L262)).
+  Expiry uses this cached time; `serverCron` refreshes it for housekeeping.
+- **Rillcache** already avoids the clock when the database has no expirations:
+  `now()` returns `0` while `expirations` is empty
+  ([`commands.rs#L95`](../../src/engine/commands.rs#L95)), so the gate's non-TTL
+  SET/GET path does not pay a clock syscall. Once any key has a TTL, each command
+  that consults expiry calls `SystemClock::now_ms()`, a `SystemTime::now()` per
+  call behind the injectable `Clock` trait
+  ([`engine.rs#L118`](../../src/engine.rs#L118)).
+
+**Verdict:** do not add a speculative cached clock to the gate path; it would not
+run there. A TTL-heavy workload is the only case where the C servers' snapshot
+shape is cheaper, and it is not in the protected gate. If measured TTL workloads
+show a clock cost, adapt the snapshot idea behind the existing `Clock` trait:
+publish one millisecond value per reactor pass and let commands read it, keeping
+the injectable test clock and single-command time consistency. That is safe Rust
+with no new dependency. It is candidate 4.9, not part of this increment.
+
+### 3.8 Decision matrix: best of each project
+
+| Component | Redis 8.10.2 | Valkey 9.1.2 | Rillcache today | Decision |
+| --- | --- | --- | --- | --- |
+| Readiness | level-triggered epoll, single loop | level-triggered epoll, single loop | Mio edge-triggered reactor with drain probe | **Keep/adapt:** edge-triggered through reviewed Mio; level-triggered needs unsafe FFI or a new selector policy |
+| Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one owner reactor plus connection-local workers | **Adapt:** multiple reactors for connection-local commands; no sharded data |
+| Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
+| Reply path | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same plus encoded-buffer copy avoidance from 7 I/O threads | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral is 4.5 and unproven |
+| Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames do not rescan payload; revisit only with large-argument evidence |
+| Storage | dict, SipHash, step rehash | kvstore, SipHash, time-budgeted rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry | **Avoid:** no safe incremental-rehash std API; custom hash/allocator is policy-sensitive |
+| Dispatch | dict command table + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands |
+| Time | cached `mstime` per execution unit | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Adapt only if TTL evidence:** candidate 4.9 |
+| Expiry | lazy + active cycle | lazy + active cycle | lazy on access + 100 ms purge tick | **Keep:** gate has no TTL rows; correctness covered by tests |
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
 evidence. Section 4.1 and the mode-word work (4.3) are implemented; 4.2 was
-deprioritized after analysis, 4.5 is partially implemented, and 4.7 is a rejected
-experiment.
+deprioritized after analysis, 4.5 is partially implemented, 4.6 is deferred,
+4.7 is a rejected experiment, 4.8 is merged with its reactor count in review, and
+4.9 is a TTL-only candidate that is not implemented.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -458,12 +566,14 @@ Mechanism, local syscall evidence, failed gate rows and diagnosis are in section
 removing it shifted cost to `epoll_wait` and lost two Valkey P1 medians. Do not
 revive it without a different readiness mechanism and fresh gate evidence.
 
-### 4.8 Owner-migration socket workers (implemented, gates pending)
+### 4.8 Owner-migration socket workers and accept distribution (merged; count in review)
 
 One reactor is the only acceptor, keeps the owner-local executor, maintenance and
 every data command, and assigns new connections round-robin to the other reactors
 so a shared-listener wakeup cannot skew connection-local work onto one worker. The
-other reactors own their assigned connections and execute only bare
+default starts `2 × allowed CPUs` reactors capped at eight (one on a single CPU),
+so eight P1 clients can land on separate reactors. The other reactors own their
+assigned connections and execute only bare
 connection-local commands (PING/ECHO/QUIT). Before the first data command a worker
 flushes prior replies, deregisters the socket, transfers the session and unparsed
 input, and hands the connection to the owner, which registers it and continues in
@@ -478,8 +588,35 @@ admission across reactors, idle maintenance, and joined shutdown with in-flight
 transfers. Tests cover worker counts, PING/SET/GET and mixed pipelines, session
 state across migration, transactions, pub/sub, blocking commands,
 large/backpressured output, idle timeout, max clients, session isolation and
-shutdown. Acceptance remains both protected gates (Valkey and Dragonfly) plus
-the unchanged functional contexts; no throughput claim is made before they pass.
+shutdown. PR #159 merged this mechanism with both four-CPU gates passing; PR #161
+added round-robin distribution but failed Dragonfly at `min(4, CPUs)`. The current
+count candidate is new runtime evidence (section 2.8). Both protected gates plus
+the unchanged functional contexts decide; no throughput claim is made before they
+pass.
+
+### 4.9 Cached command-time snapshot (not implemented)
+
+Mechanism: publish one wall-clock millisecond value per reactor pass and use it
+for expiry/eviction checks instead of `SystemTime::now()` per command, matching
+the `commandTimeSnapshot()` shape without changing single-command time
+consistency ([section 3.7](#37-clock-expiry-and-command-time-snapshots)).
+
+Prediction: a TTL-heavy P1 workload (every key has a deadline) drops one
+`clock_gettime` per command and removes the `SystemTime` conversion from the
+command path; non-TTL rows are unchanged because `now()` already returns `0`.
+
+Rejection condition: no measured syscall/time reduction, any expiry boundary
+error (a key alive at command start must stay alive for that command), any
+original-gate or four-CPU gate loss, or any p99 regression. The default gate has no TTL
+rows, so this candidate must first add a matched local TTL workload; it is not
+justified by the current gate alone. No dependency is needed: the value can be
+stored behind the existing `Clock` trait and refreshed on the reactor maintenance
+tick.
+
+Acceptance if implemented: deterministic tests cover a key expiring between two
+commands but not within one, a pass that refreshes the snapshot, injectable test
+clocks, and the same expiry/accounting behavior; the matched local A/B shows
+fewer clock calls; both protected gates still pass.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -516,7 +653,11 @@ Policy impact (explicit, not incidental):
 Operationally, the default remains the Mio one-owner reactor; Tokio transport,
 multi-owner execution and worker pinning are opt-in. TLS, fixed workers and
 non-Unix builds keep their existing fallbacks. A future default change needs the
-same native evidence and protected gates as any other runtime change.
+same native evidence and protected gates as any other runtime change. The
+eight-reactor default and candidate 4.9 add no package: they stay inside the
+reviewed Mio/std surface. Level-triggered readiness would need either raw `epoll`
+in project code or a new selector dependency, so it is a policy decision, not a
+free tuning change.
 
 ## 6. Risks
 
@@ -534,6 +675,14 @@ same native evidence and protected gates as any other runtime change.
 - **Single-thread ceiling:** the reactor executes commands on one thread; P16
   wins come from cheaper per-command work, not parallelism. A future CPU-bound
   workload could need workers, with the atomicity caveats in 4.6.
+- **Reactor oversubscription:** `2 × CPUs` connection-local reactors on a
+  four-CPU host means more runnable threads than CPUs. Connection-local commands
+  are mostly parked, but wakeup contention can still add scheduler cost; the
+  count is accepted only on protected-gate evidence, not on thread-count theory.
+- **Accept-lane skew:** one owner accepts and assigns round-robin. A worker that
+  stalls can delay its lane's new connections while other lanes continue; the
+  owner keeps accepting and never blocks on a lane send, and admission remains a
+  single shared bound.
 - **Platform scope:** non-Unix and TLS stay on the existing fallback; no
   readiness claim is made there.
 - **Dependency risk:** a new vendored crate adds supply-chain and review surface;
@@ -557,6 +706,8 @@ same native evidence and protected gates as any other runtime change.
 | Sharded keyspace / per-shard locks | Weakens or complicates multi-key atomicity, WATCH, expiry and journal ordering for a P16 regime that already wins. |
 | Custom allocator or non-keyed/weak hash | Dependency/policy and HashDoS risk; no measured need at gate keyspace sizes. |
 | Zero-copy reply references / encoded buffers | Needs reference counting and unsafe-adjacent ownership; formatting is already allocation-free per reply. |
+| Copying level-triggered `epoll` semantics | Requires raw `epoll` FFI in project code (safe-Rust violation) or a new selector dependency; Mio's edge-triggered probe is load-bearing, as PR #155 showed. |
+| Copying Valkey's I/O-thread reply copy avoidance | Depends on encoded-buffer reference tracking and an I/O-thread pool; no gate evidence that the current copy path is the remaining cost. |
 | RDB/replication work as a performance fix | Out of scope and unrelated to the measured P1 gap. |
 | Eliding the edge-triggered empty-receive drain probe (PR #155) | Cut receive syscalls ~16% locally but lost two Valkey P1 medians; the probe is also a user-space readiness batch. See 2.6/4.7. |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
@@ -620,11 +771,25 @@ frozen binaries and alternating order, with raw samples retained.
   scalable on workers; data commands shall execute on the owner-local executor;
   admission, idle timeout and shutdown shall join every reactor and in-flight
   migration. A throughput pass is valid only if both protected gates pass.
+- **AC15 (default reactor count).** When plain Unix TCP starts without fixed
+  workers, TLS-only routing, Tokio or multi-owner execution, the server shall
+  start `2 × allowed CPUs` reactors capped at eight (one on a single CPU), report
+  that count through `scheduling_policy()`, and assign new connections
+  round-robin; `--socket-workers 1..16` shall still override it. Cold-owner
+  configurations shall keep and report one reactor. The count is accepted only if
+  the original gate wins 20/20 and both four-CPU comparisons win 10/10 on the
+  final head.
+- **AC16 (cached clock, only if 4.9 is implemented).** When any key has an
+  expiration, a command shall observe one stable millisecond snapshot for its
+  whole execution, refreshed at most once per reactor pass; a key alive at
+  command start shall not expire inside that command; injectable test clocks and
+  existing expiry/accounting tests shall pass; a matched TTL-heavy A/B shall show
+  fewer clock calls, and both protected gates shall still pass.
 
 INVEST story for the next runtime increment (Dragonfly pipeline-1 margin):
 independently valuable and testable, with one recorded mechanism, prediction,
-matched baseline and rejection condition. Definition of done: AC1–AC10 and AC13
-as applicable, `make ci`, both performance gates, all 14 contexts, an up-to-date
+matched baseline and rejection condition. Definition of done: AC1–AC15 as
+applicable, `make ci`, both performance gates, all 14 contexts, an up-to-date
 head, owner review for any dependency/policy change, and a concise evidence
 report that keeps every failed cohort. The phased multi-owner/socket-worker
 program in [Dragonfly-class performance](dragonfly-class-performance.md) is the
@@ -643,6 +808,13 @@ current roadmap; individual phases are separate increments.
   and phased roadmap are in [Dragonfly-class performance](dragonfly-class-performance.md).
 - Rejected short-read experiment: PR #155, gate run 41368946995 (Dragonfly 10/10,
   Valkey 8/10), branch `perf/reactor-short-read-drain` retained.
+- Round-robin at `min(4, CPUs)`: PR #161, four-CPU run 41420512129 (Valkey 10/10,
+  Dragonfly 8/10: ping P1 −7.0%, ping P16 −2.1%), branch
+  `perf/accept-distribution` retained.
+- Current reactor-count candidate: branch `perf/eight-workers`, base `1401a79`,
+  with PR #159 (`31a6006`) as the merged owner-migration ancestor. Its gate result
+  is recorded when the protected workflows finish; a pending or failed run is
+  never replaced by a local screen.
 - Development loop: `make dev-check` for editing feedback, `make test` after a
   complete logical change and `make ci` before review, per
   [development-cycle](../development-cycle.md). Local screens never replace the
@@ -660,11 +832,15 @@ current roadmap; individual phases are separate increments.
 - The protected gate uses small strings, cyclic/random keys, eight clients and
   short three-sample medians. It is a merge policy, not a statistical proof or a
   production SLO; mixed TTLs, large values, saturation and tail SLOs remain
-  outside it.
+  outside it. It compares Valkey and Dragonfly; Redis 8.10.2 is pinned in the
+  source analysis and the older one-CPU study, not in the required four-CPU
+  comparison, so a Redis four-CPU loss would not be visible to the gate.
 - The remaining measured P1 gap is against Dragonfly on fast hosts; it is
   host-sensitive and still fails the strict median on some cohorts. Readiness was
   necessary but not sufficient, and the rejected drain probe shows that syscall
-  counts alone are not a throughput proxy.
+  counts alone are not a throughput proxy. Round-robin at four reactors improved
+  Valkey but still lost Dragonfly PING; the eight-reactor count is the current
+  response and remains unaccepted until the gates pass.
 - Cross-client write coalescing (4.5) remains unproven; do not add it
   speculatively. The resumable parser (4.2) is deprioritized because incomplete
   frames do not rescan payload bytes; revisit only with large-argument evidence.

@@ -68,9 +68,14 @@ fn default_plain_tcp_uses_owner_migration_workers_and_serves_wire() {
     let cpus = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1);
+    let expected = if cpus <= 1 {
+        1
+    } else {
+        cpus.saturating_mul(2).min(8)
+    };
     assert_eq!(
         server.scheduling_policy().socket_workers,
-        cpus.clamp(1, 4),
+        expected,
         "default reactor count follows the allowed CPU hint"
     );
     assert_eq!(server.scheduling_policy().client_handoff_lanes, 0);

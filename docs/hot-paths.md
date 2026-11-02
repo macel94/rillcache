@@ -407,9 +407,9 @@ and pay a shard hop; that matches the measured shape in which Dragonfly wins
 PING/P1 but loses the data-command P1 and every P16 row. Copying io_uring or
 shard hops is outside this project's safe boundary.
 
-The default plain Unix TCP path starts `min(4, allowed CPUs)` reactors
-(`--socket-workers 1..16` overrides). One reactor is the only acceptor, keeps the
-published owner-local executor and all data commands, and assigns new connections
+The default plain Unix TCP path starts `2 × allowed CPUs` reactors capped at
+eight (one on a single CPU) (`--socket-workers 1..16` overrides). One reactor is
+the only acceptor, keeps the published owner-local executor and all data commands, and assigns new connections
 round-robin so a shared-listener wakeup cannot skew PING onto one worker. The
 other reactors own their assigned connections and execute only bare
 connection-local commands (PING/ECHO/QUIT);
