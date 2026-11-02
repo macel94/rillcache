@@ -386,3 +386,22 @@ platforms retain timeout-based fallback admission.
   visibly with a diagnostic when no client is available unless
   `RILLCACHE_REQUIRE_REDIS_CLI=1` is set. Language-client suites, richer protocol
   negotiation and nonzero database selection remain separate increments.
+
+## Shared-store socket workers (S-SOCKET-WORKERS)
+
+- **R-SOCKET1 (event-driven):** When Rillcache starts plain Unix TCP without fixed
+  workers, TLS-only routing, Tokio or multi-owner execution, it shall run
+  `min(4, allowed CPUs)` independent readiness reactors by default; `--socket-workers
+  1..16` shall override that count. Each connection shall be owned by exactly one
+  reactor, and `--socket-workers 1` shall retain the owner-local executor.
+- **R-SOCKET2 (state-driven):** Reactors shall share the existing locked Store
+  without splitting a connection, reply order or session across threads. Only one
+  reactor shall run journal/expiry/rewrite maintenance; each reactor shall bound
+  its own accept/read/write work, enforce the shared admission limit, observe the
+  shared stop flag and join on shutdown.
+- **R-SOCKET3 (ubiquitous):** Tests shall cover the default and explicit worker
+  counts, PING/SET/GET and pipelines, fragmented/large/backpressured input,
+  blocked/pubsub clients, idle timeout, max clients, session isolation and joined
+  shutdown. Documentation shall state the shared-lock trade, that there is no
+  sharding/io_uring/migration, and that protected-gate evidence decides any
+  throughput claim.

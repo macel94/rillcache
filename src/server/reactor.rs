@@ -65,6 +65,8 @@ struct Reactor<E: Execution> {
     inbox: Option<BridgeInbox>,
     admitted: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
+    /// Only the first shared reactor runs journal/expiry/rewrite maintenance.
+    maintenance: bool,
 }
 
 impl<E: Execution> Drop for Reactor<E> {
@@ -280,9 +282,11 @@ impl<E: Execution> Reactor<E> {
             }
             let now = Instant::now();
             if now.duration_since(maintenance) >= MAINTENANCE_TICK {
-                let _ = self.store.journal_sync();
-                self.store.purge_expired(128);
-                self.store.auto_rewrite_if_due();
+                if self.maintenance {
+                    let _ = self.store.journal_sync();
+                    self.store.purge_expired(128);
+                    self.store.auto_rewrite_if_due();
+                }
                 let expired: Vec<_> = self
                     .clients
                     .iter()
@@ -359,7 +363,15 @@ pub(super) fn serve(
     stopping: Arc<AtomicBool>,
 ) -> io::Result<()> {
     if let Some((executor, inbox)) = store.install_local() {
-        serve_with(listener, config, Rc::new(executor), Some(inbox), stopping)
+        serve_with(
+            listener,
+            config,
+            Rc::new(executor),
+            Some(inbox),
+            stopping,
+            Arc::new(AtomicUsize::new(0)),
+            true,
+        )
     } else {
         serve_with(
             listener,
@@ -367,7 +379,64 @@ pub(super) fn serve(
             Rc::new(StoreHandle(store)),
             None,
             stopping,
+            Arc::new(AtomicUsize::new(0)),
+            true,
         )
+    }
+}
+
+/// Independent connection-owning reactors sharing one locked `Store`. Bare
+/// connection-local commands execute on the accepting reactor; data commands
+/// use the shared Store locks. The first reactor alone runs maintenance.
+pub(super) fn serve_shared(
+    listener: TcpListener,
+    config: Config,
+    store: Arc<Store>,
+    stopping: Arc<AtomicBool>,
+    workers: usize,
+) -> io::Result<()> {
+    debug_assert!(workers > 1);
+    let admitted = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::with_capacity(workers);
+    for index in 0..workers {
+        let listener = listener.try_clone()?;
+        let config = config.clone();
+        let store = Arc::clone(&store);
+        let stop = Arc::clone(&stopping);
+        let admitted = Arc::clone(&admitted);
+        let handle = thread::Builder::new()
+            .name(format!("rillcache-reactor-{index}"))
+            .spawn(move || {
+                let result = serve_with(
+                    listener,
+                    config,
+                    Rc::new(StoreHandle(store)),
+                    None,
+                    Arc::clone(&stop),
+                    admitted,
+                    index == 0,
+                );
+                if result.is_err() {
+                    stop.store(true, Ordering::Release);
+                }
+                result
+            })?;
+        handles.push(handle);
+    }
+    drop(listener);
+    let mut first_error = None;
+    for handle in handles {
+        match join_result(handle) {
+            Ok(()) => {}
+            Err(error) => {
+                stopping.store(true, Ordering::Release);
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -377,6 +446,8 @@ fn serve_with<E: Execution>(
     store: Rc<E>,
     inbox: Option<BridgeInbox>,
     stopping: Arc<AtomicBool>,
+    admitted: Arc<AtomicUsize>,
+    maintenance: bool,
 ) -> io::Result<()> {
     let poll = Poll::new()?;
     let fd = listener.as_raw_fd();
@@ -395,8 +466,9 @@ fn serve_with<E: Execution>(
         config,
         store,
         inbox,
-        admitted: Arc::new(AtomicUsize::new(0)),
+        admitted,
         stopping,
+        maintenance,
     }
     .run()
 }
@@ -426,6 +498,7 @@ mod tests {
             accept_ready: true,
             admitted: Arc::new(AtomicUsize::new(0)),
             stopping: Arc::new(AtomicBool::new(false)),
+            maintenance: true,
         }
     }
 

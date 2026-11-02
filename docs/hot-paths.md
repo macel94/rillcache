@@ -398,3 +398,26 @@ Release builds use fat LTO with one codegen unit while retaining overflow checks
 This is a general whole-program optimization for cross-module inlining of the
 session/store/RESP path, not a benchmark-specific mode or a safety relaxation.
 Build time increases; `make ci` still enforces the same tests and smoke benchmarks.
+
+## Shared-store socket workers (S-SOCKET-WORKERS)
+
+Dragonfly v2.0.2 starts four io_uring proactor threads on the four-CPU gate. Its
+connection-local PING scales across those threads, while SET/GET dispatch to a
+key owner and pay a hop; that matches the measured shape in which Dragonfly wins
+PING/P1 but loses the data-command P1 and every P16 row. Copying io_uring or
+shard hops is outside this project's safe boundary.
+
+The default plain Unix TCP path now starts `min(4, allowed CPUs)` independent Mio
+reactors (`--socket-workers 1..16` overrides). Each reactor exclusively owns its
+accepted connections and shares the existing locked `Store`; there is no sharded
+keyspace, no connection migration and no new wire behavior. `--socket-workers 1`
+keeps the previous owner-local executor. Only reactor zero runs journal, expiry
+and rewrite maintenance; every reactor performs its own bounded reads, writes,
+idle-timeout checks and shutdown joining. Fixed workers, TLS, Tokio transport and
+multi-owner execution keep their existing paths.
+
+Prediction: connection-local P1 commands (PING/ECHO) scale with the number of
+reactors, while SET/GET/P16 keep the existing locked-Store semantics. The trade is
+RwLock contention on data commands and a shared-listener accept wake-up; the
+protected gates decide, and no throughput claim is made until they do. The local
+host remains too contended for a valid release comparison.

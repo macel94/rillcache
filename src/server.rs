@@ -72,6 +72,9 @@ pub struct SchedulingPolicy {
     pub tokio_worker_threads: usize,
     /// Tokio sockets use the external storage owner (mixed TLS), not local Data.
     pub tokio_compatibility_owner: bool,
+    /// Independent plain-TCP connection-owning reactors; 0 means not applicable.
+    /// More than one shares the locked Store instead of the owner-local executor.
+    pub socket_workers: usize,
     pub active_poll_us: u64,
     pub run_quantum_us: u64,
     pub single_reply_yield: bool,
@@ -117,6 +120,7 @@ impl SchedulingPolicy {
             tokio_transport: false,
             tokio_worker_threads: 0,
             tokio_compatibility_owner: false,
+            socket_workers: 0,
             active_poll_us: if workers.is_some() {
                 FIXED_WORKER_ACTIVE_POLL_US
             } else {
@@ -198,6 +202,10 @@ pub struct Config {
     /// Opt-in multi-owner data execution. `None` or `Some(1)` keeps the proven
     /// one-owner path; `Some(2..=64)` starts that many owned data workers.
     pub storage_owners: Option<usize>,
+    /// Plain-TCP readiness reactors. `None` selects `min(4, allowed CPUs)`;
+    /// `Some(1)` keeps the owner-local reactor; `Some(2..=16)` shares the locked
+    /// Store across independent connection-owning reactors.
+    pub socket_workers: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
     pub max_data_bytes: usize,
     pub limits: Limits,
@@ -252,6 +260,7 @@ impl std::fmt::Debug for Config {
             .field("worker_threads", &self.worker_threads)
             .field("io_mode", &self.io_mode)
             .field("storage_owners", &self.storage_owners)
+            .field("socket_workers", &self.socket_workers)
             .field("max_data_bytes", &self.max_data_bytes)
             .field("limits", &self.limits)
             .field("idle_timeout", &self.idle_timeout)
@@ -295,6 +304,7 @@ impl Default for Config {
             worker_threads: None,
             io_mode: IoMode::default(),
             storage_owners: None,
+            socket_workers: None,
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
@@ -326,6 +336,9 @@ impl Config {
         if self
             .worker_threads
             .is_some_and(|count| !(1..=64).contains(&count))
+            || self
+                .socket_workers
+                .is_some_and(|count| !(1..=16).contains(&count))
             || self.max_clients == 0
             || self.auth_failure_limit > 10_000
             || self.auth_source_limit > 10_000
@@ -531,6 +544,9 @@ impl Server {
                 tokio_transport: false,
                 tokio_worker_threads: 0,
                 tokio_compatibility_owner: false,
+                socket_workers: config
+                    .socket_workers
+                    .unwrap_or_else(|| capacity.unwrap_or(1).clamp(1, 4)),
                 active_poll_us: 0,
                 run_quantum_us: 0,
                 single_reply_yield: false,
@@ -552,6 +568,7 @@ impl Server {
                 1
             };
             policy.tokio_compatibility_owner = config.tls_bind_addr.is_some();
+            policy.socket_workers = 0;
         }
         Ok(Self {
             listener,
@@ -688,6 +705,9 @@ fn serve_plain(
     }
     #[cfg(unix)]
     if policy.readiness_io {
+        if policy.socket_workers > 1 {
+            return reactor::serve_shared(listener, config, store, stopping, policy.socket_workers);
+        }
         return reactor::serve(listener, config, store, stopping);
     }
     // A failed/unsupported setup leaves the original nonblocking fallback.
@@ -1182,6 +1202,7 @@ mod tests {
         assert_eq!(many_cpu.client_handoff_lanes, 0);
         assert_eq!(many_cpu.client_handoff_policy_version(), 0);
         assert_eq!((one_cpu.active_poll_us, one_cpu.run_quantum_us), (0, 0));
+        assert_eq!((one_cpu.socket_workers, many_cpu.socket_workers), (0, 0));
         let counter = Arc::new(AtomicUsize::new(0));
         let first = Permit::acquire(&counter);
         assert!(!one_cpu.yield_reply(1, &first));
