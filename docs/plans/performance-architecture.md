@@ -268,18 +268,19 @@ document is the only surviving change from that branch.
 
 ### 2.9 Pipeline-1 ping variance and the four-CPU client/server overlap
 
-The merged owner-migration runtime has now produced three four-CPU cohorts with
+The merged owner-migration runtime has now produced four four-CPU cohorts with
 the same binary and gate. They differ only in run placement and host noise:
 
 | Cohort | P1 ping Rillcache | Valkey | Delta | p99 R/V |
 | --- | ---: | ---: | ---: | ---: |
 | PR #159 merge run | 117,430.7 | 114,097.1 | +2.92% | 0.095/0.127 |
 | PR #160 docs-only | 110,968.0 | 114,032.6 | −2.69% | — |
-| PR #164 docs-only | 112,894.7 | 115,545.1 | −2.29% | 0.103/0.119 |
+| PR #164 docs-only, first | 112,894.7 | 115,545.1 | −2.29% | 0.103/0.119 |
+| PR #164 docs-only, second | 107,787.9 | 112,658.8 | −4.32% | 0.135/0.135 |
 
-One pass and two losses inside ±3% for an unchanged runtime. The failing #164
-head still had a lower p99 than Valkey and passed Dragonfly 10/10 and every other
-Valkey row, so this is not a tail or data-path regression.
+One pass and three losses span +2.92% to −4.32% for an unchanged runtime. The
+failing #164 heads still had p99 at or below Valkey's and passed Dragonfly 10/10
+and every other Valkey row, so this is not a tail or data-path regression.
 
 The failing artifact's manifest explains the mechanism:
 `client_cpus: [0, 1, 2, 3]`, `server_cpus: [0, 1, 2, 3]`. The runner has no
@@ -900,7 +901,8 @@ current roadmap; individual phases are separate increments.
 - The four-CPU runner used for the recent cohorts has `client_cpus` equal to
   `server_cpus` (`[0,1,2,3]`), so the load generator shares the server CPUs.
   That biases a multi-reactor server against a single-thread competitor and puts
-  the P1 ping row inside a ±3% run-to-run band for an unchanged runtime
+  the P1 ping row inside a +2.9% to −4.3% run-to-run band for an unchanged
+  runtime
   (section 2.9). A disjoint-client-CPU runner would measure the server's lower
   p99 without generator contention; changing the runner is a CI/policy decision,
   not a server tuning knob.
