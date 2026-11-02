@@ -63,6 +63,57 @@ async fn command(
 }
 
 #[test]
+fn cancelled_control_flood_does_not_starve_an_admitted_owner_turn() {
+    run(async {
+        let layout = PartitionLayout::new(2).unwrap();
+        let core =
+            Rc::new(OwnerCore::new(layout.owners().next().unwrap(), layout, services()).unwrap());
+        let (sender, inbox) = owner_mailbox::<DataWork, Control>(1, 1, 33, 1).unwrap();
+        let replies = ByteBudget::new(1).unwrap();
+        let executed = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executed);
+        sender.data.reserve(0).await.unwrap().send_with(|| {
+            Box::new(move |_: &ShardExecutor| {
+                observed.fetch_add(1, Ordering::SeqCst);
+            }) as DataWork
+        });
+        for _ in 0..32 {
+            let (answer, reply) = reply_channel(replies.reserve(0).await.unwrap());
+            drop(reply);
+            sender
+                .control
+                .reserve(0)
+                .await
+                .unwrap()
+                .send_with(|| Control::Reserve {
+                    id: ReservationId::new(1).unwrap(),
+                    reply: answer,
+                });
+        }
+        let (answer, reply) = reply_channel(replies.reserve(0).await.unwrap());
+        sender
+            .control
+            .reserve(0)
+            .await
+            .unwrap()
+            .send_with(|| Control::Stop { reply: answer });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            OwnerActor::new(core, inbox).run(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            executed.load(Ordering::SeqCst),
+            1,
+            "CONTROL traffic starved the admitted owner turn"
+        );
+        assert_eq!(*reply.recv().await.unwrap(), Ok(()));
+    });
+}
+
+#[test]
 fn reservation_decision_apply_release_is_exclusive_and_exactly_once() {
     let layout = PartitionLayout::new(3).unwrap();
     let owner = layout.owners().next().unwrap();

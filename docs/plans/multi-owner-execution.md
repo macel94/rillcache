@@ -34,6 +34,17 @@ Payload accounting stays process-wide: owners publish their contribution into a
 shared credit total, admission uses the shared limit, and `INFO`/`MEMORY`/`STATS`/
 `DBSIZE` read one coherent cross-owner aggregate for the duration of the command.
 
+## Mailbox progress under control traffic
+
+CONTROL keeps independent capacity and burst priority, but on an unfenced owner
+at most eight consecutive CONTROL deliveries may precede ready admitted DATA.
+One DATA delivery restores CONTROL priority immediately; lane FIFO and admission
+credits are unchanged. An empty DATA lane never holds back CONTROL. Idle or
+cancelled receives do not restart the burst. While a reservation fence is held,
+DATA remains disabled regardless of the burst count, so release/abort/stop can
+still make progress. The bound counts mailbox deliveries, not elapsed time or
+OS scheduling; it is a starvation fix, not a throughput or latency SLO claim.
+
 ## Deferred owner batches
 
 The original multi-owner socket adapter blocked on one mailbox round trip per

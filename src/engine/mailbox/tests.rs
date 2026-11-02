@@ -142,6 +142,127 @@ fn closing_data_preserves_already_admitted_work_and_control_progress() {
 }
 
 #[test]
+fn sustained_control_cannot_starve_admitted_data() {
+    block_on(async {
+        let (owner, mut inbox) = owner_mailbox::<u8, u8>(1, 1, 1, 1).unwrap();
+        owner.data.reserve(1).await.unwrap().send_with(|| 7);
+        let mut delivered = false;
+        // Replenish CONTROL before every turn: draining a finite queue alone
+        // would not demonstrate a bound under sustained control traffic.
+        for turn in 0..=8 {
+            owner.control.reserve(1).await.unwrap().send_with(|| 9);
+            match bounded(inbox.next(true)).await.unwrap() {
+                Incoming::Control(message) => {
+                    assert_eq!(message.dispatch(|value| value), 9);
+                    assert!(turn < 8, "CONTROL starved admitted DATA beyond eight turns");
+                }
+                Incoming::Data(message) => {
+                    assert_eq!(message.dispatch(|value| value), 7);
+                    delivered = true;
+                    break;
+                }
+            }
+        }
+        assert!(delivered);
+        // The fairness turn must not consume or lose the queued control work.
+        match bounded(inbox.next(true)).await.unwrap() {
+            Incoming::Control(message) => assert_eq!(message.dispatch(|value| value), 9),
+            _ => panic!("CONTROL must resume immediately after the fairness turn"),
+        }
+    });
+}
+
+#[test]
+fn fairness_preserves_data_fifo_and_bounds_control_delay_to_one_data_turn() {
+    block_on(async {
+        let (owner, mut inbox) = owner_mailbox::<u8, u8>(2, 2, 1, 1).unwrap();
+        for value in [1, 2] {
+            owner.data.reserve(1).await.unwrap().send_with(|| value);
+        }
+        for _ in 0..8 {
+            owner.control.reserve(1).await.unwrap().send_with(|| 3);
+            match bounded(inbox.next(true)).await.unwrap() {
+                Incoming::Control(message) => assert_eq!(message.dispatch(|value| value), 3),
+                _ => panic!("CONTROL retains its initial burst priority"),
+            }
+        }
+        owner.control.reserve(1).await.unwrap().send_with(|| 4);
+        match bounded(inbox.next(true)).await.unwrap() {
+            Incoming::Data(message) => assert_eq!(message.dispatch(|value| value), 1),
+            _ => panic!("DATA needs a fairness turn after the bounded burst"),
+        }
+        match bounded(inbox.next(true)).await.unwrap() {
+            Incoming::Control(message) => assert_eq!(message.dispatch(|value| value), 4),
+            _ => panic!("CONTROL must not wait behind a second DATA turn"),
+        }
+        match bounded(inbox.next(true)).await.unwrap() {
+            Incoming::Data(message) => assert_eq!(message.dispatch(|value| value), 2),
+            _ => panic!("DATA must preserve FIFO order"),
+        }
+    });
+}
+
+#[test]
+fn exhausted_control_burst_never_overrides_a_data_fence() {
+    block_on(async {
+        let (owner, mut inbox) = owner_mailbox::<u8, u8>(1, 1, 1, 1).unwrap();
+        owner.data.reserve(1).await.unwrap().send_with(|| 7);
+        for _ in 0..32 {
+            owner.control.reserve(1).await.unwrap().send_with(|| 9);
+            match bounded(inbox.next(false)).await.unwrap() {
+                Incoming::Control(message) => assert_eq!(message.dispatch(|value| value), 9),
+                _ => panic!("fenced DATA must never run, even after many CONTROL turns"),
+            }
+        }
+        assert!(owner.data.try_reserve(1).unwrap().is_none());
+        match bounded(inbox.next(true)).await.unwrap() {
+            Incoming::Data(message) => assert_eq!(message.dispatch(|value| value), 7),
+            _ => panic!("unfenced admitted DATA must remain available"),
+        }
+    });
+}
+
+#[test]
+fn an_empty_data_lane_does_not_hold_control_at_the_burst_limit() {
+    block_on(async {
+        let (owner, mut inbox) = owner_mailbox::<u8, u8>(1, 1, 1, 1).unwrap();
+        for _ in 0..32 {
+            owner.control.reserve(1).await.unwrap().send_with(|| 9);
+            match bounded(inbox.next(true)).await.unwrap() {
+                Incoming::Control(message) => assert_eq!(message.dispatch(|value| value), 9),
+                _ => panic!("empty DATA must never delay ready CONTROL"),
+            }
+        }
+    });
+}
+
+#[test]
+fn cancelling_an_idle_receive_does_not_reset_the_fairness_bound() {
+    block_on(async {
+        let (owner, mut inbox) = owner_mailbox::<u8, u8>(1, 1, 1, 1).unwrap();
+        for _ in 0..8 {
+            owner.control.reserve(1).await.unwrap().send_with(|| 9);
+            match bounded(inbox.next(true)).await.unwrap() {
+                Incoming::Control(message) => {
+                    message.dispatch(|_| ());
+                }
+                _ => panic!("only CONTROL was queued"),
+            }
+        }
+        let mut pending = Box::pin(inbox.next(true));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(pending.as_mut(), &mut cx).is_pending());
+        drop(pending);
+        owner.data.reserve(1).await.unwrap().send_with(|| 7);
+        owner.control.reserve(1).await.unwrap().send_with(|| 9);
+        match bounded(inbox.next(true)).await.unwrap() {
+            Incoming::Data(message) => assert_eq!(message.dispatch(|value| value), 7),
+            _ => panic!("an idle/cancelled receive must not restart the CONTROL burst"),
+        }
+    });
+}
+
+#[test]
 fn reply_cancellation_and_oversize_release_all_reserved_credit() {
     block_on(async {
         let budget = ByteBudget::new(8).expect("budget");
