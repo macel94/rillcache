@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:1ce241d0ca6d7ea3dba7262df2a4cbb7e715e21e861e832fb3cdf9f1c896d8a8",
+  "claims": [
+    {
+      "id": "claim_d25febe34a1045029495c9a922322cc7",
+      "statement": "The opt-in journal is a sequence of RESP2 commands that rebuilds each changed key with DEL plus final-state SET/RPUSH/SADD/HSET/ZADD/XADD, field/key absolute expiry and stream group metadata.",
+      "evidence": [
+        {
+          "resource": "repo://docs/persistence.md#L71-L91",
+          "version": "repo-lines-v1:sha256:49c10e5ba17280efd844a329e11bab9e80e08e6dd97ff65f683b21a8f6f46573:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxOTE2NjY1YWE4ZTJjNmYwZjMxOWI5NDJjOTBjMTc3MjcxN2EwOTBmZDM3YTY2ZTRhNDk0ZDE5MWVmZWQzNjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmY2ZiNjU2MTM3YjEzMzdkOGRjOWMwNDYxNmQ4NmZiMmRjZWZjMWIwZTYxMGEzODRjZjc2ZDhiZGUwMjA1MTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM5NTJkODQ5MzI1YjlhZmQwZWVlYjBjOGU5NDBkNGE1YWJlNGEzNzZjMzQ0MDc3NWU1YzE5ODdhNGYxMzdlZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1NTZlMmMyMzlmZDhkNWI3NDliYmY1MTc1OWU0NGNmMDAxNTMxODg0YjE3MjYzNGRjMGMwMmQ2YTk2ZDdlZWEifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L1-L20",
+          "version": "repo-lines-v1:sha256:5deb9e152c109a2865c72e3dcbd6d1b12c0fd8169d92e6eb65aa0cc8414f6194:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzMTIxMmUxMzE1ZjMxMzQxNTUxNDIxNmQyMTM3OWU0NDU1ZWIyYmEzZDQwMmQ3NjVmYTQwMTkxMDlkMDc3YWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZhNWFjNmZkOTFiOTQyYzkwZDhiOGRjZTY2YTE1YzE2NTcwMzc1MDhkOTBjYzAyYzFlOTRjOTJjMmE2YTJlZmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljNmRiYzU2MTI5YjJkMTVmMzdmODAyZTIzNjEwZTI4ZGExNDgwZTNkMzBlZjQxN2RiYzhmOGRhN2NlNDQ3ZWQifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L641-L760",
+          "version": "repo-lines-v1:sha256:16c0a38d2ba1155f1a40a3a0cb8fabc736d729e03df45287f0f9a856f1a37827:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4OGFjM2RjYmE1M2M5ZTg4MzgyNjNjMmFjNjliY2JkNTIxMDQxODdjZjIyOWNjOWJlMWE1NjdhZDRkMWZiNzM3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTIyYzQyY2QxOWM2ZDAzZDgwOGM0NTI3MjA1NTI4MjViN2VhMWM1YjQ5MWIyMTg1MTFjYWM3NDE1Y2Y5ZDliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlNGNmOWMyYzA4ZGUxOWVkNWZjMWM1OTI2OTU5YTYwZGU1ZWQ1Yjk3ZDQwY2FiNjg1NzRjNzllYjJlZTIyMGJjIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_7d8240907f154bcc9c344e450a057f2c",
+      "statement": "A journal commit captures keys changed since the command's sequence and appends their final state before returning; an append or fsync failure replaces the success reply with an append-only error and latches the journal as failed.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/journal.rs#L192-L247",
+          "version": "repo-lines-v1:sha256:9c488f30b72ab214d060b376b12d6885c95b808998a5328081fd04f77b63d2de:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4NDQ5OTU3Zjg1NDE4MjhkYjk2ODYyNWRkYjBkNjc4MjNjNTgyODA2ZTk4MTc4ODBiZWUwZmU1YjllMmJmMWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2MmVlNTdlNDFhOGMyMGFlMDE2NGRmMjYxNDM5ZGNjNDk5ZDM1MjA4MzQxNTE1MTZkMDQ3ZThkZWFlOGE0NjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2YTY0YjNhNDQwZTQ2MzNkMTEzZTAwYTcxNzNhNjNmYTc5ZDQ3NTdlZTA2YjIwMTY0ZmNkZGNiZTk2MDFlNjQifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L355-L459",
+          "version": "repo-lines-v1:sha256:d4c6c03a1f5f57f5fb072c1c261471a8ee2ecb527c3bdb10d1cd648bcfbeb42c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjZmI1OGU2MGY0MTMyNjk2MjEzYzlmZDQzODE1MWVkZDNmMzU5NTU3MzcyMzNjNDM2ZjI5ZjA2MzllYWM3OTFhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhYjUyNWM4MDQ5MWUzZDQwZWNjOTk5NzRhYzgyMzc5NWY1MjVlOTUwYmJiMzIxZWVkZDI3MWQwYTZkZjNjMDc1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjODNhMGI1YTkwN2NkMDI3MzRkODc4YTU2YWIwZTA1N2IzM2ExNjI2NjE1OTlhYWU3YWUzYTE5MzZkMWNmYjIxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_421f2c9496b64edeb4a9403f6fb336ed",
+      "statement": "The three fsync policies are always (sync before reply), everysec (write immediately, maintenance sync about once per second) and no (OS-only until orderly shutdown), with runtime policy changes and a synchronous local WAITAOF flush.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/journal.rs#L192-L247",
+          "version": "repo-lines-v1:sha256:9c488f30b72ab214d060b376b12d6885c95b808998a5328081fd04f77b63d2de:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4NDQ5OTU3Zjg1NDE4MjhkYjk2ODYyNWRkYjBkNjc4MjNjNTgyODA2ZTk4MTc4ODBiZWUwZmU1YjllMmJmMWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2MmVlNTdlNDFhOGMyMGFlMDE2NGRmMjYxNDM5ZGNjNDk5ZDM1MjA4MzQxNTE1MTZkMDQ3ZThkZWFlOGE0NjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2YTY0YjNhNDQwZTQ2MzNkMTEzZTAwYTcxNzNhNjNmYTc5ZDQ3NTdlZTA2YjIwMTY0ZmNkZGNiZTk2MDFlNjQifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L22-L40",
+          "version": "repo-lines-v1:sha256:c7ccf79168b9b75b5844bf17b2883b3da567a5037d0a1004c99f989c457ac750:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkwMTgzZGRmNDY5YmI4NmRkNGVhNWZmMmI1ZGM5NDgwMmE1YTFjN2EwYjI4MGZmNWEyYzY0MzM3NWQ0MDNjZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU0OGYxNmIwNDg0YmIyMzc5ZTkzYTRhNzMwNGIzZjZjZDJjZGEwNmNmNGZlZmQ5OGQ0M2ZhZjJjZmNlZjRjNTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMwZjk1MDM5MTdkMjQ1YTc4NTkyZDA5Mjk0MjNkMjg2ZWI0NjlmODE5YzMwOTM4YTQzNTQ4MTlkZWMzYzBkMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY0MGU3MzkzNGQyYjg3YzhmYmJkMjlmMWQ0ZjY2Mjc4YWVkZTY2NGYzZTc2ZTUwNmRjZDMzMjU3MmUyNjdhZDIifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L601-L638",
+          "version": "repo-lines-v1:sha256:5eb199b7b78f51098e433b98402a364c5552fc3fdb4e63091ef368b7bfe7241f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlMmNhNWJjMGE5Mzg3MTk4Zjk1OTdhMDA2ZGY3MTVjZGJlYjIwNTU1MWRhYmM3YWRiYjRkNWZmNmVhMDY1MDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2MjI3OWZiYzYxYzg2NzkyNzQ1ZDY0ZmRhYTZmZTI0Mzk2NmE2MzkyOGUxMTAzMmVhY2I0MjBhNTYxMWVjNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkyNDAxN2U1Y2Y5MmEyNGFjNzAxY2FjZGIwZTJmYzBlMjAwMTg1YTk0Y2U5NDZmNDM5NDM1MzJjZGE3NmFhZWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_703d0fe2673e4a759a58bcacba28493f",
+      "statement": "Replay executes complete records before listening, truncates only an incomplete final record, and fails startup with a byte offset on malformed RESP or a command that returns an error.",
+      "evidence": [
+        {
+          "resource": "repo://docs/persistence.md#L179-L196",
+          "version": "repo-lines-v1:sha256:a1b69678cd78985853f9427dc7beb83aec179ef4e61220715681d574272fff08:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3OWNlMGVjMWJjYjIxMmQ0YWQzMTYzODA5YzJlZDM0ZGNkZjQ0Y2Y2MGJhMjZkYTZjZDAyYTU0YjIwZjU1NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkODJmYjc4MjVlM2Q5MzUzNTMxMmEwYWMxNjUzYjM1YjA4ZTNhMTE2YjUxMmFiZDhjYmUwMTk3NmM5NmEwZjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY2ZDg4NGExZDE0ZWQ5NzU1NThmZjBhNjRlMmJmOGI1OWRkYWVhZGQxYWJmOGY3ZmJlZDljMDUxMjhkYTU5MmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhMDUxYzc1OGNiNmQ5NWJhYjBjMThjYmM3MmFjYmU4ZGJlNmU1NDNmOGY2NjYyNzMxYjNjMzI1MmIwZDUyOTIifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L124-L190",
+          "version": "repo-lines-v1:sha256:8a0113a218b269b7a9c58db223d5389ed2152326601961e13c79a9eaa4b37875:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1NDA0NGNkNjY5NzMwM2M0MjE4NDNiNzgwZGNkN2M1NDFkYTk2MDFiMDRhZjlhY2U4NTM3MzgxZmMxNGZjNGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViOWEwOGJjMjlmNmViZWJlOWE1ZjAxOTAzZDk4NDVkYmNiNTg0MmE0NTVmMDdkNWY0MDAyZGFjMzJhNWM2MDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNmZWVmMGY1N2RlNGUyN2MyNWI5ZGNmMjc2OTFhNjc5MzY1N2ViYTRlOWNmNDBlNTBkYWNmOTMyZmM1YjFiNmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_86f6d9fd312849eb9e9778b5e5fed05c",
+      "statement": "BGREWRITEAOF and automatic rewrite are synchronous full-state snapshots written to a mode-0600 temporary file, fsynced and renamed over the journal while command service pauses.",
+      "evidence": [
+        {
+          "resource": "repo://docs/persistence.md#L146-L177",
+          "version": "repo-lines-v1:sha256:fbe9a1ad00a1cf79654828623626a35990c45b9c5a24236f17f5ba457f911ad3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4NmFhNzcwMTkwMzFmNWIwZTIwNTZhYmUyMmRjNmFmYTE4OWNjMjM0NjhiMDc2YWExYTE3Yjc5YmQ3ZjA2MzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiYThhOWJjYmNiOTdmNTkxMGQ3ZjgxN2FlMmRiMGY5M2E3ODg3ZDk2NzMzNTM0YzM2NWQ0Y2Y0YmI5NzFmNzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMwNDgyNDk5ZjdlZmZhODE4NmQ0MTRmNWY0ZmY4ZTM0OTM3NTJkNTEwNTkyNzlmOWI2OWE0MWYzODE1OTY5ZWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3YjI5ZmFhMTM4MDAyZTNhNDczNjlmNWY1MzJlYTc3NGVhOTI4Y2QwOWU0MzJhOGRjMWNmM2U3OTkwMTQwOGQifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L250-L309",
+          "version": "repo-lines-v1:sha256:b4de73a3334cb5118f1f8a10c1df7437ea74a2518cdff70b11e6d62d74a87ece:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4YmYxMGNmOWQxOGIzYWY2YzVmMzVhODI0ZDcxMzMwZjBiMjVmNDYyYTZlNmMzMWVmYWU0NjA0MmFlY2JkNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkMzU1MDI5NjVjOWQ1NzdlMmRlNTcyYWRkNmVmNzQ3Mjk5ODQzNTM1ZTAzZjFiMDFlM2YwZjcxMDA1NmNhMTcifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L521-L568",
+          "version": "repo-lines-v1:sha256:81a643e62eda30b663c7737160ed3e41fd2df31089760bfd6c1f588d3e22954c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlNWY1MWYzMTcyZTg3OThhZTkwOGQ1OWQ0YmJlNzU0ZjZiMDU2YjYyYjIwMThmOTA2MmJkNWE2NDgyYjc5ZjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlM2EzM2MyNTQ2MTA2YTIwZWJkMjUwMTcxM2E3ODYxZDM0Zjk2ZjI3NTEyYzUxMGVjNTlmZGNjOWZlYjg2NmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAzNjFiMjg1NTY5ZGExNjQzOGNhYWI0NDcyM2RiNTg0MzQ3YmU2MTM1ZDk2YjE0ZGJhMTEzMGVmMjQ1NzIzNzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUyZTM0MTg2NmE2NDFkZGUwNjMwYWNkYmI2MGRlNzA5OTYxODIzOTY1ODM0ZmYwNTM3M2ZkMzc4YjViMTBmY2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_652c5b7724264ffb8f28114e66c11c48",
+      "statement": "INFO persistence reports enabled state, size and latched write/rewrite status but always reports no rewrite in progress; RDB and fork fields are omitted.",
+      "evidence": [
+        {
+          "resource": "repo://docs/persistence.md#L222-L232",
+          "version": "repo-lines-v1:sha256:99439adefe67697c76f9caf3f4e24a386f35880a5e89562191c8324b1f016779:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhNDc3YmExNzZlYmFmNjE4ZDc2ZTNlN2ZlMWE0NjYyYTEzZTc4OTExMWMzNjRkOTcxZDMzM2U1NzZjNTJhZjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmZmY5Y2FjNDNkMDdkZDcxMjkxMTJiOTBkNzQzNWQwYTgwOGYwOTg3MWZhMDJiMDRiOTY4YmQ0NTNlOGU5M2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk4MDE1OGQyYTk5OWZmNDFmMTNiZjhkZDRkODhhY2NmNGJmZTQwZmZmMjBiY2VjZjA1N2I2NTYzN2MyODAwMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L311-L318",
+          "version": "repo-lines-v1:sha256:2a2f42db50d72213a322b182a854b98b204c6c50740e7e8a45471a31bfc56096:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2FhZjFmMzI3ZjU1NDU5NTdkNGEzZThkNGZlMzJhZDE0ZTc0ZmIxYmQzZjk2OWExNTMyZGVhY2E4MzNiNWE1MCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGY4MmY5Y2RhNTY0OWVkNTI2ZmUzNTIxOGQ2N2Q3ZTI5M2Y0ZmQ4Mjk2ZTdiNGMxZTVlNWFjZDZiOWRmOWZkMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTA4MDEzMjBhNDJkNDg2OGJiNjYwOTU4NzkwM2ZiYWZlNGEzZjg0MjVmMTgxMjdlMjczZTI5YmJjNGRiMjIzMSJ9"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L79-L85",
+          "version": "repo-lines-v1:sha256:3a15f24a8614aca7dbcd334e2f89ae0a2c7e82ce20e17c1aa759361f4b308181:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTIzMjA5MDg3YzI2YjZlZjBkMWMwMDhhYmI5NDliYzMxMWQzZWQ1MjQ1MThmNGYzZmJiZTU4NjA4MDNiYjY5NCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjljNDI0MDllNzNhMTBmNmY5ZmNiZjNhMzg0MzZiOWQ5Y2M1NWY5MTQ5NjMxNTA5YjQyNjQ2YzhkMjRiNjVmNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDQ1Y2IxYzQ2OGU1ZjExZWI1YzVlOGY3NDAyNDZlYjkzOTBjNzdlMmY4MzViMjcwNjI2YmViNzRlMjliMzliMyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_5d6736259bb64dd9a45b46d941a8de32",
+      "statement": "Stream entries, last IDs and group cursors are rebuilt on replay, but consumer objects and pending-entry-list owners, delivery counts and timestamps are not restored.",
+      "evidence": [
+        {
+          "resource": "repo://docs/persistence.md#L198-L204",
+          "version": "repo-lines-v1:sha256:daae2983feaad914198c4715b84f2be73654ee6851af419d0004a4bf25d2632d:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTdkYTAwMjUwOWFiNGI1NjIwNzc1OWYwNjJjN2MxYTY5YjIxODEyMDA5MDRjY2VmODU1ODc3ZjA4M2VjMmY4OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGUyZTgzMTFjOTVlOTU1YWQxMmYwNGFlNmMyOTBjMTA4ZmI0Y2ZmYTQzMWFkYTBlMzM1YWM4Mjg1MDBjODYzNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGYxZDgyMzBiZjA5YTg2OWU4Y2RiOGJjZTBlMTBmMGVlZjhmZmE3M2RmM2M3MjRmMTEzMDRlY2U5NTlkMTEwOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDlmMjkyMDc2ZTE5ZjM2YTRiMGQ4YWZlMWJmZGM0NGE4NWQwN2QwMmRlYzIyNjQ5MGE3Yzc2M2QwY2RhNDU3YyJ9"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L760-L850",
+          "version": "repo-lines-v1:sha256:332723f54d2ff35e49d435aac17bc1e3221343975a3e3a610bb5bb6a784f9737:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM3NTI3NjM1ZTBjMGYzMjc1NGI4MjcyOTlmNDczZDRiNzRiNjFiZGE3ZjE5NDMyMTdkZGEwNjJjZjMxM2IzNjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3OGFiNTI4MzJjYzUyZTZlMzhkZjgxZTNmYTE2Nzk4MDRiZjM0NGZjNmNhYjAyNDJiMGJkZjU0NDkzYjUzNDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4bfd20ae9ff741e0a3f97209921112a9",
+      "statement": "The journal has no RDB compatibility, checksums, encryption, background rewrite, multi-process ownership, crash/ENOSPC corpus, backup/restore drill, PITR or portable signal-driven drain.",
+      "evidence": [
+        {
+          "resource": "repo://docs/production-readiness.md#L15-L24",
+          "version": "repo-lines-v1:sha256:9d8f3c0fd0edee318ca94a67761afbdb802a825b13d7448501c63d63bdb7e778:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkNzExOWQyNTEwZjc1YzEwMmJkNzZiZWFjOWMwMWYzMjMwM2JkNTk2ZDAyZTdkZmFmYTg2MjQxNWEwZjgzMmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiYThhOWJjYmNiOTdmNTkxMGQ3ZjgxN2FlMmRiMGY5M2E3ODg3ZDk2NzMzNTM0YzM2NWQ0Y2Y0YmI5NzFmNzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjMDQ3NTRkMDY5YzY0OWQ0ZjRkODhmZWZjZjcyNmZkNDRkMjA1YzM1YjNiZTUwZDhjOTEwNWVlN2Y1NTVjYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzYThkNjc1ZDMzMDdjZTIzZWU3YzQxYTExYTQ4YjlkMmExNDQzODY2ZmM1YWY0NWYwNDM4YmNlZGYxMzdlNDIifQ"
+        },
+        {
+          "resource": "repo://docs/production-readiness/durability.md#L3-L10",
+          "version": "repo-lines-v1:sha256:8a06582d213af65573e029036c9e736cebb1cf7970015fc4bef7256dd50d15c4:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjhhYjhjMDYzMWFmZWE0MTg1MDUzNjgwZDc0ZGE0NmI0NjM5YWZjNmU4MGI4MDVkNTE0NDhlODVjODJjZTczZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTE2M2Y3MjAwMGM4YTRlZjBkOGEzZjEwNWQxYWIxMTgwNGUzODZmYTQzYTNiOWZmYmRhZWJmZjYyNWIyZDYxYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2Y5MzI2NWZiYTcwMTYzOWI2MGJjYmQwMjVmNGY0MGI3YTYwYTEzNDAwNDZiNzhkMjkxMjQ3ZDUyNGFjYTJhZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T16:04:12.575Z"
+  }
+}

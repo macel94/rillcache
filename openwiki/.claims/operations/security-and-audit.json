@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:1571aa0e02e4638b2ab9f428f7dc3678ad0f34e5d331c308e716eee3724ec13f",
+  "claims": [
+    {
+      "id": "claim_c4f4b2bdaf5e4265b73469851519a393",
+      "statement": "Password and ACL-file authentication are mutually exclusive; the default user stores only a SHA-256 digest, wrong credentials return a generic WRONGPASS, and AUTH without a configured password returns the explicit no-password error.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/auth.rs#L300-L430",
+          "version": "repo-lines-v1:sha256:8e68726a50b6064484b4866672ea376624ba91ef5e0069f56096c4838cb6ad08:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxZTI2YjQ5NzI1NTNkOGUyNTNjODYyOGFkZTFlMmEzODcxZGI2ZDA0OGE2ZTEwM2VmNWUzZDBmNzdlMTFjMGRmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhZjdmZWI2MWVmZTAzNjdhNzgxOGU1MGY3Mjk3OGYxNjk0YjY2ZTlhOGY2NTA1MTRjNGRjZmJlNDRmNTYyYWE4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0YzQwMjg3OTM0YThmNGRjNThjYWIyYTdlOGY3NTlmMGVhMDBmMjE2MzBmNTdiN2RhOTA2NDhlYzlhZGMzOTAxIn0"
+        },
+        {
+          "resource": "repo://src/engine/auth.rs#L478-L516",
+          "version": "repo-lines-v1:sha256:e3f6aff59135a1241948dc86b88d795cf716e3c447ee60120b3552c8992e90ce:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwZjQ3YzJkM2VjZjU3ZGE3ZTBjZDMyYWQ5Y2Y0ZDZmYTVkMmM4YmE3NzBlOTgzZDMxZDkwNmFlMjRkYWNkZmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImExYWM3MmUxYmE2Y2FjNTViMmM4NTBhZGUxMDU5ZmIxOWY0NjNhYmQ2YzEwN2UwYzFhZDIwMGFlMGZmYThjMTgifQ"
+        },
+        {
+          "resource": "repo://src/session/auth.rs#L15-L63",
+          "version": "repo-lines-v1:sha256:0dfa872c1f2cf215a1d534712027d9412dca636adb38628fbd0e26bda82585de:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwMzUyMWI1YmRmYWViNzk2MzY5ZTExMzEwODIwMjIwZTNhMTI1MGUwY2E5NzIyMGEzYTI1OWFkMjQxNTcwZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4Mjk5YTMwZTBhYThmM2ZmMmVlYThjNDZkNjRlY2M5NjNmMzhiZDdmZDAxNTAzY2MzOWZkMTUzZjQzNjFlZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkNDFkMGI0ZGQ5ZTM3ZmQyMjkzZmFlNmIyYzI3NDc2ZTEwNWU4ZGFhNDA0YmNhMjlkMDY1YmJkZDdkMzY1ODYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bb21d68d1a524a88977346eac99761a0",
+      "statement": "An ACL file must define an enabled default user and is bounded to a 4 MiB file, user/rule counts and pattern counts; ACL SETUSER applies atomically and ACL SAVE writes a mode-0600 temporary file, fsyncs, renames and fsyncs the directory.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/auth.rs#L686-L800",
+          "version": "repo-lines-v1:sha256:d8401af669f2523ecf2803d95003920054e4439bef203e12d5a6e474e340029f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4NDk3MDM3OGYyOGQ4N2Y2MGQ3YjgyZWVlNWE3MzIxNTdjZDUzNDk3YmU1MDRkMmE1YWExZThlNWFkZjRlOTJkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5NzBjZTEwNzhkOWIxODE5MjFhYjhiN2M4OWJiODc4YTc5Y2I5ODIzOGNhZjZhMTVkYjk0MjIzYmViNmIyZjMzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyNGZhY2NiM2Q5ZDcxNjkyNDliMzU1MDIwNWYxYmVkZTM3NDA4N2U5YmEyNGZmOTQ2ZjRhYTEzYjM2OTdkMGVjIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_66db4673e3774d69b30d26ccfb5eb82c",
+      "statement": "ACL rules support ordered command/category/subcommand overrides, read/write key patterns, channel patterns and selector groups, with category membership approximated over the published command table.",
+      "evidence": [
+        {
+          "resource": "repo://docs/security.md#L42-L80",
+          "version": "repo-lines-v1:sha256:ca786930fc6092b1ca2ce24468908b76dfaf5a4233dca8b6335f1ae2a3f16063:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjllNzJkOGVlYTQwZGJjODdiN2YzNDMyMGE0YmYwMzU2OTgwMTVhMjljNWJlNzQ2YmQwMTBkMTY3ZWMzNTk0NjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1NDA2MzM3OWJmOTdiNmI1NjA5YWU1NmM4M2QyNmQwYTcxN2E0Y2NlOGZlNzRmNzU5OGQzZWE1NzVjYTM0YzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk3NjU3OTUxYzMzOTAwNDU5ZGU4OGMwYmEzMzA2MjAwMTYxYzkzNzNmOWNlZjdmNWEwZDlmM2NjY2FkMDkyNmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ2YzcyMmFmNTgxN2E3ZjQ3MGE3ODBlNzhiZjBiYzgwYmMxZjI1ODYzYzI0NTc4NGUyODQ3OTAyOWY5MmI4ODMifQ"
+        },
+        {
+          "resource": "repo://src/engine/auth.rs#L356-L402",
+          "version": "repo-lines-v1:sha256:3550aae0f0e1418838d35a879fa3d49f6f322d099a7e25bd8f150f593771ce83:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhYTJmMmUwYmVmYTM1NzY4Njk3YmRlMDMxMjU1ZTIxMmNlNTg4NWM5ZDFkNWRiNTg3MzhjMTU3NTQwYjM5N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3NmQwNzcwOTY2NGQ1OTlkZGE0NjdhNDAyZjdhN2JiMTIzYWI1NWFlNjRmMTRiNDQ5ZGJkZDRmZDI1ZTNiYTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f0515d292df94fac8a4f363b99c0636a",
+      "statement": "EXEC re-checks every queued command against the current ACL, so a revocation or user disable between MULTI and EXEC prevents the queued writes.",
+      "evidence": [
+        {
+          "resource": "repo://docs/security.md#L184-L191",
+          "version": "repo-lines-v1:sha256:9e9a2c1eabdc5a28b29cfd7126539dbd361d4ff75192f1aa806855aa7a611812:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTI5ZmExNTFkNGE4YjViMzU3OWFhODZjNTY1MDU1NTkxOTU2ZDMyZWY5NGIzOGY1YzFmOWEzNGVkOTRiOWI1OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzg2ZmUwMGEwMWQzMjNhZDA5ZDJjZjQ1ODk4MGI3ZjQzZDU0YjY0NWQyZDE4MzBjY2QyNWNmMzAxMGRlMDg2NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODhjM2FmNTRmMDA1Y2JjZWFlZGY0NjJiY2M2YmJiYTM4NGYzNzI4MDk3N2YwODU2NzRlN2Q1Njg3MjdiMWQxYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTg5ZDdhNTcyMTJlZTUyNTNhNjk5NjhiYjlmODAzNDYzZWFiMDQ1ZTk2YjA4OWEyYWZkZGQyNzE5YzY5YWVjZCJ9"
+        },
+        {
+          "resource": "repo://src/session/transaction.rs#L48-L115",
+          "version": "repo-lines-v1:sha256:cb81fecfa0e770d12d7bb5b45b0116ed06499c056f133572f77a5a5d9421ace0:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1Y2RlZjgwODVhZTc0YWI2MzZkNjQ1OWY1YzZkNWZiZmIwZGIyNjRmMWIwZDc1YmFjNTE5YzliM2Y2NzE3YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkYThkM2FjY2UzYTViODQwNDAyYThkNjcxZWFhY2EyODFhMzk5YTE4NDkxYmUyOGI4ZjUwZWY0ZDFlMmIyMzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzNTc1Y2RhZWY0Zjg4NjY0OTJmYTBmNDQ0ZmRiMjU4ZDg4OGI2YzZmYzU3MDM3YTMyMzkyMDU2YzkzZWViNTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE5Nzg4MjIyNzYxNjRlNjI2MGYyNzFlM2M2ZTUzYjgxNzljODI2MzkwNDM5NzhhOGJhMmVjZjQ3N2ZhOTg0ZTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ceffc98cb9c443a7a411628e9944afc0",
+      "statement": "A per-connection failed-auth budget closes the connection after N failures, while an optional per-peer-IP table bounds sources at 4,096 and locks a source for the configured window; both are process-local rather than global rate limits.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/auth_guard.rs#L1-L100",
+          "version": "repo-lines-v1:sha256:9eee0311127c6209b5d59dbd3426c441c2fa493f6ad88c77af776a9b46ca4bc9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYmNkMDAzNmU2Y2ZmMzgyYTk1ZGYzMzkwMjJmOGUwZTcyMDBkMTIwZmY1MjdhYzU2NGFhNjFiN2QzOWM4OTY4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNmIwNDQ5MTQ2OTcyMmU4MzYzYTk0ZTQwNDQ1MzhlMDEzYTJhMjE3ZTM2YjFlNTY4YmE2MGFjYjdiNGM4ZjJlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIn0"
+        },
+        {
+          "resource": "repo://src/session/auth.rs#L15-L71",
+          "version": "repo-lines-v1:sha256:56b24e9ed371f129974b0521d29b88df489db43e5e81aefde3c599d30d754074:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwMzUyMWI1YmRmYWViNzk2MzY5ZTExMzEwODIwMjIwZTNhMTI1MGUwY2E5NzIyMGEzYTI1OWFkMjQxNTcwZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4Mjk5YTMwZTBhYThmM2ZmMmVlYThjNDZkNjRlY2M5NjNmMzhiZDdmZDAxNTAzY2MzOWZkMTUzZjQzNjFlZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlMThlMTI4NmUzYTVhOTBlYjA3Mjc1ZTVjZTVmNjAyNDEzNzBkNzNjM2Q2Y2M0MDdhNTUyYTg5MDFmMTFkZjAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_48355e72b34c4c81a6486df06124df87",
+      "statement": "The denial audit writes bounded hex-encoded lines with one-generation rotation at 1 KiB to 1 GiB, flushes each line, and increments audit failure counters without changing the denied command reply.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/audit.rs#L1-L120",
+          "version": "repo-lines-v1:sha256:9cfafcbe5c2435654f9eac6f7bc1eb71988a063bbe1335dbe0d486980de89bcb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmNzFmMTU0MTQ5Zjc3YmU2YTc4MjVjNWIxYTFlZDBlMzc4YzVlMTM3MjViNjhjNjQ3NWJjZmRlYTQ1NjcyYzZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyM2FiZWZkNGY4MzYzNmQyNWVjNGVmOTA4YTEzZGRiZjEwNTMwYTc4YjhmMDE5OGEzNGRiMTJlNTc4NzI3MzE5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmMjcxYTAwZTJkMTUyM2EzZjMyZTNkZDNlOWMwZjNjZDFhMDlhN2JiZTMxNmY1Yjc4Y2UxOWJlZWU4ZjA1ZmFhIn0"
+        },
+        {
+          "resource": "repo://src/engine/audit.rs#L108-L135",
+          "version": "repo-lines-v1:sha256:e2a4a3bed3363ec8e9313f046aa81d59f11880f86047dfa6ca62a39a10317505:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBkYmNlNTU5ZjE0OWU0NDNiNGJlNDhkN2RlOTIyN2QyYjg4OGE5NDk3MWE4MzI1YzMyZTFmNzJkNTM4YWQ4ZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzYmRiNWVhNDA5NmY0YjU1ODAwODFkYjRhM2RlZWQ1ODFkZjE4MWYzNmRkNmY1YTI5MzNiZmZkNjQ0OTgzMTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE4MWIxMTRjYTAxMWY3MjI3NTViYzdlZDcxODA1MzhlODJmNGYyNzA1NzcwMWMyZWZjOTc4ZDE5YTI1ZWI3ZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0ZWViODFhNzI1NzBlMGY3YjA3MWYwMDg1ZDc0ODE0NDczN2IyZWJhNTZiODFjMGMwODFjYjJiOWE0MTc5ZDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5b7b84fb7e9c4ee2b4462ff232c36b73",
+      "statement": "Per-line HMAC-SHA256 signing supports a 16..=1024-byte key or up to eight keyring keys; it authenticates individual lines but is not a hash chain and does not detect deletion, reordering or replay.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/audit.rs#L108-L201",
+          "version": "repo-lines-v1:sha256:2a673373edcf87a2daaa0c5dc622f2b513971c2ec193c4dec5eedf462a263687:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBkYmNlNTU5ZjE0OWU0NDNiNGJlNDhkN2RlOTIyN2QyYjg4OGE5NDk3MWE4MzI1YzMyZTFmNzJkNTM4YWQ4ZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE4MWIxMTRjYTAxMWY3MjI3NTViYzdlZDcxODA1MzhlODJmNGYyNzA1NzcwMWMyZWZjOTc4ZDE5YTI1ZWI3ZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhYWNiYWU4M2Q3ZmRkZjM1YjM4ZDc4YzM4YjhlODJjOWZlMWQzOGEyZDhhNzE1ZjRmMzM0OGU4OWZjMjAxNzMifQ"
+        },
+        {
+          "resource": "repo://src/engine/audit.rs#L135-L176",
+          "version": "repo-lines-v1:sha256:af3e387d1d6a19594a3ce66362910f60570ed289572ef162bd9091cb6135aa18:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzYmRiNWVhNDA5NmY0YjU1ODAwODFkYjRhM2RlZWQ1ODFkZjE4MWYzNmRkNmY1YTI5MzNiZmZkNjQ0OTgzMTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhNzA4Njg5ZWMwY2U0YjFhNzkxNWU1ZDlhNWI1ZTJmZDkxYWMwMjA5ODlkMTc0YjljMjQ2ZjVkYmM2NGJjNmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwNmQ4NDdkYzc1MmQyODYzMWQxOGQyNzliNTc0ZTM1ZjlhYjhmNzVhZjA5ODk2ZjkyOGFmOGY3MTJjZDEyMmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1e0289868f7b43f084d6827748ee904c",
+      "statement": "The UDP audit sink is best-effort with a 100 ms write timeout, and the separate collector bounds datagram/output sizes, verifies optional HMAC keys and drops empty, oversized or invalid lines without authenticating sender identity or encrypting traffic.",
+      "evidence": [
+        {
+          "resource": "repo://src/bin/rillcache-audit-collector.rs#L1-L35",
+          "version": "repo-lines-v1:sha256:9b7393bad27a5a3ff84f88af2fcefc5e8d42fc8e427f6139b2b7102dc1a0fb41:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxZDc4NDMyNjNiYjRiNjE1MDJiN2FlOWQ5MmFjN2IxMjFiOGQ3MGU0ZjE0MjFhZmQ3MTliZmZjNWU4OThmNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOWUxMjU0NjQyNTU3NmQzZGVhZThjOWI5ZGJmMTI4ZDVkNmRkYWY1ZDdmZTg1NzkzNDkyN2RlZmZhM2I5ZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhOWVmZjhmNTgwNGRmN2MzOTUzYTFmZjlkMmQ0ZjFmMDE5NmFhZTBhNmZlODJlN2ZmNDM4MDZiNGVlNTUwOTQifQ"
+        },
+        {
+          "resource": "repo://src/bin/rillcache-audit-collector.rs#L193-L251",
+          "version": "repo-lines-v1:sha256:4e073424d84bb808bde97ec23346f486afa7f408c725eabea99a2b3bbbd22fc6:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4MjY5ZTg4ZTRkZGNmMzY2OWNlYmIyMmY4OTZkMjlkNDJmODViZjM4YWRiYTM3MWU1YWIwZDkwOTdiOWIxYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OTc3MWZlMWI2NjI4ODc1YWEyM2U3ZGJlNGFhNzE0NjFkMDBjZGZiNjZkZGYxMWI5ZDgyMGFjNTg5N2ZkZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU2OWY1ZWE3OWIwNzYyOTZhOWU5NmIzY2E3MWRjNzc4OWFlNDFjNDFlMzg5ZmE2OGI1OGM5NTlmYzdhMzRlNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4NGI2MWIzOWExZDkzZTQ4NTYzMjFiZWViNmI2Y2FlMGRmNzhlM2YwOWEzODVmNTAxNWM4MTEyMjc3NTZlNTEifQ"
+        },
+        {
+          "resource": "repo://src/engine/audit_syslog.rs#L1-L40",
+          "version": "repo-lines-v1:sha256:f19dbeeccc9118bd435f8e22fbd502356ab9bdb7f690f0192dacb89229b4b9c9:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3ODYwMmU1YWE3Yzk2YTdlZTkzOWJlN2JmZWVlNTBlYTU3MWE3N2I2NDk4N2I5NjI2YmJhNDFiMjkwYzNjMzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9f387f49119e4dd2bee75e88c0449ccc",
+      "statement": "Native TLS is rustls TLS 1.3 only on a distinct listener, optionally requires client certificates, does not map certificate identity to an ACL user, and has no SNI, hot reload, OCSP or ALPN support.",
+      "evidence": [
+        {
+          "resource": "repo://docs/tls.md#L1-L24",
+          "version": "repo-lines-v1:sha256:7c4bbd9ac69fe30f61f51d6a6bab8aefff6d37b862eb7fe077fa7a0ab251f586:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhNDg5NzFjNzFhNDU2MzUzYzE3OWRjNTA0OTZmYThkMzc1NmQ4NGIyNTIwNGNkZGU2MzgwMjZkNWRiMGZmZTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2NWEwOTE2MmU0NjFjNGFkMTQ4OTAzMjgzM2I4NDdhMThmYjM0YjViOWM5ODhhMzJiYWIyMDhjNmJkNGU0ZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3ZDdhZjM4MGMwZDZlNjhiN2Y0YTlhZWM1YzMwOTNkMzE3OWFkNjNkZGQzYmQyYmExNTNiZTZhMDEwZTYyNjMifQ"
+        },
+        {
+          "resource": "repo://docs/tls.md#L86-L98",
+          "version": "repo-lines-v1:sha256:0d8e5ff81691b65a34e93955527b1fa18f7dafa01c3d0cc48f5a954dbf00d38e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhNGFiZTgxNjczNDc0ODM1YTEzMTNlMGM3ZTVjYzZlNTU4NzAwNWZjNzdiNDhiNWE5NDE2YWRjMjhlN2FmZDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhOGE5OTEzZTgwMmM0YjNjZmNjNGIzNjQ4MWU1M2U5YTk2ZDVjZDJjYTMyOTVjOTFmNWQ5N2MxNmY5NGZiNWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzNDlhZjAxMjI2ODI3M2Q4MjI3OTFjZDFjODA5NmEyMWIyZjhhMTFjOTg2MzQxYjljNWY5YzQ0NjI1ZDU5NzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxNmUzMjkxN2ZhYTI0NWQ4MzA5ZjNmZTc1ZWQzYjliNDM2MjZiMzViNmNmNmZmYjZmY2ViNDhlNGI4NTM5ZTYifQ"
+        },
+        {
+          "resource": "repo://src/server/tls.rs#L1-L83",
+          "version": "repo-lines-v1:sha256:02e881bb178bbde274f0293f45e4b3951d17bff5e455d1ffd055b115526cd816:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3ZTM2NjFmNThiZDg5YWU5ZGVjNjEyYjA0OTljM2EzMzc5NjJiNTk3NTYzODQ4OTI0ZDhjZWU1N2NlYTQzZmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEzODVjYzE1ZGE0ZGYwYTc2NmRjODJlZWQ0YjdiYjEwM2ZkMjFkYjliZTVkZmEwOGQzZGQ2YTI1OWNmMjhlMDEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T16:04:12.575Z"
+  }
+}
