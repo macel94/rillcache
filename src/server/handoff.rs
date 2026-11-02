@@ -1,7 +1,6 @@
 //! Small-budget busy-client I/O leases to an existing managed client thread.
 //! Quiet connections return to their blocking owners: no new permanent poller.
 
-use super::client_socket::ClientSocket;
 use super::pool::Client;
 use super::*;
 use crate::session::Session;
@@ -257,7 +256,7 @@ impl Sharing {
         let mut client = match io.channel.cached.take() {
             Some(client) => client,
             None => Client {
-                stream: ClientSocket::direct(stream.try_clone()?),
+                stream: stream.try_clone()?,
                 session: Session::new(),
                 input: Vec::new(),
                 output: Vec::new(),

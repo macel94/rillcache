@@ -14,7 +14,6 @@ use crate::session::Session;
 use std::path::PathBuf;
 
 mod accept;
-mod client_socket;
 mod handoff;
 #[cfg(unix)]
 mod multi;

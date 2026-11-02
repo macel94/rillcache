@@ -2,7 +2,6 @@
 //! where supported. Edge-triggered readiness is retained in the runnable queue
 //! until WouldBlock; bounded passes never rely on receiving a second edge.
 
-use super::client_socket::ClientSocket;
 use super::pool::{Client, LocalPoll};
 use super::*;
 use crate::engine::{BridgeInbox, Execution, ServerServices, StoreHandle};
@@ -168,7 +167,7 @@ impl<E: Execution> Reactor<E> {
                 .next_token
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("readiness token space exhausted"))?;
-            let (stream, control) = ClientSocket::new(stream)?;
+            let control = stream.try_clone()?;
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
             session.set_peer(peer);
@@ -178,7 +177,7 @@ impl<E: Execution> Reactor<E> {
                 .registry()
                 .register(&mut SourceFd(&fd), token, Interest::READABLE)?;
             self.store
-                .register_shared_client(session.id(), peer, stream.local_addr()?, control);
+                .register_client(session.id(), peer, stream.local_addr()?, control);
             let connection = Connection {
                 token,
                 client: Some(Client {

@@ -1,7 +1,6 @@
 //! Optional bounded I/O/execution lanes using only safe standard-library APIs.
 //! Nonblocking round-robin polling is portable, not an epoll/kqueue substitute.
 
-use super::client_socket::ClientSocket;
 use super::*;
 use crate::engine::{BridgeInbox, Execution, StoreHandle};
 use std::sync::atomic::AtomicUsize;
@@ -46,7 +45,7 @@ impl PollWindow {
 }
 
 pub(super) struct Client {
-    pub(super) stream: ClientSocket,
+    pub(super) stream: TcpStream,
     pub(super) session: Session,
     pub(super) input: Vec<u8>,
     pub(super) output: Vec<u8>,
@@ -517,12 +516,12 @@ pub(super) fn serve(
                 continue;
             }
             stream.set_nonblocking(true)?;
-            let (stream, control) = ClientSocket::new(stream)?;
+            let control = stream.try_clone()?;
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
             session.set_peer(peer);
             session.set_pubsub_sender(sender);
-            store.register_shared_client(session.id(), peer, stream.local_addr()?, control);
+            store.register_client(session.id(), peer, stream.local_addr()?, control);
             let client = Client {
                 stream,
                 session,
@@ -699,7 +698,7 @@ mod tests {
         stream.set_nonblocking(true).unwrap();
         (
             Client {
-                stream: ClientSocket::new(stream).unwrap().0,
+                stream,
                 session: Session::new(),
                 input,
                 output: Vec::new(),
@@ -789,7 +788,7 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         stream.set_nonblocking(true).unwrap();
         let mut client = Client {
-            stream: ClientSocket::new(stream).unwrap().0,
+            stream,
             session: Session::new(),
             input: b"*1\r\n$4\r\nPING\r\n".to_vec(),
             output: Vec::new(),

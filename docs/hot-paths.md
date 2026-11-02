@@ -414,22 +414,6 @@ This is a general whole-program optimization for cross-module inlining of the
 session/store/RESP path, not a benchmark-specific mode or a safety relaxation.
 Build time increases; `make ci` still enforces the same tests and smoke benchmarks.
 
-## Managed TCP receive path
-
-On Linux, managed Mio/fixed-worker sockets transfer the original descriptor via
-safe `OwnedFd`/`File` conversions and receive with `File::read`. TCP stream reads
-with zero receive flags retain the same byte, nonblocking, EOF and interruption
-behavior. The selector still registers that original descriptor. The existing
-shutdown clone is shared by `Arc` with the client registry and used for ordinary
-`TcpStream` writes, preserving its SIGPIPE protection; no extra steady-state
-socket descriptor is added. CLIENT KILL transfers the shared control outside the
-registry lock instead of duplicating another descriptor. Other platforms and
-borrowed legacy I/O leases keep their TCP receive path. TLS is unchanged.
-
-This is not zero-copy or a benchmark-only mode. Profiles identify receive syscall
-setup as an experiment, not proof that fd reads are faster; matched normal
-measurements and every protected gate still decide performance acceptance.
-
 ## Owner-migration socket workers (S-SOCKET-WORKERS)
 
 Dragonfly v2.0.2 starts four io_uring proactor threads on the four-CPU gate. Its
