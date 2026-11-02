@@ -8,7 +8,10 @@ reactor merged as PR #139 (`4a52fc0`) after passing both protected gates on its
 merge candidate (section 2.3); this document merged as PR #141 (`f572bd8`).
 Later increments added opt-in Tokio transport, multi-owner execution, cached
 mode/authorization words and batched owner replies, and the required four-CPU job
-now also compares Dragonfly (sections 2.5–2.6). A gate pass on one head never
+now also compares Dragonfly (sections 2.5–2.6). Two further runtime experiments —
+the short-read drain elision (#155) and shared-store socket workers (#157) — were
+measured and rejected (sections 2.6–2.7); the next multi-reactor design remains a
+candidate (section 4.8), not a default change. A gate pass on one head never
 substitutes for a fresh head, and every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
@@ -193,6 +196,30 @@ already-active clients: removing it shifts work to another `epoll_wait` wake and
 can add P1 latency. The syscall count alone was not a throughput proxy. The
 candidate was closed, its branch and artifacts were retained, and it was not
 rerun. This is a rejected option in section 7.
+
+### 2.7 Shared-store socket workers (PR #157, rejected)
+
+Candidate: default plain Unix TCP runs `min(4, CPUs)` independent Mio reactors,
+each owning disjoint connections over the existing locked Store; no sharding,
+migration, io_uring or dependency change. The original 20-case gate rejected it
+**12/20** (run 41380968312):
+
+| Budget | P | Workload | Rillcache | Valkey | Delta |
+| --- | ---: | --- | ---: | ---: | ---: |
+| inherited | 1 | ping | 160,813 | 105,100 | +53.0% |
+| inherited | 1 | set | 42,462 | 100,038 | -57.6% |
+| inherited | 1 | get | 42,669 | 100,584 | -57.6% |
+| inherited | 16 | set | 61,926 | 964,787 | -93.6% |
+| inherited | 16 | get | 62,069 | 1,086,520 | -94.3% |
+| one-cpu | 1 | set | 108,883 | 97,242 | +12.0% |
+| one-cpu | 16 | set | 1,398,149 | 953,753 | +46.6% |
+
+The PING result confirms that connection-local work scales across reactors. The
+data rows collapse because shared `StoreHandle`/bridge/lock execution is not the
+owner-local data path; the one-CPU budget selects one reactor, keeps the local
+executor, and passes every row. Diagnosis: multiple reactors are viable only for
+connection-local commands; data commands must stay on the owner-local executor.
+The PR was closed with its branch and evidence retained, not rerun or relabeled.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -434,6 +461,24 @@ Mechanism, local syscall evidence, failed gate rows and diagnosis are in section
 removing it shifted cost to `epoll_wait` and lost two Valkey P1 medians. Do not
 revive it without a different readiness mechanism and fresh gate evidence.
 
+### 4.8 Multi-reactor with one-time owner migration (specified, not implemented)
+
+One owner reactor keeps the local executor, maintenance and every data command.
+N−1 worker reactors accept connections and execute connection-local commands
+(PING/ECHO/QUIT). A connection migrates once to the owner when its first data
+command appears: prior replies flush, the unparsed input/session/buffers move,
+the fd is deregistered and registered on the owner, and reply order is preserved.
+PING scales across workers; SET/GET/P16 keep the proven owner-local data path.
+This is intentionally different from the rejected shared-store experiment and
+from per-command shard hops.
+
+Risks: migration ordering and pending-output/backpressure handling, accept
+distribution, max-client admission across reactors, idle-timeout maintenance, and
+joined shutdown with in-flight migrations. Acceptance: both protected gates, a
+migration/pipeline/session-state test matrix, no lost or reordered replies, no
+new dependency, no sharding/io_uring/unsafe code. Not started; it is a separate
+large default-path increment, not a documentation claim.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -512,6 +557,7 @@ same native evidence and protected gates as any other runtime change.
 | Zero-copy reply references / encoded buffers | Needs reference counting and unsafe-adjacent ownership; formatting is already allocation-free per reply. |
 | RDB/replication work as a performance fix | Out of scope and unrelated to the measured P1 gap. |
 | Eliding the edge-triggered empty-receive drain probe (PR #155) | Cut receive syscalls ~16% locally but lost two Valkey P1 medians; the probe is also a user-space readiness batch. See 2.6/4.7. |
+| Shared-store multi-reactor data execution (PR #157) | PING scaled +53% but data collapsed -57.6% at P1 and about -94% at P16; the owner-local executor is required. See 2.7/4.8. |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
 
 ## 8. Acceptance criteria (EARS)
@@ -567,6 +613,11 @@ frozen binaries and alternating order, with raw samples retained.
   final head shall have a strictly higher median in all ten workload/pipeline
   cases, with a losing row retained as failed evidence rather than explained
   away; the Valkey comparison and original gate remain independently required.
+- **AC14 (owner migration, when 4.8 is implemented).** A connection shall change
+  reactor ownership at most once before its first data command, with prior replies
+  flushed and order preserved; PING/ECHO shall remain scalable on workers; data
+  commands shall execute on the owner-local executor; admission, idle timeout and
+  shutdown shall join every reactor and in-flight migration.
 
 INVEST story for the next runtime increment (Dragonfly pipeline-1 margin):
 independently valuable and testable, with one recorded mechanism, prediction,
@@ -590,6 +641,9 @@ current roadmap; individual phases are separate increments.
   and phased roadmap are in [Dragonfly-class performance](dragonfly-class-performance.md).
 - Rejected short-read experiment: PR #155, gate run 41368946995 (Dragonfly 10/10,
   Valkey 8/10), branch `perf/reactor-short-read-drain` retained.
+- Rejected shared-store socket workers: PR #157, original-gate run 41380968312
+  (12/20), branch `perf/socket-workers` retained; the bundle also contains the
+  design-doc update from the closed #156.
 - Development loop: `make dev-check` for editing feedback, `make test` after a
   complete logical change and `make ci` before review, per
   [development-cycle](../development-cycle.md). Local screens never replace the
@@ -619,8 +673,9 @@ current roadmap; individual phases are separate increments.
   `core_affinity`, merged through their own PRs. A future head still needs fresh
   gates, and any further dependency needs its own review. The portable fallback
   remains the documented boundary for TLS, fixed workers and non-Unix builds.
-- The short-read elision is a rejected experiment, not an unfinished task: its
-  branch and gate artifacts are retained, and it must not be revived without a
-  different readiness mechanism and fresh evidence.
+- The short-read elision and shared-store socket workers are rejected
+  experiments, not unfinished tasks: their branches and gate artifacts are
+  retained, and neither may be revived without a different mechanism and fresh
+  evidence. The next credible design is the one-time owner migration in 4.8.
 - Redis 8.10.2 and Valkey 9.1.2 are pins, not an evergreen "latest" claim; source
   links are immutable tags.
