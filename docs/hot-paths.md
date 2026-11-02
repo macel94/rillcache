@@ -433,10 +433,10 @@ data commands. The other reactors own disjoint accepted
 connections and execute only bare connection-local commands (PING/ECHO/QUIT);
 before the first data command they flush replies, deregister the socket, transfer
 the session/input and hand the connection to the owner reactor, which registers
-and continues it in order. The single-reactor path consolidates selector waits;
-explicit parallel mode retains its measured legacy absorption path after global
-consolidation regressed PING in the matched control. There is no sharded keyspace,
-no per-command owner hop and
+and continues it in order. Both modes retain their original selector/absorption
+loop: consolidation experiments regressed controls and were rejected, not
+smuggled into the default-count change. There is no sharded keyspace, no
+per-command owner hop and
 no wire change.
 
 A shared locked-Store version of this idea was measured and rejected first: PING

@@ -24,18 +24,6 @@ const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
 /// Mio 1.2.4 rounds this up to one millisecond on Linux; it is not an 8 us spin.
 const FAST_WAIT: Duration = Duration::from_micros(8);
 
-fn wait_timeout(runnable: bool, asynchronous: bool, absorb_next: bool) -> Duration {
-    if runnable {
-        Duration::ZERO
-    } else if absorb_next {
-        FAST_WAIT
-    } else if asynchronous {
-        ASYNC_TICK
-    } else {
-        STOP_TICK
-    }
-}
-
 /// An index is reusable, but its full, non-recycled selector token is not.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ReadyKey {
@@ -126,10 +114,6 @@ impl<E: Execution> Drop for Reactor<E> {
 }
 
 impl<E: Execution> Reactor<E> {
-    fn single_reactor(&self) -> bool {
-        !self.worker && self.incoming.is_none()
-    }
-
     fn enqueue(&mut self, key: ReadyKey) {
         if let Some(connection) = self.clients.get_mut(key.slot).and_then(Option::as_mut)
             && connection.token == key.token
@@ -441,10 +425,6 @@ impl<E: Execution> Reactor<E> {
         let mut chunk = [0; 16 * 1024];
         let mut maintenance = Instant::now();
         let mut asynchronous = maintenance;
-        // Consolidation helped the co-located owner control, but increased
-        // multi-reactor wakeup churn. Preserve that explicit mode's wait path.
-        let co_located = self.single_reactor();
-        let mut absorb_next = false;
         while !self.stopping.load(Ordering::Acquire) && !self.store.shutdown_requested() {
             if let Some(inbox) = &self.inbox {
                 inbox.drain(self.store.as_ref());
@@ -490,13 +470,15 @@ impl<E: Execution> Reactor<E> {
             // The listener is polled on every pass: a queued connection or a new
             // client must never wait behind a sustained pipeline. A zero timeout
             // keeps that pass non-blocking while work is already queued.
-            // Consume a one-shot wait intent here, rather than polling at the
-            // bottom and polling ZERO again before servicing that same readiness.
-            let timeout = wait_timeout(
-                self.accept_ready || !self.ready.is_empty(),
-                !self.asynchronous.is_empty(),
-                co_located && std::mem::take(&mut absorb_next),
-            );
+            // This collection can gather peers arriving after absorption. Keep
+            // it: removing an apparently duplicate poll also changes batching.
+            let timeout = if self.accept_ready || !self.ready.is_empty() {
+                Duration::ZERO
+            } else if self.asynchronous.is_empty() {
+                STOP_TICK
+            } else {
+                ASYNC_TICK
+            };
             match self.poll.poll(&mut events, Some(timeout)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -518,16 +500,10 @@ impl<E: Execution> Reactor<E> {
                 }
             }
             if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
-                if co_located {
-                    absorb_next = true;
-                } else {
-                    // Keep explicit parallel workers on their measured legacy
-                    // path; no global removal of their absorption poll.
-                    match self.poll.poll(&mut events, Some(FAST_WAIT)) {
-                        Ok(()) => self.ingest(&events),
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                        Err(error) => return Err(error),
-                    }
+                match self.poll.poll(&mut events, Some(FAST_WAIT)) {
+                    Ok(()) => self.ingest(&events),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error),
                 }
             }
         }
@@ -756,44 +732,6 @@ mod tests {
             migrate: None,
             incoming: None,
             waker: None,
-        }
-    }
-
-    #[test]
-    fn consolidation_never_selects_a_shared_owner_or_worker() {
-        let mut reactor = fixture();
-        assert!(reactor.single_reactor());
-        reactor.worker = true;
-        assert!(!reactor.single_reactor());
-        reactor.worker = false;
-        let (_sender, receiver) = std::sync::mpsc::channel();
-        reactor.incoming = Some(receiver);
-        assert!(!reactor.single_reactor());
-    }
-
-    #[test]
-    fn runnable_work_always_overrides_absorption_and_timer_waits() {
-        for asynchronous in [false, true] {
-            for absorb in [false, true] {
-                assert_eq!(wait_timeout(true, asynchronous, absorb), Duration::ZERO);
-            }
-        }
-    }
-
-    #[test]
-    fn absorption_is_one_shot_and_idle_and_async_fallbacks_are_preserved() {
-        for asynchronous in [false, true] {
-            let mut absorb_next = true;
-            assert_eq!(
-                wait_timeout(false, asynchronous, std::mem::take(&mut absorb_next)),
-                FAST_WAIT
-            );
-            // No serviced client rearms the intent after an empty selector turn.
-            assert_eq!(
-                wait_timeout(false, asynchronous, std::mem::take(&mut absorb_next)),
-                if asynchronous { ASYNC_TICK } else { STOP_TICK }
-            );
-            assert!(!absorb_next);
         }
     }
 

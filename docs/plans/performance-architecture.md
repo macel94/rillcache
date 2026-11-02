@@ -605,7 +605,7 @@ with no new dependency. It is candidate 4.9, not part of this increment.
 | Component | Redis 8.10.2 | Valkey 9.1.2 | Rillcache today | Decision |
 | --- | --- | --- | --- | --- |
 | Readiness | level-triggered epoll, single loop | level-triggered epoll, single loop | Mio edge-triggered reactor with drain probe | **Keep/adapt:** edge-triggered through reviewed Mio; level-triggered needs unsafe FFI or a new selector policy |
-| Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | owner reactor plus at most `min(4, CPUs)` connection-local workers | **Adapt, bounded:** more reactors than CPUs oversubscribed P1 ping (−22.4% Valkey); reject counts above `min(4, CPUs)` without a different mechanism |
+| Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one co-located I/O/data owner by default; explicit parallel connection-local workers | **Adapt, bounded:** more reactors than CPUs oversubscribed P1 ping (−22.4% Valkey); reject counts above `min(4, CPUs)` without a different mechanism |
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Reply path | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same plus encoded-buffer copy avoidance from 7 I/O threads | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral is 4.5 and unproven |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames do not rescan payload; revisit only with large-argument evidence |
@@ -805,7 +805,7 @@ mechanism, all raw samples and CPU placement are retained, and both protected
 gates still pass on any resulting head. This is a diagnosis of an already-merged
 change, not a new runtime candidate.
 
-### 4.11 Reactor wakeup/spin budget (diagnostic, not implemented)
+### 4.11 Reactor wait diagnostic (hosted harness implemented; consolidation rejected)
 
 **Source-resolution correction:** Mio 1.2.4's Linux selector rounds a positive
 sub-millisecond timeout upward: `FAST_WAIT` requests 8 us but reaches
@@ -814,12 +814,16 @@ are hypotheses, not measured spin time. The single-poll candidate instead moves
 the absorption wait to the next round's sole selector call, avoiding a second
 ZERO poll before servicing readiness. Its first global trial was rejected:
 PING/P1 was -0.09% and PING/P16 p99 +31%, despite GET/P1 +3.14% (run
-41500430375). The subsequent co-location candidate restricts consolidation to
-the single-reactor path; explicit parallel mode keeps its original absorption
-wait, timeout, draining and quanta. Its [matched hosted diagnostic](../development-cycle.md#same-job-hosted-reactor-diagnostic)
+41500430375). The combined co-location/single-reactor consolidation trial (run
+41507264904) also lost 5.61% in explicit-one PING/P1 and 5.09% in explicit-four
+PING/P16, despite its default-mode gains. It was rejected too. The zero-time
+poll can gather more readiness and affect batching, so it is not necessarily
+redundant. After diagnosis review, the co-location-only candidate restores the
+original reactor algorithm entirely; only the default count changes. The
+[matched hosted diagnostic](../development-cycle.md#same-job-hosted-reactor-diagnostic)
 is distinct from the isolated fixed-host screening lane and from protected gates.
 
-Mechanism: section 2.11 measures about 0.086 voluntary plus 0.014 involuntary
+**Historical, rejected selector hypothesis:** section 2.11 measures about 0.086 voluntary plus 0.014 involuntary
 context switches per P1 ping, against ~0.0001 for the single-thread servers,
 while Rillcache still wins rate and p99. The 8 µs `FAST_WAIT` absorption after a
 productive pass and the owner/worker wakeups are the plausible sources. A
@@ -833,11 +837,12 @@ connection-local clients per reactor and absent with one client or one reactor.
 A negative result (fewer switches but lower rate or worse p99) means the spin is
 buying latency and must stay.
 
-Baseline and method: freeze current and candidate binaries, alternate on one
+Unrun deeper-profile proposal (not the hosted /proc evidence): freeze current
+and candidate binaries, alternate on one
 host and one CPU placement, use the same pinned generator and at least three
 rotated repetitions, and retain per-command scheduler counters
 (`sched_switch`, `epoll_wait`, receive/send-class syscalls), raw JSON and spreads.
-Run both the default reactor count and `--socket-workers 1`. Do not compare
+Run default and explicit `--socket-workers 1` / `4` controls. Do not compare
 numbers from different hosts or substitute a single local screen for a gate.
 
 Rejection condition: any original-gate loss, any Valkey/Dragonfly four-CPU loss,
@@ -848,8 +853,8 @@ keep the absorption path when it is doing useful work.
 
 Acceptance if implemented: deterministic reactor scheduling tests, no lost
 wakeups or ordering regressions, joined shutdown, the matched A/B above, and both
-protected gates on the final head. Until the diagnostic shows the spin is the
-cost, this remains a hypothesis, not a runtime change.
+protected gates on the final head. Neither selector trial qualified; the final
+co-location-only change in section 4.8 keeps this selector behavior unchanged.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -1013,7 +1018,7 @@ frozen binaries and alternating order, with raw samples retained.
   `--socket-workers 1..16` as an override. It is accepted only if the original
   gate wins 20/20 and both four-CPU comparisons win 10/10 on the final head.
   The `2 × CPUs`/eight candidate failed both four-CPU gates on P1 ping and is
-  rejected; the merged default stays at `min(4, CPUs)`.
+  rejected; that checkpoint retained `min(4, CPUs)` (the later co-location change is in section 4.8).
 - **AC16 (cached clock, only if 4.9 is implemented).** When any key has an
   expiration, a command shall observe one stable millisecond snapshot for its
   whole execution, refreshed at most once per reactor pass; a key alive at
@@ -1065,8 +1070,11 @@ current roadmap; individual phases are separate increments.
   one-core; deterministic tables retained at
   `/root/perf-evidence/manual-41477114469/report.md`. The generated report PR is
   not a gate and was not merged into this record.
-- Wakeup/spin diagnostic (section 4.11): not yet run; requires frozen binaries,
-  scheduler/syscall counters and the same protected gate on any resulting head.
+- Hosted reactor diagnostic (section 4.11): runs 41500430375 (72 samples) and
+  41507264904 (108) completed with frozen binaries and matched-thread /proc
+  counters. Both selector variants were rejected, with losses retained. Detailed
+  syscall profiling is unrun; the co-location-only candidate needs its own fresh
+  matched evidence and the unchanged protected gates.
 - Development loop: `make dev-check` for editing feedback, `make test` after a
   complete logical change and `make ci` before review, per
   [development-cycle](../development-cycle.md). Local screens never replace the

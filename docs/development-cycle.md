@@ -85,9 +85,9 @@ gh workflow run upstream-performance.yml --ref BRANCH \
 python3 scripts/reactor-study.py --check /path/to/reactor-study
 ```
 
-The co-located single-reactor selector candidate preserves its absorption timeout
-rather than guessing a spin budget; explicit parallel reactors retain their old
-wait path after the global-consolidation experiment regressed PING: vendored Mio 1.2.4's Linux selector rounds positive
+Selector-consolidation experiments were rejected after control regressions;
+the co-location-only candidate preserves the original reactor algorithm and
+absorption timeout rather than guessing a spin budget: vendored Mio 1.2.4's Linux selector rounds positive
 sub-millisecond waits upward, so the nominal 8 us request is **1 ms**, not an
 8 us busy spin. One selector call per round avoids re-polling just-ingested
 readiness while retaining edge-triggered WouldBlock probes and bounded quanta.

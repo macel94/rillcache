@@ -424,8 +424,3 @@ platforms retain timeout-based fallback admission.
   timeout, max clients, session isolation and joined shutdown. Documentation
   shall state that no key is sharded, no per-command owner hop is added, and that
   protected-gate evidence decides any throughput claim.
-- **R-SOCKET4 (state-driven):** While the network uses the single co-located
-  reactor, a productive empty turn shall request one absorption wait at the next
-  selector entry; idle turns shall return to the stop/async timer. Runnable and
-  accept work shall override waits. Explicit parallel reactors shall retain their
-  legacy absorption path; no edge-triggered drain probe may be omitted.
