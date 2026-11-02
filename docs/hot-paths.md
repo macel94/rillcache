@@ -425,7 +425,11 @@ bounds its own I/O, observes the shared stop flag and joins on shutdown. Fixed
 workers, TLS, Tokio transport and multi-owner execution keep their existing
 paths.
 
-Acceptance is the unchanged Valkey and Dragonfly four-CPU gates plus migration
+Acceptance was the unchanged Valkey and Dragonfly four-CPU gates plus migration
 tests for ordering, session state, transactions, pub/sub, blocking commands,
-large/backpressured output, idle timeout and shutdown. No throughput claim is
-made from the contended development host.
+large/backpressured output, idle timeout and shutdown. PR #159 (`31a6006`) passed
+both: Valkey 10/10 (P1 ping 117,430.7 vs 114,097.1, +2.9%) and Dragonfly 10/10
+(P1 ping 115,108.1 vs 91,954.1, +25.2%), with data P1 +3.1% to +7.8% versus
+Valkey and +75% to +78% versus Dragonfly. The gate remains scoped to four CPUs,
+small strings, 1,024 keys and ten-second samples; no universal or production-SLO
+claim follows.

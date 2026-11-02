@@ -9,9 +9,10 @@ merge candidate (section 2.3); this document merged as PR #141 (`f572bd8`).
 Later increments added opt-in Tokio transport, multi-owner execution, cached
 mode/authorization words and batched owner replies; the required four-CPU job now
 also compares Dragonfly (sections 2.5–2.6). A shared-store socket-worker
-experiment was measured and rejected (section 2.7), and an owner-migration
-socket-worker implementation is in review (section 4.8). A gate pass on one head never
-substitutes for a fresh head, and every dependency still needs explicit review.
+experiment was measured and rejected (section 2.7). The owner-migration
+socket-worker implementation merged as PR #159 (`31a6006`) and passed both
+four-CPU gates (section 2.8). A gate pass on one head never substitutes for a
+fresh head, and every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -217,6 +218,26 @@ data collapse shows that shared `StoreHandle`/bridge/lock execution is not the
 owner-local data path; the one-CPU budget selects one reactor, keeps the local
 executor, and passes every row. The PR was closed with its branch and artifacts
 retained, not rerun or relabeled.
+
+### 2.8 Owner-migration result (merged)
+
+PR #159 (`31a6006`) merged after all 14 required contexts and both four-CPU
+gates passed (run 41399136864). The design is in section 4.8: one owner-local
+data reactor, connection-local worker reactors, and one-time migration on the
+first data command.
+
+| Comparison | Gate | P1 ping | Other P1 data rows | P16 rows |
+| --- | --- | ---: | ---: | ---: |
+| Valkey 9.1.2 | PASS 10/10 | 117,430.7 vs 114,097.1 (+2.9%) | +3.1% to +7.8% | +80% to +120% |
+| Dragonfly v2.0.2 | PASS 10/10 | 115,108.1 vs 91,954.1 (+25.2%) | +75% to +78% | +130% to +160% |
+
+This is the first head after the Dragonfly gate was added that wins every strict
+median against both competitors. It confirms the split: PING/ECHO scale on
+connection-local workers, while data commands retain the owner-local executor
+that the rejected shared-store variant could not replace. Batch p99 is at or
+below the competitors' in the reported rows. The gate is still scoped to four
+CPUs, small strings, 1,024 random keys and ten-second samples; no universal or
+production-SLO claim follows.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -458,7 +479,7 @@ Mechanism, local syscall evidence, failed gate rows and diagnosis are in section
 removing it shifted cost to `epoll_wait` and lost two Valkey P1 medians. Do not
 revive it without a different readiness mechanism and fresh gate evidence.
 
-### 4.8 Owner-migration socket workers (implemented, gates pending)
+### 4.8 Owner-migration socket workers (merged in PR #159)
 
 One reactor keeps the owner-local executor, maintenance and every data command.
 The other reactors own disjoint accepted connections and execute only bare
@@ -476,8 +497,8 @@ admission across reactors, idle maintenance, and joined shutdown with in-flight
 transfers. Tests cover worker counts, PING/SET/GET and mixed pipelines, session
 state across migration, transactions, pub/sub, blocking commands,
 large/backpressured output, idle timeout, max clients, session isolation and
-shutdown. Acceptance remains both protected gates (Valkey and Dragonfly) plus
-the unchanged functional contexts; no throughput claim is made before they pass.
+shutdown. Acceptance was both protected gates (Valkey and Dragonfly) plus the
+unchanged functional contexts; they passed on `31a6006` (section 2.8).
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -617,7 +638,8 @@ frozen binaries and alternating order, with raw samples retained.
   command, with prior replies flushed and order preserved; PING/ECHO shall remain
   scalable on workers; data commands shall execute on the owner-local executor;
   admission, idle timeout and shutdown shall join every reactor and in-flight
-  migration. A throughput pass is valid only if both protected gates pass.
+  migration. Met at `31a6006`: both protected gates and all functional contexts
+  passed (section 2.8).
 
 INVEST story for the next runtime increment (Dragonfly pipeline-1 margin):
 independently valuable and testable, with one recorded mechanism, prediction,
@@ -659,10 +681,13 @@ current roadmap; individual phases are separate increments.
   short three-sample medians. It is a merge policy, not a statistical proof or a
   production SLO; mixed TTLs, large values, saturation and tail SLOs remain
   outside it.
-- The remaining measured P1 gap is against Dragonfly on fast hosts; it is
-  host-sensitive and still fails the strict median on some cohorts. Readiness was
-  necessary but not sufficient, and the rejected drain probe shows that syscall
-  counts alone are not a throughput proxy.
+- The four-CPU gate now passes all ten medians against both Valkey and Dragonfly
+  (P1 ping +2.9% and +25.2%; section 2.8). The remaining gaps are outside that
+  gate: many-core/multi-owner scaling, large values, mixed TTL/traffic, tail
+  distributions on controlled hosts, storage/hash costs, and large-frame parsing
+  only if a measured workload requires it. Do not infer universal superiority.
+  Readiness was necessary but not sufficient, and the rejected drain probe shows
+  that syscall counts alone are not a throughput proxy.
 - Cross-client write coalescing (4.5) remains unproven; do not add it
   speculatively. The resumable parser (4.2) is deprioritized because incomplete
   frames do not rescan payload bytes; revisit only with large-argument evidence.
