@@ -474,8 +474,6 @@ impl<E: Execution> Reactor<E> {
             // The listener is polled on every pass: a queued connection or a new
             // client must never wait behind a sustained pipeline. A zero timeout
             // keeps that pass non-blocking while work is already queued.
-            // This collection can gather peers arriving after absorption. Keep
-            // it: removing an apparently duplicate poll also changes batching.
             let timeout = if self.accept_ready || !self.ready.is_empty() {
                 Duration::ZERO
             } else if self.asynchronous.is_empty() {
