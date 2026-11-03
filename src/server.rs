@@ -202,10 +202,10 @@ pub struct Config {
     /// Opt-in multi-owner data execution. `None` or `Some(1)` keeps the proven
     /// one-owner path; `Some(2..=64)` starts that many owned data workers.
     pub storage_owners: Option<usize>,
-    /// Plain-TCP readiness reactors. `None` keeps the owner-local reactor, which
-    /// is the measured latency optimum at pipeline 1 (one reactor batches more
-    /// connection-local commands per readiness wake): `Some(2..=16)` opts into
-    /// shared-store connection-owning workers for PING-heavy fan-out.
+    /// Plain-TCP readiness reactors. `None` uses at most two connection-local
+    /// reactors (one without a multi-CPU hint), so connection-local commands can
+    /// use a second selector while data commands still migrate once to the single
+    /// owner-local executor. `Some(1..=16)` overrides the count.
     pub socket_workers: Option<usize>,
     /// Key and value bytes only, not allocator, map, thread or network overhead.
     pub max_data_bytes: usize,
@@ -555,7 +555,13 @@ impl Server {
                     // keep the single reactor and report it accurately.
                     1
                 } else {
-                    config.socket_workers.unwrap_or(1)
+                    // Connection-local commands need selector/read/write capacity;
+                    // data commands still migrate once to the single owner-local
+                    // executor, so this adds no key sharding or per-command hop.
+                    // One CPU keeps one reactor; explicit counts are unchanged.
+                    config
+                        .socket_workers
+                        .unwrap_or_else(|| capacity.unwrap_or(1).min(2))
                 },
                 active_poll_us: 0,
                 run_quantum_us: 0,

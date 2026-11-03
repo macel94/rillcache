@@ -64,13 +64,18 @@ impl Peer {
 }
 
 #[test]
-fn default_plain_tcp_uses_the_owner_local_reactor_and_serves_wire() {
+fn default_plain_tcp_uses_bounded_connection_local_reactors_and_serves_wire() {
     let server = start(None);
+    let expected = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(2);
     assert_eq!(
         server.scheduling_policy().socket_workers,
-        1,
-        "the default keeps one owner-local reactor: it batches more pipeline-1 commands per readiness wake"
+        expected,
+        "the default uses at most two connection-local reactors and never more than the CPU hint"
     );
+    assert!((1..=2).contains(&expected));
     assert_eq!(server.scheduling_policy().client_handoff_lanes, 0);
 
     let mut peers: Vec<_> = (0..8).map(|_| Peer::new(&server)).collect();
