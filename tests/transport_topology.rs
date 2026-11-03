@@ -229,16 +229,28 @@ fn one_effective_cpu_runs_one_network_runtime_plus_one_joined_cold_service() {
         "{affinity}"
     );
 
-    let tasks = std::fs::read_dir(format!("/proc/{}/task", process.child.id())).unwrap();
-    let mut names: Vec<_> = tasks
-        .map(|task| {
-            std::fs::read_to_string(task.unwrap().path().join("comm"))
+    // The cold-service thread is spawned just before the affinity line is
+    // emitted; its comm name can lag the parent name for a few scheduler ticks.
+    // Wait for the expected names instead of sampling once, without weakening
+    // the exact assertion.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let names = loop {
+        let mut names: Vec<String> =
+            std::fs::read_dir(format!("/proc/{}/task", process.child.id()))
                 .unwrap()
-                .trim()
-                .to_owned()
-        })
-        .collect();
-    names.sort();
+                .map(|task| {
+                    std::fs::read_to_string(task.unwrap().path().join("comm"))
+                        .unwrap()
+                        .trim()
+                        .to_owned()
+                })
+                .collect();
+        names.sort();
+        if names == ["rillcache", "rillcache-cold-"] || Instant::now() >= deadline {
+            break names;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
     assert_eq!(names, ["rillcache", "rillcache-cold-"]);
 
     // Exercise mixed-case ACL dispatch and ordered continuation on runtime zero.
