@@ -257,7 +257,7 @@ impl Reactor {
                 client: Client {
                     stream,
                     session,
-                    input: Vec::with_capacity(8192.min(self.config.limits.max_frame_bytes)),
+                    input: Vec::with_capacity(8192.min(self.config.limits.max_frame_bytes)).into(),
                     output: Vec::with_capacity(8192),
                     sent: 0,
                     closing: false,
@@ -442,7 +442,7 @@ impl Reactor {
         if consumed == client.input.len() {
             client.input.clear();
         } else if consumed > 0 {
-            client.input.drain(..consumed);
+            client.input.consume(consumed);
         }
         if let Some(batch) = run.as_mut()
             && batch.is_empty()

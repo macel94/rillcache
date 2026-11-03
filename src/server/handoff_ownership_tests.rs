@@ -19,7 +19,12 @@ fn empty_clients_skip_only_one_rescan_and_never_defer_known_work() {
         client.closing = false;
         client.eof = false;
         match state {
-            0 => client.input.extend_from_slice(b"PING\r\n"),
+            0 => {
+                client
+                    .input
+                    .read_from(&mut std::io::Cursor::new(b"PING\r\n"), 6, 1024)
+                    .unwrap();
+            }
             1 => client.output.extend_from_slice(b"+pending\r\n"),
             2 => client.closing = true,
             _ => client.eof = true,
@@ -309,7 +314,7 @@ fn repeated_leases_reuse_the_shell_and_drop_it_without_shutting_down_the_owner()
             let mut channel = LeaseChannel::new();
             let mut session = Session::new();
             let id = session.id();
-            let mut input = Vec::with_capacity(128);
+            let mut input: InputBuffer = Vec::with_capacity(128).into();
             let mut output = Vec::with_capacity(128);
             let mut shell_id = None;
             for _ in 0..4 {
@@ -363,7 +368,10 @@ fn repeated_leases_reuse_the_shell_and_drop_it_without_shutting_down_the_owner()
             let mut loan = loans.recv_timeout(Duration::from_secs(3)).unwrap();
             let client = loan.client.as_mut().unwrap();
             client.input.clear();
-            client.input.extend_from_slice(b"partial");
+            client
+                .input
+                .read_from(&mut std::io::Cursor::new(b"partial"), 7, 1024)
+                .unwrap();
             // Exercise suffix compaction on every reuse, not just the first loan.
             client.stream.write_all(b"+PO").unwrap();
             client.output.extend_from_slice(b"+PONG\r\n");

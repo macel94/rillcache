@@ -75,7 +75,9 @@ new reference or a way to promote a previously rejected result.
 The build helper package-cleans the application before each same-path rebuild,
 requires real compilation and freezes every application binary. Raw CSV, executable hashes,
 source/argv/affinity/lifecycle identity and /proc CPU plus matched-thread scheduler
-snapshots are retained. The pinned upstream notice accompanies frozen reference binaries. Counters bracket, rather than instrument, timed traffic;
+snapshots are retained. Raw snapshots include approximate Linux process RSS
+(shared pages included), not peak/private memory or proof of a memory budget.
+The pinned upstream notice accompanies frozen reference binaries. Counters bracket, rather than instrument, timed traffic;
 thread churn yields unknown scheduler coverage, not invented zero switches.
 Shared-runner noise remains; a subset improvement cannot replace current-head
 required checks or support a universal win. Revalidate historical artifacts with

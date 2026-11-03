@@ -414,6 +414,23 @@ This is a general whole-program optimization for cross-module inlining of the
 session/store/RESP path, not a benchmark-specific mode or a safety relaxation.
 Build time increases; `make ci` still enforces the same tests and smoke benchmarks.
 
+## Direct request receive storage
+
+Managed synchronous/Mio clients read directly into initialized per-connection
+request storage, with a separate filled length. Only reported received bytes are
+visible to RESP parsing. A complete consume resets that length; only actual
+trailing pipeline bytes are moved. The same storage/filled length move together
+across borrowed leases and owner migration. One standard read per existing read
+site, frame limits, I/O quanta and immediate activity updates are retained.
+
+Growth initializes storage geometrically within the configured frame bound. An
+active connection may initialize a 16 KiB read window where it previously reserved
+8 KiB plus shared scratch storage. This is bounded control memory, not keyspace
+`maxmemory`; RSS comparisons must retain that cost. This removes an application
+scratch-to-request copy, not the kernel TCP copy or rustls internal copies. The
+separate Tokio async receive path is unchanged. Throughput remains unqualified
+until measured with matched normal controls and every protected gate.
+
 ## Owner-migration socket workers (S-SOCKET-WORKERS)
 
 Dragonfly v2.0.2 starts four io_uring proactor threads on the four-CPU gate. Its

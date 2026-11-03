@@ -427,3 +427,12 @@ platforms retain timeout-based fallback admission.
   timeout, max clients, session isolation and joined shutdown. Documentation
   shall state that no key is sharded, no per-command owner hop is added, and that
   protected-gate evidence decides any throughput claim.
+- **R-SOCKET4 (state-driven):** While a synchronous/Mio client receives input,
+  each existing read site shall perform at most one standard read directly into
+  initialized request storage, within unchanged frame and I/O budgets. Only
+  reported bytes shall become visible; EOF/errors shall not advance filled
+  length. Consuming a prefix shall preserve its exact trailing bytes, and storage
+  plus filled length shall move together across a lease or owner migration.
+  Initialization/growth shall remain frame-bounded and amortized. Activity,
+  protocol/session behavior, authorization/observers and keyspace accounting
+  shall remain unchanged; increased control-buffer memory shall be disclosed.

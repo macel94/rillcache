@@ -48,7 +48,7 @@ def fixture(root, control=None):
         directory = root / R.name_for(identity)
         directory.mkdir()
         before = {"pid": index + 1000, "start_ticks": 100, "user_ticks": 0, "system_ticks": 0,
-                  "clock_ticks_per_second": 100, "actual_cpus": m["cpus"], "threads": 1,
+                  "clock_ticks_per_second": 100, "actual_cpus": m["cpus"], "threads": 1, "rss_bytes": 123456,
                   "tasks": {"1": {"start_ticks": 100, "voluntary": 0, "involuntary": 0}}}
         after = copy.deepcopy(before)
         after["user_ticks"] = 900
@@ -167,7 +167,8 @@ class ReactorStudyTests(unittest.TestCase):
             path = root / name / "sample.json"
             saved = path.read_bytes()
             for change in (lambda s: s.update(valid=False), lambda s: s["metrics"].update(rps=9999),
-                           lambda s: s["after"].update(pid=42), lambda s: s["resources"].update(cpu_seconds=0)):
+                           lambda s: s["after"].update(pid=42), lambda s: s["resources"].update(cpu_seconds=0),
+                           lambda s: s["after"].update(rss_bytes=-1)):
                 sample = json.loads(saved)
                 change(sample)
                 common.save(path, sample)

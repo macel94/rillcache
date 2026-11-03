@@ -52,7 +52,7 @@ impl PollWindow {
 pub(super) struct Client {
     pub(super) stream: TcpStream,
     pub(super) session: Session,
-    pub(super) input: Vec<u8>,
+    pub(super) input: InputBuffer,
     pub(super) output: Vec<u8>,
     pub(super) sent: usize,
     pub(super) closing: bool,
@@ -121,13 +121,15 @@ impl Client {
             self.closing = true;
             return Ok(true);
         }
-        match self.stream.read(&mut chunk[..room]) {
+        match self
+            .input
+            .read_from(&mut self.stream, room, limits.max_frame_bytes)
+        {
             Ok(0) => {
                 self.eof = true;
                 Ok(true)
             }
-            Ok(size) => {
-                self.input.extend_from_slice(&chunk[..size]);
+            Ok(_) => {
                 self.activity = Instant::now();
                 #[cfg(test)]
                 ACTIVITY_CLOCK_READS.with(|reads| reads.set(reads.get() + 1));
@@ -279,7 +281,7 @@ impl Client {
         if consumed == self.input.len() {
             self.input.clear();
         } else if consumed > 0 {
-            self.input.drain(..consumed);
+            self.input.consume(consumed);
         }
         progress |= self.flush()?;
         if self.closing || !self.output.is_empty() || !need_input {
@@ -389,7 +391,7 @@ impl Client {
         if consumed == self.input.len() {
             self.input.clear();
         } else if consumed > 0 {
-            self.input.drain(..consumed);
+            self.input.consume(consumed);
         }
         progress |= self.flush()?;
         if migrate {
@@ -534,7 +536,7 @@ pub(super) fn serve(
             let client = Client {
                 stream,
                 session,
-                input: Vec::with_capacity(8192.min(config.limits.max_frame_bytes)),
+                input: Vec::with_capacity(8192.min(config.limits.max_frame_bytes)).into(),
                 output: Vec::with_capacity(8192),
                 sent: 0,
                 closing: false,
@@ -709,7 +711,7 @@ mod tests {
             Client {
                 stream,
                 session: Session::new(),
-                input,
+                input: input.into(),
                 output: Vec::new(),
                 sent: 0,
                 closing: false,
@@ -898,7 +900,7 @@ mod tests {
         let mut client = Client {
             stream,
             session: Session::new(),
-            input: b"*1\r\n$4\r\nPING\r\n".to_vec(),
+            input: b"*1\r\n$4\r\nPING\r\n".to_vec().into(),
             output: Vec::new(),
             sent: 0,
             closing: false,
