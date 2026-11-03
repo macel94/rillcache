@@ -28,7 +28,8 @@ batching optimum) plus a bounded non-blocking readiness poll. It merged as PR
 #172 (`21ed301`) after both four-CPU gates passed (section 2.13). A clean-runner
 upstream cohort then confirmed the merged default wins every measured row against
 Redis and Valkey, with the remaining gap in P1 CPU and run-to-run variance rather
-than rate (section 2.14). A gate pass on one head never substitutes for a fresh
+than rate (section 2.14); its P1 p99 is not consistently better and is an open
+AC5 risk (section 2.15). A gate pass on one head never substitutes for a fresh
 head, and every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
@@ -567,6 +568,35 @@ The next candidate, if any, should reduce P1 CPU/variance while preserving rate
 and p99; the 100 µs poll variant was already screened and rejected, and a
 count-only reactor change is not a substitute. Redis remains outside the required
 four-CPU comparison, so this advisory cohort does not turn into a gate claim.
+
+### 2.15 Merged-default tail behavior
+
+The merged one-reactor + bounded-poll default wins throughput consistently, but
+its P1 ping p99 is not consistently better than the C servers. The strict
+throughput gate does not fail on p99; AC5 still expects P1 batch p99 to be no more
+than 5% above the pre-change head or lower than Valkey's. The observed rows:
+
+| Cohort | Clients | P1 ping p99 ms Rillcache | Redis | Valkey | Dragonfly | Throughput vs Valkey |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| #172 final gate (run 41552051338) | 8 | 0.095 | — | 0.135 | 0.103 | +3.13% |
+| #174 docs gate (run 41560156879) | 8 | 0.103 | — | 0.151 | 0.103 | +11.27% |
+| #175 docs gate (run 41564296997) | 8 | 0.119 | — | 0.087 | 0.055 | +21.77% |
+| Clean-runner upstream (run 41563160515) | 16 | 0.119 | 0.111 | 0.111 | — | +7.10% |
+
+The p99 direction flips with the cohort while the throughput win does not. On
+the fastest #175 host Rillcache had 21.8% more throughput and a 37% worse p99
+than Valkey; on the #172/#174 hosts it had both higher throughput and lower p99.
+The clean-runner 16-client cohort shows a small, consistent p99 disadvantage
+(0.119 versus 0.111) alongside a lower p50 (0.071 versus 0.079).
+
+**Verdict:** do not claim a tail win for the merged default. The bounded poll
+keeps the reactor runnable to remove a wakeup, which can help typical latency
+while occasionally delaying a request behind the current pass; the effect is
+host-sensitive. AC5 remains an explicit design criterion even though the
+protected gate is throughput-only. A future poll/wakeup candidate must record
+per-request or batch p99 and be rejected if it regresses beyond AC5, even when
+throughput wins. The current default stays because its throughput and CPU
+evidence is strong and no measured alternative preserves both rate and tail.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -1304,6 +1334,10 @@ current roadmap; individual phases are separate increments.
   `c4d4698`, four-CPU run 41552051338 PASS Valkey 10/10 (P1 ping +3.13%) and
   Dragonfly 10/10 (+18.32%); original gate run 41552051280 PASS; merged as
   `21ed301`. Artifacts under `/root/perf-evidence/pr172/final/`.
+- Post-merge docs cohort (sections 2.14–2.15): PR #175 head `e75036b`, four-CPU
+  run 41564296997 PASS Valkey 10/10 (P1 ping 170,807.9 vs 140,275.0, +21.77%;
+  p99 0.119/0.087) and Dragonfly 10/10 (178,931.8 vs 170,517.6; p99
+  0.119/0.055); artifacts under `/root/perf-evidence/pr175/four-cpu/`.
 - Owner-local reactor and bounded poll (section 4.12): candidate default is one
   reactor plus a 20 µs zero-timeout window. Local frozen-binary diagnostic
   samples and the official `valkey-benchmark` screen are retained under
@@ -1348,6 +1382,11 @@ current roadmap; individual phases are separate increments.
   merged as PR #172 after passing both four-CPU gates (section 2.13). The
   remaining P1 question is host-sensitive measurement and other workloads, not a
   larger thread count.
+- P1 p99 is not consistently better under the merged bounded-poll default
+  (section 2.15). The throughput gate passes on medians, but AC5 remains a design
+  criterion: a future wakeup/poll change must measure p99 and reject a regression
+  beyond AC5 even when throughput improves. Do not claim a tail win from
+  throughput evidence.
 - The four-CPU runner used for the recent cohorts has `client_cpus` equal to
   `server_cpus` (`[0,1,2,3]`), so the load generator shares the server CPUs.
   That biases a multi-reactor server against a single-thread competitor and puts
