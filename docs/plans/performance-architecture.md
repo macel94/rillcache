@@ -361,8 +361,9 @@ needed to establish causality.
 A separate manual benchmark run (41477114469, tested source `9692e07`, 180
 validated records, three repetitions, AMD EPYC 9V45, Redis 8.10.2 and Valkey
 9.1.2 with the pinned generator) measured the same five commands at P1/P16 and
-one-core budgets. It is **not** the protected gate and its generated report is
-not merged; the deterministic tables are retained at
+one-core budgets. It is **not** the protected gate; its generated report is now
+on main (`63e1f20`, PR #168), while the deterministic tables below come from
+the run artifact retained at
 `/root/perf-evidence/manual-41477114469/report.md`.
 
 | Workload | Rillcache | Redis | Valkey | Rill lead vs Redis/Valkey |
@@ -1393,8 +1394,9 @@ current roadmap; individual phases are separate increments.
 - Manual cohort (section 2.11): run 41477114469 against source `9692e07`,
   180 validated records, Redis/Valkey/Rillcache five workloads at P1/P16 and
   one-core; deterministic tables retained at
-  `/root/perf-evidence/manual-41477114469/report.md`. The generated report PR is
-  not a gate and was not merged into this record.
+  `/root/perf-evidence/manual-41477114469/report.md`. The generated report is now
+  merged as `63e1f20` (PR #168); it is not a gate, and this record still uses the
+  run artifact rather than the report as performance evidence.
 - Hosted reactor diagnostic (section 4.11): runs 41500430375 (72 samples) and
   41507264904 (108) completed with frozen binaries and matched-thread /proc
   counters. Both selector variants were rejected, with losses retained. They are
