@@ -264,7 +264,6 @@ impl Reactor {
                     eof: false,
                     retry_io: false,
                     activity: Instant::now(),
-                    activity_batch: None,
                     _permit: Some(Permit::acquire(&self.admitted)),
                     shutdown_on_drop: true,
                     pubsub: receiver,

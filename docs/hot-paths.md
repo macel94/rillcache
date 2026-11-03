@@ -414,18 +414,6 @@ This is a general whole-program optimization for cross-module inlining of the
 session/store/RESP path, not a benchmark-specific mode or a safety relaxation.
 Build time increases; `make ci` still enforces the same tests and smoke benchmarks.
 
-## Managed I/O activity clock
-
-A managed `Client::poll` coalesces successful nonzero receive/flush activity into
-one timestamp at completion of that bounded client pass. It does not retain a
-visited-client queue or do a second reactor-slot lookup. Standalone receive/flush
-and connection-local worker passes retain immediate updates.
-
-This is completion-of-I/O-processing bookkeeping, not an exact wire timestamp.
-Mere buffered/protocol progress, EOF and WouldBlock do not refresh inactivity;
-returned errors clear batching state. Idle timeout values, selector waits,
-command/I/O quanta and key-expiry clocks are unchanged.
-
 ## Owner-migration socket workers (S-SOCKET-WORKERS)
 
 Dragonfly v2.0.2 starts four io_uring proactor threads on the four-CPU gate. Its

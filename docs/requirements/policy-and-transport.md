@@ -427,9 +427,3 @@ platforms retain timeout-based fallback admission.
   timeout, max clients, session isolation and joined shutdown. Documentation
   shall state that no key is sharded, no per-command owner hop is added, and that
   protected-gate evidence decides any throughput claim.
-- **R-SOCKET4 (state-driven):** While a managed I/O pass is active, successful
-  nonzero reads/writes shall commit one activity timestamp at pass completion,
-  never before the I/O being serviced. Buffered-only progress, EOF, WouldBlock
-  and unsuccessful I/O shall not refresh inactivity. A returned error shall clear
-  batching; standalone operations shall retain immediate activity updates. Key
-  expiry, timeout settings, bounded work and actual I/O shall remain unchanged.

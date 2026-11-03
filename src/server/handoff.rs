@@ -265,7 +265,6 @@ impl Sharing {
                 eof: false,
                 retry_io: false,
                 activity: Instant::now(),
-                activity_batch: None,
                 _permit: None,
                 shutdown_on_drop: false,
                 pubsub: std::sync::mpsc::sync_channel(1).1,
