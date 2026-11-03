@@ -12,6 +12,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tarfile
 import time
 
 if not __debug__:
@@ -104,21 +105,33 @@ def build_reference():
         assert re.search(r'(?:\bv=|\s)' + re.escape(version) + r'(?:\s|$)',
                          (version_log / 'stdout.log').read_text()), 'cached reference version differs'
         shutil.copy2(cache / name, BIN / name)
-    G['save'](OUT / 'reference-identity.json', {**saved, 'cache_reused': reused})
+    # Binary evidence includes the pinned upstream notice even on cache reuse.
+    # Read only this bounded regular member from the already-verified archive.
+    with tarfile.open(archive, 'r:gz') as source:
+        member = source.getmember(f'valkey-{version}/COPYING')
+        assert member.isfile() and 0 < member.size <= 65536, 'invalid upstream notice'
+        with source.extractfile(member) as notice:
+            (BIN / 'VALKEY-COPYING').write_bytes(notice.read(member.size))
+    G['save'](OUT / 'reference-identity.json', {**saved, 'cache_reused': reused,
+              'notice_sha256': G['digest'](BIN / 'VALKEY-COPYING')})
 
 
-def build_sources():
+def build_sources(mechanism_control=None):
+    sources = [('baseline', BASE), ('candidate', CANDIDATE)]
+    if mechanism_control:
+        sources.append(('mechanism-control', mechanism_control))
     G['save'](OUT / 'initial.json', {'diagnostic_only': True, 'complete': False,
-                                   'base': BASE, 'candidate': CANDIDATE})
-    COMMON.checked(['git', 'fetch', '--no-tags', 'origin', BASE, CANDIDATE], OUT / 'fetch', timeout=180)
+                                   'base': BASE, 'candidate': CANDIDATE, 'sources': dict(sources)})
+    COMMON.checked(['git', 'fetch', '--no-tags', 'origin', *[sha for _, sha in sources]], OUT / 'fetch', timeout=180)
     BIN.mkdir(parents=True, exist_ok=False)
     # Reuse one absolute source/build path; freeze each binary before overlaying.
     # No deleted source may survive an overlay and contaminate the candidate.
-    deleted = subprocess.check_output(['git', 'diff', '--diff-filter=D', '--name-only', BASE, CANDIDATE], cwd=ROOT)
-    assert not deleted, 'source deletions require a fresh extraction strategy'
+    for (_, before), (_, after) in zip(sources, sources[1:]):
+        deleted = subprocess.check_output(['git', 'diff', '--diff-filter=D', '--name-only', before, after], cwd=ROOT)
+        assert not deleted, 'source deletions require a fresh extraction strategy'
     tree = Path(os.environ['RUNNER_TEMP']) / 'rillcache-dev-performance-source'
     tree.mkdir()
-    for name, sha in [('baseline', BASE), ('candidate', CANDIDATE)]:
+    for name, sha in sources:
         archive = subprocess.Popen(['git', 'archive', sha], cwd=ROOT, stdout=subprocess.PIPE)
         try:
             subprocess.run(['tar', '-x', '-C', str(tree)], stdin=archive.stdout, check=True, timeout=120)
@@ -128,9 +141,9 @@ def build_sources():
                 raise RuntimeError('source archive failed')
         compile_application(tree, name)
         shutil.copy2(tree / 'target/release/rillcache', BIN / name)
-    assert G['digest'](BIN / 'baseline') != G['digest'](BIN / 'candidate'), 'known code-generating revisions produced the same binary'
+    assert len({G['digest'](BIN / name) for name, _ in sources}) == len(sources), 'known code-generating revisions produced the same binary'
     build_reference()
-    return {name: str((BIN / name).resolve()) for name in ('baseline', 'candidate', 'valkey', 'generator')}
+    return {name: str((BIN / name).resolve()) for name in (*[name for name, _ in sources], 'valkey', 'generator')}
 
 
 def perf_tool():

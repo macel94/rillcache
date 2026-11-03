@@ -416,17 +416,14 @@ Build time increases; `make ci` still enforces the same tests and smoke benchmar
 
 ## Managed I/O activity clock
 
-The single-owner Mio frontend shares one completion timestamp across successful
-nonzero socket I/O in a bounded reactor turn. It tracks at most `RUN_QUANTUM`
-visited keys, checks their generation tokens and never scans idle slots or grows
-an unbounded queue. Pending fresh I/O cannot expire against an older timestamp;
-it is committed before migration. Outside a caller-owned turn, `Client::poll`
-coalesces receive/flush timestamps into one completion update. Standalone I/O
-outside a batch retains immediate updates.
+A managed `Client::poll` coalesces successful nonzero receive/flush activity into
+one timestamp at completion of that bounded client pass. It does not retain a
+visited-client queue or do a second reactor-slot lookup. Standalone receive/flush
+and connection-local worker passes retain immediate updates.
 
 This is completion-of-I/O-processing bookkeeping, not an exact wire timestamp.
 Mere buffered/protocol progress, EOF and WouldBlock do not refresh inactivity;
-returned errors clear pending state. Idle timeout values, selector waits,
+returned errors clear batching state. Idle timeout values, selector waits,
 command/I/O quanta and key-expiry clocks are unchanged.
 
 ## Owner-migration socket workers (S-SOCKET-WORKERS)

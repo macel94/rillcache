@@ -15,27 +15,35 @@ R = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(R)
 
 
-def fixture(root):
+def fixture(root, control=None):
+    variants = R.variants_for(control)
     contract = {"selected_cpus": [0, 1, 2, 3], "rust": f"rustc {common.PINS['rust']} (fixture)", "build_environment": {}}
     m = {"diagnostic_only": True, "complete": True, "base_source": "a" * 40, "candidate_source": "b" * 40,
          "hardware_contract": contract, "hardware_fingerprint": R.D.HARDWARE["fingerprint"](contract),
          "cpus": [0, 1, 2, 3], "launch_directory": str(root), "binaries": {}, "binary_sha256": {}}
+    if control is not None:
+        m["mechanism_control_source"] = control
     (root / "frozen-binaries").mkdir()
-    for name in (*R.VARIANTS, "generator"):
+    for name in (*variants, "generator"):
         path = root / "frozen-binaries" / name
         path.write_text("synthetic fixture only: " + name)
         m["binaries"][name] = str(path)
         m["binary_sha256"][name] = common.digest(path)
-    for name in ("baseline", "candidate"):
+    for name in variants:
+        if name == "valkey":
+            continue
         path = root / "build" / name
         path.mkdir(parents=True)
         (path / "stderr.log").write_text("Compiling rillcache v0.1.0 (fixture, not a real build)\n")
+    notice = root / "frozen-binaries/VALKEY-COPYING"
+    notice.write_text("synthetic notice fixture, not a redistributed binary")
     common.save(root / "reference-identity.json", {
+        "notice_sha256": common.digest(notice),
         "identity": {"hardware_fingerprint": m["hardware_fingerprint"],
                      "source_archive_sha256": common.PINS["upstreams"]["valkey"]["sha256"]},
         "binary_sha256": {k: m["binary_sha256"][k] for k in ("valkey", "generator")}})
     samples = []
-    for index, identity in enumerate(R.identities()):
+    for index, identity in enumerate(R.identities(variants)):
         mode, workload, pipeline, run, variant = identity
         directory = root / R.name_for(identity)
         directory.mkdir()
@@ -47,7 +55,7 @@ def fixture(root):
         after["tasks"]["1"]["voluntary"] = 100
         after["tasks"]["1"]["involuntary"] = 10
         port = index + 20000
-        metrics = {"rps": float(100 + R.VARIANTS.index(variant)), "min_latency_ms": .001,
+        metrics = {"rps": float(100 + variants.index(variant)), "min_latency_ms": .001,
                    "p50_latency_ms": .002, "p95_latency_ms": .003, "p99_latency_ms": .004,
                    "max_latency_ms": .005, "avg_latency_ms": .002}
         valid = {"validated_keys": 0 if workload == "ping" else 1024, "ping": True}
@@ -71,7 +79,7 @@ def fixture(root):
                 f'"{title}",' + ','.join(str(metrics[x]) for x in header[1:]) + '\n')
             (path / "stderr.log").write_text("")
         samples.append(s)
-    rows = R.rows_for(samples)
+    rows = R.rows_for(samples, variants)
     common.save(root / "results.json", rows)
     (root / "summary.md").write_text(R.report(rows))
     m["evidence_sha256"] = R.D.evidence_hashes(root)
@@ -90,6 +98,35 @@ class ReactorStudyTests(unittest.TestCase):
                     case = [i for i in ids if i[:3] == (mode, workload, pipeline)]
                     for position in range(3):
                         self.assertEqual(set(R.VARIANTS), {case[i][4] for i in range(position, 9, 3)})
+
+    def test_optional_rejected_control_is_balanced_in_four_positions(self):
+        variants = R.variants_for("c" * 40)
+        ids = list(R.identities(variants))
+        self.assertEqual(192, len(ids))
+        self.assertEqual(192, len(set(ids)))
+        for mode in R.MODES:
+            for workload in R.WORKLOADS:
+                for pipeline in R.PIPELINES:
+                    case = [i for i in ids if i[:3] == (mode, workload, pipeline)]
+                    for position in range(4):
+                        self.assertEqual(set(variants), {case[i][4] for i in range(position, 16, 4)})
+
+    def test_optional_control_fixture_requires_distinct_source_and_actual_rebuild(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            m, rows, samples = fixture(root, "c" * 40)
+            self.assertEqual(192, len(samples))
+            self.assertEqual(rows, R.check(root))
+            m["mechanism_control_source"] = m["candidate_source"]
+            common.save(root / "manifest.json", m)
+            with self.assertRaisesRegex(ValueError, "source identity"):
+                R.check(root)
+            m["mechanism_control_source"] = "c" * 40
+            (root / "build/mechanism-control/stderr.log").write_text("Finished release; stale fixture\n")
+            m["evidence_sha256"] = R.D.evidence_hashes(root)
+            common.save(root / "manifest.json", m)
+            with self.assertRaisesRegex(ValueError, "not rebuilt"):
+                R.check(root)
 
     def test_one_worker_control_never_changes_reference_or_default_launch(self):
         default = R.server_argv("/binary", "baseline", "default", 1234, [0, 1, 2, 3], Path("/tmp/sample"))
@@ -143,6 +180,16 @@ class ReactorStudyTests(unittest.TestCase):
                 common.save(root / "manifest.json", m)
             (root / "frozen-binaries/candidate").write_text("changed binary")
             with self.assertRaises(ValueError):
+                R.check(root)
+
+    def test_rehashed_reference_notice_corruption_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            m, _, _ = fixture(root)
+            (root / "frozen-binaries/VALKEY-COPYING").write_text("changed notice")
+            m["evidence_sha256"] = R.D.evidence_hashes(root)
+            common.save(root / "manifest.json", m)
+            with self.assertRaisesRegex(ValueError, "reference identity"):
                 R.check(root)
 
     def test_manual_actions_guard_fails_before_builds(self):

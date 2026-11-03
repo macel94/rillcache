@@ -20,6 +20,9 @@ on:
       reactor_base:
         description: 'Exact baseline SHA for the reactor diagnostic'
         type: string
+      reactor_control:
+        description: 'Optional exact rejected-implementation SHA for a four-way mechanism comparison (diagnostic only)'
+        type: string
       daily:
         description: 'Complete five-server daily comparison (disable for the legacy three-server study)'
         type: boolean
@@ -101,7 +104,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.reactor_diagnostic && !inputs.reactor_profile }}
     name: Same-job reactor baseline candidate diagnostic
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,9 +129,10 @@ jobs:
       - name: Fresh production builds and matched P1 P16 default and explicit one/four-worker controls
         env:
           BASE: ${{ inputs.reactor_base }}
+          MECHANISM_CONTROL: ${{ inputs.reactor_control }}
           HARDWARE: ${{ steps.machine.outputs.fingerprint }}
         run: |
-          python3 scripts/reactor-study.py --base "$BASE" --candidate "$GITHUB_SHA" --expected-hardware "$HARDWARE"
+          python3 scripts/reactor-study.py --base "$BASE" --candidate "$GITHUB_SHA" --mechanism-control "$MECHANISM_CONTROL" --expected-hardware "$HARDWARE"
           python3 scripts/reactor-study.py --check target/upstream/evidence/reactor-study
       - name: Retain frozen controls and every result including losses
         if: always()

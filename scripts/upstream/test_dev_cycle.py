@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import runpy
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -245,7 +246,13 @@ class ReferenceCacheTests(unittest.TestCase):
             (root / 'benchmarks').mkdir()
             (root / 'Makefile').write_text('synthetic makefile')
             (root / 'benchmarks/targets.mk').write_text('synthetic pins')
-            payload = b'synthetic source archive'
+            notice = b'synthetic pinned upstream notice, not a real binary distribution'
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode='w:gz') as package:
+                member = tarfile.TarInfo('valkey-9.1.2/COPYING')
+                member.size = len(notice)
+                package.addfile(member, io.BytesIO(notice))
+            payload = buffer.getvalue()
             pin = {'version': '9.1.2', 'sha256': D['hashlib'].sha256(payload).hexdigest(), 'url': 'unused'}
             archive = root / f'target/upstream-downloads/valkey-9.1.2-{pin["sha256"]}.tar.gz'
             archive.parent.mkdir(parents=True)
@@ -267,6 +274,9 @@ class ReferenceCacheTests(unittest.TestCase):
                  patch.object(D['COMMON'], 'PINS', {'upstreams': {'valkey': pin}}), \
                  patch.object(D['COMMON'], 'checked', side_effect=checked) as command:
                 function()
+                self.assertEqual((frozen / 'VALKEY-COPYING').read_bytes(), notice)
+                self.assertEqual(G['read_json'](root / 'evidence/reference-identity.json')['notice_sha256'],
+                                 G['digest'](frozen / 'VALKEY-COPYING'))
                 self.assertEqual(sum(call.args[0][0] == 'make' for call in command.call_args_list), 2)
                 cache = next((root / 'target/dev-reference-cache').iterdir())
                 if damage:
@@ -278,6 +288,7 @@ class ReferenceCacheTests(unittest.TestCase):
                     function()
                     self.assertEqual(sum(call.args[0][0] == 'make' for call in command.call_args_list), 2)
                     self.assertTrue(G['read_json'](root / 'evidence/reference-identity.json')['cache_reused'])
+                    self.assertEqual((frozen / 'VALKEY-COPYING').read_bytes(), notice)
 
     def test_verified_unchanged_reference_is_not_rebuilt(self):
         self.exercise()

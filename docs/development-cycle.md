@@ -67,11 +67,15 @@ one/four-worker Rillcache modes, P1/P16, and three Latin-rotated repetitions (10
 samples). Capture the allocated hardware/software fingerprint **before builds**;
 require it unchanged afterward. Do not select/rerun a hardware cohort for wins.
 This is not the isolated fixed-host study below, dedicated hardware, or a gate.
+An optional exact `reactor_control` SHA includes a rejected implementation as a
+mechanism control: all four binaries run in four Latin rotations (192 samples),
+with its own fresh same-path build and frozen identity. This control is not a
+new reference or a way to promote a previously rejected result.
 
 The build helper package-cleans the application before each same-path rebuild,
-requires real compilation and freezes both binaries. Raw CSV, executable hashes,
+requires real compilation and freezes every application binary. Raw CSV, executable hashes,
 source/argv/affinity/lifecycle identity and /proc CPU plus matched-thread scheduler
-snapshots are retained. Counters bracket, rather than instrument, timed traffic;
+snapshots are retained. The pinned upstream notice accompanies frozen reference binaries. Counters bracket, rather than instrument, timed traffic;
 thread churn yields unknown scheduler coverage, not invented zero switches.
 Shared-runner noise remains; a subset improvement cannot replace current-head
 required checks or support a universal win. Revalidate historical artifacts with

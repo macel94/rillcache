@@ -26,13 +26,17 @@ PIPELINES = (1, 16)
 SAFE_ENV = {"PATH": os.environ["PATH"], "LANG": "C", "LC_ALL": "C"}
 
 
-def identities():
+def variants_for(mechanism_control):
+    return (*VARIANTS[:-1], "mechanism-control", VARIANTS[-1]) if mechanism_control else VARIANTS
+
+
+def identities(variants=VARIANTS):
     for mode in MODES:
         for workload in WORKLOADS:
             for pipeline in PIPELINES:
-                for run in range(1, 4):
+                for run in range(1, len(variants) + 1):
                     offset = run - 1
-                    for variant in VARIANTS[offset:] + VARIANTS[:offset]:
+                    for variant in variants[offset:] + variants[:offset]:
                         yield mode, workload, pipeline, run, variant
 
 
@@ -141,14 +145,14 @@ def sample(binaries, identity, cpus, directory):
         C.save(directory / "sample.json", result)
 
 
-def rows_for(samples):
-    G["ensure"]([s["identity"] for s in samples] == [list(i) for i in identities()], "incomplete/reordered diagnostic")
+def rows_for(samples, variants=VARIANTS):
+    G["ensure"]([s["identity"] for s in samples] == [list(i) for i in identities(variants)], "incomplete/reordered diagnostic")
     rows = []
     for mode in MODES:
         for workload in WORKLOADS:
             for pipeline in PIPELINES:
                 values = {}
-                for variant in VARIANTS:
+                for variant in variants:
                     records = [s for s in samples if s["identity"][:3] == [mode, workload, pipeline] and s["identity"][4] == variant]
                     rates = [s["metrics"]["rps"] for s in records]
                     values[variant] = {"median": statistics.median(rates), "min": min(rates), "max": max(rates),
@@ -163,8 +167,12 @@ def rows_for(samples):
 
 
 def report(rows):
+    count = len(rows[0]["servers"])
+    scope = ("108 uninstrumented ten-second samples; baseline/candidate/Valkey in three Latin-rotated repetitions; "
+             if count == 3 else "192 uninstrumented ten-second samples; baseline/candidate/rejected mechanism-control/Valkey "
+             "in four Latin-rotated repetitions; ")
     text = ["# Same-job reactor A/B diagnostic — NOT a merge gate", "",
-            "108 uninstrumented ten-second samples; baseline/candidate/Valkey in three Latin-rotated repetitions; "
+            scope +
             "PING/GET P1/P16, default vs explicit one/four Rillcache socket workers, same shared four logical CPUs and official generator. "
             "Hardware/software fingerprint is captured BEFORE building and checked unchanged afterward; hosted runners "
             "are not dedicated/stable hardware. This is distinct from isolated fixed-host screening.", "",
@@ -191,21 +199,25 @@ def check(root):
     G["ensure"](m["evidence_sha256"] == D.evidence_hashes(root), "raw evidence hash differs")
     D.HARDWARE["require_match"](m["hardware_contract"], m["hardware_fingerprint"])
     D.validate_build_environment(m["hardware_contract"])
-    G["ensure"](m["base_source"] != m["candidate_source"] and all(re.fullmatch(r"[0-9a-f]{40}", m[k])
-           for k in ("base_source", "candidate_source")), "source identity differs")
+    control = m.get("mechanism_control_source")
+    sources = [m["base_source"], m["candidate_source"], *([control] if control is not None else [])]
+    G["ensure"](len(set(sources)) == len(sources) and all(re.fullmatch(r"[0-9a-f]{40}", s) for s in sources), "source identity differs")
+    variants = variants_for(control)
     G["ensure"](m["cpus"] == m["hardware_contract"]["selected_cpus"], "placement differs")
-    G["ensure"](set(m["binaries"]) == {*VARIANTS, "generator"} == set(m["binary_sha256"]), "binary roles differ")
-    G["ensure"](len(set(m["binary_sha256"].values())) == 4, "binary roles reused")
+    G["ensure"](set(m["binaries"]) == {*variants, "generator"} == set(m["binary_sha256"]), "binary roles differ")
+    G["ensure"](len(set(m["binary_sha256"].values())) == len(variants) + 1, "binary roles reused")
     for name, expected in m["binary_sha256"].items():
         G["ensure"](C.digest(root / "frozen-binaries" / name) == expected, "frozen binary changed")
-    for name in ("baseline", "candidate"):
-        G["ensure"]("Compiling rillcache v" in (root / "build" / name / "stderr.log").read_text(), "application not rebuilt")
+    for name in variants:
+        if name != "valkey":
+            G["ensure"]("Compiling rillcache v" in (root / "build" / name / "stderr.log").read_text(), "application not rebuilt")
     ref = G["read_json"](root / "reference-identity.json")
     G["ensure"](ref["identity"]["hardware_fingerprint"] == m["hardware_fingerprint"] and
                 ref["identity"]["source_archive_sha256"] == C.PINS["upstreams"]["valkey"]["sha256"] and
-                ref["binary_sha256"] == {k: m["binary_sha256"][k] for k in ("valkey", "generator")}, "reference identity differs")
+                ref["binary_sha256"] == {k: m["binary_sha256"][k] for k in ("valkey", "generator")} and
+                C.digest(root / "frozen-binaries/VALKEY-COPYING") == ref["notice_sha256"], "reference identity differs")
     samples = []
-    for identity in identities():
+    for identity in identities(variants):
         mode, workload, pipeline, _, variant = identity
         directory = root / name_for(identity)
         s, server = G["read_json"](directory / "sample.json"), G["read_json"](directory / "server.json")
@@ -226,7 +238,7 @@ def check(root):
             metrics = G["read_generator"](directory / phase, workload, argv)
             G["ensure"](s["warmup" if phase == "warmup" else "metrics"] == metrics, "CSV differs")
         samples.append(s)
-    rows = rows_for(samples)
+    rows = rows_for(samples, variants)
     G["ensure"](G["read_json"](root / "results.json") == rows and (root / "summary.md").read_text() == report(rows), "derived results differ")
     return rows
 
@@ -235,6 +247,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base")
     parser.add_argument("--candidate")
+    parser.add_argument("--mechanism-control", help="Optional exact rejected-implementation SHA; four balanced repetitions")
     parser.add_argument("--expected-hardware")
     parser.add_argument("--check", type=Path)
     args = parser.parse_args()
@@ -242,10 +255,14 @@ def main():
         print(report(check(args.check)))
         return
     G["ensure"](os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch", "manual Actions diagnostic only")
-    G["ensure"](all(re.fullmatch(r"[0-9a-f]{40}", value or "") for value in (args.base, args.candidate)) and args.base != args.candidate, "distinct exact source SHAs required")
+    control = args.mechanism_control or None
+    sources = [args.base, args.candidate, *([control] if control else [])]
+    G["ensure"](all(re.fullmatch(r"[0-9a-f]{40}", value or "") for value in sources) and len(set(sources)) == len(sources), "distinct exact source SHAs required")
+    variants = variants_for(control)
     G["ensure"](subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip() == args.candidate, "checkout is not candidate source")
     OUT.mkdir(parents=True, exist_ok=False)
-    m = {"diagnostic_only": True, "complete": False, "base_source": args.base, "candidate_source": args.candidate}
+    m = {"diagnostic_only": True, "complete": False, "base_source": args.base, "candidate_source": args.candidate,
+         "mechanism_control_source": control}
     C.save(OUT / "manifest.json", m)
     try:
         contract = D.HARDWARE["probe"]()
@@ -254,18 +271,18 @@ def main():
         m.update(hardware_contract=contract, hardware_fingerprint=fingerprint, cpus=contract["selected_cpus"], launch_directory=str(OUT))
         C.save(OUT / "manifest.json", m)
         D.OUT, D.BIN, D.BASE, D.CANDIDATE = OUT, OUT / "frozen-binaries", args.base, args.candidate
-        binaries = D.build_sources()
+        binaries = D.build_sources(control)
         hashes = {name: C.digest(path) for name, path in binaries.items()}
         m.update(binaries=binaries, binary_sha256=hashes)
         samples = []
-        for identity in identities():
+        for identity in identities(variants):
             G["ensure"](all(C.digest(path) == hashes[name] for name, path in binaries.items()), "binary changed during diagnostic")
             directory = OUT / name_for(identity)
             sample(binaries, identity, m["cpus"], directory)
             samples.append(G["read_json"](directory / "sample.json"))
             print(name_for(identity), "validated", flush=True)
         D.HARDWARE["require_match"](D.HARDWARE["probe"](), fingerprint)
-        rows = rows_for(samples)
+        rows = rows_for(samples, variants)
         C.save(OUT / "results.json", rows)
         (OUT / "summary.md").write_text(report(rows))
         m.update(complete=True, evidence_sha256=D.evidence_hashes(OUT))

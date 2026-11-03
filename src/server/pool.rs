@@ -124,18 +124,8 @@ impl Client {
         }
     }
 
-    pub(super) fn finish_activity_batch(&mut self, timestamp: &mut Option<Instant>) {
-        if self.activity_batch == Some(true) {
-            self.activity = *timestamp.get_or_insert_with(Self::activity_now);
-            self.activity_batch = Some(false);
-        }
-    }
-
     pub(super) fn open(&self, progress: bool, timeout: Duration) -> Option<bool> {
-        // I/O in this caller-owned turn has not been timestamped yet. It must
-        // not expire against an older timestamp before turn completion.
-        (progress || self.activity_batch == Some(true) || self.activity.elapsed() < timeout)
-            .then_some(progress)
+        (progress || self.activity.elapsed() < timeout).then_some(progress)
     }
 
     /// At most one bounded socket read per client/pass.
@@ -178,18 +168,12 @@ impl Client {
         config: &Config,
         chunk: &mut [u8],
     ) -> io::Result<Option<bool>> {
-        let own_batch = self.activity_batch.is_none();
-        if own_batch {
-            self.activity_batch = Some(false);
-        }
+        self.activity_batch = Some(false);
         let result = self.poll_inner(store, config, chunk);
-        // A reactor owns a wider bounded turn; fixed-worker/lease callers own
-        // only this pass. Neither mode timestamps buffered-only CPU progress.
-        if own_batch || result.is_err() {
-            self.finish_activity_batch(&mut None);
-        }
-        if own_batch {
-            self.activity_batch = None;
+        // Commit once at this client's pass completion, including on returned
+        // errors. Buffered-only CPU progress never sets the I/O activity flag.
+        if self.activity_batch.take() == Some(true) {
+            self.activity = Self::activity_now();
         }
         result
     }
@@ -838,49 +822,6 @@ mod tests {
         assert_eq!(client.poll(&store, &config, &mut [0; 128]).unwrap(), None);
         assert!(client.activity_batch.is_none());
         ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 0));
-    }
-
-    #[test]
-    fn caller_owned_turn_shares_one_timestamp_and_cannot_expire_fresh_io() {
-        let (mut first, _first_peer) = test_client(Vec::new());
-        let (mut second, _second_peer) = test_client(Vec::new());
-        let old = Instant::now() - Duration::from_secs(2);
-        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
-        for client in [&mut first, &mut second] {
-            client.activity = old;
-            client.activity_batch = Some(false);
-            client.output.extend_from_slice(b"reply");
-            assert!(client.flush().unwrap());
-            assert_eq!(client.activity, old);
-            assert_eq!(client.open(false, Duration::from_millis(1)), Some(false));
-            let config = Config {
-                idle_timeout: Duration::from_millis(1),
-                ..Config::default()
-            };
-            assert_eq!(
-                client
-                    .poll(&Store::new(1024), &config, &mut [0; 128])
-                    .unwrap(),
-                Some(false)
-            );
-            assert_eq!(
-                client.activity_batch,
-                Some(true),
-                "a later visit must not discard pending I/O"
-            );
-        }
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 0));
-        let start = Instant::now();
-        let mut stamp = None;
-        first.finish_activity_batch(&mut stamp);
-        second.finish_activity_batch(&mut stamp);
-        assert!(first.activity >= start);
-        assert_eq!(first.activity, second.activity);
-        assert_eq!(first.activity_batch, Some(false));
-        assert_eq!(second.activity_batch, Some(false));
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
-        first.finish_activity_batch(&mut stamp);
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
     }
 
     #[test]
