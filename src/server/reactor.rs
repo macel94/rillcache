@@ -20,11 +20,13 @@ const STOP_TICK: Duration = Duration::from_millis(10);
 const ASYNC_TICK: Duration = Duration::from_millis(1);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
 /// After a productive pass the next request for a client we just answered is
-/// usually already in flight. One short timed wait lets the kernel absorb it,
-/// which avoids a sleep/wake cycle per command at pipeline 1. It replaces a
-/// blocking wait rather than adding one, and it only runs when the runnable
-/// queue is empty, so an idle server still parks for the full stop tick.
-const FAST_WAIT: Duration = Duration::from_micros(8);
+/// usually already in flight. Staying runnable for at most this long lets the
+/// reactor observe that arrival without a sleep/wake round trip, which is the
+/// dominant remaining cost of a pipeline-1 round trip. The window is renewed
+/// only by real work and only when the runnable queue is empty, so an idle
+/// server still parks for the full stop tick; under sustained pipeline-1 load
+/// the reactor deliberately trades one busy CPU for a shorter round trip.
+const FAST_POLL: Duration = Duration::from_micros(20);
 
 /// An index is reusable, but its full, non-recycled selector token is not.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -500,10 +502,22 @@ impl<E: Execution> Reactor<E> {
                 }
             }
             if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
-                match self.poll.poll(&mut events, Some(FAST_WAIT)) {
-                    Ok(()) => self.ingest(&events),
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => return Err(error),
+                let deadline = Instant::now() + FAST_POLL;
+                loop {
+                    match self.poll.poll(&mut events, Some(Duration::ZERO)) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                        Err(error) => return Err(error),
+                    }
+                    self.ingest(&events);
+                    if self.accept_ready
+                        || !self.ready.is_empty()
+                        || self.stopping.load(Ordering::Acquire)
+                        || Instant::now() >= deadline
+                    {
+                        break;
+                    }
+                    std::hint::spin_loop();
                 }
             }
         }

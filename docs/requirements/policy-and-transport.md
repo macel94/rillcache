@@ -406,12 +406,17 @@ platforms retain timeout-based fallback admission.
 ## Owner-migration socket workers (S-SOCKET-WORKERS)
 
 - **R-SOCKET1 (event-driven):** When Rillcache starts plain Unix TCP without fixed
-  workers, TLS-only routing, Tokio or multi-owner execution, it shall run
-  `min(4, allowed CPUs)` reactors by default; `--socket-workers 1..16` shall
-  override that count. One reactor shall keep the owner-local data executor and
-  all data commands; worker reactors shall own disjoint accepted connections and
-  execute only bare connection-local commands. `--socket-workers 1` shall retain
-  the single owner-local reactor.
+  workers, TLS-only routing, Tokio or multi-owner execution, it shall run one
+  owner-local reactor by default; `--socket-workers 1..16` shall override that
+  count, and `2..=16` shall add connection-local worker reactors. One reactor
+  shall keep the owner-local data executor and all data commands; worker reactors
+  shall own disjoint accepted connections and execute only bare connection-local
+  commands.
+- **R-SOCKET3 (bounded latency poll):** When a plain readiness reactor has just
+  serviced at least one request, has no queued client and no pending accept, it
+  shall keep polling readiness without blocking for at most 20 µs before parking
+  for the normal stop tick. The window shall be renewed only by serviced work, so
+  an idle server parks immediately, and it shall never delay stopping.
 - **R-SOCKET2 (state-driven):** Before a worker executes the first data command on
   a connection, it shall flush prior replies, deregister the socket, transfer the
   session and unparsed input, and hand the connection to the owner reactor, which
