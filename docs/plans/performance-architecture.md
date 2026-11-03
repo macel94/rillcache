@@ -31,10 +31,12 @@ Redis and Valkey, with the remaining gap in P1 CPU and run-to-run variance rathe
 than rate (section 2.14); its P1 p99 is not consistently better and is an open
 AC5 risk (section 2.15). Candidate 4.13 (adaptive bounded poll) is closed: the
 miss-based and fixed-window variants are rejected analytically, and a measured
-hybrid busy/sleep split did not reduce CPU and worsened p99. The ~95% P1 CPU is
-the deliberate price of the P1 win; further reduction needs a mechanism outside
-the safe-Rust/Mio boundary (section 4.13). No gate pass substitutes for a fresh
-head, and every dependency still needs explicit review.
+hybrid busy/sleep split did not reduce CPU and worsened p99. The P1 busy-window
+cost and variance are the deliberate price of the P1 win; the headline 95% total
+is mostly the higher rate, with a small host-sensitive per-command difference.
+Further reduction needs a mechanism outside the safe-Rust/Mio boundary (section
+4.13). No gate pass substitutes for a fresh head, and every dependency still
+needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -566,14 +568,24 @@ the reactor stays runnable to remove a sleep/wake pair. At P16 the CPU use is
 comparable (88–98% versus 86–96%) and the rate lead is much larger. RSS is lower
 than both references (about 5.4–6.2 MiB versus 6.6–7.3 MiB).
 
+CPU percentage is not directly comparable when rates differ. Dividing the
+reported one-CPU percentage by the measured rate gives approximately 8.1 µs per
+command for Rillcache (0.951 / 117,349) versus 7.4 for Redis (0.820 / 110,193)
+and 7.4 for Valkey (0.816 / 109,569): about 9% more per command, not a 13-point
+deficit. Most of the higher total CPU is the 6.5% higher rate. The earlier manual
+cohort measured the opposite per-command ordering (8.6 versus 9.0 and 8.8 µs),
+so this metric is also host-sensitive. Treat the per-command CPU gap as small and
+unresolved, not as a large inefficiency.
+
 **Verdict:** the merged architecture is confirmed as the right throughput
 direction on a clean host, including against Redis, which the protected gate does
 not compare. Do not trade the P1 win back for CPU without a measured alternative.
-The P1 CPU/variance gap is the measured cost of the bounded poll, not a missing
-knob: candidate 4.13 is closed after the miss-based, fixed-window and hybrid
-variants were rejected (section 4.13). A count-only reactor change is not a
-substitute. Redis remains outside the required four-CPU comparison, so this
-advisory cohort does not turn into a gate claim.
+The P1 total-CPU gap is mostly the higher rate plus a small, host-sensitive
+per-command difference; the variance cost is the bounded poll. Candidate 4.13 is
+closed after the miss-based, fixed-window and hybrid variants were rejected
+(section 4.13). A count-only reactor change is not a substitute. Redis remains
+outside the required four-CPU comparison, so this advisory cohort does not turn
+into a gate claim.
 
 ### 2.15 Merged-default tail behavior
 
@@ -1172,15 +1184,17 @@ throughput passes; do not claim a tail or efficiency win from medians alone.
 
 **Verdict: close the poll-tuning direction.** The miss-based and fixed-window
 variants are rejected analytically, and the hybrid busy/sleep split is rejected
-on measurement. The CPU is the direct cost of keeping the reactor runnable for
-successful windows; any mechanism that stops burning it reintroduces the
-sleep/wake pair that the window exists to remove. Reducing that cost without
-losing rate or p99 would need kernel batching or busy-poll socket options
-(`recvmmsg`/`sendmmsg`, `io_uring`, `SO_BUSY_POLL`), which are outside the
-safe-Rust/Mio boundary. Until that policy changes or a different topology is
-measured, accept the ~95% P1 CPU as the deliberate price of the P1 win and do not
-open another poll-window knob. Reopen only with a genuinely new mechanism, not a
-repackaged window length.
+on measurement. The busy-window CPU and its variance are the direct cost of
+keeping the reactor runnable for successful windows; any mechanism that stops
+burning it reintroduces the sleep/wake pair that the window exists to remove.
+The headline 95% total CPU is mostly the higher measured rate, with only a small,
+host-sensitive per-command difference (section 2.14). Reducing the busy-window
+cost without losing rate or p99 would need kernel batching or busy-poll socket
+options (`recvmmsg`/`sendmmsg`, `io_uring`, `SO_BUSY_POLL`), which are outside
+the safe-Rust/Mio boundary. Until that policy changes or a different topology is
+measured, accept the P1 busy-window cost as the deliberate price of the P1 win
+and do not open another poll-window knob. Reopen only with a genuinely new
+mechanism, not a repackaged window length.
 
 ## 5. Required libraries, dependencies and policy impact
 
