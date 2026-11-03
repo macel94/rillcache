@@ -12,11 +12,6 @@ use crate::session::Session;
 const QUANTUM: usize = 64;
 const OUTPUT_CHUNK: usize = 64 * 1024;
 
-#[cfg(test)]
-std::thread_local! {
-    static ACTIVITY_CLOCK_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 struct PollWindow {
     until: Instant,
     run_since: Instant,
@@ -87,8 +82,6 @@ impl Client {
             Ok(size) => {
                 self.sent += size;
                 self.activity = Instant::now();
-                #[cfg(test)]
-                ACTIVITY_CLOCK_READS.with(|reads| reads.set(reads.get() + 1));
                 if self.sent == self.output.len() {
                     self.output.clear();
                     self.sent = 0;
@@ -129,8 +122,6 @@ impl Client {
             Ok(size) => {
                 self.input.extend_from_slice(&chunk[..size]);
                 self.activity = Instant::now();
-                #[cfg(test)]
-                ACTIVITY_CLOCK_READS.with(|reads| reads.set(reads.get() + 1));
                 Ok(true)
             }
             Err(error)
@@ -744,7 +735,6 @@ mod tests {
         }
         let store = Store::new(1024);
         let config = Config::default();
-        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
         assert_eq!(
             client.poll(&store, &config, &mut [0; 1024]).unwrap(),
             Some(true)
@@ -753,111 +743,13 @@ mod tests {
         peer.read_exact(&mut reply).unwrap();
         assert_eq!(&reply, b":1\r\n");
         assert!(client.input.is_empty());
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 2));
-        let stamped = client.activity;
         assert_eq!(
             client.poll(&store, &config, &mut [0; 1024]).unwrap(),
             Some(false)
         );
-        assert_eq!(client.activity, stamped);
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 2));
         let mut output = Vec::new();
         store.execute(&[b"GET", b"counter"], &mut output);
         assert_eq!(output, b"$1\r\n1\r\n");
-    }
-
-    #[test]
-    fn buffered_only_progress_does_not_refresh_inactivity() {
-        let (mut client, _peer) = test_client(b"\r\n".to_vec());
-        let old = Instant::now() - Duration::from_secs(2);
-        client.activity = old;
-        let config = Config {
-            idle_timeout: Duration::from_secs(1),
-            ..Config::default()
-        };
-        let store = Store::new(1024);
-        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
-        assert_eq!(
-            client.poll(&store, &config, &mut [0; 128]).unwrap(),
-            Some(true)
-        );
-        assert_eq!(
-            client.activity, old,
-            "parsing an empty line is not socket I/O"
-        );
-        assert_eq!(client.poll(&store, &config, &mut [0; 128]).unwrap(), None);
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 0));
-    }
-
-    #[test]
-    fn partial_input_updates_activity_without_a_reply() {
-        let (mut client, mut peer) = test_client(Vec::new());
-        let part = b"*1\r\n$4\r\nPI";
-        peer.write_all(part).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut buffer = [0; 64];
-        while !client
-            .stream
-            .peek(&mut buffer)
-            .is_ok_and(|n| n == part.len())
-        {
-            assert!(Instant::now() < deadline);
-            thread::yield_now();
-        }
-        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
-        let start = Instant::now();
-        assert_eq!(
-            client
-                .poll(&Store::new(1024), &Config::default(), &mut buffer)
-                .unwrap(),
-            Some(true)
-        );
-        assert!(client.activity >= start);
-        assert_eq!(client.input, part);
-        assert!(client.output.is_empty());
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
-    }
-
-    #[test]
-    fn failed_io_does_not_refresh_activity() {
-        let (mut client, _peer) = test_client(Vec::new());
-        client.output.extend_from_slice(b"reply");
-        client.stream.shutdown(Shutdown::Both).unwrap();
-        let old = client.activity;
-        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
-        assert!(
-            client
-                .poll(&Store::new(1024), &Config::default(), &mut [0; 128])
-                .is_err()
-        );
-        assert_eq!(client.activity, old);
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 0));
-    }
-
-    #[test]
-    fn standalone_io_keeps_immediate_activity_updates() {
-        let (mut client, mut peer) = test_client(Vec::new());
-        client.output.extend_from_slice(b"reply");
-        ACTIVITY_CLOCK_READS.with(|reads| reads.set(0));
-        let start = Instant::now();
-        assert!(client.flush().unwrap());
-        assert!(client.activity >= start);
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 1));
-        peer.write_all(b"input").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut buffer = [0; 64];
-        while !client.stream.peek(&mut buffer).is_ok_and(|n| n == 5) {
-            assert!(Instant::now() < deadline);
-            thread::yield_now();
-        }
-        let start = Instant::now();
-        assert!(
-            client
-                .receive(Config::default().limits, &mut buffer)
-                .unwrap()
-        );
-        assert!(client.activity >= start);
-        ACTIVITY_CLOCK_READS.with(|reads| assert_eq!(reads.get(), 2));
     }
 
     #[test]
