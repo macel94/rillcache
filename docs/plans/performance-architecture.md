@@ -1,7 +1,7 @@
 # Performance architecture: measured gaps and candidate designs
 
-**Status: RESEARCH. Candidate 4.12 is implemented on its own branch and is
-awaiting protected-gate evidence; every other runtime item here is historical.**
+**Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
+both four-CPU gates; every other runtime item here is historical.**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -23,11 +23,11 @@ remaining gap in CPU efficiency and scheduler churn (section 2.11).
 Cross-candidate gate results show that changing the reactor count alone is not a
 reliable P1 fix (section 2.12); the two-reactor default tried on this branch also
 failed that row while every single-owner data row passed (section 2.13).
-Candidate 4.12 is therefore the matched wakeup mechanism section 2.12 calls for:
-one owner-local reactor (the batching optimum) plus a bounded non-blocking
-readiness poll, with fresh protected-gate evidence required on the exact head. A
-gate pass on one head never substitutes for a fresh head, and every dependency
-still needs explicit review.
+Candidate 4.12 supplied the missing mechanism: one owner-local reactor (the
+batching optimum) plus a bounded non-blocking readiness poll. It merged as PR
+#172 (`21ed301`) after both four-CPU gates passed (section 2.13). A gate pass on
+one head never substitutes for a fresh head, and every dependency still needs
+explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -396,8 +396,8 @@ condition.
 
 ### 2.12 Cross-candidate synthesis: P1 ping is not a reactor-count problem
 
-Three independent owners tested reactor counts around the merged four-reactor
-default. The implementations are separate; only their published four-CPU gate
+Three independent owners tested reactor counts around the then-default four
+reactors. The implementations are separate; only their published four-CPU gate
 evidence is compared here. Absolute rates come from different hosts and must not
 be compared across rows.
 
@@ -405,7 +405,7 @@ be compared across rows.
 | --- | --- | ---: | ---: | ---: | --- | --- |
 | one reactor, co-located | PR #167 `d291cad` | 107,707.0 | 108,572.5 | −0.80% | P1 GET −0.11% | PASS 10/10 |
 | two reactors | PR #172 `c7904c6` | 150,489.2 | 152,652.7 | −1.42% | none | PASS 10/10 |
-| four reactors | merged default, four cohorts | 107,787.9–117,430.7 | 112,658.8–115,545.1 | −4.32% to +2.92% | none | PASS 10/10* |
+| four reactors (historical default) | PRs #164/#169/#171/#173 cohorts | 107,787.9–117,430.7 | 112,658.8–115,545.1 | −4.32% to +2.92% | none | PASS 10/10* |
 | eight reactors | PR #164 `e790299` | 85,675.7 | 110,402.4 | −22.4% | none; Dragonfly also failed P1 ping only | FAIL 9/10 |
 
 \*The four-reactor Dragonfly comparison passed 10/10 on every cohort; the table's
@@ -418,15 +418,14 @@ narrowly. Eight reactors is the only case with a mechanistic, large loss:
 eight server reactors plus two generator threads exceed four CPUs badly. Four
 reactors sits in a ±4% band and has passed both gates repeatedly.
 
-**Verdict:** stop tuning the reactor count to clear the Valkey P1 ping median.
-One, two, four and eight reactors have all failed that row on at least one head;
-the sign is not monotonic in reactor count, and the two-reactor result shows the
-row can stay negative even when absolute rate and p99 are much better. The
-merged four-reactor default remains because it carries the most passing
-evidence, not because four is provably optimal. The next valid work is the
-matched fixed-host diagnostic (counters and wakeup mechanisms) or a gate runner
-with disjoint client CPUs; another default-count change would be an unmeasured
-knob turn.
+**Verdict:** stop tuning the reactor count alone to clear the Valkey P1 ping
+median. One, two, four and eight reactors have all failed that row on at least
+one head; the sign is not monotonic in reactor count, and the two-reactor result
+shows the row can stay negative even when absolute rate and p99 are much better.
+The four-reactor default carried the most passing evidence until 4.12 merged, but
+a count-only change is not a reliable fix. The merged default is now one
+owner-local reactor plus the bounded readiness poll (sections 2.13 and 4.12);
+another count-only change remains an unmeasured knob turn.
 
 ### 2.13 Theoretical PING ceiling, reactor batching and the bounded readiness poll
 
@@ -508,6 +507,20 @@ local screen used the pinned official `valkey-benchmark` with the gate's own
 arguments (eight clients, two threads, 1024 random keys, 64-byte values, seed 42)
 and the server and generator both pinned to CPUs `0-3`, with 6 s measured
 samples (the protected gate uses 10 s).
+
+The final merged head (`c4d4698`, run 41552051338) passed both required four-CPU
+comparisons:
+
+| Gate | P1 ping Rillcache | Competitor | Delta | P1 p99 R/C |
+| --- | ---: | ---: | ---: | ---: |
+| Valkey 9.1.2 | 116,791.9 | 113,242.0 | +3.13% | 0.095/0.135 |
+| Dragonfly 2.0.2 | 111,899.4 | 94,574.5 | +18.32% | 0.111/0.103 |
+
+Both passed 10/10, the original gate passed, and the merged default is now one
+owner-local reactor with the 20 µs bounded poll. This is the accepted exact-head
+evidence for 4.12; it does not isolate the poll from host noise, but it validates
+the direction the mechanism predicted and replaces the earlier two-reactor screen
+that failed the same row.
 
 Candidate 4.12 therefore implements one owner-local reactor by default plus the
 bounded readiness poll. `--socket-workers 2..=16` remains the opt-in path for
@@ -747,8 +760,9 @@ evidence. Section 4.1 and the mode-word work (4.3) are implemented; 4.2 was
 deprioritized after analysis, 4.5 is partially implemented, 4.6 is deferred,
 4.7 is a rejected experiment, 4.8 is merged with its reactor count rejected,
 4.9 is a TTL-only candidate that is not implemented, 4.10 is a diagnostic
-A/B for the already-merged counter layout, and 4.11 is a wakeup/spin diagnostic
-motivated by the manual scheduler counters.
+A/B for the already-merged counter layout, 4.11 is the wakeup/spin diagnostic
+motivated by the manual scheduler counters, and 4.12 is its merged
+owner-local-reactor + bounded-poll implementation.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -968,7 +982,7 @@ wakeups or ordering regressions, joined shutdown, the matched A/B above, and bot
 protected gates on the final head. Until the diagnostic shows the spin is the
 cost, this remains a hypothesis, not a runtime change.
 
-### 4.12 Owner-local reactor default with a bounded readiness poll (implemented candidate)
+### 4.12 Owner-local reactor default with a bounded readiness poll (merged in PR #172)
 
 Mechanism: plain Unix TCP without an explicit count runs the single owner-local
 reactor. `--socket-workers 2..=16` still opts into shared-store connection-local
@@ -1006,6 +1020,12 @@ active, current-base protection, all 14 required contexts, and fresh protected
 performance evidence on the exact head. The count is reported through
 `scheduling_policy()`. The bounded poll is a fixed, documented policy constant,
 not a per-workload switch.
+
+Result: PR #172 merged as `21ed301` after all 14 required contexts passed. The
+final head `c4d4698` (run 41552051338) passed Valkey 10/10 with P1 ping
+116,791.9 vs 113,242.0 (+3.13%) and Dragonfly 10/10 with 111,899.4 vs 94,574.5
+(+18.32%); the original gate passed. The earlier two-reactor candidate and the
+single-reactor blocking-wait candidate remain retained as failed evidence.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -1226,8 +1246,17 @@ current roadmap; individual phases are separate increments.
   one-core; deterministic tables retained at
   `/root/perf-evidence/manual-41477114469/report.md`. The generated report PR is
   not a gate and was not merged into this record.
-- Wakeup/spin diagnostic (section 4.11): not yet run; requires frozen binaries,
-  scheduler/syscall counters and the same protected gate on any resulting head.
+- Wakeup/spin diagnostic (section 4.11): superseded by the merged bounded-poll
+  implementation in 4.12; the diagnostic's scheduler/syscall protocol remains the
+  template for any future wakeup change.
+- Cross-candidate count evidence (section 2.12): PR #167 one reactor, four-CPU run
+  41518853948 (Valkey 8/10, P1 ping −0.80%, P1 GET −0.11%; Dragonfly 10/10);
+  PR #172 two reactors, run 41544908472 (Valkey 9/10, P1 ping −1.42%; Dragonfly
+  10/10). Artifacts retained under `/root/perf-evidence/pr167/` and `pr172/`.
+- Merged owner-local reactor + bounded poll (section 4.12): PR #172 final head
+  `c4d4698`, four-CPU run 41552051338 PASS Valkey 10/10 (P1 ping +3.13%) and
+  Dragonfly 10/10 (+18.32%); original gate run 41552051280 PASS; merged as
+  `21ed301`. Artifacts under `/root/perf-evidence/pr172/final/`.
 - Owner-local reactor and bounded poll (section 4.12): candidate default is one
   reactor plus a 20 µs zero-timeout window. Local frozen-binary diagnostic
   samples and the official `valkey-benchmark` screen are retained under
@@ -1265,9 +1294,10 @@ current roadmap; individual phases are separate increments.
   necessary but not sufficient, and the rejected drain probe shows that syscall
   counts alone are not a throughput proxy. Round-robin at four reactors improved
   Valkey but still lost Dragonfly PING; the eight-reactor response then lost P1
-  ping to both and is rejected. Candidate 4.12 instead restores the single
-  owner-local reactor and removes the blocking wakeup from the pipeline-1 round
-  trip; the remaining P1 question needs fresh protected-gate evidence, not a
+  ping to both and is rejected. Candidate 4.12 restored the single owner-local
+  reactor and removed the blocking wakeup from the pipeline-1 round trip; it
+  merged as PR #172 after passing both four-CPU gates (section 2.13). The
+  remaining P1 question is host-sensitive measurement and other workloads, not a
   larger thread count.
 - The four-CPU runner used for the recent cohorts has `client_cpus` equal to
   `server_cpus` (`[0,1,2,3]`), so the load generator shares the server CPUs.
