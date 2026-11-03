@@ -27,6 +27,12 @@ const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
 /// server still parks for the full stop tick; under sustained pipeline-1 load
 /// the reactor deliberately trades one busy CPU for a shorter round trip.
 const FAST_POLL: Duration = Duration::from_micros(20);
+/// Busy-spin prefix of the fast-poll window. The rest of the window is one
+/// timed, sleeping wait. The prefix catches the common immediate reply without
+/// a scheduler wake; the sleeping tail stops the reactor burning a full window
+/// when the next request is not already imminent. The split keeps the fast path
+/// runnable but replaces most zero-timeout `epoll` calls with one wait.
+const FAST_POLL_BUSY: Duration = Duration::from_micros(5);
 
 /// An index is reusable, but its full, non-recycled selector token is not.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -503,7 +509,21 @@ impl<E: Execution> Reactor<E> {
             }
             if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
                 let deadline = Instant::now() + FAST_POLL;
+                let busy_until = deadline.checked_sub(FAST_POLL_BUSY).unwrap_or(deadline);
                 loop {
+                    let now = Instant::now();
+                    if now >= busy_until {
+                        let remaining = deadline.saturating_duration_since(now);
+                        if !remaining.is_zero() {
+                            match self.poll.poll(&mut events, Some(remaining)) {
+                                Ok(()) => {}
+                                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                                Err(error) => return Err(error),
+                            }
+                            self.ingest(&events);
+                        }
+                        break;
+                    }
                     match self.poll.poll(&mut events, Some(Duration::ZERO)) {
                         Ok(()) => {}
                         Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
