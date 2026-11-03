@@ -25,9 +25,11 @@ reliable P1 fix (section 2.12); the two-reactor default tried on this branch als
 failed that row while every single-owner data row passed (section 2.13).
 Candidate 4.12 supplied the missing mechanism: one owner-local reactor (the
 batching optimum) plus a bounded non-blocking readiness poll. It merged as PR
-#172 (`21ed301`) after both four-CPU gates passed (section 2.13). A gate pass on
-one head never substitutes for a fresh head, and every dependency still needs
-explicit review.
+#172 (`21ed301`) after both four-CPU gates passed (section 2.13). A clean-runner
+upstream cohort then confirmed the merged default wins every measured row against
+Redis and Valkey, with the remaining gap in P1 CPU and run-to-run variance rather
+than rate (section 2.14). A gate pass on one head never substitutes for a fresh
+head, and every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -525,6 +527,46 @@ that failed the same row.
 Candidate 4.12 therefore implements one owner-local reactor by default plus the
 bounded readiness poll. `--socket-workers 2..=16` remains the opt-in path for
 PING-heavy fan-out, where a hot single reactor is the limit rather than the goal.
+
+### 2.14 Clean-runner upstream cohort on the merged default
+
+A separate manual upstream study (run 41563160515, source `c8b760a`) measured the
+merged one-reactor + bounded-poll default against Redis 8.10.2 and Valkey 9.1.2
+on one clean runner: 180/180 valid samples, six rotated repetitions, 16 clients,
+disjoint server/client CPU affinity, default server mode (one owner-local
+reactor), and the pinned Redis 8.10.2 `redis-benchmark` generator. It is
+**advisory**, not the protected gate (which uses eight clients and the official
+Valkey generator), but it is the first clean-host cohort for the merged
+architecture.
+
+| Workload | P | Rillcache | Redis | Valkey | Lead vs Redis/Valkey | Rill CPU % | Redis/Valkey CPU % |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| ping | 1 | 117,349 | 110,193 | 109,569 | +6.49% / +7.10% | 95.1 | 82.0 / 81.6 |
+| set | 1 | 116,167 | 111,857 | 111,878 | +3.85% / +3.83% | 94.9 | 87.4 / 89.6 |
+| get-hit | 1 | 116,167 | 111,008 | 109,890 | +4.65% / +5.71% | 94.7 | 85.9 / 85.6 |
+| get-miss | 1 | 117,050 | 110,681 | 109,290 | +5.75% / +7.10% | 95.1 | 84.2 / 83.8 |
+| incr | 1 | 116,845 | 111,857 | 110,011 | +4.46% / +6.21% | 94.9 | 86.1 / 85.4 |
+| ping | 16 | 1,570,681 | 1,244,813 | 1,063,830 | +26.18% / +47.64% | 88.4 | 90.6 / 88.9 |
+| set | 16 | 1,438,857 | 821,918 | 686,499 | +75.06% / +109.59% | 95.4 | 87.9 / 94.6 |
+| get-hit | 16 | 1,470,588 | 958,466 | 843,884 | +53.43% / +74.26% | 97.7 | 86.2 / 95.9 |
+| get-miss | 16 | 1,522,843 | 1,102,941 | 961,538 | +38.07% / +58.38% | 90.7 | 85.7 / 84.9 |
+| incr | 16 | 1,188,123 | 933,128 | 853,487 | +27.33% / +39.21% | 96.2 | 87.6 / 95.9 |
+
+The merged default wins every measured row. The remaining measured gaps are CPU
+and run-to-run variance at pipeline 1: P1 ping uses 95.1% of one CPU versus about
+82% for the C servers, and its coefficient of variation is 1.89% versus 0.16%
+and 0.37%. That is the deliberate cost of the 20 µs bounded poll (section 2.13):
+the reactor stays runnable to remove a sleep/wake pair. At P16 the CPU use is
+comparable (88–98% versus 86–96%) and the rate lead is much larger. RSS is lower
+than both references (about 5.4–6.2 MiB versus 6.6–7.3 MiB).
+
+**Verdict:** the merged architecture is confirmed as the right throughput
+direction on a clean host, including against Redis, which the protected gate does
+not compare. Do not trade the P1 win back for CPU without a measured alternative.
+The next candidate, if any, should reduce P1 CPU/variance while preserving rate
+and p99; the 100 µs poll variant was already screened and rejected, and a
+count-only reactor change is not a substitute. Redis remains outside the required
+four-CPU comparison, so this advisory cohort does not turn into a gate claim.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -1246,6 +1288,11 @@ current roadmap; individual phases are separate increments.
   one-core; deterministic tables retained at
   `/root/perf-evidence/manual-41477114469/report.md`. The generated report PR is
   not a gate and was not merged into this record.
+- Clean-runner upstream cohort (section 2.14): run 41563160515 against source
+  `c8b760a`, 180/180 valid samples, six rotated repetitions, 16 clients,
+  disjoint server/client CPUs, pinned Redis 8.10.2 `redis-benchmark`; artifacts
+  under `/root/perf-evidence/upstream-41563160515/`. Advisory only, no gate
+  substitution and no report PR.
 - Wakeup/spin diagnostic (section 4.11): superseded by the merged bounded-poll
   implementation in 4.12; the diagnostic's scheduler/syscall protocol remains the
   template for any future wakeup change.
@@ -1286,8 +1333,10 @@ current roadmap; individual phases are separate increments.
   four-CPU comparison, so a Redis four-CPU loss would not be visible to the gate.
   The manual cohort shows Rillcache ahead on all five measured workloads at
   P1/P16, but it is not a gate and does not cover unseen commands or mixed
-  workloads. The remaining measured gaps against Redis/Valkey are CPU efficiency
-  and scheduler churn, not rate or tail on those rows.
+  workloads. The clean-runner upstream cohort confirms the same direction on the
+  merged default (section 2.14). The remaining measured gaps against
+  Redis/Valkey are P1 CPU and run-to-run variance, not rate or tail on those
+  rows.
 - The P1 ping row is host-sensitive. The refreshed runtime passed both four-CPU
   comparisons twice (section 2.10), but earlier identical binaries also lost that
   row by up to 4.32% on the same shared runner (section 2.9). Readiness was
