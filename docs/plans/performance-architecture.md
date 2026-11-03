@@ -585,13 +585,16 @@ than 5% above the pre-change head or lower than Valkey's. The observed rows:
 | #172 final gate (run 41552051338) | 8 | 0.095 | — | 0.135 | 0.103 | +3.13% |
 | #174 docs gate (run 41560156879) | 8 | 0.103 | — | 0.151 | 0.103 | +11.27% |
 | #175 docs gate (run 41564296997) | 8 | 0.119 | — | 0.087 | 0.055 | +21.77% |
+| #176 docs gate (run 41566914311) | 8 | 0.071 | — | 0.087 | 0.071 | +0.44% |
+| #179 docs gate (run 41582234348) | 8 | 0.119 | — | 0.087 | 0.063 | +23.54% |
 | Clean-runner upstream (run 41563160515) | 16 | 0.119 | 0.111 | 0.111 | — | +7.10% |
 
 The p99 direction flips with the cohort while the throughput win does not. On
-the fastest #175 host Rillcache had 21.8% more throughput and a 37% worse p99
-than Valkey; on the #172/#174 hosts it had both higher throughput and lower p99.
-The clean-runner 16-client cohort shows a small, consistent p99 disadvantage
-(0.119 versus 0.111) alongside a lower p50 (0.071 versus 0.079).
+the fastest #175 and #179 hosts Rillcache had 21.8–23.5% more throughput and a
+37% worse p99 than Valkey; on the #172/#174 hosts it had both higher throughput
+and lower p99, and #176 had a lower p99 with a near-tie rate. The clean-runner
+16-client cohort shows a small, consistent p99 disadvantage (0.119 versus 0.111)
+alongside a lower p50 (0.071 versus 0.079).
 
 **Verdict:** do not claim a tail win for the merged default. The bounded poll
 keeps the reactor runnable to remove a wakeup, which can help typical latency
@@ -1394,6 +1397,11 @@ current roadmap; individual phases are separate increments.
   run 41564296997 PASS Valkey 10/10 (P1 ping 170,807.9 vs 140,275.0, +21.77%;
   p99 0.119/0.087) and Dragonfly 10/10 (178,931.8 vs 170,517.6; p99
   0.119/0.055); artifacts under `/root/perf-evidence/pr175/four-cpu/`.
+- Later tail cohorts (section 2.15): #176 run 41566914311 (p99 0.071/0.087
+  Valkey, 0.071/0.071 Dragonfly, rate +0.44% vs Valkey; artifacts under
+  `/root/perf-evidence/pr176/four-cpu/`) and #179 run 41582234348 (p99
+  0.119/0.087 Valkey, 0.127/0.063 Dragonfly, rate +23.54%; artifacts under
+  `/root/perf-evidence/pr179/four-cpu/`). Both docs-only heads.
 - Owner-local reactor and bounded poll (section 4.12): candidate default is one
   reactor plus a 20 µs zero-timeout window. Local frozen-binary diagnostic
   samples and the official `valkey-benchmark` screen are retained under
