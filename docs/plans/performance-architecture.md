@@ -33,10 +33,10 @@ AC5 risk (section 2.15). Candidate 4.13 (adaptive bounded poll) is closed: the
 miss-based and fixed-window variants are rejected analytically, and a measured
 hybrid busy/sleep split did not reduce CPU and worsened p99. The P1 busy-window
 cost and variance are the deliberate price of the P1 win; the headline 95% total
-is mostly the higher rate, with a small host-sensitive per-command difference.
-Further reduction needs a mechanism outside the safe-Rust/Mio boundary (section
-4.13). No gate pass substitutes for a fresh head, and every dependency still
-needs explicit review.
+is mostly the higher rate, with a small ~5–9% ping-specific per-command
+difference across two clean cohorts. Further reduction needs a mechanism outside
+the safe-Rust/Mio boundary (section 4.13). No gate pass substitutes for a fresh
+head, and every dependency still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -571,16 +571,22 @@ than both references (about 5.4–6.2 MiB versus 6.6–7.3 MiB).
 CPU percentage is not directly comparable when rates differ. Dividing the
 reported one-CPU percentage by the measured rate gives approximately 8.1 µs per
 command for Rillcache (0.951 / 117,349) versus 7.4 for Redis (0.820 / 110,193)
-and 7.4 for Valkey (0.816 / 109,569): about 9% more per command, not a 13-point
-deficit. Most of the higher total CPU is the 6.5% higher rate. The earlier manual
-cohort measured the opposite per-command ordering (8.6 versus 9.0 and 8.8 µs),
-so this metric is also host-sensitive. Treat the per-command CPU gap as small and
-unresolved, not as a large inefficiency.
+and 7.4 for Valkey (0.816 / 109,569) on the first clean cohort: about 9% more
+per command, not a 13-point deficit. Most of the higher total CPU is the 6.5%
+higher rate.
+
+A second clean cohort (`d5da908`, run 41633321852) repeated the direction at a
+faster host scale: P1 ping 171,233 vs 164,429 and 164,474, CPU 94.7% vs 86.4%
+and 86.2%, p99 0.091 vs 0.087/0.087. That is about 5.5 vs 5.25 µs per command
+(~5% more), and P1 SET is essentially equal (5.52 vs 5.54/5.52 µs). The P1 ping
+per-command gap is therefore small, ping-specific, and consistent across the two
+clean hosts (~5% and ~9%); the earlier manual cohort's opposite ordering is the
+outlier. Treat it as a small real cost, not a general inefficiency.
 
 **Verdict:** the merged architecture is confirmed as the right throughput
 direction on a clean host, including against Redis, which the protected gate does
 not compare. Do not trade the P1 win back for CPU without a measured alternative.
-The P1 total-CPU gap is mostly the higher rate plus a small, host-sensitive
+The P1 total-CPU gap is mostly the higher rate plus a small ~5–9% ping-specific
 per-command difference; the variance cost is the bounded poll. Candidate 4.13 is
 closed after the miss-based, fixed-window and hybrid variants were rejected
 (section 4.13). A count-only reactor change is not a substitute. Redis remains
@@ -602,13 +608,15 @@ than 5% above the pre-change head or lower than Valkey's. The observed rows:
 | #176 docs gate (run 41566914311) | 8 | 0.071 | — | 0.087 | 0.071 | +0.44% |
 | #179 docs gate (run 41582234348) | 8 | 0.119 | — | 0.087 | 0.063 | +23.54% |
 | Clean-runner upstream (run 41563160515) | 16 | 0.119 | 0.111 | 0.111 | — | +7.10% |
+| Clean-runner upstream, repeat (run 41633321852) | 16 | 0.091 | 0.087 | 0.087 | — | +4.10% |
 
 The p99 direction flips with the cohort while the throughput win does not. On
 the fastest #175 and #179 hosts Rillcache had 21.8–23.5% more throughput and a
 37% worse p99 than Valkey; on the #172/#174 hosts it had both higher throughput
-and lower p99, and #176 had a lower p99 with a near-tie rate. The clean-runner
-16-client cohort shows a small, consistent p99 disadvantage (0.119 versus 0.111)
-alongside a lower p50 (0.071 versus 0.079).
+and lower p99, and #176 had a lower p99 with a near-tie rate. Both clean-runner
+16-client cohorts show a small p99 disadvantage (0.119 vs 0.111 and 0.091 vs
+0.087), so the effect is more consistent in that harness than in the 8-client
+gate, though still small.
 
 **Verdict:** do not claim a tail win for the merged default. The bounded poll
 keeps the reactor runnable to remove a wakeup, which can help typical latency
@@ -1187,10 +1195,11 @@ variants are rejected analytically, and the hybrid busy/sleep split is rejected
 on measurement. The busy-window CPU and its variance are the direct cost of
 keeping the reactor runnable for successful windows; any mechanism that stops
 burning it reintroduces the sleep/wake pair that the window exists to remove.
-The headline 95% total CPU is mostly the higher measured rate, with only a small,
-host-sensitive per-command difference (section 2.14). Reducing the busy-window
-cost without losing rate or p99 would need kernel batching or busy-poll socket
-options (`recvmmsg`/`sendmmsg`, `io_uring`, `SO_BUSY_POLL`), which are outside
+The headline 95% total CPU is mostly the higher measured rate, with a small
+~5–9% ping-specific per-command difference on the two clean cohorts (section
+2.14). Reducing the busy-window cost without losing rate or p99 would need kernel
+batching or busy-poll socket options (`recvmmsg`/`sendmmsg`, `io_uring`,
+`SO_BUSY_POLL`), which are outside
 the safe-Rust/Mio boundary. Until that policy changes or a different topology is
 measured, accept the P1 busy-window cost as the deliberate price of the P1 win
 and do not open another poll-window knob. Reopen only with a genuinely new
@@ -1431,6 +1440,10 @@ current roadmap; individual phases are separate increments.
   disjoint server/client CPUs, pinned Redis 8.10.2 `redis-benchmark`; artifacts
   under `/root/perf-evidence/upstream-41563160515/`. Advisory only, no gate
   substitution and no report PR.
+- Clean-runner repeat (sections 2.14–2.15): run 41633321852 against source
+  `d5da908`, same harness and sample count; artifacts under
+  `/root/perf-evidence/upstream-41633321852/`. Confirms the small ping-specific
+  per-command CPU gap (~5%) and the small 16-client p99 disadvantage.
 - Wakeup/spin diagnostic (section 4.11): superseded by the merged bounded-poll
   implementation in 4.12; the diagnostic's scheduler/syscall protocol remains the
   template for any future wakeup change.
