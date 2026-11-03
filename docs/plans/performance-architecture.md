@@ -29,8 +29,10 @@ batching optimum) plus a bounded non-blocking readiness poll. It merged as PR
 upstream cohort then confirmed the merged default wins every measured row against
 Redis and Valkey, with the remaining gap in P1 CPU and run-to-run variance rather
 than rate (section 2.14); its P1 p99 is not consistently better and is an open
-AC5 risk (section 2.15). A gate pass on one head never substitutes for a fresh
-head, and every dependency still needs explicit review.
+AC5 risk (section 2.15). Candidate 4.13 proposes an adaptive bounded poll for the
+remaining CPU/variance gap, not as a default change without fresh gates. A gate
+pass on one head never substitutes for a fresh head, and every dependency still
+needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -564,10 +566,11 @@ than both references (about 5.4–6.2 MiB versus 6.6–7.3 MiB).
 **Verdict:** the merged architecture is confirmed as the right throughput
 direction on a clean host, including against Redis, which the protected gate does
 not compare. Do not trade the P1 win back for CPU without a measured alternative.
-The next candidate, if any, should reduce P1 CPU/variance while preserving rate
-and p99; the 100 µs poll variant was already screened and rejected, and a
-count-only reactor change is not a substitute. Redis remains outside the required
-four-CPU comparison, so this advisory cohort does not turn into a gate claim.
+The next candidate should reduce P1 CPU/variance while preserving rate and p99
+(candidate 4.13); the 100 µs poll variant was already screened and rejected, and
+a count-only reactor change is not a substitute. Redis remains outside the
+required four-CPU comparison, so this advisory cohort does not turn into a gate
+claim.
 
 ### 2.15 Merged-default tail behavior
 
@@ -833,8 +836,9 @@ deprioritized after analysis, 4.5 is partially implemented, 4.6 is deferred,
 4.7 is a rejected experiment, 4.8 is merged with its reactor count rejected,
 4.9 is a TTL-only candidate that is not implemented, 4.10 is a diagnostic
 A/B for the already-merged counter layout, 4.11 is the wakeup/spin diagnostic
-motivated by the manual scheduler counters, and 4.12 is its merged
-owner-local-reactor + bounded-poll implementation.
+motivated by the manual scheduler counters, 4.12 is its merged
+owner-local-reactor + bounded-poll implementation, and 4.13 is the proposed
+adaptive-poll follow-up for the remaining P1 CPU/variance gap.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -1099,6 +1103,41 @@ final head `c4d4698` (run 41552051338) passed Valkey 10/10 with P1 ping
 (+18.32%); the original gate passed. The earlier two-reactor candidate and the
 single-reactor blocking-wait candidate remain retained as failed evidence.
 
+### 4.13 Adaptive bounded poll for P1 CPU/variance (candidate, not implemented)
+
+Mechanism: the merged 20 µs window is fixed. The clean-runner cohort (section
+2.14) shows it wins rate but costs about 95% of one CPU at P1 ping versus ~82%
+for Redis/Valkey, with a 1.89% coefficient of variation versus 0.16–0.37%.
+Candidate 4.13 would keep the full window immediately after a reply and shrink or
+skip it when the reactor has already spun through several empty windows without
+new work, or size it from the last observed request inter-arrival. The goal is to
+stop paying a fixed busy window when the next request is clearly not imminent,
+without reintroducing the blocking wakeup on the fast path.
+
+Prediction: P1 ping CPU falls toward the C-server range (about 85%) and the
+run-to-run spread narrows, while P1 rate, p99 and P16 throughput stay within AC5.
+The effect should be absent in P16, where the runnable queue never empties, and
+in one-CPU mode the lower CPU use may improve rate if the generator shares the
+core.
+
+Baseline and method: freeze current and candidate binaries, alternate on one
+clean host, use the official generator at the gate's 8 clients and the 16-client
+upstream harness as a secondary check, and retain per-sample rate, p99, server
+CPU and scheduler counters. A local shared VM is a diagnostic only. Measure both
+the default one-reactor mode and an explicit `--socket-workers 2` mode so the
+window logic is not overfit to one topology.
+
+Rejection condition: any original-gate loss, any Valkey/Dragonfly four-CPU loss,
+a P1 p99 regression beyond AC5, no measurable CPU or variance reduction, or a P16
+regression beyond the existing spread. The fixed 100 µs variant was already
+rejected (section 2.13); a candidate that merely lengthens the window is not a
+substitute for adaptivity.
+
+Acceptance if implemented: deterministic tests for the window state machine and
+shutdown during a window, no lost wakeups or ordering changes, the matched A/B
+above, and both protected gates on the final head. Report CPU and p99 even when
+throughput passes; do not claim a tail or efficiency win from medians alone.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -1313,6 +1352,9 @@ current roadmap; individual phases are separate increments.
   artifacts under `/root/perf-evidence/pr169/four-cpu/`; merged as `ffa2181`.
 - Counter-layout A/B (section 4.10): not yet run; requires frozen packed and
   padded binaries on one host, both reactor counts, and raw samples.
+- Adaptive-poll candidate (section 4.13): not implemented or measured. The merged
+  20 µs window is the baseline; any candidate needs the frozen A/B and both
+  protected gates, with P1 CPU, variance and p99 reported even when rate passes.
 - Manual cohort (section 2.11): run 41477114469 against source `9692e07`,
   180 validated records, Redis/Valkey/Rillcache five workloads at P1/P16 and
   one-core; deterministic tables retained at
