@@ -183,7 +183,7 @@ impl<E: Execution> Reactor<E> {
                 client: Some(Client {
                     stream,
                     session,
-                    input: Vec::with_capacity(8192.min(self.config.limits.max_frame_bytes)).into(),
+                    input: Vec::with_capacity(8192.min(self.config.limits.max_frame_bytes)),
                     output: Vec::with_capacity(8192),
                     sent: 0,
                     closing: false,
@@ -804,8 +804,7 @@ mod tests {
             .unwrap()
             .client_mut()
             .input
-            .read_from(&mut std::io::Cursor::new(b"PING\r\n"), 6, 1024)
-            .unwrap();
+            .extend_from_slice(b"PING\r\n");
         assert_eq!(
             reactor.service(key, &mut [0; 1024]).unwrap(),
             Served::Runnable(true)

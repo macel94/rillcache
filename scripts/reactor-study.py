@@ -47,8 +47,6 @@ def name_for(identity):
 
 def snapshot(pid):
     group = D.snapshot(pid)
-    # Point-in-time process RSS, including shared pages; not peak/private memory.
-    group["rss_bytes"] = int(Path(f"/proc/{pid}/statm").read_text().split()[1]) * os.sysconf("SC_PAGE_SIZE")
     tasks = {}
     for path in sorted(Path(f"/proc/{pid}/task").iterdir()):
         try:
@@ -232,8 +230,6 @@ def check(root):
         G["ensure"](server["argv"] == server_argv(m["binaries"][variant], variant, mode, s["port"], cpus, launch), "server command differs")
         G["ensure"](s["before"]["actual_cpus"] == cpus == s["after"]["actual_cpus"] and
                     s["before"]["pid"] == s["pid"] == s["after"]["pid"], "resource identity differs")
-        G["ensure"](all(isinstance(s[phase]["rss_bytes"], int) and s[phase]["rss_bytes"] >= 0
-                        for phase in ("before", "after")), "invalid RSS snapshot")
         G["ensure"](s["resources"] == resources(s["before"], s["after"], s["window_seconds"]), "resource counters differ")
         valid = {"validated_keys": 0 if workload == "ping" else G["KEYSPACE"], "ping": True}
         G["ensure"](s["preload"] == s["warmup_validation"] == s["measured_validation"] == valid, "dataset validation differs")

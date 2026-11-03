@@ -243,7 +243,7 @@ impl Sharing {
     pub(super) fn exchange(
         &self,
         stream: &mut TcpStream,
-        input: &mut InputBuffer,
+        input: &mut Vec<u8>,
         output: &mut Vec<u8>,
         session: &mut Session,
         io: &mut LeaseIO<'_>,
@@ -258,7 +258,7 @@ impl Sharing {
             None => Client {
                 stream: stream.try_clone()?,
                 session: Session::new(),
-                input: InputBuffer::default(),
+                input: Vec::new(),
                 output: Vec::new(),
                 sent: 0,
                 closing: false,

@@ -1,8 +1,6 @@
 //! Default Unix Tokio networking, portable managed-client fallback and fixed workers.
 
-#[cfg(test)]
-use std::io::Read;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -10,7 +8,6 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use self::input::InputBuffer;
 use crate::engine::{Action, Auth, ErrorDialect, EvictionPolicy, FsyncPolicy, NotifyFlags, Store};
 use crate::protocol::{Limits, dispatch_request};
 use crate::session::Session;
@@ -18,7 +15,6 @@ use std::path::PathBuf;
 
 mod accept;
 mod handoff;
-mod input;
 #[cfg(unix)]
 mod multi;
 mod pool;
@@ -992,9 +988,9 @@ fn serve_client(
     let idle_timeout = *idle_timeout;
     let policy = *policy;
     let client_id = session.id();
-    let mut input: InputBuffer = Vec::with_capacity(8192.min(limits.max_frame_bytes)).into();
+    let mut input = Vec::with_capacity(8192.min(limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
-    let chunk = [0u8; 16 * 1024];
+    let mut chunk = [0u8; 16 * 1024];
     let mut lease_channel = handoff::LeaseChannel::new();
     let result = (|| {
         let mut subscriber_timeout = false;
@@ -1034,9 +1030,9 @@ fn serve_client(
                 if session.is_blocked() {
                     let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
                     if room > 0 {
-                        match input.read_from(stream, room, limits.max_frame_bytes) {
+                        match stream.read(&mut chunk[..room]) {
                             Ok(0) => return Ok(()),
-                            Ok(_) => {}
+                            Ok(size) => input.extend_from_slice(&chunk[..size]),
                             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                             Err(error)
                                 if matches!(
@@ -1065,9 +1061,9 @@ fn serve_client(
                 if session.is_paused() || session.is_blocked() {
                     let room = (limits.max_frame_bytes - input.len()).min(chunk.len());
                     if room > 0 {
-                        match input.read_from(stream, room, limits.max_frame_bytes) {
+                        match stream.read(&mut chunk[..room]) {
                             Ok(0) => return Ok(()),
-                            Ok(_) => {}
+                            Ok(size) => input.extend_from_slice(&chunk[..size]),
                             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                             Err(error)
                                 if matches!(
@@ -1120,7 +1116,7 @@ fn serve_client(
             if consumed == input.len() {
                 input.clear();
             } else if consumed > 0 {
-                input.consume(consumed);
+                input.drain(..consumed);
             }
             if !output.is_empty() {
                 stream.write_all(&output)?;
@@ -1172,14 +1168,14 @@ fn serve_client(
                 stream.write_all(b"-ERR Protocol error: request frame limit exceeded\r\n")?;
                 return Ok(());
             }
-            match input.read_from(stream, room, limits.max_frame_bytes) {
+            match stream.read(&mut chunk[..room]) {
                 Ok(0) => {
                     if !input.is_empty() {
                         stream.write_all(b"-ERR Protocol error: unexpected end of stream\r\n")?;
                     }
                     return Ok(());
                 }
-                Ok(_) => {}
+                Ok(size) => input.extend_from_slice(&chunk[..size]),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error)
                     if matches!(

@@ -19,7 +19,7 @@ pub(super) fn pair(input: Vec<u8>) -> (Client, TcpStream) {
         Client {
             stream,
             session: Session::new(),
-            input: input.into(),
+            input,
             output: Vec::new(),
             sent: 0,
             closing: false,
@@ -286,7 +286,7 @@ fn returned_partial_reply_is_not_resent_and_blocking_mode_is_restored() {
     thread::scope(|scope| {
         let (ready, wait) = mpsc::channel();
         let worker = scope.spawn(move || {
-            let mut input = InputBuffer::default();
+            let mut input = Vec::new();
             let mut output = Vec::new();
             assert!(
                 !sharing
@@ -315,10 +315,7 @@ fn returned_partial_reply_is_not_resent_and_blocking_mode_is_restored() {
         state.stream.write_all(b"+PO").unwrap();
         state.output.extend_from_slice(b"+PONG\r\n");
         state.sent = 3;
-        state
-            .input
-            .read_from(&mut std::io::Cursor::new(b"partial"), 7, 1024)
-            .unwrap();
+        state.input.extend_from_slice(b"partial");
         drop(pending);
         let mut reply = [0; 7];
         peer.read_exact(&mut reply).unwrap();
@@ -353,7 +350,7 @@ fn real_push_receiver_moves_with_the_lease_and_returns_to_its_owner() {
                 !sharing
                     .exchange(
                         &mut original,
-                        &mut InputBuffer::default(),
+                        &mut Vec::new(),
                         &mut Vec::new(),
                         &mut session,
                         &mut LeaseIO {
