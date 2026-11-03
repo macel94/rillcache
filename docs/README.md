@@ -50,8 +50,9 @@ configure for the ordinary offline development loop.
 
 ### Architecture and research
 
-The default Unix plain-TCP frontend co-locates Mio I/O with its single data
-owner. Explicit parallel socket workers move a data connection once to that owner. The [hot-path guide](hot-paths.md) and
+The default Unix plain-TCP frontend uses one owner-local Mio reactor, with opt-in
+socket workers that move a data connection once to its local data owner. The
+[hot-path guide](hot-paths.md) and
 [performance architecture](plans/performance-architecture.md) explain this design.
 [Opt-in Tokio transport](async-transport.md), [multi-owner execution](plans/multi-owner-execution.md),
 [owner-local storage](plans/owner-local-storage.md) and the [sharding seam](sharding.md)

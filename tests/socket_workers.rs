@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 #![cfg(unix)]
 
-//! Default plain-TCP owner-migration socket workers and the explicit one-worker path.
+//! Default owner-local plain-TCP reactor, opt-in owner-migration workers and the
+//! explicit one-worker path.
 
 use rillcache::protocol::encode_request;
 use rillcache::{Config, Server, ServerHandle};
@@ -63,12 +64,12 @@ impl Peer {
 }
 
 #[test]
-fn default_plain_tcp_colocates_io_and_data_and_serves_wire() {
+fn default_plain_tcp_uses_the_owner_local_reactor_and_serves_wire() {
     let server = start(None);
     assert_eq!(
         server.scheduling_policy().socket_workers,
         1,
-        "default I/O stays on the single data owner; parallel reactors are explicit"
+        "the default keeps one owner-local reactor: it batches more pipeline-1 commands per readiness wake"
     );
     assert_eq!(server.scheduling_policy().client_handoff_lanes, 0);
 
@@ -92,7 +93,7 @@ fn default_plain_tcp_colocates_io_and_data_and_serves_wire() {
 }
 
 #[test]
-fn concurrent_ping_accounting_and_reset_are_exact_with_one_or_four_reactors() {
+fn concurrent_ping_accounting_and_reset_are_exact_with_one_two_or_four_reactors() {
     fn total(peer: &mut Peer) -> u64 {
         peer.send(&[b"INFO", b"stats"]);
         let info = String::from_utf8(peer.bulk()).unwrap();
@@ -103,7 +104,7 @@ fn concurrent_ping_accounting_and_reset_are_exact_with_one_or_four_reactors() {
             .unwrap()
     }
 
-    for workers in [1, 4] {
+    for workers in [1, 2, 4] {
         let server = start(Some(workers));
         assert_eq!(server.scheduling_policy().socket_workers, workers);
         let mut admin = Peer::new(&server);
