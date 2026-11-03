@@ -53,6 +53,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-TOKIO-NET4:** When idle timeout, peer cancellation, protocol error, SHUTDOWN,
   server-handle shutdown or worker failure occurs, connection registration and
   resources shall be released and every owned runtime worker shall be joined.
+  If normal stop occurs while maintenance waits for cold admission, cancellation
+  shall end the acceptor successfully without queuing more cold work. Cold-service
+  failures and task panics shall remain errors, including during cancellation.
 - **R-TOKIO-NET5:** When remote worker threads start, the server shall attempt
   safe best-effort CPU affinity to distinct allowed logical IDs when supported;
   failure shall leave scheduling to the OS and shall not prevent startup.

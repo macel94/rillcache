@@ -85,6 +85,25 @@ impl Context {
         }
     }
 
+    async fn maintain_cold(&self) -> io::Result<bool> {
+        let result = self
+            .cold
+            .run(
+                &mut Session::new(),
+                &mut Vec::new(),
+                self,
+                ColdOperation::Maintenance,
+            )
+            .await;
+        match result {
+            Ok(_) => Ok(!self.stopped()),
+            // SHUTDOWN can finish while maintenance waits for the single cold
+            // permit. This is cancellation, not a failed network runtime.
+            Err(error) if error.kind() == io::ErrorKind::Interrupted && self.stopped() => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     fn stopped(&self) -> bool {
         self.stopping.load(Ordering::Acquire) || self.store.shutdown_requested()
     }
@@ -430,16 +449,8 @@ async fn accept_loop(
                 // sync/rewrite or other filesystem maintenance runs here.
                 if let Some(executor) = &executor {
                     executor.purge_expired(128);
-                } else {
-                    context
-                        .cold
-                        .run(
-                            &mut Session::new(),
-                            &mut Vec::new(),
-                            &context,
-                            ColdOperation::Maintenance,
-                        )
-                        .await?;
+                } else if !context.maintain_cold().await? {
+                    return Ok(());
                 }
                 maintenance = Instant::now();
             }
