@@ -32,11 +32,13 @@ than rate (section 2.14); its P1 p99 is not consistently better and is an open
 AC5 risk (section 2.15). Candidate 4.13 (adaptive bounded poll) is closed: the
 miss-based and fixed-window variants are rejected analytically, and a measured
 hybrid busy/sleep split did not reduce CPU and worsened p99. The P1 busy-window
-cost and variance are the deliberate price of the P1 win; the headline 95% total
-is mostly the higher rate, with a small ~5–9% ping-specific per-command
-difference across two clean cohorts. Further reduction needs a mechanism outside
-the safe-Rust/Mio boundary (section 4.13). No gate pass substitutes for a fresh
-head, and every dependency still needs explicit review.
+cost and variance are the deliberate price of the P1 win; a local tracepoint
+diagnostic attributes it to roughly eight `epoll_wait` calls per command from the
+zero-timeout spin (section 2.16), and the headline 95% total is mostly the higher
+rate with a small ~5–9% ping-specific per-command difference across two clean
+cohorts. Further reduction needs a mechanism outside the safe-Rust/Mio boundary
+(section 4.13). No gate pass substitutes for a fresh head, and every dependency
+still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -627,6 +629,42 @@ per-request or batch p99 and be rejected if it regresses beyond AC5, even when
 throughput wins. The current default stays because its throughput and CPU
 evidence is strong and no measured alternative preserves both rate and tail.
 
+### 2.16 Local syscall count of the merged bounded poll
+
+A local tracepoint diagnostic on the merged default (`d5da908`) counted the
+server's syscalls while eight clients ran P1 ping. The host is the shared
+six-logical-CPU VM at about 1.2k ops/s, not a gate host; the server was pinned to
+CPU 0, clients to CPUs 1–2, and `perf stat` sampled 6.088 s while the full 20k
+client run took 16.51 s. Normalizing by rate × window gives about 7,374 commands
+inside the perf window:
+
+| Tracepoint | Count | Per command (approx) |
+| --- | ---: | ---: |
+| `syscalls:sys_enter_epoll_wait` | 57,090 | 7.74 |
+| `syscalls:sys_enter_recvfrom` | 13,607 | 1.85 |
+| `syscalls:sys_enter_sendto` | 7,622 | 1.03 |
+| `sched:sched_switch` | 1,821 | 0.25 |
+
+The 20 µs bounded poll is a zero-timeout `epoll_wait` spin, so it accounts for
+most of the ~8 epoll waits per command on this slow host. `recvfrom` is about one
+receive plus the edge-triggered drain probe; `sendto` is about one reply write.
+At gate rates the window usually returns on an event earlier, so this is a
+mechanism diagnostic, not a gate prediction. It explains the CPU cost and why the
+hybrid timed wait (section 4.13) reduced epoll calls but regressed p99: it traded
+the spin for sleep/wake latency.
+
+Compared with the pre-readiness diagnostic (section 2.4, ~6.2 receive-class
+syscalls per command), the readiness reactor cut receive-side work to ~1.85, but
+the bounded poll spends the savings on epoll waits. Redis and Valkey use
+level-triggered single loops that amortize one wait over all ready clients; Rill
+cannot copy that without raw `epoll` FFI or a different selector policy, and a
+sleeping wait was measured worse on the tail.
+
+**Verdict:** record the syscall trade as the measured mechanism behind the P1 CPU
+cost. Do not add another poll-window variant; the remaining safe options are
+outside the Mio boundary. The local counts are diagnostic only and must not be
+substituted for gate evidence.
+
 ## 3. Per-component comparison with Redis and Valkey
 
 Pins: Valkey `9.1.2` and Redis `8.10.2` source tags, as in
@@ -1193,8 +1231,10 @@ throughput passes; do not claim a tail or efficiency win from medians alone.
 **Verdict: close the poll-tuning direction.** The miss-based and fixed-window
 variants are rejected analytically, and the hybrid busy/sleep split is rejected
 on measurement. The busy-window CPU and its variance are the direct cost of
-keeping the reactor runnable for successful windows; any mechanism that stops
-burning it reintroduces the sleep/wake pair that the window exists to remove.
+keeping the reactor runnable for successful windows; the local tracepoint count
+attributes about eight `epoll_wait` calls per command to the zero-timeout spin
+(section 2.16). Any mechanism that stops burning it reintroduces the sleep/wake
+pair that the window exists to remove.
 The headline 95% total CPU is mostly the higher measured rate, with a small
 ~5–9% ping-specific per-command difference on the two clean cohorts (section
 2.14). Reducing the busy-window cost without losing rate or p99 would need kernel
@@ -1478,6 +1518,11 @@ current roadmap; individual phases are separate increments.
 - Local paired diagnostic used in 2.4 (diagnostic only):
   `perf stat -p <server-pid> -e 'syscalls:sys_enter_recvfrom,...' -- sleep <n>`
   around a `valkey-benchmark` run with both servers pinned to the same CPUs.
+- Local syscall diagnostic used in 2.16: merged default `d5da908`, server pinned
+  CPU 0, clients CPUs 1–2, `perf stat` tracepoints over 6.088 s while
+  `rillcache-bench` ran 20k P1 ping; raw files and the per-command table under
+  `/root/perf-evidence/syscalls-current/`. Diagnostic only; the host ran at
+  ~1.2k ops/s, so these counts are not gate predictions.
 - Store-path and instruction A/B: `scripts/compare-builds.py` and the documented
   hot-path study, with frozen binaries and retained raw JSON.
 - Dependency verification: `make ci` runs the policy test, which executes
