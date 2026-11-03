@@ -31,9 +31,10 @@ Redis and Valkey, with the remaining gap in P1 CPU and run-to-run variance rathe
 than rate (section 2.14); its P1 p99 is not consistently better and is an open
 AC5 risk (section 2.15). Candidate 4.13 proposes an adaptive bounded poll for the
 remaining CPU/variance gap; a miss-based shrink or fixed-window change is rejected
-before implementation, so any viable version must be client-RTT-aware (section
-4.13). No gate pass substitutes for a fresh head, and every dependency still needs
-explicit review.
+before implementation, and a measured hybrid busy/sleep split was rejected because
+CPU did not fall and p99 worsened. Any viable version must be client-RTT-aware
+(section 4.13). No gate pass substitutes for a fresh head, and every dependency
+still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -1145,6 +1146,23 @@ requests that arrive late in the window, risking the very rate and p99 the windo
 exists to protect. Do not implement a miss counter or a fixed-window change as an
 efficiency fix.
 
+**Measured rejection: hybrid busy-prefix + timed-wait poll.** A diagnostic branch
+(`f7cc8b9`) kept a 5 µs zero-timeout busy prefix and made the remaining 15 µs one
+timed sleeping `epoll` wait. On the clean advisory runner (run 41612942833,
+180/180 samples) it did not reduce CPU and it badly worsened the tail:
+
+| P1 ping | Hybrid | Redis | Valkey |
+| --- | ---: | ---: | ---: |
+| Rate | 58,847 | 49,432 | 49,591 |
+| Server CPU % | 95.5 | 83.7 | 85.0 |
+| p99 ms | 0.959 | 0.231 | 0.231 |
+
+P16 ping p99 was also worse (1.095 versus 0.407/0.463 ms). The host was slower
+than the baseline cohort, so absolute rates are not comparable, but CPU did not
+fall from the baseline 95.1% and the ~4x P1 p99 regression is decisive. The timed
+wait reintroduced exactly the wakeup latency the busy window removes. Reject this
+shape; a viable 4.13 must not rely on sleeping inside the window.
+
 Prediction for a genuine RTT-aware candidate: P1 ping CPU falls toward the
 C-server range (about 85%) and the run-to-run spread narrows, while P1 rate, p99
 and P16 throughput stay within AC5. The effect should be absent in P16, where the
@@ -1263,6 +1281,7 @@ free tuning change.
 | Starting more connection-local reactors than CPUs (`2 × CPUs`, max eight) | Failed both four-CPU gates on P1 ping (Valkey −22.4%, Dragonfly −9.3%) while data rows passed; the extra threads oversubscribe the four-CPU budget (section 2.8). |
 | Tuning the default reactor count to clear Valkey P1 ping | One, two, four and eight reactors have each failed that row on some head; the sign is not monotonic and the two-reactor head lost 1.42% despite the highest rate and better p99 (section 2.12). |
 | Miss-based adaptive poll or a shorter fixed poll window | Does not reduce the measured P1 CPU, which comes from successful windows; shrinking on hits or shortening the window risks the rate/p99 the window protects (section 4.13). |
+| Hybrid 5 µs busy prefix + 15 µs timed-wait poll | Measured: CPU stayed at 95.5% and P1 ping p99 rose to 0.959 ms vs 0.231 for both references; P16 p99 also worsened. The sleep reintroduces the wakeup latency the busy window removes. Run 41612942833. |
 | RDB/replication work as a performance fix | Out of scope and unrelated to the measured P1 gap. |
 | Eliding the edge-triggered empty-receive drain probe (PR #155) | Cut receive syscalls ~16% locally but lost two Valkey P1 medians; the probe is also a user-space readiness batch. See 2.6/4.7. |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
@@ -1385,12 +1404,14 @@ current roadmap; individual phases are separate increments.
   artifacts under `/root/perf-evidence/pr169/four-cpu/`; merged as `ffa2181`.
 - Counter-layout A/B (section 4.10): not yet run; requires frozen packed and
   padded binaries on one host, both reactor counts, and raw samples.
-- Adaptive-poll candidate (section 4.13): not implemented or measured. The merged
-  20 µs window is the baseline; any candidate needs the frozen A/B and both
-  protected gates, with P1 CPU, variance and p99 reported even when rate passes.
-  A miss-based shrink or shorter fixed window is rejected before implementation
-  because it does not address successful-window CPU; a viable candidate must be
-  client-RTT-aware or use a per-connection absorption budget.
+- Adaptive-poll candidate (section 4.13): a viable version remains unimplemented
+  and unmeasured. The merged 20 µs window is the baseline; any candidate needs
+  the frozen A/B and both protected gates, with P1 CPU, variance and p99
+  reported even when rate passes. A miss-based shrink or shorter fixed window is
+  rejected before implementation, and the hybrid 5 µs busy + 15 µs timed wait was
+  measured and rejected (run 41612942833: CPU 95.5%, P1 p99 0.959 vs 0.231 ms).
+  A viable candidate must be client-RTT-aware or use a per-connection absorption
+  budget.
 - Manual cohort (section 2.11): run 41477114469 against source `9692e07`,
   180 validated records, Redis/Valkey/Rillcache five workloads at P1/P16 and
   one-core; deterministic tables retained at
