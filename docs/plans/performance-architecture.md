@@ -30,9 +30,10 @@ upstream cohort then confirmed the merged default wins every measured row agains
 Redis and Valkey, with the remaining gap in P1 CPU and run-to-run variance rather
 than rate (section 2.14); its P1 p99 is not consistently better and is an open
 AC5 risk (section 2.15). Candidate 4.13 proposes an adaptive bounded poll for the
-remaining CPU/variance gap, not as a default change without fresh gates. A gate
-pass on one head never substitutes for a fresh head, and every dependency still
-needs explicit review.
+remaining CPU/variance gap; a miss-based shrink or fixed-window change is rejected
+before implementation, so any viable version must be client-RTT-aware (section
+4.13). No gate pass substitutes for a fresh head, and every dependency still needs
+explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -1108,17 +1109,25 @@ single-reactor blocking-wait candidate remain retained as failed evidence.
 Mechanism: the merged 20 µs window is fixed. The clean-runner cohort (section
 2.14) shows it wins rate but costs about 95% of one CPU at P1 ping versus ~82%
 for Redis/Valkey, with a 1.89% coefficient of variation versus 0.16–0.37%.
-Candidate 4.13 would keep the full window immediately after a reply and shrink or
-skip it when the reactor has already spun through several empty windows without
-new work, or size it from the last observed request inter-arrival. The goal is to
-stop paying a fixed busy window when the next request is clearly not imminent,
-without reintroducing the blocking wakeup on the fast path.
+Candidate 4.13 must reduce the cost of **successful** windows, because that is
+where the measured CPU goes: the reactor stays runnable because the next request
+usually arrives inside the window. A viable mechanism therefore has to be
+client-RTT-aware or use a per-connection absorption budget; simply shrinking
+after empty windows does not touch the fast path.
 
-Prediction: P1 ping CPU falls toward the C-server range (about 85%) and the
-run-to-run spread narrows, while P1 rate, p99 and P16 throughput stay within AC5.
-The effect should be absent in P16, where the runnable queue never empties, and
-in one-CPU mode the lower CPU use may improve rate if the generator shares the
-core.
+**Rejected before implementation: a miss-based adaptive window.** Shrinking the
+window only after several empty windows leaves the measured 95% CPU unchanged,
+because successful windows keep resetting it. Shrinking on hits, or using a
+shorter fixed window, would cut CPU by reintroducing the sleep/wake pair for
+requests that arrive late in the window, risking the very rate and p99 the window
+exists to protect. Do not implement a miss counter or a fixed-window change as an
+efficiency fix.
+
+Prediction for a genuine RTT-aware candidate: P1 ping CPU falls toward the
+C-server range (about 85%) and the run-to-run spread narrows, while P1 rate, p99
+and P16 throughput stay within AC5. The effect should be absent in P16, where the
+runnable queue never empties, and in one-CPU mode the lower CPU use may improve
+rate if the generator shares the core.
 
 Baseline and method: freeze current and candidate binaries, alternate on one
 clean host, use the official generator at the gate's 8 clients and the 16-client
@@ -1230,6 +1239,8 @@ free tuning change.
 | Copying level-triggered `epoll` semantics | Requires raw `epoll` FFI in project code (safe-Rust violation) or a new selector dependency; Mio's edge-triggered probe is load-bearing, as PR #155 showed. |
 | Copying Valkey's I/O-thread reply copy avoidance | Depends on encoded-buffer reference tracking and an I/O-thread pool; no gate evidence that the current copy path is the remaining cost. |
 | Starting more connection-local reactors than CPUs (`2 × CPUs`, max eight) | Failed both four-CPU gates on P1 ping (Valkey −22.4%, Dragonfly −9.3%) while data rows passed; the extra threads oversubscribe the four-CPU budget (section 2.8). |
+| Tuning the default reactor count to clear Valkey P1 ping | One, two, four and eight reactors have each failed that row on some head; the sign is not monotonic and the two-reactor head lost 1.42% despite the highest rate and better p99 (section 2.12). |
+| Miss-based adaptive poll or a shorter fixed poll window | Does not reduce the measured P1 CPU, which comes from successful windows; shrinking on hits or shortening the window risks the rate/p99 the window protects (section 4.13). |
 | RDB/replication work as a performance fix | Out of scope and unrelated to the measured P1 gap. |
 | Eliding the edge-triggered empty-receive drain probe (PR #155) | Cut receive syscalls ~16% locally but lost two Valkey P1 medians; the probe is also a user-space readiness batch. See 2.6/4.7. |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
@@ -1355,6 +1366,9 @@ current roadmap; individual phases are separate increments.
 - Adaptive-poll candidate (section 4.13): not implemented or measured. The merged
   20 µs window is the baseline; any candidate needs the frozen A/B and both
   protected gates, with P1 CPU, variance and p99 reported even when rate passes.
+  A miss-based shrink or shorter fixed window is rejected before implementation
+  because it does not address successful-window CPU; a viable candidate must be
+  client-RTT-aware or use a per-connection absorption budget.
 - Manual cohort (section 2.11): run 41477114469 against source `9692e07`,
   180 validated records, Redis/Valkey/Rillcache five workloads at P1/P16 and
   one-core; deterministic tables retained at
