@@ -1,6 +1,8 @@
 # Performance architecture: measured gaps and candidate designs
 
-**Status: RESEARCH. This document changes no runtime behavior.** It records where
+**Status: RESEARCH. Candidate 4.12 is implemented on its own branch and is
+awaiting protected-gate evidence; every other runtime item here is historical.**
+It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
 dependency policy, and what evidence was required. The bounded Mio readiness
@@ -14,14 +16,18 @@ merged as PR #159 (`31a6006`) after both four-CPU gates passed (section 4.8).
 Round-robin accept distribution then failed the Dragonfly gate at the old
 `min(4, CPUs)` count (PR #161), and the follow-up `2 × CPUs` count, capped at
 eight, failed both four-CPU gates on pipeline-1 ping (PR #164, section 2.8). The
-eight-reactor count is rejected; this document now records that evidence without
-a runtime change. A later refresh onto the isolated command counters passed both
-four-CPU gates twice (section 2.10), and a separate manual cohort shows no
-measured rate loss to Redis or Valkey on five workloads, with the remaining gap
-in CPU efficiency and scheduler churn (section 2.11). Cross-candidate gate
-results show that changing the reactor count is not a reliable P1 fix
-(section 2.12). A gate pass on one head never substitutes for a fresh head, and
-every dependency still needs explicit review.
+eight-reactor count is rejected. A later refresh onto the isolated command
+counters passed both four-CPU gates twice (section 2.10), and a separate manual
+cohort shows no measured rate loss to Redis or Valkey on five workloads, with the
+remaining gap in CPU efficiency and scheduler churn (section 2.11).
+Cross-candidate gate results show that changing the reactor count alone is not a
+reliable P1 fix (section 2.12); the two-reactor default tried on this branch also
+failed that row while every single-owner data row passed (section 2.13).
+Candidate 4.12 is therefore the matched wakeup mechanism section 2.12 calls for:
+one owner-local reactor (the batching optimum) plus a bounded non-blocking
+readiness poll, with fresh protected-gate evidence required on the exact head. A
+gate pass on one head never substitutes for a fresh head, and every dependency
+still needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -263,7 +269,7 @@ head (run 41441783049). The loss is therefore specific to the extra reactors, no
 to data execution or parsing.
 
 Diagnosis: eight reactor threads on four CPUs oversubscribe the host. Each
-productive reactor also takes the 8 µs `FAST_WAIT` spin, so the extra threads
+productive reactor also took the then-current 8 µs blocking readiness wait, so the extra threads
 consume runnable time without adding parallel work; P1 ping fell from the
 117–138k range of the four-reactor cohorts to about 86k. Adding reactors beyond
 the CPU budget is not a scaling mechanism for P1 latency. The runtime candidate
@@ -377,7 +383,7 @@ P1 data rows are near one CPU and about 0.0028 voluntary switches/command, so
 the churn is specific to the connection-local PING path, not the owner-local
 data path. P16 ping also uses 121.9% CPU because it can execute on several
 reactors. The mechanism is the owner-plus-worker reactor model: a P1 ping can
-involve an accept/wakeup and the 8 µs `FAST_WAIT` absorption per reactor, while
+involve an accept/wakeup and the then-current 8 µs readiness absorption per reactor, while
 Redis and Valkey keep one thread and do not pay cross-thread wakeups. The extra
 run-able thread demand is what becomes a loss when the benchmark generator
 shares the same CPUs (section 2.9).
@@ -421,6 +427,91 @@ evidence, not because four is provably optimal. The next valid work is the
 matched fixed-host diagnostic (counters and wakeup mechanisms) or a gate runner
 with disjoint client CPUs; another default-count change would be an unmeasured
 knob turn.
+
+### 2.13 Theoretical PING ceiling, reactor batching and the bounded readiness poll
+
+Section 2.12 shows that reactor count alone does not clear the Valkey P1 median;
+this section explains why the count is still part of the mechanism, and why the
+bounded poll is the part that was missing. Pipeline 1 has exactly one request in
+flight per connection, so throughput is set by Little's law:
+`rate = clients / round-trip latency`. With the official gate's
+eight clients and two generator threads, the generator itself serializes each
+thread over four connections. The floor is therefore the generator's own
+synchronous `write`+`read` cycle plus the server's share of the round trip, not
+the number of server CPUs. Adding server reactors cannot raise that floor; it can
+only add wakeups and steal runnable time from the two generator threads.
+
+Two mechanisms follow from the measurements.
+
+**Batching per readiness wake.** A reactor that owns more connections can serve
+more of the generator's ready requests per `epoll_wait` return. With `R = 4` on
+the four-CPU gate each reactor owns two of the eight connections, so almost every
+wake serves one request; with `R = 1` it owns all eight and can serve one request
+per generator thread (two) before sleeping again. The gate's own data rows are
+the cleanest within-run evidence: data connections always migrate to the single
+owner reactor, so they are a one-reactor measurement taken beside the split PING
+row. On the candidate head that lost the gate, the single-owner rows reached
+155,311–159,816 req/s P1 while the two-reactor PING row reached 150,489 req/s,
+even though PING does strictly less work. A single reactor is not a compromise
+for P1 PING; it is the faster topology.
+
+**Removing the sleep/wake pair.** Even with perfect batching, a reactor that has
+answered every queued client and parks in `epoll_wait` pays a wakeup for the next
+arrival. The request is usually already in flight within a few microseconds, so
+the reactor can stay runnable for a bounded window and observe it directly. The
+implementation polls with a zero timeout for at most 20 µs after a productive
+pass, only while no client is queued and no accept is pending; the window is
+renewed only by serviced work. The cost is bounded: an idle server spins for at
+most one window after its last command and then parks for the 10 ms stop tick,
+and a pipeline-16 pass never reaches the branch because its runnable queue is
+never empty. Under sustained pipeline-1 load the reactor deliberately holds one
+CPU busy; that is the latency/CPU trade this project chooses for P1.
+
+Batching alone is not sufficient: section 2.12 records that the co-located
+one-reactor head from PR #167 lost the same Valkey median by 0.80% while cutting
+scheduler churn. That fits the decomposition above. One reactor removes the split-set
+wakeups but still parks in `epoll_wait`, so it continues to pay one blocking
+arrival per command; the bounded poll is the remaining mechanism, and the local
+screen shows it removing most of the switches that batching left behind
+(0.057–0.071 to 0.025–0.035 per command).
+
+The same arithmetic explains the one-CPU gate, where the server is pinned to one
+CPU and the generator runs on the others. One reactor is both the batching
+optimum and the CPU floor: the measured P1 ping cost is about 8.5 CPU µs per
+command against 8.8 for the C servers, so Rillcache is not losing on command
+instructions. The remaining one-CPU bound is the kernel readiness/receive/send
+round trip plus the necessary generator handoff. Batching those syscalls across
+sockets would need `recvmmsg`/`sendmmsg`, `io_uring` or another FFI-level
+mechanism outside the current safe-Rust/Mio boundary.
+
+Evidence for the two mechanisms:
+
+| Cohort | Topology | P1 ping req/s | P16 ping req/s | P1 voluntary switches/command |
+| --- | --- | ---: | ---: | ---: |
+| four-CPU gate, source `c7904c6` (run 41544908472) | 2 reactors, blocking wait | 150,489 (p99 0.071 ms) | 1,815,984 | not collected |
+| four-CPU gate, same run, single-owner data rows | 1 reactor | 155,311–159,816 | 1,551,099–1,836,765 | not collected |
+| local screen, frozen binaries | 2 reactors, blocking wait | 16,299–25,728 | 324,277–368,059 | 0.154–0.174 |
+| local screen, frozen binaries | 1 reactor, blocking wait | 20,224–25,728 | — | 0.057–0.071 |
+| local screen, frozen binaries | 1 reactor, 20 µs poll | 22,173–28,092 | 433,679–500,122 | 0.025–0.035 |
+
+The middle row separates the two mechanisms: batching alone already removes most
+of the per-command wakeups, and the bounded poll removes most of the rest. A
+second screen of the final default binary reproduced the P1 direction
+(22,193–28,447 vs 17,659–26,710 for the two-reactor default) and left P16 mixed
+(326,270–427,505 vs 329,313–341,565), so no P16 gain is claimed: the point of the
+one-reactor default is that it does not collapse the pipelined row.
+
+The local host is a heavily loaded six-logical-CPU KVM, so its absolute rates are
+diagnostic only; the direction and the switch counters are consistent across
+paired repetitions, and the official run is the authoritative rate evidence. The
+local screen used the pinned official `valkey-benchmark` with the gate's own
+arguments (eight clients, two threads, 1024 random keys, 64-byte values, seed 42)
+and the server and generator both pinned to CPUs `0-3`, with 6 s measured
+samples (the protected gate uses 10 s).
+
+Candidate 4.12 therefore implements one owner-local reactor by default plus the
+bounded readiness poll. `--socket-workers 2..=16` remains the opt-in path for
+PING-heavy fan-out, where a hot single reactor is the limit rather than the goal.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -640,7 +731,7 @@ with no new dependency. It is candidate 4.9, not part of this increment.
 | Component | Redis 8.10.2 | Valkey 9.1.2 | Rillcache today | Decision |
 | --- | --- | --- | --- | --- |
 | Readiness | level-triggered epoll, single loop | level-triggered epoll, single loop | Mio edge-triggered reactor with drain probe | **Keep/adapt:** edge-triggered through reviewed Mio; level-triggered needs unsafe FFI or a new selector policy |
-| Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | owner reactor plus at most `min(4, CPUs)` connection-local workers | **Adapt, bounded:** more reactors than CPUs oversubscribed P1 ping (−22.4% Valkey); reject counts above `min(4, CPUs)` without a different mechanism |
+| Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one owner-local reactor plus an opt-in 2–16 connection-local worker override | **Adapt, bounded:** more reactors split the client set and cost the four-CPU P1 gate; one reactor batches more commands per readiness wake and the bounded poll removes one wakeup per round trip |
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Reply path | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same plus encoded-buffer copy avoidance from 7 I/O threads | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral is 4.5 and unproven |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames do not rescan payload; revisit only with large-argument evidence |
@@ -757,11 +848,12 @@ revive it without a different readiness mechanism and fresh gate evidence.
 
 One reactor is the only acceptor, keeps the owner-local executor, maintenance and
 every data command, and assigns new connections round-robin to the other reactors
-so a shared-listener wakeup cannot skew connection-local work onto one worker. The
-merged default remains `min(4, allowed CPUs)`. A `2 × allowed CPUs` count, capped
-at eight, was measured and rejected on pipeline-1 ping (section 2.8). The other
-reactors own their assigned connections and execute only bare
-connection-local commands (PING/ECHO/QUIT). Before the first data command a worker
+so a shared-listener wakeup cannot skew connection-local work onto one worker.
+The other reactors own their assigned connections and execute only bare
+connection-local commands (PING/ECHO/QUIT). The merged default remained
+`min(4, allowed CPUs)`. A `2 × allowed CPUs` count, capped at eight, was measured
+and rejected on pipeline-1 ping (section 2.8), and the later `ceil(CPUs/2)`
+default failed the same row (section 2.13). Before the first data command a worker
 flushes prior replies, deregisters the socket, transfers the session and unparsed
 input, and hands the connection to the owner, which registers it and continues in
 reply order. `--socket-workers 1` keeps the single owner-local reactor; fixed
@@ -779,7 +871,9 @@ shutdown. PR #159 merged this mechanism with both four-CPU gates passing; PR #16
 added round-robin distribution but failed Dragonfly at `min(4, CPUs)`. The
 `2 × CPUs`/eight count then failed both gates on P1 ping and is rejected
 (section 2.8); do not revive it without a different scheduling mechanism and
-fresh evidence. Both protected gates plus the unchanged functional contexts
+fresh evidence. Candidate 4.12 takes that route: it defaults to the owner reactor
+alone and adds the bounded readiness poll, leaving this section as the opt-in
+worker mechanism. Both protected gates plus the unchanged functional contexts
 decide every count change; no throughput claim is made before they pass.
 
 ### 4.9 Cached command-time snapshot (not implemented)
@@ -838,15 +932,17 @@ mechanism, all raw samples and CPU placement are retained, and both protected
 gates still pass on any resulting head. This is a diagnosis of an already-merged
 change, not a new runtime candidate.
 
-### 4.11 Reactor wakeup/spin budget (diagnostic, not implemented)
+### 4.11 Reactor wakeup/spin budget (diagnostic; superseded by 4.12)
 
 Mechanism: section 2.11 measures about 0.086 voluntary plus 0.014 involuntary
 context switches per P1 ping, against ~0.0001 for the single-thread servers,
-while Rillcache still wins rate and p99. The 8 µs `FAST_WAIT` absorption after a
-productive pass and the owner/worker wakeups are the plausible sources. A
-candidate should reduce wakeups or spin CPU only when a reactor is multiplexing
-multiple clients, or park immediately instead of spinning when another reactor
-already has runnable work.
+while Rillcache still wins rate and p99. The then-current 8 µs readiness wait
+after a productive pass and the owner/worker wakeups are the plausible sources.
+Candidate 4.12 later implemented the measured version: one owner-local reactor
+plus a bounded zero-timeout poll instead of a blocking wait. This entry stays as
+the diagnostic rationale and rejection rule that 4.12 inherits. Section 2.12
+records why another default reactor count alone is not an acceptable substitute
+for this diagnostic.
 
 Prediction: the voluntary-switch rate and P1 ping CPU% fall materially, with
 rate and p99 unchanged or better. The effect should be strongest with several
@@ -870,9 +966,46 @@ keep the absorption path when it is doing useful work.
 Acceptance if implemented: deterministic reactor scheduling tests, no lost
 wakeups or ordering regressions, joined shutdown, the matched A/B above, and both
 protected gates on the final head. Until the diagnostic shows the spin is the
-cost, this remains a hypothesis, not a runtime change. Section 2.12 records why
-another default reactor count is not an acceptable substitute for this
-diagnostic.
+cost, this remains a hypothesis, not a runtime change.
+
+### 4.12 Owner-local reactor default with a bounded readiness poll (implemented candidate)
+
+Mechanism: plain Unix TCP without an explicit count runs the single owner-local
+reactor. `--socket-workers 2..=16` still opts into shared-store connection-local
+workers, which continue to execute only PING/ECHO/QUIT and migrate data
+connections to the owner. After a productive pass with an empty runnable queue
+and no pending accept, the reactor polls readiness with a zero timeout for at
+most 20 µs before parking for the normal stop tick; the window is renewed only by
+serviced work.
+
+Prediction: at four CPUs the P1 PING row stops paying a split-set wakeup and a
+blocking `epoll_wait` arrival per command. It should join the single-owner data
+rows at roughly 155–160k req/s, and the bounded poll should remove one sleep/wake
+pair from the generator round trip, roughly halving voluntary switches per command
+relative to the one-reactor blocking wait (and cutting them about fivefold
+relative to the two-reactor default) while raising P1 PING further. P1 data rows should improve for
+the same reason, P16 rows should be unchanged because their runnable queue is
+never empty, and the one-CPU gate should keep one reactor while losing its
+blocking wakeup. An idle server must still park within one 20 µs window and use
+no measurable CPU.
+
+Baseline and method: frozen current and candidate binaries, one host and CPU
+placement, the pinned official `valkey-benchmark` with the gate's own arguments,
+alternating repetitions, both explicit counts, and raw P1/P16 JSON with server
+CPU and context switches. The local host is shared, so the screen shows mechanism
+and direction only; only the protected gates accept the change.
+
+Rejection condition: any original-gate loss, any Valkey or Dragonfly four-CPU
+loss, a P1 batch-p99 regression beyond AC5, no reduction in per-command wakeups
+or CPU, or a P16 collapse. Revert to the previous default rather than adding a
+benchmark-specific mode or weakening a gate.
+
+Acceptance if the gates pass: deterministic unit/wire tests for the selected
+count and the existing worker modes, correct shutdown while a poll window is
+active, current-base protection, all 14 required contexts, and fresh protected
+performance evidence on the exact head. The count is reported through
+`scheduling_policy()`. The bounded poll is a fixed, documented policy constant,
+not a per-workload switch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -966,7 +1099,6 @@ free tuning change.
 | Copying level-triggered `epoll` semantics | Requires raw `epoll` FFI in project code (safe-Rust violation) or a new selector dependency; Mio's edge-triggered probe is load-bearing, as PR #155 showed. |
 | Copying Valkey's I/O-thread reply copy avoidance | Depends on encoded-buffer reference tracking and an I/O-thread pool; no gate evidence that the current copy path is the remaining cost. |
 | Starting more connection-local reactors than CPUs (`2 × CPUs`, max eight) | Failed both four-CPU gates on P1 ping (Valkey −22.4%, Dragonfly −9.3%) while data rows passed; the extra threads oversubscribe the four-CPU budget (section 2.8). |
-| Tuning the default reactor count to clear Valkey P1 ping | One, two, four and eight reactors have each failed that row on some head; the sign is not monotonic and the two-reactor head lost 1.42% despite the highest absolute rate and better p99. See section 2.12. |
 | RDB/replication work as a performance fix | Out of scope and unrelated to the measured P1 gap. |
 | Eliding the edge-triggered empty-receive drain probe (PR #155) | Cut receive syscalls ~16% locally but lost two Valkey P1 medians; the probe is also a user-space readiness batch. See 2.6/4.7. |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
@@ -1030,14 +1162,19 @@ frozen binaries and alternating order, with raw samples retained.
   scalable on workers; data commands shall execute on the owner-local executor;
   admission, idle timeout and shutdown shall join every reactor and in-flight
   migration. A throughput pass is valid only if both protected gates pass.
-- **AC15 (reactor count).** When a candidate changes the default plain Unix TCP
-  reactor count above the CPU hint, it shall start at most
-  `2 × allowed CPUs` (one on a single CPU), report the count through
-  `scheduling_policy()`, assign new connections round-robin, and keep
-  `--socket-workers 1..16` as an override. It is accepted only if the original
-  gate wins 20/20 and both four-CPU comparisons win 10/10 on the final head.
-  The `2 × CPUs`/eight candidate failed both four-CPU gates on P1 ping and is
-  rejected; the merged default stays at `min(4, CPUs)`.
+- **AC15 (reactor budget).** When plain Unix TCP starts without an explicit
+  count, it shall run one owner-local reactor, report that count through
+  `scheduling_policy()`, keep all data commands on the owner-local executor, and
+  preserve `--socket-workers 1..16` as an override. It is accepted only if the
+  original gate wins 20/20 and both four-CPU comparisons win 10/10 on the final
+  head. The `min(4, CPUs)`, `2 × CPUs` and `ceil(CPUs/2)` defaults remain
+  historical evidence, not current defaults.
+- **AC17 (bounded poll).** When a plain readiness reactor has serviced at least
+  one request, has no queued client and no pending accept, it shall poll with a
+  zero timeout for at most 20 µs before parking, shall renew that window only
+  through serviced work, shall still observe stopping within that window, and
+  shall not apply the window when a runnable client or accept is pending. It is
+  accepted only on the same gate conditions as AC15.
 - **AC16 (cached clock, only if 4.9 is implemented).** When any key has an
   expiration, a command shall observe one stable millisecond snapshot for its
   whole execution, refreshed at most once per reactor pass; a key alive at
@@ -1091,11 +1228,13 @@ current roadmap; individual phases are separate increments.
   not a gate and was not merged into this record.
 - Wakeup/spin diagnostic (section 4.11): not yet run; requires frozen binaries,
   scheduler/syscall counters and the same protected gate on any resulting head.
-- Cross-candidate count evidence (section 2.12): PR #167 one reactor, four-CPU run
-  41518853948 (Valkey 8/10, P1 ping −0.80%, P1 GET −0.11%; Dragonfly 10/10);
-  PR #172 two reactors, run 41544908472 (Valkey 9/10, P1 ping −1.42%; Dragonfly
-  10/10). Artifacts retained under `/root/perf-evidence/pr167/` and `pr172/`.
-  Both are other owners' open PRs; only their published gate results are used.
+- Owner-local reactor and bounded poll (section 4.12): candidate default is one
+  reactor plus a 20 µs zero-timeout window. Local frozen-binary diagnostic
+  samples and the official `valkey-benchmark` screen are retained under
+  `/root/perf-evidence/ping-max/`; they are shared-host mechanism evidence, not
+  gate results. Fresh original and four-CPU gates on the exact head decide
+  acceptance. The failed `ceil(CPUs/2)` head is preserved there with its raw
+  four-CPU log.
 - Development loop: `make dev-check` for editing feedback, `make test` after a
   complete logical change and `make ci` before review, per
   [development-cycle](../development-cycle.md). Local screens never replace the
@@ -1122,14 +1261,14 @@ current roadmap; individual phases are separate increments.
   and scheduler churn, not rate or tail on those rows.
 - The P1 ping row is host-sensitive. The refreshed runtime passed both four-CPU
   comparisons twice (section 2.10), but earlier identical binaries also lost that
-  row by up to 4.32% on the same shared runner (section 2.9). One-, two-, four-
-  and eight-reactor defaults have each failed it on some head; the sign is not
-  monotonic (section 2.12). Readiness was necessary but not sufficient, and the
-  rejected drain probe shows that syscall counts alone are not a throughput
-  proxy. Round-robin at four reactors improved Valkey but still lost Dragonfly
-  PING; the eight-reactor response then lost P1 ping to both and is rejected. The
-  remaining P1 question needs a different scheduling mechanism, not another
-  reactor count.
+  row by up to 4.32% on the same shared runner (section 2.9). Readiness was
+  necessary but not sufficient, and the rejected drain probe shows that syscall
+  counts alone are not a throughput proxy. Round-robin at four reactors improved
+  Valkey but still lost Dragonfly PING; the eight-reactor response then lost P1
+  ping to both and is rejected. Candidate 4.12 instead restores the single
+  owner-local reactor and removes the blocking wakeup from the pipeline-1 round
+  trip; the remaining P1 question needs fresh protected-gate evidence, not a
+  larger thread count.
 - The four-CPU runner used for the recent cohorts has `client_cpus` equal to
   `server_cpus` (`[0,1,2,3]`), so the load generator shares the server CPUs.
   That biases a multi-reactor server against a single-thread competitor and puts
