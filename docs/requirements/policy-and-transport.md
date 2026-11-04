@@ -53,6 +53,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R-TOKIO-NET4:** When idle timeout, peer cancellation, protocol error, SHUTDOWN,
   server-handle shutdown or worker failure occurs, connection registration and
   resources shall be released and every owned runtime worker shall be joined.
+  If normal stop occurs while maintenance waits for cold admission, cancellation
+  shall end the acceptor successfully without queuing more cold work. Cold-service
+  failures and task panics shall remain errors, including during cancellation.
 - **R-TOKIO-NET5:** When remote worker threads start, the server shall attempt
   safe best-effort CPU affinity to distinct allowed logical IDs when supported;
   failure shall leave scheduling to the OS and shall not prevent startup.
@@ -411,12 +414,7 @@ platforms retain timeout-based fallback admission.
   count, and `2..=16` shall add connection-local worker reactors. One reactor
   shall keep the owner-local data executor and all data commands; worker reactors
   shall own disjoint accepted connections and execute only bare connection-local
-  commands.
-- **R-SOCKET3 (bounded latency poll):** When a plain readiness reactor has just
-  serviced at least one request, has no queued client and no pending accept, it
-  shall keep polling readiness without blocking for at most 20 µs before parking
-  for the normal stop tick. The window shall be renewed only by serviced work, so
-  an idle server parks immediately, and it shall never delay stopping.
+  commands. `--socket-workers 1` shall retain the single owner-local reactor.
 - **R-SOCKET2 (state-driven):** Before a worker executes the first data command on
   a connection, it shall flush prior replies, deregister the socket, transfer the
   session and unparsed input, and hand the connection to the owner reactor, which
@@ -429,3 +427,8 @@ platforms retain timeout-based fallback admission.
   timeout, max clients, session isolation and joined shutdown. Documentation
   shall state that no key is sharded, no per-command owner hop is added, and that
   protected-gate evidence decides any throughput claim.
+- **R-SOCKET4 (bounded latency poll):** When a plain readiness reactor has just
+  serviced at least one client, has no queued client and no pending accept, it
+  shall poll readiness without blocking for at most 20 µs before parking for the
+  normal stop tick. Only another serviced pass shall renew the window; stopping
+  shall be checked within it. CPU and tail-latency tradeoffs shall remain visible.

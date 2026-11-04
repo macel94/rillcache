@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "dragonfly": {
+    "version": "2.0.2",
+    "url": "https://github.com/dragonflydb/dragonfly/releases/download/v2.0.2/dragonfly-x86_64.tar.gz",
+    "sha256": "eb9dfe654c69ab190cb3aa329ed3599ebe19c5e9a3a437bb7bc38ef52f665c88",
+    "license_url": "https://raw.githubusercontent.com/dragonflydb/dragonfly/v2.0.2/LICENSE.md",
+    "license_sha256": "6bc246b6ec377f6db8eea1bc4f9701faad37d3a54e2b914241a258cc3cd2f369",
+    "license": "BSL-1.1; non-production benchmark use only"
+  },
+  "garnet": {
+    "version": "2.2.5",
+    "revision": "8d007138208ce030eb10a50c80e636b1678b83e4",
+    "url": "https://github.com/microsoft/garnet/releases/download/v2.2.5/linux-x64-based.tar.xz",
+    "sha256": "f397cf0da94697ebd2fa17e7d3bc448fa5d62578f2c9693698a104a88d91c626",
+    "license_url": "https://raw.githubusercontent.com/microsoft/garnet/v2.2.5/LICENSE",
+    "license_sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+    "license": "MIT"
+  },
+  "dotnet": {
+    "version": "10.0.14",
+    "url": "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.14/dotnet-runtime-10.0.14-linux-x64.tar.gz",
+    "sha512": "634326028645f38731c8c4e71a68356e4ca0d6b6607139a234ab760687f742063edaf33a1f20dda615742d2dc8300ca2ff857619d51fbb38090383b71334af89",
+    "metadata_url": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json"
+  }
+}

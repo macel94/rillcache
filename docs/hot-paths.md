@@ -422,31 +422,30 @@ and pay a shard hop; that matches the measured shape in which Dragonfly wins
 PING/P1 but loses the data-command P1 and every P16 row. Copying io_uring or
 shard hops is outside this project's safe boundary.
 
-The default plain Unix TCP path is one owner-local reactor: at pipeline 1 a
-single reactor batches every in-flight connection-local command into one
-readiness wake, while extra reactors split the client set and add a wakeup per
-batch. The earlier `min(4, allowed CPUs)` and `ceil(allowed CPUs / 2)` defaults
-both lost the four-CPU gate's pipeline-1 PING row, and the project's own data
-rows (which always execute on the single owner) reach higher rates than the split
-PING path on the same run. Explicit `--socket-workers 2..=16` still opts into
-shared-store connection-local workers for PING-heavy fan-out. One reactor keeps
-the published owner-local executor and all data commands. Additional reactors own
-disjoint accepted connections and execute only bare connection-local commands
-(PING/ECHO/QUIT); before the first data command they flush replies, deregister
-the socket, transfer the session/input and hand the connection to the owner
-reactor, which registers and continues it in order. There is no sharded keyspace,
-no per-command owner hop and no wire change.
+The default plain Unix TCP path co-locates I/O with the single published data
+owner. One reactor can batch work from more in-flight connections per readiness
+wake rather than splitting that client set across workers. `--socket-workers
+2..16` explicitly opts into parallel connection-local I/O; `--socket-workers 1`
+makes the default count explicit. This is not a universal scaling claim; measure
+higher concurrency before selecting a parallel count.
 
-After a productive pass with nothing queued, the reactor keeps polling readiness
-without blocking for at most 20 µs before parking. Pipeline-1 round trips are
-dominated by the sleep/wake pair between the reply and the next request; staying
-runnable for a bounded window removes one of those wakeups without adding a
-timer or a thread. The window is renewed only by serviced work, is skipped while
-another client is already queued or a connection is waiting to be accepted, and
-an idle server parks for the full 10 ms stop tick. Under sustained pipeline-1
-load this deliberately holds one reactor CPU busy: it trades a full core for a
-shorter round trip, and it has no effect on pipeline-16 passes, which never reach
-the empty-queue branch.
+In explicit parallel mode, one reactor keeps the owner-local executor and all
+data commands. Other reactors own disjoint accepted connections and execute only
+bare connection-local commands (PING/ECHO/QUIT). Before the first data command
+they flush replies, deregister the socket, transfer the session/input and hand
+the connection to the owner reactor, which registers and continues it in order.
+There is no sharded keyspace, per-command owner hop or wire change.
+
+The merged PR #172 adds a separate bounded readiness-poll mechanism. After
+servicing clients with nothing queued, the reactor polls readiness with zero
+timeout for at most 20 µs before parking. It checks stopping inside the window,
+skips it while a client/accept is already queued, and only another serviced pass
+renews it. An idle reactor otherwise parks for the 10 ms stop tick. Under
+sustained P1 traffic this can hold a full CPU busy to avoid sleep/wake round
+trips; CPU and p99 costs remain real even when throughput passes. The branch is
+conditional on queue state, not pipeline depth. This is distinct from the older
+8 µs timed wait (rounded to 1 ms by Linux Mio) and from the rejected selector
+consolidation studies; their losses remain evidence, not current runtime code.
 
 A shared locked-Store version of this idea was measured and rejected first: PING
 scaled, but data commands collapsed because shared `StoreHandle`/bridge execution
