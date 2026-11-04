@@ -18,6 +18,9 @@ HARNESS = Path(os.environ.get("RILLCACHE_GATE_HARNESS", Path(__file__).with_name
 SPEC = importlib.util.spec_from_file_location("multicpu_gate", HARNESS)
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
+# A policy PR is measured by the protected base harness, so the same test file
+# must pass against a harness without the paired-bootstrap diagnostic.
+PAIRED = hasattr(gate, "BOOTSTRAP_RESAMPLES")
 HEADER = ("test", "rps", "avg_latency_ms", "min_latency_ms", "p50_latency_ms", "p95_latency_ms", "p99_latency_ms", "max_latency_ms")
 
 
@@ -170,8 +173,10 @@ class GateTests(unittest.TestCase):
         cpus = [0, 1, 2, 3]
         binaries = {v: "/" + v for v in ("rillcache", "valkey", "generator")}
         manifest = dict(schema_version=gate.SCHEMA_VERSION, complete=True, gate_passed=True, allowed_cpus=cpus,
-                        server_cpus=cpus, client_cpus=cpus, runs=3, workloads=gate.WORKLOADS,
+                        server_cpus=cpus, client_cpus=cpus, runs=gate.RUNS, workloads=gate.WORKLOADS,
                         pipelines=gate.PIPELINES, duration_seconds=10, warmup_requests=8000,
+                        **({"bootstrap": dict(resamples=gate.BOOTSTRAP_RESAMPLES, seed=gate.BOOTSTRAP_SEED)}
+                           if PAIRED else {}),
                         launch_directory="/original/runner/gate", binaries=binaries,
                         binary_sha256={v: "a" * 64 for v in binaries}, base_source="a" * 40,
                         head_source="b" * 40, candidate_source="c" * 40, order=[], evidence_sha256={})
@@ -203,14 +208,78 @@ class GateTests(unittest.TestCase):
         (root / "summary.md").write_text(gate.summary(gate.evaluate(self.samples())))
         return manifest
 
+    def test_alternating_repetitions_keep_every_sample_and_balanced_order(self):
+        ids = list(gate.identities())
+        self.assertGreaterEqual(gate.RUNS, 3)
+        self.assertEqual(10 * 2 * gate.RUNS, len(ids))
+        self.assertEqual(len(ids), len(set(ids)))
+        for workload in gate.WORKLOADS:
+            for pipeline in gate.PIPELINES:
+                order = [v for w, p, _, v in ids if (w, p) == (workload, pipeline)]
+                self.assertEqual(gate.RUNS, order.count("rillcache"))
+                self.assertEqual(gate.RUNS, order.count("valkey"))
+                firsts = order[0::2]
+                self.assertEqual(gate.RUNS, len(firsts))
+                for earlier, later in zip(firsts, firsts[1:]):
+                    self.assertNotEqual(earlier, later)
+                self.assertGreaterEqual(min(firsts.count("rillcache"), firsts.count("valkey")),
+                                        gate.RUNS // 2)
+
+    @unittest.skipUnless(PAIRED, "protected base harness has no paired diagnostic yet")
+    def test_paired_interval_is_deterministic_reported_and_never_acceptance(self):
+        samples = self.samples()
+        rows = gate.evaluate(samples)
+        self.assertEqual(rows, gate.evaluate(copy.deepcopy(samples)))
+        for row in rows:
+            paired = row["paired"]
+            self.assertEqual(gate.RUNS, paired["runs"])
+            self.assertEqual(gate.RUNS, paired["wins"])
+            self.assertLessEqual(paired["ci_low"], paired["median_ratio"])
+            self.assertLessEqual(paired["median_ratio"], paired["ci_high"])
+        # A row can win three of five paired runs yet tie on whole-cohort
+        # medians: the diagnostic must never turn that into a pass.
+        tied = self.samples()
+        for item in tied:
+            if (item["workload"], item["pipeline"]) != ("ping", 1):
+                continue
+            item["rps"] = {1: 100, 2: 120, 3: 120, 4: 100, 5: 100}[item["run"]] if item["variant"] == "rillcache" \
+                else {1: 50, 2: 100, 3: 100, 4: 200, 5: 200}[item["run"]]
+        tied_rows = gate.evaluate(tied)
+        ping = next(r for r in tied_rows if (r["workload"], r["pipeline"]) == ("ping", 1))
+        self.assertEqual(3, ping["paired"]["wins"])
+        self.assertGreater(ping["paired"]["median_ratio"], 1.0)
+        self.assertFalse(ping["passed"])
+        # Conversely a row can pass the strict median rule while losing two of
+        # the five paired runs; those losses stay visible in the diagnostic.
+        mixed = self.samples()
+        for item in mixed:
+            if item["variant"] == "rillcache" and (item["workload"], item["pipeline"]) == ("ping", 1):
+                item["rps"] = 120 if item["run"] in (1, 2, 3) else 90
+        mixed_rows = gate.evaluate(mixed)
+        ping = next(r for r in mixed_rows if (r["workload"], r["pipeline"]) == ("ping", 1))
+        self.assertTrue(ping["passed"])
+        self.assertEqual(3, ping["paired"]["wins"])
+
+    @unittest.skipUnless(PAIRED, "protected base harness has no paired diagnostic yet")
+    def test_paired_statistics_reject_incomplete_or_invalid_ratios(self):
+        for bad in ([1.0] * (gate.RUNS - 1), [1.0] * (gate.RUNS + 1), [1.0, True, 1.0, 1.0, 1.0],
+                    [1.0, 0, 1.0, 1.0, 1.0], [1.0, float("nan"), 1.0, 1.0, 1.0],
+                    [1.0, float("inf"), 1.0, 1.0, 1.0]):
+            with self.subTest(ratios=bad), self.assertRaises(ValueError):
+                gate.paired_statistics(bad)
+
     def test_relocated_cohort_replays_and_corruptions_fail_closed(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             manifest = self.cohort_fixture(root)
             self.assertTrue(all(r["passed"] for r in gate.load_cohort(root)))
-            for key, value in (("complete", False), ("gate_passed", False), ("server_cpus", [0]),
-                               ("runs", True), ("head_source", "invalid"), ("order", []), ("evidence_sha256", {}),
-                               ("schema_version", 1), ("duration_seconds", 1), ("warmup_requests", 1)):
+            tampers = [("complete", False), ("gate_passed", False), ("server_cpus", [0]),
+                       ("runs", True), ("runs", gate.RUNS + 1), ("head_source", "invalid"),
+                       ("order", []), ("evidence_sha256", {}), ("schema_version", 1),
+                       ("duration_seconds", 1), ("warmup_requests", 1)]
+            if PAIRED:
+                tampers.append(("bootstrap", {"resamples": 1, "seed": 1}))
+            for key, value in tampers:
                 bad = copy.deepcopy(manifest)
                 bad[key] = value
                 gate.save(root / "manifest.json", bad)

@@ -25,7 +25,10 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       RILLCACHE_GATE_HELPERS: ${{ github.workspace }}/base/scripts/upstream
-    timeout-minutes: 50
+    # The Valkey cohort runs five alternating repetitions (~+7 measured minutes)
+    # plus the unchanged three-round Dragonfly comparison. Measured steps took
+    # 10.4-10.5 minutes each at three rounds on a standard runner.
+    timeout-minutes: 75
     steps:
       - name: Validate the exact open PR and freeze its base and head identities
         id: context
@@ -166,7 +169,7 @@ jobs:
           grep -Eq '^rillcache [0-9]+\.[0-9]+\.[0-9]+' "$RUNNER_TEMP/valkey-multicpu-tools/candidate-version.txt"
           hash=$(sha256sum "$RUNNER_TEMP/valkey-multicpu-tools/candidate" | awk '{print $1}')
           echo "sha256=$hash" >> "$GITHUB_OUTPUT"
-      - name: Measure all ten conditions with the official benchmark and four server CPUs
+      - name: Measure all ten conditions in five alternating rounds with the official benchmark
         env:
           HARNESS: ${{ steps.harness.outputs.path }}
           BASE_SOURCE: ${{ steps.context.outputs.base }}
