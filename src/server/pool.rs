@@ -108,7 +108,11 @@ impl Client {
     }
 
     pub(super) fn open(&self, progress: bool, timeout: Duration) -> Option<bool> {
-        (progress || self.activity.elapsed() < timeout).then_some(progress)
+        // A queued or in-flight reply is outstanding work, not inactivity: the
+        // reactor (or a WouldBlock flush) still has to drain it, so an idle
+        // timeout must never close the connection in that state.
+        (progress || !self.output.is_empty() || self.activity.elapsed() < timeout)
+            .then_some(progress)
     }
 
     /// At most one bounded socket read per client/pass.

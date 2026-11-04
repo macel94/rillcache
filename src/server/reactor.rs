@@ -177,6 +177,10 @@ impl<E: Execution> Reactor<E> {
                 close.push(key);
                 continue;
             }
+            // The kernel accepted bytes for this connection: that is real socket
+            // activity, even though `Client::flush` deferred the write. Without
+            // this the idle timeout would close a client whose reply is in flight.
+            client.activity = Instant::now();
             client.sent += result as usize;
             if client.sent >= client.output.len() {
                 client.output.clear();
@@ -817,7 +821,10 @@ fn serve_with<E: Execution>(
         .register(&mut SourceFd(&fd), LISTENER, Interest::READABLE)?;
     let send_ring = SendRing::new().ok();
     if send_ring.is_some() {
-        eprintln!("rillcache: io_uring send ring active");
+        // Diagnostics must never abort the server when the launcher's stderr pipe
+        // is already closed (as the CLI profiling fixture does).
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "rillcache: io_uring send ring active");
     }
     Reactor {
         poll,

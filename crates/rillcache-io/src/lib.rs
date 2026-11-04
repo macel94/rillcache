@@ -393,7 +393,10 @@ impl SendRing {
                 panic!("completion for a buffer id that is not in flight: {id}");
             }
             if cqe.res > 0 && cqe.res as u32 != self.lengths[id as usize] {
-                panic!("partial completion id={id} res={} len={}", cqe.res, self.lengths[id as usize]);
+                panic!(
+                    "partial completion id={id} res={} len={}",
+                    cqe.res, self.lengths[id as usize]
+                );
             }
             self.live[id as usize] = false;
             self.in_flight = self
