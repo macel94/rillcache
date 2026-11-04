@@ -49,6 +49,10 @@ configure for the ordinary offline development loop.
 
 ### Architecture and research
 
+[Architecture approaches](architecture-comparison.md) compares Redis, Valkey,
+Dragonfly and Rillcache at the execution, I/O, data-placement and topology level,
+with diagrams and an explicit borrow/reject ledger.
+
 The default Unix plain-TCP frontend uses one owner-local Mio reactor, with opt-in
 socket workers that move a data connection once to its local data owner. The
 [hot-path guide](hot-paths.md) and
