@@ -19,7 +19,9 @@ sibling code. See [transport topology and limits](async-transport.md).
 
 ## Transport and dependency boundary
 
-- `#![forbid(unsafe_code)]` on every target. No raw pointers, FFI, allocator or
+- `#![forbid(unsafe_code)]` on every application target. The one reviewed exception
+  is `crates/rillcache-io` (io_uring send batching) behind a safe API; no raw
+  pointers, FFI, allocator or
   atomic-pointer tricks.
 - External crates remain allowlisted by `tests/policy.rs`: rustls, Mio, Tokio
   and `core_affinity` with only their required transitive packages. `hashbrown`,

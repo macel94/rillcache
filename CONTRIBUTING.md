@@ -66,7 +66,9 @@ the auto-loaded [project instructions](AGENTS.md).
 ## Safety is not negotiable
 
 `unsafe_code = "forbid"` applies package-wide, and each crate root also contains
-`#![forbid(unsafe_code)]`. No unsafe code, FFI, native extensions, unapproved dependency
+`#![forbid(unsafe_code)]`. The only unsafe code is the reviewed in-repo
+`crates/rillcache-io` boundary (Linux io_uring send batching, safe API only);
+its `README.md`/`AGENTS.md` state the contract. No other FFI, native extensions, unapproved dependency
 exceptions, build scripts or alternative allocators. Do not relax/remove the
 policy to make an optimization work. Safe APIs of the Rust standard library and
 runtime are permitted; their implementation internals are outside this policy.

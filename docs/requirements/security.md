@@ -392,7 +392,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   bundles, a TLS listener on the plaintext address, non-positive handshake
   timeouts or TLS files without a listener shall fail startup with a bounded error.
   Only the reviewed rustls, Tokio and `core_affinity` dependency graphs, with
-  required transitive crates, shall be allowed; project code remains unsafe-free
+  required transitive crates, shall be allowed; application code remains unsafe-free,
+  with the single reviewed exception of the in-repo `rillcache-io` crate
   and FFI-free. Mio is used transitively by Tokio for I/O readiness.
 - **R377 (ubiquitous):** Tests shall cover TLS 1.3 RESP in every execution mode,
   plaintext coexistence, TLS 1.2 rejection, absence of HTTP ALPN, required

@@ -183,15 +183,16 @@ pub struct SendRing {
     sqes: Mapping,
     sq_head: *mut u32,
     sq_tail: *mut u32,
+    sq_entries: u32,
     sq_mask: u32,
     sq_array: *mut u32,
     cq_head: *mut u32,
     cq_tail: *mut u32,
     cq_mask: u32,
     cqes: *mut Cqe,
-    pending: u32,
     buffers: Vec<Option<Box<[u8]>>>,
     lengths: Vec<u32>,
+    live: Vec<bool>,
     free: Vec<u32>,
     in_flight: usize,
 }
@@ -224,14 +225,12 @@ impl SendRing {
         let sq = Mapping::new(fd.as_raw_fd(), sq_len, IORING_OFF_SQ_RING)?;
         let cq = Mapping::new(fd.as_raw_fd(), cq_len, IORING_OFF_CQ_RING)?;
         let sqes = Mapping::new(fd.as_raw_fd(), sqes_len, IORING_OFF_SQES)?;
-        // SAFETY: each offset is inside the mapping created for that queue and
-        // every pointer is used only by this single-threaded owner.
-        let (sq_head, sq_tail) = unsafe {
-            (
-                sq.at::<u32>(params.sq_off.head as usize),
-                sq.at::<u32>(params.sq_off.tail as usize),
-            )
-        };
+        // SAFETY: the offset is inside the mapping created for this queue and the
+        // pointer is used only by this single-threaded owner. The SQ head itself is
+        // not needed: the per-buffer id list bounds outstanding SQEs to the ring
+        // size, and every recycled id implies the kernel consumed that entry.
+        let sq_head = unsafe { sq.at::<u32>(params.sq_off.head as usize) };
+        let sq_tail = unsafe { sq.at::<u32>(params.sq_off.tail as usize) };
         // SAFETY: as above; the array is `sq_entries` u32 indices.
         let sq_array = unsafe { sq.at::<u32>(params.sq_off.array as usize) };
         // SAFETY: as above.
@@ -263,6 +262,7 @@ impl SendRing {
         }
         let buffers = (0..ENTRIES).map(|_| None).collect();
         let lengths = vec![0u32; ENTRIES as usize];
+        let live = vec![false; ENTRIES as usize];
         let free = (0..ENTRIES).rev().collect();
         Ok(Self {
             fd,
@@ -271,15 +271,16 @@ impl SendRing {
             sqes,
             sq_head,
             sq_tail,
+            sq_entries: params.sq_entries,
             sq_mask,
             sq_array,
             cq_head,
             cq_tail,
             cq_mask,
             cqes,
-            pending: 0,
             buffers,
             lengths,
+            live,
             free,
             in_flight: 0,
         })
@@ -305,7 +306,14 @@ impl SendRing {
         let Some(id) = self.free.pop() else {
             return Err(io::ErrorKind::WouldBlock.into());
         };
+        if self.live[id as usize] {
+            return Err(io::Error::other("ring buffer id submitted twice"));
+        }
+        self.live[id as usize] = true;
         let tail = self.sq_tail();
+        // The per-buffer ids already bound outstanding SQEs to the ring size; this
+        // assertion proves the kernel consumed an entry before we wrap onto it.
+        debug_assert!(tail.wrapping_sub(self.sq_head_value()) <= self.sq_entries);
         let index = tail & self.sq_mask;
         let slot = self.buffers[id as usize]
             .get_or_insert_with(|| vec![0u8; MAX_PAYLOAD].into_boxed_slice());
@@ -331,25 +339,28 @@ impl SendRing {
             *self.sq_array.add(index as usize) = index;
         }
         self.set_sq_tail(tail.wrapping_add(1));
-        self.pending += 1;
         self.lengths[id as usize] = bytes.len() as u32;
         self.in_flight += bytes.len();
         Ok(id)
     }
 
     /// Submit everything queued so far with one `io_uring_enter`.
+    ///
+    /// The count is derived from the shared queue positions (`tail - head`), not
+    /// from a private counter: a kernel head that lags one entry would otherwise
+    /// make `enter` re-execute an older SQE whose buffer has already been reused.
     pub fn flush(&mut self) -> io::Result<()> {
-        if self.pending == 0 {
+        let to_submit = self.sq_tail().wrapping_sub(self.sq_head_value());
+        if to_submit == 0 {
             return Ok(());
         }
-        let pending = self.pending;
-        // SAFETY: the ring is exclusively owned; `pending` counts SQEs written
-        // by `submit_send` that the kernel has not been told about yet.
+        // SAFETY: the ring is exclusively owned; `to_submit` is exactly the number
+        // of array entries published between the kernel head and our tail.
         let submitted = unsafe {
             libc::syscall(
                 libc::SYS_io_uring_enter,
                 self.fd.as_raw_fd(),
-                pending,
+                to_submit,
                 0,
                 0,
                 std::ptr::null::<libc::sigset_t>(),
@@ -359,7 +370,9 @@ impl SendRing {
         if submitted < 0 {
             return Err(io::Error::last_os_error());
         }
-        self.pending -= submitted as u32;
+        if submitted as u32 != to_submit {
+            return Err(io::Error::other("io_uring accepted only part of the queue"));
+        }
         Ok(())
     }
 
@@ -376,6 +389,13 @@ impl SendRing {
         self.set_cq_head(head.wrapping_add(1));
         let id = cqe.user_data as u32;
         if (id as usize) < self.buffers.len() {
+            if !self.live[id as usize] {
+                panic!("completion for a buffer id that is not in flight: {id}");
+            }
+            if cqe.res > 0 && cqe.res as u32 != self.lengths[id as usize] {
+                panic!("partial completion id={id} res={} len={}", cqe.res, self.lengths[id as usize]);
+            }
+            self.live[id as usize] = false;
             self.in_flight = self
                 .in_flight
                 .saturating_sub(self.lengths[id as usize] as usize);
@@ -385,6 +405,11 @@ impl SendRing {
             id,
             result: cqe.res,
         })
+    }
+
+    fn sq_head_value(&self) -> u32 {
+        // SAFETY: mapped shared u32 owned by this ring.
+        unsafe { std::ptr::read_volatile(self.sq_head) }
     }
 
     fn sq_tail(&self) -> u32 {
@@ -521,8 +546,9 @@ mod tests {
             .collect();
         let mut submitted = 0usize;
         let mut completed = 0usize;
+        let mut sent_bytes = 0usize;
         let expected_len: usize = payloads.iter().map(Vec::len).sum();
-        let mut reader = std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut total = Vec::new();
             b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -551,6 +577,7 @@ mod tests {
             while let Some(c) = ring.next_completion() {
                 assert!(c.result > 0, "unexpected result {}", c.result);
                 completed += 1;
+                sent_bytes += c.result as usize;
                 progress = true;
             }
             if !progress {
@@ -559,6 +586,7 @@ mod tests {
         }
         let received = reader.join().unwrap();
         let expected: Vec<u8> = payloads.concat();
+        assert_eq!(sent_bytes, expected.len(), "kernel-reported bytes differ");
         assert_eq!(received.len(), expected.len(), "byte count");
         if let Some(at) = received.iter().zip(&expected).position(|(a, b)| a != b) {
             let lo = at.saturating_sub(8);

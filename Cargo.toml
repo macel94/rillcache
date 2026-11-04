@@ -12,8 +12,10 @@ build = false
 [workspace]
 members = ["crates/rillcache-io"]
 
-# Explicit exceptions: rustls, Tokio and CPU affinity with required transitives.
-# Application code remains unsafe-free; dependencies expose safe OS/TLS APIs.
+# Explicit exceptions: rustls, Tokio and CPU affinity with required transitives,
+# plus the in-repo `rillcache-io` crate, which owns the repository's only unsafe
+# code (Linux io_uring send batching) behind a safe API. Application code itself
+# remains `#![forbid(unsafe_code)]`.
 [dependencies]
 core_affinity = "=0.8.3"
 mio = { version = "=1.2.4", default-features = false, features = ["os-poll", "os-ext"] }

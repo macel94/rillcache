@@ -49,7 +49,10 @@ feature roadmap, a production SLO or a claim that one design wins every workload
 
 Non-negotiable constraints ([requirements](../requirements.md)):
 
-- Application code is safe Rust; every target keeps `#![forbid(unsafe_code)]`.
+- Application code is safe Rust; every application target keeps
+  `#![forbid(unsafe_code)]`. The single reviewed exception is the in-repo
+  `crates/rillcache-io` crate (io_uring send batching) with a safe API and its own
+  `README.md`/`AGENTS.md` contract.
   No FFI, raw pointers, custom allocator, native extension or build script in
   project code.
 - External Rust dependencies are explicit, reviewed exceptions, vendored for

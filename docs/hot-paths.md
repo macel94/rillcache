@@ -37,7 +37,9 @@ full-token validation; hashing routes kernel events, not productive I/O turns.
 A turn owns its one queued continuation, and asynchronous membership changes
 only on session-state transitions. Slot storage is bounded by peak simultaneous
 connections rather than lifetime connection count. Mio 1.2.4 is pinned/vendored with default logging disabled;
-application targets still forbid unsafe code. Linux uses epoll, but unlike
+application targets still forbid unsafe code (the only unsafe lives in the reviewed
+`rillcache-io` crate, which batches socket sends through io_uring when the kernel
+supports it and otherwise falls back to direct writes). Linux uses epoll, but unlike
 Valkey's level-triggered `ae_epoll.c`, Mio requires edge-triggered draining.
 The runnable queue therefore retains bounded work until WouldBlock, preserves
 interrupted operations, limits accepts/commands/I/O per pass, and only registers

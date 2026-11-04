@@ -15,7 +15,8 @@ increments; it is not a claim of full Redis compatibility.
   crates vendored for offline builds. No other build, development, test or
   benchmark dependency is permitted. The
   dependency-policy test inspects all targets/features and rejects packages
-  outside this allowlist. Application code remains unsafe-free; as with the
+  outside this allowlist. Application code remains unsafe-free except for the reviewed
+in-repo `rillcache-io` crate; as with the
   standard library, dependency implementation internals are outside that boundary.
 - All project code is AI-generated. Human review, product judgment and test-based
   validation remain central. Automation does not replace that validation.
