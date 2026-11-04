@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
 /// Reviewed exceptions: rustls, Mio (used internally by Tokio), Tokio and
-/// core_affinity with their required transitive crates. Any other package fails.
+/// core_affinity with their required transitive crates, plus the in-repo
+/// `rillcache-io` crate that owns the only unsafe code (io_uring send batching)
+/// behind a safe API. Any other package fails.
 const ALLOWED: &[&str] = &[
     "bytes",
     "cc",
@@ -16,6 +18,7 @@ const ALLOWED: &[&str] = &[
     "once_cell",
     "pin-project-lite",
     "rillcache",
+    "rillcache-io",
     "ring",
     "rustls",
     "rustls-pemfile",
@@ -82,4 +85,67 @@ fn only_reviewed_tls_runtime_affinity_and_transitive_crates_are_allowed() {
             "external dependency outside the reviewed runtime/TLS/affinity exceptions: {line}\n{tree}"
         );
     }
+}
+
+/// The unsafe boundary is exactly one in-repo crate with a safe API.
+#[test]
+fn unsafe_code_lives_only_in_the_reviewed_io_crate() {
+    fn scan(root: &std::path::Path, findings: &mut Vec<String>) {
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if !["target", ".git", "vendor"].contains(&name.as_str()) {
+                    scan(&path, findings);
+                }
+                continue;
+            }
+            if name == "policy.rs" {
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let forbids = text
+                .lines()
+                .any(|line| line.trim().starts_with("#![forbid(unsafe_code)]"));
+            let uses_unsafe = text.lines().any(|line| {
+                let code = line.trim();
+                !code.starts_with("//")
+                    && [
+                        "unsafe {",
+                        "unsafe fn",
+                        "unsafe impl",
+                        "unsafe trait",
+                        "unsafe extern",
+                    ]
+                    .iter()
+                    .any(|pattern| code.contains(pattern))
+            });
+            let inside_io_crate = path
+                .components()
+                .any(|part| part.as_os_str() == "rillcache-io");
+            if inside_io_crate {
+                assert!(
+                    !forbids,
+                    "the unsafe crate must not forbid the code it exists to isolate: {}",
+                    path.display()
+                );
+            } else if uses_unsafe {
+                findings.push(path.display().to_string());
+            }
+        }
+    }
+    let mut findings = Vec::new();
+    scan(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+        &mut findings,
+    );
+    assert!(
+        findings.is_empty(),
+        "unsafe outside the reviewed crate ({} files): {:?}",
+        findings.len(),
+        &findings[..findings.len().min(5)]
+    );
 }
