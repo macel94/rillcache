@@ -139,7 +139,7 @@ fn unsafe_code_lives_only_in_the_reviewed_io_crate() {
     }
     let mut findings = Vec::new();
     scan(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         &mut findings,
     );
     assert!(
