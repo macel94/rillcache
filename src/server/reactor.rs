@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::fd::AsRawFd;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
+use rillcache_io::{MAX_PAYLOAD, SendRing};
 
 const LISTENER: Token = Token(0);
 const WAKER: Token = Token(usize::MAX);
@@ -57,6 +58,8 @@ struct Connection {
     asynchronous: bool,
     writable: bool,
     read_closed: bool,
+    /// Ring buffer id of an outstanding send, if this reactor batches writes.
+    inflight_send: Option<u32>,
 }
 
 impl Connection {
@@ -103,6 +106,11 @@ struct Reactor<E: Execution> {
     migrate: Option<Sender<Client>>,
     incoming: Option<Receiver<Client>>,
     waker: Option<Arc<Waker>>,
+    /// Completion-batched socket writes. `None` falls back to direct writes.
+    send_ring: Option<SendRing>,
+    /// Ring buffer id -> connection that owns the outstanding send.
+    ring_slots: Vec<Option<ReadyKey>>,
+
 }
 
 impl<E: Execution> Drop for Reactor<E> {
@@ -128,6 +136,64 @@ impl<E: Execution> Reactor<E> {
         }
     }
 
+    /// Submit queued ring sends once and apply every published completion.
+    ///
+    /// Called once per reactor pass. A completed send advances `sent`, drops the
+    /// buffer when the reply is fully written, and keeps the client runnable so a
+    /// remainder (payload larger than one ring buffer) is queued next pass.
+    fn harvest_sends(&mut self) -> io::Result<()> {
+        let Some(ring) = self.send_ring.as_mut() else {
+            return Ok(());
+        };
+        ring.flush()?;
+        let mut completed: Vec<(u32, i32)> = Vec::new();
+        while let Some(done) = ring.next_completion() {
+            completed.push((done.id, done.result));
+        }
+        let mut close: Vec<ReadyKey> = Vec::new();
+        let mut wake: Vec<ReadyKey> = Vec::new();
+        for (id, result) in completed {
+            if std::env::var_os("RILLCACHE_TRACE_RING").is_some() {
+                eprintln!("DONE id={id} result={result}");
+            }
+            let Some(key) = self.ring_slots[id as usize].take() else {
+                continue;
+            };
+            let Some(connection) = self
+                .clients
+                .get_mut(key.slot)
+                .and_then(Option::as_mut)
+                .filter(|connection| connection.token == key.token)
+            else {
+                continue;
+            };
+            if connection.inflight_send != Some(id) {
+                continue;
+            }
+            connection.inflight_send = None;
+            let Some(client) = connection.client.as_mut() else {
+                continue;
+            };
+            if result <= 0 {
+                close.push(key);
+                continue;
+            }
+            client.sent += result as usize;
+            if client.sent >= client.output.len() {
+                client.output.clear();
+                client.sent = 0;
+            }
+            wake.push(key);
+        }
+        for key in wake {
+            self.enqueue(key);
+        }
+        for key in close {
+            self.remove(key);
+        }
+        Ok(())
+    }
+
     fn remove(&mut self, key: ReadyKey) {
         let Some(slot) = self.clients.get_mut(key.slot) else {
             return;
@@ -141,6 +207,12 @@ impl<E: Execution> Reactor<E> {
         let connection = slot.take().expect("validated occupied connection slot");
         self.tokens.remove(&key.token);
         self.asynchronous.remove(&key);
+        if let Some(id) = slot
+            .as_mut()
+            .and_then(|connection| connection.inflight_send.take())
+        {
+            self.ring_slots[id as usize] = None;
+        }
         self.free_slots.push(key.slot);
         let fd = connection.client().stream.as_raw_fd();
         let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
@@ -194,6 +266,7 @@ impl<E: Execution> Reactor<E> {
                     eof: false,
                     retry_io: false,
                     activity: Instant::now(),
+                    defer_flush: self.send_ring.is_some(),
                     _permit: Some(Permit::acquire(&self.admitted)),
                     shutdown_on_drop: true,
                     pubsub: receiver,
@@ -203,6 +276,7 @@ impl<E: Execution> Reactor<E> {
                 asynchronous: false,
                 writable: false,
                 read_closed: false,
+                inflight_send: None,
             };
             let slot = match self.free_slots.pop() {
                 Some(slot) => {
@@ -309,7 +383,7 @@ impl<E: Execution> Reactor<E> {
                     }
                     connection.asynchronous = needs_async;
                 }
-                let writable = !client.output.is_empty();
+                let writable = !client.output.is_empty() && self.send_ring.is_none();
                 if writable != connection.writable {
                     let interest = if writable {
                         Interest::READABLE.add(Interest::WRITABLE)
@@ -322,7 +396,29 @@ impl<E: Execution> Reactor<E> {
                         .reregister(&mut SourceFd(&fd), key.token, interest)?;
                     connection.writable = writable;
                 }
-                let runnable = made || retry_before || client.retry_io;
+                // One outstanding send per socket keeps reply order intact; the
+                // ring batches submissions from different clients into a single
+                // `io_uring_enter` at the end of this reactor pass.
+                if let Some(ring) = self.send_ring.as_mut()
+                    && connection.inflight_send.is_none()
+                    && client.sent < client.output.len()
+                {
+                    let end = client.sent.saturating_add(MAX_PAYLOAD).min(client.output.len());
+                    let fd = client.stream.as_raw_fd();
+                    match ring.submit_send(fd, &client.output[client.sent..end]) {
+                        Ok(id) => {
+                            if std::env::var_os("RILLCACHE_TRACE_RING").is_some() {
+                                eprintln!("SUBMIT id={id} fd={fd} sent={} len={} bytes={:?}", client.sent, end - client.sent, &client.output[client.sent..end]);
+                            }
+                            connection.inflight_send = Some(id);
+                            self.ring_slots[id as usize] = Some(key);
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                        Err(_) => return Ok(Served::Closed),
+                    }
+                }
+                let runnable =
+                    made || retry_before || client.retry_io || connection.inflight_send.is_some();
                 if runnable {
                     connection.queued = true;
                     self.ready.push_back(key);
@@ -384,6 +480,7 @@ impl<E: Execution> Reactor<E> {
             asynchronous: false,
             writable: false,
             read_closed: false,
+            inflight_send: None,
         };
         let slot = match self.free_slots.pop() {
             Some(slot) => {
@@ -501,6 +598,8 @@ impl<E: Execution> Reactor<E> {
                     Ok(Served::Migrated) => {}
                 }
             }
+            // One submission (and completion drain) per pass, for every client.
+            self.harvest_sends()?;
             if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
                 let deadline = Instant::now() + FAST_POLL;
                 loop {
@@ -520,6 +619,15 @@ impl<E: Execution> Reactor<E> {
                     std::hint::spin_loop();
                 }
             }
+        }
+        // Bounded drain: closing client sockets aborts outstanding sends, so the
+        // ring empties quickly; never block shutdown on a stuck completion.
+        for _ in 0..10_000 {
+            self.harvest_sends()?;
+            if self.send_ring.as_ref().is_none_or(|ring| ring.in_flight() == 0) {
+                break;
+            }
+            std::thread::yield_now();
         }
         Ok(())
     }
@@ -624,6 +732,8 @@ pub(super) fn serve_shared(
         migrate: None,
         incoming: Some(incoming),
         waker: None,
+        send_ring: SendRing::new().ok(),
+        ring_slots: vec![None; rillcache_io::ENTRIES as usize],
     };
     let result = reactor.run();
     stopping.store(true, Ordering::Release);
@@ -675,6 +785,8 @@ fn serve_worker(
         migrate: Some(migrate),
         incoming: None,
         waker: Some(waker),
+        send_ring: None,
+        ring_slots: Vec::new(),
     }
     .run()
 }
@@ -712,6 +824,8 @@ fn serve_with<E: Execution>(
         migrate: None,
         incoming: None,
         waker: None,
+        send_ring: SendRing::new().ok(),
+        ring_slots: vec![None; rillcache_io::ENTRIES as usize],
     }
     .run()
 }
@@ -746,6 +860,8 @@ mod tests {
             migrate: None,
             incoming: None,
             waker: None,
+            send_ring: None,
+            ring_slots: Vec::new(),
         }
     }
 

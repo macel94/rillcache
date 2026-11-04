@@ -1,0 +1,16 @@
+[package]
+name = "rillcache-io"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Reviewed unsafe boundary for Linux io_uring completion batching"
+publish = false
+
+# The only unsafe code in this repository lives in this crate. The application
+# crate keeps #![forbid(unsafe_code)] and uses only this safe surface.
+[dependencies]
+libc = "=0.2.191"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"

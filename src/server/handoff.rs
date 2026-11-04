@@ -267,6 +267,7 @@ impl Sharing {
                 activity: Instant::now(),
                 _permit: None,
                 shutdown_on_drop: false,
+                defer_flush: false,
                 pubsub: std::sync::mpsc::sync_channel(1).1,
             },
         };

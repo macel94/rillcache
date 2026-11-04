@@ -57,6 +57,9 @@ pub(super) struct Client {
     pub(super) activity: Instant,
     pub(super) _permit: Option<Permit>,
     pub(super) shutdown_on_drop: bool,
+    /// The owning reactor submits writes through a completion ring, so `flush`
+    /// must leave the bytes queued and report no progress.
+    pub(super) defer_flush: bool,
     pub(super) pubsub: Receiver<Vec<u8>>,
 }
 
@@ -71,6 +74,9 @@ impl Drop for Client {
 
 impl Client {
     pub(super) fn flush(&mut self) -> io::Result<bool> {
+        if self.defer_flush {
+            return Ok(false);
+        }
         if self.sent == self.output.len() {
             self.output.clear();
             self.sent = 0;
@@ -534,6 +540,7 @@ pub(super) fn serve(
                 activity: Instant::now(),
                 _permit: Some(Permit::acquire(&admitted)),
                 shutdown_on_drop: true,
+                defer_flush: false,
                 pubsub: receiver,
             };
             if lanes[next].sender.send(client).is_err() {
@@ -709,6 +716,7 @@ mod tests {
                 activity: Instant::now(),
                 _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
                 shutdown_on_drop: true,
+                defer_flush: false,
                 pubsub: std::sync::mpsc::sync_channel(1).1,
             },
             peer,
@@ -799,6 +807,7 @@ mod tests {
             activity: Instant::now() - Duration::from_secs(2),
             _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
             shutdown_on_drop: true,
+            defer_flush: false,
             pubsub: std::sync::mpsc::sync_channel(1).1,
         };
         let config = Config {

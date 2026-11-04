@@ -103,9 +103,17 @@ version = "0.1.0"
 dependencies = [
  "core_affinity",
  "mio",
+ "rillcache-io",
  "rustls",
  "rustls-pemfile",
  "tokio",
+]
+
+[[package]]
+name = "rillcache-io"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

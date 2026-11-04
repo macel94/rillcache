@@ -266,6 +266,7 @@ impl Reactor {
                     activity: Instant::now(),
                     _permit: Some(Permit::acquire(&self.admitted)),
                     shutdown_on_drop: true,
+                    defer_flush: false,
                     pubsub: receiver,
                 },
                 services: self.store.services_handle(),
