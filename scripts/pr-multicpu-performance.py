@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import re
 import statistics
 import subprocess
@@ -26,13 +27,18 @@ from performance import parse_csv
 
 WORKLOADS = ("ping", "set", "get", "set-nx-existing", "set-xx-existing")
 PIPELINES = (1, 16)
-RUNS = 3
+RUNS = 5
+# Reported diagnostic only: a deterministic percentile bootstrap of the per-run
+# paired Rillcache/Valkey throughput ratios. Acceptance stays the strict
+# whole-cohort median comparison below, never this interval.
+BOOTSTRAP_RESAMPLES = 2000
+BOOTSTRAP_SEED = 20261104
 KEYSPACE = 1024
 VALUE = b"v" * 64
 REPLACEMENT = b"w" * 64
 WARMUP = 8000
 DURATION_SECONDS = 10
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SHA = r"[0-9a-f]{40}"
 CSV_HEADER = ["test", "rps", "avg_latency_ms", "min_latency_ms", "p50_latency_ms",
               "p95_latency_ms", "p99_latency_ms", "max_latency_ms"]
@@ -219,6 +225,28 @@ def name_for(workload, pipeline, run, variant):
     return f"{workload}-p{pipeline}-r{run}-{variant}"
 
 
+def paired_statistics(ratios):
+    """Summarize one row's per-run candidate/reference throughput ratios.
+
+    The bootstrap interval is deterministic (fixed seed) so revalidation
+    reproduces it exactly. It is reported next to the medians so a near-parity
+    row shows its own uncertainty; it never decides the gate.
+    """
+    ensure(len(ratios) == RUNS and all(
+        type(ratio) in (float, int) and math.isfinite(ratio) and ratio > 0 for ratio in ratios),
+        "invalid paired ratios")
+    generator = random.Random(BOOTSTRAP_SEED)
+    resampled = sorted(statistics.median(
+        [ratios[generator.randrange(len(ratios))] for _ in range(len(ratios))])
+        for _ in range(BOOTSTRAP_RESAMPLES))
+    last = len(resampled) - 1
+    return {"median_ratio": statistics.median(ratios),
+            "ci_low": resampled[int(0.025 * last)],
+            "ci_high": resampled[int(0.975 * last)],
+            "wins": sum(ratio > 1 for ratio in ratios),
+            "runs": len(ratios)}
+
+
 def evaluate(samples):
     expected = set(identities())
     actual = [(s["workload"], s["pipeline"], s["run"], s["variant"]) for s in samples]
@@ -233,6 +261,12 @@ def evaluate(samples):
                 ensure(all(type(r) in (float, int) and 0 < r < float("inf") for r in rates), "invalid throughput")
                 row[variant] = {"median": statistics.median(rates), "min": min(rates), "max": max(rates),
                                 "p99_ms": statistics.median(s["p99_latency_ms"] for s in records)}
+            row["paired"] = paired_statistics([
+                next(s["rps"] for s in samples if (s["workload"], s["pipeline"], s["run"], s["variant"])
+                     == (workload, pipeline, run, "rillcache")) /
+                next(s["rps"] for s in samples if (s["workload"], s["pipeline"], s["run"], s["variant"])
+                     == (workload, pipeline, run, "valkey"))
+                for run in range(1, RUNS + 1)])
             row["passed"] = row["rillcache"]["median"] > row["valkey"]["median"]
             rows.append(row)
     return rows
@@ -244,19 +278,26 @@ def summary(rows):
             f"**{'PASS' if wins == 10 else 'FAIL'}: {wins}/10 medians strictly faster than Valkey.**", "",
             "Same pinned, unmodified valkey-benchmark for both default-mode servers; exactly four logical server CPUs. "
             "Eight clients, two generator threads, 1024 random keys, 64-byte values, seed 42, 8000 warmup commands, "
-            "official --duration 10 for every measured sample; three alternating native repetitions. Ties or any loss fail.", "",
+            "official --duration 10 for every measured sample; five alternating native repetitions. Ties or any loss fail.", "",
+            "Acceptance is the strict whole-cohort median comparison above; every sample is retained and no run is dropped, "
+            "selected or weighted. The paired ratio column is the median of that row's five per-run Rillcache/Valkey "
+            f"throughput ratios with a deterministic percentile-bootstrap 95% interval ({BOOTSTRAP_RESAMPLES} resamples, "
+            f"seed {BOOTSTRAP_SEED}). It is reported so a near-parity row shows its own uncertainty and is never used to "
+            "pass or fail the gate; an interval that contains 1.0 marks a row whose direction the cohort cannot resolve.", "",
             "Ten-second samples span 40 upstream 250 ms shutdown/progress ticks; residual timer quantization remains. "
             "Earlier sub-second request-count evidence is retained as a failed, different experiment, never reused as a pass.", "",
             "Client CPUs are disjoint when available, otherwise share the four server CPUs (see manifest). "
             "The upstream tool rejects error replies but does not validate every non-error payload; full-keyspace "
             "checks/probes run before and after load. p99 is upstream pipeline latency, not per-command latency at P>1. "
             "Shared-runner noise/client contention can block this scoped gate; no universal superiority claim.", "",
-            "| Workload | P | Rillcache median [min–max] req/s | Valkey median [min–max] req/s | p99 ms R/V | Gate |",
-            "| --- | ---: | ---: | ---: | ---: | --- |"]
+            "| Workload | P | Rillcache median [min–max] req/s | Valkey median [min–max] req/s | p99 ms R/V | Wins | Paired ratio [95% CI] | Gate |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |"]
     for row in rows:
-        a, b = row["rillcache"], row["valkey"]
+        a, b, paired = row["rillcache"], row["valkey"], row["paired"]
         text.append(f'| {row["workload"]} | {row["pipeline"]} | {a["median"]:.2f} [{a["min"]:.2f}–{a["max"]:.2f}] | '
-                    f'{b["median"]:.2f} [{b["min"]:.2f}–{b["max"]:.2f}] | {a["p99_ms"]:.3f}/{b["p99_ms"]:.3f} | {"PASS" if row["passed"] else "FAIL"} |')
+                    f'{b["median"]:.2f} [{b["min"]:.2f}–{b["max"]:.2f}] | {a["p99_ms"]:.3f}/{b["p99_ms"]:.3f} | '
+                    f'{paired["wins"]}/{paired["runs"]} | {paired["median_ratio"]:.4f} '
+                    f'[{paired["ci_low"]:.4f}–{paired["ci_high"]:.4f}] | {"PASS" if row["passed"] else "FAIL"} |')
     return "\n".join(text) + "\n"
 
 
@@ -269,6 +310,7 @@ def load_cohort(directory):
     ensure(manifest["server_cpus"] == server_cpus and manifest["client_cpus"] == client_cpus, "CPU allocation differs")
     ensure(type(manifest["runs"]) is int and manifest["runs"] == RUNS and manifest["workloads"] == list(WORKLOADS)
            and manifest["pipelines"] == list(PIPELINES)
+           and manifest["bootstrap"] == {"resamples": BOOTSTRAP_RESAMPLES, "seed": BOOTSTRAP_SEED}
            and type(manifest["duration_seconds"]) is int and manifest["duration_seconds"] == DURATION_SECONDS
            and type(manifest["warmup_requests"]) is int and manifest["warmup_requests"] == WARMUP, "gate policy differs")
     ensure(all(re.fullmatch(SHA, manifest[k]) for k in ("base_source", "head_source", "candidate_source")), "invalid source identity")
@@ -332,6 +374,7 @@ def main():
                         allowed_cpus=cpus, server_cpus=server_cpus, client_cpus=client_cpus, binaries=binaries,
                         binary_sha256=hashes, valkey_version=version, runs=RUNS, workloads=WORKLOADS,
                         pipelines=PIPELINES, duration_seconds=DURATION_SECONDS, warmup_requests=WARMUP,
+                        bootstrap={"resamples": BOOTSTRAP_RESAMPLES, "seed": BOOTSTRAP_SEED},
                         launch_directory=str(output), order=[], evidence_sha256={})
         save(output / "manifest.json", manifest)
         samples = []

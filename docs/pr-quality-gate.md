@@ -106,13 +106,31 @@ also exercised in Valkey's `tests/integration/valkey-benchmark.tcl`. No Rust loa
 generator, rewritten upstream assertion, or custom timed loop is used here.
 
 Five commands (PING, SET overwrite, GET hit, NX-existing rejection, XX-existing
-overwrite) at P=1 and P=16 give **10 strict median comparisons and 60 fresh native
+overwrite) at P=1 and P=16 give **10 strict median comparisons and 100 fresh native
 server samples**. Each sample has 8000 warmup commands, 8 connections, 2 generator
 threads, 1024 random keys, 64-byte values and seed 42. Every measured sample uses
-the official **`--duration 10`** mode (not `-n`); three repetitions alternate server
-order. The wrapper requires at least ten seconds of observed generator wall time. Default server modes,
+the official **`--duration 10`** mode (not `-n`); **five repetitions alternate server
+order**. The wrapper requires at least ten seconds of observed generator wall time. Default server modes,
 loopback TCP and persistence/TLS-off are retained. There is no aggregate-score
 escape, tie pass, retry-until-green or substitution for the original 20-case gate.
+
+The strict rule is unchanged: every sample is retained and each row still passes
+only when the whole-cohort Rillcache median is strictly greater than Valkey's.
+The fifth sampling round exists because the observed per-repetition spread on a
+marginal row is ±2–7% while the median comparison can be decided by ~1%; five
+alternating rounds narrow the median's uncertainty without dropping, selecting or
+weighting any run. Each ten-condition table also reports **wins/5** and the median
+of the five per-run Rillcache/Valkey ratios with a deterministic percentile-bootstrap
+95% interval (2000 resamples, fixed seed, reproduced by `--check`). That interval is
+reported so a near-parity row shows its own uncertainty; it never passes or fails
+the gate. This is evidence quality, not a threshold change: losses, ties, complete
+losing cohorts and unfinished cohorts fail exactly as before.
+
+The Dragonfly comparison keeps three alternating repetitions: its smallest observed
+single-row margin is far outside the measured spread, so extra rounds there would
+spend shared-runner minutes without changing a decision. Schema 3 records the
+five-round Valkey cohort and the bootstrap parameters; schema-2 evidence is
+validated only by its matching harness revision and is never relabelled.
 
 Both servers are pinned to the same first four allowed logical CPUs; the generator
 uses remaining CPUs when available, otherwise shares those four. Affinity is
