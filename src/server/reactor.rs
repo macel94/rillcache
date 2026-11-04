@@ -7,11 +7,11 @@ use super::*;
 use crate::engine::{BridgeInbox, Execution, ServerServices, StoreHandle};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
+use rillcache_io::{MAX_PAYLOAD, SendRing};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::fd::AsRawFd;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
-use rillcache_io::{MAX_PAYLOAD, SendRing};
 
 const LISTENER: Token = Token(0);
 const WAKER: Token = Token(usize::MAX);
@@ -110,7 +110,6 @@ struct Reactor<E: Execution> {
     send_ring: Option<SendRing>,
     /// Ring buffer id -> connection that owns the outstanding send.
     ring_slots: Vec<Option<ReadyKey>>,
-
 }
 
 impl<E: Execution> Drop for Reactor<E> {
@@ -403,12 +402,20 @@ impl<E: Execution> Reactor<E> {
                     && connection.inflight_send.is_none()
                     && client.sent < client.output.len()
                 {
-                    let end = client.sent.saturating_add(MAX_PAYLOAD).min(client.output.len());
+                    let end = client
+                        .sent
+                        .saturating_add(MAX_PAYLOAD)
+                        .min(client.output.len());
                     let fd = client.stream.as_raw_fd();
                     match ring.submit_send(fd, &client.output[client.sent..end]) {
                         Ok(id) => {
                             if std::env::var_os("RILLCACHE_TRACE_RING").is_some() {
-                                eprintln!("SUBMIT id={id} fd={fd} sent={} len={} bytes={:?}", client.sent, end - client.sent, &client.output[client.sent..end]);
+                                eprintln!(
+                                    "SUBMIT id={id} fd={fd} sent={} len={} bytes={:?}",
+                                    client.sent,
+                                    end - client.sent,
+                                    &client.output[client.sent..end]
+                                );
                             }
                             connection.inflight_send = Some(id);
                             self.ring_slots[id as usize] = Some(key);
@@ -624,7 +631,11 @@ impl<E: Execution> Reactor<E> {
         // ring empties quickly; never block shutdown on a stuck completion.
         for _ in 0..10_000 {
             self.harvest_sends()?;
-            if self.send_ring.as_ref().is_none_or(|ring| ring.in_flight() == 0) {
+            if self
+                .send_ring
+                .as_ref()
+                .is_none_or(|ring| ring.in_flight() == 0)
+            {
                 break;
             }
             std::thread::yield_now();
@@ -804,6 +815,10 @@ fn serve_with<E: Execution>(
     let fd = listener.as_raw_fd();
     poll.registry()
         .register(&mut SourceFd(&fd), LISTENER, Interest::READABLE)?;
+    let send_ring = SendRing::new().ok();
+    if send_ring.is_some() {
+        eprintln!("rillcache: io_uring send ring active");
+    }
     Reactor {
         poll,
         listener,
@@ -824,8 +839,8 @@ fn serve_with<E: Execution>(
         migrate: None,
         incoming: None,
         waker: None,
-        send_ring: SendRing::new().ok(),
         ring_slots: vec![None; rillcache_io::ENTRIES as usize],
+        send_ring,
     }
     .run()
 }

@@ -149,7 +149,10 @@ impl Mapping {
         if ptr == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { ptr: ptr.cast(), len })
+        Ok(Self {
+            ptr: ptr.cast(),
+            len,
+        })
     }
 
     /// # Safety
@@ -215,7 +218,8 @@ impl SendRing {
         // SAFETY: the kernel returned a fresh owned descriptor.
         let fd = unsafe { OwnedFd::from_raw_fd(fd as RawFd) };
         let sq_len = params.sq_off.array as usize + params.sq_entries as usize * 4;
-        let cq_len = params.cq_off.cqes as usize + params.cq_entries as usize * std::mem::size_of::<Cqe>();
+        let cq_len =
+            params.cq_off.cqes as usize + params.cq_entries as usize * std::mem::size_of::<Cqe>();
         let sqes_len = params.sq_entries as usize * std::mem::size_of::<Sqe>();
         let sq = Mapping::new(fd.as_raw_fd(), sq_len, IORING_OFF_SQ_RING)?;
         let cq = Mapping::new(fd.as_raw_fd(), cq_len, IORING_OFF_CQ_RING)?;
@@ -223,29 +227,39 @@ impl SendRing {
         // SAFETY: each offset is inside the mapping created for that queue and
         // every pointer is used only by this single-threaded owner.
         let (sq_head, sq_tail) = unsafe {
-            (sq.at::<u32>(params.sq_off.head as usize), sq.at::<u32>(params.sq_off.tail as usize))
+            (
+                sq.at::<u32>(params.sq_off.head as usize),
+                sq.at::<u32>(params.sq_off.tail as usize),
+            )
         };
         // SAFETY: as above; the array is `sq_entries` u32 indices.
         let sq_array = unsafe { sq.at::<u32>(params.sq_off.array as usize) };
         // SAFETY: as above.
         let (cq_head, cq_tail) = unsafe {
-            (cq.at::<u32>(params.cq_off.head as usize), cq.at::<u32>(params.cq_off.tail as usize))
+            (
+                cq.at::<u32>(params.cq_off.head as usize),
+                cq.at::<u32>(params.cq_off.tail as usize),
+            )
         };
         // SAFETY: the CQ entry array starts at `cq_off.cqes` and holds
         // `cq_entries` entries of 16 bytes, both included in `cq_len`.
         let cqes = unsafe { cq.at::<Cqe>(params.cq_off.cqes as usize) };
-        if std::env::var_os("RILLCACHE_TRACE_CQ").is_some() {
-            eprintln!("size={} sq_off_at={} cq_off_at={}", std::mem::size_of::<Params>(),
-                std::mem::offset_of!(Params, sq_off), std::mem::offset_of!(Params, cq_off));
-            // SAFETY: diagnostic read of our own zeroed-then-kernel-filled POD.
-            let raw: &[u32] = unsafe { std::slice::from_raw_parts((&params as *const Params).cast::<u32>(), 30) };
-            eprintln!("raw[0..30]={raw:?}");
-            eprintln!("sq: head={} tail={} mask={} entries={} flags={} dropped={} array={}",
-                params.sq_off.head, params.sq_off.tail, params.sq_off.ring_mask, params.sq_off.ring_entries,
-                params.sq_off.flags, params.sq_off.dropped, params.sq_off.array);
-            eprintln!("cq: head={} tail={} mask={} entries={} overflow={} cqes={}",
-                params.cq_off.head, params.cq_off.tail, params.cq_off.ring_mask, params.cq_off.ring_entries,
-                params.cq_off.overflow, params.cq_off.cqes);
+        // `io_sqring_offsets`/`io_cqring_offsets` describe *where in the mapping*
+        // each word lives: `ring_mask` is an offset, not the mask value. The
+        // mask itself must be read from the mapped ring.
+        // SAFETY: the mask words lie inside the mappings (the kernel published
+        // their offsets) and are read once at single-owner construction time.
+        let sq_mask =
+            unsafe { std::ptr::read_volatile(sq.at::<u32>(params.sq_off.ring_mask as usize)) };
+        // SAFETY: as above for the completion ring.
+        let cq_mask =
+            unsafe { std::ptr::read_volatile(cq.at::<u32>(params.cq_off.ring_mask as usize)) };
+        if sq_mask != params.sq_entries.next_power_of_two() - 1
+            || cq_mask != params.cq_entries.next_power_of_two() - 1
+        {
+            return Err(io::Error::other(
+                "io_uring ring geometry differs from its mapping",
+            ));
         }
         let buffers = (0..ENTRIES).map(|_| None).collect();
         let lengths = vec![0u32; ENTRIES as usize];
@@ -257,11 +271,11 @@ impl SendRing {
             sqes,
             sq_head,
             sq_tail,
-            sq_mask: params.sq_off.ring_mask,
+            sq_mask,
             sq_array,
             cq_head,
             cq_tail,
-            cq_mask: params.cq_off.ring_mask,
+            cq_mask,
             cqes,
             pending: 0,
             buffers,
@@ -283,18 +297,26 @@ impl SendRing {
     /// must not write that socket through another path meanwhile.
     pub fn submit_send(&mut self, fd: RawFd, bytes: &[u8]) -> io::Result<u32> {
         if bytes.is_empty() || bytes.len() > MAX_PAYLOAD {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "send size outside ring bound"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "send size outside ring bound",
+            ));
         }
         let Some(id) = self.free.pop() else {
             return Err(io::ErrorKind::WouldBlock.into());
         };
         let tail = self.sq_tail();
         let index = tail & self.sq_mask;
-        let slot = self.buffers[id as usize].get_or_insert_with(|| vec![0u8; MAX_PAYLOAD].into_boxed_slice());
+        let slot = self.buffers[id as usize]
+            .get_or_insert_with(|| vec![0u8; MAX_PAYLOAD].into_boxed_slice());
         slot[..bytes.len()].copy_from_slice(bytes);
         // SAFETY: `index < sq_entries`; the SQE array covers every entry and is
         // exclusively owned by this ring.
-        let sqe = unsafe { &mut *self.sqes.at::<Sqe>(index as usize * std::mem::size_of::<Sqe>()) };
+        let sqe = unsafe {
+            &mut *self
+                .sqes
+                .at::<Sqe>(index as usize * std::mem::size_of::<Sqe>())
+        };
         *sqe = Sqe {
             opcode: IORING_OP_SEND,
             fd,
@@ -305,7 +327,9 @@ impl SendRing {
             ..Sqe::default()
         };
         // SAFETY: `sq_array` has `sq_entries` u32 slots indexed by `index`.
-        unsafe { *self.sq_array.add(index as usize) = index; }
+        unsafe {
+            *self.sq_array.add(index as usize) = index;
+        }
         self.set_sq_tail(tail.wrapping_add(1));
         self.pending += 1;
         self.lengths[id as usize] = bytes.len() as u32;
@@ -349,20 +373,18 @@ impl SendRing {
         let index = head & self.cq_mask;
         // SAFETY: `index < cq_entries` and the CQ array covers every entry.
         let cqe = unsafe { *self.cqes.add(index as usize) };
-        let before = head;
         self.set_cq_head(head.wrapping_add(1));
-        if std::env::var_os("RILLCACHE_TRACE_CQ").is_some() {
-            eprintln!("HEAD before={before} after={} tail={}", self.cq_head(), self.cq_tail());
-        }
         let id = cqe.user_data as u32;
-        if std::env::var_os("RILLCACHE_TRACE_CQ").is_some() {
-            eprintln!("CQE id={id} res={} len={}", cqe.res, self.lengths.get(id as usize).copied().unwrap_or(0));
-        }
         if (id as usize) < self.buffers.len() {
-            self.in_flight = self.in_flight.saturating_sub(self.lengths[id as usize] as usize);
+            self.in_flight = self
+                .in_flight
+                .saturating_sub(self.lengths[id as usize] as usize);
             self.free.push(id);
         }
-        Some(Completion { id, result: cqe.res })
+        Some(Completion {
+            id,
+            result: cqe.res,
+        })
     }
 
     fn sq_tail(&self) -> u32 {
@@ -452,11 +474,16 @@ mod tests {
         };
         let (a, _b) = UnixStream::pair().unwrap();
         assert!(ring.submit_send(a.as_raw_fd(), b"").is_err());
-        assert!(ring.submit_send(a.as_raw_fd(), &vec![0u8; MAX_PAYLOAD + 1]).is_err());
+        assert!(
+            ring.submit_send(a.as_raw_fd(), &vec![0u8; MAX_PAYLOAD + 1])
+                .is_err()
+        );
         for _ in 0..ENTRIES {
             ring.submit_send(a.as_raw_fd(), b"x").unwrap();
         }
-        assert!(matches!(ring.submit_send(a.as_raw_fd(), b"x"), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+        assert!(
+            matches!(ring.submit_send(a.as_raw_fd(), b"x"), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
+        );
     }
 
     #[test]
@@ -489,18 +516,23 @@ mod tests {
         let (a, mut b) = UnixStream::pair().unwrap();
         a.set_nonblocking(false).unwrap();
         // One byte per send keeps the socket writable but exercises many ids.
-        let payloads: Vec<Vec<u8>> = (0..2_000u32).map(|i| vec![(i % 251) as u8 + 1; (i % 5 + 1) as usize]).collect();
+        let payloads: Vec<Vec<u8>> = (0..2_000u32)
+            .map(|i| vec![(i % 251) as u8 + 1; (i % 5 + 1) as usize])
+            .collect();
         let mut submitted = 0usize;
         let mut completed = 0usize;
-        let mut received = Vec::new();
+        let expected_len: usize = payloads.iter().map(Vec::len).sum();
         let mut reader = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut total = Vec::new();
             b.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            while total.len() < 6_000 {
+            while total.len() < expected_len {
                 match b.read(&mut buf) {
                     Ok(0) => break,
-                    Ok(n) => total.extend_from_slice(&buf[..n]),
+                    Ok(n) => {
+                        let room = expected_len - total.len();
+                        total.extend_from_slice(&buf[..n.min(room)]);
+                    }
                     Err(_) => break,
                 }
             }
@@ -525,13 +557,18 @@ mod tests {
                 std::thread::yield_now();
             }
         }
-        received = {
-            let collected = reader.join().unwrap();
-            collected
-        };
+        let received = reader.join().unwrap();
         let expected: Vec<u8> = payloads.concat();
         assert_eq!(received.len(), expected.len(), "byte count");
-        assert_eq!(received, expected, "bytes or ordering differ");
+        if let Some(at) = received.iter().zip(&expected).position(|(a, b)| a != b) {
+            let lo = at.saturating_sub(8);
+            let hi = (at + 8).min(expected.len());
+            panic!(
+                "first mismatch at {at}: got {:?} want {:?}",
+                &received[lo..hi],
+                &expected[lo..hi]
+            );
+        }
     }
 
     #[test]
