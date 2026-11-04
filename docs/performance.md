@@ -26,7 +26,9 @@ server's median; `1.20x` means about 20% more requests per second in that case.
 
 Both servers in each comparison received the same **four logical CPUs**, with
 8 clients, 2 generator threads, 1,024 random keys, 64-byte values, 8,000 warmup
-commands, ten-second measured samples and three alternating repetitions. The
+commands, ten-second measured samples and alternating repetitions (three in the
+cohorts below; the Valkey four-CPU gate now runs five and reports a paired
+bootstrap interval as a diagnostic, per [the quality gate](pr-quality-gate.md)). The
 same unmodified official `valkey-benchmark` drove both servers, including the
 Rillcache-versus-Dragonfly comparison. Generator CPUs were separate when
 available and otherwise shared, as recorded in the artifact.
