@@ -1247,6 +1247,64 @@ measured, accept the P1 busy-window cost as the deliberate price of the P1 win
 and do not open another poll-window knob. Reopen only with a genuinely new
 mechanism, not a repackaged window length.
 
+### 4.14 Completion-batched sends through an io_uring crate (rejected: slower and corrupt)
+
+Section 4.13 closed poll tuning and named kernel batching (`recvmmsg`/`sendmmsg`,
+`io_uring`, `SO_BUSY_POLL`) as the only remaining lever, outside the
+safe-Rust/Mio boundary. This section records the one such mechanism that was
+actually built and measured, so the boundary is not re-litigated from memory.
+
+**Mechanism.** Replace the per-reply `write` syscall with `IORING_OP_SEND`
+submissions queued by the reactor and flushed with one `io_uring_enter` per pass;
+`Client::flush` defers while a ring is present, one send per socket stays
+outstanding so reply order cannot change, and completions are harvested after the
+service batch. The unsafe code lives in a new in-repo crate `crates/rillcache-io`
+with a safe surface (`SendRing::new/submit_send/flush/next_completion/wait`), a
+single issuer and no registered buffers; the application crate keeps
+`#![forbid(unsafe_code)]` and a policy test asserts that no other file contains
+`unsafe` and that the allowlist names only that crate. A `README.md` and
+`AGENTS.md` in the crate state the ABI, ownership and failure contract. The crate
+was validated against a 2,000-send partial-write stress test that compares the
+peer's byte stream with the submitted payloads.
+
+The implementation surfaced three real defects before it could be measured:
+`io_sqring_offsets.ring_mask` is an **offset into the mmap**, not the mask value;
+`io_uring_enter` must submit `tail - kernel_head`, because a private counter makes
+a lagging kernel head re-execute an older SQE whose buffer has been reused; and a
+deferred flush must not let the idle timeout close a connection whose reply is
+still queued.
+
+**Measurement** (diagnostic branch `diagnostic/io-uring-send`, run 41932571815,
+108/108 revalidated samples, baseline the merged one-reactor default):
+
+| Row | vs baseline | Server CPU (s / 10 s) |
+| --- | ---: | ---: |
+| PING P1 | **-5.47%** | 9.99 -> 10.00 |
+| GET P1 | **-6.90%** | 10.00 -> 10.00 |
+| GET P16 | **-13.58%** | 10.00 -> 10.00 |
+| PING P16 | -1.30% | 9.99 -> 9.99 |
+
+P1 p99 regressed 18-20% and GET/P16 p99 6%. Server CPU is identical in every
+default and one-worker row: eliminating one `write` per request saves nothing,
+because TCP processing dominates, while the payload copy into the ring and the
+completion round trip cost one extra reactor pass in the latency-sensitive rows.
+The stress test also still shows intermittent buffer/SQE aliasing, so the unsafe
+path fails correctness as well as speed.
+
+**Verdict: reject and do not promote.** There is no CPU to recover and no
+correctness argument for shipping an unsafe transport that can place one reply's
+bytes in another reply's position. The crate, wiring, policy test, docs and all
+evidence remain on `diagnostic/io-uring-send` only; the application runtime is
+unchanged. Cross-socket batching is also unavailable in `recvmmsg`/`sendmmsg`
+(both take a single `sockfd`), and a read/write split across two threads measured
+slower on an 8-connection P1 probe (2,957 and 2,286 req/s versus 3,372 and 4,907
+single-threaded). With poll tuning, extra reactors, clock coalescing, direct
+receive buffers, the read/write split and now io_uring send batching all measured
+or proven inapplicable, `ping`/P1 remains a parity row: the five-round gate's
+paired ratio is 0.9989 with a 95% interval of [0.9802-1.0128]. Closing it needs a
+mechanism that changes the syscall or TCP work itself, not the reactor's
+bookkeeping.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -1586,6 +1644,12 @@ current roadmap; individual phases are separate increments.
   `core_affinity`, merged through their own PRs. A future head still needs fresh
   gates, and any further dependency needs its own review. The portable fallback
   remains the documented boundary for TLS, fixed workers and non-Unix builds.
+- The io_uring send-batching attempt (section 4.14) is closed: it was implemented
+  behind the safe-API `crates/rillcache-io` boundary, passed the full local suite,
+  and then measured 5-14% slower with identical server CPU while its stress test
+  still showed reply aliasing. It is evidence, not a pending task; do not revive
+  it without a mechanism that reduces syscall or TCP work rather than adding a
+  completion round trip.
 - The short-read elision is a rejected experiment, not an unfinished task: its
   branch and gate artifacts are retained, and it must not be revived without a
   different readiness mechanism and fresh evidence.
