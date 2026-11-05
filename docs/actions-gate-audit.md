@@ -51,6 +51,7 @@ Tracked protection: [main ruleset](../.github/main-ruleset.json).
 | `benchmarks.yml` | Not PR-triggered | Explicit manual legacy comparisons, optional inference and trusted report publisher; generated report PRs still require all 14 checks |
 | `hotpaths.yml` | Not PR-triggered | Manual trusted-main profiling/A-B experiment |
 | `copilot-auth-check.yml` | Not PR-triggered | Manual trusted-main inference-auth probe; no PR credential path |
+| `openwiki-pages.yml` | Not PR-triggered | Publishes the generated OpenWiki visualizer to GitHub Pages on main; no PR check |
 | `upstream-performance.yml` | Not PR-triggered | Daily five-server comparison, manual legacy comparison and isolated study; none substitutes for a required PR gate |
 
 GitHub's platform-generated Dependency Graph workflow is not a repository YAML

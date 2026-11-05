@@ -19,7 +19,7 @@ class FakeAPI:
     def __init__(self):
         self.policy = json.loads((ROOT / ".github/main-ruleset.json").read_text())
         self.effective = copy.deepcopy(self.policy["rules"])
-        self.workflows = {"total_count": 11, "workflows": [
+        self.workflows = {"total_count": 12, "workflows": [
             {"path": f".github/workflows/{path}", "state": "active"}
             for path in gate.load_inventory()
         ] + [{"path": "dynamic/dependabot/update-graph", "state": "active"}]}
@@ -39,9 +39,9 @@ class GatePolicyTests(unittest.TestCase):
         for path in ("main-ruleset.json", "pr-workflow-gates.json"):
             shutil.copyfile(ROOT / ".github" / path, root / ".github" / path)
 
-    def test_all_ten_workflows_six_pr_workflows_and_fourteen_contexts_are_accounted_for(self):
+    def test_all_eleven_workflows_six_pr_workflows_and_fourteen_contexts_are_accounted_for(self):
         inventory = gate.audit_local()
-        self.assertEqual(10, len(inventory))
+        self.assertEqual(11, len(inventory))
         self.assertEqual(6, len(gate.required_workflows()))
         checks = gate.required_checks()
         self.assertEqual(14, len(checks))
