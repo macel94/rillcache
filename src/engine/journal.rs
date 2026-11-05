@@ -76,6 +76,91 @@ pub(super) struct RewriteJob {
     rounds: usize,
 }
 
+/// Exclusive local-filesystem ownership of one append-only journal.
+///
+/// Two processes pointed at the same journal would interleave appends and corrupt
+/// the history, so startup claims `<journal>.lock` with `create_new`. A stale lock
+/// from a crashed process is reclaimed only when its recorded PID is gone or has
+/// been reused (start-time mismatch). Shared filesystems are not supported: this
+/// is an advisory local lock, not a distributed one.
+struct Ownership {
+    path: PathBuf,
+    contents: String,
+}
+
+impl Ownership {
+    fn acquire(journal: &Path) -> io::Result<Self> {
+        let path = journal.with_extension(format!(
+            "{}lock",
+            journal
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(|extension| format!("{extension}."))
+                .unwrap_or_default()
+        ));
+        let start = process_start_ticks(std::process::id()).ok_or_else(|| {
+            io::Error::other("cannot read the process start time for journal ownership")
+        })?;
+        let contents = format!("{} {start}\n", std::process::id());
+        for attempt in 0..2 {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    file.write_all(contents.as_bytes())?;
+                    file.sync_all()?;
+                    return Ok(Self { path, contents });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempt == 0 => {
+                    let held = fs::read_to_string(&path).unwrap_or_default();
+                    let mut fields = held.split_whitespace();
+                    let pid = fields.next().and_then(|value| value.parse::<u32>().ok());
+                    let start = fields.next().and_then(|value| value.parse::<u64>().ok());
+                    let live = match (pid, start) {
+                        (Some(pid), Some(start)) => match process_start_ticks(pid) {
+                            // A live owner with the same start time blocks startup.
+                            Some(current) if current == start => true,
+                            // Gone or reused: the lock is stale.
+                            Some(_) | None => false,
+                        },
+                        // Unreadable or malformed lock: fail closed and let an
+                        // operator inspect it rather than guessing ownership.
+                        _ => true,
+                    };
+                    if live {
+                        return Err(io::Error::other(format!(
+                            "append-only journal {} is already owned by process {}; stop it or use a different --dir",
+                            journal.display(),
+                            pid.map(|pid| pid.to_string()).unwrap_or_else(|| "?".into())
+                        )));
+                    }
+                    fs::remove_file(&path)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::other(
+            "could not claim append-only journal ownership",
+        ))
+    }
+}
+
+impl Drop for Ownership {
+    fn drop(&mut self) {
+        // Only remove the lock if it still records this process, so a reclaimed
+        // lock from another instance is never deleted.
+        if fs::read_to_string(&self.path).is_ok_and(|held| held == self.contents) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Kernel start time of `pid` (clock ticks since boot), used to distinguish a
+/// live owner from PID reuse. `None` when the process is gone or unreadable.
+fn process_start_ticks(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields: Vec<&str> = stat.rsplit_once(") ")?.1.split_whitespace().collect();
+    fields.get(19)?.parse().ok()
+}
+
 struct RewriteState {
     file: File,
     temporary: PathBuf,
@@ -92,6 +177,7 @@ pub(super) struct Journal {
     failed: bool,
     last_rewrite_failed: bool,
     rewrite: Option<RewriteState>,
+    _ownership: Ownership,
     size: u64,
     rewrite_base: u64,
 }
@@ -109,6 +195,9 @@ impl Journal {
     /// Open (or create) the log, replay it into a fresh store, discard a partial
     /// tail and leave the file positioned for appends.
     pub(super) fn open(path: &Path, policy: FsyncPolicy, limits: Limits) -> io::Result<Self> {
+        // Claim ownership before opening or replaying: a second process must not
+        // read a journal it is about to corrupt.
+        let ownership = Ownership::acquire(path)?;
         #[cfg(unix)]
         let file = {
             use std::os::unix::fs::OpenOptionsExt as _;
@@ -138,6 +227,7 @@ impl Journal {
             failed: false,
             last_rewrite_failed: false,
             rewrite: None,
+            _ownership: ownership,
             size,
             rewrite_base: size,
         })
