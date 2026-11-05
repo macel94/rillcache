@@ -121,6 +121,11 @@
       "jobs": {},
       "non_pr_reason": "Manual default-branch inference authentication probe, never a PR credential path."
     },
+    "openwiki-pages.yml": {
+      "events": ["push", "workflow_dispatch"],
+      "jobs": {},
+      "non_pr_reason": "Publishes the generated OpenWiki visualizer to GitHub Pages on main; not a PR check."
+    },
     "upstream-performance.yml": {
       "events": [
         "schedule",

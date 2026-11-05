@@ -14,7 +14,7 @@ project's front page.
 | Compare all five servers in the daily run | [Daily benchmarks](daily-benchmarks.md) |
 | Understand remaining production work | [Production readiness](production-readiness.md) |
 | Find every remaining production blocker | [Production readiness gaps](production-readiness-gaps.md) |
-| Give a coding agent repository context | [OpenWiki](../openwiki/quickstart.md) |
+| Give a coding agent repository context | [OpenWiki](../openwiki/quickstart.md) or its [published wiki](https://macel94.github.io/rillcache/) |
 
 ## Run and operate
 
