@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:457fc45aef08a6050fe57ce9f7a32e0f3219eafd6592fdb079dd48b28d00506e",
+  "claims": [
+    {
+      "id": "claim_8336ce8b64a94ca699d56ed7df75796f",
+      "statement": "All key types share one Entry in one keyspace, with optional string, collection or stream state plus expiry, field TTLs and payload length; there is no shadow namespace.",
+      "evidence": [
+        {
+          "resource": "repo://docs/collections.md#L1-L12",
+          "version": "repo-lines-v1:sha256:3c25be519cc598dd72141f8c28278e9261277328a6f473b791231a868ca713bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyZDE1ZDAwNDk2YmU5YTRhNDRjZDljYjBhZDJjOTg3YmMwZGZmYzVjMTkzODdkZDJiMjRhYjRkZjdiYTRiMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjZTI2NGY5ZWJhYWNlNGRlYWNmNzhmYzY0NWJmMjU2NDcwMzY2ZTJjNmVhNDA5Y2Q2MGZjMzgyYzI3OTRiODAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4Nzk4ODdhMWU5YjBmMDdjZTk2NGU2NzY3ZDUyZWFlMWJjMzA5ODFlZmE2MmI5ZjRjMjcyMWRhMzJlNDJhNWYifQ"
+        },
+        {
+          "resource": "repo://src/engine/data.rs#L181-L235",
+          "version": "repo-lines-v1:sha256:d47ff0d4ef928ef4eb147025325a05e4db6b3182f17ea5645c673f8d30b12973:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZWFjNTc2OTg1YzM0NGUyMTM0MzVjZjc0NzUxODA2NWI1NmNlMGZmYjQ2NzExNmU2YTJhNDBmMDk0OGE2NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE0ZjFmZDA1NTVlN2Q1ZmU3MmU1ZDEzN2YyOWU4Y2VlNTNhNzAwZjQzYjUwMjllNjY2ZmFiYzkyNDUzNjAzMzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyZDVmNzQ1NThkM2IyNWZiOGI5NDA3ZGVjYWNlZDU4NDU0NTZjYTEyZjRlMTUzM2FlNjQzYjBkYjc3ZGUzNGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_10043057351644b69cc83a429157681e",
+      "statement": "Collections use packed and general representations for lists, sets, hashes and sorted sets, selected from configurable thresholds on mutation rather than rewritten immediately by CONFIG.",
+      "evidence": [
+        {
+          "resource": "repo://docs/collections.md#L108-L117",
+          "version": "repo-lines-v1:sha256:5a6ed4f5e88940d46d8c53d08b41edfbefbf70910b44d432318dcef0ad76d641:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3MDFmNjAxNTRhM2MwZDJjMDAyNzU0MzNmZjUwYjM3OWE5OWQ5MTkzNGYyMDQ3NDhlZmVjZDhmMjI1YjY4YzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyMmQxNzBmNGJkMWFjYzcxZWMxYjE2OGQ5MDJhNTMyYjUxODQzYjYyM2Y5YzgyOWU4MWNiYThlYWVkNzViNjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIwYTM5NGYxOWNmZmNiOGU5ODhmZDczZmJkYmIzMTY2ZGU2YWQzZDllMDdjY2ZjZTVhNDgwMTM3YTgzNGExNDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZkMzA0YWE2ZWY0OThkOTc4NzBhY2VkMTRkODFhMjhiZDUzNTk2MjE3YjZiYjljMDI2ZjMyZjFjMThiNGE2MTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fe223bc5aa784fd1b0d1f21976c08f6f",
+      "statement": "Collection mutations stage a complete replacement before payload admission, preserve the old value and TTL on failure, delete empty keys and enforce a one-million-element per-key bound.",
+      "evidence": [
+        {
+          "resource": "repo://docs/collections.md#L60-L90",
+          "version": "repo-lines-v1:sha256:12fe5b8aee8ce0831f9f874ab22be17244a204512a582be8992bfbd553577e58:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2YTRhN2ZmYzQwNzA0ZjBmNTdlMWVkNzhlNzNjMjgzNjdlNGFmNTkwZTAxYjZjM2Q2Y2Y0YzljYzczYzc4N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3MDkxMjg1NjRkMDQ1Y2U4ZWVlMzBjYWM5ZmQ3OWI1NzI5MGQ1NTUwOTY5YzM5YzAzNzk0MjVhZTZmZGY1N2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjM2E1ZjVjOTc3YWJiMjhiM2E3YTM0YWE2MzUxZWIyNWQyYWUyMmVhMGJlYzZhMDE0NmNiYzI1ZjIzMWFhNTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxOWMwYjFlMGQ0ODgxODJlZGJlZTY4MGFhNDRlM2IyYTcxMjc4OThlMzJhYzZkMTdhZDAzZGI5N2UzZmUyMTYifQ"
+        },
+        {
+          "resource": "repo://src/engine/collection_commands.rs#L1-L18",
+          "version": "repo-lines-v1:sha256:486ab336cb3641627d8e55da575df4aa647478d846a6ce869bd7286c5edbe3f1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlYjVmMmUxYzViZDIwMTcxZDI0ZGQxMTgzMDBkMTFjMjU4ODMxNzc2YTI5ZjJjNDUyMGI2ZTM1OTQ1Y2Q4NjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2NWY3MjdhMjdkMDNjMTliYjE4NDZiZGQ1ZGI3OTc3NTc5MzNhY2I1YTlkMzMzNTY2ODNkMjhiODRkYjQxYTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg0NmE5Y2YzMTMxY2JmYzFkMGQzMmE3YzAwZWQ3OGY0ZGQ4MzAwYTc3MGYwYjljOWJlN2E3YjNhZDUyOTk1MWIifQ"
+        },
+        {
+          "resource": "repo://src/engine/collections.rs#L1-L10",
+          "version": "repo-lines-v1:sha256:6d962a8be9e008ef4c11479293e6855ab33cf16870f8d16e2f61687db832d7a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkYjNmMzMxODFhYTVhZWM0ZWZjMjE5YjJiNjRhMWQ4NDUxYzE5Zjk5ZTIwY2UzMjk5NWI1Y2NkOWNkNTNlYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2NWY3MjdhMjdkMDNjMTliYjE4NDZiZGQ1ZGI3OTc3NTc5MzNhY2I1YTlkMzMzNTY2ODNkMjhiODRkYjQxYTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJiZjcyOTNmODdmZWRjYWZmNWE1ZWI1YjExOWQ3NWU1NjM5NDQ5NDJhYWQwZjI0ZjI1YjRhMzY2MGY4NmFjYTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bdb33065cc8747c1baf58ef7d105cffb",
+      "statement": "A stream stores ordered entries, last-generated and retention counters, and consumer groups with consumers and pending references; deletion retains pending references and pending state is not restored by the journal.",
+      "evidence": [
+        {
+          "resource": "repo://docs/streams.md#L1-L20",
+          "version": "repo-lines-v1:sha256:2cb74a192a0f79a45c42c7a689749d9768d5599f97f278f16b145d65ce3a3129:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyZjMwOWQyN2NhZDMxNmZmMWI4NmRkYmYwN2I2N2YyYjJkZGJlZWRmOWVhM2I4MWI5Mzg4OGQ2ZDBmZWE1YmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkMTA0YmVjMTkxODc5NzdkZGRkZGJlOGE2YmQxMGU5YmM5NGJjNmY2YzlhZTgyODRlZTg4MDRjMzUyNDZjODkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJjMjIxY2U1ZDlmZGYyZWNjNGIyMjI2MDIzOGYyZTE2NjlmNTdlMGIxNWY1OWQ1ZjY2ZTAwODQ5ZGQ5MTJhZWMifQ"
+        },
+        {
+          "resource": "repo://docs/streams.md#L87-L109",
+          "version": "repo-lines-v1:sha256:47cb12d86d4569d5e3cd7f8d17c39a908bb3858634dc84e9bf2ac07106a4b02a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmNjZkYWFmZmE3NTg5ZGM2YzI1ZTQ0OWFjNDk1N2I0MTJkNzkyMjc2OWMzMWQ3MjIyYzZmMGIyODllZWJkNjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3NGViNDg1MDBiZjRkYjUyZDFkZWU3OWM1OTUwMzIyODMyYzJlOWRiY2ExMzdhZTQ3ODE2NjRmMmUzYTIyYmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkMWNjNmRkZTVjMWFhYjJjYmNkMzQ3MzA2YzczYmY5Zjc0YTBhMzViZDA4MWVjYmQyZjZkNTgxOTgxMTVmM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI2NmJlZWQxOTIzYjM1MDMwYjM2ZjZkYTc3ZjE5ODYyY2QxNWVlNmVlODJmYzNlMmMyMzZhMmRjZTExOWE0ZDMifQ"
+        },
+        {
+          "resource": "repo://src/engine/data.rs#L181-L201",
+          "version": "repo-lines-v1:sha256:dfcd2e4b001a355d369d33fe55beaad39966356a8a2fb548dda15ce6c597f071:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZWFjNTc2OTg1YzM0NGUyMTM0MzVjZjc0NzUxODA2NWI1NmNlMGZmYjQ2NzExNmU2YTJhNDBmMDk0OGE2NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyZDVmNzQ1NThkM2IyNWZiOGI5NDA3ZGVjYWNlZDU4NDU0NTZjYTEyZjRlMTUzM2FlNjQzYjBkYjc3ZGUzNGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4NzY0YTU3OGNiMWNjYmI3NDQ1ODJiZTllY2M5YWVkMjVjYTM0YjY4ODc0ZjYwMzg0MWJmYTA1MTRlNDk0NjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_65bed8fea52449f888fadf39b373b92b",
+      "statement": "Geospatial values are sorted sets scored with the 52-bit interleaved WGS-84 geohash, and searches use a bounded linear scan instead of a native neighbour index.",
+      "evidence": [
+        {
+          "resource": "repo://docs/geospatial.md#L1-L20",
+          "version": "repo-lines-v1:sha256:256a9503c520e5869202d8a62f3f65974093ffc47122840cabcd7b43ca44f7e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2MjRkODdhYTMyN2EwMmJmYWM1MDZmMmNlZGMxNzZlZjI1ODE4ZDNkN2IwZjdhNzM5ZmVhY2RmZTNiMTk5NmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2OTAxYTU3MTJjZmMyYzU2ZjFlNGMzYzZjYmM0NGI3MDFjNmUxNTAyZjcwODc5ZjY4NWNlYTE1OTU4OTg2MzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjExMGYxODc0NThmZTY3MDkzNWE0NjQ3ZTU1ODhiYTQ3ZGYxZjg5MzEwOWU0NjRiZjExZmQ2NTYyZmM3NDA2MDIifQ"
+        },
+        {
+          "resource": "repo://src/engine/geo.rs#L1-L24",
+          "version": "repo-lines-v1:sha256:c258867df35576ecc43c5dbf36ba1a2ef540e6a5520c8d481689c5763eafc034:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwOGNmYWQ2Njc3OGJhNGIxZTU1OWE3ZDJkNTk2YjE3OWYwM2FkM2MwYWQxMTE2NGYwY2MwOTc0YzZhNDRlNGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2NWY3MjdhMjdkMDNjMTliYjE4NDZiZGQ1ZGI3OTc3NTc5MzNhY2I1YTlkMzMzNTY2ODNkMjhiODRkYjQxYTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkNzNjODc5MmE4ZjYxMjk3OGVkOGJhZjI1OGE2ODYyNjI0NmNmYmYzNzk2OWJlYzJiYzc2ZmY2MDMyNzVkYTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_11e0f2b357664c8e8dcae40c30ab1e72",
+      "statement": "HyperLogLog uses a private versioned string payload with an exact 4,096-hash set that promotes to a 2^14-register dense sketch, and it is not Redis sparse/dense payload compatible.",
+      "evidence": [
+        {
+          "resource": "repo://docs/hyperloglog.md#L28-L51",
+          "version": "repo-lines-v1:sha256:ac8b223d0e8594917b8eb348899499610fe5aebb8d8a2cb9351329b92d4622fc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4NzY4OGM0NjUzMWUxODMwNjAyYzVmZWQzNjY5M2Y5Yjk1NWQyZGE2NmZiMGE5MTNkMjg0NjIzYzNkMjg1NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjMmY5ODY0NWZkODA2ZWQ0Y2NhNjY5MDE0OWI2OTI2MTIzYWZlZWRiYTVmNWRjMzdiMDNlMzQ5ZGFiMWE0MjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3MWIxYmJmMGNiMWQ4NmM2Y2Q2NTRiMDNkYjFiMGMxNDkxZDNlMzAzZDI2ZTE5MzdiOTc5YzVmYTI1OTgwOGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYwMTgwN2NmOTZkNzJhYzcyYzJjNWM1MGRjOGJiMTk1OGQwMmVlZjFlMDYxYjQzODIyZTVlMTIyMTViODY3OGIifQ"
+        },
+        {
+          "resource": "repo://src/engine/hll.rs#L1-L28",
+          "version": "repo-lines-v1:sha256:f824bf85c607c9a334d97f9a9cd20b298d0abd268a8cf92ff48d2f7e2c602246:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmOGRiMjY3YmE1MGRlMjZhODRlMTQxZGM2ZDRiYjE0NDRhYmZiMWU2NGUxOTQyOWIwNzk1NTA1ZWRhZTk1NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFlMzFlMTU4M2M2NzA3M2FjYmEyMTRkZGI4NjVlNzc4NDI2YzYxZmI4NjI3OTE2YTVmMzk5YzM3NjA2MjY0NGUifQ"
+        },
+        {
+          "resource": "repo://src/engine/hll.rs#L103-L122",
+          "version": "repo-lines-v1:sha256:522193898832edd68b278dd63d8a5c398b4350a0dd4ad8f7d97c9ed3c3800102:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmZGRmYWQxMTM0YTUyZTIzMjk0MTE0YjdkMmFiNzNmODJjZDE1M2M5NTAwY2FmMjNiMzExNzU5MTc1NWIzMWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUwMjYyNjUzMzQ0MzJkNmU0YmIwMWU2NTIwZmQ1NmQ1MWViNTNlMGVlNjViZTk2MGJhM2NkYTM0NzA4Y2I4MTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1edc7a64c7a0409291fc09b34e5fa405",
+      "statement": "Bitmap operations are MSB-first operations on ordinary strings, with byte or bit ranges and bounded string/offset checks; LCS uses a bounded dynamic-programming table.",
+      "evidence": [
+        {
+          "resource": "repo://docs/string-algorithms.md#L1-L36",
+          "version": "repo-lines-v1:sha256:258cb6d9ac6b47d6a9fd7823c4b37d24cc611d1d41b5e0fa3623c06636d6702a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmNTgwNjEzOWMxZmI4YTk2OWNhMmI0M2EyZDNlM2JjNmRlN2I5ZjA5ZjEwYTVjZjM1YTU1OTJjMTJlNDg0NTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5M2FlM2MwN2U3M2QwZWU0ZGFiOWI0ZTAwMmQ5OGJkOGY4NjIxMzBiNTk2NDg5Y2U2MWYwNmUxOWRiODVkNDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNlNGFhMDFlYTYwYTY2ZTg1M2QzYjJlNTBlMjAzNDE2YjY2NjBkZWQwYzNhZDE1ZjI3MWFjYTc3ODQ0ZWMzOTcifQ"
+        },
+        {
+          "resource": "repo://src/engine/string_algorithms.rs#L1-L20",
+          "version": "repo-lines-v1:sha256:8fce17a192676b4ba2a943408dade875e57f7468e7c9c8418e1634f8ff40ec26:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwMWQ5ZjQzMWJiMzRiM2RjZDE3YzY2OTk3MmI3ZTM0YzgxNDcwN2FlY2M2MTYzNzEzNDczNDNkNzA3NjRlM2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkNGZkOThmZDhiODhjMzI5NTAyZjE0Y2M4MzVmNTRjNTA2ZDhlZTM0YWU3MjZjODQwYzI0NmVjY2QxYWM5ZjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiYTBlNGY0N2MzMzExNDk4MzhhNDhmZGMwNmQwNjM3YjRhM2Y4ZGFmNWIzMmM3ZWFhMjlkMmE1MDY0MzNiNWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_93945de197c14f07b526ceed58aa04d9",
+      "statement": "Store commands are routed through the strings, keyspace, collections, streams, pubsub and admin family modules, while transaction, blocking, pubsub-session and client state remain in the session layer.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine.rs#L1217-L1245",
+          "version": "repo-lines-v1:sha256:ca62fea4b8e5f2016d9c1775597b89ad90620727e5c5b71b9df39380909cfe8f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlZWM3N2EwMjk3YjViYzNjYTliNGNmMGFiODFhZTg1NTQ2MDE0ODNhYmNiY2Y0MTE4NmNmY2U5ZjdjOTc2NTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxYWNkODcyNDU5YmUyMmJiNWIxMzMyNjM5ZTFhNjU4NjUzZWRlOGZmNzlhZDRkYTk0ZTU2ZGM4YWZmNzVmMmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmOTQ1MGYyOTlhMTVhMjUyYjk3NDc1Yzg2OTUwNjIxMGY2Y2ZhMWVlNDBlN2ZjYWJkMTljNDIwYjdiODJmNzMifQ"
+        },
+        {
+          "resource": "repo://src/engine/dispatch/mod.rs#L1-L66",
+          "version": "repo-lines-v1:sha256:81bafbef2eed173c1c4fdb01921dd01911bdbbaa314c2aa918fa4dd45275d220:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3ZTI1ZGFhOTY0YTk1YTk5YWEwYjY4NDlkM2M5ODQ4ZjU4OWNiMWQzMmFkNDUyMTM1Y2I2ZDJjMTZmYjA0NTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkZGQ1NjFjZDhkY2FjMmU5YjEzOTFjMjk5YmVlZmJhZGIxOTljZWFmMTU5ZWEwMWVmZGYyNWQzNWFhYTlmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T16:04:12.575Z"
+  }
+}

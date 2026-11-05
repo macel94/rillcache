@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:d6824aaa8e456b6a713edd35424e950c73cd80194f0a4f30b83b47d1604bdeb9",
+  "claims": [
+    {
+      "id": "claim_b5cd236f2d98497a8b975d385e0dfae8",
+      "statement": "The command registry contains 243 commands, and the discovery test asserts that exact count and sorted metadata.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/discovery/mod.rs#L37-L82",
+          "version": "repo-lines-v1:sha256:1bcbc96b0a73ea486bbb7f8b18b8b97411f0cdaa24109e8a7b4cd4914b39d52d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1MDRiYjI1ZDQ1N2EzNThkNzc3MjkxNzllODBmODJkMjBlZmFmMTcyYTgxOWJlZjRlNmY3NDNkODYxZDYwNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4NjljZTZiNTQ5MzAzZTA5MTk2ZWQwZmM2MjY0NzZjYzExN2JkZmY3NmVmNmE0ZTU2MjEwODY1MWQyODQ2MmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFkYjNmNGJjZGIzNTMxMzFlNWE4MmU0MGNhMDUzODI0ZTQ4MjIxNzQ5ZDc1YmVjZDdjYjBhNjUwYjhhNjZkNWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4ZjZkMjk5YTdjZjIzODM2MzdiZTI2OTYyOGUzNDA0YjM5M2U4MzU3M2Q3M2U3YzRlNjU4OTgzODFkNmJiMzAifQ"
+        },
+        {
+          "resource": "repo://tests/discovery.rs#L108-L115",
+          "version": "repo-lines-v1:sha256:7f0f227870227120d8408bacbe0104d8928c03bdf1540e0e22bc9892f004442f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTQ5ZmFjNGIzYjVmMmZlNDNiMmRiMTlkOTA5ZmU3MjgzMWMzNWQzMTNkOWY5YWQ4Njc1NDE5MTkzMzBlNDA0NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjEyNDI4ODZjMTc5MTA1OGQzYTNlYTgwY2MwZTZjMzEzMDFjYmZlMzllMWQ3Nzk3OGI2MmFjZmY3ZGY3YzdjNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2Y5YWQ0NjNiZTcxYzVmNDIwOTQ2YWZiZjA3ZDBmZTlmNWYxMWRhODJmMWU5NDkwM2NjMzM5NWQ4YzFhMGIzOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTc2MmIyNTIyMmQwOWViNGNiNjE3YjY5Y2ZkNDE5MTA3ZmI3NjBhNmZkY2JjMTU5ZWRlYTUwMDE4ODFmNmQ2ZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_a0695f06603a4769bca49209384d12fe",
+      "statement": "The supported compatibility surface covers binary-safe RESP2 and inline requests, strings and counters, bitmaps, LCS, HyperLogLog, collections, geospatial sets, a bounded stream subset, scans, transactions, pub/sub, ACLs, eviction and an opt-in journal.",
+      "evidence": [
+        {
+          "resource": "repo://docs/requirements/compatibility.md#L5-L56",
+          "version": "repo-lines-v1:sha256:13c70f234a086f37b6a877561615201123a690391d000ee8ec47920fc58ae231:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlNDE5YmZmMTlkM2E0M2Y4Y2ZjOTA5ZjhjY2EwYmMyNDQ5Nzk2NDdjMWYxOTFjZjc4YjUwZWE1YTlkM2IyOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4Y2Y5MmZjMmJiYzg3ODVkNjdmODY3NjRiMTI4MmNlODY1YzA1ZDhjMTEzNWU1OGViMmI3NWIxOTJlYjZhYzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlNjYxYTQyYWNlNGU5MmRhYTAwNTQxNzQ1ZDZjNDI5OWU3YTcxZTljZWI3M2Q3MmM2MzZkNWYwMWY1MzkwNDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM2NzQ4YWUzMjY5NWQxOWZjOTY1ZWU0NWUzNDg1ZWEzYmIwN2M5YzkzNTEzZmVkMzFlNWUyNGU5ZWE2ZTMxZDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3ca5c33358474b8aa0306050cd15563d",
+      "statement": "Cluster routing, loadable modules, RDB persistence, replication and nonzero logical databases are explicitly rejected with bounded unsupported errors rather than fabricated state or redirects.",
+      "evidence": [
+        {
+          "resource": "repo://docs/unsupported.md#L1-L36",
+          "version": "repo-lines-v1:sha256:f775f538b05d5f9540956b0a80811ab377532c9e843aa8a87c53e1603628f9b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlNmE2NTNlYzJmNzhkZGU0ODRmMDQyNzhkODk2YjVkMjJiODkxMDExOWFmZTU3YTkxMTNmMTIxZDI5Y2JkZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiZWVjZmU5OWY3NmJjYjlhNjdlMDRjZWRiNzVjZDQyNWUzMGM5NTM3MWMwZDNkZTljY2JiYjhiOWNlODJiMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/engine/unsupported.rs#L1-L56",
+          "version": "repo-lines-v1:sha256:c7bf354a7584df323eea701b9d80c1236f3bfa4292f3cb4d56aee331a2350e9a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxYzlhZWJkOGNjNGYzYTYxYjlmN2YxZmI4NjkwZGY3OWQ1NmVkYTZiYzY3YWI3NTRkN2NhYjViZTc1ZmZmMTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdmZGYwZTczZGQ5MjhlZTdjOWU1N2YxOGM4N2RjZmQzMzI1MzBiMjI3Y2VjOGVhZmI2ZDc1YzU5ZmQ3YjE4NzQifQ"
+        },
+        {
+          "resource": "repo://tests/sessions.rs#L190-L200",
+          "version": "repo-lines-v1:sha256:e399f60b4060cb53631513feb40a1205ef06ba6aa7e640b3da89216a1f519884:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc2YmFjNjc2NTI1NzM4Y2IyY2I4OGJkM2U5MWUxOWQ0YTMzN2ViYTE1NWZlMzdhNjI1YmFlNTgwMTk1YTMzMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlM2Y4NzkwOGNjN2I5OTMyNjQyOTkyM2RhMzYwYTg3NTMzOTYzMjcyMDAxODE2NDQ1NTliM2JlODk3ODljNjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_aa67766d5e8c4aa9a2c24565cc280e47",
+      "statement": "RESP3 support is limited to the simple strings, errors, integers, bulk strings, arrays, nulls and pub/sub push frames emitted by the current command set, rather than the full RESP3 type and push surface.",
+      "evidence": [
+        {
+          "resource": "repo://docs/requirements/compatibility.md#L63-L76",
+          "version": "repo-lines-v1:sha256:32d173a19db3c646e7dc9f614603926bb38f4c2063ff3a9b3498af850e8f04d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4ZGM5NmVkNDRhOWUxM2VhYjFlOGVmZTMxZTM0YjI0ZmUwOThmYTQxMTEwMDIyOTA1NmEwYThiN2FkYWU5NGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlNmQwYmNlOWU3ZWQxZDNlMGU3MzAwOTMyYjMwNzBjZDFmYzg5Y2IxNDY1M2FkYmNlMjlhY2E4N2ViZTc2NWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzYWVkNGRiN2M2ZTUzYjk2OWM0NDU2Mzk0MDdhYmY5ZmQxYzc0MzZkY2Q0NzU1NzcxMzZlOTA2YTk3MDU4MDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlNDZmMzJmOWI0NDIxNmQ1ZDgxOWRhYzlkNzg0M2YzOWQ2NGE2M2I0NTk3N2MyOTJmODdjNjk0YzNmYzRlY2QifQ"
+        },
+        {
+          "resource": "repo://src/session/mod.rs#L1-L11",
+          "version": "repo-lines-v1:sha256:b582e078080b169608b1e930baf0e2bb5fe5590b0b386e0fad52eaaa0c291e50:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhOGI3MDA4ZDFhYzI0N2E5ZGI4MzNiNzc5MGJiZTEzMjhhYzY5YTk3NDdmZWU5ZjY5MzY0MDNhODk3ODZlZDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NTkyYTU2NWU5MGY0Mzc3OTNiYjdiN2IyZjkzNmE1MjlmMDkwMGRiYmJhNmZlZjIwZGVhNWE4M2I4MWNjZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJiODA3YmYyNDZiOWFmMWIzZDcwODlkYmQ0YjQ1YzI0YzllMjhkOTA2YzEwYWFjZmU4NGJmNDk0NTBhOWM2YmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c54c3c5a5eea4fd5ab1c3ecd90b40e0a",
+      "statement": "The required upstream compatibility matrix runs only the original unit/type/string, unit/type/incr and unit/keyspace Tcl files, with native controls and documented scope exclusions; other upstream units are untested.",
+      "evidence": [
+        {
+          "resource": "repo://docs/upstream-ci.md#L70-L100",
+          "version": "repo-lines-v1:sha256:84d7f2581e2a053158b7e38c73449ec8d6f083dd0a72646801b293b799d15424:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmMzNlNDI3Nzc3YTMyOTA4NTY2ODU0ZjQwOTUyOGM5OWRjYjM1NjdkMTUzOWZmYThmZDRiOGExZDFkOGIxNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiMjRkYWQ1Y2E3NTllMmE3ZmQxNmE1NTkxYjQwZWYwY2E3ZjI3ODIyZDZiMDUyNzE2NWE0MmVkMGM3ODNlMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlZjBkMmY5YjZkODY2YmQxNGNiNjhmYjA3NGUwOTA2ODcxMjAxZmM0ZGEzY2I4NThiZTlmYmFhOTQ2MzU2NTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI1NTcyYzQ0ZTBjODUyZTNmMjFlODI2MmY3MDExZDk2NDU2NzAyYTdhNDk2NTMxZDY4NWQyZjlhZDhhY2I1MDQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_35b0b7e16eaa4e758dc93dc01b072989",
+      "statement": "The dependency-free reference corpus verifies a focused RESP2 subset and is explicitly not a full Redis compatibility, client-library, cluster or performance suite.",
+      "evidence": [
+        {
+          "resource": "repo://docs/reference-conformance.md#L1-L50",
+          "version": "repo-lines-v1:sha256:f85cfc583c7e85167ad0f270d046bc3b9f6c1eb3ad5fe9c83b36a62740c21bc1:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDA3MzM2ZjE0NDJlOWEzODU4ZmMyNTc0ZTZlNzdjMGUzODY1MGMxMzRmOGQxOTk5M2I2OTVkMzVlNTNhODUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhNDM3YzQzZTk3OTVlMGEwMmMxMGJkMTJiMGJkMmMwZWZjOGMyMzNjNzBlNGFlNGRhN2JjNjYzZGI2YjgzOTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ae81af29dded4740b11ce6562b09698b",
+      "statement": "The protected Valkey performance gates require all 20 original medians and all 10 official four-CPU medians to beat Valkey on the exact head, but they do not establish feature equivalence, production stability or realistic workload coverage.",
+      "evidence": [
+        {
+          "resource": "repo://docs/ci-benchmark-review.md#L60-L75",
+          "version": "repo-lines-v1:sha256:fb86e5dab9d81be09cbd7c065c8af8c2c0f565a2a056090bb70a11a77e21c144:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlMjAyOGY2NGY5YzA1ODM2OWIwYjkwN2E1OWQ0M2FmZDE2OTUyOTNiYTJlYzczYTI1NDM4Mjc2OWEzODVkZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhZmFhOThiM2E4MTNkYzBiYzFmZmI2MzY0MzFkMDI2ZDE1YmNkNzcwY2M4YjJhNjM0OTcyZjA2YjI4ZTViOWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmNjNkODM3MWFjMmE4ZDE3YjBjNjNlNjA2M2NkOGQ1NDI0ZjRhNjFlZmM5NjAzZjFhOWQ4YmVhMWVjZDllOGMifQ"
+        },
+        {
+          "resource": "repo://docs/upstream-ci.md#L1-L11",
+          "version": "repo-lines-v1:sha256:7cc4fda6500f9aafda48b711b70fd789a07a1798ef4486b40a2b9c71b9a92c4a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxZjExNmU1ZjU3YTQ1NTIyNTVmNjg0ZTMxNmRlMzYxM2ZmMDQwOWM1NTA3NzU1YThiZDFiM2U2MDUyZjY4OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1ZWRlNmQwZjM4MTMyZGQ0MTk2MzRlNTQ5YWMyYTdhNzc1NjQ2NzY0N2VlNGExY2UzNjI1NTBjYzM5ZWMwNjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJjNDI5NDRiYjg1N2IyZTE2OTEzMjk2MWE3YmVjZmYzMjI3ZWEzZDZmZGMyMWVkMjE4ODgxMDAxNmUyOTZjNWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b120b4782e6649b398766c9e59cf7b4e",
+      "statement": "The append-only journal remains best-effort: there is no RDB, background rewrite, checksum, encryption, crash/ENOSPC validation, backup/restore drill, point-in-time recovery or portable signal-driven drain.",
+      "evidence": [
+        {
+          "resource": "repo://docs/production-readiness.md#L15-L24",
+          "version": "repo-lines-v1:sha256:9d8f3c0fd0edee318ca94a67761afbdb802a825b13d7448501c63d63bdb7e778:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkNzExOWQyNTEwZjc1YzEwMmJkNzZiZWFjOWMwMWYzMjMwM2JkNTk2ZDAyZTdkZmFmYTg2MjQxNWEwZjgzMmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiYThhOWJjYmNiOTdmNTkxMGQ3ZjgxN2FlMmRiMGY5M2E3ODg3ZDk2NzMzNTM0YzM2NWQ0Y2Y0YmI5NzFmNzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjMDQ3NTRkMDY5YzY0OWQ0ZjRkODhmZWZjZjcyNmZkNDRkMjA1YzM1YjNiZTUwZDhjOTEwNWVlN2Y1NTVjYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzYThkNjc1ZDMzMDdjZTIzZWU3YzQxYTExYTQ4YjlkMmExNDQzODY2ZmM1YWY0NWYwNDM4YmNlZGYxMzdlNDIifQ"
+        },
+        {
+          "resource": "repo://docs/production-readiness/durability.md#L3-L10",
+          "version": "repo-lines-v1:sha256:8a06582d213af65573e029036c9e736cebb1cf7970015fc4bef7256dd50d15c4:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjhhYjhjMDYzMWFmZWE0MTg1MDUzNjgwZDc0ZGE0NmI0NjM5YWZjNmU4MGI4MDVkNTE0NDhlODVjODJjZTczZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTE2M2Y3MjAwMGM4YTRlZjBkOGEzZjEwNWQxYWIxMTgwNGUzODZmYTQzYTNiOWZmYmRhZWJmZjYyNWIyZDYxYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2Y5MzI2NWZiYTcwMTYzOWI2MGJjYmQwMjVmNGY0MGI3YTYwYTEzNDAwNDZiNzhkMjkxMjQ3ZDUyNGFjYTJhZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_2cd5f18e012b4d19b8a4dd1625f972dd",
+      "statement": "The repository states that it is not yet a drop-in Redis replacement or a production service, and that a verified command subset is not a drop-in claim.",
+      "evidence": [
+        {
+          "resource": "repo://docs/compatibility.md#L1-L6",
+          "version": "repo-lines-v1:sha256:f0cf73f25b8e13566d005f502a5c7ffb9f6b2d79148d93afdd622bcadbaeeefe:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjhhM2JiZTRjZWJiODA4NjNmMjE3NzRiNzYwZmFjYWEwZDBiNDIxZmRjZjM3ZjVlMTQwY2QzN2QxZmQ1ZmUyMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDk0ZjMxYjAxZmEwMTUwNDI5ZTdlNTcxZGRkZDBkNjllZWEwMGViZmY4OWRmZjk3OGE4NjllNjEzNmI3N2NhNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGRiYWJmZjQzMWRiZDEzMzg5ZDY0M2M1NzRhOWRiMTc4ZDdiZjdiN2FlYzAxOWFkY2YzMjUzMWI1NzEwMGEwMiJ9"
+        },
+        {
+          "resource": "repo://docs/production-readiness-gaps.md#L3-L7",
+          "version": "repo-lines-v1:sha256:3611943dc9a4acd4e1c36119661ceb8c8581b535380efe12b1a2c6ab8a0380d1:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2Q0OTZmYTllY2UzOTI2ZTk5NzBjZDI5NzEyNDdmMzQwNWU5NmZmZmYzOTgyMDVmNjU4ZTIzZDRkNTY0MjVmMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2QyOWU4NTE3ZTQxODQ0NGU3ZTJiMjhkZmIzNDA5ZjYyM2Y1ODA2NjdjYzkxMWZjOGZiMTlhNDRhNjMzMzU2NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2ZjZDI4NTVlMDAzNWU1YTZhMGFmNWNmMWNlNGZjNzE5ZjNjODJiODE2YzU4YmZiMTgwMDBlZWU1YWU1OTE5MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQyYTE4ZDk1OWU0N2E3ODE0M2M2NWNjMzU2OWMwZDQyNmVjNTlmZGQ5NDMyOGE5MjE0NTBkNGY4NmU4YmIxNiJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T16:04:12.575Z"
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:343bf620bbc11c09208757f18f63fd9ec33b7dd13044a41764e004a8fd3bf63a",
+  "claims": [
+    {
+      "id": "claim_75dd9939d0c74e9f8fa06d6b5d17a635",
+      "statement": "The parser accepts non-empty RESP arrays of non-null bulk strings and Redis inline commands, borrows RESP arguments, invokes the executor only for a complete valid frame, and enforces configurable frame, bulk and argument bounds.",
+      "evidence": [
+        {
+          "resource": "repo://src/protocol.rs#L1-L105",
+          "version": "repo-lines-v1:sha256:eb53b929d2bfd9a1bdf22c3e62b6763a5d6a7ded1b4f171df17866c082993f2d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmMGEzNzJmOTEyMzAyNjFiZjlmM2FmZDk1Zjg1ZDVkYzRiMDNhZWM2NDY0YWMyZDU1ZDcwMjdhOTczMDRlZTM4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1ODcyOTE0NzllNDU0MWZjOTlkNjYxZGUxOTU2NWI1YjJiOGExOTcxYmQwYTRhZTBjZDczMzlkNGM2NWU2NDllIn0"
+        },
+        {
+          "resource": "repo://src/protocol.rs#L231-L284",
+          "version": "repo-lines-v1:sha256:30aabd98545078fe5d6f4f77927ce6feefa3004a880a0a12909ce784c26304a2:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxNjIxZGUxZGY5ODkwMjg0MjMwMzhiNzFmNDQ0YzU2N2I2YzYwMjE1ODg4MDkwZDdmMGZjYjU1NGMxY2RjNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzZWYyMWZmOGUxNDlkMzFmODBiMDE1OGQ3ZWI5NzRhZDc0NDFlY2IxMjRiZmIwODQ5MjgzMDc0MmQ0MTI2MTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1YjliMDNkMGUxNjc2MmUwMjJmYjMzZWU1MDBkOGFmMmUxZjhmNzI3ZmZlZDMxOTk4ZGFlYzlhZjJiMTEyMzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_873cafd88d17448d885c506957f6f74b",
+      "statement": "The canonical PING frame has a 14-byte fast path, while fragmented or non-canonical PING frames still use the complete bounded parser.",
+      "evidence": [
+        {
+          "resource": "repo://src/protocol.rs#L71-L105",
+          "version": "repo-lines-v1:sha256:9af3820129c18324090f3fa0a9ec7074f941f4ae4394fa190d83df08417acd49:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkMjc2NjdjZmQ0MGJhY2Q0ZmY1OWRlMWVmMmQxNjA1MjBhZTIxOThiM2JmZWI1NGJkMmEyOGE0NTRiZDIxNDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwNjNjNGQxYWY4Y2Q4OWJiMGJkZDc2NTdmZmNiZjY4MDZhNjEwZDc5ZDZjOGQ0YzMwN2MyNDFkZjM5MDA1MjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4NzI5MTQ3OWU0NTQxZmM5OWQ2NjFkZTE5NTY1YjViMmI4YTE5NzFiZDBhNGFlMGNkNzMzOWQ0YzY1ZTY0OWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d44cd6aa638742f08d7ad0dc005c9a48",
+      "statement": "HELLO negotiates RESP2 or RESP3 and reports server=rillcache, crate version, proto, client id and standalone mode without claiming a Redis version or unsupported capabilities.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/client.rs#L1-L150",
+          "version": "repo-lines-v1:sha256:97979b64d9f8b779038cda3c4ed6306d87d6e6bd3bd4cc4eb48d554040090fae:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNDE0NzdmNjZiOWI0YmUzM2JmNWRiNGM0ODhmM2Y2MTYyYjNjNzI4N2U4ZTEyNjJmMTc3OWM0NWRmM2I5NzdmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiMWE2MGQyYWJhODZjZTcxOWQ0MTQ3MWIwYTc3MGYxMTk0YzI0NDU1YzhlN2E2Y2NhNzk3NDU5ODhmNGE1MTA2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5OGY0YjE4Mjc5N2NiMDY2YzI1NWJkNWY1MTU3NzZlZmYxMGI4MjlkNDY5NDczYTQzMDE0MTUxYmZhMzEyYzIxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_56023b8f17984ce19fd0789cbc5b6b41",
+      "statement": "HELLO parses and validates AUTH and SETNAME options before changing protocol, metadata or authentication state, so a rejected option leaves the session unchanged.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/client.rs#L18-L115",
+          "version": "repo-lines-v1:sha256:16fe478c23443373e19e5d6e9e8e8906e5f3b045b070f25859de0f93864ae9c5:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1NGNkOTI0ZmQ3M2ZkOTEwZTk0ZmViY2RjMGY2MTI2Y2RjZWIxOTZjOTY4ZDc3MTk2ZDk5NDU0ZTdmMzU3OTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1ZDU5ZWU0NmYwYWNiZWUzN2Q1OTdiNTIyYzBjYzVmMGQwMWRmZWQwZjZiMWJkOWEyNjU4ZDlmMWNkNWIyZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ4NjlhMGMwYWM2YzRlNzg0MzQxYTcwNmUxZGE2NmM1OWIxNDMzZTk4ZjEwODg1OTJkOWY5ZTk1NzdlZGY5OTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyNmI5OWJlN2QxNjkwNTIzMGY1NTExMDFjN2E4NmYyMmI4ZWVmOWY0NDlhMTIxOGMzOWMzYTI1NTgyZGQ4YTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9887719884554de7a2282a647b0cd057",
+      "statement": "RESP3 conversion is frame-aware, maps RESP2 null bulk and null array frames to the RESP3 null, preserves binary payloads and uses push frames for pub/sub, but does not implement the full RESP3 type/tracking surface.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/dispatch.rs#L415-L426",
+          "version": "repo-lines-v1:sha256:2edcaccdf15a1028972544a056a300f23c0e4b0b0872bde9fca09937c2d93ace:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiMTM5ZjgxNTViYzM3NjdjNTY2YjQ5OGE1OGMzNzkzNDIxYzZhODA1ZjZmOWY3YTJjNzkzZGU3ZWUzZTJhZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVmZDk5ODc3MWE0NzkzMTQ0NWIxZDAwM2IxOTA4NTM3Y2RlNzcyMWI0MjIwODY5MWIyZGJjMGY0NzMwYTQ0YTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3OTRkMDJhODEyMTk0NGQxNzZkMjY1ZTliYjljYzU5ZjZhYjg5MGJjYWRmOGFlZmRlYmRiYmI0ZjJlYTg0NDQifQ"
+        },
+        {
+          "resource": "repo://src/session/reply.rs#L1-L75",
+          "version": "repo-lines-v1:sha256:f501192d2897b507aa98975e2659e8978cb011b7f33a9b3503e985cfc39a6365:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwOGI4OWZiOGY2MmVmYTk5YTMzYWYzYjk1ZDUyNmI4N2I2NTA3ZmQ5MDlmMjE5YjJmY2EyNzQ2MmM0YWE5ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1MDZkZjMwNzE0ZjE2N2RhNGQzZmQ3YzJjZjExNDY1MWY3MzAzNTVhYzI2ZWJiOTdiMDE3NmFlNDRjNWIwZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM1N2NlY2I5NzQxZTVkNTdkZmUzMTQ0ODRhOTRjNjA5YzM4MzAwMWRhMmYwNmIyOGFjMmI3OTgzZjFmZWEzNWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6298379ba8d84b04b01aaf07ae588939",
+      "statement": "A session owns protocol, client id, name, library metadata, authenticated user, transaction/watch/blocked/paused/subscriber state, and this state moves with the connection across worker handoff.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/mod.rs#L28-L115",
+          "version": "repo-lines-v1:sha256:188a0bf423b399fbcf96d7652ad261fcde5d4eab3030fbfb8a90c15bf2ab8245:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxODU3ZTA3Mzg3NmZkYzg5YjhlNjNlNWJhNjY0NGMxMTc1ODAzNmQ4NDc5Mjc2NmVhNzJiMjRmMWZjZDFhN2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYyZGU1OTY4MTEwMTY5MjAyZGE4YTEyZTUzYjZlOTc4NzZhMzkyNTM3NWE1N2Q4NzBkMGQ0YTY1YTJmYmU0OWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1YjUyNjIxNWYyODg2ODU1ZWI4ZDQyNDY4ZGUyMTZjM2M2YzljNDhmZmVlZmM5YTdjYmZlMTc3NGExNTE1YzgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c1f4fa2ff8594851b1e7a00bfe7ca6bf",
+      "statement": "Only database zero exists: SELECT 0 succeeds, nonzero indices return an out-of-range error and malformed indices return an invalid-index error.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/client.rs#L500-L545",
+          "version": "repo-lines-v1:sha256:74f3216894e85ee455d57ce25c03d2ad6fe2a1394c081e7dfcd2646a78ea29c7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0NGM0MmY4MGYxNjUyOWUyN2M4Zjg5ZWU5ZjMyNDNlMmQwNmE0MDZkODlmZmMzMWYwMDc0N2E4ODFlZmRiOTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2ZjgxZWU4Nzk5MzU5YzA5ZmRiN2NkNDE0NTNlMzk3NmU2MjA5ODhhMTMyZDMzMzBhNmUyNGFmMjkzZmMyNDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://tests/sessions.rs#L190-L200",
+          "version": "repo-lines-v1:sha256:e399f60b4060cb53631513feb40a1205ef06ba6aa7e640b3da89216a1f519884:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc2YmFjNjc2NTI1NzM4Y2IyY2I4OGJkM2U5MWUxOWQ0YTMzN2ViYTE1NWZlMzdhNjI1YmFlNTgwMTk1YTMzMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlM2Y4NzkwOGNjN2I5OTMyNjQyOTkyM2RhMzYwYTg3NTMzOTYzMjcyMDAxODE2NDQ1NTliM2JlODk3ODljNjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_833f5e92e7304f0e988cc71773d54481",
+      "statement": "RESET discards transactions and watches, clears blocking/pause/subscription/monitor state, returns to RESP2 and database zero, clears the authenticated user and retains client metadata.",
+      "evidence": [
+        {
+          "resource": "repo://docs/client-sessions.md#L55-L70",
+          "version": "repo-lines-v1:sha256:f311506d96e47bebfd450d4b6b22add31a00d1958d0da5f1e3a033b05eb4c374:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NzU0ZDNkZTA5YjAwZjNhN2UzYzEyZWUzZmY2MDY3YzE1YmE2YzM0NTdmOWMxMTVlY2Q0YjhhNGE0NTFhNzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkNGQ3MTcxNGI5NjhkMDU3MzY5MWZlZjgxNmVmNmUyNjczNGZhMjc0ODllYTg3NjkyMTdlOWVjNGMzMzQ3ZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI1YTQ2MDQ4NTFmZGNjMmYyZTc0YWM0MDE2YTE5OWUyMmQ4YmNmNzE1NjFkNGM2NTJmZTY1NjU1YmM4NmY5ZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRiZjM3NzhiMmY1OTJhOGIyNzFjMDkwYzY5ODNiMTQ2MzJmYjYzOGU1YjNhMmNhZjEwMDczYjgyMDYzNWU5YmUifQ"
+        },
+        {
+          "resource": "repo://src/session/mod.rs#L266-L299",
+          "version": "repo-lines-v1:sha256:1cb785a6dce0c809318da50adb24929a38d5ba76813eb9d39e5e72641dd81631:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4NDc3NjZlMWE5NWMzNDc1OGEzOWY3ZDA1MmFlYzUxNjk2MzhiMWVjYzI0ZjViOGIxMTQ1Yzg1ODJlYjc1ZDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhMDA0OTY4N2EyY2RlMDBkMDU1ZTRmMmJhYTM4NmM2YWI4YjY4ZTllMGQyNTg2NTlmMTJiYTI1OGI0MWJmYTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6778987c039749f79e0c923fbe1fe878",
+      "statement": "COMMAND exposes a strictly name-sorted registry with legacy six-field metadata, COUNT, INFO, LIST filters, GETKEYS and GETKEYSANDFLAGS using the same key extraction as ACL enforcement.",
+      "evidence": [
+        {
+          "resource": "repo://docs/discovery.md#L1-L50",
+          "version": "repo-lines-v1:sha256:58dab52233d25a6601997e8f60d3dcc3cdb84d99a5f3d16e6956a35e1c722273:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlY2RiN2YwNDI0Y2ZmMTU3ZTFiYmMwZWVkMmQwMGM1N2Q0YTk5NGYyZDAxNmRmNTViNGUzMzBlYzUxZWU4MDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyMjAwZTJkODQ2NzgyN2NmNGQzZDdiNmRhZmJhOWFjM2JiMmZhNTgwMTY2NGNlYmFhMDdjZmI3ZGY5YmZiYTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxMjYzNjY3NDEwMTIzNjBjY2Q0MjQ3NWFiNjZhOGJjNjcxNWIyMzEyMzcxYzgxN2VkOGQxODQyZjVlZTZkZjQifQ"
+        },
+        {
+          "resource": "repo://src/engine/discovery/mod.rs#L1-L85",
+          "version": "repo-lines-v1:sha256:1e7d809f220f5fa3254927c791b8e1ef4553057243671795b073bd0a78e308fa:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxM2VjNTE1YmZlYWMxMzI3NDE0YjcxMDc3NzRmZTViY2U1ODc1ZTc2Y2EwZGM4ODNhODI5ZjU3ZGUxMDgyNDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmMWVmOGFlMDdlZDA4OTVlNDhkZjViODJhM2I4YWVmYWY2NjRiOWVhODUxYjZiMWFlZWNhMWM1OTNjNDdkOGEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T15:32:39.597Z"
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:8cdebd0d22adf76ba6661faaa2f45fe64ce142af0d36725119ff677c327e0956",
+  "claims": [
+    {
+      "id": "claim_574a7126e75641e7a825f93a39ff1995",
+      "statement": "The standalone server and library default to a loopback 127.0.0.1:6379 bind, while the container entrypoint binds the container interface and examples keep host publication loopback-only.",
+      "evidence": [
+        {
+          "resource": "repo://Dockerfile#L16-L31",
+          "version": "repo-lines-v1:sha256:870384c1e3ca668056379a31042a1e5f44510279142d81ece3cdd75393e2d61b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiNTdjN2RhMjIwYTg3NTNkN2JkYWJhYzBkM2FmZGI2ZWZhNzQyZTRjNzM2YzViYzkzYWI0MGRmZDVlMjNiOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhNGVkY2JmMGIxNDJlYmUxMzBhNmI0MDliZmU2NzU1MmNhMWJjZDc3Mjk0NDI2YzQyYzY5MTE4YWYyMTk3NjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNmNzQzYjExMWMyNTkzZjljMTdhMzIyZTdiODc4MDBhOTYzNzNlYzAwNmJiMGQ1ZjcwMGRkODFjMmQ3MzgxYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://docs/containers.md#L12-L24",
+          "version": "repo-lines-v1:sha256:378c348856e628ec39278cec5359aace729ca1cca5ee3b14429024414a069234:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0YzE1MzFlNzM4MWNkN2E0ZjhkN2QxOWQyZTUzMWVjZjY2NWM3NDFkZjJjZDNkNDI3MGExZDI2NTFmMjVhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyYzBiMTVlMTViODBmNWQwOWFlNjIwNWFkNmI1OTMyNjFlMGRjMzEyMzYwZmU4N2VhMmNmMTBlYzI3YTI0ZGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1Yzg1MzI2YzFmYjhmNDE5ZWYwZTM2ODZkNjZmMzdiN2Q2MzI1OWRiMDA4MjJhNjE1MjE5ZTAzZTJiYWVmZjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczNWY2NWQzN2IwMWVlNDE0ZTQ5NWZlZGFmZTlmZDA3ODRmZDQ1ZDZjNGE5ZmRmYWIyMzYyZDM2NDA5YjdlNjkifQ"
+        },
+        {
+          "resource": "repo://src/server.rs#L296-L300",
+          "version": "repo-lines-v1:sha256:954c256aaececbe860b2fc1d6dcea9c76430cd3002c4aea073b10ae308372448:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjMxZWIxZjc1ZTc2NmJjMDc5Y2MwOTdjOTkxMzVkZmFjN2Y2OGE3MGMxYmVhNDI3Njk3MDk2YWYyNDJhY2EwYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmE5YThiNmI3NzkzN2U4NjY4ZTdiNGNjYzlmZjUyNzE1ZWE1MWVjYjZmODE4ZjhiZGUxM2E4OTFhY2NmYmMxOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTllNzYzNTVjZjExOTk0ODBjM2Y5OTgzNmIxNDg2Yzg0MWQ4OTFmYWFkOTA0YzYwOGUwOTMwMjJkMzc1N2FlZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzQ1YzVhMTdiMDc1YzhjZWEzMDRiY2Q3YTkyNTM0M2JjN2FkNzFlMWYyYWRhZjliYTQ4MjE1NzNiMWMwZjlmMSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_15e9fd087f74443cbad3e72f72ff5adc",
+      "statement": "Persistence is an opt-in private RESP journal with always, everysec and no fsync policies, synchronous rewrite and no RDB or stream pending-state durability.",
+      "evidence": [
+        {
+          "resource": "repo://docs/persistence.md#L1-L13",
+          "version": "repo-lines-v1:sha256:55cc0218c6ef1b20ec610ecc826bde8db2c161becac5339f99132a6806415d57:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhN2Q2ZjM5NzExOTM3NmM4ODFiODBiMmNmZTRkNTQ2ODQ3ZjA1YmRhNmU0MjFmZDk0ZDk1N2MxYjcwZTQ4NjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxMjUwYmMyNzY2NWU1YThiYTAzYWVmNmYzZTI4ODg1YTgyZDU3Yjc1NTdjZDk4YzAxY2M2ZTZhMWE1YTQ0YzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3ZDdhZjM4MGMwZDZlNjhiN2Y0YTlhZWM1YzMwOTNkMzE3OWFkNjNkZGQzYmQyYmExNTNiZTZhMDEwZTYyNjMifQ"
+        },
+        {
+          "resource": "repo://docs/persistence.md#L114-L155",
+          "version": "repo-lines-v1:sha256:9ff116660e1d6fb4f6744c880852ae201d66e9e57d323058b5eff1f3a9e0b152:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkOTY3NzQxMWJmMDAyZTAwMjE1Y2JhMWFhNGY4MWM5NTFmOThmZjJlNDRiNzY4MTk4YzU5MTBkMWM3Y2QzZTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhMjY2YmVhZDJhOTQ0ZjBhNDVkNDg4OTg1MmUwOGMzMDFkZTk5NGM4YWM4ZWFlMWQ1YjhhMDZjY2VkODg1MzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMwYzYyYTk0M2RmYTZlZDU3YWRkZDQ5MmE2M2UzOGUzNDZkNTdjZDk3ODAwOWY3M2NjZTlkYjYxNjExNTdlNmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhNjFiMzBiNmViYTQ0NDFlNzgyMjcwMmQ4MTI2MDQ3ZTJjZDg3MTMxMzNjZGRiNjExMGUzZGM0N2VkYmEyMzUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1877c3b203ea4d2394c83c8e3bee3e54",
+      "statement": "The repository states that it is not yet a drop-in Redis replacement or a production service, with remaining gaps tracked in the canonical checklist, including RDB, replication, clustering, scripting, full RESP3, client-library CI, security review and complete durability evidence.",
+      "evidence": [
+        {
+          "resource": "repo://docs/client-sessions.md#L116-L124",
+          "version": "repo-lines-v1:sha256:f43c2f38df78a381f5c3c6fda4b01eff9d644ca153c5b152c4e0fa1edd1d7661:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDY5MjEyYzkyYjFkZDM2Mjg0YTc3OGQxYWU5ZjEwZDQ5ZTE2ZDg4ZjY5ZThiYWM5YzE1YzU3MjM2YzE5MzllNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2I0NGVlNTM3YmUwZjQxYjM0NDZiNjAyNjBlZjgxY2I3N2QxNTZkNDc3MzRjN2QzZmFkNmJlOGJmNjNiM2U1OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2E2MDg0NjVhZmQ0MDU3ODE3ZDkzMGJlZDQwMjQyMGJhZTU3OTQ5NTE0MTg4Yjg3NDBiYzJmY2ZkYmRkYjM2ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        },
+        {
+          "resource": "repo://docs/compatibility.md#L40-L58",
+          "version": "repo-lines-v1:sha256:edeb4c0a5ac21c0bc2c751cc8f605e08603ba0ee080cd226baffd3c7df79b95a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBkYmQ1ZDU0ZDA3YWFkNWYzYjRhNDBlZmYxMjg3OTIxMGViYjgxODkyNmFjM2IwMWEwMGQ5YWJhOTFjYWI0N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkNGE3NzVjZTg1ODJlODI3NmJhNjlkNjJkMTllOGQyM2JiNDAwOTZhOTczYzI1YjUwMGI4NmRjYmY5OTA4MDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY4M2MzYWQwNGEyMDA3NWZlMDQ5ZmQ2YTkxOGE2ZjNmZjZlYTc3ZjBhNjBkMTkxOTg1ZWM5NTJkMmVhNWMwZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA1MTNhMDkxNjUyMzdiNTcwNDY4NTQwOGQ0ZGU3OGIxZDk3OWNjZTU4MzExMzI0YjM2YTAxODQ2NDk1YjU4ODAifQ"
+        },
+        {
+          "resource": "repo://docs/production-readiness-gaps.md#L3-L7",
+          "version": "repo-lines-v1:sha256:3611943dc9a4acd4e1c36119661ceb8c8581b535380efe12b1a2c6ab8a0380d1:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2Q0OTZmYTllY2UzOTI2ZTk5NzBjZDI5NzEyNDdmMzQwNWU5NmZmZmYzOTgyMDVmNjU4ZTIzZDRkNTY0MjVmMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2QyOWU4NTE3ZTQxODQ0NGU3ZTJiMjhkZmIzNDA5ZjYyM2Y1ODA2NjdjYzkxMWZjOGZiMTlhNDRhNjMzMzU2NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2ZjZDI4NTVlMDAzNWU1YTZhMGFmNWNmMWNlNGZjNzE5ZjNjODJiODE2YzU4YmZiMTgwMDBlZWU1YWU1OTE5MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQyYTE4ZDk1OWU0N2E3ODE0M2M2NWNjMzU2OWMwZDQyNmVjNTlmZGQ5NDMyOGE5MjE0NTBkNGY4NmU4YmIxNiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_568377dd5487431bbab61e47e5626df6",
+      "statement": "Protected delivery requires 14 contexts, all 20 original Valkey medians, all 10 official four-CPU Valkey medians and 10 same-setup Dragonfly medians to pass on the exact head.",
+      "evidence": [
+        {
+          "resource": "repo://docs/pr-quality-gate.md#L12-L42",
+          "version": "repo-lines-v1:sha256:fd52f687ed72bd9074939cf81e227812a3c01e7136d3a9bd8c7e5410884ea287:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyOTYwMGZjN2JhMTU5ZmFkYjI2YzZhYzMxZTYxNTNlYTViMTA3YTUwNzlmNWFmMTU3ZWJmMzIzNTFhNzYzNzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxNzg0OWJmMzFkYTBmZmQ4YTY1OGY5MDYzMDdmNGE3MDIwNjFhOGU1ZGJhODE5NGZlOGM2NjYwY2MyNGRkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZlZDBhZDhhMTU1ZTViNTAyNmRhODU1M2ZkNjk5MjM1ODEyOTk5ZWM0MWVkYWFjYTQzY2FiZTlkOWRmNWU1OGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY0ZWFlOGExOTY0M2Q2ZDdjZjg3ODgzZGVmMWUxN2MyYzZlNzg0OWU3YTljZjhhYjJmNTYxMTNlYTA2ZWIwYzUifQ"
+        },
+        {
+          "resource": "repo://docs/pr-quality-gate.md#L99-L179",
+          "version": "repo-lines-v1:sha256:6c03fc26282e4f8cdb75c5626b90af74122144356d90ba38399e076fa01b9af1:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliMzkyYjY3M2VkZTRjMjQ2ZTlmNGNjNGJiZDMxN2U1YmJkMWVjMjljODAzZDY0MmJjZjZlZjNhYTExZTZhMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhYTNkZWFiN2Q1N2JhN2RjYWVhZTBhMWU2MmZmYjZkNDA5NmI2MDc3MmYyNGVhMDExZTg0Njk5MmI5OTFhZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU1ZjJlZTI4NGM4OGFmOTJjZWQxNDZkNDdjMTViNzhiMDc3ZmY4ZWVlYzQ2YzdlZTdhMTYxYWY5ZjQ5ZDRlMDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJhMTc4ODA0MTA3NzA0ZDAyY2MxMGYxODAxN2Q0ZDQyMjJiODg0NmI4MDdiMGQ3N2UzY2QyN2E1YWMwNDZiZmMifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T16:04:12.575Z"
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:4884ec434493771888f0e9497af61e34eaf99813c2a78ba3f951971b98b40e09",
+  "claims": [
+    {
+      "id": "claim_5f3adbe81d084e55ac2ad6b2ac3ea491",
+      "statement": "The crate exposes engine, protocol, server and session modules plus Config, Server and ServerHandle, forbids unsafe code and depends only on the reviewed rustls, Mio, Tokio and core_affinity exceptions.",
+      "evidence": [
+        {
+          "resource": "repo://Cargo.toml#L1-L35",
+          "version": "repo-lines-v1:sha256:939321c89c6d1391c38b2ca20052eeaef4e41ca9657371f207446f1b3efeb70d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhM2NkNWE4MWIzZjlhNjIxYWE0OTNkOTBjNDVmNDJhYjU3MWQ0ZTQyYjhhZTVhZmYzNTFjYjBhMDJkMDZkODIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NjVjZDI4NWVhMTMwYjlmMWQxZmQ1ODI3YjkyMGY5MDBmMGNlZmRmZDlkZjdmOGMzMDEzYzU1ZWJjYzY4NjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/lib.rs#L1-L13",
+          "version": "repo-lines-v1:sha256:347f1c3c5538cc42dc0a17fa16d647e574cb6ad9fbf1aba7717e6a04a43fc08f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxZDc4NDMyNjNiYjRiNjE1MDJiN2FlOWQ5MmFjN2IxMjFiOGQ3MGU0ZjE0MjFhZmQ3MTliZmZjNWU4OThmNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3ODZiMTBlODU4ZTlkNTNiYThjMjQwMDBhZDM4YzgzN2E4OWRkMzQ0NzAxNmVjMjU1ZWFhYjBlMzc3MWE0OTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0434f7d542be40c9829a2ba7060bfa6e",
+      "statement": "The binary validates a bounded CLI option set before bind, including thread, storage-owner and socket-worker ranges, distinct TLS configuration, and mutually exclusive password and ACL-file authentication.",
+      "evidence": [
+        {
+          "resource": "repo://src/main.rs#L1-L75",
+          "version": "repo-lines-v1:sha256:df1198e605bfd85142d0c662eb1c21faef481bfdaa69695c09e8a58c15e850a0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxZDc4NDMyNjNiYjRiNjE1MDJiN2FlOWQ5MmFjN2IxMjFiOGQ3MGU0ZjE0MjFhZmQ3MTliZmZjNWU4OThmNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5MWFjZmY5NGE2NTdkOTliMmFjMjg5MzhhNDQyMjZmNDhlNGMxNTE3ODMwODI1MzZhNTdkZmRlOTRiMTUwMDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhYzUyMTcxNjkwYmQ1ODUxYmIwOTRjM2U0MTg2MjBhMDY2NzljNTg3NGQwMzNiZGZhNDQ2M2QzOTRkNzgzMDYifQ"
+        },
+        {
+          "resource": "repo://src/main.rs#L83-L265",
+          "version": "repo-lines-v1:sha256:af8771b505c5258b07f6e91418df18266bb7fd546bec4d3f9d9c6b9e5506c673:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4ZGIzMzljMTdkNGNjNTRlNzBjNGZjZmVjYjYxMWJiOWU3ZDM2M2YyNWIxOGUwOTIzYTFkMzA2Y2M5NTkyNGU1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4N2FhZDU5MTU3NGQ0MmZiZmYyZWVmYzYyODNlYjA3NmU5ZGI5YmRjZGJkMDQ5ZGM3MGNhOTIxYjVjYjc1MWJiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2NmUwZjE3NGQ4YjBmN2E4MjczMjE3NzdiODJmZmMxZjhlOGZhNTI5MmU4YzA5MjQ2YzQ0NzYzZjdjZDYyODU0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkMzk0ZTA5Yjk4OTA3YmUwMjAyNmFmMDA2ZWRiODJhYjhhNTYwNTZhMGVkODM5N2NkZWVmZWJiYzBhM2IzNWMwIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_991cddf36c1041d199ae729590123cfa",
+      "statement": "Server::bind validates configuration, loads auth and audit material, opens the journal or memory store, attaches audit and runtime settings, binds plaintext and optional TLS listeners, and computes an immutable scheduling policy.",
+      "evidence": [
+        {
+          "resource": "repo://src/server.rs#L482-L592",
+          "version": "repo-lines-v1:sha256:06cb2fd4ad54f0a625883237d2cfd49f2121ce0cefabe54caa99188ffab427b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmZjVjNTQzODFhNjg4NTZmOWMwMGIwZmQyNzI5MGVkNjE4OGU1ZTIyNDI1NzQyYzg1MmE5Yzg5ZmJkMjk3MjEyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5NmM1N2FhZTQwODhjZTYyY2MyODNmZmI3NTQzOTVjMzVjMTQwMDc2YjkwMzVlMzMzZGViNmEwZDMzZDRkY2NhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhZWMwMjUxMzBjNjdhYjM1YWNhN2I3NGJiOGRhZmZkYjQ2ODhkMzE2MmFkMDY2NDAwYjhjYjE3OGI3ZTBhMDAxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_617c6883114d42b7b4a26b3a47a8e203",
+      "statement": "Data is thread-confined and stores an Entry per key with optional string, collection, stream, field TTLs, absolute expiry, payload length and access counter, plus a sorted expiry index, bounded WATCH versions and a bounded mutation-event log.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/data.rs#L204-L268",
+          "version": "repo-lines-v1:sha256:fb6cb73d508a316c4a2cf788d913b352c82b89ec1c1de188bed63add404325a6:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNDQ3YmZhNjNlMmZkODFmNTk2MDYwODBjMmY1ZGVhMDgyMTRhMmZjNGNlNWU2NzkwMTk3MDQ4M2NlOGQxM2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmN2ZlYjYxZWZlMDM2N2E3ODE4ZTUwZjcyOTc4ZjE2OTRiNjZlOWE4ZjY1MDUxNGM0ZGNmYmU0NGY1NjJhYTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0ODhiMjU3OTYxNzRhN2FmNjVkMDZjNGI2NzQwMjIxMTBhZTQ0OGYzYTY1OGJmODkzOTQ3YmU2NDljZDhhMWYifQ"
+        },
+        {
+          "resource": "repo://src/engine/data.rs#L239-L267",
+          "version": "repo-lines-v1:sha256:311b14133ceade5e8926c245415a8d4d52c4b0e007a510a2e0f626843c9effe2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxNjM3ZGEwZTBjN2UwMDUyZDU3ODBjZTQ5MzA2MmQ2Nzg5MDkwMjY2YWFkMDNjYzE0ZDEyYTk3ZmQ5YTZiOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNGVkY2M3ODcwYTMyMmRhNjgyNzQ5NTE1ZWMzNGU1MDlhODQzYmUwYTQ4MGU2YjY2MzgwNGMxYTM2MGIyMzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YTFlZGQyMzA4NDE3MjI2MzEyNmVlNWI2YTg0YzE3YmZlMTZkNzY3MjIxYjJhYzU2MjgxNWQ3NWYzMDIxMjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d728d3e3a3a74735884cb7e8b8ded759",
+      "statement": "ServerServices holds shared control-plane state behind atomics and separate locks, including auth, clients, pub/sub, monitors, counters, observation collectors and configuration epochs.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine.rs#L216-L281",
+          "version": "repo-lines-v1:sha256:037bf24668028b7ac8f1153b3103a8775a555c9fd652194f5c3c2667e0688421:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0N2I1N2JjMzM0ODFjMWY3ZmE3MmU3NTg2YWI2ZTBlMzI1MmUzN2UwMjIxOTBiYmU5YTBmYTAxMDA2OTU5YTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM5NmNiYWU3Y2U5MTFjZjQ1MmMyZGU0MWZkYmY1MjZjM2U0YjQ0ZjliZDQxZWU2NzkyOTUxM2UzNzQwYTkxYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNmMzQwZTAwNzhmOGE2NjhmNWVjOTUyZWY4YjlkZTc5YzFiZTY0YzJmMGI0NjkyYjVkOTE0MWJmOWM3ZGU3ZGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7c0bfd4af59a4d2d9e15156a7cdd8a6d",
+      "statement": "The default local frontend installs a ShardExecutor on the socket thread, while journal, ACL-file, audit and mixed-TLS configurations use a single external compatibility owner so Data remains on its construction thread.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine.rs#L283-L300",
+          "version": "repo-lines-v1:sha256:a97ff9e70d962c60dc5357c726ce72b3cb22715c2959bb497adfab9f45e6f54b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlODgzYTFlYTg2ODVmM2RiYjIzYzFlYzJiMTAwZTEzNWEzMzQ0NTliNWUyNjgxMDE3OWUzNWI1YTA1ZTgyNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4NDk3YWIzMTAxMjcxM2NkZDVmNzBiNDczZGVmNzdkMTdlYjBlYzBjNzgyMDFmYzJmNDcyYmVkNjZjOGVkNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4ZTYwZWI1YmQ0NjZmZTYxNjdlMTgyOWFmYmRmZTcyNDU2NGYwNTM3NmZiMmM0ZjJkMTdkZjNmMWJhM2JjZjkifQ"
+        },
+        {
+          "resource": "repo://src/engine/bridge.rs#L232-L252",
+          "version": "repo-lines-v1:sha256:992ad1cf38c3cfde0a7426852236b8e02af3d2333d15ca4c1e012ad81e74c96b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxZWUzNTIxNGVmYmFiMDI4ZWJhYWQyODZhNWI3N2IyYWIzNTMzNTMyMjJlYTNmYTE4OGY0Yjg2YmQ3Mjk2OTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4YjhkNGVlY2FmNGQ2NzA3NWRlZDRiMzZhNjA1ZDhiZTU4OTBjNWVlZjQ3M2MzNGMxOWI1NWQxNmMyM2UyYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhY2M5ZDhkMWMxNTM1OTYwMzNhZWU1YjFlNWFkOTZjODJiYmU0MzAxMmViYmY4ZjQyZGU4MDQxMzgxZmE1NjAifQ"
+        },
+        {
+          "resource": "repo://src/server.rs#L547-L560",
+          "version": "repo-lines-v1:sha256:44ae211b000ba41cca16dbe6ae7c9545b7adbe8dc5b85c9ef8e95fc4176a5ee6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NTU3MjJlNzU2NDEyNjI0NDhjNzdmYzUxYzFlMzgyMGZiMDFmZWZiZTZkY2E0ZGYxOTYwNmFjMjA3YzAwZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxY2E3YWJiNzg3Mzc2NTY1ODQxNzRlNjcyMGIwYjk1MGU3NmU0ZDlkNjJlMjdhODJiYWNkY2I4NGViNTZkYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxZDg0OTJmMTg5N2QyYzc3OTMxM2ZmODRkZmMwNzAwY2FlMmZjMDQxMWNkODk2Yzg3ZTZhZGQ0NTM3Y2NmZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3NTdmNGQ4OGZhYjAzZjZmOWFiN2JmOWZjMjdiZDFjOTU0NzJlZDJmZTNhNTdjOGVlNmQ3YzJmY2Y3ZTdkYmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_85337aa18cdd4249abf43a80ee552820",
+      "statement": "The engine keeps PING at the top level, gives GET, SET and ECHO a small inlined entry, and routes every other command through the strings, keyspace, collections, streams, pub/sub and administration family modules.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine.rs#L1217-L1245",
+          "version": "repo-lines-v1:sha256:ca62fea4b8e5f2016d9c1775597b89ad90620727e5c5b71b9df39380909cfe8f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlZWM3N2EwMjk3YjViYzNjYTliNGNmMGFiODFhZTg1NTQ2MDE0ODNhYmNiY2Y0MTE4NmNmY2U5ZjdjOTc2NTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxYWNkODcyNDU5YmUyMmJiNWIxMzMyNjM5ZTFhNjU4NjUzZWRlOGZmNzlhZDRkYTk0ZTU2ZGM4YWZmNzVmMmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmOTQ1MGYyOTlhMTVhMjUyYjk3NDc1Yzg2OTUwNjIxMGY2Y2ZhMWVlNDBlN2ZjYWJkMTljNDIwYjdiODJmNzMifQ"
+        },
+        {
+          "resource": "repo://src/engine/dispatch/mod.rs#L1-L66",
+          "version": "repo-lines-v1:sha256:81bafbef2eed173c1c4fdb01921dd01911bdbbaa314c2aa918fa4dd45275d220:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3ZTI1ZGFhOTY0YTk1YTk5YWEwYjY4NDlkM2M5ODQ4ZjU4OWNiMWQzMmFkNDUyMTM1Y2I2ZDJjMTZmYjA0NTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkZGQ1NjFjZDhkY2FjMmU5YjEzOTFjMjk5YmVlZmJhZGIxOTljZWFmMTU5ZWEwMWVmZGYyNWQzNWFhYTlmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_faaf925702f749149306ac25f139e3f2",
+      "statement": "The persistence layer is an optional private RESP journal with synchronous rewrite, no RDB writer, no checksum and no background or forked rewrite; fsync policy determines the acknowledgement window.",
+      "evidence": [
+        {
+          "resource": "repo://docs/persistence.md#L1-L20",
+          "version": "repo-lines-v1:sha256:5142c768e7fac0e0dff6122e004ec996f00e9d8676a75b7fea1ac35e759c66ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhN2Q2ZjM5NzExOTM3NmM4ODFiODBiMmNmZTRkNTQ2ODQ3ZjA1YmRhNmU0MjFmZDk0ZDk1N2MxYjcwZTQ4NjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM3NzkyYjQwZWFhZGNmYmM0ZjhiMzhjMmIyZGI0NDIwNDU4ODlhYWRkMWY5YzlkMjhjNTIyZjE2MjlmZjIxN2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwNzUwMGM2NDI1ZDMzZTA5ZTI2NTcyYjcwNmIyMzIwNTY4MTQyMTFkYjc2NWE0OGU1MTVkZTVlZjEyYzFiZjgifQ"
+        },
+        {
+          "resource": "repo://docs/persistence.md#L95-L160",
+          "version": "repo-lines-v1:sha256:1aa5197f6ecdf5bc9b4e37d295f16e677752a48836ad6406eddeef3208901437:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiZWM3Y2ViNTM0ZTFhZWVlN2Q1OWRkMDk0MGZkMzViYjc2Y2IwNmYwZjRiOWJhNGJiNjQ3Yzk0ODZhOTU5Y2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3MWRiMzI5ZTY4ZDllZjE1YjEzNmNkYTBiMGIzZDk5ZmI3Y2U4YmI0OWU1ZmY0MTJhZTdkNjc3YzUwNDkxYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc1NTZlMmMyMzlmZDhkNWI3NDliYmY1MTc1OWU0NGNmMDAxNTMxODg0YjE3MjYzNGRjMGMwMmQ2YTk2ZDdlZWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmYTNjYmVmOTY5YjZkNzk5ZTc2MTBjNmY0Mjc5ZjAwYjdhNjFjOGFjOGM3NTNjNWEwYWRjNDU0MmYxYzM2ZTcifQ"
+        },
+        {
+          "resource": "repo://src/engine/journal.rs#L437-L459",
+          "version": "repo-lines-v1:sha256:e8246cd956654e8eb0e8d053106927a02ac629af52011335e4803f6988b31494:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdhNmY3OTE2MmY1ZWUxNTVjN2I3NzZhZGJmZGRkNjY2MWUzNjhmNThiOTBlYTc0ODM2MDY2MzVmOTY5OTJlMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0ZjEzNWJkZjVhMzhiNWMyMmFiYmI5NGYxMDAyZmQ4NjBhZTM3NmMxODRkMDZiNjNmMzk1MTdjODhhZmFhMTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4M2EwYjVhOTA3Y2QwMjczNGQ4NzhhNTZhYjBlMDU3YjMzYTE2MjY2MTU5OWFhZTdhZTNhMTkzNmQxY2ZiMjEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T16:04:12.575Z"
+  }
+}

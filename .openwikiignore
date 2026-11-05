@@ -1,0 +1,11 @@
+# Generated and vendored content
+
+target/
+vendor/
+.git/
+
+# Benchmark and profiler output
+benchmarks/**/results/
+benchmarks/**/*.log
+*.profraw
+perf.data*

@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:8a5092a89fc0929ccb50b2968e877b02bb2b10aa3daf97a96a013f9be9b7961f",
+  "claims": [
+    {
+      "id": "claim_781d8e19dfb64a53a737bd52b8852132",
+      "statement": "The request parser is binary-safe, borrows RESP bulk arguments, defaults to a 2 MiB frame, 1 MiB bulk and 1024 arguments, and invokes the executor exactly once only for a complete valid frame.",
+      "evidence": [
+        {
+          "resource": "repo://src/protocol.rs#L1-L19",
+          "version": "repo-lines-v1:sha256:9b0382ad24dd287c8fb1490064c6a48cccba1f4e86bab325254036f4bef99449:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwYTM3MmY5MTIzMDI2MWJmOWYzYWZkOTVmODVkNWRjNGIwM2FlYzY0NjRhYzJkNTVkNzAyN2E5NzMwNGVlMzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyYTY0MThmMDBjM2Y4Yjc3ZTBiMmQwNTYwYmU3NzFhM2Q2YTkwNjM3MzJiYjQ3ZGQ2NDA1YTYxMGQ3YWRlMGUifQ"
+        },
+        {
+          "resource": "repo://src/protocol.rs#L231-L284",
+          "version": "repo-lines-v1:sha256:30aabd98545078fe5d6f4f77927ce6feefa3004a880a0a12909ce784c26304a2:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxNjIxZGUxZGY5ODkwMjg0MjMwMzhiNzFmNDQ0YzU2N2I2YzYwMjE1ODg4MDkwZDdmMGZjYjU1NGMxY2RjNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzZWYyMWZmOGUxNDlkMzFmODBiMDE1OGQ3ZWI5NzRhZDc0NDFlY2IxMjRiZmIwODQ5MjgzMDc0MmQ0MTI2MTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1YjliMDNkMGUxNjc2MmUwMjJmYjMzZWU1MDBkOGFmMmUxZjhmNzI3ZmZlZDMxOTk4ZGFlYzlhZjJiMTEyMzYifQ"
+        },
+        {
+          "resource": "repo://src/protocol.rs#L59-L105",
+          "version": "repo-lines-v1:sha256:d9ec6f5a45c51f3c1dfba27a9854526fd156169514e02febf3e2f0c5db9f7dfe:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjOWNkNTRlNjgzN2E0ODVmYTU4MDM4MjhjZWMzNzc5YzBlOTk3ODRmNmJhNWI3ZmNmMGRkNjg5NTBjNzEzYWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4M2IzZmNmYThjZWRmYmUxMjg5NzllYWM2MDExZTc0YjYwMzMwOTU2N2UzZjQxZDRlNDA3M2VhZDI0MWU5ZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4NzI5MTQ3OWU0NTQxZmM5OWQ2NjFkZTE5NTY1YjViMmI4YTE5NzFiZDBhNGFlMGNkNzMzOWQ0YzY1ZTY0OWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_be7672242ffa4ffa8337700e376f013b",
+      "statement": "A complete canonical PING frame takes a 14-byte fast path while fragmented or non-canonical PING frames still use the full bounded parser.",
+      "evidence": [
+        {
+          "resource": "repo://src/protocol.rs#L71-L104",
+          "version": "repo-lines-v1:sha256:3a0a510f4f79794169c61fef6adf91679302d7e36d0df745b3bf8cb7615a6c1c:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkMjc2NjdjZmQ0MGJhY2Q0ZmY1OWRlMWVmMmQxNjA1MjBhZTIxOThiM2JmZWI1NGJkMmEyOGE0NTRiZDIxNDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NzVlOTRhOTA0YWM0OWIzMTU0ZDQ2NzJhNjZlODYyOWI4NmRhYzc0ZTNlMjkzN2JlNjkyN2FlM2RhMTFjNTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwNjNjNGQxYWY4Y2Q4OWJiMGJkZDc2NTdmZmNiZjY4MDZhNjEwZDc5ZDZjOGQ0YzMwN2MyNDFkZjM5MDA1MjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA4MWNhNDg2MjBhZDRkMTEwOTg4MzYwNjNmODlhYzQwY2Q1YzA2NTViMTQ0YzQ2YzZmOTNjMWZkNmRjNmI2MjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_10ee663c8c424c34a67d8191a9c78799",
+      "statement": "Session execution applies command counting, MONITOR, authentication and ACL checks, RESP2 subscriber restrictions, MULTI handling and connection-local commands before routing a data command to the execution boundary.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/dispatch.rs#L160-L394",
+          "version": "repo-lines-v1:sha256:8509f1f924f22920728749fdcff7c14198a3bf155b813521406e21fd97731146:eyJzZWxlY3RlZExpbmVDb3VudCI6MjM1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5NjU3NGNjMjY5ZjQyYWY2YTJkNjIwYmEwZmM2ZmU4NGFjYWYwYmE1ZGEwNmM5ZjNlNWIwY2FjNGRiYmE4NDk1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3MDRiM2QyNzMwZmExMzM0NDY5YTgzYzgyM2MxM2I3OWQ3MzgxNzMxNzFiYTk4MmU5NmI4NGViMTdlZGI1Zjg4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMzU3OTIzMDQ2ODBkNDNmZjYyNmM1NGUxZDE4OWIyYTY2MzY1NWQ1OTA0ODBmMDJlZWQ5ZTg0NmE1YTNiNDUzIn0"
+        },
+        {
+          "resource": "repo://src/session/mod.rs#L1-L11",
+          "version": "repo-lines-v1:sha256:b582e078080b169608b1e930baf0e2bb5fe5590b0b386e0fad52eaaa0c291e50:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhOGI3MDA4ZDFhYzI0N2E5ZGI4MzNiNzc5MGJiZTEzMjhhYzY5YTk3NDdmZWU5ZjY5MzY0MDNhODk3ODZlZDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NTkyYTU2NWU5MGY0Mzc3OTNiYjdiN2IyZjkzNmE1MjlmMDkwMGRiYmJhNmZlZjIwZGVhNWE4M2I4MWNjZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJiODA3YmYyNDZiOWFmMWIzZDcwODlkYmQ0YjQ1YzI0YzllMjhkOTA2YzEwYWFjZmU4NGJmNDk0NTBhOWM2YmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1ba72dc8c6904dc5a9a76ad54fce38ac",
+      "statement": "A deferred multi-owner command is used only when transaction, subscription, monitor, blocking, pause, latency and commandstats conditions permit; connection and blocking commands stay on the synchronous path.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/dispatch.rs#L17-L59",
+          "version": "repo-lines-v1:sha256:83de484fb664276f16af4a3480040f4d4bb761934de43a443cb3a331f296ec5e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1NjZkZDE5NTUyYWYwMTI0ZTZiOGU0MWI0ZGQ1N2JmMmNhZTJhNTlmZGQzZTlhNDY5MGI5ODZlYzIwODNiNjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjZTc3ZDU0NWU2MzdiMzllMTNkODhkZGJhMmQ5MGQyZjkyODkxOTYyZDYwNzkxN2NkNzY5OWE2ZmIwY2Q2NzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyMTQyZmVlNTVjNjA5ODc1ODMzNWE1MjdhYjA5ZTU1YmUxY2VjN2RjZmZjNmNkOWUzYjNjODMyZmZhZjcwMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZhNWVkMDYwZjcyZjU4YjQ4OGZhODdhN2FmMjQ3OGFiMmMxNDZlYmU0MzM5YTBmYmQzNzJjYmI5MDkyZjM2ZjQifQ"
+        },
+        {
+          "resource": "repo://src/session/dispatch.rs#L396-L419",
+          "version": "repo-lines-v1:sha256:ce4f98da82350c93740b36b41d0ff86075ec1de9d39458232d8dd89eed06ba17:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyYzk3NTg1YmZiNWQzZTVmOTg5ZTQwZjU3YjZmYWRkY2JkYjA4ZTg0ZDY4ODdlNDhhYzMzOWUxZWE0MTRiMmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBhMzg5ZTg2NmY3MTdhNTkyMjc0MzY4ZWFiMjJhNTY1YjAwZGEyZDI4NzQ3NGE0YWI2YmNmMjI0NGM4OTRlMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxY2ExYzgzYzhiNTdmY2ZhZGI5NGNmZDcxMWEyN2M3NDQ4ZGE5ZTI5NTEwNTY2N2FiY2U1MWJkYWFiOTAyMjIifQ"
+        },
+        {
+          "resource": "repo://src/session/dispatch.rs#L73-L120",
+          "version": "repo-lines-v1:sha256:986b64205e51638a1a4a25e2ba7970b7da98ea04f4d4149136b3751f6257613c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwMzUyMWI1YmRmYWViNzk2MzY5ZTExMzEwODIwMjIwZTNhMTI1MGUwY2E5NzIyMGEzYTI1OWFkMjQxNTcwZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NmE1NDRjYzAyM2VkNDA1ZTNiOThiOGEzNTQwOTBmYWQxNmU5ZTE4ZDVlZTlmN2JhNmMzZTcwMDUzMDA5ZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1MGE5ZTZlNGEwMTY3OTIyZWQyZWRlNzI5YTljODU3NTJmNDNkOGE5YTM5MDYwOWIzYjZkNjdjYzEzNTA0ZTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_89f33431db8245b3bc5760afb7c0cca9",
+      "statement": "ShardExecutor executes a command inside one synchronous owner turn and commits journal and notification effects before returning to the session.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine.rs#L1161-L1181",
+          "version": "repo-lines-v1:sha256:3d3dc0ae6567534fa4c1a96df8fdcdbdfefe6d2a0808b72db6a518099720f0e0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4ZTg5NDQzODM2ZjJhMmQ5ZTg2ZmQxNDYyYzEzNDYxY2YyZDk4N2ViYmMwY2ExYWJhOWE2MTc0NTg1MDg1MjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRhZmY1YWYwY2I0ZjVlNDIzMWE1Yjc2N2NmZDcxYmIzZGJiNzAyYmMwNjRmY2Q2N2RlMWIxNDkyOGY2ZGVkYTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmNjQ2ODk1MDYyNTY5MWJhM2M2NTgxYWIzNjc4Yjg2NGFkMGU3MDc0ZDE5MDAzYTU3MTVjYzk3YTg1YTRiYjcifQ"
+        },
+        {
+          "resource": "repo://src/engine/dispatch/mod.rs#L1-L66",
+          "version": "repo-lines-v1:sha256:81bafbef2eed173c1c4fdb01921dd01911bdbbaa314c2aa918fa4dd45275d220:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3ZTI1ZGFhOTY0YTk1YTk5YWEwYjY4NDlkM2M5ODQ4ZjU4OWNiMWQzMmFkNDUyMTM1Y2I2ZDJjMTZmYjA0NTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkZGQ1NjFjZDhkY2FjMmU5YjEzOTFjMjk5YmVlZmJhZGIxOTljZWFmMTU5ZWEwMWVmZGYyNWQzNWFhYTlmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_73658f079dd345ca83bc307963f517aa",
+      "statement": "When append-only effects are enabled, the engine captures changed keys since the turn's sequence, encodes canonical writes and appends them before the turn completes; an append failure replaces the success reply with an append-only error.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/journal.rs#L345-L459",
+          "version": "repo-lines-v1:sha256:6476caff4c515e7fcf3b76de98ede72eb28fc84bdde6d545142b5c5df48a0ee0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2OWNkYTZjZDQ2ZmY2MWM2Njk1YTc0MWFhNmU5MGNkYmM3OGJkZDFjY2EwMDk2YzU4ZTAwNjBmNGY2ODYwNjUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjODNhMGI1YTkwN2NkMDI3MzRkODc4YTU2YWIwZTA1N2IzM2ExNjI2NjE1OTlhYWU3YWUzYTE5MzZkMWNmYjIxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_2e6efae71c75429e999efa27d7cac1d5",
+      "statement": "RESP3 conversion happens after the engine writes RESP2 output, parses frame boundaries recursively, and leaves malformed internal output unchanged.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/dispatch.rs#L415-L426",
+          "version": "repo-lines-v1:sha256:2edcaccdf15a1028972544a056a300f23c0e4b0b0872bde9fca09937c2d93ace:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiMTM5ZjgxNTViYzM3NjdjNTY2YjQ5OGE1OGMzNzkzNDIxYzZhODA1ZjZmOWY3YTJjNzkzZGU3ZWUzZTJhZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVmZDk5ODc3MWE0NzkzMTQ0NWIxZDAwM2IxOTA4NTM3Y2RlNzcyMWI0MjIwODY5MWIyZGJjMGY0NzMwYTQ0YTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3OTRkMDJhODEyMTk0NGQxNzZkMjY1ZTliYjljYzU5ZjZhYjg5MGJjYWRmOGFlZmRlYmRiYmI0ZjJlYTg0NDQifQ"
+        },
+        {
+          "resource": "repo://src/session/reply.rs#L1-L75",
+          "version": "repo-lines-v1:sha256:f501192d2897b507aa98975e2659e8978cb011b7f33a9b3503e985cfc39a6365:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwOGI4OWZiOGY2MmVmYTk5YTMzYWYzYjk1ZDUyNmI4N2I2NTA3ZmQ5MDlmMjE5YjJmY2EyNzQ2MmM0YWE5ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1MDZkZjMwNzE0ZjE2N2RhNGQzZmQ3YzJjZjExNDY1MWY3MzAzNTVhYzI2ZWJiOTdiMDE3NmFlNDRjNWIwZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM1N2NlY2I5NzQxZTVkNTdkZmUzMTQ0ODRhOTRjNjA5YzM4MzAwMWRhMmYwNmIyOGFjMmI3OTgzZjFmZWEzNWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1326966fb5854df19aa667495970b1ab",
+      "statement": "The session epilogue records slowlog, latency and commandstats after execution, records error statistics for error replies, and returns Action::Close when the connection must stop after flushing.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/mod.rs#L205-L260",
+          "version": "repo-lines-v1:sha256:3e102cadf8c1fd8c1449ae403b65d1ac8f1ba7d3ce4ed370388ece3666d813a1:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhZTVjM2M5YjY5N2Q3ZDYyNWUyOGEzOTRmOGFkZmQ1Mjg0MDQ0YzZmYTE3ZGIxY2FhNDIxNjRmOTFmNTA0ZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyNzg4ZWI4YjA2YzQ0NTA0MzQ0OTQ5YjBlYWFiOWE2NTMzMjc2YWVlNWQwYjliNzQwNWFkYTQyYThkNGZhNmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE4YjJlNDE5MTYzYTA1ODAzMGRhZTcwOWNhN2ZmMDE5YzNkZmIxOTAwMmUzZDViNzNjMTA1MjI2MjJlZGM3YWIifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T15:32:39.597Z"
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:8965b98e611fbf25efc4035ee6d315eefc2ecb7d39e4bc53c8b35269b5119d7a",
+  "claims": [
+    {
+      "id": "claim_e37653390082477fbdc6febd834939d7",
+      "statement": "INFO with no argument returns server, memory, keyspace, stats, clients and errorstats; INFO all adds commandstats, replication and persistence, and unsupported sections return an explicit error.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/discovery/mod.rs#L980-L1135",
+          "version": "repo-lines-v1:sha256:122b675018e601669a1f61829f33a570fe7ae21ac3b05cf934ad0597711ec920:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlN2JkNzYwNDc4N2Q4NTA3MTdiYmY5MWQwYTUxOGUzZWQ5N2RiYTYxYjliYTllNzRhMTY5NTJkMmJjZDQzZjk2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmOTlkODk0ZTY4OGE3YWE1ODNmMjNlNTVmNWU3NzQxMmZhMzA5ZjlkMGYxNjUyZjk0OGU1ZWI2OTUwMTJkNjRiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmYjEzMmJiYzFjNWY0M2E4MWMxODkxYmNkOGIyMjc0MjE4Y2U3Y2RmNDEwNTQxNGNmY2Q1NDk1MWFlZjFlZDFmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZDI0YjU3Yjc5M2E5MGVkZDk0N2VjNTViMjQxOWJmMjM0MjJmZGYyNDg3OTc1ZDEwZDk1MDQ1NDE1NTEzZmJlIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e0937ba16f464f37be35decb7bd9ac62",
+      "statement": "INFO memory reports key/value payload bytes and explicitly labels the scope as not RSS; INFO keyspace reports live keys, expiring keys, average TTL and hash subexpiry state.",
+      "evidence": [
+        {
+          "resource": "repo://docs/observability.md#L40-L60",
+          "version": "repo-lines-v1:sha256:f7f1d02d29d0d1598b999a4ffd8b7a3603b029be18bafe455fe693c1d13a121d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlMjVkMGYxZGJjYzhmZDUwYzEzMzMwMmZjM2JjNDgwNzg1ZTlkZGQ1MjdhMTk5ZjM4YWEyZTAwYWM5ZmJhMzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBkOWZjMTBiMTY5NDE4ZWMzYjU3ZmNjZjNiZGRmMTU2MjU5OGQyNmRkZDk1YWIyZWMwNDBmYTliZGJiZjlmZDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI3MDNjMGQyOTE1NWIzYTIwMzNlOTVhODcwMWViNDUwMGI2ZDNkOGNkNmUxMzBjYjZkOWJhMDRlM2ZmZmZhOWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmMjNmY2Q2MTllYjMzMTRmZTc0MDQ2M2UyZjljNWQ1ZTU5YzUxMzQ5MGRiZDcyMjViZTNmMzI0ZTIxYWJmNTYifQ"
+        },
+        {
+          "resource": "repo://src/engine/discovery/mod.rs#L990-L1085",
+          "version": "repo-lines-v1:sha256:7aec17deb3751e452ace8ca1110a14aa87c94809ed66bbc57a07f8f0781d6f25:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2YjQ3OGRiNDRmNmE1NzMyY2E2MDhiZDIwZjA2NTllOTcyNGVkNDA5ZDQ4NGM4Yjg3ZjIzOTQ0NTMzM2MxYTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3YmE2ZGY3NTk3Y2EyOWEwMGVjZDMwOTAzZDI3ZmFmMDJhZWRlYWYyZjJmNWRjYWRkYjBjMTE2Nzc4ODkwMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhM2E2NTM0Mjg0MmFlMGE3ZWNjMDg5YmFkZjM2ZTlkYjlmZDEzNWIxY2RhM2JjOWQyZTNmYTY2MjE0ZmE1NTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFjOTMzZDA4MjUzY2VjM2ExNjZhYzdlYmE0NDRiMTUyMzVlZmYzNTdiNjU0MzRmNDA2ZTA2NjM0NGQ3ZjU5NjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_29e3d48a1b174842bd0df772a68f19aa",
+      "statement": "INFO stats exposes connection, command, rejection, expiration, subexpiration, eviction, pub/sub and audit failure counters, while INFO clients exposes connected, max and blocked client counts.",
+      "evidence": [
+        {
+          "resource": "repo://docs/observability.md#L1-L40",
+          "version": "repo-lines-v1:sha256:26ea3df4415e6af6792dec9c17d5d8be9d7e4648e8de06226195732217623dae:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0OTEyYjc5OTI1ZmRkODU1ZmRhMDM0ZDhiMTU4ZTIwNmQxNWE1NDNiM2RkZDE2MmYxZDYwMWQ5NGU5YmJjMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlMjVkMGYxZGJjYzhmZDUwYzEzMzMwMmZjM2JjNDgwNzg1ZTlkZGQ1MjdhMTk5ZjM4YWEyZTAwYWM5ZmJhMzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA3ZjM3Mzg0OTYwZjE2NjRmODhkY2NhZjdjOTYzNjcyYWJiMWY3YmQwNTE4ODcxZGM4YmRjOTcyZjgxMDQwMGQifQ"
+        },
+        {
+          "resource": "repo://src/engine/discovery/mod.rs#L1065-L1115",
+          "version": "repo-lines-v1:sha256:ab4388e9ed1fb422e21a8e8c05e7e8e69e46f84d45d095a54616c6b4719efb76:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExNDE3MTJmYjVmYmMxMGMwNzY1ZDllN2FiYjRlOGZkOTYyZmMxOWU0NjBiMjEyMWZlZDFkNDU3MmUyYjllMjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0ZTBjYzJiODJjOGZmZjEwMmYxYTNhOWVmZTU2MmQ0ZGQzOGVhNzU3MTNhYTU2N2RlYjg3NzkyMmRhYmYwN2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiNmZmOGZiYmY5YTZkNTVjMzcwMDdlNWRhZTczZmZhYTE1YjMyNGRiMDJhZjFjMmQ0Mzg4NzQ4M2U3YmEzNWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFjMTdkYzZjNDVjMDViZDgwZDEzMzg4NTEyZTEzMDYwNThjOWRiMGM4NGJhOGZhZTdkOGE5MmYyY2VmOTFkODYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a7f5c2490995455e9757249a8088e6b1",
+      "statement": "Command counters are sharded relaxed atomics summed on read, so snapshots can lag concurrent dispatch slightly and are not a billing ledger.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine.rs#L11-L19",
+          "version": "repo-lines-v1:sha256:3f233a79fc309da941949353476255fd55f0b6f61df64d46da9f8cbb30e86e29:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNGUxM2Y3Y2EzZDBlN2YwZTg0Y2ExYTE5YjYzZmJlYzAyMzJkZjMxOWFkYTAyYTNlNjU3YTk3MzdiMWEzZThkMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWU1Yzk3MGNlNWQzNTJhNGZjYzExODMwZjUwZWRhOTQ5Y2YyMTg4MTczNWQwODZkYjMyZDE1ZjBmYWIwODdjMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTAzZGY1YTU1ZGYwZTJmOWNmZmFlMDYzMDlhMDY1OTQzMmNlNzBhZGE4MzNlMGNhZTBhMWIyMzNiMTE0YTFmMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjM5OTRhY2Y3YzEzNmE3ZDZiYjMzMTk2MjUwNDMzZDhjOWJlNzc5ZmIxMWJkYTU4OTE2MGExODI0ZjRkY2YwMiJ9"
+        },
+        {
+          "resource": "repo://src/engine.rs#L252-L257",
+          "version": "repo-lines-v1:sha256:5a4334faf01f6b61acb9fe3effa96c04b26fc9c03ec4b5334ecc701fda6ae3d7:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmQ1OTA1Mzg1MTMyOTA2M2VjOTA3NjE0YWVkZTI1NmFmNjEwYTFhMDdlNTZkNzcwZGM0YjljNDQ5ZGE2Nzc4ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjVkNTE2YzkxNmIyYTNmMTNmYWI2ZGI4NzBjMjBiMDA1YWRmNWNhNWUxOWVkYjFkNjI3MWFkMzVhMzVhZmU0ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDlhN2ZmZTdhNzBkMTAyOTllMzQwMDhmNGYzY2E3NDNhMTJhMmI3YzkzNDEwZTU5NmI1Y2M5MWY2ZjY0ZTM2ZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjdlZjljNzE0YWI3N2M1MjE1YTRjZjdlMTUyZjEzZTg0M2IyYjRiMTgzNDczMDlmNjMyOWU1OGY5ZGIzZWY5YSJ9"
+        },
+        {
+          "resource": "repo://src/engine.rs#L542-L547",
+          "version": "repo-lines-v1:sha256:7a3db8c7e899689685b8ee6bf5f09613100c22182592b9fb48caa14c22673b40:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYThmNjIzMmQwMjUzNzJhMzBjZTM0ZTBmZjhmZTI3N2UwN2EzOTUyNTJlOTU0M2YwYzA5NWRjZDE0MTk4ZDA4OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGM3MDkwYjllYjNjYzQyYjgxMWY1ODZiYzRhN2U2NDhjZjVlNTE0MTViZDYwM2VlMDdiZjY1YTZmOGRlNzk5YSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWRlMzY1YjJjNDdlZTRhYTQzODdkMzQ5OWZhNjM3ZGYyNjA5ODVjY2NiZGM2ODFhM2I0ZWZiYzQyZmY3MWZmYyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_467d6b68d16c4780b2aa1268c463c1af",
+      "statement": "INFO commandstats is opt-in, counts network Session dispatches and excludes separately counted MULTI constituents, measures dispatch time without blocking wait, and classifies failed/rejected calls.",
+      "evidence": [
+        {
+          "resource": "repo://docs/observability.md#L62-L110",
+          "version": "repo-lines-v1:sha256:9a9db4c46c8222cdfcbd60118c94aa316a1da384251f04c04f76a234a01a21e7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2Y2MzZDRjNWJhYTE2NTc3ZjJkZmZmOGEyZDFmYTgzNDA4MTczZmY4ZTcwYWQyOGFiMTFlM2FkODIxY2VlYjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlkZTI3MWQwOTIxYzlmNDFmYWI1NWIyNGM3ZWMxMTNmZGU0Yzg3NGRjZTg1Nzk5NmFlNzUxMTI2YzJjZjU2MTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM0NjQ3ZThiNjkyODVlMjdiYTdlODJlMjA0YmNhM2ZhMGEzZDYzMGNhZGY5ZTRlNjEzZGIzNDVlNTc0Y2ExNjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODdiZjFlMTdiMzAxMjBjNzRhZTc0OGVmMzNkYjQwOTUyOTBmNmE4MTA5NWQ0YWQyYmFmZWFiMTcxYTY2NmIifQ"
+        },
+        {
+          "resource": "repo://src/engine/commands.rs#L1-L40",
+          "version": "repo-lines-v1:sha256:18d53fb997c49f626cb24c4140e054bf00300e6d673cd30d2fca8d1dcde75753:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwZTVlMjEzZjNmODY1NmFmNGY4YmMwYTk2ZmFkMmI4OWRiYjUyYTUzYzNkYjYxMmE5MmUxOGI2MGVlYzhiNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzNWU3ZDFjY2RjOTA3ODlhMTAyNWI2Y2E4Mzg5YzYzOTIzYWRiYjRhNzJlOGJiNTI4ODhjZjFkNTM2M2Q1YzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRlYjNmZjU5YzM5MDUyNzM0MjM5Mzc2ZjEyZWYzM2EyNTNlMWI5Mjk4MTBlMGNhY2M2MDhmYjdkOTVjMDkxYzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_262cfcf214cf4f0790a927395fcc2d42",
+      "statement": "SLOWLOG defaults to 10,000 microseconds and 128 entries, bounds the maximum at 1,000,000, truncates arguments and redacts authentication, ACL and requirepass credentials.",
+      "evidence": [
+        {
+          "resource": "repo://docs/observability.md#L95-L130",
+          "version": "repo-lines-v1:sha256:1e98f33408851066ebfcc2a3b67b7b8b1b0449363d2a018b7c19ab9984c4b318:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzNjEyOTBhMDJiMDM2ZTVkMjgwNTE1ODhjYjA5NjdlNjU4NDAzOGYzNWU2YmUwNzc5YWY0NGM5Nzg2OTc0YTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkZTVkM2VkZWFmNmMzNjhiODkxMzllYTIwMmVhZjJlOGY5YjQzOGUyODFmOGYwMGFkZDNiMTgzYzRkZDVlZWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljMjZlNGEyODk2YmE0NjgxMWVjNGUzNGVlNGNkYmFmYjUxMjZhMjgwNWNjNTUwYjE2ODRiZThmZDRiN2FkMTQifQ"
+        },
+        {
+          "resource": "repo://src/engine/slowlog.rs#L1-L35",
+          "version": "repo-lines-v1:sha256:5112675cbb25a7573989bdfaa743580011b64a437d1f301715e3e630d5fb8e8d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzZDcyOWFjN2QxYmNmMTlhNmVlMmEwYjZmNTc3NTNkM2NkY2RhNDQyNTkxMzRkMTYxNTkwYTM4OGNhZDQ2ODgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzZmQwNGI3OTZhNzQ0YTc3MjQ4MTQ1ZWUzYmQyYjgyNWY4NTM5NWQ3OTFmYzY4Y2Y4MzRlODFiMWI0ZTcyYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhMTA0MDdiNGQ5OWVhMDE1MjdhZDcyZGE4NGU2MGIzNDc3YWFiZDk5ZWNhMTFhN2U5MGUwM2IzY2IyNzc0YTAifQ"
+        },
+        {
+          "resource": "repo://src/engine/slowlog.rs#L198-L250",
+          "version": "repo-lines-v1:sha256:a2300b074412056c4fe381a220471d8b203f53d5123dac4c0625b4387b6a0081:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhOGZjYjhhZjc3YjU3ZWE5ZDFkZTIyODA2YjA4MzAxNDgwN2NjOTA0NmE1MmFkMDE4OTdmNDhiNjkyNTZmYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5NTRkMjNmMGNhNmJiN2YyZGFhMzYzNTA4NGRhYzIwZDQyMjVmZjMwZTMyNTM5NTczYjM5ZTUxMjdjOGQ5NTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdlZTcwMzk0YTVmZWU3NTQ4YmZhNDg1NjAzNmU4YmQ2MGJhZmZlNDA0ZjAyOTMyMzQzMGNhYWJjMjNlZTU3MzkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_59fb3aebf92b466da70d9043d66ac211",
+      "statement": "LATENCY keeps at most 160 samples per series and measures only command attempts and expiry reclamation; histogram and graph subcommands are explicitly unsupported.",
+      "evidence": [
+        {
+          "resource": "repo://docs/observability.md#L140-L165",
+          "version": "repo-lines-v1:sha256:f3ec50d9a2a7164f219a8a7c4b51dac81d7f386fb0168b93ab72746f3692b0c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3MjY2OTRjMzhkYTFkNzA1ZTE4OTA5NjQzZTU3Zjg5ZTBlZmJiYTRmNTY1YzQ5NWJhYjUyMzk1MzdiOGJhMGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyNmZiZmZmM2NhMmQzMzc3OWYzNzJiZWU4MGI3M2Q5MzVmMzM2YmRhNjEwOGZmZmY5ZTJhMDg4OTFlMWM5NGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjMzJkNzcwMDk2ODhkOGI2ZjQwYThhMmUyM2E4OWUwNmFlZWJjYTVmMjNhNTEzMzg1MGQzZWYzOTViMWM5MWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZlOWM4YTEwNmQxY2E3YmYzZGY4ZjYyNmIzNDQ0OWZlMTk0NDU2MjA5MzFjMWNiODU2Nzg5OTNjOTc0NDVjMjgifQ"
+        },
+        {
+          "resource": "repo://src/engine/latency.rs#L1-L30",
+          "version": "repo-lines-v1:sha256:6fdc614d5914bf9fc7c3f0c8890c5833f662394fa56a285cd37f972f5e4c17ff:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwYjE4NDc5OGE3MjlhNTA1NTJlNGZiOWJiOGY0ZDQzZTBlYjA1N2I3MDcwNTJkZTFjODM0ODc2NjY2ZDMyNTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlZDk3N2ZjNDllNzNkM2M0ZTI1YzI3MzRhZTE4ZTI3ZDdiNjAxY2M3YTRjYTM0ZmJjNDg5N2JkNWUxMDM1ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwNWY0YmU1ODMyOGE4ZDliMTlkYTVhMWI5MjBjNTAzNDI4ZTlhNjc0ZDM4NTg5M2IzYTdkZmI1MDc4N2YxYjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a026ae656dca4ad5bf7f47b1536aa53a",
+      "statement": "OBJECT reports actual storage encodings and returns unsupported errors for IDLETIME and FREQ; MEMORY reports logical key/value payload only, not RSS or allocator statistics.",
+      "evidence": [
+        {
+          "resource": "repo://docs/introspection.md#L1-L90",
+          "version": "repo-lines-v1:sha256:00b5a9ea0aba5077f0071de963ae367a3f93d8de42024e73fc79181a49a8bba8:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxZTg0Y2E0ODU5ZWFkNzMxNzU1MTk1ZDE1YmM3NWUwOGFmMTg0ZmQ3MTg1ODI4ZjJjNDhmOWFiMjBmZGU5NGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkMzVlMTNjYmUzOWE3YWYyYjE3ZjU5YmVlM2ExMGU4ZjQ0ZjMyMzUzMWEzOGEwZDM0ZTEwNzUzODljNjg4NDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ2YjE0YjdjMTIwNmQ2MWRiYWExMGQwOTUxZTdmMjhlYjg3MjNhZDE3Y2QyOGFkY2M4MDNlMGIzYzU3Yjg3ZDMifQ"
+        },
+        {
+          "resource": "repo://src/engine/introspection.rs#L1-L140",
+          "version": "repo-lines-v1:sha256:50a74649cc0ec9f8aeaf86ee6621f4dac02c56565b68b9362edfd8e6edc5fb89:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjYmRkNGI3ODJkOTUwZjEwMjQ0YTZkMWZlNDA5MjEwN2E0M2Q3ODVhYWI1ODRhYTYzZWUwYWVkZjk4MWRkMTMwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4Y2IzMGUyYjNmZTQzMzRjNTIzZDE1ODJhZmM3ZDE4ZDUyMGMxYzM2OTU4ZjZmNmFiZjM5MzhiMThlZjQzMTI0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxNGNiOTVjZDkxZTRhZjA2NjJmMDhiMGNjM2M3YmEyY2IxZDQ0MDE0YzFlNGY4ZWUwYTM1YjM0Y2JkZjNhOGE0In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_d87a5a5bb23443298da18aaf2060bff2",
+      "statement": "The healthcheck shares one one-second deadline across connect, PING write and PONG read, requires the exact +PONG reply, and is quiet on success.",
+      "evidence": [
+        {
+          "resource": "repo://docs/containers.md#L86-L106",
+          "version": "repo-lines-v1:sha256:4693c327471d8f80f7a94732c32db93e093ddd44272e60f04f514ad6e8ced5c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4OTRjZjA0MzkzNmM0NDFhODJiMjRlZTc0MjM2ZWE4OTlkZDA2ZTBkNjdkMTRhNzczOTVkNDBmNDM1YTg1N2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3NmM1M2I2OTU2Yzc5NGUxZTFmOGQwZGJiZWM1ODg5Y2I5ZjIyYWJhZWQwNGJlMzI2MmNmNzMwYmZkOTUxNzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiZjdiZjdhMjNiYTJiMTkzNzhmOGNmMzhhYmE2YzQ3MWUwM2JhYTczZTJiY2NmZGI0NWEwNWJmYWNiNWJjOWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhhNzM4ZjQ1NjlmOWEzNjMwZTA0ODc3MGZkOWJkOGIwNzcwNzliMWMwMjM2ZjEyNjQyMDJhNjkzNTAzODdiZWYifQ"
+        },
+        {
+          "resource": "repo://src/healthcheck.rs#L1-L55",
+          "version": "repo-lines-v1:sha256:ef37eb60b849b026c95a4997573468ccb4a44b7495b272438c118e9678ef762f:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwZGQ3MzIyNTQxMjdjZWE3NzQ4MjI5ZGZkNTZkYTVkZTkxOTQ2NmQ2ODM5YWJmMGM0MjY3N2Q2NzZlMjY0NmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0M2JkYmVmNmZiZDNmZmI4ZjEzOGQxOGRlM2M2NGZjZThjOWZiNjYxNzRhZDM4ZWM2ZTZkYzE1NGRhZWFkZTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5YWFiYThiM2VhNTgxZDJmZDEwYzFmODcwMjA5NzUyOWIyYjRlZGRiYjI4M2I4YWRkMTY1MzhmNTNhOTAxYWMifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T16:04:12.575Z"
+  }
+}
