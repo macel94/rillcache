@@ -75,6 +75,46 @@ Evidence rules used below:
 4. No threshold relaxation, omitted workload, retry-until-green or historical
    pass reuse is permitted by [the quality gate](../pr-quality-gate.md).
 
+### 1.1 Candidate admission: bound the mechanism before building it
+
+Every rejected candidate in this document failed the same way in hindsight: the
+mechanism was plausible, it was built, and only then did the measurement show the
+gain was never available. The io_uring send attempt (section 4.14) is the clearest
+case: it removed one `write` per request, passed the whole local suite, and still
+measured 5–14% slower with byte-identical server CPU.
+
+Two numbers decide, before any code is written:
+
+1. **The mechanism's upper bound.** The most it can possibly gain if everything
+   else stayed free. For a syscall reduction that is
+   `syscalls_removed × syscall_cost / per_request_cost`; with ~0.3–0.5 µs per
+   entry+exit and ~8.7 µs per request at the four-CPU gate, removing *both* socket
+   syscalls is a 7–11% ceiling, and batching removes part of one. Serialising work
+   onto another core is bounded by the share that can move; reusing a buffer is
+   bounded by the copy.
+2. **The row's measured noise.** The paired interval and the per-repetition spread
+   on the row the change is meant to win (section 2.17 and the five-round cohorts:
+   ±1.5–3% on `ping`/P1).
+
+Admission rule: **build only when the upper bound exceeds the noise, with margin.**
+If the bound is inside the noise band, the mechanism cannot reliably pass even if
+it works perfectly, and the correct action is to record the bound and stop. Two
+corollaries, both learned the hard way:
+
+- **An ambiguous probe is a no.** The io_uring probe measured +45% in one round and
+  +1% in the next on a noisy host. "Inconclusive" is not permission to invest; it
+  is evidence that the effect is smaller than the measurement can resolve.
+- **Do not build a mechanism whose cost lands on the same path it optimises.** The
+  ring saved a syscall and added a payload copy plus a completion round trip on
+  the same latency-critical pass. A candidate must reduce total work per request,
+  not move it into an equally hot step.
+
+Each candidate record must state the bound, the noise it is compared against, and
+the kill criterion before implementation. The experiments that already failed —
+poll consolidation, extra reactors, activity-clock coalescing, direct receive
+buffers, the read/write split and io_uring batching — stay rejected; they cannot be
+revived by re-describing them as new knobs.
+
 ## 2. Measured position
 
 ### 2.1 Original 20-case gate (one inherited or one-CPU budget)
