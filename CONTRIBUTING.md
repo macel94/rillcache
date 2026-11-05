@@ -43,6 +43,11 @@ ordinary implementation PRs have no blanket approving-review quota. See the
    PR gate applies a scoped shared-runner throughput threshold, not a stable-hardware
    SLO or universal win. Preserve uncertainty, CPU/tails and losses; never trade
    away safety or change the acceptance threshold to obtain a passing result.
+   Before implementing a performance candidate, bound its best possible effect and
+   compare that bound with the noise of the row it must win; build only when the
+   bound clears the noise with margin, and treat an ambiguous probe as a no. The
+   rule and the failed experiments that motivate it are in
+   [candidate admission](docs/plans/performance-architecture.md#11-candidate-admission-bound-the-mechanism-before-building-it).
 6. Update compatibility limits and mark only behavior actually verified by tests.
 
 ## Autonomous agent completion
