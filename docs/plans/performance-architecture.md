@@ -707,6 +707,39 @@ cost. Do not add another poll-window variant; the remaining safe options are
 outside the Mio boundary. The local counts are diagnostic only and must not be
 substituted for gate evidence.
 
+### 2.17 Five-round cohorts: the paired interval exposes near-parity
+
+The first five-round Valkey cohort (PR #189 docs-only head `927ccef`, base
+`e74bac3`, run 41936225853, 100 samples) passed the strict median rule 10/10, but
+the new paired interval shows where the cohort cannot resolve direction:
+
+| Row | Rillcache median | Valkey median | Delta | Wins | Paired ratio [95% CI] |
+| --- | ---: | ---: | ---: | ---: | --- |
+| ping P1 | 117,002.6 | 114,048.4 | +2.59% | 4/5 | 1.0254 [0.9703–1.0661] |
+| ping P16 | 1,606,942.4 | 986,772.8 | +62.8% | 5/5 | 1.5788 [1.5288–1.6465] |
+| set P1 | 116,352.2 | 108,591.4 | +7.1% | 5/5 | 1.0747 [1.0453–1.1229] |
+
+The P1 ping interval contains 1.0, so the cohort cannot resolve that row's
+direction even though the whole-cohort median is higher; every other row has a
+5/5 sweep and an interval above 1.0. Dragonfly passed 10/10 with P1 ping
+115,257.5 vs 94,669.6 (+21.8%). This is evidence quality, not a threshold change:
+the row still passes by the unchanged strict median rule, and the interval is
+never used to pass or fail it.
+
+A later docs-only cohort (head `90c1768`, run 41940385826) shows the opposite
+side of the same host sensitivity: Valkey passed 10/10 with P1 ping 165,006.2 vs
+139,149.2 (+18.6%, 5/5, ratio 1.1876 [1.0206–1.2964]), while Dragonfly failed
+9/10 **only** on P1 ping (165,175.0 vs 167,637.5, −1.47%; p99 0.119/0.063). The
+same runtime passed one opponent's P1 interval with a wide margin and lost the
+other opponent's strict row on a fast host. That is the gate's per-opponent rule
+working as intended, not a runtime regression.
+
+**Verdict:** quote the paired interval for the P1 row, not a point estimate. A
+strict pass is not proof of a resolved 2.6% win, and a Dragonfly P1 loss on a
+fast host does not by itself justify a runtime change. The two cohorts reinforce
+the variance analysis in sections 2.9 and 2.15 and the decision to keep the
+merged one-reactor default.
+
 ## 3. Per-component comparison with Redis and Valkey
 
 Pins: Valkey `9.1.2` and Redis `8.10.2` source tags, as in
@@ -1567,6 +1600,12 @@ current roadmap; individual phases are separate increments.
   paired-bootstrap 95% interval (2000 resamples, fixed seed); the interval is
   diagnostic only and never passes or fails a row. Dragonfly remains three
   rounds. Historical cohorts above used three rounds and are marked as such.
+- Five-round cohorts (section 2.17): run 41936225853 on head `927ccef` passed
+  Valkey 10/10 and Dragonfly 10/10; P1 ping was 4/5 with ratio 1.0254
+  [0.9703–1.0661]. Run 41940385826 on head `90c1768` passed Valkey 10/10
+  (P1 ping 5/5, ratio 1.1876 [1.0206–1.2964]) but failed Dragonfly 9/10 on
+  P1 ping (−1.47%). Artifacts under `/root/perf-evidence/pr189/four-cpu/` and
+  `/root/perf-evidence/pr190/four-cpu/`.
 - Dragonfly comparison: `python3 scripts/test-dragonfly-performance.py` and
   `python3 scripts/pr-dragonfly-performance.py --check <artifact>`; the design
   and phased roadmap are in [Dragonfly-class performance](dragonfly-class-performance.md).
