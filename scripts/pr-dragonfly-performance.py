@@ -28,6 +28,10 @@ from common import Client, available_port, command, digest, process_stats, save,
 from performance import parse_csv
 
 WORKLOADS = ("ping", "set", "get", "set-nx-existing", "set-xx-existing")
+# Rows measured by this invocation. A parallel workflow runs one workload per job
+# and the aggregation step merges the validated partial cohorts back into the full
+# ten-row gate; a normal invocation selects all five.
+SELECTED = WORKLOADS
 PIPELINES = (1, 16)
 RUNS = 3
 KEYSPACE = 1024
@@ -231,7 +235,7 @@ def sample(binaries, variant, workload, pipeline, cpus, client_cpus, directory):
 
 
 def identities():
-    for index, (workload, pipeline) in enumerate((w, p) for w in WORKLOADS for p in PIPELINES):
+    for index, (workload, pipeline) in enumerate((w, p) for w in SELECTED for p in PIPELINES):
         for run in range(1, RUNS + 1):
             order = ("rillcache", "dragonfly") if (run + index) % 2 else ("dragonfly", "rillcache")
             for variant in order:
@@ -247,7 +251,7 @@ def evaluate(samples):
     actual = [(s["workload"], s["pipeline"], s["run"], s["variant"]) for s in samples]
     ensure(len(actual) == len(expected) and set(actual) == expected, "missing/duplicate cohort sample")
     rows = []
-    for workload in WORKLOADS:
+    for workload in SELECTED:
         for pipeline in PIPELINES:
             row = {"workload": workload, "pipeline": pipeline}
             for variant in ("rillcache", "dragonfly"):
@@ -292,7 +296,12 @@ def load_cohort(directory):
            and manifest["complete"] is True, "incomplete gate evidence")
     server_cpus, client_cpus = placement(manifest["allowed_cpus"])
     ensure(manifest["server_cpus"] == server_cpus and manifest["client_cpus"] == client_cpus, "CPU allocation differs")
-    ensure(type(manifest["runs"]) is int and manifest["runs"] == RUNS and manifest["workloads"] == list(WORKLOADS)
+    selected = tuple(manifest["workloads"])
+    ensure(selected and all(w in WORKLOADS for w in selected) and len(set(selected)) == len(selected),
+           "invalid workload selection")
+    global SELECTED
+    SELECTED = selected
+    ensure(type(manifest["runs"]) is int and manifest["runs"] == RUNS and manifest["workloads"] == list(SELECTED)
            and manifest["pipelines"] == list(PIPELINES)
            and type(manifest["duration_seconds"]) is int and manifest["duration_seconds"] == DURATION_SECONDS
            and type(manifest["warmup_requests"]) is int and manifest["warmup_requests"] == WARMUP, "gate policy differs")
@@ -344,7 +353,14 @@ def main():
     for key in ("candidate", "dragonfly", "generator", "base-source", "head-source", "candidate-source",
                 "dragonfly-version", "license", "out"):
         parser.add_argument("--" + key, required=True)
+    parser.add_argument("--workloads", default=",".join(WORKLOADS),
+                        help="comma-separated subset for a parallel partial cohort")
     args = parser.parse_args()
+    requested = tuple(args.workloads.split(","))
+    ensure(requested and all(w in WORKLOADS for w in requested) and len(set(requested)) == len(requested),
+           "invalid workload selection")
+    global SELECTED
+    SELECTED = requested
     ensure(sys.platform == "linux", "Linux procfs/taskset required")
     ensure(all(re.fullmatch(SHA, getattr(args, k)) for k in ("base_source", "head_source", "candidate_source")), "invalid source SHA")
     ensure(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.dragonfly_version), "invalid Dragonfly pin")
@@ -381,7 +397,7 @@ def main():
                         allowed_cpus=cpus, server_cpus=server_cpus, client_cpus=client_cpus, binaries=binaries,
                         binary_sha256=hashes, dragonfly_version=args.dragonfly_version,
                         dragonfly_binary_version=plain_version, license_path="license.txt",
-                        license_sha256=digest(output / "license.txt"), runs=RUNS, workloads=WORKLOADS,
+                        license_sha256=digest(output / "license.txt"), runs=RUNS, workloads=SELECTED,
                         pipelines=PIPELINES, duration_seconds=DURATION_SECONDS, warmup_requests=WARMUP,
                         launch_directory=str(output), order=[], evidence_sha256={})
         save(output / "manifest.json", manifest)

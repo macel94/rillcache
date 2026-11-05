@@ -26,6 +26,10 @@ from common import Client, available_port, command, digest, process_stats, save,
 from performance import parse_csv
 
 WORKLOADS = ("ping", "set", "get", "set-nx-existing", "set-xx-existing")
+# Rows measured by this invocation. A parallel workflow runs one workload per job
+# and the aggregation step merges the validated partial cohorts back into the full
+# ten-row gate; a normal invocation selects all five.
+SELECTED = WORKLOADS
 PIPELINES = (1, 16)
 RUNS = 5
 # Reported diagnostic only: a deterministic percentile bootstrap of the per-run
@@ -214,7 +218,7 @@ def sample(binaries, variant, workload, pipeline, cpus, client_cpus, directory):
 
 
 def identities():
-    for index, (workload, pipeline) in enumerate((w, p) for w in WORKLOADS for p in PIPELINES):
+    for index, (workload, pipeline) in enumerate((w, p) for w in SELECTED for p in PIPELINES):
         for run in range(1, RUNS + 1):
             order = ("rillcache", "valkey") if (run + index) % 2 else ("valkey", "rillcache")
             for variant in order:
@@ -252,7 +256,7 @@ def evaluate(samples):
     actual = [(s["workload"], s["pipeline"], s["run"], s["variant"]) for s in samples]
     ensure(len(actual) == len(expected) and set(actual) == expected, "missing/duplicate cohort sample")
     rows = []
-    for workload in WORKLOADS:
+    for workload in SELECTED:
         for pipeline in PIPELINES:
             row = {"workload": workload, "pipeline": pipeline}
             for variant in ("rillcache", "valkey"):
@@ -275,7 +279,7 @@ def evaluate(samples):
 def summary(rows):
     wins = sum(row["passed"] for row in rows)
     text = ["# Official Valkey benchmark: four-CPU PR gate", "",
-            f"**{'PASS' if wins == 10 else 'FAIL'}: {wins}/10 medians strictly faster than Valkey.**", "",
+            f"**{'PASS' if wins == len(rows) else 'FAIL'}: {wins}/{len(rows)} medians strictly faster than Valkey.**", "",
             "Same pinned, unmodified valkey-benchmark for both default-mode servers; exactly four logical server CPUs. "
             "Eight clients, two generator threads, 1024 random keys, 64-byte values, seed 42, 8000 warmup commands, "
             "official --duration 10 for every measured sample; five alternating native repetitions. Ties or any loss fail.", "",
@@ -308,7 +312,12 @@ def load_cohort(directory):
            and manifest["complete"] is True, "incomplete gate evidence")
     server_cpus, client_cpus = placement(manifest["allowed_cpus"])
     ensure(manifest["server_cpus"] == server_cpus and manifest["client_cpus"] == client_cpus, "CPU allocation differs")
-    ensure(type(manifest["runs"]) is int and manifest["runs"] == RUNS and manifest["workloads"] == list(WORKLOADS)
+    selected = tuple(manifest["workloads"])
+    ensure(selected and all(w in WORKLOADS for w in selected) and len(set(selected)) == len(selected),
+           "invalid workload selection")
+    global SELECTED
+    SELECTED = selected
+    ensure(type(manifest["runs"]) is int and manifest["runs"] == RUNS and manifest["workloads"] == list(SELECTED)
            and manifest["pipelines"] == list(PIPELINES)
            and manifest["bootstrap"] == {"resamples": BOOTSTRAP_RESAMPLES, "seed": BOOTSTRAP_SEED}
            and type(manifest["duration_seconds"]) is int and manifest["duration_seconds"] == DURATION_SECONDS
@@ -352,7 +361,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ("candidate", "valkey", "generator", "base-source", "head-source", "candidate-source", "valkey-version", "out"):
         parser.add_argument("--" + key, required=True)
+    parser.add_argument("--workloads", default=",".join(WORKLOADS),
+                        help="comma-separated subset for a parallel partial cohort")
     args = parser.parse_args()
+    requested = tuple(args.workloads.split(","))
+    ensure(requested and all(w in WORKLOADS for w in requested) and len(set(requested)) == len(requested),
+           "invalid workload selection")
+    global SELECTED
+    SELECTED = requested
     ensure(sys.platform == "linux", "Linux procfs/taskset required")
     ensure(all(re.fullmatch(SHA, getattr(args, k)) for k in ("base_source", "head_source", "candidate_source")), "invalid source SHA")
     ensure(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.valkey_version), "invalid Valkey pin")
@@ -372,7 +388,7 @@ def main():
         ensure(re.search(r"\bv=" + re.escape(args.valkey_version) + r"(?:\s|$)", version), "Valkey version differs from protected pin")
         manifest.update(base_source=args.base_source, head_source=args.head_source, candidate_source=args.candidate_source,
                         allowed_cpus=cpus, server_cpus=server_cpus, client_cpus=client_cpus, binaries=binaries,
-                        binary_sha256=hashes, valkey_version=version, runs=RUNS, workloads=WORKLOADS,
+                        binary_sha256=hashes, valkey_version=version, runs=RUNS, workloads=SELECTED,
                         pipelines=PIPELINES, duration_seconds=DURATION_SECONDS, warmup_requests=WARMUP,
                         bootstrap={"resamples": BOOTSTRAP_RESAMPLES, "seed": BOOTSTRAP_SEED},
                         launch_directory=str(output), order=[], evidence_sha256={})
