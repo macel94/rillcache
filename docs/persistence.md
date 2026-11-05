@@ -143,6 +143,21 @@ writes fail. The in-memory mutation may already be applied; a restart replays on
 what reached the file. Disk-full, quota and permission errors are visible rather
 than silently converted into success.
 
+## Single-process ownership
+
+A journal is owned by exactly one process. Startup claims `<journal>.lock`
+(`appendonly.aof.lock`) with an exclusive create containing the owner's PID and
+kernel start time; a second server pointed at the same `--dir` fails with
+`append-only journal ... is already owned by process N` instead of interleaving
+appends. A lock left by a crash is reclaimed only when the recorded process is
+gone or its PID has been reused (the start time no longer matches), so a live owner
+is never displaced. Clean shutdown removes the lock; the lock is absent when
+`--appendonly no`.
+
+This is an **advisory local-filesystem lock**. It does not coordinate writers on a
+shared/network filesystem, and such a volume is not a supported deployment; keep a
+journal on local storage or guarantee single-process access externally.
+
 ## Compaction with BGREWRITEAOF
 
 `BGREWRITEAOF` replaces the log with a compact snapshot of the current keyspace:
@@ -228,8 +243,9 @@ it as volatile across restart and do not use this subset as a durable work queue
   not Redis's fork-based rewrite: the key list is materialised in memory and the
   rewrite runs on the owner thread between maintenance ticks.
 - No graceful signal-driven drain; see [container delivery](containers.md).
-- No multi-process file locking, shared-filesystem guarantees or crash-consistency
-  testing across kernel/filesystem failure modes.
+- No shared-filesystem coordination: ownership is a local advisory lock
+  (`<journal>.lock`), not a distributed lease. Crash-consistency of append and
+  rewrite is covered by `tests/durability_crash.rs`.
 - No backup/restore tooling, point-in-time recovery, retention policy or log
   rotation. Operators must size/rotate files and test restores.
 - Per-command acknowledgment is not a transaction commit in the distributed sense;

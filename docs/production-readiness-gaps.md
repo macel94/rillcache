@@ -270,11 +270,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   the supervisor contract and accepted loss window.
 
 - [ ] **D8. Multi-process journal ownership is unguarded.** [P1]
-  Two processes pointed at one journal can interleave or corrupt histories; there
-  is no lock file, ownership check or shared-filesystem guarantee.
-  **Closes when:** startup acquires and verifies ownership, stale locks are
-  handled safely, and multi-process/shared-volume behavior is documented and
-  tested, or the profile declares single-process exclusive access.
+  **Partial (2026-11-05): local exclusive ownership enforced.** Startup claims
+  `<journal>.lock` with an exclusive create recording PID and kernel start time; a
+  second process on the same directory fails with a clear error, a crash-stale lock
+  is reclaimed only when the recorded process is gone or its PID was reused, and
+  clean shutdown removes the lock (`tests/journal_ownership.rs`). The lock is
+  advisory and local: shared/network filesystems are explicitly unsupported.
+  **Remaining:** no distributed lease or shared-volume guarantee; an operator must
+  keep the journal on local storage or enforce single-process access externally.
+  **Closes when:** shared-volume behavior is either implemented with a real lease
+  or the deployment profile excludes it explicitly (the current documentation says
+  unsupported).
 
 - [ ] **D9. Wall-clock rollback across restart is unresolved.** [P1]
   Absolute TTLs are persisted, but a host clock moved backwards can resurrect a
