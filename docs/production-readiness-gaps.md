@@ -207,6 +207,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `BGREWRITEAOF` and automatic compaction hold the exclusive gate while encoding
   and fsyncing a full snapshot. There is no background, incremental or forked
   rewrite, progress reporting or copy-on-write isolation.
+  **Measured (host-local diagnostic, 2026-11-05):** 20,000 keys of 64-byte values
+  (2.5 MB journal) block the server for **130 ms**; a concurrent client's worst
+  PING during that window was **129 ms**. The stall is O(dataset) because the whole
+  keyspace is re-encoded and fsynced inside one owner turn, so a production-sized
+  journal stalls for seconds.
   **Closes when:** rewrite is background/incremental with a bounded service pause
   or a measured and accepted pause SLO, progress reporting and crash-safe
   generation switching.
@@ -224,6 +229,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   loss, fsync failure, process kill or power loss at each journal/rewrite
   boundary. The journal latches a failed state, but the full acknowledgment and
   recovery contract is not proven.
+  **Partial evidence (2026-11-05):** `tests/durability_crash.rs` spawns the real
+  binary and asserts, after a `SIGKILL` and restart, that every client-acknowledged
+  write survives with `appendfsync always` (so the reply cannot precede the
+  durable append) and that `everysec` recovery yields a contiguous prefix with no
+  holes. ENOSPC, quota, permission loss, fsync failure, power loss and kill during
+  rewrite remain unverified.
   **Closes when:** a crash/fault harness injects each failure at every boundary,
   proves no applied-but-unlogged success reply, bounds the loss window, and
   verifies restart recovery and visible failure states.
