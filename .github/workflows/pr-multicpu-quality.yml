@@ -222,6 +222,9 @@ jobs:
       - name: Verify every binary before timing anything
         run: |
           cd "$RUNNER_TEMP/tools"
+          # Artifact transport does not preserve the executable bit; restore it
+          # before hashing (content hashes are mode-independent and unchanged).
+          chmod +x candidate valkey generator dragonfly
           sha256sum --check hashes.sha256
       - name: Resolve the pinned reference version from the frozen build
         id: reference
