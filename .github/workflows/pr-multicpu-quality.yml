@@ -1,5 +1,8 @@
 name: PR multi-CPU Valkey and Dragonfly performance
 
+# Parallel per-workload cohorts: one build, one job per server/workload row, and a
+# single aggregation job named exactly like the required context. Wall-clock
+# feedback drops from ~31 minutes to roughly build + the slowest row + aggregation.
 on:
   pull_request:
     branches: [main]
@@ -19,16 +22,18 @@ concurrency:
   group: pr-multicpu-valkey-${{ github.event.pull_request.number || inputs.pull_request }}-${{ github.event_name }}
   cancel-in-progress: true
 
+env:
+  WORKLOADS: ping,set,get,set-nx-existing,set-xx-existing
+
 jobs:
-  benchmark:
-    name: Valkey 4-CPU performance gate
+  context:
+    name: Freeze the exact PR base and head
     runs-on: ubuntu-24.04
-    env:
-      RILLCACHE_GATE_HELPERS: ${{ github.workspace }}/base/scripts/upstream
-    # The Valkey cohort runs five alternating repetitions (~+7 measured minutes)
-    # plus the unchanged three-round Dragonfly comparison. Measured steps took
-    # 10.4-10.5 minutes each at three rounds on a standard runner.
-    timeout-minutes: 75
+    timeout-minutes: 10
+    outputs:
+      base: ${{ steps.context.outputs.base }}
+      head: ${{ steps.context.outputs.head }}
+      pr: ${{ steps.context.outputs.pr }}
     steps:
       - name: Validate the exact open PR and freeze its base and head identities
         id: context
@@ -55,13 +60,21 @@ jobs:
               assert pr['head']['sha'] == os.environ['GITHUB_SHA'], 'dispatch is not the current PR head'
               assert os.environ['GITHUB_REF'] == 'refs/heads/' + pr['head']['ref'], 'wrong dispatch branch'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              for key, value in [('base', pr['base']['sha']), ('head', pr['head']['sha'])]:
-                  assert re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source identity'
+              for key, value in [('base', pr['base']['sha']), ('head', pr['head']['sha']), ('pr', number)]:
+                  if key != 'pr':
+                      assert re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source identity'
                   out.write(f'{key}={value}\n')
           PY
+
+  build:
+    name: Build frozen benchmark binaries
+    needs: context
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.context.outputs.base }}
+          ref: ${{ needs.context.outputs.base }}
           path: base
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,69 +85,37 @@ jobs:
           persist-credentials: false
       - name: Require the checked source to contain the exact current base
         env:
-          BASE_SOURCE: ${{ steps.context.outputs.base }}
+          BASE_SOURCE: ${{ needs.context.outputs.base }}
         run: git -C candidate merge-base --is-ancestor "$BASE_SOURCE" HEAD
-      - name: Select the protected orchestration wrapper with one pinned installation bootstrap
-        id: harness
-        env:
-          BASE_SOURCE: ${{ steps.context.outputs.base }}
+      - name: Toolchain and build prerequisites
         run: |
-          harness="$GITHUB_WORKSPACE/base/scripts/pr-multicpu-performance.py"
-          if [[ ! -f "$harness" ]]; then
-            # Only this exact pre-installation protected main can bootstrap.
-            [[ "$BASE_SOURCE" == d94bd4e97906e517c30d056ddd2be24c0714f315 ]]
-            harness="$GITHUB_WORKSPACE/candidate/scripts/pr-multicpu-performance.py"
-          fi
-          echo "path=$harness" >> "$GITHUB_OUTPUT"
-          RILLCACHE_GATE_HARNESS="$harness" python3 "$GITHUB_WORKSPACE/candidate/scripts/test-multicpu-performance.py"
-          python3 "$GITHUB_WORKSPACE/candidate/scripts/test-multicpu-performance.py"
-          python3 "$GITHUB_WORKSPACE/candidate/scripts/test-pr-policy.py"
-      - name: Select the protected Dragonfly wrapper with one pinned installation bootstrap
-        id: dragonfly-harness
-        env:
-          BASE_SOURCE: ${{ steps.context.outputs.base }}
-        run: |
-          harness="$GITHUB_WORKSPACE/base/scripts/pr-dragonfly-performance.py"
-          if [[ ! -f "$harness" ]]; then
-            # Only this exact pre-installation protected main can bootstrap.
-            [[ "$BASE_SOURCE" == acc875c57a5c09f82c28ef086a87c3ac9223faad ]]
-            harness="$GITHUB_WORKSPACE/candidate/scripts/pr-dragonfly-performance.py"
-          fi
-          echo "path=$harness" >> "$GITHUB_OUTPUT"
-          RILLCACHE_GATE_HARNESS="$harness" python3 "$GITHUB_WORKSPACE/candidate/scripts/test-dragonfly-performance.py"
-          python3 "$GITHUB_WORKSPACE/candidate/scripts/test-dragonfly-performance.py"
+          sudo apt-get update
+          sudo apt-get install -y --no-upgrade --no-install-recommends build-essential tcl curl ca-certificates
+          rustup show active-toolchain
       - name: Build checksum-pinned official Valkey server and benchmark once
-        id: tools
         working-directory: base
         run: |
-          mkdir -p "$RUNNER_TEMP/valkey-multicpu-tools"
-          rustc -vV > "$RUNNER_TEMP/valkey-multicpu-tools/compiler.txt"
-          toolchain=$(rustup show active-toolchain | awk '{print $1}')
-          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/tools"
+          rustc -vV > "$RUNNER_TEMP/tools/compiler.txt"
           version=$(awk '$1 == "VALKEY_VERSION" {print $3}' benchmarks/targets.mk)
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           make "$PWD/target/competitors/valkey-$version/src/valkey-server"
-          # Same verified source tree and build settings; no benchmark patches.
           make -C "target/competitors/valkey-$version/src" -j2 valkey-benchmark
-          cp "target/competitors/valkey-$version/src/valkey-server" "$RUNNER_TEMP/valkey-multicpu-tools/valkey"
-          cp "target/competitors/valkey-$version/src/valkey-benchmark" "$RUNNER_TEMP/valkey-multicpu-tools/valkey-benchmark"
-          sha256sum "target/competitors/valkey-$version/src/valkey-benchmark.c" > "$RUNNER_TEMP/valkey-multicpu-tools/benchmark-source.sha256"
-          cp benchmarks/targets.mk "$RUNNER_TEMP/valkey-multicpu-tools/reference-pins.mk"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          cp "target/competitors/valkey-$version/src/valkey-server" "$RUNNER_TEMP/tools/valkey"
+          cp "target/competitors/valkey-$version/src/valkey-benchmark" "$RUNNER_TEMP/tools/generator"
+          sha256sum "target/competitors/valkey-$version/src/valkey-benchmark.c" > "$RUNNER_TEMP/tools/benchmark-source.sha256"
+          cp benchmarks/targets.mk "$RUNNER_TEMP/tools/reference-pins.mk"
+          printf '%s\n' "$version" > "$RUNNER_TEMP/tools/valkey-version.txt"
       - name: Download checksum-pinned Dragonfly release and its BSL notice
-        id: dragonfly
         working-directory: base
         env:
-          BASE_SOURCE: ${{ steps.context.outputs.base }}
+          BASE_SOURCE: ${{ needs.context.outputs.base }}
           CANDIDATE_DIR: ${{ github.workspace }}/candidate
         run: |
-          directory="$RUNNER_TEMP/dragonfly-tools"
-          mkdir -p "$directory"
+          directory="$RUNNER_TEMP/tools"
           pins=benchmarks/targets.mk
           notice=benchmarks/notices/Dragonfly-BSL-1.1.txt
           if ! grep -q '^DRAGONFLY_VERSION' "$pins"; then
-            # Only this exact pre-installation protected main can bootstrap the
-            # new pin and notice from the candidate tree.
             [[ "$BASE_SOURCE" == acc875c57a5c09f82c28ef086a87c3ac9223faad ]]
             pins="$CANDIDATE_DIR/benchmarks/targets.mk"
             notice="$CANDIDATE_DIR/benchmarks/notices/Dragonfly-BSL-1.1.txt"
@@ -142,122 +123,204 @@ jobs:
           version=$(awk '$1 == "DRAGONFLY_VERSION" {print $3}' "$pins")
           expected=$(awk '$1 == "DRAGONFLY_SHA256" {print $3}' "$pins")
           url="https://github.com/dragonflydb/dragonfly/releases/download/v${version}/dragonfly-x86_64.tar.gz"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$expected" =~ ^[0-9a-f]{64}$ ]]
           curl --proto '=https' --tlsv1.2 --fail --location --show-error --retry 3 \
-            --connect-timeout 10 --max-time 180 "$url" -o "$directory/dragonfly.tar.gz"
-          printf '%s  %s\n' "$expected" "$directory/dragonfly.tar.gz" | sha256sum --check --status
-          tar -xzf "$directory/dragonfly.tar.gz" -C "$directory"
-          binary=$(find "$directory" -maxdepth 1 -type f -name 'dragonfly*' ! -name '*.tar.gz' | head -1)
+            --connect-timeout 10 --max-time 180 "$url" -o "$RUNNER_TEMP/dragonfly.tar.gz"
+          printf '%s  %s\n' "$expected" "$RUNNER_TEMP/dragonfly.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/dragonfly.tar.gz" -C "$RUNNER_TEMP"
+          binary=$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name 'dragonfly*' ! -name '*.tar.gz' | head -1)
           [[ -n "$binary" && -x "$binary" ]]
           mv "$binary" "$directory/dragonfly"
-          cp "$notice" "$directory/Dragonfly-BSL-1.1.txt"
-          sha256sum "$directory/dragonfly" "$directory/Dragonfly-BSL-1.1.txt" > "$directory/hashes.sha256"
-          "$directory/dragonfly" --version > "$directory/version.txt" 2>&1
-          grep -qi "dragonfly.*v${version}" "$directory/version.txt"
-          printf 'version=%s\nurl=%s\nsha256=%s\n' "$version" "$url" "$expected" > "$directory/pin.json"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          cp "$notice" "$directory/license.txt"
+          "$directory/dragonfly" --version > "$directory/dragonfly-version.txt" 2>&1
+          grep -qi "dragonfly.*v${version}" "$directory/dragonfly-version.txt"
+          printf '%s\n' "$version" > "$directory/dragonfly-pin.txt"
       - name: Build the Rillcache candidate normally with the same pinned compiler
-        id: candidate
         working-directory: candidate
-        env:
-          TOOLCHAIN: ${{ steps.tools.outputs.toolchain }}
         run: |
-          cargo "+$TOOLCHAIN" build --locked --offline --release --bin rillcache
-          cp target/release/rillcache "$RUNNER_TEMP/valkey-multicpu-tools/candidate"
-          target/release/rillcache --version > "$RUNNER_TEMP/valkey-multicpu-tools/candidate-version.txt"
-          grep -Eq '^rillcache [0-9]+\.[0-9]+\.[0-9]+' "$RUNNER_TEMP/valkey-multicpu-tools/candidate-version.txt"
-          hash=$(sha256sum "$RUNNER_TEMP/valkey-multicpu-tools/candidate" | awk '{print $1}')
-          echo "sha256=$hash" >> "$GITHUB_OUTPUT"
-      - name: Measure all ten conditions in five alternating rounds with the official benchmark
+          toolchain=$(rustup show active-toolchain | awk '{print $1}')
+          cargo "+$toolchain" build --locked --offline --release --bin rillcache
+          cp target/release/rillcache "$RUNNER_TEMP/tools/candidate"
+          target/release/rillcache --version > "$RUNNER_TEMP/tools/candidate-version.txt"
+      - name: Freeze hashes and allocated hardware identity
         env:
-          HARNESS: ${{ steps.harness.outputs.path }}
-          BASE_SOURCE: ${{ steps.context.outputs.base }}
-          HEAD_SOURCE: ${{ steps.context.outputs.head }}
-          VALKEY_VERSION: ${{ steps.tools.outputs.version }}
+          BASE_SOURCE: ${{ needs.context.outputs.base }}
+          HEAD_SOURCE: ${{ needs.context.outputs.head }}
         run: |
-          mkdir -p evidence
-          { uname -a; lscpu; cat "$RUNNER_TEMP/valkey-multicpu-tools/compiler.txt"; cc --version; } > evidence/environment.txt
-          cp "$RUNNER_TEMP/valkey-multicpu-tools/reference-pins.mk" evidence/reference-pins.mk
-          cp "$RUNNER_TEMP/valkey-multicpu-tools/benchmark-source.sha256" evidence/benchmark-source.sha256
-          python3 "$HARNESS" \
-            --candidate "$RUNNER_TEMP/valkey-multicpu-tools/candidate" \
-            --valkey "$RUNNER_TEMP/valkey-multicpu-tools/valkey" \
-            --generator "$RUNNER_TEMP/valkey-multicpu-tools/valkey-benchmark" \
-            --base-source "$BASE_SOURCE" --candidate-source "$GITHUB_SHA" --head-source "$HEAD_SOURCE" \
-            --valkey-version "$VALKEY_VERSION" --out evidence/gate
-      - name: Independently revalidate the full official CSV cohort, including losses
-        if: success() || failure()
-        env:
-          HARNESS: ${{ steps.harness.outputs.path }}
-        run: python3 "$HARNESS" --check evidence/gate
-      - name: Show all wins, losses, spreads, CPU and whole-batch tails
-        if: always()
-        run: |
-          if [[ -f evidence/gate/summary.md ]]; then
-            tee -a "$GITHUB_STEP_SUMMARY" < evidence/gate/summary.md
-          else
-            printf 'Four-CPU Valkey gate failed before a complete valid cohort was available. No performance pass.\n' >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Measure Rillcache against Dragonfly in all ten conditions
-        if: ${{ !cancelled() && steps.candidate.outcome == 'success' && steps.dragonfly.outcome == 'success' }}
-        env:
-          RILLCACHE_SHA256: ${{ steps.candidate.outputs.sha256 }}
-          HARNESS: ${{ steps.dragonfly-harness.outputs.path }}
-          BASE_SOURCE: ${{ steps.context.outputs.base }}
-          HEAD_SOURCE: ${{ steps.context.outputs.head }}
-          DRAGONFLY_VERSION: ${{ steps.dragonfly.outputs.version }}
-        run: |
-          printf '%s  %s\n' "$RILLCACHE_SHA256" "$RUNNER_TEMP/valkey-multicpu-tools/candidate" | sha256sum --check --status
-          python3 "$HARNESS" \
-            --candidate "$RUNNER_TEMP/valkey-multicpu-tools/candidate" \
-            --dragonfly "$RUNNER_TEMP/dragonfly-tools/dragonfly" \
-            --generator "$RUNNER_TEMP/valkey-multicpu-tools/valkey-benchmark" \
-            --base-source "$BASE_SOURCE" --candidate-source "$GITHUB_SHA" --head-source "$HEAD_SOURCE" \
-            --dragonfly-version "$DRAGONFLY_VERSION" \
-            --license "$RUNNER_TEMP/dragonfly-tools/Dragonfly-BSL-1.1.txt" \
-            --out evidence/dragonfly
-      - name: Independently revalidate every Dragonfly comparison, including losses
-        if: success() || failure()
-        env:
-          HARNESS: ${{ steps.dragonfly-harness.outputs.path }}
-        run: python3 "$HARNESS" --check evidence/dragonfly
-      - name: Show Dragonfly wins, losses, spreads, CPU and whole-batch tails
-        if: always()
-        run: |
-          if [[ -f evidence/dragonfly/summary.md ]]; then
-            tee -a "$GITHUB_STEP_SUMMARY" < evidence/dragonfly/summary.md
-          else
-            printf 'Dragonfly same-setup gate failed before a complete valid cohort was available. No performance pass.\n' >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Preserve Valkey raw measurements even when the required gate fails
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          cd "$RUNNER_TEMP/tools"
+          sha256sum candidate valkey generator dragonfly > hashes.sha256
+          python3 - <<'PY'
+          import hashlib, json, os, platform
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'tools'
+          hashes = {}
+          for line in (root / 'hashes.sha256').read_text().splitlines():
+              digest, name = line.split()
+              hashes[Path(name).name] = digest
+          record = {
+              'base_source': os.environ['BASE_SOURCE'],
+              'head_source': os.environ['HEAD_SOURCE'],
+              'candidate_source': os.environ['GITHUB_SHA'],
+              'valkey_version': (root / 'valkey-version.txt').read_text().strip(),
+              'dragonfly_version': (root / 'dragonfly-pin.txt').read_text().strip(),
+              'binary_sha256': hashes,
+              'runner': os.environ.get('RUNNER_NAME'),
+              'kernel': platform.release(),
+          }
+          (root / 'binaries.json').write_text(json.dumps(record, indent=2, sort_keys=True) + '\n')
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pr-valkey-four-cpu-${{ github.event.pull_request.number || inputs.pull_request }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: evidence/gate
-          if-no-files-found: warn
+          name: multicpu-binaries-${{ needs.context.outputs.pr }}-${{ github.sha }}
+          path: ${{ runner.temp }}/tools
+          retention-days: 7
+
+  benchmark:
+    name: ${{ matrix.server }} ${{ matrix.workload }} row
+    needs: [context, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [valkey, dragonfly]
+        workload: [ping, set, get, set-nx-existing, set-xx-existing]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.context.outputs.base }}
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Select the protected harness from the base branch
+        id: harness
+        env:
+          BASE_SOURCE: ${{ needs.context.outputs.base }}
+        run: |
+          if [[ "${{ matrix.server }}" == valkey ]]; then
+            harness="$GITHUB_WORKSPACE/base/scripts/pr-multicpu-performance.py"
+            if [[ ! -f "$harness" ]]; then
+              [[ "$BASE_SOURCE" == d94bd4e97906e517c30d056ddd2be24c0714f315 ]]
+              harness="$GITHUB_WORKSPACE/candidate/scripts/pr-multicpu-performance.py"
+            fi
+          else
+            harness="$GITHUB_WORKSPACE/base/scripts/pr-dragonfly-performance.py"
+            if [[ ! -f "$harness" ]]; then
+              [[ "$BASE_SOURCE" == acc875c57a5c09f82c28ef086a87c3ac9223faad ]]
+              harness="$GITHUB_WORKSPACE/candidate/scripts/pr-dragonfly-performance.py"
+            fi
+          fi
+          echo "path=$harness" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v5.0.0
+        with:
+          name: multicpu-binaries-${{ needs.context.outputs.pr }}-${{ github.sha }}
+          path: ${{ runner.temp }}/tools
+      - name: Verify every binary before timing anything
+        run: |
+          cd "$RUNNER_TEMP/tools"
+          sha256sum --check hashes.sha256
+      - name: Resolve the pinned reference version from the frozen build
+        id: reference
+        run: |
+          if [[ "${{ matrix.server }}" == valkey ]]; then
+            echo "version=$(cat "$RUNNER_TEMP/tools/valkey-version.txt")" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(cat "$RUNNER_TEMP/tools/dragonfly-pin.txt")" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Measure one workload with both servers alternating
+        env:
+          HARNESS: ${{ steps.harness.outputs.path }}
+          BASE_SOURCE: ${{ needs.context.outputs.base }}
+          HEAD_SOURCE: ${{ needs.context.outputs.head }}
+        run: |
+          mkdir -p "evidence/${{ matrix.server }}-${{ matrix.workload }}"
+          python3 "$HARNESS" \
+            --candidate "$RUNNER_TEMP/tools/candidate" \
+            ${{ matrix.server == 'valkey' && '--valkey' || '--dragonfly' }} "$RUNNER_TEMP/tools/${{ matrix.server }}" \
+            --generator "$RUNNER_TEMP/tools/generator" \
+            --base-source "$BASE_SOURCE" --candidate-source "$GITHUB_SHA" --head-source "$HEAD_SOURCE" \
+            ${{ matrix.server == 'valkey' && '--valkey-version' || '--dragonfly-version' }} "${{ steps.reference.outputs.version }}" \
+            ${{ matrix.server == 'dragonfly' && format('--license {0}/license.txt', runner.temp) || '' }} \
+            --workloads "${{ matrix.workload }}" \
+            --out "evidence/${{ matrix.server }}-${{ matrix.workload }}"
+      - name: Revalidate this partial cohort from its raw CSV
+        if: success() || failure()
+        env:
+          HARNESS: ${{ steps.harness.outputs.path }}
+        run: python3 "$HARNESS" --check "evidence/${{ matrix.server }}-${{ matrix.workload }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: multicpu-partial-${{ matrix.server }}-${{ matrix.workload }}-${{ needs.context.outputs.pr }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/${{ matrix.server }}-${{ matrix.workload }}
           retention-days: 30
-      - name: Preserve the Dragonfly pin and license hashes with the evidence
+          if-no-files-found: warn
+
+  gate:
+    name: Valkey 4-CPU performance gate
+    needs: [context, build, benchmark]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.context.outputs.base }}
+          path: base
+          persist-credentials: false
+      - name: Fail closed when any per-row job did not succeed
+        env:
+          MATRIX_RESULT: ${{ needs.benchmark.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          [[ "$BUILD_RESULT" == success ]] || { echo "build job: $BUILD_RESULT"; exit 1; }
+          [[ "$MATRIX_RESULT" == success ]] || { echo "per-row jobs: $MATRIX_RESULT"; exit 1; }
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v5.0.0
+        with:
+          pattern: multicpu-partial-*-${{ needs.context.outputs.pr }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: partials
+      - name: Merge and revalidate the Valkey cohort
+        env:
+          BASE_SOURCE: ${{ needs.context.outputs.base }}
+        run: |
+          mapfile -t dirs < <(find partials -maxdepth 1 -mindepth 1 -type d -name 'multicpu-partial-valkey-*' | sort)
+          [[ "${#dirs[@]}" -eq 5 ]] || { echo "expected 5 Valkey partials, found ${#dirs[@]}"; exit 1; }
+          args=(); for dir in "${dirs[@]}"; do args+=(--partial "$dir"); done
+          python3 base/scripts/merge-multicpu-gates.py \
+            --harness base/scripts/pr-multicpu-performance.py "${args[@]}" \
+            --out evidence/valkey
+          python3 base/scripts/merge-multicpu-gates.py \
+            --harness base/scripts/pr-multicpu-performance.py "${args[@]}" \
+            --check evidence/valkey
+      - name: Merge and revalidate the Dragonfly cohort
+        run: |
+          mapfile -t dirs < <(find partials -maxdepth 1 -mindepth 1 -type d -name 'multicpu-partial-dragonfly-*' | sort)
+          [[ "${#dirs[@]}" -eq 5 ]] || { echo "expected 5 Dragonfly partials, found ${#dirs[@]}"; exit 1; }
+          args=(); for dir in "${dirs[@]}"; do args+=(--partial "$dir"); done
+          python3 base/scripts/merge-multicpu-gates.py \
+            --harness base/scripts/pr-dragonfly-performance.py "${args[@]}" \
+            --out evidence/dragonfly
+          python3 base/scripts/merge-multicpu-gates.py \
+            --harness base/scripts/pr-dragonfly-performance.py "${args[@]}" \
+            --check evidence/dragonfly
+      - name: Publish both merged tables, including losses
         if: always()
         run: |
-          mkdir -p evidence/dragonfly
-          for file in hashes.sha256 version.txt pin.json; do
-            if [[ -f "$RUNNER_TEMP/dragonfly-tools/$file" ]]; then
-              cp "$RUNNER_TEMP/dragonfly-tools/$file" "evidence/dragonfly/$file"
+          for file in evidence/valkey/summary.md evidence/dragonfly/summary.md; do
+            if [[ -f "$file" ]]; then
+              tee -a "$GITHUB_STEP_SUMMARY" < "$file"
+            else
+              printf 'Missing merged table: %s\n' "$file" >> "$GITHUB_STEP_SUMMARY"
             fi
           done
-          if [[ -f "$RUNNER_TEMP/valkey-multicpu-tools/candidate-version.txt" ]]; then
-            cp "$RUNNER_TEMP/valkey-multicpu-tools/candidate-version.txt" evidence/dragonfly/
-          fi
-          if [[ -f evidence/environment.txt ]]; then
-            cp evidence/environment.txt evidence/dragonfly/
-          fi
-      - name: Preserve Dragonfly raw measurements and license evidence even on failure
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pr-dragonfly-four-cpu-${{ github.event.pull_request.number || inputs.pull_request }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: evidence/dragonfly
-          if-no-files-found: warn
+          name: multicpu-merged-${{ needs.context.outputs.pr }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/
           retention-days: 30
+          if-no-files-found: warn

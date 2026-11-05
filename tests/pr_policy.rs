@@ -50,7 +50,9 @@ fn every_main_pr_requires_distinct_tests_and_real_valkey_measurements() {
         "base/scripts/pr-multicpu-performance.py",
         "valkey-benchmark",
         "--generator",
-        "python3 \"$HARNESS\" --check evidence/gate",
+        "python3 \"$HARNESS\" --check \"evidence/${{ matrix.server }}-${{ matrix.workload }}\"",
+        "merge-multicpu-gates.py",
+        "sha256sum --check hashes.sha256",
         "persist-credentials: false",
         "if: always()",
     ] {

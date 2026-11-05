@@ -118,7 +118,9 @@ class PolicyTests(unittest.TestCase):
         multicpu = (ROOT / '.github/workflows/pr-multicpu-quality.yml').read_text()
         for text in ('pull_request:', 'branches: [main]', 'name: Valkey 4-CPU performance gate',
                      'base/scripts/pr-multicpu-performance.py', 'valkey-benchmark',
-                     '--generator', '--check evidence/gate', 'persist-credentials: false', 'if: always()'):
+                     '--generator', '--check "evidence/${{ matrix.server }}-${{ matrix.workload }}"',
+                     'merge-multicpu-gates.py', '--workloads "${{ matrix.workload }}"',
+                     'sha256sum --check hashes.sha256', 'persist-credentials: false', 'if: always()'):
             self.assertIn(text, multicpu)
         for text in ('pull_request_target:', 'continue-on-error:', 'paths:', 'paths-ignore:', 'secrets.', 'contents: write'):
             self.assertNotIn(text, multicpu)

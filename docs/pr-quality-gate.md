@@ -114,6 +114,19 @@ order**. The wrapper requires at least ten seconds of observed generator wall ti
 loopback TCP and persistence/TLS-off are retained. There is no aggregate-score
 escape, tie pass, retry-until-green or substitution for the original 20-case gate.
 
+The required context is produced by a **parallel** workflow: one `build` job freezes
+one candidate/reference/generator set, ten per-row matrix jobs (five workloads ×
+Valkey/Dragonfly) each run both servers alternately for their row, and a single
+aggregation job named `Valkey 4-CPU performance gate` revalidates every partial
+cohort through its harness, merges the ten rows and decides the check. Each row is
+still a paired comparison on one allocated runner, but rows now run on different
+runners of the same type, so the merged manifest records the host fingerprint per
+row. The aggregation fails closed on a missing/misnamed partial, a duplicate row,
+mismatched sources or binary hashes, a hash mismatch in the raw evidence, or any
+losing row; a failed matrix leg blocks the required context instead of shrinking
+the table. Wall-clock feedback is roughly build plus the slowest row instead of the
+full serial cohort.
+
 The strict rule is unchanged: every sample is retained and each row still passes
 only when the whole-cohort Rillcache median is strictly greater than Valkey's.
 The fifth sampling round exists because the observed per-repetition spread on a
