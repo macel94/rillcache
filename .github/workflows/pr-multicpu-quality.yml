@@ -237,7 +237,8 @@ jobs:
           BASE_SOURCE: ${{ needs.context.outputs.base }}
           HEAD_SOURCE: ${{ needs.context.outputs.head }}
         run: |
-          mkdir -p "evidence/${{ matrix.server }}-${{ matrix.workload }}"
+          # The harness creates its own output directory and refuses an existing
+          # one, so never pre-create it here.
           python3 "$HARNESS" \
             --candidate "$RUNNER_TEMP/tools/candidate" \
             ${{ matrix.server == 'valkey' && '--valkey' || '--dragonfly' }} "$RUNNER_TEMP/tools/${{ matrix.server }}" \
