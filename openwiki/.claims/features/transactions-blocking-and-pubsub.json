@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:ed4a987868b22bf80effba0b54d99e015a1c719c19f7520af75f299c16a98fa6",
+  "claims": [
+    {
+      "id": "claim_d70107cc891a4fceb6d508f0245eb2d3",
+      "statement": "MULTI stores commands by value in connection-local state with a 10,000-command bound; unknown, arity-invalid, session, blocking and SHUTDOWN commands mark the transaction dirty and cause EXECABORT.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/transaction.rs#L1-L170",
+          "version": "repo-lines-v1:sha256:f01995bdecf76ce807558c71cb3a8b4cf706ef4ddf953eef6987d3c8d1784a0d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjMTAwYTk2YTEyMTU0NjZmMjQwNWFmMzY0MGU5M2QzZjAxOWZhNDNkZjI2ZGMyYjBlMzRhYWEyYWQ4ZmJkMjBjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5OTYzODJmNGU4ZDQxYjgyZDlmOGRmNmU3MTgxOWYyMzBiOGYxNTI5ZjY3MDYwYzFmNTA1OWZjNGI4OGE3MWRjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZDg4MGY5OTI5MDI5MDQ1YTY3MDBjOWI4NWYyZDFmMTI2YTgyY2Y1NGQ2MmI3ZTk3OTMwY2ZkOTAyMmU5OWY5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_1f28e69ec0754e33b2de94cdeaa4d0e8",
+      "statement": "EXEC re-checks authorization for every queued command after queueing and before executing the batch, so an ACL revocation cannot be bypassed by a pre-existing queue.",
+      "evidence": [
+        {
+          "resource": "repo://src/session/transaction.rs#L48-L115",
+          "version": "repo-lines-v1:sha256:cb81fecfa0e770d12d7bb5b45b0116ed06499c056f133572f77a5a5d9421ace0:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1Y2RlZjgwODVhZTc0YWI2MzZkNjQ1OWY1YzZkNWZiZmIwZGIyNjRmMWIwZDc1YmFjNTE5YzliM2Y2NzE3YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkYThkM2FjY2UzYTViODQwNDAyYThkNjcxZWFhY2EyODFhMzk5YTE4NDkxYmUyOGI4ZjUwZWY0ZDFlMmIyMzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzNTc1Y2RhZWY0Zjg4NjY0OTJmYTBmNDQ0ZmRiMjU4ZDg4OGI2YzZmYzU3MDM3YTMyMzkyMDU2YzkzZWViNTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE5Nzg4MjIyNzYxNjRlNjI2MGYyNzFlM2M2ZTUzYjgxNzljODI2MzkwNDM5NzhhOGJhMmVjZjQ3N2ZhOTg0ZTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3e8eb8f0043342c4b27f942d0a2f412b",
+      "statement": "A single-owner EXEC validates watched keys and executes the complete queue in one synchronous turn, appending replies as one array; command errors do not roll back earlier successful commands.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/transaction.rs#L1-L155",
+          "version": "repo-lines-v1:sha256:f57494b86dea228fc6dcefff9e974492c0ae2a4761f49edbdd09ec23912a19f7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiYmNiMzMwMzEyMDkwMThlZjYxMWZlM2JkMmEyM2IxN2I0ZDkzYzljMzdkODQ5ZDc1MTJmZTRhMmZmZmVlMzc3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiYjNlNzkwNzJjOGM5YWM2NTEzOGM4MjkzOTE2Njg5OWYyZGY3NjljZmI4MWY4M2NmNzEyNjRhNmQ0NTVjYzliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjNDBhZTJhZDNmYWMwNWE2ZDgyZDY0Y2ZmNDExNzhlNzQ0MzJhNmQ5MmU1MmZmOTE3YThhNTE2YzY0NmZhOWZhIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_0e54699bad0f40beb62e0055f282b75f",
+      "statement": "WATCH records key version, presence and store epoch; a mismatch aborts with a null array, and the bounded 65,536-entry version table fails closed by advancing an epoch when entries are evicted.",
+      "evidence": [
+        {
+          "resource": "repo://docs/transactions.md#L57-L61",
+          "version": "repo-lines-v1:sha256:6dac7d305746db8f0387a5d297f1f08faa776f3fa92bb1faae6c6d0f20bf5515:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzUyYmQ0NmI1ZGVjNzViZTc4MDE0ZTI0YjQ5MDAzOWJlZDg1ZmQ5ZWIzNDczODYxNTEyNzJiYjIxODQ4MTFjYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzlmNzgzMGVlODUzN2FkNDI5Yjc2NmVjNDI5MzRlM2U0NjM5OWM2NzM5ODc3MTdiNzBiNTVhZGZkM2NiMWMyZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjIyMTAwYTdjY2UyMDAyMjAzMzc3NTdiY2ZjMzgzOTkxMDljMTk3MmIyMDY0ODdiYTM2OTM4N2E4ZTZkN2M2NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMThjNTBlMzVlYWI3NWQ0ZTMxY2I0MDliYmY4OGEyOWZkNWEyYzVlOWRhNWU4MTEzMDliYWUyNzM0NzUwMThiNiJ9"
+        },
+        {
+          "resource": "repo://src/engine/data.rs#L239-L267",
+          "version": "repo-lines-v1:sha256:311b14133ceade5e8926c245415a8d4d52c4b0e007a510a2e0f626843c9effe2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxNjM3ZGEwZTBjN2UwMDUyZDU3ODBjZTQ5MzA2MmQ2Nzg5MDkwMjY2YWFkMDNjYzE0ZDEyYTk3ZmQ5YTZiOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNGVkY2M3ODcwYTMyMmRhNjgyNzQ5NTE1ZWMzNGU1MDlhODQzYmUwYTQ4MGU2YjY2MzgwNGMxYTM2MGIyMzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YTFlZGQyMzA4NDE3MjI2MzEyNmVlNWI2YTg0YzE3YmZlMTZkNzY3MjIxYjJhYzU2MjgxNWQ3NWYzMDIxMjgifQ"
+        },
+        {
+          "resource": "repo://src/engine/transaction.rs#L1-L75",
+          "version": "repo-lines-v1:sha256:1a7e402e459405b29ad833cc392ea6e936fe6251d1e903356151142c47784643:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiY2IzMzAzMTIwOTAxOGVmNjExZmUzYmQyYTIzYjE3YjRkOTNjOWMzN2Q4NDlkNzUxMmZlNGEyZmZmZWUzNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyMmY2YjkwZmU3MDczMzAxMmJmYTZjYTMwZjgzM2Y2MmViZjk5NzM2YzhmNTgxZTIxMTAzODU0MGU5YTg4MzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmZWJkYzQ5MzgwNTcxNDYxYjI2YTUwM2M5NTUwYTk0NDU0MzEyYjA0NjdmMjFkOTFmN2IzMmY2MmMzYjZkMjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e73cd81ac98f4d7eb0fdb800ccc1ec5e",
+      "statement": "Blocking commands store a deadline and continuation without holding a data borrow, do not parse further input until unblocked, and are polled about every 10 milliseconds rather than woken by a condition variable.",
+      "evidence": [
+        {
+          "resource": "repo://docs/collections.md#L120-L142",
+          "version": "repo-lines-v1:sha256:e296fc01d947e4f841095ae19206a570a7f5b63db8f7fbe83bbbc9e3ca10a937:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzODEyNjRmNWYyZjYxZWRlNWUxODAyNjIyZjU5MjRjYTFjMjRiODA1NTQyY2U2YTdiNjFjN2I3NmIxYWM0NGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjYjk2Y2E4YzYzZTIyYzAwOTJhN2MwM2I0NzE0NTQ4MGE0ZDAyY2E1MzIwY2MwNzA3MmYyYjdiYTA2MWVjZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkMzA0YWE2ZWY0OThkOTc4NzBhY2VkMTRkODFhMjhiZDUzNTk2MjE3YjZiYjljMDI2ZjMyZjFjMThiNGE2MTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4YTcwNWFmMDAwMzM0ZjEyODAyYzdjZGVjZDE3NWU0YjVmZDZiMTYzMjE4NjM3YmNiNzFiNjY2MDk0ODkxMjYifQ"
+        },
+        {
+          "resource": "repo://src/engine/blocking.rs#L1-L10",
+          "version": "repo-lines-v1:sha256:02491a51da31003dd53f85e15ef53cd9287fce38c747f4849ee3736a7b4bbe6f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTcyZGRmN2RjNDQ2OWFjYmI0Yzg0MmI3YjUyMjFhNmNjMzM3ZTBmMWM0M2Y3NDA5OTU0NmVmYjA4MDVmN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzYmNhMmU0OGIxZjc5ZWQ3OTBiNWFjNjY1MmViZDQ5MmQ2MDNiNDU4NTcxZGViNzFiZDBkYmE1ZTlmM2I5MTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzMjE0YWQzMWQyZGVkNjQ5NmU3OGM3YjJhZDhjZTNlZDdkMDUyMTZlYjFhYTBjNGFkZTc1ZTM2MjZkYWQxMjYifQ"
+        },
+        {
+          "resource": "repo://src/session/blocking.rs#L1-L135",
+          "version": "repo-lines-v1:sha256:a77d6f4461ef2fde6b89658ad8e61847d9fcf5b2e389566cb347c601ff81f661:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkYTg4MmI5ZjEzZWI2N2ZhNDFiYzY2NTdiZDIxYzQ1NDNkY2Q2MjQ2NzI3YWJlNzgxN2I4MDM2NDk4NjY0MTVlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3NDA5YTNjMTc5YjkyMDAyOGYzMmQ3ZmRkYzNlYTllMTQ0ZWEzZTM3NjQxMzBjZDE5MTVlNjJjMTQyZjgxMzc0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzNTQ5NzQ0OWZmZGMwMTRhYjI2Y2IyNTA3ZmE5Nzc0MjNkZjBkNGRiNTJjN2IzODZkOTQ4Y2VhN2IyMjA3ZWEzIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_9774ad1243ae4f1ba2d544b864c355e2",
+      "statement": "Each pub/sub subscriber owns a bounded 1,024-frame queue; publishers use non-blocking sends and remove a full or disconnected subscriber instead of blocking.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/pubsub.rs#L1-L15",
+          "version": "repo-lines-v1:sha256:6d786768f914b7fdd116dce79231a93be7235983928106efb71f909d658cde6f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkYWJhODIzOThhOWI5NzYwYzlmZmE4ZjMyNjdmMzk3ZDUxYTc0OGVhMDg4MjI5YWY3ZDgzMmNkYWFiNjNlYTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyZTI4ZjdjMjAxM2Q4MDg2YjVhOGRmYjJjYmNkYTc5NGRjMjIzYTQ2MDNjNDNhZGIyNTliMDViNDQ2Y2E4ZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3ZDAyYzI4NjA4MWUyZTdjN2EwZWUwOTBmN2M0ODBiMTc0OWEwZGEyZjQ5MDc1MzA5NThjNWNlOWRiN2Q5OWQifQ"
+        },
+        {
+          "resource": "repo://src/engine/pubsub.rs#L100-L155",
+          "version": "repo-lines-v1:sha256:d746483bf99080f6269626b605468ddad99bfaa42b290494147a83e1c9104169:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwZDQ4ODk1ZGYwYjZkNDE4MThkYTU3ODdlYTA0YmIwZmQ5MzgwN2I3ZjAyYmE2MjNmM2NjMmU4ZDUyM2VjYWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzN2EyMjlmZTE5NGQ1MTk3NjQyOTQ3NGViZWVmNzE2Yjc5NjA4ODI0NDM1NTczZGMxMzdhMDhkZDdiNzBlMTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ4Yzk4YzM2MjBiNzllNTQ1ZDk1ZTY0N2MyZDNmYWU2ZWEwMjYwYjg4NmUyOTBiZGFlNDUxOGVkMWQ1OWRkNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhlZmY0MjRiMGIwZWE2YWNkNWI5YTI3MmVjOTZjZGJjYzlmYTFkYmFmNDBmYjcwMjg3NzJjNDM0NmY1YjM4NmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6fa42cfaaf5349b1bf8ea43dd102fc15",
+      "statement": "RESP2 subscriber mode allows only subscribe/unsubscribe operations, PING, QUIT and RESET, while RESP3 keeps ordinary commands available and uses push frames; sharded channels are a separate namespace.",
+      "evidence": [
+        {
+          "resource": "repo://docs/pubsub.md#L50-L90",
+          "version": "repo-lines-v1:sha256:92ceecfe04b8dd9de94b7cd7ce26f34fabe95d2b5a33e73a81b6cf6722b2371d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzMjA3NDlmNDEyZThkOTYxMTJjYjQ5NjcxYmU1MTQxNmEzYmZkMzA4NmEwYjFkZDlhMjhmZGQyN2ViYmQzOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxNjU4YjViZmY4MzgzNmY2ZGZlZDUyYTUyMTRiMDBiYmFlM2I5ZDA3YWYwZjFmZmMwNDJjNjNmNjE4YTI3ZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM1YjZmMmI0NWVlZTAyMWY0MWJiOWEwMGFiODZhMTdmNWUxY2JmZWFmNmNhZTA1NzU4NGUxZGFiMWQ3YjRiYTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM0NWY2OWQ4OTdlMDA0ZmY5M2U5NmM0NWQyOGE1M2QwYWFlYjQ4MDIwMTRiYjk1ZDA2MWVhMGY3ODI3NDg3YmQifQ"
+        },
+        {
+          "resource": "repo://src/session/mod.rs#L196-L210",
+          "version": "repo-lines-v1:sha256:2e40d72a3d4307a427abba949cfa01e6af7abb51a267caba6195754a274153d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzOTQ4ZWVlNjU2ZTI1ZDBhYWJiMjk4ZDJkZjYyMWM2OWU0ZWJmMTNhYjdlMzliY2E1OWZmY2ExOTgyOWI1MWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDczMzEzNTA3OWJlOWI5ZTY0MzVjODJiODIwYWZkZjM5Y2MyMzNkN2YxMjBjMzdhNWFkZThlZDAyYzQ1YzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0N2EzZDQ1NTA5NDM5YjJhNGU1NjliY2UwNDc0ZTQ2ZmY1MTZjMDQ0MWQ4YjQ3N2Y3MDI2OTBkZGY4NDAyYWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhY2VmZTljYzU2ZWI5MzY5MmQ0M2EzMGZhNzBkMzRkM2Q1Y2JlZTkwNzYxZmYwOTFkZWQ4ZTI3YTEyZjYyODgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d25f6844edee4722a9fa22ccd87b7953",
+      "statement": "Keyspace notifications support K/E and g$lshztxe/A flags, reject keymiss/new-key/module classes, and use bounded 1,024-key lifecycle queues whose events can be dropped under pressure.",
+      "evidence": [
+        {
+          "resource": "repo://docs/notifications.md#L1-L75",
+          "version": "repo-lines-v1:sha256:37fbd8dad1c307922d3887db5c40f349a9adfae49ba4005d240882d06be84cbe:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1MWQ4OTUyZGYwYjVjZTE2ZTcyMTA0OWM0OWQwZjYxNGE5NzMxOTI5N2IwN2I0YWFhYTQzMGRhZjcxMzM0ZDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4ODYxZWYyYzllMTViMzU4ZmExYzNkNjk2NDk3MzMzNDQwNDM3YzY1MmYwMDgyOWEzYjJjMzQwMzVmOGEwZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2NGRmODZlMTNmNjc0YmYwMmYwYmQ0YTFlYWU3NzAwZGQ2NzQyY2Q1NjllNmVkN2QwOTkyNzg4YmM1ZmM1YzcifQ"
+        },
+        {
+          "resource": "repo://src/engine/notify.rs#L1-L170",
+          "version": "repo-lines-v1:sha256:7499dcc0ab438cc9b3323e7e55f546aa6bc397ce9ec38845439d4ad7252fe97d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhOGI4NGExNTg1NjE5YTVhOGVkOTRiN2FmMzAwM2QwYmQ3NjdjOGYyMGE1ZGUwZjk5ZWNhZTU2OTg2MzI3NGI3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_97a2dca1bea0492b897b10642e7724a2",
+      "statement": "Pub/sub and keyspace notification delivery are at-most-once, process-local, non-persistent and non-replicated, with no replay, acknowledgement, dead-letter queue or ordering guarantee across publishers.",
+      "evidence": [
+        {
+          "resource": "repo://docs/notifications.md#L76-L110",
+          "version": "repo-lines-v1:sha256:674d6cc2a8735b0cadb3b403aecde29ce82a81654cc00fd866d7c6009b9fe1d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlkZDVkYTViZDFlYTViZTYyZDU3YzVmNzJkYjQ0OGYxNzhiOGY1YzRmZTA3NzFiYzRiMDgxZmYwZTJhZDQxMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiMjZlYWIwZDY1MzhhM2M4OGRhOGEyYTJkNmIxNmI5MDBhNzEzZjU5MWJkZTM4MDBmODgyN2ViYTI3NmZmYTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxODY2ZDM5MzFjNjA5ZWFkNmE0M2Q1MDYzMjM2NjE1Yzg1NjliNjMwZDQzNjkwYjczOGZhOWY4MDg1MzYyNGIifQ"
+        },
+        {
+          "resource": "repo://docs/pubsub.md#L30-L48",
+          "version": "repo-lines-v1:sha256:82807c9c2d9b549a47b98ca19179ecf1febb76a8067931f54677a4fcb0639b04:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2ZjFmYTdiNTczMzdhZmJiNjY3NTRmMmVkMWU3ZWI3YzFhZmI4MzBlOWVmZWY1MGIzMzgxMDViZjk0OGJhYzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwZGUxNjEzNTI1N2JkMGYyNTAwMGI0MDhhMmYwY2QwOGQwM2ZlNzE5Y2RjZWI0ZjFlMzIzNTRmYjkxM2ZiNTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2NmQ3MTIxY2QzMTFiM2QxOGVlOGYyYWIzOThlNzU2ODg1NzZiODgwYTBlOWY1OWFhZTU2ODI4Y2Q4YmMwYzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyYzQ4NDU2MWU0MjMyNjdhODA3ZTA2OTBiOGYyMTFlMDZkNjkyNGY0MzczZGNmODljZTFiNjllMzFjNTEzN2YifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T15:32:39.597Z"
+  }
+}

@@ -40,6 +40,7 @@ Prefer a native binary? See [building from source](docs/getting-started.md#build
 | See supported commands and compatibility | [Compatibility guide](docs/compatibility.md) |
 | Understand the performance results | [Benchmarks and scope](docs/performance.md) |
 | Use Docker, Compose or Kubernetes | [Container guide](docs/containers.md) |
+| Give a coding agent repository context | [OpenWiki](openwiki/quickstart.md) |
 | Find a specific topic | [Documentation](docs/README.md) |
 
 ## Status and contributing

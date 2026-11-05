@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:362535bbccaa99abccec3f73ff30dc3c3fe1e5808d28a7b9ecc73cc46feaf9c4",
+  "claims": [
+    {
+      "id": "claim_4066a8021d384f1e9c2debbb56f1b3fd",
+      "statement": "The default plain-TCP transport on Unix is the Mio readiness reactor; Tokio is selected only by the explicit --io-mode tokio option.",
+      "evidence": [
+        {
+          "resource": "repo://src/server.rs#L470-L479",
+          "version": "repo-lines-v1:sha256:bfeb2e8cf62589b8deaf15c7b1e33e694cc3e5884d25adb8dabfcbf611afe1f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwMWE3Nzg2ZmZjOGFjYmVkYTUzZGUwNmNjMWU0ZjMyNmQyZmQyYjA0NjYzYjg1YTgzOGMzODQyZGE5ODBlYWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwOTE5OWViMWIyMzNlOTY0ZTM0ZTg5ZmQyN2IzMGM4YTJmMTI3ZWE1NWMyMmEzZGViYzdhNTNjYjNjNTcwOTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIzMTJhMjM0ZGFhMjE0ODI3YTc1NzdmOTZhYmZjNWY0YzQyNTNiOTliODcxN2QyMjU1MTk5ZDI4NDU3MDAwYTQifQ"
+        },
+        {
+          "resource": "repo://src/server.rs#L52-L60",
+          "version": "repo-lines-v1:sha256:76b03a7521494b800a9f374b4789655a68fcf19228c890932aa5942bf8d2796a:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2I3OTE2ZTZiNmRiZjRkYTIzNTg1ZjlhOGJkYmRkMTdjYTc0NGRmMmMxZTA5YTRhY2VmNGY1M2Q4ZDAwMWM2NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmI1ZmM2ZTFlOTBmZWNiZThlNTY4ZjNmMzcwZjdiYmZiZDU3ZDM2MDU5NWU5ZTBiYmEzMjkxYWJkZWUzZDY5MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGUxZTJjYTc4OTQxMDMyMTEzYjQ4MTkwMjJjYzA3OGU3NWRhYzI2ZjVjZDUyZmMxMzIwOTUwNjdlYTI0MzQxOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzA2ZWYwOTdkZDhkYTVjZWI2ZjAwYTM5ZDk5YTgxYTA1YjlkY2E5ZDkzMTBlYmNkNjRjYTRhMjU1M2ViYjhkNCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_b26e7cd7e5ce492485664e449da8dc5e",
+      "statement": "When the single-owner readiness frontend is used without persistence, ACL files, audit sinks or TLS, the socket-worker count defaults to min(4, allowed CPUs), can be overridden from 1 to 16, and is forced to one for configurations that need the external bridge owner.",
+      "evidence": [
+        {
+          "resource": "repo://src/server.rs#L205-L208",
+          "version": "repo-lines-v1:sha256:695d2d49c4af60bc06595a9f46b7269650acab355e78fc69cdf89b6e0edfe14c:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQyNjhmOWRjNDk3MjZkNTcxYWZiZDcxOTc1ZjYzZDQzMGQyMGU0OGYzYzQ1N2VlOGE0MDVhMWZhZmU5OGY5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjlhMzk0MzA5MzMwZGZkNTA3ZTlmY2FmMTFhOTc0ZWVkNTAyZGYwNDU5N2VmMjljNTA3MmFhYjA0MGQyNGFlMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjY4N2I2NTU5YWM0MzA2NTJlOWQzZmJlZmRiMDdjZjRhODQ5OTQzMmU0MTE2NDBjZWY4NzRiMDNmYWM4MzM0MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjJhZGJlZTEyZjcwZDFjOTFmMTcwZDU1NTBlY2QyY2RhNzlhNDE2NDNmNjY3ZmE1NTg0M2IwYmYyNjM1MDA4NiJ9"
+        },
+        {
+          "resource": "repo://src/server.rs#L547-L560",
+          "version": "repo-lines-v1:sha256:44ae211b000ba41cca16dbe6ae7c9545b7adbe8dc5b85c9ef8e95fc4176a5ee6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NTU3MjJlNzU2NDEyNjI0NDhjNzdmYzUxYzFlMzgyMGZiMDFmZWZiZTZkY2E0ZGYxOTYwNmFjMjA3YzAwZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxY2E3YWJiNzg3Mzc2NTY1ODQxNzRlNjcyMGIwYjk1MGU3NmU0ZDlkNjJlMjdhODJiYWNkY2I4NGViNTZkYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxZDg0OTJmMTg5N2QyYzc3OTMxM2ZmODRkZmMwNzAwY2FlMmZjMDQxMWNkODk2Yzg3ZTZhZGQ0NTM3Y2NmZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3NTdmNGQ4OGZhYjAzZjZmOWFiN2JmOWZjMjdiZDFjOTU0NzJlZDJmZTNhNTdjOGVlNmQ3YzJmY2Y3ZTdkYmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ec3d67018529425f9b4d663a0b47bcb4",
+      "statement": "The Mio reactor retains edge-triggered work in a runnable queue until WouldBlock, recycles slot indexes with non-recycled tokens, accepts at most 64 connections and services at most 256 runnable turns per pass.",
+      "evidence": [
+        {
+          "resource": "repo://src/server/reactor.rs#L1-L27",
+          "version": "repo-lines-v1:sha256:78a860b9bbcd23728360f71b14bfef16379b6fe377f6d6098baed19226e2d751:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3Y2RmMzkzZWYwMThhMmM4MTFjMzU5OWMxYWUxMzVlZmYzYzA3MjIzNzIxNWY2Y2ZkNjRjMWRhZjA4OGU2YjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlOThmYTNmNjBmZDY0YjNmYmI2ZWQyODU3OTliNGRiYjU1Zjg4MGUwOTZiYThlNDhmNDI1NjE1YzUwM2NkMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlMDgzNzkwYWIwYWQ3ZTg2YjJhM2VjNjA3MWM3MmJmZjNkYzBjNzQ1NjAwZDFkYTJmYzRlYjI1YzFkYWQyNmEifQ"
+        },
+        {
+          "resource": "repo://src/server/reactor.rs#L147-L221",
+          "version": "repo-lines-v1:sha256:e5703867d84ad7801b51216dd80dcdfeb421f997100924caf1cdafaf9f0c3f46:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2NmNjMTQ3NmY2YmRmZTA5ZGNjNmJiNTVlYzM1MTQ1YTY2NGFmMDhlZDliODA5ZjIyNzAzMjQ1YTI5NzVlM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQxOTM2OTM4MDQ2ZjJiODUzYmEyYWUzNDlkYjhmODlhOWU1NzlhYWU1NGIzZWFhMjRjMThjNmI0NTliOGZmZGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE1YmU2OWY2ZjA4Y2E1NGZhMWMxMzFiMzllNWMzMzZhZjZkODNkYWRlNDBlNmY5YWFlYTAzYWI3NGU5OGZmNGYifQ"
+        },
+        {
+          "resource": "repo://src/server/reactor.rs#L492-L500",
+          "version": "repo-lines-v1:sha256:9f09d872181a1fb242cd73ed9a79ff606bc10c53b161b4577445b690e3d60e07:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTc0M2I3NTEzMTY2OGEzMTYwM2U3OTU3MDYyMDQ4MTQ3ZjI1N2Q3ZTJiZTI3MmJhZTZlODEzMTY0NjU3Mjk3NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGM2NDc5Y2MyMzA0NDBmZDQxZTgyMjQyMTg2Nzk2OTg1NTlkMjg5M2JkNjdiNDM4MGFmYWI4MTFiMzhhNTVhYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjY2YmQzYTAzOWFlZjM5M2VlZTIyZDAwZWYzNjQ3MDQwNWZkNzc5NDE3YTE0YTUxZWJjOTA1ZjUwMzZkY2E1MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjU0ZDk5NGQ3N2RjZTA5M2I3ZGE5MGFhZWVjOWMxZmFlZWZjYWRjNTFmNWQ5YTVhY2Q1ZmE1ZTllNTljNDQzZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_d15dd402ba3c47b98a36cc73b2c8dd2a",
+      "statement": "With more than one socket worker, only the owner reactor holds Data; worker reactors execute bare local PING, ECHO and QUIT and migrate a connection before any transaction, subscription, monitor, blocking, paused or data command.",
+      "evidence": [
+        {
+          "resource": "repo://src/server/pool.rs#L294-L325",
+          "version": "repo-lines-v1:sha256:82ecf6815db3978e3f81206291e7560a654dd54f8e7b72cf1e98a635337dcdb2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkYWU5MmUwNDM0Y2U5NjFiNmJlZDJkNWVkNmQ3MTUyZWE4MjBhNTE4MTE2MzAxNzYxOGVmNGE1MjgxYmM0MTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlNDYyYmQ4NWVhMzUyMjgyMmE5YWQzZWIyNDA5OWIwMzJhMWI2MjdiZWNmZDdjNTgzMWU5OTI3ZDRiYWM0MGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBhNzliZDgwMzNiZmUzMWFmZmExNzhmY2RiMDkzY2FhMmViN2ViYmZlOGJmZjZkNDIyMjZiZmYxNzcwNGMzZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiYThlMDMyM2U3NjFhMzZkNzMwNDE5ODEwYWM1YjY4OTkzM2Q1N2Q4OGQyYTg2YTg5MmY1MjI4ZTkyMjc3YTIifQ"
+        },
+        {
+          "resource": "repo://src/server/reactor.rs#L543-L556",
+          "version": "repo-lines-v1:sha256:0fae7abd50d574223e60914a52a2a238eede151145be34c621aafca83e25e4d9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiNTEzM2M1NDMwNzBlYjc2OGIwNDA5MWY2ODRjMTA2MTU5M2Y5YzcxM2ZiZWUyZmIzMzc3YTI0MjI0NjIwN2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOWUxMjU0NjQyNTU3NmQzZGVhZThjOWI5ZGJmMTI4ZDVkNmRkYWY1ZDdmZTg1NzkzNDkyN2RlZmZhM2I5ZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3OWY5MzgwNzAxZGQzMjJkMTRhOGNkZjBhNTAwNmY4NTVjNzFmZmVjZDY1MDMwYzdmYmYyOWM2N2EzNDFhMjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_33f66a1743f64372abe6f3c13fbdabf9",
+      "statement": "Client I/O leases use 50 microseconds on one CPU and 100 microseconds on small multicore budgets, have a 100 millisecond maximum epoch, are limited to capacity hints of at most four CPUs, and allow two coordinators only when Linux explicitly reports SMT disabled.",
+      "evidence": [
+        {
+          "resource": "repo://src/server.rs#L30-L42",
+          "version": "repo-lines-v1:sha256:34f5f237b13c41ba78b0b2e9725e220c2ac13a3881b8a728431bbaa987de8f7f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlOWVlZjgyZTUzNzk5MjM3NjVkM2M5NjIxODAzMjRmMzQ2OGJiYjAwODMyZDliNDc0YmJiNmM3NDAwMzBmMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwZjY3NjgzODlkYjI1ZTllMDQ5OTk0ODUyMWM5ZWJjODgxYmJhZTY2Y2NjNTllZWU3MTU1NTJlMzM0NzQxNTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjMzY4YWU0ZGFiNDg1ZmUyMjMxNWNiYjk0ZjQ4MjczZmQ0MDU2OWJkNzc3NzU2ZjE2YzNmMjRhZjBmY2I3ODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjY2ZkOWM3ODkwZDk2OWY5MzA2ZTg5NTU0Y2IyZTRhNTc0YTNkNDdjYjFlMzRiNGI2OWYwNjk1ZTM2NjAyOGIifQ"
+        },
+        {
+          "resource": "repo://src/server/handoff.rs#L1-L14",
+          "version": "repo-lines-v1:sha256:0faa2d618f57628d4a74aaf6dc40f5e668e6d921f9721d7910c99ff99c8a3710:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMmU1OTE0ZmZiODJiNzE0YTlmZWE5ZmRiZjFkNWUxNmQzMDhkMWEyOTU0OGI2MDY4N2E5YzliYTkwMTFjMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjcyYmYwNmYzYzQ2MjBiYmViNGVlMDY1NzYyZjExOWI5YWY4MTRhYzk2YTcwYTljNWRmNGU5ZThmYmRiMWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA2YjNjMTI3ZTA3YTZlMWZmNGNlMjgwOWY4NjFhZDIwZDg1M2Q1YTkzMzRlZTg3ODhmZGY0OTIzZDQ3MzgwZDUifQ"
+        },
+        {
+          "resource": "repo://src/server/topology.rs#L1-L5",
+          "version": "repo-lines-v1:sha256:286cf175ffa86918bd1124cbaa4abd78a03b2c238f52f5d73218b91a09510920:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDRjYWZiMDI3MmM1MGE5OTgwMTAxZGU4YTllNzE3MTM3Nzc5ZWZmNjg2NTRhZWYzOTMxYzNiNGNlODc5ZTAwZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDFiYWJiOTQ3NjA1Yjk3MjZlZjUxOGYxYzlkOTQxMDdhNTRjMjEwNDQ5YTcxOWI2MWZlYjU0NTk5MzcxZjA4NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmJiMDUyNTJkZmNlNDU5MjNkMzRlMjVhNjNmZjZlZjlmMjliMTg5NjQ3ZTBlOGZkNmRjZDk0NjI3NDViNjUyOSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_33c3e8d1f3134677b54d230c91bfd325",
+      "statement": "The portable fixed-worker frontend bounds queued, active and in-flight clients with one shared admission counter and polls for at most 50 microseconds after real progress without rearming on empty passes.",
+      "evidence": [
+        {
+          "resource": "repo://src/server/pool.rs#L1-L31",
+          "version": "repo-lines-v1:sha256:bdc52f744aaf44d8f8203864f8e568e08079cf7a170b30b51af99074ab65fd8f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0MWI0NTU5MTcyMjI4OWY5ZDRhZjg3MGIwNmQ2ZWUwNmNhMDQ0NjIyYzM1ZjY2MGFmNTNhMWU3NjBmYWZmYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyYzVjMjVmZWJlODY3MGFlZjAwYWUwN2E3YjA1ZjZiZmI4MzQ2NTRmYjg5YTJhOWI4OTU2OWJjNTY4YTM0YzEifQ"
+        },
+        {
+          "resource": "repo://src/server/pool.rs#L433-L446",
+          "version": "repo-lines-v1:sha256:d502ab754cd95c35fbfb685836891830388273739467416a56ee81037ea3a93a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2M2ZlZWMwOWNkZjJmY2U5Nzg2ZGZmMzE4MjlkY2Q0NDAyMTFjZDUyYTllYjFhM2RhZDI4MjFjMDYyNGZiZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1NmE3NzE3MTRiNzMwY2I1MWEyMzE0ZWQ0OGNiODhkZGFkYTlhMDMyZDE4NzhjMGFjYzA4OGQ5OWMyNTc1ZDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmYjAwYWI3OTM5YmFiMjJlMzI0YzJkMjdmMzg0MTMzN2JlODYwZTIwYzIzMDA4NGI0MzdiNGU3MWE4NTI1ZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUyMzk3ZDcyMDk1YjFhNjA0NmQyOTJmNTUyNDQzM2ZkZmRlZTRkNWRiMDQyMjkxNWZkODZkM2UyZjhkZTc5ODUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4d2d6cd8a03844e4a61f88c108add099",
+      "statement": "The optional Tokio frontend is unavailable for fixed workers, append-only persistence, ACL files or audit sinks, and it isolates disk-capable cold work in one separately joined service thread with one permit and one queued job.",
+      "evidence": [
+        {
+          "resource": "repo://src/server.rs#L470-L479",
+          "version": "repo-lines-v1:sha256:bfeb2e8cf62589b8deaf15c7b1e33e694cc3e5884d25adb8dabfcbf611afe1f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwMWE3Nzg2ZmZjOGFjYmVkYTUzZGUwNmNjMWU0ZjMyNmQyZmQyYjA0NjYzYjg1YTgzOGMzODQyZGE5ODBlYWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwOTE5OWViMWIyMzNlOTY0ZTM0ZTg5ZmQyN2IzMGM4YTJmMTI3ZWE1NWMyMmEzZGViYzdhNTNjYjNjNTcwOTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIzMTJhMjM0ZGFhMjE0ODI3YTc1NzdmOTZhYmZjNWY0YzQyNTNiOTliODcxN2QyMjU1MTk5ZDI4NDU3MDAwYTQifQ"
+        },
+        {
+          "resource": "repo://src/server/tokio_io.rs#L130-L143",
+          "version": "repo-lines-v1:sha256:8c1a5553182208871fbd80c11afa71b750691e927df917401aa3ba67f9d89b4f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlMTY3MmJjN2RmN2IyMTQyNzJjMmEzY2EwMTdiOWJhYjY3ODE1OGIzZDQ1Y2NjYmM2MTQ3Y2MwZDJlOTIwNGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIxYTRkNTk2NjQ3NzYwOTllMDIyMWE4MmNkYmZhNjVmNWI3ODY2YTUyNWFjMDA2N2QzY2E2NWI4NjBhZTFmMmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkMGFlMTcxYjU2N2M5YjAxODIyYTUyODk0ODMzOTU5YTY2MjU1OWE2ZGIxZmUyOTM4YmQwNmI5ZWQ4OThiYTEifQ"
+        },
+        {
+          "resource": "repo://src/server/tokio_io.rs#L216-L226",
+          "version": "repo-lines-v1:sha256:61cc5681020ab8bf770bdaef2ca67ac480b2b7cb3e3bfa939e8cb62118246a96:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2M2ZlZWMwOWNkZjJmY2U5Nzg2ZGZmMzE4MjlkY2Q0NDAyMTFjZDUyYTllYjFhM2RhZDI4MjFjMDYyNGZiZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkN2UyMWE4MjA5ZjU5NGI3MTNjMjJjOTQ4ZWVhZjhhMzQ2MmY4OWM5MzI2ZDIxNTI1ZjhhNzIzMDY2YmQ2ZGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3MWMxZGQwNGUyOThlYjI1YmMxMDAyYWZlMTczMTRmMzM0M2Q0ZGNkODg5N2NhZThlYmI1ZWM1M2Q5NjU0ZTgifQ"
+        },
+        {
+          "resource": "repo://src/server/tokio_io.rs#L306-L314",
+          "version": "repo-lines-v1:sha256:9b26594ca6a8c98a5eff0942d6a2c0ac820b76f69279de312f99cd10f1d50843:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWFjOWFkNzUyYzQyNjJlMDU5MmJmMzY2NTNmNmJlNDhjMmY3MTdmMThmNzViMzk2ODI4MzU1NmZmM2Y1ZTNhMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWY5NDc0NDk2NjAxNDQzNjk5YjgxMDA4YTY0OGRiYTBkMTdiNmYzNDU2MGEyNWUyMzMzNzYwNjFkYjkyYTc5ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2Y0Y2QwYjA5OGE0ZWYyMWQxNDVhZGM5MDNiZjc4MjMyNTk5MjQxODk2OWMyNzBiOWMzNGJkMjg4YTViMTI1NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGM5ZTI1MzEwNjM4ZDZjMDA5YTc2NDNiOWE2NGM5ZjllMjM2NWUzZWJlMGQxMjM1MzEyODBiNWYzYmEzNDAyYSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_027c900df3464afaabb8b65303e87087",
+      "statement": "Native TLS is a separate rustls TLS 1.3 listener that can require client certificates from a PEM CA, enforces handshake and idle timeouts, and hands the established stream to the ordinary RESP loop.",
+      "evidence": [
+        {
+          "resource": "repo://src/server.rs#L520-L535",
+          "version": "repo-lines-v1:sha256:0030b5648fe981127a8a1c1722d8daa761c3812cbef39b5315598e03af590b23:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2ZDdlODYyNTgwYjBkODBiODQ3YjEzYzRjMTNkM2QzODI1ODRmYWNmYzVkNGVmNTkzZTI0NDU5Y2M3NjUxNDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkyMTY1YjZmNjdjNzRmZWMzNWM4YmEzZDg4ZmNmNjk3ZmU0MmFkOTVjMWQ5ZmYyNTJkY2MyMGYyYTcwMjZlM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliYjFiYWQ1OTc0YjM2Zjc1NzY1ODg0MmM0NzY2YmI3YzFkYTk3MDg5ODFmNWQ5NTFjNjI4MjI5NzE0ZTY2NzMifQ"
+        },
+        {
+          "resource": "repo://src/server/tls.rs#L1-L5",
+          "version": "repo-lines-v1:sha256:c7c6bda4b4d8593fd6dbdd47a8744b7cb3798ae525872f276974e027c713f59a:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjdlMzY2MWY1OGJkODlhZTlkZWM2MTJiMDQ5OWMzYTMzNzk2MmI1OTc1NjM4NDg5MjRkOGNlZTU3Y2VhNDNmYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOTBiNjk3MTliOTM3MzkyMjdmZDMxZTI5ZDRkOGI3NDBjODY2YzViNThlZThhMWM1YTc0OTVjYWNkOGFhNDcwOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjZlNDczZjU0YmIwYzM3M2Y5NjhiZTdjNjJiNzg3NjAxMzY4ZDM4NjUzN2JhZTE5ODI0ZTUyMmZiYzhjYTQ4NiJ9"
+        },
+        {
+          "resource": "repo://src/server/tls.rs#L23-L83",
+          "version": "repo-lines-v1:sha256:ca0b6f29aa52c44afcd8898925a112c68ec89c53716242b6470e719d0f7767ac:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiNjdlYjNkYjBkOWUyNTg2MTgxZjQ4ZjM0NDRjMDZjYWJjODc1ZjliZWJmNzkzMTUyYjUwNzAwYTI2YjVmNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxMGZlOGM2ZTFkNWUwNTNkNGIxNTI1MjExYjhjYjdjYTA1MmQ5Y2YzN2ViNmFhN2FiYzFmMmJmNjYzZjNmZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEzODVjYzE1ZGE0ZGYwYTc2NmRjODJlZWQ0YjdiYjEwM2ZkMjFkYjliZTVkZmEwOGQzZGQ2YTI1OWNmMjhlMDEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T15:32:39.597Z"
+  }
+}

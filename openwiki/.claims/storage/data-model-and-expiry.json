@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:411aef7bb9af91afa9065dfa8e15f5939f605e3a9d3e55e5e2aff2d6a52748ec",
+  "claims": [
+    {
+      "id": "claim_9e947814835841fabe312fb961485738",
+      "statement": "Each Entry holds an optional string value, collection or stream plus payload length, an absolute expiry deadline, field TTLs and a mutation access rank; one Data map holds all key types.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/data.rs#L181-L247",
+          "version": "repo-lines-v1:sha256:f2cace3b456610c38fc31095f89cb6d572e2faf9939577c5dafbece0a8f43890:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyZWFjNTc2OTg1YzM0NGUyMTM0MzVjZjc0NzUxODA2NWI1NmNlMGZmYjQ2NzExNmU2YTJhNDBmMDk0OGE2NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1YjVlNTUyYjM5MmI5ZWJmNTA5MjcwMTEyZjhmMWI5Zjg0OTE3OWMxM2VjNjllZDIxYTU4ZmViY2I0MjMxMTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyZDVmNzQ1NThkM2IyNWZiOGI5NDA3ZGVjYWNlZDU4NDU0NTZjYTEyZjRlMTUzM2FlNjQzYjBkYjc3ZGUzNGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxOWM1M2MyMjQyYzkyNDYyNTZkMGMxY2I0YzM4NTUwOTcwMWI5ZjJhOGYyZjE3ZmRmYTQ2YzcxZjU2N2FhM2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f35f418f18164061a9a0188e81beeada",
+      "statement": "Key expiry is stored as absolute Unix milliseconds and an entry is alive while now is less than or equal to the deadline, so the deadline tick can still be read before expiry one millisecond later.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/data.rs#L224-L235",
+          "version": "repo-lines-v1:sha256:94bf119d88bad7a27e0a7a097fe9b69c111b47cd4f83b43cb1c08f69e157ee70:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4OWZlYTY2N2MwYzJiZWI1ZWFmZDE4NWI5OGM2ODAzZjY2Y2NmZWYyZjQ2NDdkYmZjZmM4ODU4YTZjYmRmM2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE0ZjFmZDA1NTVlN2Q1ZmU3MmU1ZDEzN2YyOWU4Y2VlNTNhNzAwZjQzYjUwMjllNjY2ZmFiYzkyNDUzNjAzMzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkMjMxNDYxNTczYjZjOTFkYmFlYmVkNjgyYmJjNGIyMzc1MWJlOTA0MDM1ZjZkOTg1ZTUyY2YzOGRlMTY4NDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUifQ"
+        },
+        {
+          "resource": "repo://src/engine/expiry_tests.rs#L1-L35",
+          "version": "repo-lines-v1:sha256:79b8fa89b29c423f1267e9fe4c4a751848d2d0cedc4f3613079a1aa9d29f9ef4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0Nzk0ZmZjNDJjODEzNWMxZWM2ZWZiNmM3MDgyNWU0MjUxMDZmNjIyNmNhNTMwNDA4ZTdhZjJiYjVjNDExY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmNzA5MTQ5OTRiZjQ5ZDY3YzBlNTNiNDRmN2IzNTFlNDU2MDBkYmZiNWY2ZjNhODhiMGFjNDFmMzVhMjkxZDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZlYjFkMjliMWI1M2RjZjM2ODI1NTJhOTc4OTVjMDkwMWE5YjUzNDZkMzE0ODAzZTZjZmJhMmFlM2U2NzVhMzAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bf160942be854c8db71413babb4518aa",
+      "statement": "Field TTLs are absolute per-hash-field deadlines applied lazily on hash access; removing the last field removes the key and expired field removals increment expired_subkeys.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/data.rs#L468-L550",
+          "version": "repo-lines-v1:sha256:4c01e539cbf4cc34f08bbebea0e439ab78c91de9539ea598a8bc987fafd4c191:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1M2FlNjI3NjAzZTNhNzFiYWQ2MzA3YmNhODE2YzgwMjgyMDIwMGMxOGU4MzNlODc0N2E2MWI5MjQyOGYyYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNhOTE4NTIxODRmMDdkMjk1MzMyODFhNTgyNTVkM2NjMTdiNmU2N2Q3YjQzMGY4ZmVkZjlkOTdhZmMwMmQ3MDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEyNmNkMDU4NjE0NTVjOTNhMzE2OTI1NTNmYmVmMGEzZjFkNzg2OTRjYTY0Njk3ODk5MzQ4MmJlYTkwN2E2NjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1359800dc15941eaa4553a25c9bfd2dc",
+      "statement": "Expiry has a lazy key-touch path and an active maintenance path that removes at most 128 keys about every 100 milliseconds, while DBSIZE, KEYS, RANDOMKEY and scans reap due keys first.",
+      "evidence": [
+        {
+          "resource": "repo://docs/keyspace.md#L55-L90",
+          "version": "repo-lines-v1:sha256:4b9b8d53c92f855af4e7faaf1942348900368ba87009c570c741e059d035620a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiMWM1Njk4NzRkZGQ3MjExNzEwODUyM2QwODdjZTlkYzQxYTA0MjQwZmYwYTkzNmU3YjBhYzBiMTdiZmRlYzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg4MGFjZDM1MWEwYjdhNWE2NDMwMjE1Y2ZiZTI5ZjRhNmUxZDA1MzliYzEwZTdiOTdlZjQzNjAwNDRhZGMwYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM5N2VkMTQ4OTdhZjExMWQ5NGIzNDBlMThkNjNiNmY5NmE1ODVlYmEwZDUyM2QyMGE0YmU2MmE4ZTA0YzA1ZGYifQ"
+        },
+        {
+          "resource": "repo://src/engine.rs#L1140-L1160",
+          "version": "repo-lines-v1:sha256:1f9e640d0617ebaae68f08409a15bb8d1077ef38d8594a19ffbcb6308173d75d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmNjFhNDQwN2NhNmU0NjAxMzA0NWNkMjVhZjMyODNmNzYzYmEyYTgxYTNiYWI2YzY2ZjgwMTE2ZDE1N2Y0YmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVmODkzYzE5N2I5YzllZWQ4Y2EyOTM1MDJmNDU1ODgyZDA3M2QxZmMxZjYwYThlMjliNGMxZjkwODA1NTZlNGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3NDMxZDU2NWU3ZjBjN2RiMjFjNjE5MWQ1ODJlNDFiYWEzOTE2NzAxMWY1ZDg1OTFhMTQ5Yjc4M2UxZTcwMjkifQ"
+        },
+        {
+          "resource": "repo://src/engine/data.rs#L554-L570",
+          "version": "repo-lines-v1:sha256:4cd8804a14d53bc761dc696f5c606455b2e3cab8229a8e0577edc4d90d30ef7f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhMDc0NTI0MzllZThkY2VmMDYyYzRjN2RiMzZiOTJkZjQ2YTIxMDkzNDljZjg5ZTc4OTdhNGU4MWYyZjgwOTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyNmNkMDU4NjE0NTVjOTNhMzE2OTI1NTNmYmVmMGEzZjFkNzg2OTRjYTY0Njk3ODk5MzQ4MmJlYTkwN2E2NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNmM2M2NDBhNjI2MTkxNDdjNmVmYjgwZjcyNzNlOGE3ZDdmNzkyMjc1MGFhZjQ5OGU1NTQ1NGE1Y2M4MmExZjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e72438292ff1465980638a62b2675c7e",
+      "statement": "Every successful mutation updates the peak payload, a global sequence and the key's WATCH version, and records a bounded journal event; version-table or event-log overflow fails closed to an epoch change or full snapshot.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/data.rs#L239-L267",
+          "version": "repo-lines-v1:sha256:311b14133ceade5e8926c245415a8d4d52c4b0e007a510a2e0f626843c9effe2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxNjM3ZGEwZTBjN2UwMDUyZDU3ODBjZTQ5MzA2MmQ2Nzg5MDkwMjY2YWFkMDNjYzE0ZDEyYTk3ZmQ5YTZiOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNGVkY2M3ODcwYTMyMmRhNjgyNzQ5NTE1ZWMzNGU1MDlhODQzYmUwYTQ4MGU2YjY2MzgwNGMxYTM2MGIyMzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YTFlZGQyMzA4NDE3MjI2MzEyNmVlNWI2YTg0YzE3YmZlMTZkNzY3MjIxYjJhYzU2MjgxNWQ3NWYzMDIxMjgifQ"
+        },
+        {
+          "resource": "repo://src/engine/data.rs#L360-L430",
+          "version": "repo-lines-v1:sha256:5c2c14f1614d7d6f3c50efae803e7821154014a78bfd2fe7610f29f5062320cf:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0M2JmM2Y0ZTg0NTM0YjBkNTk4Y2NhMDQ4YjI1ZGZiMDVmZGZjNGNkMDY1MDBkODhjOGUwYmRiZTMwMWNhMGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdjMzJjOWQ4YTBmMzY3YWFlNWMwZDVlY2MzNDVkNWYzOTRjZmZlNzRlZDA3MzQ0MTQ0NDAzODhjMGQyOGFiN2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc0M2NkM2IyYWZiYjkxZGU3MGY2MDZmMTQzOWUxYzQ4NmJjN2I4YzcyNjhiNGFkYWIyYjdlYjAyYTdmZGU3ZmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2c6b0988520a4bc7b470da400749d136",
+      "statement": "Payload accounting counts key bytes plus string or collection/stream member bytes, excluding map capacity, allocator slack, indexes, threads, sockets and journal buffers, so it is not RSS.",
+      "evidence": [
+        {
+          "resource": "repo://docs/collections.md#L85-L100",
+          "version": "repo-lines-v1:sha256:e6d22d6da336a3063da44c7401461e8bbb36dcfe2c1fea46e8b1de46ad15ccdd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5NTA2M2ZmYjljMmZkNThmMDQzNTIyNmM5NzAyMTBkMTlkNTViOWM4NTdjYjc5MTVhOTE4ZTU3NGQ5ZWEyY2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiYTA5NmE2NTFjZWNiMjU2YzZhOTQ4ZjcyMmY2MjU4MWY1MWE2NDU2NjNhN2EwY2RhYzM2Njk0Y2JhYTQ0OTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA2NmY2YmY5ODE1YTM5NmU2Mzg0YTVmZDZhNDIwMjcyMzE5YmZlMGIyOTg5NmIxOTA4OTY5YzFmMjhlNDMwOTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjllODA4YTcyZjdlM2Q3ZThiZTIwMzk1NWZmNDkwZDhkMzM3NmUyOGMxNTEwOGM4ZTA2MjgyYjExZTc0YWExZjkifQ"
+        },
+        {
+          "resource": "repo://docs/eviction.md#L1-L20",
+          "version": "repo-lines-v1:sha256:5d943c715b6e0e53af3861c0654b9ba8d339be98abb4295be61e3b1528255573:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3OWQzYWEwM2YzYTMyYmQ3MGZiOGJkYTQyYTM2MzVjYWQwMjIwNWYxZTg3Y2M4MDM0YjNhZjFlY2YyMTgzOTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1MzFjZTgwZDI5OGQzZjMxZTc5Y2Q2ZjVhYjQyMzgzM2VkODBiYTk3ZGFkMzNlN2EzN2MxYjQwNTZlMzlmN2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM2MjU2MGVhZTRkMWIxN2I0NjE3MDgxYzYwMzMwODNlMmRjMWJlZTQyZDBlYjQyM2RjN2EyMWMxOTdlNjRjOGEifQ"
+        },
+        {
+          "resource": "repo://src/engine.rs#L200-L210",
+          "version": "repo-lines-v1:sha256:9f6ba0323f9499b2ff30292b14b8e997e5e316aba74a740d04b39f5af4a8575e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxY2Q0Y2MzY2E3ZDk2OGZmZmJmOWQ4ZDU1Mjk5YjIyMjE2MDFiMTU3ZThhMzBlMTY2YWRhNDMyOWM5ZTQ2NDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4NmRiNGFhOGU2ZmRlMmM1YjQyNDA1Y2UyMGQ3MzZiNDZiNzYxNzcwYzBiZWEwNzRkOGFmOTk2NDA5YmNlMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFjOGZhNDI2YTdiZDBlZjAyMjk5MTRhM2M4M2RiZDM3YjRlYmJhMGYyOTc4ZWU4NDI0NWU3ZmViMmQ1NjQ1NmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhiZDgzODkyMzBjYjA1MzU4NmZhOTg5MDMyYjhiMzgyMDIyYjFhYzRjZjA0NGIwMGM5MTI1NjM0NThhMTkwNDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_49c4e1ba5776439a80e9e83daefedbbc",
+      "statement": "Admission is atomic: a write either fits, reaps expired keys and evicts eligible victims, or returns OOM before deleting anything; multi-key writes validate the entire final payload first.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/data.rs#L664-L780",
+          "version": "repo-lines-v1:sha256:34e280592cf4d8f648ed84f4392fb0997a3805965ab0438e77c5a1249b4c0ee1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYzk0NmVjY2YyMDNkYzM2OGFkZTAzNmM4OWM4NjJmNTRkOGQyZjAxNjk4NTI5ODRkM2M4ZGQxODNlYWRlNDMzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxZTdlOWFlMGFmYmQ2MWY5Nzk3N2VkMjFkNjkwODdkZjU1ZjdhMjQwMDkyYzE4MWQwMWFhYjc5MGVkZDNiOGIxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5MmExY2I3Mjc4YWExZTg0OGE3OTgyYWM5ZTUwYTQ0Y2NjNTBlN2NkMTU4ZDA5N2Y0NDkzZDMzYTI0MTZhMzE0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0YjkxMGE0MGMxYmM0OTg4MTZjZjVkYjZiNjIwZGIwNmY0ZDgyMjM0NDdlMTY1NDk2ZjYzMGY4NjkxMzU4YjVmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_f8e878efa4214471889064eb030d7bbc",
+      "statement": "Eviction supports noeviction, allkeys-random/LRU and volatile-random/LRU/TTL; LRU uses mutation recency, random rotates over hash-map order, volatile policies spare persistent keys and the target key is never a victim.",
+      "evidence": [
+        {
+          "resource": "repo://docs/eviction.md#L1-L62",
+          "version": "repo-lines-v1:sha256:2ed9b2572684f1335c1dbb164aeffb96298f0c7e5b8c087954fcf6d9d0aadeb0:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3OWQzYWEwM2YzYTMyYmQ3MGZiOGJkYTQyYTM2MzVjYWQwMjIwNWYxZTg3Y2M4MDM0YjNhZjFlY2YyMTgzOTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlZGMzNGFiZWU3YWVjMjlhMjVkMzNhZGFjN2ZiNjk5ZmI3N2I3MjAxNjU3ZmFhMGYxOWI5NjFlZjMxN2ZlNTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA4NmUwNjJkYjlkMmZkODdhYjU0YjEzNzhkYTM1NGUxOWEzN2U5NTdhYzgxMzhhNWI5YmUzNzAyYWJlY2I4OWUifQ"
+        },
+        {
+          "resource": "repo://src/engine/data.rs#L692-L755",
+          "version": "repo-lines-v1:sha256:5ba26b5b3b09d2203ae5f82905f5f95fe2a02e10949b11f5bb71d40d428e2f8e:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkNTliOWY4MWJjMzhmZDk2MjFhZTVlZmFhMjMzZWY4ZWFmNjE5MDQ5YWM2NDlhMWY1NjQyZjU2ODNiMTYyZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzMTViNzJjNzhmZjFmY2Y5NzY1ZTcyMWFjN2Q3ZWM1MzgwMjA1ZDllNjllODhkNDNkYTBjNDlkYjFjMmE1M2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlMzkyMjI5MjY4NTQwOTE1YTM1NjQ5ODJhNTUwYmY2MTk2OGJmYzZhZmY4MDdlNTkxMjM0MGY0ZWRiMDVhMDgifQ"
+        },
+        {
+          "resource": "repo://src/engine/eviction.rs#L1-L49",
+          "version": "repo-lines-v1:sha256:0e105ef24c0a6c1bf67c51850b17b52847e2b0876742f8bf8fa4c411c66b9b58:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhM2QzZDliMWM3ZjFiZTNhNjQzMWZiNzMxZGRlMjcxMDU0ZWFjOWQ0ZTBkZGUzZjRiM2ViOGZlMzcxMTQ5MDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_abe7256410114cd4a6ef21a2e154e289",
+      "statement": "Scan cursors index a sorted snapshot under the store lock and are traversal hints rather than stable identities; COUNT is a bounded work hint and collection scans sort by raw bytes.",
+      "evidence": [
+        {
+          "resource": "repo://docs/keyspace.md#L90-L113",
+          "version": "repo-lines-v1:sha256:d6b6637e852540292e3a2c0600ce6dc055d933e9415746e57836b2816ed99f53:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyZjk3YmExM2M5ZTE5ZGNhNzNhNjRkODdmNTQ3ZDJkMjMyOTQ2YWFiZDNiMDFlZWZjMWZiODZlYTNkYzBmNjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJmMGExN2Q2ZjlmYWY3MmFkODk3MDZhZDBmMDkxOGU0NjA2MWEyYjJlOThmMzIyNjc3MDhhNzA0NjU0N2EyYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T15:32:39.597Z"
+  }
+}

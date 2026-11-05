@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:dfd802f72ea6ee32e50fc6f763d7b163b8a60dcb79ed1a584299b430f312f4a8",
+  "claims": [
+    {
+      "id": "claim_517870a78cae42dd9fc242cb065cc05f",
+      "statement": "ShardExecutor keeps Data in a RefCell and is deliberately !Send and !Sync; the default local path installs it on the socket thread, while journal, ACL-file and audit configurations use the external compatibility owner instead.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine.rs#L275-L292",
+          "version": "repo-lines-v1:sha256:a97ff9e70d962c60dc5357c726ce72b3cb22715c2959bb497adfab9f45e6f54b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlODgzYTFlYTg2ODVmM2RiYjIzYzFlYzJiMTAwZTEzNWEzMzQ0NTliNWUyNjgxMDE3OWUzNWI1YTA1ZTgyNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4NDk3YWIzMTAxMjcxM2NkZDVmNzBiNDczZGVmNzdkMTdlYjBlYzBjNzgyMDFmYzJmNDcyYmVkNjZjOGVkNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4ZTYwZWI1YmQ0NjZmZTYxNjdlMTgyOWFmYmRmZTcyNDU2NGYwNTM3NmZiMmM0ZjJkMTdkZjNmMWJhM2JjZjkifQ"
+        },
+        {
+          "resource": "repo://src/engine/bridge.rs#L232-L252",
+          "version": "repo-lines-v1:sha256:992ad1cf38c3cfde0a7426852236b8e02af3d2333d15ca4c1e012ad81e74c96b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxZWUzNTIxNGVmYmFiMDI4ZWJhYWQyODZhNWI3N2IyYWIzNTMzNTMyMjJlYTNmYTE4OGY0Yjg2YmQ3Mjk2OTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4YjhkNGVlY2FmNGQ2NzA3NWRlZDRiMzZhNjA1ZDhiZTU4OTBjNWVlZjQ3M2MzNGMxOWI1NWQxNmMyM2UyYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhY2M5ZDhkMWMxNTM1OTYwMzNhZWU1YjFlNWFkOTZjODJiYmU0MzAxMmViYmY4ZjQyZGU4MDQxMzgxZmE1NjAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fc3b4cad3713425e8e480b0353bea427",
+      "statement": "The ShardRouter supports one to 64 power-of-two shards, seeds XXH3 with a process-random value, and fixes key placement for the process lifetime without claiming a cryptographic HashDoS defence.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/shard.rs#L1-L8",
+          "version": "repo-lines-v1:sha256:963c8a934ead60647c25d018d0701f8001ba18ca71037bf23621716288a40f14:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODhlNDE0YTQyNWUyODQwMzliNGI3MjQyNjFlYWM3ZjJkNjc2ZTRjZmU4NzIwY2JhNTAzNmMzOTAxNWQyZDdlNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzMxNjBlYzEzYjlhYzFjZTA1NzVjZWU1NGQ4ZDUzN2Y4YThjZWU1NzllZGI0ZWQyYWNiNzY2ZTc0NTVlNWQyZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjQyMzBkMzkxYWUwMmU3YjJhNDYwODRkMTEyN2E4MTI0ZTI0MDEwZjkyZDc0NjA3ZmUyNmI1MmEwZTE5MTU5MiJ9"
+        },
+        {
+          "resource": "repo://src/engine/shard.rs#L40-L78",
+          "version": "repo-lines-v1:sha256:fdffa40f547c5ef7111be3ccffea2bd4e12b2986558c34df9afd19ed07e41e99:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmMTViYzBhOGMxMjRkYzMxNGEzMTkyMTM1MWQyZWZhMmQyN2UwYzJlM2FkZWMyOTljMTFiMTI1OTIyYjhjZjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhMjYxY2RmZmM0ZWUzODFlODMyMTg5MDdjZWFlYzc2NjRiMTk2M2I4ZDQ0YmJhYTZhZjU3ZGI3MGZkNzBhYzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwZjYzMDdmZTYwMzk0NGVhNzhkZDZmMTRiYTRiOTU4NTY1YzZmZDY0N2Y2MzQ3NDk0NTkwZDI3MmNiNzk4NjIifQ"
+        },
+        {
+          "resource": "repo://src/engine/shard.rs#L81-L90",
+          "version": "repo-lines-v1:sha256:4214dc49085c2c97c829ad518bde86003faad02d38c543d32204a5e266c6e3f8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0Yzc2NjliZDRiMWEzZThiZDllNzM0OWRmNDUxYTcxZWJiODBkODcyNWVhZGY1MzhlNTJkMzExYWNkM2Y3MmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1NzJmMjE0NGI2NjhkOGFjZGUxZWZkOTE5NmJiZDZkYmI1YTEzM2Q0YTA4MDVlNGNjYjA0OWEyNzc3ZjkxOGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFkYjJiMjVmYmRjODNkYzQ0YzZmZTQ4MzE3NDZiMWNjZGQ2Y2YxODg1OTRiYmZlOTE4ZmE4MDJiZjc4ZGFkNzUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1119810b7f384fe1a651b81b293b4683",
+      "statement": "Multi-owner mode uses 64 virtual partitions for more than one owner and assigns partition p to owner p modulo owner_count, so non-power-of-two owner counts from 2 to 64 are balanced within one partition.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/partition.rs#L1-L5",
+          "version": "repo-lines-v1:sha256:ddaee9163662e43258e30c2339b3e1f1fd1e954f3217685e1a6709fc5883dbde:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzJkNDA0NzFiNjlhZjEwMGUyMDQ3YmE4M2U3MDM2ZmQ3YjBkODczNjQ3MzI2MmNjM2ZiNGY1ZDI5ZDBlYmU2YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTEwOTFkMWFiYjUyYTQ4ZjVkOWRmOTFmMGU1ZjYzOGMxNzIwZWMwYTM1YWI3ZDJjZjc1NmY5NTI5ODlmYjI5NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjczZDQ0MDVhODAyYWZhZjZiZDcwMzdhODZhZmIxNDFlYjE2MzkyMDExNzI0ZTExNDY0MzAzNWY5NmQ2NzZiNiJ9"
+        },
+        {
+          "resource": "repo://src/engine/partition.rs#L48-L99",
+          "version": "repo-lines-v1:sha256:c82a0f70256a47e384bd09251e85c6124622ec7b446493a0210dd2aebe949563:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NTlmYTRlYWQwNDgwMGExMzFkOTZmY2FkYzg4Y2Q0M2Y2MTM1ZDU2NDZhOGI0ZjdmZWVjYjdlMmEwMTMyNjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2YTgwY2U0MTkyM2Q1MzM4YWU1ODliOGQ4ZjViNjA2ZDQ0Zjk1MjMzZGJlZjg1OGNkZDllMmJlZTU5MzFkZDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0ODg0ZjI0YzQ2MGUxYjkzMzQ3NzZmODczN2Y1ZGJkZDY1ZWQzN2JiYWJhZjBlZDhjNzhmNmUxM2FjMzgzY2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliMTliYTMxODExYWRlOWQ4YzAzYWI1YmVlOWQ0YjI2N2M3NDZjOWRmMDE2MDVmMTliMjkyZDhmODA2YjcxZDUifQ"
+        },
+        {
+          "resource": "repo://src/engine/router.rs#L261-L272",
+          "version": "repo-lines-v1:sha256:eff941527be4bdd63ef2d1a2ab4497d9aa56f1b94024496d88aaa7ebe138cb5c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4YjhlNTU4ZjkwZjg1YTIwOTI1OGZkMmE0MDEwNGU2YjdiZjcyMTU2MWQ2OTE1NTAxODE0Nzg5MDI0YzVmZjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3YmYyMzlhMzRhOWNlZTQzZGYwYmU0NzlmZjY1NWFhYjEyZWY3Y2Y1NDI1MmQ0Y2RmM2NmMjYyNWVjNjVlMjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNkNTM3YTVjNWE4MTJjNDk3NWE2ODcxM2QzOTQ0ZTkwYzY2ZjI1ZGQ3MDUxMzg0MmNjN2E2ZDVmOGJjMTg2YTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1YTIwMTA3ZjgwNTc1NTVlZGE2NDkzMDg2NDg3MDdhZDY3NDY1YTg3NGM3NWQxMWY1YWU1NmI0NWE5ZWRjNmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fb175d2968d6498f91a03b99a764b190",
+      "statement": "Each multi-owner worker runs a current-thread Tokio runtime and LocalSet with separate bounded DATA and CONTROL lanes, and admission charges message slots and retained bytes atomically before argument copying.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/mailbox.rs#L1-L10",
+          "version": "repo-lines-v1:sha256:82b159fde6830df21e7d363ce1ca8e63841a6e4a3e9e801b10a7e131f9e9a30a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyZDQwNDcxYjY5YWYxMDBlMjA0N2JhODNlNzAzNmZkN2IwZDg3MzY0NzMyNjJjYzNmYjRmNWQyOWQwZWJlNmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlMTVhYzliODMyNTE1ZmNjOWEzOTY4OTIxMWI3NmVjNWUzZDgxODAzMmZmZGQ3MmM4OTkwZGVkNzZlMGRmNzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmNGRmNTY4MmIwOTBjMzUxOThmMGU0MmRiYTlkN2QwZjE0MzdmOGJjNWZjODUzZTAzN2RiZjdhNDQzN2JmZTAifQ"
+        },
+        {
+          "resource": "repo://src/engine/mailbox.rs#L367-L414",
+          "version": "repo-lines-v1:sha256:83178bb18a93a11426ca1632836cedbe96aecb59a094e52c1d0fef6976e5a0c1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlZmFiNjdlYWJmYzRlMTM2NDA4YmYyYThlMTg5ZTdkY2IwYmUyMDdjNWI3NDc4YjAwZDI2ZmY3NDQxZjJiNWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2MmQ1YjVkNGJjNjI5ZDQ0ZjUyMGZlOWY2NDA0NGE0ZWYzZWU1NjY3MjZiNTk0Yzc3ZGZhNDI3MTY3OWVlMjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ3ZTdjNzdiN2MzOGIxZWVlZGIyMTkzYzdmM2VhZmFiNzE2MDFlZWJkZmM5Zjg5NzNkNWZlNzVhZmUzNmM3MjkifQ"
+        },
+        {
+          "resource": "repo://src/engine/router.rs#L282-L311",
+          "version": "repo-lines-v1:sha256:9e37dfa38e630093a37b0a26c847cbf01d336b5509d8c08f401554bbc626217b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkZDM0Nzk5Yjc3ODU2OTM4OWNiNGRkZTQyYjQxOWE0MTQzOWQwMmMxMjNhNjkxNDIzMjdjOGI2YWYxNmNhZTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYzMzFjOTQyMTBkNmIwZjU4ZjVjMzlkNGQ2ZGNjZDgzMzU0NmJjMjBmN2MyZmExZjI3MjRmMzE3ODA4ZTFmYjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmM2RlODg5NGQyMDUyOWJiY2FlMTdhMjk5OWZkNjJlNjdjNGU5MTVmYWJiNTEwMzEyZmM1ZjQzNTRkYzU4ZmUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_912c09de21734a4ab33c9e03dc67d3d0",
+      "statement": "CONTROL traffic has burst priority but may not run more than eight consecutive deliveries before ready DATA on an unfenced owner, and DATA reception is disabled while a reservation fence is held.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/mailbox.rs#L379-L381",
+          "version": "repo-lines-v1:sha256:56d486fb9d08bc3e3b31f97adf4a727579e0ed13507ab8eb669282a54dab1ae8:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODAxZDgwYWQ5OWE0ODU0ZjAxMTYxMzczOGQyMmE4YmU0ODBjOTU1NzFlNjFjMjg5M2RiY2JlODdjNGMyMjQ0NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2Q2ZTc1NjM5MTZjOTJlMzIyMzBmZWJlN2Y5ODgyNjIxMzkzMDk4ZmU1NDkwNGVhYjJlOTU5ODJhYjkzM2RiNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjRhMzY1YTkwZWMxMWU5MDQzMjc1MmNmOTM3NmVjNWVkMzZiODBiYTVlOGU2ODU0ZmNmOTg5NzBkMzA0NDQ2OSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDEzNGZmMjNiZTI1MDk3NGNhZDA2MGVlOWZhMDg4YjNhZTQ1ZWRiNzRjMDE0YzBkYzE2YzJmM2I4MTQ2YmQzYSJ9"
+        },
+        {
+          "resource": "repo://src/engine/mailbox.rs#L430-L463",
+          "version": "repo-lines-v1:sha256:5e62f61827711b007c8da5280c021bfc91de5034959438f8c5183a308714eaf2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3NWU1ZGRkMjU5NzRmMzlhZGQ4YjcyNDAyOGEwNmVkOWEzMmYwN2M1NDNkYWE3OWEyODA2ODBkNzExMjNiNmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlkYmUwZDM3MTg4OTY3YTVjYWI5MmRhZDg5ZmJjMzlmZTc3NTlhNWRlOWZiZDg0YTlkZTM5MjUwYzJiNDU0MGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYwYjlkNDdlZDJkM2ExN2Y2ZTkzNjYzYjc2N2JkYWYzOTU0NmE1YmI4ODA2MDA0Mzc5YmUyYmE2MWNhZTMxODkifQ"
+        },
+        {
+          "resource": "repo://src/engine/owner_actor.rs#L1-L8",
+          "version": "repo-lines-v1:sha256:f5e2c216ab71eee0b5fbfc56cf2c52dfa08def306f8221f36cdea55ec4264baf:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzJkNDA0NzFiNjlhZjEwMGUyMDQ3YmE4M2U3MDM2ZmQ3YjBkODczNjQ3MzI2MmNjM2ZiNGY1ZDI5ZDBlYmU2YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjk1OWFkZGVhOWIyOWJjNzI0Y2IwNGM5ZTE4M2Y3NDA2MGJjMGU2ZDQ2NjMxYzBlMWE4ZDYwMTI2Y2M1YzRmZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmZmZTA5NzM2Y2VkNWZkZjUzNTMwMWVlMTRiOThkNmIyZTkzYTQwNzYyYzU0MGMzNmJlOTg1ODU5MDY4NzYzMyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_9db12f5bfda84dca90a6413b2be7e690",
+      "statement": "Cross-owner commands reserve every participant in increasing owner order, execute against a scratch executor holding only the keys the command may touch, transplant only written keys, and abort granted fences on failure rather than continuing with partial data.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/owner_actor.rs#L325-L333",
+          "version": "repo-lines-v1:sha256:fb81c8d5b4afbe094a7052f61ee13d6c806ee2b5a9675c24811538d9e4a31296:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzRhZGQ3NDdkMDViZjc4OTEzOWUxYWJkZDIwMDdlOGM4ZTM2YzMzZDU2NDViODExNzU1YTdlYTA4OThjY2UxMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTYyZWU1N2U0MWE4YzIwYWUwMTY0ZGYyNjE0MzlkY2M0OTlkMzUyMDgzNDE1MTUxNmQwNDdlOGRlYWU4YTQ2NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2Y5YjA0MmViYjQ4Nzk5NDliYmVhOGUzYjU5MzNkMjZmZjA2MTM4YjYwN2FiZGUwNzkwNDJjMzk1YWU2OTI1OSJ9"
+        },
+        {
+          "resource": "repo://src/engine/router.rs#L1-L15",
+          "version": "repo-lines-v1:sha256:1d81156d5aeafd65996aabd10c5b70c96df3e87c795b5937d4ec36cccff3459f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyZDQwNDcxYjY5YWYxMDBlMjA0N2JhODNlNzAzNmZkN2IwZDg3MzY0NzMyNjJjYzNmYjRmNWQyOWQwZWJlNmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiOTI0OWY0YzlmMTI3Mjk0NzJhNzcyYzFhNDhiNjc0MjU1ODNhMDhhNGI0NzJhOWYzZjkzYTU1NDVhOGIwMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0NmExMzEyODBhZjY3MzUyOWUzOTgyMjQ3NGNmNTUyMjM1ZmFmMjg4MjdiYmJiYmU2MzQ4YjE0NWZkNGIzY2UifQ"
+        },
+        {
+          "resource": "repo://src/engine/router.rs#L668-L729",
+          "version": "repo-lines-v1:sha256:746372fd239f0f6f06d155d2480c3beb6161330297f2b73f93f9f512a22afe98:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwODEzY2M2MTViNjNkODlmM2M5MzJkMWY3YWRjNWExMmM4ZTkyNDg5MGY5NDMzMWM2MjM3ODFiZmQ3MjM5MGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ2Yzg5MmU0ZmZjNjgyZTMwN2E1ODBiYmRmMjg4MGVhNTBlYTZiOTY2MmRiYWQwZDZjMzU5MTczMTBiZGVhMGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5MjFhMDdjN2FlZGFlZGE0MDNmMDhjNWJmOTkwZDZhNGM2ODhmZmU4MjM3YTcyNWQyYTA5N2MyYmNhYWY2NzAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1a4d3923f7bd45adbfa7629003e993df",
+      "statement": "Deferred multi-owner batches preserve request order, use a reply budget separate from synchronous control/data replies, and keep the original commands when admission is full instead of partially applying the batch.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/router.rs#L63-L78",
+          "version": "repo-lines-v1:sha256:424181f11d6a22b9780b141b671403c829305de17c81ab44eb8ddb8389298798:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjYzE4ZjQxYmI4NzQxZDk1NDVlMmFhZDNjMWNmNDljZDUwZmExMjc5NDIyNGEyYjQ2N2I4NDQ0NTE4N2Q5MDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2OTNkZjdmODJhMWE4NWVlOGRkNGU0MzI5MWNiNGZiZWRlNjk3ZjJkMmE0ZGJiM2IwNTgwZWU4NTc3ZWQzYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2ZWQ1ZWIxYWY5M2M3YjQwOTc1NWNjYjcwYjk5M2VmYjdlZTU2ODRmZmEwODQ0OTQ4ZWU3NmNhNjE4NGZmODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0YTM2NWE5MGVjMTFlOTA0MzI3NTJjZjkzNzZlYzVlZDM2YjgwYmE1ZThlNjg1NGZjZjk4OTcwZDMwNDQ0NjkifQ"
+        },
+        {
+          "resource": "repo://src/server/multi.rs#L472-L532",
+          "version": "repo-lines-v1:sha256:c206ffadf93776bbd3bf4023d9f0c4d71551eec76f1168588cc96078acf91141:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5Yzk0ZmQxMzNmZDhjMTE0Njk1YjI5NWM2ZDAwODEzMGI4MTE4ZTE1OTg1ZDhhZGUwZjExYzkxZTY1OWY4MzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmZTQ5ZjNmZTU4MGFlZWIwZTNmZTNiYjc4Y2Y2MWFmYjhiNDI0NzI2OTY1NWJhODJiZTg4ZmEyYjEwOTAzZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjNTYxYTYwNzAwY2M2M2Y0ZjIxZTg5MGU1YzQ0ZmJmMzNkYzZkYzhlNmRiNjg5ZGUyMjc5ZmI1NWE2MDc0NmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiNTRiMmQ4YTk1ZWZlMDIxMDA0OTcyNGM0YTFiMDM0ZDMzYjI3MDcwMGVlOGJhMmUyNTdjZGNkZmI4MmVmNjAifQ"
+        },
+        {
+          "resource": "repo://src/server/multi.rs#L64-L142",
+          "version": "repo-lines-v1:sha256:d7349a09dff84b53624b79e40537507f0df45326532c9602ac5f6bd54d5148ff:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5OTcxMmFkMGE3N2M0MWJiZGIxNjgwZDZmZWUwMGU3MGVhMmEzNzA4YjRmNjBlYzA0ZjIyMGQ4NzRkZmE2MzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhlMmM2MGI5NjkyYjdiZTJlZTRjMmFkMDU2MmY3N2U3YzBjZGE1MGZiNzEzYTlkZGNiODAxNjAzZWFhYTYzZDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fc3c8bb0af99429cbca46798d668b419",
+      "statement": "Blocking list operations poll the owner about every 10 milliseconds without holding a data borrow between checks, and multi-owner blocking operations use a fenced scratch executor for a coherent key set.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/blocking.rs#L1-L45",
+          "version": "repo-lines-v1:sha256:5bb16e1a46c34cb3c7df116ca8d15406a0e4d48d37bc9ae6fd0936ece5da64be:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTcyZGRmN2RjNDQ2OWFjYmI0Yzg0MmI3YjUyMjFhNmNjMzM3ZTBmMWM0M2Y3NDA5OTU0NmVmYjA4MDVmN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4MGZhZTE0MzEyNjc4MjllMTg4ZTI2ZDJhMmU2ODAwNDgxNDZjMWYzNjI2NDUzNjY5OWE3Y2Q5MjliOGU4MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJiZDQ2ZGMyMGU3Y2Y5MDhkMTQxNWMyYzM2YTUyMTAyYzFlNjYwMDcxYWE3OTg2OWZiYjQ0MjU5MDM1NDczMDIifQ"
+        },
+        {
+          "resource": "repo://src/engine/router.rs#L1572-L1583",
+          "version": "repo-lines-v1:sha256:143bd3f326700d8444e4e127c2651dc01ce427cf4d306c135959fa120779c16c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyNWE4MDFhNGEzYzg3Yzc2MWIzNTk2NzgwNzI0MTg5MWEyZWZhMzVjMWVlZGI3N2RkODBlZjYxMjBiZjk1MjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIwZjk1YzhhODRmOTNmNDBkOTBjNmEyNjZkOTdkNzQ0YmVmMTU2MmMzODZiYWUxZDE3NmUzNDJkMjRjNTBiMTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMyNDI0NWY2OWMyMTI4NDNkYjRjMDRlMTE3NDlhYTIyZWVhODgzMDA4NGVmNjI5Zjg0NTdlMjczODA0MWJkYjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c868b575c8de4b6a905ff5b1179156e8",
+      "statement": "Payload accounting is process-wide across owners, and INFO, MEMORY, STATS and DBSIZE gather one coherent cross-owner aggregate for the command before clearing the override.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/router.rs#L1538-L1559",
+          "version": "repo-lines-v1:sha256:27ca2160e5d1b138c16c9d03dfcc370a77098c495ea8dd0dfbf61b2f706aac05:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjMTI5NTFlYjIyM2I4NzYzODlhMDM4NzM3NmQ4YjUzZDVkMTU1ODJmMjIyZGE1ZDM0Nzk5ZmE5ODA1ZDVjMGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5OTcyZGQwYWNlMDg5NTMyNGIyNjk4YTViMmNhMWJhMmQzNmUxY2JlMmQwMDk5NTM0NzBjNWJjMWIyZjM1ODYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFlYzUxZDI5NjlkMmJlZWFiNTk0ZTQ3Mzk5ODg0NWI0MWM0NDkzZWExYTA4MzkzYTNiNWU2OTQ3MTZlZjY1YTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI2ZDgzNTEyYjFhNjY1NGE3ZGYzNjMyYzkyMDc0NDFhYzQ2Nzk3OWU1Y2NlZGVjM2IzNjdiODcwYjY0ZWVkYzkifQ"
+        },
+        {
+          "resource": "repo://src/engine/router.rs#L266-L271",
+          "version": "repo-lines-v1:sha256:3f2948e501c0e246f77cb482844810c2c41b8777fcc6282d52b34d870988edcb:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjdjYWQ0MzhhMDIwMTI0YjliZGQ2NTNiMjYwZmExNWI5NGY3YTBmNDM4NDNmMDk2NjE4NDY3Y2FjMTRiYWRiOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjMyMGQ2YzYzMTZkOWQ1ZGVlMjIxY2U4YjNiZGY3ZGY4YjYzYWRlMzM5ZDM5YWUyYzIwNzk2MWNiNWY1ZDA0OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODhmMGM1YjkxYjY0NjYzYmJkOGQzMjk0MDQxZTI1YTkzZTc0ZDdhYmFjOWQxNTk0MWJhYzI0NTc1MThlN2Y4YSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjYzZWI4ZjI5ZTk2ZTYyMzAyMmVkZDc0NDJiZjBlMjMyOGQ5NDcyMWQ0ZDU4YTFkNTVlOTY3NWVjNTgwNjI5YSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_62eb957a651f419f962b20810d33833b",
+      "statement": "Multi-owner shutdown closes data admission, stops and joins every owner thread, and reports an owner failure rather than continuing with partial data.",
+      "evidence": [
+        {
+          "resource": "repo://src/engine/router.rs#L342-L401",
+          "version": "repo-lines-v1:sha256:dcf39f881157f5083144e0ac1c70f4e660b97c582205a58fbdcb7e0420497ddf:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyOTllMzA1NzRlMzk2YjRhMTIyNDkxMWExMDhjYjk0ZDM1MzNkOWE4OThmMzBjMDllYTQxNTFkNTVlN2ExMWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2MmVlNTdlNDFhOGMyMGFlMDE2NGRmMjYxNDM5ZGNjNDk5ZDM1MjA4MzQxNTE1MTZkMDQ3ZThkZWFlOGE0NjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliZTlmMTc3NDY4NzI3YmNkNGE1YzMzOGE3ZGY0MWExNzVmNGY1NTFmNGYyZmE3YzY0MGUxMGM0Zjg5ZDI0YTYifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.3",
+    "at": "2026-11-02T15:32:39.597Z"
+  }
+}
