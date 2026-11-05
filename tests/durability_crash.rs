@@ -251,3 +251,96 @@ fn everysec_recovers_a_contiguous_prefix_without_holes_after_sigkill() {
     restarted.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_kill_during_a_background_rewrite_keeps_the_live_journal_and_all_acked_writes() {
+    let dir = temp_dir("rewrite-crash");
+    let server = Server::start(&dir, "always");
+    let mut stream = server.connect();
+    send(&mut stream, &[b"PING"], b"+PONG\r\n");
+    const WRITES: usize = 20_000;
+    let value = [b'v'; 64];
+    for chunk in 0..WRITES / 100 {
+        let mut bytes = Vec::new();
+        for index in chunk * 100..chunk * 100 + 100 {
+            let key = key(index);
+            rillcache::protocol::encode_request(&[b"SET", key.as_bytes(), &value], &mut bytes);
+        }
+        stream.write_all(&bytes).unwrap();
+        let mut replies = vec![0u8; 5 * 100];
+        stream.read_exact(&mut replies).unwrap();
+    }
+    // Start the cooperative rewrite and confirm it is actually running before the
+    // process dies, so the kill lands mid-rewrite rather than before it starts.
+    send(
+        &mut stream,
+        &[b"BGREWRITEAOF"],
+        b"+Background append only file rewriting started\r\n",
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        stream
+            .write_all(b"*2\r\n$4\r\nINFO\r\n$11\r\npersistence\r\n")
+            .unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+            if head.ends_with(b"\r\n") {
+                break;
+            }
+        }
+        let length: usize = std::str::from_utf8(&head[1..head.len() - 2])
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut body = vec![0u8; length + 2];
+        stream.read_exact(&mut body).unwrap();
+        if String::from_utf8_lossy(&body).contains("aof_rewrite_in_progress:1") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "rewrite never started"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(stream);
+    server.kill();
+
+    // The old journal must still hold every acknowledged write; the temporary
+    // rewrite file must not be replayed.
+    let restarted = Server::start(&dir, "always");
+    let mut stream = restarted.connect();
+    send(&mut stream, &[b"PING"], b"+PONG\r\n");
+    for index in 0..WRITES {
+        let mut reply = Vec::new();
+        send(&mut stream, &[b"GET", key(index).as_bytes()], b"");
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte).unwrap();
+        assert_eq!(byte[0], b'$', "key {index} missing after crash");
+        loop {
+            stream.read_exact(&mut byte).unwrap();
+            reply.push(byte[0]);
+            if reply.ends_with(b"\r\n") {
+                break;
+            }
+        }
+        let length: usize = std::str::from_utf8(&reply[..reply.len() - 2])
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut body = vec![0u8; length + 2];
+        stream.read_exact(&mut body).unwrap();
+        assert_eq!(&body[..length], &value, "key {index} value differs");
+    }
+    // Recovery must accept a fresh rewrite after the interrupted one.
+    send(
+        &mut stream,
+        &[b"BGREWRITEAOF"],
+        b"+Background append only file rewriting started\r\n",
+    );
+    restarted.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

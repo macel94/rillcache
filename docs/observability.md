@@ -195,9 +195,10 @@ aof_current_size:1234
 
 With persistence disabled only `loading:0` and `aof_enabled:0` are returned.
 `aof_last_write_status` reflects the journal's latched failure state and
-`aof_last_bgrewrite_status` the last synchronous `BGREWRITEAOF`, so
-`aof_rewrite_in_progress` is always `0`. RDB, background-rewrite progress,
-backlog, bio and fork fields are omitted because they are not measured.
+`aof_last_bgrewrite_status` the last completed `BGREWRITEAOF`. Since the
+cooperative rewrite change, `aof_rewrite_in_progress` reports whether a rewrite is
+currently running. RDB, backlog, bio and fork fields are omitted because they are
+not implemented or measured.
 
 ## Deliberate gaps
 

@@ -146,20 +146,38 @@ than silently converted into success.
 ## Compaction with BGREWRITEAOF
 
 `BGREWRITEAOF` replaces the log with a compact snapshot of the current keyspace:
-`FLUSHALL` followed by every live key's rebuild records. The implementation is
-**synchronous** despite the Redis-compatible name: it holds the exclusive
-transaction gate while encoding the snapshot, writing a mode-0600 temporary file
-in the journal directory, fsyncing it, atomically renaming it over the journal and
-reopening it at the snapshot end so the next append follows the snapshot instead
-of overwriting it. Command service pauses for the duration. There is no fork, copy-on-
-write page sharing, incremental rewrite or background progress reporting.
+`FLUSHALL` followed by every live key's rebuild records. Since the cooperative
+rewrite change it is **not** a single blocking pass:
 
-A successful `+OK` means the old log has been atomically replaced with a complete
-snapshot that includes every mutation committed before the rewrite. A crash during
-the temporary write leaves the previous log intact; a failure returns an error and
-the journal retains its prior contents/position unless the rename already
-completed. Concurrent appends cannot race the replacement because the same gate
-serializes commands. Rewriting a disabled journal returns a visible error.
+1. The command materialises the key list and creates a mode-0600 temporary file in
+   the journal directory, then replies
+   `+Background append only file rewriting started`. No keyspace values are
+   encoded under this first pause; it is bounded by the number of key names.
+2. The maintenance loop advances one bounded slice per tick (at most 512 keys or
+   1 MiB of encoded state). Between slices the server keeps serving commands.
+   Every key changed since the previous round is re-encoded as a **whole value**
+   (`DEL` plus rebuild), never as the original incremental command, so a key
+   visited twice cannot duplicate collection members.
+3. The snapshot is fsynced outside the exclusive gate. A final round re-encodes
+   the keys written during that fsync, then a short gate appends the residual,
+   fsyncs, renames the temporary file over the journal and reopens it at the
+   snapshot end.
+
+`INFO persistence` reports `aof_rewrite_in_progress` while a rewrite is running and
+`aof_last_bgrewrite_status:ok|err` for the last completed attempt. A crash before
+the rename leaves the previous journal intact; the temporary file is removed on the
+next start and never replayed. Killing the server mid-rewrite keeps every
+acknowledged write (covered by `tests/durability_crash.rs`).
+
+Measured on the development host with 20,000 keys of 64-byte values (2.5 MB
+journal): the old synchronous pass blocked command service for **130 ms**; the
+cooperative rewrite replies in **9–20 ms** (key-list materialisation), encodes
+**1.6–2.4 ms** per 512-key slice, commits in under 1 ms beyond its residual fsync,
+and completes the background pass for that dataset in roughly 4–5 s while clients
+are served between slices. Completion time and the start pause still scale with
+the keyspace: there is no fork, copy-on-write page sharing, or incremental
+generation beyond this. A write storm during the rewrite makes the reconciliation
+rounds longer; the slice size bounds each round, not the total.
 
 Automatic rewrite thresholds are configurable at runtime:
 
@@ -169,10 +187,10 @@ CONFIG SET auto-aof-rewrite-percentage 100 auto-aof-rewrite-min-size 67108864
 
 `auto-aof-rewrite-percentage` defaults to `100` and `0` disables automatic
 rewrites. `auto-aof-rewrite-min-size` defaults to 64 MiB. The maintenance loop
-checks the open journal about every 100 ms and triggers the same synchronous
-snapshot rewrite once the file is at least the minimum size and has grown by the
-configured percentage over the size recorded at the last rewrite. A successful
-rewrite resets that baseline. These rewrites still pause command service under the
+checks the open journal about every 100 ms and starts the same cooperative rewrite
+once the file is at least the minimum size and has grown by the configured
+percentage over the size recorded at the last rewrite. A successful rewrite resets
+that baseline. Rewrites no longer hold the exclusive gate for the whole snapshot;
 transaction gate; there is no fork, background progress or incremental rewrite
 claim.
 
@@ -205,9 +223,10 @@ it as volatile across restart and do not use this subset as a durable work queue
 
 ## Deliberate gaps
 
-- No RDB import/export, background/incremental AOF rewrite, manifest/multi-part
-  AOF, checksums, encryption at rest or replication of the log. `BGREWRITEAOF` is a blocking full-state compaction, not Redis's
-  fork-based background rewrite.
+- No RDB import/export, manifest/multi-part AOF, checksums, encryption at rest or
+  replication of the log. `BGREWRITEAOF` is cooperative and incremental, but it is
+  not Redis's fork-based rewrite: the key list is materialised in memory and the
+  rewrite runs on the owner thread between maintenance ticks.
 - No graceful signal-driven drain; see [container delivery](containers.md).
 - No multi-process file locking, shared-filesystem guarantees or crash-consistency
   testing across kernel/filesystem failure modes.

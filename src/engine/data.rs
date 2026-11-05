@@ -256,6 +256,11 @@ pub(crate) struct Data {
     journal_events: VecDeque<(u64, Vec<u8>)>,
     journal_overflow: bool,
     collect_events: bool,
+    /// Keys mutated since the active rewrite started. Only filled while a rewrite
+    /// is running, so steady-state mutation cost is unchanged.
+    rewrite_events: VecDeque<(u64, Vec<u8>)>,
+    rewrite_overflow: bool,
+    rewrite_active: bool,
     expired_events: VecDeque<Vec<u8>>,
     evicted_events: VecDeque<Vec<u8>>,
     pub(in crate::engine) expired_keys: u64,
@@ -373,6 +378,15 @@ impl Data {
             }
             self.versions.insert(key.to_vec(), self.version_seq);
         }
+        if self.rewrite_active {
+            if self.rewrite_events.len() >= MAX_JOURNAL_EVENTS {
+                self.rewrite_events.clear();
+                self.rewrite_overflow = true;
+            } else {
+                self.rewrite_events
+                    .push_back((self.version_seq, key.to_vec()));
+            }
+        }
         // Persistence/notifications alone consume per-key history. Keep WATCH
         // versions current without allocating disabled or unusable events;
         // consuming the full snapshot resumes incremental collection.
@@ -394,6 +408,37 @@ impl Data {
             self.journal_events.clear();
             self.journal_overflow = false;
         }
+    }
+
+    pub(super) fn begin_rewrite_tracking(&mut self) {
+        self.rewrite_active = true;
+        self.rewrite_events.clear();
+        self.rewrite_overflow = false;
+    }
+
+    /// Take the keys mutated since the previous call. The log is cleared, so a
+    /// write that lands while the caller re-encodes those keys is reported again
+    /// next round instead of being lost.
+    pub(super) fn take_rewrite_changes(&mut self) -> (Vec<Vec<u8>>, bool) {
+        let overflow = self.rewrite_overflow;
+        self.rewrite_overflow = false;
+        let mut keys: Vec<Vec<u8>> = if overflow {
+            self.entries.keys().cloned().collect()
+        } else {
+            let mut seen = std::collections::BTreeSet::new();
+            for (_, key) in self.rewrite_events.drain(..) {
+                seen.insert(key);
+            }
+            seen.into_iter().collect()
+        };
+        keys.sort_unstable();
+        (keys, overflow)
+    }
+
+    pub(super) fn end_rewrite_tracking(&mut self) {
+        self.rewrite_active = false;
+        self.rewrite_events.clear();
+        self.rewrite_overflow = false;
     }
 
     pub(super) fn journal_seq(&self) -> u64 {

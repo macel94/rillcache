@@ -263,7 +263,28 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
                 .expect("AOF size");
             assert!(size > 0, "{text}");
 
-            command(&mut stream, &[b"BGREWRITEAOF"], b"+OK\r\n");
+            command(
+                &mut stream,
+                &[b"BGREWRITEAOF"],
+                b"+Background append only file rewriting started\r\n",
+            );
+            // Wait for the cooperative rewrite to finish so the status fields
+            // below describe a completed attempt, not one still in progress.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let mut request = Vec::new();
+                encode_request(&[b"INFO", b"persistence"], &mut request);
+                stream.write_all(&request).unwrap();
+                let text = bulk_text(&read_frame(&mut stream, 0));
+                if field(&text, "aof_rewrite_in_progress") == Some("0") {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "rewrite did not finish: {text}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
             let mut request = Vec::new();
             encode_request(&[b"INFO", b"all"], &mut request);
             stream.write_all(&request).unwrap();

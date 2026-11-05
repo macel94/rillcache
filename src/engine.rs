@@ -296,6 +296,8 @@ pub(crate) struct ShardExecutor {
     effects_enabled: std::cell::Cell<bool>,
     /// Last payload total this owner contributed to the shared credit counter.
     published_payload: std::cell::Cell<usize>,
+    /// Cooperative append-only rewrite state (owner-thread only, like `data`).
+    rewrite_job: std::cell::RefCell<Option<crate::engine::journal::RewriteJob>>,
     _local: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
@@ -1053,6 +1055,7 @@ impl ShardExecutor {
             owner_thread,
             data: std::cell::RefCell::new(data),
             published_payload: std::cell::Cell::new(0),
+            rewrite_job: std::cell::RefCell::new(None),
             _local: std::marker::PhantomData,
         }
     }
@@ -1080,6 +1083,7 @@ impl ShardExecutor {
             owner_thread,
             data: std::cell::RefCell::new(data),
             published_payload: std::cell::Cell::new(0),
+            rewrite_job: std::cell::RefCell::new(None),
             _local: std::marker::PhantomData,
         }
     }

@@ -381,6 +381,10 @@ impl Store {
     pub fn set_payload_limit(&self, limit: usize) -> bool {
         self.call(move |executor| executor.set_payload_limit(limit))
     }
+    pub fn rewrite_in_progress(&self) -> bool {
+        self.call(ShardExecutor::rewrite_in_progress)
+    }
+
     pub fn journal_sync(&self) -> std::io::Result<()> {
         self.call(ShardExecutor::journal_sync)
     }

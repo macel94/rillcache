@@ -4,13 +4,15 @@
 //! the keys it changed (`DEL` plus `SET`/`RPUSH`/`SADD`/`HSET`/`ZADD`/`XADD` and
 //! an absolute `PEXPIREAT`). Replaying the file is ordinary Redis command
 //! execution, so the log is readable by a Redis-compatible tool and does not
-//! require binary-format compatibility. This is intentionally not an RDB/AOF
-//! rewrite implementation: the file grows without compaction.
+//! require binary-format compatibility. Compaction is a cooperative rewrite: the
+//! owner materialises the key list, then maintenance encodes bounded slices
+//! between client commands and swaps in the synced snapshot under a short gate.
 
 use super::ShardExecutor;
 use super::data::{Collection, Data};
 use super::notify::{Category as NotifyCategory, NotifyFlags};
 use crate::protocol::{Limits, dispatch_request, encode_request};
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -63,6 +65,23 @@ impl Default for AofConfig {
     }
 }
 
+const REWRITE_STEP_KEYS: usize = 512;
+const REWRITE_STEP_BYTES: usize = 1024 * 1024;
+
+pub(super) struct RewriteJob {
+    keys: Vec<Vec<u8>>,
+    cursor: usize,
+    pending: VecDeque<Vec<u8>>,
+    synced: bool,
+    rounds: usize,
+}
+
+struct RewriteState {
+    file: File,
+    temporary: PathBuf,
+    bytes: u64,
+}
+
 pub(super) struct Journal {
     file: File,
     path: PathBuf,
@@ -72,6 +91,7 @@ pub(super) struct Journal {
     last_sync: Instant,
     failed: bool,
     last_rewrite_failed: bool,
+    rewrite: Option<RewriteState>,
     size: u64,
     rewrite_base: u64,
 }
@@ -82,6 +102,7 @@ pub(super) struct PersistenceStatus {
     pub current_size: Option<u64>,
     pub write_failed: bool,
     pub rewrite_failed: bool,
+    pub rewrite_in_progress: bool,
 }
 
 impl Journal {
@@ -116,6 +137,7 @@ impl Journal {
             last_sync: Instant::now(),
             failed: false,
             last_rewrite_failed: false,
+            rewrite: None,
             size,
             rewrite_base: size,
         })
@@ -212,7 +234,7 @@ impl Journal {
         Ok(())
     }
 
-    /// Whether the current log has grown enough to justify a synchronous rewrite.
+    /// Whether the current log has grown enough to justify a rewrite.
     fn auto_rewrite_due(&self, percentage: u64, min_size: u64) -> bool {
         if percentage == 0 || self.size < min_size {
             return false;
@@ -248,10 +270,10 @@ impl Journal {
 }
 
 impl Journal {
-    /// Replace the log with a compact full-state snapshot using an fsynced
-    /// same-directory temporary file. Called within the single compatibility
-    /// owner's turn, so no concurrent append can be lost.
-    fn rewrite(&mut self, records: &[u8]) -> io::Result<u64> {
+    /// Create the same-directory temporary file that will replace the live
+    /// journal once a consistent snapshot has been synced.
+    fn begin_rewrite(&mut self) -> io::Result<()> {
+        self.abort_rewrite();
         let directory = self.path.parent().unwrap_or_else(|| Path::new("."));
         let temporary = directory.join(format!(
             ".{}.rewrite-{}",
@@ -261,39 +283,79 @@ impl Journal {
                 .unwrap_or("appendonly.aof"),
             std::process::id()
         ));
-        let result = (|| -> io::Result<u64> {
-            #[cfg(unix)]
-            let mut file = {
-                use std::os::unix::fs::OpenOptionsExt as _;
-                OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&temporary)?
-            };
-            #[cfg(not(unix))]
-            let mut file = OpenOptions::new()
+        #[cfg(unix)]
+        let file = {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(&temporary)?;
-            file.write_all(records)?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&temporary, &self.path)?;
+                .mode(0o600)
+                .open(&temporary)?
+        };
+        #[cfg(not(unix))]
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temporary)?;
+        self.rewrite = Some(RewriteState {
+            file,
+            temporary,
+            bytes: 0,
+        });
+        Ok(())
+    }
+
+    /// Append encoded snapshot records to the temporary file. The caller holds
+    /// the data gate only while encoding, never while these writes block.
+    fn write_rewrite(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let Some(state) = self.rewrite.as_mut() else {
+            return Err(io::Error::other("no rewrite in progress"));
+        };
+        if let Err(error) = state.file.write_all(bytes) {
+            self.last_rewrite_failed = true;
+            self.abort_rewrite();
+            return Err(error);
+        }
+        state.bytes = state.bytes.saturating_add(bytes.len() as u64);
+        Ok(())
+    }
+
+    fn sync_rewrite(&mut self) -> io::Result<()> {
+        let Some(state) = self.rewrite.as_mut() else {
+            return Err(io::Error::other("no rewrite in progress"));
+        };
+        if let Err(error) = state.file.flush().and_then(|()| state.file.sync_all()) {
+            self.last_rewrite_failed = true;
+            self.abort_rewrite();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Atomically replace the live journal with the synced snapshot. The caller
+    /// holds the exclusive data gate, so no append can interleave with the swap.
+    fn commit_rewrite(&mut self) -> io::Result<u64> {
+        let Some(mut state) = self.rewrite.take() else {
+            return Err(io::Error::other("no rewrite in progress"));
+        };
+        let result = (|| -> io::Result<u64> {
+            state.file.flush()?;
+            state.file.sync_all()?;
+            drop(state.file);
+            fs::rename(&state.temporary, &self.path)?;
+            let directory = self.path.parent().unwrap_or_else(|| Path::new("."));
             if let Ok(directory) = fs::File::open(directory) {
                 let _ = directory.sync_all();
             }
             let mut replacement = OpenOptions::new().read(true).write(true).open(&self.path)?;
-            // The replacement handle starts at offset zero; the next append must
-            // land after the snapshot instead of overwriting it.
             replacement.seek(SeekFrom::End(0))?;
             self.file = replacement;
             self.dirty = false;
             self.failed = false;
             self.last_sync = Instant::now();
-            Ok(records.len() as u64)
+            Ok(state.bytes)
         })();
         self.last_rewrite_failed = result.is_err();
         match &result {
@@ -302,10 +364,17 @@ impl Journal {
                 self.rewrite_base = *size;
             }
             Err(_) => {
-                let _ = fs::remove_file(&temporary);
+                let _ = fs::remove_file(&state.temporary);
             }
         }
         result
+    }
+
+    fn abort_rewrite(&mut self) {
+        if let Some(state) = self.rewrite.take() {
+            drop(state.file);
+            let _ = fs::remove_file(&state.temporary);
+        }
     }
 
     pub(super) fn status(&self) -> PersistenceStatus {
@@ -314,6 +383,7 @@ impl Journal {
             current_size: self.file.metadata().ok().map(|metadata| metadata.len()),
             write_failed: self.failed,
             rewrite_failed: self.last_rewrite_failed,
+            rewrite_in_progress: self.rewrite.is_some(),
         }
     }
 
@@ -338,6 +408,7 @@ impl Journal {
 
 impl Drop for Journal {
     fn drop(&mut self) {
+        self.abort_rewrite();
         let _ = self.sync_all();
     }
 }
@@ -538,34 +609,191 @@ impl ShardExecutor {
         self.rewrite_journal().is_ok()
     }
 
+    fn rewrite_budget(&self) -> usize {
+        self.journal_limits
+            .max_frame_bytes
+            .saturating_sub(4096)
+            .clamp(1024, CHUNK_BUDGET)
+    }
+
+    /// Encode one bounded slice and append it to the in-progress rewrite file.
+    fn rewrite_write_slice(
+        &self,
+        journal: &std::sync::Mutex<Journal>,
+        keys: &[Vec<u8>],
+    ) -> io::Result<usize> {
+        let now = self.clock.now_ms().max(0);
+        let budget = self.rewrite_budget();
+        let mut records = Vec::new();
+        {
+            let data = self
+                .data
+                .try_borrow()
+                .map_err(|_| io::Error::other("data busy during rewrite"))?;
+            for key in keys {
+                encode_key(&data, key, now, budget, &mut records);
+            }
+        }
+        journal
+            .lock()
+            .map_err(|_| io::Error::other("poisoned journal lock"))?
+            .write_rewrite(&records)?;
+        Ok(keys.len())
+    }
+
+    /// Start a cooperative rewrite. It returns immediately; maintenance advances
+    /// one bounded slice per tick so client commands interleave with it.
     pub(super) fn rewrite_journal(&self) -> Result<u64, ()> {
         let Some(journal) = self.journal.as_ref() else {
             return Err(());
         };
-        let records = {
+        if self.rewrite_job.borrow().is_some() {
+            return Ok(0);
+        }
+        let keys = {
             let Ok(mut data) = self.data.try_borrow_mut() else {
                 return Err(());
             };
+            data.begin_rewrite_tracking();
+            data.entries.keys().cloned().collect::<Vec<_>>()
+        };
+        let mut header = Vec::new();
+        encode_request(&[b"FLUSHALL"], &mut header);
+        let started = (|| -> std::io::Result<()> {
+            let mut journal = journal
+                .lock()
+                .map_err(|_| io::Error::other("poisoned journal lock"))?;
+            journal.begin_rewrite()?;
+            journal.write_rewrite(&header)
+        })();
+        if started.is_err() {
+            if let Ok(mut data) = self.data.try_borrow_mut() {
+                data.end_rewrite_tracking();
+            }
+            if let Ok(mut journal) = journal.lock() {
+                journal.abort_rewrite();
+            }
+            return Err(());
+        }
+        *self.rewrite_job.borrow_mut() = Some(RewriteJob {
+            keys,
+            cursor: 0,
+            pending: VecDeque::new(),
+            synced: false,
+            rounds: 0,
+        });
+        Ok(0)
+    }
+
+    /// Advance the cooperative rewrite by at most [`REWRITE_STEP_BYTES`] of
+    /// encoded state and one bounded batch of changed keys. Called from
+    /// maintenance, so clients are served between slices.
+    pub(super) fn rewrite_step(&self) -> io::Result<()> {
+        let Some(journal) = self.journal.as_ref() else {
+            return Ok(());
+        };
+        let finished = {
+            let mut guard = self.rewrite_job.borrow_mut();
+            let Some(job) = guard.as_mut() else {
+                return Ok(());
+            };
+            // Phase 1: snapshot keys in bounded slices.
+            if job.cursor < job.keys.len() {
+                let mut end = job.cursor;
+                let mut bytes = 0usize;
+                while end < job.keys.len() && end - job.cursor < REWRITE_STEP_KEYS {
+                    bytes += job.keys[end].len() + 64;
+                    end += 1;
+                    if bytes >= REWRITE_STEP_BYTES {
+                        break;
+                    }
+                }
+                let slice: Vec<Vec<u8>> = job.keys[job.cursor..end].to_vec();
+                self.rewrite_write_slice(journal, &slice)?;
+                job.cursor = end;
+                return Ok(());
+            }
+            // Phase 2: re-encode whole values for keys changed since the last
+            // round. Whole-value records are idempotent, so a key visited twice
+            // cannot duplicate collection members.
+            if !job.pending.is_empty() {
+                let take = job.pending.len().min(REWRITE_STEP_KEYS);
+                let slice: Vec<Vec<u8>> = job.pending.drain(..take).collect();
+                self.rewrite_write_slice(journal, &slice)?;
+                return Ok(());
+            }
+            let (mut changed, overflow) = match self.data.try_borrow_mut() {
+                Ok(mut data) => data.take_rewrite_changes(),
+                Err(_) => return Err(io::Error::other("data busy during rewrite")),
+            };
+            if overflow {
+                let data = self
+                    .data
+                    .try_borrow()
+                    .map_err(|_| io::Error::other("data busy during rewrite"))?;
+                changed = data.entries.keys().cloned().collect();
+            }
+            if !changed.is_empty() {
+                job.rounds = job.rounds.saturating_add(1);
+                job.pending.extend(changed);
+                return Ok(());
+            }
+            if !job.synced {
+                // Bulk durability happens outside the data gate.
+                journal
+                    .lock()
+                    .map_err(|_| io::Error::other("poisoned journal lock"))?
+                    .sync_rewrite()?;
+                job.synced = true;
+                return Ok(());
+            }
+            // Phase 3: the snapshot matches the live state; commit under the gate.
+            let Ok(mut data) = self.data.try_borrow_mut() else {
+                return Err(io::Error::other("data busy during rewrite commit"));
+            };
+            let (mut tail, overflow) = data.take_rewrite_changes();
+            if overflow {
+                tail = data.entries.keys().cloned().collect();
+            }
             let now = self.clock.now_ms().max(0);
-            let budget = self
-                .journal_limits
-                .max_frame_bytes
-                .saturating_sub(4096)
-                .clamp(1024, CHUNK_BUDGET);
-            let mut keys: Vec<Vec<u8>> = data.entries.keys().cloned().collect();
-            keys.sort_unstable();
+            let budget = self.rewrite_budget();
             let mut records = Vec::new();
-            encode_request(&[b"FLUSHALL"], &mut records);
-            for key in &keys {
+            for key in &tail {
                 encode_key(&data, key, now, budget, &mut records);
             }
+            let mut journal = journal
+                .lock()
+                .map_err(|_| io::Error::other("poisoned journal lock"))?;
+            if !records.is_empty() {
+                journal.write_rewrite(&records)?;
+            }
+            journal.sync_rewrite()?;
+            journal.commit_rewrite()?;
             data.journal_reset();
-            records
+            data.end_rewrite_tracking();
+            true
         };
-        let Ok(mut journal) = journal.lock() else {
-            return Err(());
-        };
-        journal.rewrite(&records).map_err(|_| ())
+        if finished {
+            *self.rewrite_job.borrow_mut() = None;
+        }
+        Ok(())
+    }
+
+    pub(super) fn rewrite_in_progress(&self) -> bool {
+        self.rewrite_job.borrow().is_some()
+    }
+
+    fn abort_rewrite_job(&self) {
+        if self.rewrite_job.borrow_mut().take().is_some() {
+            if let Ok(mut data) = self.data.try_borrow_mut() {
+                data.end_rewrite_tracking();
+            }
+            if let Some(journal) = self.journal.as_ref()
+                && let Ok(mut journal) = journal.lock()
+            {
+                journal.abort_rewrite();
+            }
+        }
     }
 
     pub(super) fn persistence_status(&self) -> PersistenceStatus {
@@ -575,20 +803,32 @@ impl ShardExecutor {
                 current_size: None,
                 write_failed: false,
                 rewrite_failed: false,
+                rewrite_in_progress: false,
             };
         };
+        let in_progress = self.rewrite_in_progress();
         journal.lock().map_or(
             PersistenceStatus {
                 aof_enabled: true,
                 current_size: None,
                 write_failed: true,
                 rewrite_failed: true,
+                rewrite_in_progress: in_progress,
             },
-            |journal| journal.status(),
+            |journal| {
+                let mut status = journal.status();
+                status.rewrite_in_progress = in_progress;
+                status
+            },
         )
     }
 
     pub fn journal_sync(&self) -> io::Result<()> {
+        // A background rewrite is best effort: abort it on failure instead of
+        // turning maintenance into an error for unrelated client commands.
+        if self.rewrite_step().is_err() {
+            self.abort_rewrite_job();
+        }
         let Some(journal) = self.journal.as_ref() else {
             return Ok(());
         };
