@@ -37,8 +37,10 @@ diagnostic attributes it to roughly eight `epoll_wait` calls per command from th
 zero-timeout spin (section 2.16), and the headline 95% total is mostly the higher
 rate with a small ~5–9% ping-specific per-command difference across two clean
 cohorts. Further reduction needs a mechanism outside the safe-Rust/Mio boundary
-(section 4.13). No gate pass substitutes for a fresh head, and every dependency
-still needs explicit review.
+(section 4.13). The Valkey four-CPU gate now uses five alternating rounds and
+reports a diagnostic paired-bootstrap interval; the strict median pass rule is
+unchanged. No gate pass substitutes for a fresh head, and every dependency still
+needs explicit review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -1364,10 +1366,15 @@ free tuning change.
 
 ## 8. Acceptance criteria (EARS)
 
-Definitions: "the four-CPU gate" is the unchanged official
-`valkey-benchmark` workflow; "the original gate" is the unchanged 20-case
-workflow; "a matched local A/B" means the same host, toolchain, release profile,
-frozen binaries and alternating order, with raw samples retained.
+Definitions: "the four-CPU gate" is the official `valkey-benchmark` workflow; its
+Valkey cohort now uses five alternating rounds (schema 3) and reports wins/5 plus
+a deterministic paired-bootstrap 95% interval as a diagnostic. The pass rule is
+unchanged: every row still requires the whole-cohort Rillcache median to be
+strictly greater than Valkey's, and the interval never passes or fails a row. The
+Dragonfly comparison remains three rounds. Historical cohorts in this document
+used three rounds and are labeled as such. "The original gate" is the unchanged
+20-case workflow; "a matched local A/B" means the same host, toolchain, release
+profile, frozen binaries and alternating order, with raw samples retained.
 
 - **AC1 (readiness default).** When Rillcache is built for Unix and started in
   default plain-TCP mode, the server shall use kernel readiness and shall report
@@ -1458,6 +1465,10 @@ current roadmap; individual phases are separate increments.
   [`.github/pr-workflow-gates.json`](../../.github/pr-workflow-gates.json).
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
+- Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
+  paired-bootstrap 95% interval (2000 resamples, fixed seed); the interval is
+  diagnostic only and never passes or fails a row. Dragonfly remains three
+  rounds. Historical cohorts above used three rounds and are marked as such.
 - Dragonfly comparison: `python3 scripts/test-dragonfly-performance.py` and
   `python3 scripts/pr-dragonfly-performance.py --check <artifact>`; the design
   and phased roadmap are in [Dragonfly-class performance](dragonfly-class-performance.md).
@@ -1553,11 +1564,13 @@ current roadmap; individual phases are separate increments.
 ## 10. Limits and open questions
 
 - The protected gate uses small strings, cyclic/random keys, eight clients and
-  short three-sample medians. It is a merge policy, not a statistical proof or a
-  production SLO; mixed TTLs, large values, saturation and tail SLOs remain
-  outside it. It compares Valkey and Dragonfly; Redis 8.10.2 is pinned in the
-  source analysis and the manual cohort (section 2.11), not in the required
-  four-CPU comparison, so a Redis four-CPU loss would not be visible to the gate.
+  short five-sample Valkey medians (three for Dragonfly and historical cohorts).
+  It is a merge policy, not a statistical proof or a production SLO; mixed TTLs,
+  large values, saturation and tail SLOs remain outside it. The paired-bootstrap
+  interval is diagnostic and does not change the strict median rule. It compares
+  Valkey and Dragonfly; Redis 8.10.2 is pinned in the source analysis and the
+  manual cohort (section 2.11), not in the required four-CPU comparison, so a
+  Redis four-CPU loss would not be visible to the gate.
   The manual cohort shows Rillcache ahead on all five measured workloads at
   P1/P16, but it is not a gate and does not cover unseen commands or mixed
   workloads. The clean-runner upstream cohort confirms the same direction on the
