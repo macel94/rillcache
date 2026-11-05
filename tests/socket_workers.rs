@@ -156,7 +156,7 @@ fn explicit_one_worker_keeps_owner_local_path() {
 
 #[test]
 fn migration_preserves_session_state_transactions_and_pipelines() {
-    let server = start(None);
+    let server = start(Some(4));
     let mut peer = Peer::new(&server);
     peer.send(&[b"CLIENT", b"SETNAME", b"mover"]);
     assert_eq!(peer.line(), b"+OK\r\n");
@@ -188,7 +188,7 @@ fn migration_preserves_session_state_transactions_and_pipelines() {
 
 #[test]
 fn pubsub_and_blocking_connections_are_owned_by_the_owner_reactor() {
-    let server = start(None);
+    let server = start(Some(4));
     let mut subscriber = Peer::new(&server);
     subscriber.send(&[b"SUBSCRIBE", b"chan"]);
     assert_eq!(subscriber.line(), b"*3\r\n");
@@ -216,7 +216,7 @@ fn pubsub_and_blocking_connections_are_owned_by_the_owner_reactor() {
 
 #[test]
 fn large_local_echo_backpressure_then_data_migration_stays_ordered() {
-    let server = start(None);
+    let server = start(Some(4));
     let mut peer = Peer::new(&server);
     let value = vec![b'x'; 512 * 1024];
     let mut frame = Vec::new();

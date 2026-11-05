@@ -48,10 +48,10 @@ Tracked protection: [main ruleset](../.github/main-ruleset.json).
 | `container.yml` | `verify`, `build (amd64, ubuntu-24.04)`, `build (arm64, ubuntu-24.04-arm)` | `publish` and its `public-pull` dependents cannot run on PRs |
 | `upstream-compatibility.yml` | `Build pinned TCP compatibility tools`; `Tcl redis / string`, `/ incr`, `/ keyspace`; `Tcl valkey / string`, `/ incr`, `/ keyspace` | Native controls and candidate failures both remain real failures |
 | `pr-branch-updater.yml` | `read-only-self-tests` | Write-capable `reconcile` is trusted-main-only, never PR code |
-| `benchmarks.yml` | Not PR-triggered | Explicit manual/weekly comparisons, optional inference and trusted report publisher; generated report PRs still require all 14 checks |
+| `benchmarks.yml` | Not PR-triggered | Explicit manual legacy comparisons, optional inference and trusted report publisher; generated report PRs still require all 14 checks |
 | `hotpaths.yml` | Not PR-triggered | Manual trusted-main profiling/A-B experiment |
 | `copilot-auth-check.yml` | Not PR-triggered | Manual trusted-main inference-auth probe; no PR credential path |
-| `upstream-performance.yml` | Not PR-triggered | Manual three-server comparison, not a substitute for either required Valkey gate |
+| `upstream-performance.yml` | Not PR-triggered | Daily five-server comparison, manual legacy comparison and isolated study; none substitutes for a required PR gate |
 
 GitHub's platform-generated Dependency Graph workflow is not a repository YAML
 workflow or an every-PR gate. GitGuardian is a separate external integration,

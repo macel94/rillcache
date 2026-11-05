@@ -88,8 +88,9 @@ GHCR using only its workflow token. Only its trusted publisher gets `packages: w
 fresh unprivileged jobs must prove anonymous pull/run. Docker/Kubernetes examples
 and the one-time GitHub public-visibility setting are in [container delivery](docs/containers.md).
 `make container` / `make container-smoke` are optional: container tooling and network
-access remain outside the offline fast path. Full Redis/Valkey/Copilot comparisons
-run manually/weekly; a separate native Valkey comparison is mandatory on every PR,
+access remain outside the offline fast path. Five-server comparisons run daily in the separate
+[read-only upstream workflow](docs/daily-benchmarks.md); legacy Redis/Valkey/Copilot
+report comparisons remain manual; a separate native Valkey comparison is mandatory on every PR,
 including docs/report-only changes.
 
 When updating Rust or GitHub Actions, verify official upstream releases and update

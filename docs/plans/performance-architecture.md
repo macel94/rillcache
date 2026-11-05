@@ -885,7 +885,7 @@ with no new dependency. It is candidate 4.9, not part of this increment.
 | Component | Redis 8.10.2 | Valkey 9.1.2 | Rillcache today | Decision |
 | --- | --- | --- | --- | --- |
 | Readiness | level-triggered epoll, single loop | level-triggered epoll, single loop | Mio edge-triggered reactor with drain probe | **Keep/adapt:** edge-triggered through reviewed Mio; level-triggered needs unsafe FFI or a new selector policy |
-| Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one owner-local reactor plus an opt-in 2–16 connection-local worker override | **Adapt, bounded:** more reactors split the client set and cost the four-CPU P1 gate; one reactor batches more commands per readiness wake and the bounded poll removes one wakeup per round trip |
+| Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one owner-local reactor plus an opt-in 2–16 connection-local worker override | **Adapt, bounded:** the measured four-CPU P1 gate favored one reactor plus a bounded poll; preserve CPU/tail costs and measure larger fan-out before choosing parallel workers |
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Reply path | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same plus encoded-buffer copy avoidance from 7 I/O threads | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral is 4.5 and unproven |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames do not rescan payload; revisit only with large-argument evidence |
@@ -1003,14 +1003,15 @@ revive it without a different readiness mechanism and fresh gate evidence.
 
 ### 4.8 Owner-migration socket workers and accept distribution (merged; count rejected)
 
-One reactor is the only acceptor, keeps the owner-local executor, maintenance and
-every data command, and assigns new connections round-robin to the other reactors
-so a shared-listener wakeup cannot skew connection-local work onto one worker.
-The other reactors own their assigned connections and execute only bare
-connection-local commands (PING/ECHO/QUIT). The merged default remained
-`min(4, allowed CPUs)`. A `2 × allowed CPUs` count, capped at eight, was measured
-and rejected on pipeline-1 ping (section 2.8), and the later `ceil(CPUs/2)`
-default failed the same row (section 2.13). Before the first data command a worker
+The implemented parallel mode keeps one owner-local executor, maintenance and
+every data command; workers accept disjoint connections from the shared listener.
+The round-robin accept-distribution experiment below was rejected; it is not the
+current `serve_shared` implementation. The earlier `min(4, allowed CPUs)` default
+was replaced by one owner-local reactor plus bounded polling (section 4.12), with
+explicit `--socket-workers 2..16` retaining parallel connection-local I/O. The
+`2 × allowed CPUs` count, capped at eight, lost pipeline-1 ping (section 2.8), as
+did the later `ceil(CPUs/2)` default (section 2.13). Other reactors execute only
+bare connection-local commands (PING/ECHO/QUIT). Before the first data command a worker
 flushes prior replies, deregisters the socket, transfers the session and unparsed
 input, and hands the connection to the owner, which registers it and continues in
 reply order. `--socket-workers 1` keeps the single owner-local reactor; fixed
@@ -1089,9 +1090,25 @@ mechanism, all raw samples and CPU placement are retained, and both protected
 gates still pass on any resulting head. This is a diagnosis of an already-merged
 change, not a new runtime candidate.
 
-### 4.11 Reactor wakeup/spin budget (diagnostic; superseded by 4.12)
+### 4.11 Reactor wait diagnostic (consolidation rejected; bounded poll in 4.12)
 
-Mechanism: section 2.11 measures about 0.086 voluntary plus 0.014 involuntary
+**Source-resolution correction:** Mio 1.2.4's Linux selector rounds a positive
+sub-millisecond timeout upward: `FAST_WAIT` requests 8 us but reaches
+`epoll_wait` as 1 ms, not a user-space spin. Earlier "spin" descriptions above
+are hypotheses, not measured spin time. The single-poll candidate instead moves
+the absorption wait to the next round's sole selector call, avoiding a second
+ZERO poll before servicing readiness. Its first global trial was rejected:
+PING/P1 was -0.09% and PING/P16 p99 +31%, despite GET/P1 +3.14% (run
+41500430375). The combined co-location/single-reactor consolidation trial (run
+41507264904) also lost 5.61% in explicit-one PING/P1 and 5.09% in explicit-four
+PING/P16, despite its default-mode gains. It was rejected too. The zero-time
+poll can gather more readiness and affect batching, so it is not necessarily
+redundant. After diagnosis review, the co-location-only candidate restores the
+original reactor algorithm entirely; only the default count changes. The
+[matched hosted diagnostic](../development-cycle.md#same-job-hosted-reactor-diagnostic)
+is distinct from the isolated fixed-host screening lane and from protected gates.
+
+**Historical, rejected selector hypothesis:** section 2.11 measures about 0.086 voluntary plus 0.014 involuntary
 context switches per P1 ping, against ~0.0001 for the single-thread servers,
 while Rillcache still wins rate and p99. The then-current 8 µs readiness wait
 after a productive pass and the owner/worker wakeups are the plausible sources.
@@ -1107,11 +1124,12 @@ connection-local clients per reactor and absent with one client or one reactor.
 A negative result (fewer switches but lower rate or worse p99) means the spin is
 buying latency and must stay.
 
-Baseline and method: freeze current and candidate binaries, alternate on one
+Unrun deeper-profile proposal (not the hosted /proc evidence): freeze current
+and candidate binaries, alternate on one
 host and one CPU placement, use the same pinned generator and at least three
 rotated repetitions, and retain per-command scheduler counters
 (`sched_switch`, `epoll_wait`, receive/send-class syscalls), raw JSON and spreads.
-Run both the default reactor count and `--socket-workers 1`. Do not compare
+Run default and explicit `--socket-workers 1` / `4` controls. Do not compare
 numbers from different hosts or substitute a single local screen for a gate.
 
 Rejection condition: any original-gate loss, any Valkey/Dragonfly four-CPU loss,
@@ -1122,8 +1140,8 @@ keep the absorption path when it is doing useful work.
 
 Acceptance if implemented: deterministic reactor scheduling tests, no lost
 wakeups or ordering regressions, joined shutdown, the matched A/B above, and both
-protected gates on the final head. Until the diagnostic shows the spin is the
-cost, this remains a hypothesis, not a runtime change.
+protected gates on the final head. Neither selector trial qualified; the final
+co-location-only change in section 4.8 keeps this selector behavior unchanged.
 
 ### 4.12 Owner-local reactor default with a bounded readiness poll (merged in PR #172)
 
@@ -1476,11 +1494,11 @@ profile, frozen binaries and alternating order, with raw samples retained.
   head. The `min(4, CPUs)`, `2 × CPUs` and `ceil(CPUs/2)` defaults remain
   historical evidence, not current defaults.
 - **AC17 (bounded poll).** When a plain readiness reactor has serviced at least
-  one request, has no queued client and no pending accept, it shall poll with a
+  one client, has no queued client and no pending accept, it shall poll with a
   zero timeout for at most 20 µs before parking, shall renew that window only
-  through serviced work, shall still observe stopping within that window, and
-  shall not apply the window when a runnable client or accept is pending. It is
-  accepted only on the same gate conditions as AC15.
+  through another serviced pass, shall still observe stopping within that window,
+  and shall not apply the window when a runnable client or accept is pending. It
+  is accepted only on the same gate conditions as AC15.
 - **AC16 (cached clock, only if 4.9 is implemented).** When any key has an
   expiration, a command shall observe one stable millisecond snapshot for its
   whole execution, refreshed at most once per reactor pass; a key alive at
@@ -1544,6 +1562,10 @@ current roadmap; individual phases are separate increments.
   `/root/perf-evidence/manual-41477114469/report.md`. The generated report is now
   merged as `63e1f20` (PR #168); it is not a gate, and this record still uses the
   run artifact rather than the report as performance evidence.
+- Hosted reactor diagnostic (section 4.11): runs 41500430375 (72 samples) and
+  41507264904 (108) completed with frozen binaries and matched-thread /proc
+  counters. Both selector variants were rejected, with losses retained. They are
+  distinct from the later bounded-poll mechanism and its protected evidence.
 - Clean-runner upstream cohort (section 2.14): run 41563160515 against source
   `c8b760a`, 180/180 valid samples, six rotated repetitions, 16 clients,
   disjoint server/client CPUs, pinned Redis 8.10.2 `redis-benchmark`; artifacts

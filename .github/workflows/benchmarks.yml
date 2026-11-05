@@ -1,9 +1,9 @@
 name: Comparative benchmarks
 
 on:
+  # Legacy Rust-generator/report-publishing contract remains manually available.
+  # Scheduled comparisons live in upstream-performance.yml (all five servers).
   workflow_dispatch:
-  schedule:
-    - cron: '21 6 * * 1'
 
 permissions:
   contents: read

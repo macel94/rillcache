@@ -249,6 +249,75 @@ fn slow_reply_stops_pipeline_side_effects_and_joins_on_one_runtime() {
     server.shutdown();
 }
 
+fn maintenance_context() -> (Context, mpsc::Receiver<ColdJob>) {
+    let (sender, receiver) = mpsc::channel(1);
+    (
+        Context {
+            config: Config::default(),
+            store: Arc::new(Store::new(1024)),
+            stopping: Arc::new(AtomicBool::new(false)),
+            controls: Arc::new(Mutex::new(HashMap::new())),
+            cold: ColdExecutor {
+                sender,
+                permit: Arc::new(Semaphore::new(1)),
+            },
+            task_limit: 128,
+        },
+        receiver,
+    )
+}
+
+fn poll_maintenance(
+    future: std::pin::Pin<&mut impl std::future::Future<Output = io::Result<bool>>>,
+) -> std::task::Poll<io::Result<bool>> {
+    future.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+}
+
+#[test]
+fn shutdown_during_cold_maintenance_admission_is_graceful() {
+    let (context, mut receiver) = maintenance_context();
+    let held = context.cold.permit.try_acquire().unwrap();
+    let mut maintenance = std::pin::pin!(context.maintain_cold());
+    // Force the exact race: the stop check passed, but admission is pending.
+    assert!(poll_maintenance(maintenance.as_mut()).is_pending());
+    context.stop();
+    drop(held);
+    let std::task::Poll::Ready(result) = poll_maintenance(maintenance.as_mut()) else {
+        panic!("shutdown admission did not complete");
+    };
+    assert!(!result.unwrap());
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    assert_eq!(context.cold.permit.available_permits(), 1);
+}
+
+#[test]
+fn successful_cold_maintenance_continues_accepting() {
+    let (context, mut receiver) = maintenance_context();
+    let mut maintenance = std::pin::pin!(context.maintain_cold());
+    assert!(poll_maintenance(maintenance.as_mut()).is_pending());
+    receiver.try_recv().unwrap()();
+    assert!(matches!(
+        poll_maintenance(maintenance.as_mut()),
+        std::task::Poll::Ready(Ok(true))
+    ));
+    assert_eq!(context.cold.permit.available_permits(), 1);
+}
+
+#[test]
+fn stopped_context_does_not_hide_failed_cold_service_admission() {
+    let (context, _receiver) = maintenance_context();
+    context.stop();
+    context.cold.permit.close();
+    let mut maintenance = std::pin::pin!(context.maintain_cold());
+    let std::task::Poll::Ready(result) = poll_maintenance(maintenance.as_mut()) else {
+        panic!("closed admission did not complete");
+    };
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+}
+
 #[test]
 fn cold_io_saturation_leaves_runtime_runnable_and_shutdown_joins_the_service() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

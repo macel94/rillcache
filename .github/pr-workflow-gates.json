@@ -38,9 +38,9 @@
       "non_pr_jobs": {"reconcile": "not-pull-request"}
     },
     "benchmarks.yml": {
-      "events": ["workflow_dispatch", "schedule"],
+      "events": ["workflow_dispatch"],
       "jobs": {},
-      "non_pr_reason": "Manual/weekly comparisons, inference and report publication; not a PR event. Report PRs receive every ordinary required check."
+      "non_pr_reason": "Manual legacy Rust-generator comparisons, inference and report publication; not a PR event. Scheduled five-server comparisons use upstream-performance.yml. Report PRs receive every ordinary required check."
     },
     "hotpaths.yml": {
       "events": ["workflow_dispatch"],
@@ -53,9 +53,9 @@
       "non_pr_reason": "Manual default-branch inference authentication probe, never a PR credential path."
     },
     "upstream-performance.yml": {
-      "events": ["workflow_dispatch"],
+      "events": ["schedule", "workflow_dispatch"],
       "jobs": {},
-      "non_pr_reason": "Separate manual Redis/Valkey three-server study and opt-in fixed-host screening; neither substitutes for either mandatory PR performance gate."
+      "non_pr_reason": "Daily five-server comparisons, manual legacy study, same-job hosted reactor diagnostics, separate owned-process instrumented profiles and opt-in fixed-host screening; none substitutes for any mandatory PR performance gate."
     }
   }
 }
