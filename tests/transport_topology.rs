@@ -106,18 +106,22 @@ impl Process {
         // Protocol SHUTDOWN closes without a success reply (existing contract).
         assert_eq!(stream.read(&mut [0]).unwrap(), 0);
         let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
+        let status = loop {
             if let Some(status) = self.child.try_wait().unwrap() {
-                assert!(status.success());
-                break;
+                break status;
             }
             assert!(
                 Instant::now() < deadline,
                 "shutdown did not join all threads"
             );
             thread::yield_now();
-        }
+        };
         self.logger.take().unwrap().join().unwrap();
+        assert!(
+            status.success(),
+            "server shutdown failed ({status}):\n{}",
+            self.lines.try_iter().collect::<Vec<_>>().join("\n")
+        );
     }
 }
 

@@ -1,7 +1,11 @@
 #![forbid(unsafe_code)]
 
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::process::Command;
+
+// These are functional checks, not a concurrent-load contract. Keep the live
+// profiling fixture outside the health probe's actual one-second deadline.
+static LIVE_SERVER_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn compiled_binaries_provide_help_and_server_version() {
@@ -47,6 +51,7 @@ fn invalid_cli_arguments_fail_with_usage_status() {
 #[cfg(target_os = "linux")]
 #[test]
 fn standalone_profiling_validates_all_workloads_and_fails_without_a_target() {
+    let _fixture = LIVE_SERVER_TEST.lock().unwrap();
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Stdio};
 
@@ -132,7 +137,10 @@ fn standalone_profiling_validates_all_workloads_and_fails_without_a_target() {
 
 #[test]
 fn healthcheck_is_quiet_on_success_and_fails_for_an_unavailable_endpoint() {
+    let _fixture = LIVE_SERVER_TEST.lock().unwrap();
     use rillcache::{Config, Server};
+    use std::io::{Read, Write};
+    use std::time::Duration;
     let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
     let server = Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -146,6 +154,23 @@ fn healthcheck_is_quiet_on_success_and_fails_for_an_unavailable_endpoint() {
     .spawn()
     .unwrap();
     let address = server.local_addr().to_string();
+    // spawn() does not promise that the serving thread has started. Establish
+    // readiness once, separately from the unchanged CLI deadline; never retry a
+    // failed health probe or increase its production timeout.
+    {
+        let mut ready =
+            TcpStream::connect_timeout(&server.local_addr(), Duration::from_secs(3)).unwrap();
+        ready
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        ready
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        ready.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+        let mut reply = [0; 7];
+        ready.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"+PONG\r\n");
+    }
     let output = Command::new(env!("CARGO_BIN_EXE_rillcache"))
         .args(["--healthcheck", &address])
         .output()

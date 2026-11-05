@@ -213,7 +213,7 @@ python3 scripts/pr-dragonfly-performance.py --check /path/to/dragonfly-gate
 
 ## Automated report PRs
 
-The manual/weekly comparison and genuine Copilot review retain their separate
+The manual legacy comparison and genuine Copilot review retain their separate
 read-only measurement/inference jobs. Only the trusted default-branch publication
 job has `contents: write`, `pull-requests: write` and `actions: write`. It:
 

@@ -58,6 +58,32 @@ class NativeBuildTests(unittest.TestCase):
             ['cargo', 'clean', '--locked', '--offline', '--release', '--package', 'rillcache'],
             ['cargo', 'build', '--locked', '--offline', '--release', '--bin', 'rillcache']])
 
+    def test_optional_mechanism_control_is_fetched_rebuilt_and_frozen_at_same_path(self):
+        function = NATIVE['build_sources']
+        a, b, c = ('a' * 40, 'b' * 40, 'c' * 40)
+        compiler = Mock()
+        archive = Mock()
+        archive.wait.return_value = 0
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.dict(function.__globals__, {'OUT': root / 'evidence', 'BIN': root / 'evidence/bin',
+                            'BASE': a, 'CANDIDATE': b, 'compile_application': compiler, 'build_reference': Mock()}), \
+                 patch.dict(NATIVE['G'], {'digest': lambda path: Path(path).name}), \
+                 patch.dict(os.environ, {'RUNNER_TEMP': str(root)}), \
+                 patch.object(NATIVE['COMMON'], 'checked') as checked, \
+                 patch.object(NATIVE['subprocess'], 'check_output', return_value=b'') as diff, \
+                 patch.object(NATIVE['subprocess'], 'Popen', return_value=archive) as export, \
+                 patch.object(NATIVE['subprocess'], 'run'), \
+                 patch.object(NATIVE['shutil'], 'copy2'):
+                binaries = function(c)
+            self.assertEqual({'baseline', 'candidate', 'mechanism-control', 'valkey', 'generator'}, set(binaries))
+            self.assertEqual(['git', 'fetch', '--no-tags', 'origin', a, b, c], checked.call_args.args[0])
+            self.assertEqual([['git', 'archive', sha] for sha in (a, b, c)], [x.args[0] for x in export.call_args_list])
+            self.assertEqual(['baseline', 'candidate', 'mechanism-control'], [x.args[1] for x in compiler.call_args_list])
+            self.assertEqual({root / 'rillcache-dev-performance-source'}, {x.args[0] for x in compiler.call_args_list})
+            self.assertEqual([['git', 'diff', '--diff-filter=D', '--name-only', x, y] for x, y in ((a, b), (b, c))],
+                             [x.args[0] for x in diff.call_args_list])
+
     def test_a_stale_cargo_finished_status_is_rejected(self):
         with self.assertRaisesRegex(AssertionError, 'application was not rebuilt'):
             self.compile_with_status('Finished release profile in 0.01s')
@@ -96,7 +122,11 @@ class NativeEvidenceTests(unittest.TestCase):
                 self.assertIn('syscalls:sys_exit_readv', argv)
                 self.assertIn('syscalls:sys_enter_readv', argv)
                 self.assertIn('syscalls:sys_enter_sched_yield', argv)
-                self.assertEqual(argv.count('--filter'), 3)
+                self.assertIn('syscalls:sys_enter_writev', argv)
+                self.assertIn('syscalls:sys_enter_sendmsg', argv)
+                self.assertIn('syscalls:sys_enter_recvmsg', argv)
+                self.assertIn('syscalls:sys_exit_recvmsg', argv)
+                self.assertEqual(argv.count('--filter'), 4)
                 self.assertEqual(argv[argv.index('-p') + 1], str(pid))
                 self.assertNotIn('-a', argv)
 

@@ -29,8 +29,12 @@ fn start(config: Config) -> ServerHandle {
 fn connect(server: &ServerHandle, ip: Ipv4Addr) -> TcpStream {
     let address = SocketAddr::new(IpAddr::V4(ip), server.local_addr().port());
     let stream = TcpStream::connect(address).unwrap();
+    // These tests assert reply content, isolation and lockout ordering; they do
+    // not assert a wall-clock reply bound. A 3 s read deadline turned normal
+    // thread-scheduling delay on an oversubscribed host into a false failure.
+    // Keep a bounded deadline for real hangs without requiring prompt scheduling.
     stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
+        .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     stream
         .set_write_timeout(Some(Duration::from_secs(3)))
@@ -51,13 +55,26 @@ fn send(stream: &mut TcpStream, arguments: &[&[u8]], reply: &[u8]) {
 const WRONGPASS: &[u8] = b"-WRONGPASS invalid username-password pair or user is disabled.\r\n";
 const THROTTLED: &[u8] = b"-ERR too many authentication attempts, try later\r\n";
 
+/// Failure-window and post-lockout wait with generous scheduling headroom.
+///
+/// The throttle counts failures inside one window and then locks for that same
+/// window. A 100 ms config cannot distinguish "no lockout" from a host that
+/// descheduled this test between two round trips: with the machine's load
+/// average near 11 on 6 CPUs, one measured run got `+OK` instead of the
+/// lockout reply because the counter window had elapsed, and the same test
+/// also failed 2/60 times on unmodified protected main. A 10x window keeps the
+/// ordering/semantics under test while removing the wall-clock race; the test
+/// still proves both the lockout and its expiry.
+const SOURCE_WINDOW_MS: u64 = 1_000;
+const LOCKOUT_WAIT: Duration = Duration::from_millis(1_500);
+
 #[test]
 fn source_budget_locks_one_peer_and_expires_after_the_window() {
     let server = start(Config {
         requirepass: Some(b"secret".to_vec()),
         auth_failure_limit: 0,
         auth_source_limit: 3,
-        auth_source_window_ms: 100,
+        auth_source_window_ms: SOURCE_WINDOW_MS,
         ..Config::default()
     });
     let mut local = connect(&server, Ipv4Addr::LOCALHOST);
@@ -67,7 +84,7 @@ fn source_budget_locks_one_peer_and_expires_after_the_window() {
     let mut same_source = connect(&server, Ipv4Addr::LOCALHOST);
     send(&mut same_source, &[b"AUTH", b"secret"], THROTTLED);
 
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(LOCKOUT_WAIT);
     let mut after = connect(&server, Ipv4Addr::LOCALHOST);
     send(&mut after, &[b"AUTH", b"secret"], b"+OK\r\n");
     server.shutdown().unwrap();
