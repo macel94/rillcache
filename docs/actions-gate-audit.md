@@ -44,7 +44,7 @@ Tracked protection: [main ruleset](../.github/main-ruleset.json).
 | --- | --- | --- |
 | `ci.yml` | `Tests and offline CI` | Main-only archive steps are not separate PR requirements |
 | `pr-quality.yml` | `Valkey performance gate` — all original 20 medians strictly win | No path/report exemption |
-| `pr-multicpu-quality.yml` | `Valkey 4-CPU performance gate` — all 10 official-generator medians strictly win | No tie/partial-cohort pass |
+| `pr-multicpu-quality.yml` | `Valkey 4-CPU performance gate` — aggregation job over ten parallel per-workload rows; all 10 official-generator medians strictly win | No tie, missing/duplicate partial, hash mismatch or partial-cohort pass |
 | `container.yml` | `verify`, `build (amd64, ubuntu-24.04)`, `build (arm64, ubuntu-24.04-arm)` | `publish` and its `public-pull` dependents cannot run on PRs |
 | `upstream-compatibility.yml` | `Build pinned TCP compatibility tools`; `Tcl redis / string`, `/ incr`, `/ keyspace`; `Tcl valkey / string`, `/ incr`, `/ keyspace` | Native controls and candidate failures both remain real failures |
 | `pr-branch-updater.yml` | `read-only-self-tests` | Write-capable `reconcile` is trusted-main-only, never PR code |

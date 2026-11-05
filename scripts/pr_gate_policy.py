@@ -112,13 +112,33 @@ def audit_local(root=ROOT):
         ensure(item["jobs"], f"PR workflow has no required checks: {path}")
         ensure("paths:" not in text and "paths-ignore:" not in text, f"PR workflow has path exemptions: {path}")
         exempt = item["non_pr_jobs"]
-        ensure(set(jobs) == set(item["jobs"]) | set(exempt), f"uncatalogued/missing PR jobs: {path}")
+        aux = item.get("aux_jobs", {})
+        ensure(set(jobs) == set(item["jobs"]) | set(exempt) | set(aux), f"uncatalogued/missing PR jobs: {path}")
+        required_needs = " ".join(jobs[job] for job in item["jobs"])
+        for job, kind in aux.items():
+            ensure(kind == "dependency", f"unknown auxiliary job kind: {path}/{job}")
+            block = jobs[job]
+            ensure("continue-on-error:" not in block, f"auxiliary job masks failures: {path}/{job}")
+            ensure(re.search(r"^    if:[ \t]", block, re.M) is None,
+                   f"auxiliary dependency job can be skipped: {path}/{job}")
+            ensure(re.search(rf"(^|[\s,\[]){re.escape(job)}($|[\s,\]])", required_needs) is not None,
+                   f"auxiliary job is not a dependency of a required check: {path}/{job}")
         for job, checks in item["jobs"].items():
             block = jobs[job]
             ensure(checks == resolved_checks(path, job, block), f"required job/matrix contexts differ: {path}/{job}")
             ensure("continue-on-error:" not in block, f"required job masks failures: {path}/{job}")
             condition = re.search(r"^    if:[ \t]*(.*)$", block, re.M)
-            if path == "pr-branch-updater.yml" and job == "read-only-self-tests":
+            if path == "pr-multicpu-quality.yml" and job == "gate":
+                # The parallel cohorts finish in independent jobs; the required
+                # gate must still run to publish losses and fail closed on any
+                # dependency result, so an always() condition is asserted here
+                # together with an explicit needs-result failure step.
+                ensure(condition and condition[1].strip() == "always()",
+                       "parallel multi-CPU gate must run always to fail closed")
+                ensure("Fail closed when any per-row job did not succeed" in block
+                       and "needs.benchmark.result" in block and "needs.build.result" in block,
+                       "parallel multi-CPU gate must fail closed on dependency results")
+            elif path == "pr-branch-updater.yml" and job == "read-only-self-tests":
                 ensure(condition and condition[1] == "github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')",
                        "policy self-tests must execute for PRs and read-only branch dispatch")
                 ensure(not re.search(r"^      [a-z-]+: write$", block, re.M),

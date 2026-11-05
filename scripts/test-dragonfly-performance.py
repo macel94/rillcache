@@ -109,15 +109,19 @@ class GateTests(unittest.TestCase):
     def test_workflow_builds_one_rillcache_for_both_comparisons_and_runs_after_valkey_loss(self):
         root = Path(__file__).resolve().parents[1]
         text = (root / '.github/workflows/pr-multicpu-quality.yml').read_text()
+        # One frozen build feeds every parallel row; both servers come from the
+        # same artifact, verified by hash before any timing starts.
         self.assertIn('build --locked --offline --release --bin rillcache', text)
-        self.assertEqual(text.count('--candidate "$RUNNER_TEMP/valkey-multicpu-tools/candidate"'), 2)
-        step = text.split('      - name: Measure Rillcache against Dragonfly in all ten conditions\n', 1)[1].split('      - name:', 1)[0]
-        self.assertIn("!cancelled() && steps.candidate.outcome == 'success'", step)
-        self.assertIn("steps.dragonfly.outcome == 'success'", step)
-        self.assertIn('--generator "$RUNNER_TEMP/valkey-multicpu-tools/valkey-benchmark"', step)
-        self.assertIn('--dragonfly "$RUNNER_TEMP/dragonfly-tools/dragonfly"', step)
-        self.assertIn('sha256sum --check --status', step)
-        self.assertNotIn('--valkey ', step)
+        self.assertIn('name: Build frozen benchmark binaries', text)
+        self.assertIn('multicpu-binaries-${{ needs.context.outputs.pr }}-${{ github.sha }}', text)
+        self.assertIn('sha256sum --check hashes.sha256', text)
+        self.assertIn('server: [valkey, dragonfly]', text)
+        self.assertIn("${{ matrix.server == 'valkey' && '--valkey' || '--dragonfly' }}", text)
+        self.assertIn('--generator "$RUNNER_TEMP/tools/generator"', text)
+        self.assertIn('--workloads "${{ matrix.workload }}"', text)
+        # Losses are published and the required gate fails closed on any failed row.
+        self.assertIn('Fail closed when any per-row job did not succeed', text)
+        self.assertIn('merge-multicpu-gates.py', text)
         self.assertNotIn('continue-on-error:', text)
 
     def test_runtime_children_do_not_receive_workflow_credentials(self):

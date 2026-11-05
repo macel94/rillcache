@@ -2,53 +2,122 @@
   "schema_version": 1,
   "workflows": {
     "ci.yml": {
-      "events": ["push", "pull_request", "workflow_dispatch"],
-      "jobs": {"verify": ["Tests and offline CI"]},
+      "events": [
+        "push",
+        "pull_request",
+        "workflow_dispatch"
+      ],
+      "jobs": {
+        "verify": [
+          "Tests and offline CI"
+        ]
+      },
       "non_pr_jobs": {}
     },
     "pr-quality.yml": {
-      "events": ["pull_request", "workflow_dispatch"],
-      "jobs": {"benchmark": ["Valkey performance gate"]},
+      "events": [
+        "pull_request",
+        "workflow_dispatch"
+      ],
+      "jobs": {
+        "benchmark": [
+          "Valkey performance gate"
+        ]
+      },
       "non_pr_jobs": {}
     },
     "pr-multicpu-quality.yml": {
-      "events": ["pull_request", "workflow_dispatch"],
-      "jobs": {"benchmark": ["Valkey 4-CPU performance gate"]},
-      "non_pr_jobs": {}
+      "events": [
+        "pull_request",
+        "workflow_dispatch"
+      ],
+      "jobs": {
+        "gate": [
+          "Valkey 4-CPU performance gate"
+        ]
+      },
+      "non_pr_jobs": {},
+      "aux_jobs": {
+        "context": "dependency",
+        "build": "dependency",
+        "benchmark": "dependency"
+      }
     },
     "container.yml": {
-      "events": ["push", "pull_request", "workflow_dispatch"],
+      "events": [
+        "push",
+        "pull_request",
+        "workflow_dispatch"
+      ],
       "jobs": {
-        "verify": ["verify"],
-        "build": ["build (amd64, ubuntu-24.04)", "build (arm64, ubuntu-24.04-arm)"]
+        "verify": [
+          "verify"
+        ],
+        "build": [
+          "build (amd64, ubuntu-24.04)",
+          "build (arm64, ubuntu-24.04-arm)"
+        ]
       },
-      "non_pr_jobs": {"publish": "not-pull-request", "public-pull": "needs-publish"}
+      "non_pr_jobs": {
+        "publish": "not-pull-request",
+        "public-pull": "needs-publish"
+      }
     },
     "upstream-compatibility.yml": {
-      "events": ["pull_request", "workflow_dispatch"],
+      "events": [
+        "pull_request",
+        "workflow_dispatch"
+      ],
       "jobs": {
-        "build": ["Build pinned TCP compatibility tools"],
-        "suites": ["Tcl redis / string", "Tcl redis / incr", "Tcl redis / keyspace", "Tcl valkey / string", "Tcl valkey / incr", "Tcl valkey / keyspace"]
+        "build": [
+          "Build pinned TCP compatibility tools"
+        ],
+        "suites": [
+          "Tcl redis / string",
+          "Tcl redis / incr",
+          "Tcl redis / keyspace",
+          "Tcl valkey / string",
+          "Tcl valkey / incr",
+          "Tcl valkey / keyspace"
+        ]
       },
       "non_pr_jobs": {}
     },
     "pr-branch-updater.yml": {
-      "events": ["pull_request", "push", "schedule", "workflow_dispatch", "workflow_run"],
-      "jobs": {"read-only-self-tests": ["read-only-self-tests"]},
-      "non_pr_jobs": {"reconcile": "not-pull-request"}
+      "events": [
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch",
+        "workflow_run"
+      ],
+      "jobs": {
+        "read-only-self-tests": [
+          "read-only-self-tests"
+        ]
+      },
+      "non_pr_jobs": {
+        "reconcile": "not-pull-request"
+      }
     },
     "benchmarks.yml": {
-      "events": ["workflow_dispatch"],
+      "events": [
+        "workflow_dispatch"
+      ],
       "jobs": {},
       "non_pr_reason": "Manual legacy Rust-generator comparisons, inference and report publication; not a PR event. Scheduled five-server comparisons use upstream-performance.yml. Report PRs receive every ordinary required check."
     },
     "hotpaths.yml": {
-      "events": ["workflow_dispatch"],
+      "events": [
+        "workflow_dispatch"
+      ],
       "jobs": {},
       "non_pr_reason": "Manual trusted-main profiling study, not an every-PR workload."
     },
     "copilot-auth-check.yml": {
-      "events": ["workflow_dispatch"],
+      "events": [
+        "workflow_dispatch"
+      ],
       "jobs": {},
       "non_pr_reason": "Manual default-branch inference authentication probe, never a PR credential path."
     },
@@ -58,7 +127,10 @@
       "non_pr_reason": "Publishes the generated OpenWiki visualizer to GitHub Pages on main; not a PR check."
     },
     "upstream-performance.yml": {
-      "events": ["schedule", "workflow_dispatch"],
+      "events": [
+        "schedule",
+        "workflow_dispatch"
+      ],
       "jobs": {},
       "non_pr_reason": "Daily five-server comparisons, manual legacy study, same-job hosted reactor diagnostics, separate owned-process instrumented profiles and opt-in fixed-host screening; none substitutes for any mandatory PR performance gate."
     }
