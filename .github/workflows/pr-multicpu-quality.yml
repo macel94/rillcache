@@ -248,7 +248,7 @@ jobs:
             --generator "$RUNNER_TEMP/tools/generator" \
             --base-source "$BASE_SOURCE" --candidate-source "$GITHUB_SHA" --head-source "$HEAD_SOURCE" \
             ${{ matrix.server == 'valkey' && '--valkey-version' || '--dragonfly-version' }} "${{ steps.reference.outputs.version }}" \
-            ${{ matrix.server == 'dragonfly' && format('--license {0}/license.txt', runner.temp) || '' }} \
+            ${{ matrix.server == 'dragonfly' && '--license "$RUNNER_TEMP/tools/license.txt"' || '' }} \
             --workloads "${{ matrix.workload }}" \
             --out "evidence/${{ matrix.server }}-${{ matrix.workload }}"
       - name: Revalidate this partial cohort from its raw CSV
