@@ -39,8 +39,10 @@ rate with a small ~5–9% ping-specific per-command difference across two clean
 cohorts. Further reduction needs a mechanism outside the safe-Rust/Mio boundary
 (section 4.13). The Valkey four-CPU gate now uses five alternating rounds and
 reports a diagnostic paired-bootstrap interval; the strict median pass rule is
-unchanged. No gate pass substitutes for a fresh head, and every dependency still
-needs explicit review.
+unchanged. The first five-round cohort passed strictly but its P1 ping interval
+contains 1.0, so the direction is unresolved on that row (section 2.17). No gate
+pass substitutes for a fresh head, and every dependency still needs explicit
+review.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -666,6 +668,32 @@ sleeping wait was measured worse on the tail.
 cost. Do not add another poll-window variant; the remaining safe options are
 outside the Mio boundary. The local counts are diagnostic only and must not be
 substituted for gate evidence.
+
+### 2.17 First five-round cohort: the paired interval exposes near-parity
+
+PR #189's docs-only head (`927ccef`, base `e74bac3`) produced the first five-round
+Valkey cohort (run 41936225853, 100 samples). The strict median rule still passed
+10/10, but the new paired interval shows exactly where the cohort cannot resolve
+direction:
+
+| Row | Rillcache median | Valkey median | Delta | Wins | Paired ratio [95% CI] |
+| --- | ---: | ---: | ---: | ---: | --- |
+| ping P1 | 117,002.6 | 114,048.4 | +2.59% | 4/5 | 1.0254 [0.9703–1.0661] |
+| ping P16 | 1,606,942.4 | 986,772.8 | +62.8% | 5/5 | 1.5788 [1.5288–1.6465] |
+| set P1 | 116,352.2 | 108,591.4 | +7.1% | 5/5 | 1.0747 [1.0453–1.1229] |
+
+The P1 ping interval contains 1.0, so the cohort cannot resolve that row's
+direction even though the whole-cohort median is higher; every other row has a
+5/5 sweep and an interval above 1.0. Dragonfly passed 10/10 with P1 ping
+115,257.5 vs 94,669.6 (+21.8%). This is evidence quality, not a threshold change:
+the row still passes by the unchanged strict median rule, and the interval is
+never used to pass or fail it.
+
+**Verdict:** record the near-parity P1 ping row explicitly instead of treating a
+pass as proof of a stable direction. It is consistent with the earlier
+variance/cohort analysis (sections 2.9 and 2.15) and reinforces that the P1
+throughput margin is small and host-sensitive. Do not quote the pass as a
+resolved 2.6% win; quote the interval.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -1451,6 +1479,9 @@ current roadmap; individual phases are separate increments.
   paired-bootstrap 95% interval (2000 resamples, fixed seed); the interval is
   diagnostic only and never passes or fails a row. Dragonfly remains three
   rounds. Historical cohorts above used three rounds and are marked as such.
+  First five-round cohort (section 2.17): PR #189 head `927ccef`, run
+  41936225853, PASS 10/10; P1 ping 4/5 with ratio 1.0254 [0.9703–1.0661];
+  artifacts under `/root/perf-evidence/pr189/four-cpu/`.
 - Dragonfly comparison: `python3 scripts/test-dragonfly-performance.py` and
   `python3 scripts/pr-dragonfly-performance.py --check <artifact>`; the design
   and phased roadmap are in [Dragonfly-class performance](dragonfly-class-performance.md).
@@ -1545,7 +1576,9 @@ current roadmap; individual phases are separate increments.
   short five-sample Valkey medians (three for Dragonfly and historical cohorts).
   It is a merge policy, not a statistical proof or a production SLO; mixed TTLs,
   large values, saturation and tail SLOs remain outside it. The paired-bootstrap
-  interval is diagnostic and does not change the strict median rule. It compares
+  interval is diagnostic and does not change the strict median rule; the first
+  five-round cohort shows the P1 ping interval containing 1.0 even though the
+  row passes (section 2.17), so a pass is not a resolved direction. It compares
   Valkey and Dragonfly; Redis 8.10.2 is pinned in the source analysis and the
   manual cohort (section 2.11), not in the required four-CPU comparison, so a
   Redis four-CPU loss would not be visible to the gate.
