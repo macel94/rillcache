@@ -126,8 +126,14 @@ fn pending_triples(raw: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, i64)> {
     let Resp::Array(items) = parse_resp(raw, &mut at) else {
         panic!("XPENDING must be an array")
     };
-    let Some(Resp::Array(entries)) = items.get(3) else {
-        return Vec::new();
+    // Extended XPENDING replies with the entry list directly; the summary form is
+    // [count, min, max, consumers].
+    let entries = match items.first() {
+        Some(Resp::Array(_)) => &items,
+        _ => match items.get(3) {
+            Some(Resp::Array(entries)) => entries,
+            _ => return Vec::new(),
+        },
     };
     entries
         .iter()
@@ -795,6 +801,57 @@ fn stream_consumers_and_pending_delivery_state_survive_restart() {
     );
     let empty = call(&mut stream, &[b"XPENDING", b"s", b"g"]);
     assert_eq!(empty, b"*4\r\n:0\r\n$-1\r\n$-1\r\n*0\r\n");
+    server.shutdown().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_pending_entry_for_a_deleted_stream_id_is_dropped_on_replay() {
+    // Documented D6 limitation: a PEL id whose stream entry no longer exists has
+    // no payload to re-claim, so replay drops it instead of inventing an entry.
+    let dir = temp_dir("stream-pel-deleted");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        for id in [b"1-0".as_slice(), b"2-0", b"3-0"] {
+            send(&mut stream, &[b"XADD", b"s", id, b"f", b"v"], b"");
+            let _ = reply(&mut stream);
+        }
+        send(
+            &mut stream,
+            &[b"XGROUP", b"CREATE", b"s", b"g", b"0"],
+            b"+OK\r\n",
+        );
+        send(
+            &mut stream,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                b"g",
+                b"worker",
+                b"STREAMS",
+                b"s",
+                b">",
+            ],
+            b"",
+        );
+        let _ = reply(&mut stream);
+        send(&mut stream, &[b"XDEL", b"s", b"2-0"], b":1\r\n");
+        server.shutdown().unwrap();
+    }
+    let server = start(&dir, true, FsyncPolicy::Always);
+    let mut stream = connect(&server);
+    let pending = call(&mut stream, &[b"XPENDING", b"s", b"g", b"-", b"+", b"10"]);
+    let triples = pending_triples(&pending);
+    assert_eq!(triples.len(), 2, "deleted pending id must be dropped");
+    assert_eq!(triples[0].0, b"1-0");
+    assert_eq!(triples[1].0, b"3-0");
+    assert!(
+        triples
+            .iter()
+            .all(|(_, consumer, deliveries)| { consumer == b"worker" && *deliveries == 1 })
+    );
+    send(&mut stream, &[b"XLEN", b"s"], b":2\r\n");
     server.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
