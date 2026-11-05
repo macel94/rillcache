@@ -77,6 +77,84 @@ fn reply(stream: &mut TcpStream) -> Vec<u8> {
     out
 }
 
+/// Minimal RESP reader for assertions that must ignore wall-clock fields such as
+/// XPENDING's idle time while still comparing ids, owners and delivery counts.
+enum Resp {
+    Int(i64),
+    Bulk(Option<Vec<u8>>),
+    Array(Vec<Resp>),
+}
+
+fn parse_resp(raw: &[u8], at: &mut usize) -> Resp {
+    let kind = raw[*at];
+    *at += 1;
+    let end = raw[*at..]
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .map(|offset| *at + offset)
+        .expect("RESP line terminator");
+    let line = &raw[*at..end];
+    *at = end + 2;
+    match kind {
+        // Simple strings and errors are not needed by these assertions.
+        b'+' | b'-' => Resp::Int(0),
+        b':' => Resp::Int(std::str::from_utf8(line).unwrap().parse().unwrap()),
+        b'$' => {
+            let length: i64 = std::str::from_utf8(line).unwrap().parse().unwrap();
+            if length < 0 {
+                Resp::Bulk(None)
+            } else {
+                let body = raw[*at..*at + length as usize].to_vec();
+                *at += length as usize + 2;
+                Resp::Bulk(Some(body))
+            }
+        }
+        b'*' => {
+            let count: i64 = std::str::from_utf8(line).unwrap().parse().unwrap();
+            let mut items = Vec::new();
+            for _ in 0..count {
+                items.push(parse_resp(raw, at));
+            }
+            Resp::Array(items)
+        }
+        other => panic!("unexpected RESP type {}", other as char),
+    }
+}
+
+fn pending_triples(raw: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, i64)> {
+    let mut at = 0;
+    let Resp::Array(items) = parse_resp(raw, &mut at) else {
+        panic!("XPENDING must be an array")
+    };
+    // Extended XPENDING replies with the entry list directly; the summary form is
+    // [count, min, max, consumers].
+    let entries = match items.first() {
+        Some(Resp::Array(_)) => &items,
+        _ => match items.get(3) {
+            Some(Resp::Array(entries)) => entries,
+            _ => return Vec::new(),
+        },
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let Resp::Array(fields) = entry else {
+                panic!("XPENDING entry must be an array")
+            };
+            let Resp::Bulk(Some(id)) = &fields[0] else {
+                panic!("id")
+            };
+            let Resp::Bulk(Some(consumer)) = &fields[1] else {
+                panic!("consumer")
+            };
+            let Resp::Int(deliveries) = fields[3] else {
+                panic!("deliveries")
+            };
+            (id.clone(), consumer.clone(), deliveries)
+        })
+        .collect()
+}
+
 fn call(stream: &mut TcpStream, arguments: &[&[u8]]) -> Vec<u8> {
     let mut bytes = Vec::new();
     encode_request(arguments, &mut bytes);
@@ -593,6 +671,187 @@ fn rewrite_with_concurrent_mutations_keeps_the_exact_final_state() {
         };
         assert_eq!(&actual, value, "key {key:?} differs after rewrite+restart");
     }
+    server.shutdown().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stream_consumers_and_pending_delivery_state_survive_restart() {
+    let dir = temp_dir("stream-pel");
+    let (expected_consumers, expected_pending) = {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(
+            &mut stream,
+            &[b"XADD", b"s", b"1-0", b"f", b"a"],
+            b"$3\r\n1-0\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"XADD", b"s", b"2-0", b"f", b"b"],
+            b"$3\r\n2-0\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"XADD", b"s", b"3-0", b"f", b"c"],
+            b"$3\r\n3-0\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"XGROUP", b"CREATE", b"s", b"g", b"0"],
+            b"+OK\r\n",
+        );
+        // First consumer reads two entries, second reads one, then one pending
+        // entry is claimed across consumers with an explicit retry count.
+        send(
+            &mut stream,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                b"g",
+                b"alice",
+                b"COUNT",
+                b"2",
+                b"STREAMS",
+                b"s",
+                b">",
+            ],
+            b"",
+        );
+        let _ = reply(&mut stream);
+        send(
+            &mut stream,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                b"g",
+                b"bob",
+                b"COUNT",
+                b"1",
+                b"STREAMS",
+                b"s",
+                b">",
+            ],
+            b"",
+        );
+        let _ = reply(&mut stream);
+        send(
+            &mut stream,
+            &[
+                b"XCLAIM",
+                b"s",
+                b"g",
+                b"carol",
+                b"0",
+                b"2-0",
+                b"RETRYCOUNT",
+                b"9",
+                b"JUSTID",
+                b"FORCE",
+            ],
+            b"*1\r\n$3\r\n2-0\r\n",
+        );
+        // A consumer with no pending entries must also survive.
+        send(
+            &mut stream,
+            &[b"XGROUP", b"CREATECONSUMER", b"s", b"g", b"idle"],
+            b":1\r\n",
+        );
+        let consumers = call(&mut stream, &[b"XINFO", b"CONSUMERS", b"s", b"g"]);
+        let pending = call(&mut stream, &[b"XPENDING", b"s", b"g", b"-", b"+", b"10"]);
+        server.shutdown().unwrap();
+        (consumers, pending)
+    };
+    let server = start(&dir, true, FsyncPolicy::Always);
+    let mut stream = connect(&server);
+    let consumers = call(&mut stream, &[b"XINFO", b"CONSUMERS", b"s", b"g"]);
+    let pending = call(&mut stream, &[b"XPENDING", b"s", b"g", b"-", b"+", b"10"]);
+    // `inactive` and pending idle time are wall-clock dependent; compare the
+    // durable fields instead.
+    let durable = |raw: &[u8]| {
+        let text = String::from_utf8_lossy(raw).into_owned();
+        let mut names: Vec<String> = text
+            .split("\r\n")
+            .filter(|line| {
+                line.starts_with("alice")
+                    || line.starts_with("bob")
+                    || line.starts_with("carol")
+                    || line.starts_with("idle")
+            })
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        durable(&consumers),
+        durable(&expected_consumers),
+        "consumers differ"
+    );
+    assert_eq!(
+        pending_triples(&pending),
+        pending_triples(&expected_pending),
+        "pending ids, owners or delivery counts differ after restart"
+    );
+    // The replayed PEL still supports acknowledgement and claiming.
+    let ack = call(&mut stream, &[b"XACK", b"s", b"g", b"1-0", b"2-0", b"3-0"]);
+    assert_eq!(
+        ack, b":3\r\n",
+        "all replayed pending entries must be ackable"
+    );
+    let empty = call(&mut stream, &[b"XPENDING", b"s", b"g"]);
+    assert_eq!(empty, b"*4\r\n:0\r\n$-1\r\n$-1\r\n*0\r\n");
+    server.shutdown().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_pending_entry_for_a_deleted_stream_id_is_dropped_on_replay() {
+    // Documented D6 limitation: a PEL id whose stream entry no longer exists has
+    // no payload to re-claim, so replay drops it instead of inventing an entry.
+    let dir = temp_dir("stream-pel-deleted");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        for id in [b"1-0".as_slice(), b"2-0", b"3-0"] {
+            send(&mut stream, &[b"XADD", b"s", id, b"f", b"v"], b"");
+            let _ = reply(&mut stream);
+        }
+        send(
+            &mut stream,
+            &[b"XGROUP", b"CREATE", b"s", b"g", b"0"],
+            b"+OK\r\n",
+        );
+        send(
+            &mut stream,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                b"g",
+                b"worker",
+                b"STREAMS",
+                b"s",
+                b">",
+            ],
+            b"",
+        );
+        let _ = reply(&mut stream);
+        send(&mut stream, &[b"XDEL", b"s", b"2-0"], b":1\r\n");
+        server.shutdown().unwrap();
+    }
+    let server = start(&dir, true, FsyncPolicy::Always);
+    let mut stream = connect(&server);
+    let pending = call(&mut stream, &[b"XPENDING", b"s", b"g", b"-", b"+", b"10"]);
+    let triples = pending_triples(&pending);
+    assert_eq!(triples.len(), 2, "deleted pending id must be dropped");
+    assert_eq!(triples[0].0, b"1-0");
+    assert_eq!(triples[1].0, b"3-0");
+    assert!(
+        triples
+            .iter()
+            .all(|(_, consumer, deliveries)| { consumer == b"worker" && *deliveries == 1 })
+    );
+    send(&mut stream, &[b"XLEN", b"s"], b":2\r\n");
     server.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
