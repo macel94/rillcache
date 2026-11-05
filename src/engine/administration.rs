@@ -63,7 +63,9 @@ impl ShardExecutor {
                 arity("bgrewriteaof", out);
             } else {
                 match self.rewrite_journal() {
-                    Ok(_) => out.extend_from_slice(b"+OK\r\n"),
+                    Ok(_) => {
+                        out.extend_from_slice(b"+Background append only file rewriting started\r\n")
+                    }
                     Err(()) => out.extend_from_slice(
                         b"-ERR append-only journal is not enabled or cannot be rewritten\r\n",
                     ),

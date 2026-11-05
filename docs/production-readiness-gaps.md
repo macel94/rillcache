@@ -204,17 +204,24 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   interchange and provides a supported migration tool.
 
 - [ ] **D2. AOF rewrite is synchronous and blocks command service.** [P0]
-  `BGREWRITEAOF` and automatic compaction hold the exclusive gate while encoding
-  and fsyncing a full snapshot. There is no background, incremental or forked
-  rewrite, progress reporting or copy-on-write isolation.
-  **Measured (host-local diagnostic, 2026-11-05):** 20,000 keys of 64-byte values
-  (2.5 MB journal) block the server for **130 ms**; a concurrent client's worst
-  PING during that window was **129 ms**. The stall is O(dataset) because the whole
-  keyspace is re-encoded and fsynced inside one owner turn, so a production-sized
-  journal stalls for seconds.
-  **Closes when:** rewrite is background/incremental with a bounded service pause
-  or a measured and accepted pause SLO, progress reporting and crash-safe
-  generation switching.
+  **Partial (2026-11-05): cooperative rewrite implemented.** `BGREWRITEAOF` now
+  replies `+Background append only file rewriting started` after materialising the
+  key list, and the maintenance loop advances one bounded slice (≤512 keys or
+  1 MiB) per tick between client commands. Changed keys are re-encoded as whole
+  values, so reconciliation cannot duplicate collection members; the bulk fsync
+  runs outside the gate and the final residual plus rename plus directory sync run
+  under a short gate. `INFO persistence` reports `aof_rewrite_in_progress`, and a
+  kill mid-rewrite keeps every acknowledged write (`tests/durability_crash.rs`).
+  **Measured (host-local):** old synchronous pass 130 ms full stall and 129 ms
+  worst PING for 20,000 keys (2.5 MB); cooperative start pause 9–20 ms
+  (key-list materialisation), 1.6–2.4 ms per 512-key slice, commit under 1 ms plus
+  the residual fsync. Completion time still scales with the dataset.
+  **Remaining:** no fork or copy-on-write, so the start pause is O(key names) and
+  enormous keyspaces still need a measured pause SLO; a sustained write storm
+  lengthens reconciliation rounds; there is no progress percentage, only the
+  in-progress flag. RDB and online backup remain separate items.
+  **Closes when:** the start pause is bounded independently of key count (or an
+  accepted SLO is recorded) and progress reporting covers bytes/keys completed.
 
 - [ ] **D3. Journal integrity and encryption at rest are missing.** [P0]
   The journal has no embedded checksums or authenticated records, and there is no

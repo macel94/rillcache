@@ -19,6 +19,71 @@ fn temp_dir(label: &str) -> PathBuf {
     path
 }
 
+/// Drive the cooperative rewrite to completion through the server's own
+/// maintenance tick, bounded and without a fixed readiness sleep.
+fn wait_for_rewrite(server: &ServerHandle) {
+    let mut stream = connect(server);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let info = call(&mut stream, &[b"INFO", b"persistence"]);
+        let text = String::from_utf8_lossy(&info);
+        if text.contains("aof_rewrite_in_progress:0") {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "rewrite did not finish: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Read exactly one RESP reply so a test can compare dynamic values without
+/// hard-coding lengths. Covers the simple/integer/bulk/array frames used here.
+fn reply(stream: &mut TcpStream) -> Vec<u8> {
+    let mut head = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+        if head.len() >= 2 && head.ends_with(b"\r\n") {
+            break;
+        }
+    }
+    let mut out = head.clone();
+    match head[0] {
+        b'$' => {
+            let length: i64 = std::str::from_utf8(&head[1..head.len() - 2])
+                .unwrap()
+                .parse()
+                .unwrap();
+            if length >= 0 {
+                let mut body = vec![0u8; length as usize + 2];
+                stream.read_exact(&mut body).unwrap();
+                out.extend_from_slice(&body);
+            }
+        }
+        b'*' => {
+            let count: i64 = std::str::from_utf8(&head[1..head.len() - 2])
+                .unwrap()
+                .parse()
+                .unwrap();
+            for _ in 0..count {
+                out.extend_from_slice(&reply(stream));
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn call(stream: &mut TcpStream, arguments: &[&[u8]]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    encode_request(arguments, &mut bytes);
+    stream.write_all(&bytes).unwrap();
+    reply(stream)
+}
+
 fn start(dir: &Path, appendonly: bool, fsync: FsyncPolicy) -> ServerHandle {
     let workers = match std::env::var("RILLCACHE_TEST_THREADS").as_deref() {
         Ok("0") | Err(_) => None,
@@ -219,7 +284,12 @@ fn bgrewriteaof_compacts_a_live_log_and_restart_keeps_the_state() {
         }
         let file = dir.join("test.aof");
         let before = std::fs::metadata(&file).unwrap().len();
-        send(&mut stream, &[b"BGREWRITEAOF"], b"+OK\r\n");
+        send(
+            &mut stream,
+            &[b"BGREWRITEAOF"],
+            b"+Background append only file rewriting started\r\n",
+        );
+        wait_for_rewrite(&server);
         let after = std::fs::metadata(&file).unwrap().len();
         assert!(after < before);
         server.shutdown().unwrap();
@@ -404,7 +474,12 @@ fn append_after_rewrite_replays_cleanly() {
         let server = start(&dir, true, FsyncPolicy::Always);
         let mut stream = connect(&server);
         send(&mut stream, &[b"SET", b"a", b"1"], b"+OK\r\n");
-        send(&mut stream, &[b"BGREWRITEAOF"], b"+OK\r\n");
+        send(
+            &mut stream,
+            &[b"BGREWRITEAOF"],
+            b"+Background append only file rewriting started\r\n",
+        );
+        wait_for_rewrite(&server);
         // Without seeking to the snapshot end, this write lands at offset zero
         // and overwrites the compacted file.
         send(&mut stream, &[b"SET", b"b", b"2"], b"+OK\r\n");
@@ -419,5 +494,105 @@ fn append_after_rewrite_replays_cleanly() {
         send(&mut stream, &[b"GET", b"b"], b"$1\r\n2\r\n");
         server.shutdown().unwrap();
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rewrite_with_concurrent_mutations_keeps_the_exact_final_state() {
+    let dir = temp_dir("rewrite-concurrent");
+    let server = start(&dir, true, FsyncPolicy::EverySec);
+    let mut reader = connect(&server);
+    for index in 0..1_000 {
+        send(
+            &mut reader,
+            &[b"SET", format!("cold:{index}").as_bytes(), b"cold"],
+            b"+OK\r\n",
+        );
+    }
+    let writer_addr = server.local_addr();
+    let writer = std::thread::spawn(move || {
+        let mut stream = TcpStream::connect(writer_addr).unwrap();
+        stream.set_nodelay(true).unwrap();
+        for round in 0..300u32 {
+            let key = format!("hot:{}", round % 16);
+            call(
+                &mut stream,
+                &[b"SET", key.as_bytes(), format!("value-{round}").as_bytes()],
+            );
+            call(
+                &mut stream,
+                &[b"RPUSH", b"shared:list", format!("item-{round}").as_bytes()],
+            );
+            call(&mut stream, &[b"LTRIM", b"shared:list", b"-50", b"-1"]);
+            call(
+                &mut stream,
+                &[
+                    b"HSET",
+                    b"shared:hash",
+                    format!("f{}", round % 8).as_bytes(),
+                    format!("v{round}").as_bytes(),
+                ],
+            );
+            let transient = format!("transient:{}", round % 8);
+            call(&mut stream, &[b"SET", transient.as_bytes(), b"live"]);
+            if round % 3 == 0 {
+                call(&mut stream, &[b"DEL", transient.as_bytes()]);
+            }
+        }
+    });
+    send(
+        &mut reader,
+        &[b"BGREWRITEAOF"],
+        b"+Background append only file rewriting started\r\n",
+    );
+    wait_for_rewrite(&server);
+    writer.join().unwrap();
+
+    let mut expected: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for index in 0..16 {
+        let key = format!("hot:{index}");
+        expected.push((
+            key.clone().into_bytes(),
+            call(&mut reader, &[b"GET", key.as_bytes()]),
+        ));
+    }
+    expected.push((
+        b"shared:list".to_vec(),
+        call(&mut reader, &[b"LRANGE", b"shared:list", b"0", b"-1"]),
+    ));
+    expected.push((
+        b"shared:hash".to_vec(),
+        call(&mut reader, &[b"HGETALL", b"shared:hash"]),
+    ));
+    for index in 0..8 {
+        let key = format!("transient:{index}");
+        expected.push((
+            key.clone().into_bytes(),
+            call(&mut reader, &[b"GET", key.as_bytes()]),
+        ));
+    }
+    for index in 0..1_000 {
+        let key = format!("cold:{index}");
+        expected.push((
+            key.clone().into_bytes(),
+            call(&mut reader, &[b"GET", key.as_bytes()]),
+        ));
+    }
+    server.shutdown().unwrap();
+
+    // Replay the compacted journal and compare every tracked key exactly.
+    let server = start(&dir, true, FsyncPolicy::Always);
+    let mut stream = connect(&server);
+    for (key, value) in &expected {
+        let actual = if key.starts_with(b"shared:list") {
+            call(&mut stream, &[b"LRANGE", b"shared:list", b"0", b"-1"])
+        } else if key.starts_with(b"shared:hash") {
+            call(&mut stream, &[b"HGETALL", b"shared:hash"])
+        } else {
+            call(&mut stream, &[b"GET", key])
+        };
+        assert_eq!(&actual, value, "key {key:?} differs after rewrite+restart");
+    }
+    server.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }

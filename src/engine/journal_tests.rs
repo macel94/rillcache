@@ -404,7 +404,17 @@ fn rewrite_compacts_history_and_still_replays_the_final_state() {
         }
         assert_eq!(run(&store, &[b"RPUSH", b"list", b"a", b"b"]), b":2\r\n");
         let before = std::fs::metadata(&path).unwrap().len();
-        assert_eq!(run(&store, &[b"BGREWRITEAOF"]), b"+OK\r\n");
+        assert_eq!(
+            run(&store, &[b"BGREWRITEAOF"]),
+            b"+Background append only file rewriting started\r\n"
+        );
+        for _ in 0..10_000 {
+            store.journal_sync().unwrap();
+            if !store.rewrite_in_progress() {
+                break;
+            }
+        }
+        assert!(!store.rewrite_in_progress(), "rewrite did not finish");
         let after = std::fs::metadata(&path).unwrap().len();
         assert!(after < before, "rewrite must compact {before} -> {after}");
         assert_eq!(run(&store, &[b"GET", b"key"]), b"$9\r\nvalue-199\r\n");
@@ -566,6 +576,13 @@ fn automatic_rewrite_compacts_after_configured_growth() {
         }
         let before = std::fs::metadata(&path).unwrap().len();
         assert!(store.auto_rewrite_if_due());
+        for _ in 0..10_000 {
+            store.journal_sync().unwrap();
+            if !store.rewrite_in_progress() {
+                break;
+            }
+        }
+        assert!(!store.rewrite_in_progress(), "auto rewrite did not finish");
         let after = std::fs::metadata(&path).unwrap().len();
         assert!(
             after < before,
