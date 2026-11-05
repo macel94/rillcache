@@ -254,12 +254,20 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   exact data/TTL/accounting, and states RPO/RTO and retention.
 
 - [ ] **D6. Stream pending and consumer state is volatile across restart.** [P0]
-  Replay rebuilds entries and group cursors, not consumer objects or PEL owners,
-  delivery counts and timestamps. A restart can therefore change delivery
-  semantics and break a work-queue use case.
-  **Closes when:** PEL/consumer state is persisted and restored atomically with
-  stream data and covered by restart, claim, ack and trim tests; or Streams are
-  explicitly excluded as a durable queue.
+  **Partial (2026-11-05): consumers and PEL now persist.** The journal rebuild
+  emits `XGROUP CREATECONSUMER` for every consumer and `XCLAIM ... TIME ...
+  RETRYCOUNT ... JUSTID FORCE` for every pending entry, so owners, delivery counts
+  and delivery timestamps survive restart; both the live journal and the
+  cooperative rewrite use the same encoder. `tests/persistence.rs` covers
+  consumers with and without pending entries, cross-consumer claims with an
+  explicit retry count, restart replay, and acknowledging the replayed PEL.
+  **Remaining:** pending ids whose entries were trimmed or deleted cannot be
+  re-claimed on replay and are dropped; consumer `seen_at`/`inactive` time is not
+  restored (it reflects replay time); trim/claim-after-trim durability has no
+  dedicated test yet.
+  **Closes when:** deleted-entry PEL tombstones are represented, consumer activity
+  time is preserved, and trim/claim interactions are covered by restart tests; or
+  Streams are explicitly excluded as a durable queue.
 
 - [ ] **D7. Signal-driven graceful drain is missing.** [P0]
   Managed shutdown joins workers and protocol `SHUTDOWN` flushes the journal, but

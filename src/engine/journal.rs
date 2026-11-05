@@ -1160,6 +1160,40 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
         for (name, group) in &stream.groups {
             let id = id_text(group.last_delivered);
             encode_request(&[b"XGROUP", b"CREATE", key, name, &id], output);
+            // Consumers and their pending entries are delivery state, not just
+            // stream data: recreate the consumer object, then claim each pending
+            // id back to its owner with the recorded delivery time and count.
+            // XCLAIM FORCE creates the PEL entry; XGROUP CREATECONSUMER keeps a
+            // consumer that currently has no pending entries. Entries that were
+            // trimmed or deleted can no longer be claimed and are dropped, which
+            // matches this subset's documented limitation.
+            let mut consumers: Vec<&Vec<u8>> = group.consumers.keys().collect();
+            consumers.sort();
+            for consumer in consumers {
+                encode_request(&[b"XGROUP", b"CREATECONSUMER", key, name, consumer], output);
+            }
+            for (id, pending) in &group.pending {
+                let id = id_text(*id);
+                let delivered_at = pending.delivered_at.max(0).to_string();
+                let deliveries = pending.deliveries.to_string();
+                encode_request(
+                    &[
+                        b"XCLAIM",
+                        key,
+                        name,
+                        pending.consumer.as_slice(),
+                        b"0",
+                        &id,
+                        b"TIME",
+                        delivered_at.as_bytes(),
+                        b"RETRYCOUNT",
+                        deliveries.as_bytes(),
+                        b"JUSTID",
+                        b"FORCE",
+                    ],
+                    output,
+                );
+            }
         }
         if needs_sentinel || !stream.entries.is_empty() || !stream.groups.is_empty() {
             let last = id_text(stream.last_generated);

@@ -230,11 +230,14 @@ do not edit a live file.
 
 ## Streams limitation
 
-Stream entries, last IDs and consumer-group IDs are rebuilt. Consumer objects and
-pending-entry-list metadata (delivery counts, owners, timestamps) are **not**
-reconstructed because the journal records entries and group cursors only.
-`XACK`/`XCLAIM`/`XAUTOCLAIM` operate on that process-memory pending state; treat
-it as volatile across restart and do not use this subset as a durable work queue.
+Stream entries, last IDs, consumer-group cursors, **consumer objects and their
+pending-entry lists** are rebuilt. The encoder emits `XGROUP CREATECONSUMER` for
+every consumer and `XCLAIM ... TIME <delivered-at> RETRYCOUNT <deliveries> JUSTID
+FORCE` for every pending id, so PEL owners, delivery counts and delivery
+timestamps survive restart and the replayed entries remain ackable and claimable.
+Limits of this subset: a pending id whose stream entry was trimmed or deleted has
+no payload to re-claim and is dropped on replay; consumer `seen_at`/`inactive`
+time reflects replay time rather than the original activity.
 
 ## Deliberate gaps
 
