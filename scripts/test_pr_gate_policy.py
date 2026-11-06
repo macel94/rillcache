@@ -39,9 +39,9 @@ class GatePolicyTests(unittest.TestCase):
         for path in ("main-ruleset.json", "pr-workflow-gates.json"):
             shutil.copyfile(ROOT / ".github" / path, root / ".github" / path)
 
-    def test_all_eleven_workflows_six_pr_workflows_and_fourteen_contexts_are_accounted_for(self):
+    def test_all_twelve_workflows_six_pr_workflows_and_fourteen_contexts_are_accounted_for(self):
         inventory = gate.audit_local()
-        self.assertEqual(11, len(inventory))
+        self.assertEqual(12, len(inventory))
         self.assertEqual(6, len(gate.required_workflows()))
         checks = gate.required_checks()
         self.assertEqual(14, len(checks))

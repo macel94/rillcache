@@ -102,10 +102,11 @@
     },
     "benchmarks.yml": {
       "events": [
+        "schedule",
         "workflow_dispatch"
       ],
       "jobs": {},
-      "non_pr_reason": "Manual legacy Rust-generator comparisons, inference and report publication; not a PR event. Scheduled five-server comparisons use upstream-performance.yml. Report PRs receive every ordinary required check."
+      "non_pr_reason": "Weekly Tuesday 08:17 UTC legacy Rust-generator comparison refreshes benchmarks/README.md through a protected report PR; manual dispatch remains available. Daily five-server comparison is separate. Report PRs receive all ordinary required checks."
     },
     "hotpaths.yml": {
       "events": [
@@ -122,7 +123,10 @@
       "non_pr_reason": "Manual default-branch inference authentication probe, never a PR credential path."
     },
     "openwiki-pages.yml": {
-      "events": ["push", "workflow_dispatch"],
+      "events": [
+        "push",
+        "workflow_dispatch"
+      ],
       "jobs": {},
       "non_pr_reason": "Publishes the generated OpenWiki visualizer to GitHub Pages on main; not a PR check."
     },
@@ -133,6 +137,14 @@
       ],
       "jobs": {},
       "non_pr_reason": "Daily five-server comparisons, manual legacy study, same-job hosted reactor diagnostics, separate owned-process instrumented profiles and opt-in fixed-host screening; none substitutes for any mandatory PR performance gate."
+    },
+    "openwiki-freshness.yml": {
+      "events": [
+        "push",
+        "schedule"
+      ],
+      "jobs": {},
+      "non_pr_reason": "Checks Grounded Claim evidence against source on main pushes and weekly; opens/updates an issue when semantic wiki refresh is needed. OpenWiki Pages publishes the checked-in visualizer on main."
     }
   }
 }
