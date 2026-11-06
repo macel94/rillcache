@@ -1,0 +1,127 @@
+name: OpenWiki source freshness
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Run after the Tuesday weekly benchmark dashboard workflow has published.
+    - cron: '17 12 * * 2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openwiki-freshness-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Audit grounded OpenWiki evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.22.0
+      - name: Install the exact OpenWiki resolver used by the visualizer
+        run: |
+          npm install --global --no-audit --no-fund openwiki@0.9.0
+          root="$(npm root --global)/openwiki"
+          test "$(node -p "require('$root/package.json').version")" = '0.9.0'
+      - name: Test freshness audit fixtures
+        run: python3 scripts/upstream/test_openwiki_freshness.py
+      - name: Check every grounded Claim against the current source
+        id: audit
+        env:
+          OPENWIKI_TELEMETRY_DISABLED: '1'
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          module_root="$(npm root --global)/openwiki"
+          report="$RUNNER_TEMP/openwiki-freshness.json"
+          log="$RUNNER_TEMP/openwiki-freshness.stderr"
+          set +e
+          OPENWIKI_MODULE_ROOT="$module_root" node scripts/check_openwiki_freshness.mjs "$GITHUB_WORKSPACE" > "$report" 2> "$log"
+          status=$?
+          set -e
+          if [[ $status -gt 1 || ! -s "$report" ]]; then
+            cat "$log" >&2
+            exit 1
+          fi
+          python3 - "$report" "$log" "$GITHUB_STEP_SUMMARY" "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          report_path, log_path, summary_path, output_path = sys.argv[1:]
+          data = json.load(open(report_path))
+          stale = data['stale_evidence']
+          pages = sorted({item['page'] for item in stale})
+          with open(summary_path, 'a') as summary:
+              summary.write('## OpenWiki source freshness\n\n')
+              summary.write(f"Checked {data['pages_checked']} pages, {data['claims_checked']} claims and {data['evidence_checked']} source references at `{data['source_head']}`.\n\n")
+              if stale:
+                  summary.write(f"**{len(stale)} stale evidence findings across {len(pages)} pages.** The OpenWiki visuals are still deployed from the checked-in pages; stale claims are not silently re-signed.\n\n")
+                  for page in pages:
+                      summary.write(f"- `openwiki/{page}`\n")
+                  summary.write('\nSee the automatically maintained issue **OpenWiki source evidence freshness** for the affected claim IDs and source paths.\n')
+              else:
+                  summary.write('All grounded Claim evidence is current.\n')
+          with open(output_path, 'a') as output:
+              output.write(f"stale={'true' if stale else 'false'}\n")
+          PY
+          cp "$report" "$RUNNER_TEMP/openwiki-freshness-report.json"
+          cat "$log" >&2
+      - name: Open or update the freshness issue when Claims need semantic review
+        if: steps.audit.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ runner.temp }}/openwiki-freshness-report.json
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_HEAD: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads(Path(os.environ['REPORT']).read_text())
+          stale = data['stale_evidence']
+          lines = [
+              'The scheduled/commit-triggered OpenWiki freshness audit found stale or missing grounded source evidence.',
+              '',
+              f"Audited source: `{os.environ['SOURCE_HEAD']}`.",
+              f"OpenWiki resolver: `{data['openwiki_version']}`; {data['claims_checked']} claims and {data['evidence_checked']} evidence references checked.",
+              '',
+              'Refresh with the configured OpenWiki provider (`openwiki --update`) and review the generated diff. The audit deliberately does not rewrite or re-sign claims: changed evidence needs semantic review.',
+              '',
+              '| Page | Claim ID | Source | Finding |',
+              '| --- | --- | --- | --- |',
+          ]
+          for item in stale:
+              safe = lambda value: str(value or '—').replace('|', '\\|').replace('\n', ' ')
+              lines.append(f"| `openwiki/{safe(item.get('page'))}` | `{safe(item.get('claim'))}` | `{safe(item.get('resource'))}` | {safe(item.get('reason'))} |")
+          Path(os.environ['RUNNER_TEMP'] + '/openwiki-freshness-issue.md').write_text('\n'.join(lines) + '\n')
+          PY
+          title='OpenWiki source evidence freshness'
+          issue=$(gh issue list --repo "$REPOSITORY" --state open --limit 100 --json number,title \
+            --jq '[.[] | select(.title == "OpenWiki source evidence freshness")] | .[0].number // empty')
+          if [[ -n "$issue" ]]; then
+            gh issue edit "$issue" --repo "$REPOSITORY" \
+              --body-file "$RUNNER_TEMP/openwiki-freshness-issue.md"
+          else
+            gh issue create --repo "$REPOSITORY" --title "$title" \
+              --body-file "$RUNNER_TEMP/openwiki-freshness-issue.md"
+          fi
+      - name: Close the freshness issue when all Claims are current
+        if: steps.audit.outputs.stale == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          issue=$(gh issue list --repo "$REPOSITORY" --state open --limit 100 --json number,title \
+            --jq '[.[] | select(.title == "OpenWiki source evidence freshness")] | .[0].number // empty')
+          if [[ -n "$issue" ]]; then
+            gh issue close "$issue" --repo "$REPOSITORY" \
+              --comment "Automated OpenWiki freshness audit: all grounded Claim evidence is current."
+          fi

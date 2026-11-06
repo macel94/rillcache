@@ -23,13 +23,18 @@ Do not document `vendor/`, `target/` or generated benchmark output.
 
 ## Maintenance
 
-There is no checked-in scheduled OpenWiki workflow. Refresh this wiki manually
-from the repository root with a configured OpenWiki provider:
+The visualizer deploys automatically on every `main` push. A separate workflow
+checks versioned source evidence on main pushes and weekly; when evidence is stale,
+it opens or updates a maintenance issue listing affected pages and citations. The
+audit never rewrites or re-signs Claims: stale evidence needs semantic review.
+
+Refresh this wiki from the repository root with a configured, approved OpenWiki
+provider:
 
 ```sh
 openwiki --update
 ```
 
-Review the generated diff and run the relevant tests before committing. Keep the
+Review the generated diff and run the freshness audit before committing. Keep the
 source tree and tests authoritative; the wiki is a navigation and evidence aid,
 not a replacement for them.

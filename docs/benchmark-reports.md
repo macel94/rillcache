@@ -1,12 +1,16 @@
 # Automatic benchmark reports
 
 Read **[current performance](../benchmarks/README.md)** directly in the repository.
-The root README links to it. Legacy manual Rust-generator comparative runs propose
-report PRs under the [PR-only main/test/Valkey policy](pr-quality-gate.md). The
+The root README links to it. A scheduled Tuesday 08:17 UTC legacy Rust-generator
+comparison refreshes this dashboard via a protected report PR with auto-merge
+requested; required checks and any protection review still gate the merge. Manual
+dispatch remains available. Generated report PRs run the full
+[PR-only main/test/Valkey policy](pr-quality-gate.md). The
 [dedicated daily five-server comparison](daily-benchmarks.md) instead publishes
 its own Actions summary and raw artifact; it does not replace this report format
-or create an automated report PR. After the
-required checks/reviews and protected merge, they publish:
+or create its own benchmark-report PR. The legacy report publisher writes only
+`benchmarks/README.md` and `benchmarks/reports/` through a protected PR. After the
+required checks/reviews and protected merge, it publishes:
 
 - `benchmarks/README.md`: the latest workflow run/review-attempt's performance page.
 - `benchmarks/reports/<run-id>-<review-attempt>.md`: permanent per-run Markdown.
@@ -16,7 +20,15 @@ required checks/reviews and protected merge, they publish:
 - The same report in the **review job's Actions summary**.
 
 No artifact download is needed to understand current performance. Raw JSON/logs
-remain separate evidence artifacts. The short embedded smoke on ordinary CI is
+remain separate evidence artifacts. The OpenWiki visualizer is rebuilt on every
+main push; a source-push/weekly freshness audit checks Grounded Claim evidence and
+opens or updates a maintenance issue when pages need semantic review. It does not
+silently re-sign stale Claims or generate prose without a configured approved
+model provider. The OpenWiki visualizer is rebuilt on every
+main push; a separate weekly/source-push freshness audit checks its grounded Claim
+evidence and creates or updates a maintenance issue when pages need semantic
+review. It does not silently bless stale Claims or generate prose without a
+configured, approved model provider. The short embedded smoke on ordinary CI is
 not a performance comparison and intentionally does not update this page or call AI.
 
 ## Automatic Copilot authentication and model selection
