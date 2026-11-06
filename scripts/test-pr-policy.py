@@ -154,7 +154,11 @@ class PolicyTests(unittest.TestCase):
         self.assertNotIn('git push', helper)
 
     def test_publisher_is_default_branch_only_and_cannot_push_main(self):
-        workflow = (ROOT / '.github/workflows/benchmarks.yml').read_text().split('\n  publish:\n')[1]
+        complete_workflow = (ROOT / '.github/workflows/benchmarks.yml').read_text()
+        self.assertIn("schedule:", complete_workflow)
+        self.assertIn("- cron: '17 8 * * 2'", complete_workflow)
+        self.assertIn("workflow_dispatch:", complete_workflow)
+        workflow = complete_workflow.split('\n  publish:\n')[1]
         self.assertIn('github.ref == format', workflow)
         for permission in ('contents: write', 'pull-requests: write', 'actions: write'):
             self.assertIn(permission, workflow)

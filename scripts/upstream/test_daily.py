@@ -233,7 +233,7 @@ class DailyTests(unittest.TestCase):
             self.assertTrue(json.loads((directory / "server.json").read_text())["joined"])
             self.assertNotIn("GH_TOKEN", popen.call_args.kwargs["env"])
 
-    def test_pins_and_schedules_are_explicit_and_old_pr_checks_unchanged(self):
+    def test_pins_and_dashboard_schedules_are_explicit_and_old_pr_checks_unchanged(self):
         targets = (common.ROOT / "benchmarks/targets.mk").read_text()
         for key in ("version", "sha256"):
             value = re.search(rf"^DRAGONFLY_{key.upper()} := (.+)$", targets, re.M)[1]
@@ -242,7 +242,12 @@ class DailyTests(unittest.TestCase):
         self.assertIn("cron: '17 5 * * *'", text)
         self.assertIn("python3 scripts/upstream/daily_prepare.py", text)
         self.assertIn("python3 scripts/upstream/daily.py --check", text)
-        self.assertNotIn("schedule:", (common.ROOT / ".github/workflows/benchmarks.yml").read_text())
+        benchmarks = (common.ROOT / ".github/workflows/benchmarks.yml").read_text()
+        self.assertIn("cron: '17 8 * * 2'", benchmarks)
+        self.assertIn("benchmarks/README.md", (common.ROOT / "docs/benchmark-reports.md").read_text())
+        freshness = (common.ROOT / ".github/workflows/openwiki-freshness.yml").read_text()
+        self.assertIn("cron: '17 12 * * 2'", freshness)
+        self.assertIn("check_openwiki_freshness.mjs", freshness)
         policy = json.loads((common.ROOT / ".github/pr-workflow-gates.json").read_text())
         self.assertEqual(14, sum(len(names) for w in policy["workflows"].values() for names in w["jobs"].values()))
 

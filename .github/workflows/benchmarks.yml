@@ -1,8 +1,10 @@
 name: Comparative benchmarks
 
 on:
-  # Legacy Rust-generator/report-publishing contract remains manually available.
-  # Scheduled comparisons live in upstream-performance.yml (all five servers).
+  # Refresh the checked-in benchmark dashboard weekly. The daily five-server
+  # comparison remains a separate advisory workflow and artifact.
+  schedule:
+    - cron: '17 8 * * 2'
   workflow_dispatch:
 
 permissions:
@@ -10,7 +12,8 @@ permissions:
 
 concurrency:
   group: benchmarks-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve a running scheduled/manual cohort; publishing is serialized later.
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
