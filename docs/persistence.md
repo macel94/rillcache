@@ -182,6 +182,39 @@ The lock does not coordinate writers on a shared/network filesystem; such a volu
 is unsupported, so keep journals on local storage or guarantee single-process
 access externally.
 
+## Offline backup and restore
+
+The `rillcache-backup` binary supports a versioned, bounded-memory archive of a
+quiescent AOF. Stop the source server first; `create` opens the journal through
+the normal exclusive ownership lock, replays it, and forces a journal sync before
+copying. A running writer therefore causes backup to fail without publishing an
+archive. The archive stores the AOF bytes with their length and CRC32, streams in
+1 MiB chunks, and is limited to 16 GiB. The temporary archive is mode 0600 on Unix,
+synced, then hard-linked into place without replacing an existing output. The
+archive and destination must be on a local filesystem that supports same-directory
+hard links and directory fsync; shared/network filesystems are unsupported.
+
+```text
+rillcache-backup create --dir /data --output /backups/rillcache-2026-11-07.rcb
+rillcache-backup verify --input /backups/rillcache-2026-11-07.rcb
+rillcache-backup restore --input /backups/rillcache-2026-11-07.rcb --dir /restore
+```
+
+`--filename` selects a non-default AOF basename. If the source uses non-default
+`max-data-bytes`, protocol frame/bulk or argument limits, pass matching
+`--max-data-bytes`, `--max-frame-bytes`, `--max-bulk-bytes`, and
+`--max-arguments` values to create/verify/restore. Destination directories must
+already exist and the restored AOF/lock must be absent. Restore verifies archive
+length/CRC and replays a temporary journal before atomically publishing it; it
+never overwrites an existing journal. Start a separate Rillcache instance on the
+restored directory to perform the operational restore drill.
+
+This is offline copy, not online backup, point-in-time recovery, rotation or
+retention. The archive contains only the AOF—not ACL files or server configuration.
+RPO/RTO are deployment-specific and are not claimed here. CRC32 detects accidental
+corruption but does not authenticate an archive or protect against malicious
+modification. Keep archives on trusted storage with separate access controls.
+
 ## Compaction with BGREWRITEAOF
 
 `BGREWRITEAOF` replaces the log with a compact snapshot of the current keyspace:
@@ -277,8 +310,9 @@ time reflects replay time rather than the original activity.
 - No shared-filesystem coordination: ownership is a local advisory lock
   (`<journal>.lock`), not a distributed lease. Crash-consistency of append and
   rewrite is covered by `tests/durability_crash.rs`.
-- No backup/restore tooling, point-in-time recovery, retention policy or log
-  rotation. Operators must size/rotate files and test restores.
+- `rillcache-backup` implements offline, quiescent AOF backup/verify/restore.
+  There is no online backup, point-in-time recovery, retention policy or log
+  rotation. Operators must size/rotate archives and test restores.
 - Per-command acknowledgment is not a transaction commit in the distributed sense;
   `MULTI` atomicity is process-local, and replica/failover semantics do not exist.
 
