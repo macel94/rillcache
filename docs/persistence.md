@@ -1,16 +1,16 @@
 # Append-only persistence and recovery
 
 > **Current scope:** durability completeness is explicitly deferred. The journal
-> remains implemented and tested as best-effort, but there is no RDB, checksum,
-> background/incremental rewrite, crash/ENOSPC/soak validation, backup drill,
+> remains implemented and tested as best-effort, but there is no RDB, authenticated
+> journal records, background fork/COW rewrite, ENOSPC/soak validation, backup drill,
 > point-in-time recovery or signal-driven drain. Do not treat it as a durable
 > system of record.
 
 Rillcache can persist supported keyspace mutations to an append-only command log.
 This is a real recovery path with explicit failure semantics, but it is **not** a
 complete Redis durability implementation: there is no RDB format, no
-background/forked AOF rewrite, no multi-process log ownership, no redis.conf
-integration, and stream consumer-group pending state is not restored.
+background/forked AOF rewrite, no shared-filesystem ownership, no redis.conf
+integration, and stream PEL recovery is limited for trimmed/deleted entries.
 
 ## Configuration
 
@@ -31,7 +31,8 @@ rillcache \
 
 The log is created with mode `0600` on Unix. The process must be able to read,
 write and truncate it at startup. Pointing two server processes at the same file
-is unsupported and can corrupt or interleave histories; use one owner per file.
+is protected by a local ownership lock; shared/network filesystem coordination
+is unsupported.
 The scratch container's root filesystem is read-only, so mount a writable volume
 at `/data` and add `--appendonly yes --dir /data` when persistence is required.
 
@@ -140,8 +141,27 @@ for recent acknowledged writes unless a client sends `SHUTDOWN`.
 If an append or fsync fails, the command reply is replaced with
 `ERR append-only write failed: ...`, the journal enters a failed state and later
 writes fail. The in-memory mutation may already be applied; a restart replays only
-what reached the file. Disk-full, quota and permission errors are visible rather
-than silently converted into success.
+complete, checksum-verified transactions. Disk-full, quota and permission errors
+are visible rather than silently converted into success.
+
+## Transaction checksums
+
+Each newly written transaction is followed by a standard RESP `ECHO` checksum
+record (CRC32 plus byte length). A format marker identifies the checksummed
+segment. Legacy RESP-only journals remain readable and switch to a checksummed
+segment on their first new append; rewriting compacts the legacy prefix into one
+checksummed snapshot.
+
+At startup, Rillcache verifies each complete checksum group before replaying any
+command. Valid-RESP byte corruption fails closed with a checksum mismatch. A torn
+final transaction/checksum is truncated to the previous verified boundary, so
+commands from an incomplete group are never replayed. The `ECHO` markers have no
+database effect if the RESP journal is inspected or replayed by another
+Redis-compatible server.
+
+CRC32 detects accidental corruption, not a malicious editor that recomputes the
+checksum. Authenticated records, encryption at rest and key management remain
+open in production gap D3.
 
 ## Single-process ownership
 
@@ -154,9 +174,13 @@ gone or its PID has been reused (the start time no longer matches), so a live ow
 is never displaced. Clean shutdown removes the lock; the lock is absent when
 `--appendonly no`.
 
-This is an **advisory local-filesystem lock**. It does not coordinate writers on a
-shared/network filesystem, and such a volume is not a supported deployment; keep a
-journal on local storage or guarantee single-process access externally.
+This is an **advisory local-filesystem lock**. On Linux the PID plus `/proc`
+start-time lets startup reclaim a stale lock after a crash. On platforms without
+that process identity source, startup fails closed on any existing lock; after
+confirming the old process is gone, an operator removes the stale `.lock` file.
+The lock does not coordinate writers on a shared/network filesystem; such a volume
+is unsupported, so keep journals on local storage or guarantee single-process
+access externally.
 
 ## Compaction with BGREWRITEAOF
 
@@ -164,8 +188,8 @@ journal on local storage or guarantee single-process access externally.
 `FLUSHALL` followed by every live key's rebuild records. Since the cooperative
 rewrite change it is **not** a single blocking pass:
 
-1. The command materialises the key list and creates a mode-0600 temporary file in
-   the journal directory, then replies
+1. The command materialises the key list, creates a mode-0600 temporary file and
+   checksum-format header in the journal directory, then replies
    `+Background append only file rewriting started`. No keyspace values are
    encoded under this first pause; it is bounded by the number of key names.
 2. The maintenance loop advances one bounded slice per tick (at most 512 keys or
@@ -179,7 +203,8 @@ rewrite change it is **not** a single blocking pass:
    snapshot end.
 
 `INFO persistence` reports `aof_rewrite_in_progress` while a rewrite is running and
-`aof_last_bgrewrite_status:ok|err` for the last completed attempt. A crash before
+`aof_last_bgrewrite_status:ok|err` for the last completed attempt. The final
+snapshot checksum is written and synced before the atomic rename. A crash before
 the rename leaves the previous journal intact; the temporary file is removed on the
 next start and never replayed. Killing the server mid-rewrite keeps every
 acknowledged write (covered by `tests/durability_crash.rs`).
@@ -217,8 +242,9 @@ listener starts accepting clients:
 - a complete prefix of valid commands is executed;
 - an incomplete final command (a crash during append) is ignored and the file is
   truncated back to the last complete command;
-- malformed RESP or a command that returns an error fails startup with the byte
-  offset; startup never silently skips a corrupt middle section;
+- malformed RESP, a command that returns an error, or a complete transaction with
+  a checksum mismatch fails startup with the byte offset; startup never silently
+  skips a corrupt middle section;
 - allocation/payload limits apply during replay, so an OOM while loading is a
   startup failure rather than partial data;
 - a replayed command may be rejected if it was produced by a newer/unknown command
@@ -241,9 +267,11 @@ time reflects replay time rather than the original activity.
 
 ## Deliberate gaps
 
-- No RDB import/export, manifest/multi-part AOF, checksums, encryption at rest or
-  replication of the log. `BGREWRITEAOF` is cooperative and incremental, but it is
-  not Redis's fork-based rewrite: the key list is materialised in memory and the
+- No RDB import/export, manifest/multi-part AOF, authenticated records, encryption
+  at rest or replication of the log. New RESP transactions have CRC32 checksums
+  for accidental corruption; these are not cryptographic integrity protection.
+  `BGREWRITEAOF` is cooperative and incremental, but it is not Redis's fork-based
+  rewrite: the key list is materialised in memory and the
   rewrite runs on the owner thread between maintenance ticks.
 - No graceful signal-driven drain; see [container delivery](containers.md).
 - No shared-filesystem coordination: ownership is a local advisory lock
@@ -266,5 +294,6 @@ rewrite compaction. Automatic rewrite tests cross configured growth thresholds,
 verify compaction and that the baseline resets, and replay the compacted file.
 Wire tests restart real servers in all worker modes, verify data and TTLs survive,
 compact a live log with `BGREWRITEAOF`, exercise maintenance-triggered automatic
-rewrite, recover a truncated tail, persist `FLUSHALL`, and reject corrupt logs at
-bind time.
+rewrite, recover legacy and checksummed truncated tails, upgrade legacy logs,
+detect valid-RESP byte corruption, persist stream consumers/PEL, and reject corrupt
+logs at bind time.

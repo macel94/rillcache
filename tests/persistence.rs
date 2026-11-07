@@ -855,3 +855,152 @@ fn a_pending_entry_for_a_deleted_stream_id_is_dropped_on_replay() {
     server.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn journal_checksum_detects_valid_resp_corruption_and_legacy_logs_upgrade_on_append() {
+    // New journals include standard RESP ECHO checksum records. Flip a value
+    // byte while keeping RESP framing valid: replay must detect it before serving.
+    let dir = temp_dir("checksum-corrupt");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"SET", b"k", b"v"], b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    let file = dir.join("test.aof");
+    let mut bytes = std::fs::read(&file).unwrap();
+    assert!(
+        bytes
+            .windows(27)
+            .any(|window| window == b"__RILLCACHE_AOF_CRC32_V1__:")
+    );
+    let value_at = bytes
+        .windows(7)
+        .position(|window| window == b"$1\r\nv\r\n")
+        .unwrap()
+        + 4;
+    bytes[value_at] = b"x"[0];
+    std::fs::write(&file, bytes).unwrap();
+    assert!(
+        Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            appendonly: true,
+            dir: dir.clone(),
+            appendfilename: "test.aof".into(),
+            ..Config::default()
+        })
+        .is_err(),
+        "valid-RESP data corruption must fail closed on checksum mismatch"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Old journals remain readable. The first new append starts a checksummed
+    // segment after the legacy RESP stream; subsequent restarts verify it.
+    let dir = temp_dir("checksum-upgrade");
+    let file = dir.join("test.aof");
+    let mut legacy = Vec::new();
+    encode_request(&[b"SET", b"old", b"value"], &mut legacy);
+    std::fs::write(&file, legacy).unwrap();
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"GET", b"old"], b"$5\r\nvalue\r\n");
+        send(&mut stream, &[b"SET", b"new", b"checked"], b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    let upgraded = std::fs::read(&file).unwrap();
+    assert!(
+        upgraded
+            .windows(27)
+            .any(|window| window == b"__RILLCACHE_AOF_CRC32_V1__:")
+    );
+    let record_marker = b"__RILLCACHE_RECORD_CRC32_V1__:";
+    assert!(
+        upgraded
+            .windows(record_marker.len())
+            .any(|window| window == record_marker)
+    );
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"GET", b"old"], b"$5\r\nvalue\r\n");
+        send(&mut stream, &[b"GET", b"new"], b"$7\r\nchecked\r\n");
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_corrupted_checksum_marker_fails_closed_instead_of_becoming_legacy_echo() {
+    let dir = temp_dir("checksum-marker-corrupt");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"SET", b"k", b"v"], b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    let path = dir.join("test.aof");
+    let mut bytes = std::fs::read(&path).unwrap();
+    let marker = b"__RILLCACHE_RECORD_CRC32_V1__:";
+    let at = bytes
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("checksum marker");
+    // Flip a CRC hex digit without disturbing RESP framing or marker syntax.
+    let crc_start = bytes[at..]
+        .iter()
+        .position(|byte| *byte == b':')
+        .map(|offset| at + offset + 1)
+        .unwrap();
+    bytes[crc_start] = if bytes[crc_start] == b'0' { b'1' } else { b'0' };
+    std::fs::write(&path, bytes).unwrap();
+    assert!(
+        Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            appendonly: true,
+            dir: dir.clone(),
+            appendfilename: "test.aof".into(),
+            ..Config::default()
+        })
+        .is_err(),
+        "a complete but corrupted checksum marker must fail closed"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn torn_checksummed_transaction_tail_is_discarded_as_a_whole() {
+    let dir = temp_dir("checksum-tail");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"SET", b"first", b"one"], b"+OK\r\n");
+        send(&mut stream, &[b"SET", b"second", b"two"], b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    let file = dir.join("test.aof");
+    let mut bytes = std::fs::read(&file).unwrap();
+    let marker = b"__RILLCACHE_RECORD_CRC32_V1__:";
+    let positions: Vec<usize> = bytes
+        .windows(marker.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == marker).then_some(index))
+        .collect();
+    assert!(
+        positions.len() >= 2,
+        "expected one checksum per append transaction"
+    );
+    // Keep the second SET fully written but truncate in its trailing checksum
+    // marker: recovery must stop at the preceding complete transaction.
+    bytes.truncate(positions[1] + marker.len() / 2);
+    std::fs::write(&file, bytes).unwrap();
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"GET", b"first"], b"$3\r\none\r\n");
+        send(&mut stream, &[b"GET", b"second"], b"$-1\r\n");
+        send(&mut stream, &[b"SET", b"after", b"recovery"], b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
