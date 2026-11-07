@@ -223,12 +223,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** the start pause is bounded independently of key count (or an
   accepted SLO is recorded) and progress reporting covers bytes/keys completed.
 
-- [ ] **D3. Journal integrity and encryption at rest are missing.** [P0]
-  The journal has no embedded checksums or authenticated records, and there is no
-  encryption-at-rest design or key-management contract. Corruption is detected
-  only through RESP parsing and command failure.
-  **Closes when:** record checksums/authentication detect truncation and
-  corruption, recovery fails closed on damage, and the profile documents disk
+- [ ] **D3. Journal integrity and encryption at rest are incomplete.** [P0]
+  **Partial (2026-11-07): transaction CRC32 checksums added.** Each new journal
+  transaction is followed by a standard RESP ECHO marker containing the byte
+  length and CRC32. Legacy RESP-only journals remain readable and switch to a
+  checksummed segment on their next append; rewrite snapshots are checksummed as
+  one segment. Startup preflights all checksum groups before replay, fails closed
+  on valid-RESP corruption and truncates a torn final transaction to the previous
+  verified boundary. Tests cover a standard CRC32 vector, valid-RESP corruption,
+  legacy upgrade and a fully written transaction with a torn marker.
+  **Limit:** CRC32 detects accidental corruption, not malicious modification;
+  legacy prefixes have no retroactive checksums until rewritten. There is still no
+  authenticated record format, encryption-at-rest design or key-management
+  contract.
+  **Closes when:** every journal byte is authenticated (including legacy import),
+  recovery fails closed on malicious modification, and the profile documents disk
   encryption/key ownership or implements application-level encryption.
 
 - [ ] **D4. Crash, ENOSPC and disk-fault behavior is unverified.** [P0]

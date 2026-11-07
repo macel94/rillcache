@@ -2,6 +2,11 @@ use crate::engine::{Auth, FsyncPolicy, PopOutcome, Store};
 use crate::protocol::Limits;
 use std::io::Write;
 
+#[test]
+fn crc32_matches_the_standard_check_vector() {
+    assert_eq!(!super::crc32_update(!0u32, b"123456789"), 0xcbf4_3926);
+}
+
 fn aof_path(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "rillcache-aof-{label}-{}-{:?}.aof",
