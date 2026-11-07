@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(1);
 const CHUNK_BUDGET: usize = 256 * 1024;
+const CHECKSUM_HEADER: &[u8] = b"__RILLCACHE_AOF_CRC32_V1__:";
+const CHECKSUM_RECORD: &[u8] = b"__RILLCACHE_RECORD_CRC32_V1__:";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FsyncPolicy {
@@ -68,6 +70,73 @@ impl Default for AofConfig {
 const REWRITE_STEP_KEYS: usize = 512;
 const REWRITE_STEP_BYTES: usize = 1024 * 1024;
 
+fn new_checksum_nonce() -> io::Result<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos();
+    Ok(format!("{:x}-{:x}", std::process::id(), now))
+}
+
+fn checksum_header(nonce: &str) -> Vec<u8> {
+    let payload = format!("{}{nonce}", String::from_utf8_lossy(CHECKSUM_HEADER));
+    let mut out = Vec::new();
+    encode_request(&[b"ECHO", payload.as_bytes()], &mut out);
+    out
+}
+
+fn checksum_record(nonce: &str, len: u64, crc: u32) -> Vec<u8> {
+    let payload = format!(
+        "{}{nonce}:{len}:{crc:08x}",
+        String::from_utf8_lossy(CHECKSUM_RECORD)
+    );
+    let mut out = Vec::new();
+    encode_request(&[b"ECHO", payload.as_bytes()], &mut out);
+    out
+}
+
+fn crc32_update(mut crc: u32, bytes: &[u8]) -> u32 {
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    crc
+}
+
+fn parse_checksum_header(value: &[u8]) -> Option<String> {
+    let suffix = value.strip_prefix(CHECKSUM_HEADER)?;
+    let nonce = std::str::from_utf8(suffix).ok()?;
+    (!nonce.is_empty()
+        && nonce.len() <= 96
+        && nonce.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+    .then(|| nonce.to_owned())
+}
+
+fn parse_checksum_record(value: &[u8]) -> Option<(String, u64, u32)> {
+    let suffix = value.strip_prefix(CHECKSUM_RECORD)?;
+    let text = std::str::from_utf8(suffix).ok()?;
+    let mut parts = text.split(':');
+    let nonce = parts.next()?;
+    let len = parts.next()?.parse().ok()?;
+    let crc_text = parts.next()?;
+    if crc_text.len() != 8 {
+        return None;
+    }
+    let crc = u32::from_str_radix(crc_text, 16).ok()?;
+    if parts.next().is_some()
+        || nonce.is_empty()
+        || nonce.len() > 96
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    {
+        return None;
+    }
+    Some((nonce.to_owned(), len, crc))
+}
+
 pub(super) struct RewriteJob {
     keys: Vec<Vec<u8>>,
     cursor: usize,
@@ -98,15 +167,33 @@ impl Ownership {
                 .map(|extension| format!("{extension}."))
                 .unwrap_or_default()
         ));
-        let start = process_start_ticks(std::process::id()).ok_or_else(|| {
-            io::Error::other("cannot read the process start time for journal ownership")
-        })?;
+        #[cfg(target_os = "linux")]
+        let start = process_start_ticks(std::process::id())?
+            .ok_or_else(|| io::Error::other("cannot read this process start time"))?;
+        // On platforms without /proc we still enforce one writer, but cannot
+        // prove a stale lock's owner is dead; startup therefore fails closed and
+        // an operator removes the lock after confirming the prior process exited.
+        #[cfg(not(target_os = "linux"))]
+        let start = 0u64;
         let contents = format!("{} {start}\n", std::process::id());
         for attempt in 0..2 {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
                 Ok(mut file) => {
-                    file.write_all(contents.as_bytes())?;
-                    file.sync_all()?;
+                    if let Err(error) = file
+                        .write_all(contents.as_bytes())
+                        .and_then(|()| file.sync_all())
+                    {
+                        drop(file);
+                        let _ = fs::remove_file(&path);
+                        return Err(error);
+                    }
                     return Ok(Self { path, contents });
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempt == 0 => {
@@ -115,12 +202,24 @@ impl Ownership {
                     let pid = fields.next().and_then(|value| value.parse::<u32>().ok());
                     let start = fields.next().and_then(|value| value.parse::<u64>().ok());
                     let live = match (pid, start) {
-                        (Some(pid), Some(start)) => match process_start_ticks(pid) {
-                            // A live owner with the same start time blocks startup.
-                            Some(current) if current == start => true,
-                            // Gone or reused: the lock is stale.
-                            Some(_) | None => false,
-                        },
+                        (Some(pid), Some(start)) => {
+                            #[cfg(target_os = "linux")]
+                            {
+                                match process_start_ticks(pid) {
+                                    // A live owner with the same start time blocks startup.
+                                    Ok(Some(current)) if current == start => true,
+                                    // Gone or reused: the lock is stale.
+                                    Ok(Some(_)) | Ok(None) => false,
+                                    // Cannot inspect the process: fail closed.
+                                    Err(_) => true,
+                                }
+                            }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                let _ = (pid, start);
+                                true
+                            }
+                        }
                         // Unreadable or malformed lock: fail closed and let an
                         // operator inspect it rather than guessing ownership.
                         _ => true,
@@ -154,16 +253,43 @@ impl Drop for Ownership {
 }
 
 /// Kernel start time of `pid` (clock ticks since boot), used to distinguish a
-/// live owner from PID reuse. `None` when the process is gone or unreadable.
-fn process_start_ticks(pid: u32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let fields: Vec<&str> = stat.rsplit_once(") ")?.1.split_whitespace().collect();
-    fields.get(19)?.parse().ok()
+/// live owner from PID reuse. `Ok(None)` means the process is gone; errors mean
+/// ownership could not be verified and callers must fail closed.
+#[cfg(target_os = "linux")]
+fn process_start_ticks(pid: u32) -> io::Result<Option<u64>> {
+    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        // Permission or I/O failure is not proof that the owner is dead. Fail
+        // closed so a second process never steals a lock we cannot inspect.
+        Err(error) => return Err(error),
+    };
+    let (_, fields) = stat
+        .rsplit_once(") ")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed proc stat"))?;
+    let fields: Vec<&str> = fields.split_whitespace().collect();
+    let start = fields
+        .get(19)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "proc stat lacks start time"))?
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid proc start time"))?;
+    Ok(Some(start))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_start_ticks(_pid: u32) -> io::Result<Option<u64>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "process start-time verification requires Linux /proc",
+    ))
 }
 
 struct RewriteState {
     file: File,
     temporary: PathBuf,
+    nonce: String,
+    crc: u32,
+    record_len: u64,
     bytes: u64,
 }
 
@@ -178,6 +304,7 @@ pub(super) struct Journal {
     last_rewrite_failed: bool,
     rewrite: Option<RewriteState>,
     _ownership: Ownership,
+    checksum_nonce: Option<String>,
     size: u64,
     rewrite_base: u64,
 }
@@ -228,12 +355,123 @@ impl Journal {
             last_rewrite_failed: false,
             rewrite: None,
             _ownership: ownership,
+            checksum_nonce: None,
             size,
             rewrite_base: size,
         })
     }
 
+    /// Validate checksummed transaction groups before executing any record. Legacy
+    /// AOFs without the header remain readable; the first subsequent append starts
+    /// a checksummed segment. A torn final group is truncated to the last verified
+    /// boundary, while any complete-but-mismatched group fails closed.
+    fn validate_checksums(&mut self) -> io::Result<()> {
+        self.file.seek(SeekFrom::Start(0))?;
+        let mut buffer = Vec::new();
+        let mut consumed = 0usize;
+        let mut chunk = [0u8; 64 * 1024];
+        let mut eof = false;
+        let mut offset = 0u64;
+        let mut valid_end = 0u64;
+        let mut nonce: Option<String> = None;
+        let mut crc = !0u32;
+        let mut record_len = 0u64;
+        let mut group_start = 0u64;
+        while !eof {
+            while consumed < buffer.len() {
+                let marker = dispatch_request(&buffer[consumed..], self.limits, |args| {
+                    let command = args.first().copied().unwrap_or_default();
+                    let payload = args.get(1).copied().unwrap_or_default();
+                    if args.len() == 2 && command.eq_ignore_ascii_case(b"ECHO") {
+                        Some((
+                            parse_checksum_header(payload),
+                            parse_checksum_record(payload),
+                            payload.starts_with(b"__RILLCACHE_AOF_")
+                                || payload.starts_with(b"__RILLCACHE_RECORD_"),
+                        ))
+                    } else {
+                        None
+                    }
+                });
+                match marker {
+                    Ok(Some((marker, used))) => {
+                        let raw = &buffer[consumed..consumed + used];
+                        consumed += used;
+                        offset = offset.saturating_add(used as u64);
+                        match marker {
+                            Some((Some(header_nonce), _, _)) if nonce.is_none() => {
+                                nonce = Some(header_nonce);
+                                group_start = offset;
+                                valid_end = offset;
+                                crc = !0u32;
+                                record_len = 0;
+                            }
+                            Some((_, Some((marker_nonce, expected_len, expected_crc)), _))
+                                if nonce.as_deref() == Some(marker_nonce.as_str()) =>
+                            {
+                                if expected_len != record_len || expected_crc != !crc {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!("AOF checksum mismatch at byte {group_start}"),
+                                    ));
+                                }
+                                valid_end = offset;
+                                group_start = offset;
+                                crc = !0u32;
+                                record_len = 0;
+                            }
+                            Some((_, _, true)) => {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "invalid or mismatched AOF checksum marker at byte {}",
+                                        offset - used as u64
+                                    ),
+                                ));
+                            }
+                            _ => {
+                                if nonce.is_some() {
+                                    crc = crc32_update(crc, raw);
+                                    record_len = record_len.saturating_add(raw.len() as u64);
+                                } else {
+                                    // Legacy records before a format marker retain
+                                    // the original partial-tail recovery behavior.
+                                    valid_end = offset;
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("corrupt AOF checksum framing at byte {offset}: {error}"),
+                        ));
+                    }
+                }
+            }
+            if consumed > 0 {
+                buffer.drain(..consumed);
+                consumed = 0;
+            }
+            let count = self.file.read(&mut chunk)?;
+            if count == 0 {
+                eof = true;
+            } else {
+                buffer.extend_from_slice(&chunk[..count]);
+            }
+        }
+        if nonce.is_some() && (record_len > 0 || !buffer.is_empty()) {
+            self.file.set_len(valid_end)?;
+            self.size = valid_end;
+        }
+        self.checksum_nonce = nonce;
+        self.file.seek(SeekFrom::Start(0))?;
+        Ok(())
+    }
+
     pub(super) fn replay(&mut self, store: &ShardExecutor) -> io::Result<()> {
+        self.validate_checksums()?;
         self.file.seek(SeekFrom::Start(0))?;
         let mut buffer = Vec::new();
         let mut consumed = 0usize;
@@ -305,12 +543,26 @@ impl Journal {
         if self.failed {
             return Err(io::Error::other("append-only file is in a failed state"));
         }
-        if let Err(error) = self.file.write_all(bytes) {
+        let (nonce, new_header) = match self.checksum_nonce.clone() {
+            Some(nonce) => (nonce, Vec::new()),
+            None => {
+                let nonce = new_checksum_nonce()?;
+                let header = checksum_header(&nonce);
+                (nonce, header)
+            }
+        };
+        let crc = !crc32_update(!0u32, bytes);
+        let mut transaction = Vec::with_capacity(new_header.len() + bytes.len() + 128);
+        transaction.extend_from_slice(&new_header);
+        transaction.extend_from_slice(bytes);
+        transaction.extend_from_slice(&checksum_record(&nonce, bytes.len() as u64, crc));
+        if let Err(error) = self.file.write_all(&transaction) {
             self.failed = true;
             return Err(error);
         }
+        self.checksum_nonce = Some(nonce);
         self.dirty = true;
-        self.size = self.size.saturating_add(bytes.len() as u64);
+        self.size = self.size.saturating_add(transaction.len() as u64);
         if self.policy == FsyncPolicy::Always {
             if let Err(error) = self.file.sync_data() {
                 self.failed = true;
@@ -373,6 +625,7 @@ impl Journal {
                 .unwrap_or("appendonly.aof"),
             std::process::id()
         ));
+        let nonce = new_checksum_nonce()?;
         #[cfg(unix)]
         let file = {
             use std::os::unix::fs::OpenOptionsExt as _;
@@ -389,10 +642,16 @@ impl Journal {
             .create(true)
             .truncate(true)
             .open(&temporary)?;
+        let header = checksum_header(&nonce);
+        let mut file = file;
+        file.write_all(&header)?;
         self.rewrite = Some(RewriteState {
             file,
             temporary,
-            bytes: 0,
+            nonce,
+            crc: !0u32,
+            record_len: 0,
+            bytes: header.len() as u64,
         });
         Ok(())
     }
@@ -408,6 +667,8 @@ impl Journal {
             self.abort_rewrite();
             return Err(error);
         }
+        state.crc = crc32_update(state.crc, bytes);
+        state.record_len = state.record_len.saturating_add(bytes.len() as u64);
         state.bytes = state.bytes.saturating_add(bytes.len() as u64);
         Ok(())
     }
@@ -430,6 +691,9 @@ impl Journal {
         let Some(mut state) = self.rewrite.take() else {
             return Err(io::Error::other("no rewrite in progress"));
         };
+        let marker = checksum_record(&state.nonce, state.record_len, !state.crc);
+        state.file.write_all(&marker)?;
+        state.bytes = state.bytes.saturating_add(marker.len() as u64);
         let result = (|| -> io::Result<u64> {
             state.file.flush()?;
             state.file.sync_all()?;
@@ -442,6 +706,7 @@ impl Journal {
             let mut replacement = OpenOptions::new().read(true).write(true).open(&self.path)?;
             replacement.seek(SeekFrom::End(0))?;
             self.file = replacement;
+            self.checksum_nonce = Some(state.nonce.clone());
             self.dirty = false;
             self.failed = false;
             self.last_sync = Instant::now();
