@@ -10,7 +10,7 @@ Rillcache can persist supported keyspace mutations to an append-only command log
 This is a real recovery path with explicit failure semantics, but it is **not** a
 complete Redis durability implementation: there is no RDB format, no
 background/forked AOF rewrite, no shared-filesystem ownership, no redis.conf
-integration, and stream PEL recovery is limited for trimmed/deleted entries.
+integration, and stream consumer activity timestamps are not restored.
 
 ## Configuration
 
@@ -347,10 +347,21 @@ Stream entries, last IDs, consumer-group cursors, **consumer objects and their
 pending-entry lists** are rebuilt. The encoder emits `XGROUP CREATECONSUMER` for
 every consumer and `XCLAIM ... TIME <delivered-at> RETRYCOUNT <deliveries> JUSTID
 FORCE` for every pending id, so PEL owners, delivery counts and delivery
-timestamps survive restart and the replayed entries remain ackable and claimable.
-Limits of this subset: a pending id whose stream entry was trimmed or deleted has
-no payload to re-claim and is dropped on replay; consumer `seen_at`/`inactive`
-time reflects replay time rather than the original activity.
+timestamps survive restart.
+
+A pending id can outlive its stream entry after `XDEL` or trimming. During a
+snapshot/rewrite the encoder adds a minimal placeholder `XADD` for each such id in
+ascending order, claims it into every group that references it, and then `XDEL`s
+the placeholder. The stream key and its PEL tombstone remain, so `XPENDING` still
+reports the original owner/count/time and `XACK` can remove it; `XLEN`/`XRANGE`
+never expose the synthetic payload. This uses ordinary RESP commands, so a
+Redis-compatible replay sees the same create/claim/delete sequence.
+
+Limits of this subset: consumer `seen_at`/`inactive` time still reflects replay
+time rather than the original activity, and `XCLAIM` of a tombstone removes it
+from the PEL (matching the command's missing-entry behavior) rather than returning
+a payload. Consumers with no pending entries are recreated, but their activity
+history is not preserved.
 
 ## Deliberate gaps
 

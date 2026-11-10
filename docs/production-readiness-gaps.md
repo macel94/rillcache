@@ -294,13 +294,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   cooperative rewrite use the same encoder. `tests/persistence.rs` covers
   consumers with and without pending entries, cross-consumer claims with an
   explicit retry count, restart replay, and acknowledging the replayed PEL.
-  **Remaining:** pending ids whose entries were trimmed or deleted cannot be
-  re-claimed on replay and are dropped; consumer `seen_at`/`inactive` time is not
-  restored (it reflects replay time); trim/claim-after-trim durability has no
-  dedicated test yet.
-  **Closes when:** deleted-entry PEL tombstones are represented, consumer activity
-  time is preserved, and trim/claim interactions are covered by restart tests; or
-  Streams are explicitly excluded as a durable queue.
+  **Partial (2026-11-10): deleted/trimmed PEL tombstones persist.** For a pending
+  id missing from the stream, the encoder emits an ascending placeholder `XADD`,
+  restores every group's `XCLAIM` owner/time/count, then `XDEL`s the placeholder.
+  This works in both the live journal and the cooperative rewrite and uses only
+  standard RESP commands. Restart tests cover `XDEL`, `XTRIM`, highest and
+  intermediate deleted ids, preserved owners/delivery counts, acking, absence of
+  synthetic payloads from `XLEN`/`XRANGE`, an all-deleted stream, and an empty
+  stream with group and consumer metadata (recreated with `MKSTREAM`).
+  **Remaining:** consumer `seen_at`/`inactive` activity time is not restored (it
+  reflects replay time); `XCLAIM` on a tombstone removes it from the PEL, matching
+  the missing-entry behavior; consumer history beyond current objects/PEL is not
+  preserved.
+  **Closes when:** consumer activity time is preserved (or the profile excludes
+  activity-time semantics) and the remaining queue semantics have a reviewed
+  restart contract; or Streams are explicitly excluded as a durable queue.
 
 - [ ] **D7. Signal-driven graceful drain is missing.** [P0]
   Managed shutdown joins workers and protocol `SHUTDOWN` flushes the journal, but
