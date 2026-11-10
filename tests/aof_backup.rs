@@ -414,3 +414,101 @@ fn an_inner_journal_corruption_is_rejected_even_with_a_valid_outer_archive_crc()
     let _ = std::fs::remove_dir_all(&archive_dir);
     let _ = std::fs::remove_dir_all(&destination);
 }
+
+#[test]
+fn authenticated_journals_back_up_and_restore_only_with_the_matching_key() {
+    let source = temp_dir("auth-source");
+    let archive_dir = temp_dir("auth-archive");
+    let archive = archive_dir.join("snapshot.rcb");
+    let key_dir = temp_dir("auth-key");
+    let key_file = key_dir.join("journal.key");
+    std::fs::write(&key_file, b"0123456789abcdef\n").unwrap();
+    let wrong_key = dirs_key(&key_dir, "wrong.key", b"fedcba9876543210\n");
+    {
+        let server = Server::bind(Config {
+            aof_hmac_key_file: Some(key_file.clone()),
+            ..config(&source)
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut stream = connect(&server);
+        assert_eq!(call(&mut stream, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    let made = command(&[
+        "create",
+        "--dir",
+        source.to_str().unwrap(),
+        "--output",
+        archive.to_str().unwrap(),
+        "--aof-hmac-key-file",
+        key_file.to_str().unwrap(),
+    ]);
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let verified = command(&[
+        "verify",
+        "--input",
+        archive.to_str().unwrap(),
+        "--aof-hmac-key-file",
+        key_file.to_str().unwrap(),
+    ]);
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let wrong = command(&[
+        "verify",
+        "--input",
+        archive.to_str().unwrap(),
+        "--aof-hmac-key-file",
+        wrong_key.to_str().unwrap(),
+    ]);
+    assert!(
+        !wrong.status.success(),
+        "a different key must fail archive replay"
+    );
+
+    let destination = temp_dir("auth-destination");
+    let restored = command(&[
+        "restore",
+        "--input",
+        archive.to_str().unwrap(),
+        "--dir",
+        destination.to_str().unwrap(),
+        "--aof-hmac-key-file",
+        key_file.to_str().unwrap(),
+    ]);
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    {
+        let server = Server::bind(Config {
+            aof_hmac_key_file: Some(key_file.clone()),
+            ..config(&destination)
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut stream = connect(&server);
+        assert_eq!(call(&mut stream, &[b"GET", b"k"]), b"$1\r\nv\r\n");
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&source);
+    let _ = std::fs::remove_dir_all(&archive_dir);
+    let _ = std::fs::remove_dir_all(&destination);
+    let _ = std::fs::remove_dir_all(&key_dir);
+}
+
+fn dirs_key(directory: &Path, name: &str, contents: &[u8]) -> PathBuf {
+    let path = directory.join(name);
+    std::fs::write(&path, contents).unwrap();
+    path
+}

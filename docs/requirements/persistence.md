@@ -172,3 +172,33 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   across restart. Documentation shall state the required server quiescence,
   configurable replay limits, AOF-only scope, local-filesystem assumptions and
   online backup/PITR/retention/RPO/RTO gaps.
+
+## Authenticated journal records (S119)
+
+- **R430 (event-driven):** When `--appendonly yes` and `--aof-hmac-key-file PATH`
+  are configured, startup shall read a 16..=1024-byte key, strip one trailing
+  newline, and authenticate each newly written transaction with an HMAC-SHA256
+  chain over its checksum group. An empty journal shall write an anchor on the
+  first append; a rewrite shall write an authenticated snapshot and continue the
+  chain for later appends.
+- **R431 (state-driven):** While a key is configured, startup shall verify the
+  anchor and every completed chain link before replaying any command, and shall
+  fail closed on a modified, reordered or inserted completed group before the
+  final marker, a malformed marker or a different key. A trailing unauthenticated
+  suffix (a crash-torn final group) shall be truncated to the last verified marker
+  without dropping the preceding authenticated transaction; truncation of an
+  earlier durable suffix is outside the authentication guarantee.
+- **R432 (event-driven):** If a nonempty journal has no authentication anchor,
+  then startup without `--aof-hmac-migrate` shall fail with an actionable error.
+  With the migration flag and the server stopped, startup shall seal the existing
+  checksum-verified prefix with a synced anchor before serving; later startups
+  without an anchor or migration shall still fail. The flag without a key, or
+  authentication without `--appendonly yes`, shall be rejected.
+- **R433 (ubiquitous):** Tests shall cover standard SHA-256/HMAC vectors,
+  streaming equivalence, restart, wrong key, modified chain tags, migration
+  refusal and completion, authenticated rewrite plus post-rewrite appends, torn
+  final markers, a partial next append, key-file bounds, server configuration and
+  authenticated backup/restore. Documentation shall state that HMAC is not
+  encryption, does not cover suffix rollback or whole-file replacement, has no key
+  rotation/keyring contract, and that unauthenticated writes after key removal
+  are discarded by the next authenticated start.
