@@ -183,10 +183,11 @@ impl Store {
         path: &Path,
         policy: FsyncPolicy,
         limits: Limits,
+        journal_auth: Option<JournalAuth>,
     ) -> std::io::Result<Self> {
         let mut services =
             ServerServices::with_clock_and_auth(max_payload_bytes, Arc::new(SystemClock), auth);
-        let journal = journal::Journal::open(path, policy, limits)?;
+        let journal = journal::Journal::open(path, policy, limits, journal_auth)?;
         services.journal_limits = limits;
         services.journal = Some(std::sync::Mutex::new(journal));
         let store = Self {

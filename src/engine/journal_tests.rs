@@ -1,4 +1,4 @@
-use crate::engine::{Auth, FsyncPolicy, PopOutcome, Store};
+use crate::engine::{Auth, FsyncPolicy, JournalAuth, PopOutcome, Store};
 use crate::protocol::Limits;
 use std::io::Write;
 
@@ -22,8 +22,22 @@ fn open(path: &std::path::Path, policy: FsyncPolicy) -> Store {
         path,
         policy,
         Limits::default(),
+        None,
     )
     .unwrap()
+}
+
+const AUTH_KEY: &[u8] = b"0123456789abcdef";
+
+fn open_with_auth(path: &std::path::Path, key: &[u8], migrate: bool) -> std::io::Result<Store> {
+    Store::with_auth_and_journal(
+        16 * 1024 * 1024,
+        Auth::default(),
+        path,
+        FsyncPolicy::Always,
+        Limits::default(),
+        Some(JournalAuth::new(key.to_vec(), migrate)?),
+    )
 }
 
 fn run(store: &Store, arguments: &[&[u8]]) -> Vec<u8> {
@@ -476,6 +490,7 @@ fn eviction_is_journaled_and_replays_to_the_same_survivors() {
             &path,
             FsyncPolicy::Always,
             Limits::default(),
+            None,
         )
         .unwrap();
         store.set_eviction_policy(crate::engine::EvictionPolicy::AllKeysRandom);
@@ -490,6 +505,7 @@ fn eviction_is_journaled_and_replays_to_the_same_survivors() {
         &path,
         FsyncPolicy::Always,
         Limits::default(),
+        None,
     )
     .unwrap();
     assert_eq!(run(&store, &[b"DBSIZE"]), b":2\r\n");
@@ -530,7 +546,8 @@ fn a_partial_tail_is_truncated_but_mid_file_corruption_fails() {
             Auth::default(),
             &path,
             FsyncPolicy::Always,
-            Limits::default()
+            Limits::default(),
+            None
         )
         .is_err()
     );
@@ -601,5 +618,235 @@ fn automatic_rewrite_compacts_after_configured_growth() {
     }
     let store = open(&path, FsyncPolicy::Always);
     assert_eq!(run(&store, &[b"GET", b"key"]), b"$5\r\nagain\r\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn authenticated_journal_replays_with_the_key_and_rejects_modified_tags() {
+    let path = aof_path("auth-replay");
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"one", b"1"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"SET", b"two", b"2"]), b"+OK\r\n");
+    }
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"GET", b"one"]), b"$1\r\n1\r\n");
+        assert_eq!(run(&store, &[b"GET", b"two"]), b"$1\r\n2\r\n");
+    }
+    assert!(
+        open_with_auth(&path, b"fedcba9876543210", false).is_err(),
+        "a different key must fail the anchor"
+    );
+    let mut bytes = std::fs::read(&path).unwrap();
+    let marker = b"__RILLCACHE_RECORD_HMAC256_V1__:";
+    let position = bytes
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("authentication marker");
+    let tag_start = position + marker.len();
+    bytes[tag_start] = if bytes[tag_start] == b'0' { b'1' } else { b'0' };
+    std::fs::write(&path, bytes).unwrap();
+    let error = open_with_auth(&path, AUTH_KEY, false)
+        .err()
+        .expect("modified keyed tag must fail");
+    assert!(
+        error.to_string().contains("authentication"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn authenticated_journal_is_still_readable_without_a_key() {
+    let path = aof_path("auth-no-key");
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+    }
+    let store = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&store, &[b"GET", b"k"]), b"$1\r\nv\r\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn enabling_authentication_on_an_existing_journal_requires_explicit_migration() {
+    let path = aof_path("auth-migrate");
+    {
+        let store = open(&path, FsyncPolicy::Always);
+        assert_eq!(run(&store, &[b"SET", b"before", b"value"]), b"+OK\r\n");
+    }
+    let error = open_with_auth(&path, AUTH_KEY, false)
+        .err()
+        .expect("unauthenticated journal must not be silently sealed");
+    assert!(
+        error.to_string().contains("--aof-hmac-migrate"),
+        "unexpected error: {error}"
+    );
+    {
+        let store = open_with_auth(&path, AUTH_KEY, true).unwrap();
+        assert_eq!(run(&store, &[b"GET", b"before"]), b"$5\r\nvalue\r\n");
+        assert_eq!(run(&store, &[b"SET", b"after", b"value"]), b"+OK\r\n");
+    }
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"GET", b"before"]), b"$5\r\nvalue\r\n");
+        assert_eq!(run(&store, &[b"GET", b"after"]), b"$5\r\nvalue\r\n");
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn authenticated_rewrite_and_posts_rewrite_appends_replay() {
+    let path = aof_path("auth-rewrite");
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        for index in 0..50 {
+            let value = format!("value-{index}");
+            assert_eq!(run(&store, &[b"SET", b"key", value.as_bytes()]), b"+OK\r\n");
+        }
+        assert_eq!(
+            run(&store, &[b"BGREWRITEAOF"]),
+            b"+Background append only file rewriting started\r\n"
+        );
+        let mut during = 0;
+        for _ in 0..10_000 {
+            if store.rewrite_in_progress() && during < 5 {
+                let value = format!("during-{during}");
+                assert_eq!(
+                    run(&store, &[b"SET", b"during", value.as_bytes()]),
+                    b"+OK\r\n"
+                );
+                during += 1;
+            }
+            store.journal_sync().unwrap();
+            if !store.rewrite_in_progress() {
+                break;
+            }
+        }
+        assert!(!store.rewrite_in_progress(), "rewrite did not finish");
+        assert_eq!(run(&store, &[b"SET", b"after", b"rewrite"]), b"+OK\r\n");
+        if during == 0 {
+            assert_eq!(run(&store, &[b"SET", b"during", b"none"]), b"+OK\r\n");
+        }
+    }
+    let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+    assert_eq!(run(&store, &[b"GET", b"key"]), b"$8\r\nvalue-49\r\n");
+    assert_eq!(run(&store, &[b"GET", b"after"]), b"$7\r\nrewrite\r\n");
+    assert!(
+        run(&store, &[b"GET", b"during"]).starts_with(b"$"),
+        "mutations during rewrite must survive authenticated replay"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_torn_final_authentication_marker_discards_only_the_unacknowledged_transaction() {
+    let path = aof_path("auth-torn");
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"kept", b"1"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"SET", b"torn", b"2"]), b"+OK\r\n");
+    }
+    let mut bytes = std::fs::read(&path).unwrap();
+    let marker = b"__RILLCACHE_RECORD_HMAC256_V1__:";
+    let last = bytes
+        .windows(marker.len())
+        .rposition(|window| window == marker)
+        .expect("last authentication marker");
+    bytes.truncate(last + 5);
+    std::fs::write(&path, bytes).unwrap();
+    let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+    assert_eq!(run(&store, &[b"GET", b"kept"]), b"$1\r\n1\r\n");
+    assert_eq!(run(&store, &[b"GET", b"torn"]), b"$-1\r\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_partial_unauthenticated_next_append_preserves_the_previous_authenticated_transaction() {
+    let path = aof_path("auth-partial-next");
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"durable", b"value"]), b"+OK\r\n");
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(b"*3\r\n$3\r\nSET\r\n$5\r\nbrok").unwrap();
+    drop(file);
+    let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+    assert_eq!(run(&store, &[b"GET", b"durable"]), b"$5\r\nvalue\r\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn journal_authentication_key_files_are_trimmed_and_bounded() {
+    let path = std::env::temp_dir().join(format!(
+        "rillcache-auth-key-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(&path, b"0123456789abcdef\r\n").unwrap();
+    assert_eq!(super::read_auth_key_file(&path).unwrap(), AUTH_KEY);
+    std::fs::write(&path, b"0123456789abcde\n").unwrap();
+    assert!(super::read_auth_key_file(&path).is_err());
+    std::fs::write(&path, vec![b'x'; 1025]).unwrap();
+    assert!(super::read_auth_key_file(&path).is_err());
+    let _ = std::fs::remove_file(&path);
+    assert!(super::read_auth_key_file(&path).is_err());
+}
+
+#[test]
+fn authentication_detects_modified_content_even_when_the_crc32_is_recomputed() {
+    let path = aof_path("auth-recomputed-crc");
+    {
+        let store = open_with_auth(&path, AUTH_KEY, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+    }
+    let mut bytes = std::fs::read(&path).unwrap();
+    let checksum_header = b"__RILLCACHE_AOF_CRC32_V1__:";
+    let checksum_record = b"__RILLCACHE_RECORD_CRC32_V1__:";
+    let header_at = bytes
+        .windows(checksum_header.len())
+        .position(|window| window == checksum_header)
+        .unwrap();
+    let header_end = bytes[header_at..]
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .unwrap()
+        + header_at
+        + 2;
+    let record_at = bytes
+        .windows(checksum_record.len())
+        .position(|window| window == checksum_record)
+        .unwrap();
+    let echo = b"*2\r\n$4\r\nECHO\r\n";
+    let record_start = bytes[..record_at]
+        .windows(echo.len())
+        .rposition(|window| window == echo)
+        .unwrap();
+    let value_at = bytes
+        .windows(7)
+        .position(|window| window == b"$1\r\nv\r\n")
+        .unwrap()
+        + 4;
+    bytes[value_at] = b"x"[0];
+    let crc = !super::crc32_update(!0u32, &bytes[header_end..record_start]);
+    let record_end = bytes[record_at..]
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .unwrap()
+        + record_at;
+    bytes[record_end - 8..record_end].copy_from_slice(format!("{crc:08x}").as_bytes());
+    std::fs::write(&path, bytes).unwrap();
+    let error = open_with_auth(&path, AUTH_KEY, false)
+        .err()
+        .expect("recomputed CRC must not hide a keyed-chain mismatch");
+    assert!(
+        error.to_string().contains("authentication chain mismatch"),
+        "unexpected error: {error}"
+    );
     let _ = std::fs::remove_file(&path);
 }

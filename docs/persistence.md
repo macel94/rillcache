@@ -160,8 +160,61 @@ database effect if the RESP journal is inspected or replayed by another
 Redis-compatible server.
 
 CRC32 detects accidental corruption, not a malicious editor that recomputes the
-checksum. Authenticated records, encryption at rest and key management remain
-open in production gap D3.
+checksum. Encryption at rest and key ownership/rotation remain open in production
+gap D3; optional record authentication is described next.
+
+## Journal authentication
+
+Set `--aof-hmac-key-file PATH` (16..=1024 bytes, one trailing newline stripped) to
+authenticate journal transactions with HMAC-SHA256. The in-repo SHA-256 and HMAC
+construction is the same dependency-free code used for audit-line authentication;
+the key is loaded once at startup and is not exposed in `CONFIG GET`, `INFO` or
+process arguments.
+
+With a key configured on an empty journal, the first append writes an anchor
+record and then a keyed hash chain over every following checksum group. On
+restart, the complete chain is verified before any command is replayed: a
+modified value, a reordered transaction, or a transaction inserted before the
+final marker, a malformed marker, or a wrong key fails startup. A crash-torn final unauthenticated group is discarded to the last
+verified marker, matching the checksum recovery rule. The marker records are
+ordinary RESP `ECHO` commands, so a journal can still be inspected or replayed by
+a Redis-compatible tool; without the key they are inert and only CRC32 validation
+applies.
+
+Enabling a key on an existing journal requires an explicit one-time startup flag:
+
+```text
+rillcache --appendonly yes --dir /data \
+  --aof-hmac-key-file /run/secrets/rillcache-aof.key --aof-hmac-migrate
+```
+
+`--aof-hmac-migrate` validates the existing checksum groups, seals the entire
+current prefix with an anchor, and syncs it before serving clients. Start it only
+with the server stopped and the existing file trusted: anything already in the
+prefix is authenticated as-is. On every later start, omit the flag; without an
+anchor the server fails closed rather than silently sealing an attacker-supplied
+file. `--aof-hmac-migrate` without a key, or authentication without
+`--appendonly yes`, is rejected.
+
+Authentication covers transaction content, order and the migrated prefix. It does
+not provide encryption, key rotation/keyrings, protection from someone who can
+replace both the key and the whole journal, or detection of an externally replayed
+older complete journal. Bytes after the last durable marker can be removed
+exactly like a crash-torn tail, so an attacker can cause suffix data loss;
+truncating an older durable transaction is indistinguishable from rollback
+without external state.
+Keep the key file readable only by the service account with filesystem and
+secret-store controls, back it up separately from the journal, and do not remove
+the key from a running deployment and then append: those later unauthenticated
+writes are discarded by the next authenticated start. `BGREWRITEAOF` writes a
+fresh authenticated snapshot when a key is configured.
+
+The offline `rillcache-backup` tool accepts the same `--aof-hmac-key-file` for
+`create`, `verify` and `restore`; supply it to authenticate the inner AOF during
+archive validation. Without it, backup verification still checks the outer CRC and
+checksums but cannot detect keyed modification. `create` refuses a nonempty
+journal that has no anchor when a key is supplied; run the server once with
+`--aof-hmac-migrate` after stopping it, then stop the server and take the backup.
 
 ## Single-process ownership
 
@@ -190,8 +243,9 @@ the normal exclusive ownership lock, replays it, and forces a journal sync befor
 copying. A running writer therefore causes backup to fail without publishing an
 archive. The archive stores the AOF bytes with their length and CRC32, streams in
 1 MiB chunks, and is limited to 16 GiB. The temporary archive is mode 0600 on Unix,
-synced, then hard-linked into place without replacing an existing output. The
-archive and destination must be on a local filesystem that supports same-directory
+synced, then hard-linked into place without replacing an existing output. Pass
+`--aof-hmac-key-file` for an authenticated journal; see the authentication section
+above. The archive and destination must be on a local filesystem that supports same-directory
 hard links and directory fsync; shared/network filesystems are unsupported.
 
 ```text
@@ -300,9 +354,11 @@ time reflects replay time rather than the original activity.
 
 ## Deliberate gaps
 
-- No RDB import/export, manifest/multi-part AOF, authenticated records, encryption
-  at rest or replication of the log. New RESP transactions have CRC32 checksums
-  for accidental corruption; these are not cryptographic integrity protection.
+- No RDB import/export, manifest/multi-part AOF, encryption at rest, key rotation
+  or replication of the log. New RESP transactions have CRC32 checksums, and an
+  optional HMAC-SHA256 chain authenticates transaction content/order when a key is
+  configured. HMAC is not encryption, does not protect a whole-file replacement by
+  an attacker with the key, and is not an anti-rollback mechanism.
   `BGREWRITEAOF` is cooperative and incremental, but it is not Redis's fork-based
   rewrite: the key list is materialised in memory and the
   rewrite runs on the owner thread between maintenance ticks.

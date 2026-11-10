@@ -9,7 +9,7 @@ use rillcache::{Config, Server};
 mod healthcheck;
 
 const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
-  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
+  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912)\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
 enum Options {
@@ -39,6 +39,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                 }
                 return Ok(Options::Healthcheck(address));
             }
+            "--aof-hmac-migrate" => config.aof_hmac_migrate = true,
             "--bind"
             | "--max-clients"
             | "--auth-failure-limit"
@@ -63,6 +64,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--appendonly"
             | "--appendfilename"
             | "--appendfsync"
+            | "--aof-hmac-key-file"
             | "--dir"
             | "--maxmemory-policy"
             | "--notify-keyspace-events"
@@ -211,6 +213,12 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                     "--appendfsync" => {
                         config.appendfsync = rillcache::engine::FsyncPolicy::parse(&value)
                             .ok_or("--appendfsync requires always, everysec or no")?;
+                    }
+                    "--aof-hmac-key-file" => {
+                        if value.is_empty() {
+                            return Err("--aof-hmac-key-file requires a nonempty path".into());
+                        }
+                        config.aof_hmac_key_file = Some(std::path::PathBuf::from(value));
                     }
                     "--dir" => {
                         if value.is_empty() {
@@ -453,6 +461,24 @@ mod tests {
         assert_eq!(journal.appendfilename, "test.aof");
         assert_eq!(journal.appendfsync, rillcache::engine::FsyncPolicy::Always);
         assert_eq!(journal.dir, std::path::Path::new("/data"));
+        let Options::Run(authenticated_journal) = options(
+            [
+                "--appendonly",
+                "yes",
+                "--aof-hmac-key-file",
+                "/run/secrets/aof.key",
+                "--aof-hmac-migrate",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap() else {
+            panic!("expected authenticated journal config");
+        };
+        assert_eq!(
+            authenticated_journal.aof_hmac_key_file.as_deref(),
+            Some(std::path::Path::new("/run/secrets/aof.key"))
+        );
+        assert!(authenticated_journal.aof_hmac_migrate);
         let Options::Run(eviction) =
             options(["--maxmemory-policy", "allkeys-lru"].map(str::to_owned)).unwrap()
         else {
