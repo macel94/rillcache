@@ -60,7 +60,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Gate | State | Worst gap |
 | --- | --- | --- |
 | Compatibility and command surface | Partial | Scripting, RDB, replication, cluster, multiple databases, bounded command and protocol coverage |
-| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no background rewrite, no crash/ENOSPC/backup evidence |
+| Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
 | Security and transport | Partial | No independent review, full ACLs, global rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
@@ -255,12 +255,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   proves no applied-but-unlogged success reply, bounds the loss window, and
   verifies restart recovery and visible failure states.
 
-- [ ] **D5. Backup, restore and point-in-time recovery are absent.** [P0]
-  There is no backup tooling, restore drill, generation/retention policy, PITR or
-  documented RPO/RTO. Copying a live journal is not supported.
-  **Closes when:** a documented backup/restore procedure is tested from a
-  quiescent and supported online copy, restores into an isolated instance with
-  exact data/TTL/accounting, and states RPO/RTO and retention.
+- [ ] **D5. Backup, restore and point-in-time recovery are Partial.** [P0]
+  `rillcache-backup` now creates, verifies and restores versioned, bounded-memory
+  CRC32 archives from a quiescent AOF. Creation holds the normal exclusive journal
+  lock and syncs before copying; restore verifies the outer archive and replays an
+  isolated temporary AOF before no-overwrite publication. End-to-end tests cover
+  active-writer refusal, archive corruption, inner AOF corruption, strings, TTLs,
+  stream PEL state and a restart from the restored journal. The format contains
+  only the AOF; CRC32 is not authentication. Online copy, PITR, retention,
+  configuration/ACL capture and deployment-specific RPO/RTO remain open.
+  **Closes when:** a documented backup/restore procedure has tested quiescent and
+  supported online copies, restores exact data/TTL/accounting into an isolated
+  instance, and states RPO/RTO and retention; or online backup/PITR are explicitly
+  excluded from the production profile with a reviewed operational contract.
 
 - [ ] **D6. Stream pending and consumer state is volatile across restart.** [P0]
   **Partial (2026-11-05): consumers and PEL now persist.** The journal rebuild

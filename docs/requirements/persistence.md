@@ -146,3 +146,29 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   cover every boundary response, syntax/arity variants, data preservation and
   every worker mode. Documentation shall retain the absence of RDB persistence,
   replication/failover, multiple databases, scripts and cluster routing.
+
+## Offline AOF backup and restore (S118)
+
+- **R426 (event-driven):** When `rillcache-backup create` is requested for an
+  existing regular AOF, it shall acquire the journal's normal exclusive owner
+  lock, replay/validate the journal under configured data/protocol limits, force
+  a sync, and stream a versioned length+CRC32 archive using bounded memory. If a
+  server owns the journal, validation fails, the file exceeds the 16 GiB archive
+  bound, or the output exists, the utility shall fail without publishing over an
+  existing path.
+- **R427 (event-driven):** When `verify` or `restore` reads an archive, it shall
+  validate the version, declared length, CRC32, absence of trailing bytes and the
+  inner AOF replay before reporting success. Restore shall write and validate a
+  temporary AOF, then publish only when the destination AOF and its owner lock do
+  not exist; it shall never overwrite an existing journal.
+- **R428 (unwanted behavior):** If archive framing/checksum is invalid, inner AOF
+  replay fails, or the destination is occupied, then restore shall return failure
+  without making an invalid/partial journal visible at the destination. Archive
+  mode shall not be described as cryptographic authentication, encryption, online
+  backup, PITR, retention or RPO/RTO policy.
+- **R429 (ubiquitous):** End-to-end tests shall cover live-writer refusal, empty
+  and nonempty journals, archive corruption, valid outer CRC with inner AOF
+  corruption, no-overwrite behavior, and restored strings, TTL and stream PEL
+  across restart. Documentation shall state the required server quiescence,
+  configurable replay limits, AOF-only scope, local-filesystem assumptions and
+  online backup/PITR/retention/RPO/RTO gaps.
