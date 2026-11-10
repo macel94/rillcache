@@ -202,3 +202,28 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   encryption, does not cover suffix rollback or whole-file replacement, has no key
   rotation/keyring contract, and that unauthenticated writes after key removal
   are discarded by the next authenticated start.
+
+## Deleted-entry stream PEL durability (S120)
+
+- **R434 (event-driven):** When a journal snapshot or rewrite encodes a stream
+  whose consumer-group PEL references an id missing from the stream (deleted or
+  trimmed), it shall emit an ascending placeholder `XADD` for that id, restore
+  every referencing group's pending owner, delivery count and delivery time with
+  `XCLAIM`, and then emit `XDEL` for the placeholder before the final `XSETID`.
+  The placeholder shall not remain visible in `XLEN` or `XRANGE`.
+- **R435 (state-driven):** While replay is in progress, placeholder ids shall keep
+  the XADD sequence strictly ascending across real entries, tombstones, and any
+  sentinel; the final `XSETID` shall restore the recorded last-generated,
+  entries-added and max-deleted metadata even though placeholder deletion
+  temporarily raises max-deleted.
+- **R436 (unwanted behavior):** If a placeholder id equals a live entry, the
+  encoder shall use the live entry once rather than duplicating it. Multiple
+  groups referencing the same tombstone shall each receive its PEL metadata. An
+  empty stream that has only group/consumer metadata shall be recreated with
+  `XGROUP CREATE ... MKSTREAM`, not an invalid `XADD 0-0` sentinel.
+- **R437 (ubiquitous):** Tests shall cover deleted and trimmed pending ids in the
+  live journal and after rewrite, intermediate and highest ids, preserved
+  owner/delivery count, `XACK` of a tombstone, empty `XRANGE`/unchanged `XLEN`,
+  an all-deleted stream, an empty stream with a group/consumer, and all execution
+  modes. Documentation shall retain that consumer
+  `seen_at`/`inactive` time and full consumer history are not restored.

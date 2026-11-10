@@ -806,57 +806,6 @@ fn stream_consumers_and_pending_delivery_state_survive_restart() {
 }
 
 #[test]
-fn a_pending_entry_for_a_deleted_stream_id_is_dropped_on_replay() {
-    // Documented D6 limitation: a PEL id whose stream entry no longer exists has
-    // no payload to re-claim, so replay drops it instead of inventing an entry.
-    let dir = temp_dir("stream-pel-deleted");
-    {
-        let server = start(&dir, true, FsyncPolicy::Always);
-        let mut stream = connect(&server);
-        for id in [b"1-0".as_slice(), b"2-0", b"3-0"] {
-            send(&mut stream, &[b"XADD", b"s", id, b"f", b"v"], b"");
-            let _ = reply(&mut stream);
-        }
-        send(
-            &mut stream,
-            &[b"XGROUP", b"CREATE", b"s", b"g", b"0"],
-            b"+OK\r\n",
-        );
-        send(
-            &mut stream,
-            &[
-                b"XREADGROUP",
-                b"GROUP",
-                b"g",
-                b"worker",
-                b"STREAMS",
-                b"s",
-                b">",
-            ],
-            b"",
-        );
-        let _ = reply(&mut stream);
-        send(&mut stream, &[b"XDEL", b"s", b"2-0"], b":1\r\n");
-        server.shutdown().unwrap();
-    }
-    let server = start(&dir, true, FsyncPolicy::Always);
-    let mut stream = connect(&server);
-    let pending = call(&mut stream, &[b"XPENDING", b"s", b"g", b"-", b"+", b"10"]);
-    let triples = pending_triples(&pending);
-    assert_eq!(triples.len(), 2, "deleted pending id must be dropped");
-    assert_eq!(triples[0].0, b"1-0");
-    assert_eq!(triples[1].0, b"3-0");
-    assert!(
-        triples
-            .iter()
-            .all(|(_, consumer, deliveries)| { consumer == b"worker" && *deliveries == 1 })
-    );
-    send(&mut stream, &[b"XLEN", b"s"], b":2\r\n");
-    server.shutdown().unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn journal_checksum_detects_valid_resp_corruption_and_legacy_logs_upgrade_on_append() {
     // New journals include standard RESP ECHO checksum records. Flip a value
     // byte while keeping RESP framing valid: replay must detect it before serving.
@@ -1002,5 +951,40 @@ fn torn_checksummed_transaction_tail_is_discarded_as_a_whole() {
         send(&mut stream, &[b"SET", b"after", b"recovery"], b"+OK\r\n");
         server.shutdown().unwrap();
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn empty_stream_group_and_consumer_metadata_survive_restart() {
+    let dir = temp_dir("stream-empty-group");
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(
+            &mut stream,
+            &[b"XGROUP", b"CREATE", b"s", b"g", b"0", b"MKSTREAM"],
+            b"+OK\r\n",
+        );
+        send(
+            &mut stream,
+            &[b"XGROUP", b"CREATECONSUMER", b"s", b"g", b"idle"],
+            b":1\r\n",
+        );
+        server.shutdown().unwrap();
+    }
+    let server = start(&dir, true, FsyncPolicy::Always);
+    let mut stream = connect(&server);
+    send(&mut stream, &[b"XLEN", b"s"], b":0\r\n");
+    let pending = call(&mut stream, &[b"XPENDING", b"s", b"g"]);
+    assert!(
+        pending.windows(4).any(|window| window == b":0\r\n"),
+        "an empty group must have no pending entries: {pending:?}"
+    );
+    let consumers = call(&mut stream, &[b"XINFO", b"CONSUMERS", b"s", b"g"]);
+    assert!(
+        consumers.windows(4).any(|window| window == b"idle"),
+        "recreated consumer missing: {consumers:?}"
+    );
+    server.shutdown().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }

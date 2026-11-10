@@ -9,7 +9,7 @@
 //! between client commands and swaps in the synced snapshot under a short gate.
 
 use super::ShardExecutor;
-use super::data::{Collection, Data};
+use super::data::{Collection, Data, StreamId};
 use super::notify::{Category as NotifyCategory, NotifyFlags};
 use crate::protocol::{Limits, dispatch_request, encode_request};
 use std::collections::VecDeque;
@@ -1919,16 +1919,42 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
             );
         }
     } else if let Some(stream) = &entry.stream {
-        let mut last_entry = None;
+        // A PEL can outlive its stream entry after XDEL or trimming. Recreate
+        // those ids as short-lived placeholders in ascending order, claim every
+        // pending id, then delete only the placeholders. This uses standard RESP
+        // commands and leaves the PEL metadata attached to the surviving key.
+        let mut tombstones: Vec<StreamId> = stream
+            .groups
+            .values()
+            .flat_map(|group| group.pending.keys().copied())
+            .filter(|id| !stream.entries.contains_key(id))
+            .collect();
+        tombstones.sort_unstable();
+        tombstones.dedup();
+        let mut next_tombstone = 0usize;
+        let mut last_added = StreamId::default();
         for (id, record) in &stream.entries {
-            last_entry = Some(*id);
-            let id = id_text(*id);
-            let mut arguments: Vec<&[u8]> = vec![b"XADD", key, &id];
+            while let Some(tombstone) = tombstones.get(next_tombstone)
+                && *tombstone < *id
+            {
+                let text = id_text(*tombstone);
+                encode_request(&[b"XADD", key, &text, b"", b""], output);
+                last_added = last_added.max(*tombstone);
+                next_tombstone += 1;
+            }
+            let text = id_text(*id);
+            let mut arguments: Vec<&[u8]> = vec![b"XADD", key, &text];
             for (field, value) in &record.fields {
                 arguments.push(field);
                 arguments.push(value);
             }
             encode_request(&arguments, output);
+            last_added = *id;
+        }
+        for tombstone in &tombstones[next_tombstone..] {
+            let text = id_text(*tombstone);
+            encode_request(&[b"XADD", key, &text, b"", b""], output);
+            last_added = last_added.max(*tombstone);
         }
         let max_group_id = stream
             .groups
@@ -1936,28 +1962,31 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
             .map(|group| group.last_delivered)
             .max()
             .unwrap_or_default();
-        let last_entry = last_entry.unwrap_or_default();
-        let sentinel = stream.last_generated.max(max_group_id).max(last_entry);
-        let needs_sentinel = stream.last_generated > last_entry
-            || (stream.entries.is_empty()
-                && (stream.last_generated.ms != 0
-                    || stream.last_generated.seq != 0
-                    || !stream.groups.is_empty()));
+        let sentinel = stream.last_generated.max(max_group_id).max(last_added);
+        // A nonzero last-generated id with no visible entry needs a sentinel to
+        // make XSETID possible. An entirely empty stream that only has groups is
+        // created by the first XGROUP CREATE ... MKSTREAM instead, avoiding an
+        // invalid XADD 0-0.
+        let needs_sentinel = stream.last_generated > last_added;
         if needs_sentinel {
             let id = id_text(sentinel);
             encode_request(&[b"XADD", key, &id, b"_", b"_"], output);
             encode_request(&[b"XDEL", key, &id], output);
         }
-        for (name, group) in &stream.groups {
+        for (index, (name, group)) in stream.groups.iter().enumerate() {
             let id = id_text(group.last_delivered);
-            encode_request(&[b"XGROUP", b"CREATE", key, name, &id], output);
+            if index == 0 && stream.entries.is_empty() && tombstones.is_empty() && !needs_sentinel {
+                encode_request(&[b"XGROUP", b"CREATE", key, name, &id, b"MKSTREAM"], output);
+            } else {
+                encode_request(&[b"XGROUP", b"CREATE", key, name, &id], output);
+            }
             // Consumers and their pending entries are delivery state, not just
             // stream data: recreate the consumer object, then claim each pending
             // id back to its owner with the recorded delivery time and count.
             // XCLAIM FORCE creates the PEL entry; XGROUP CREATECONSUMER keeps a
-            // consumer that currently has no pending entries. Entries that were
-            // trimmed or deleted can no longer be claimed and are dropped, which
-            // matches this subset's documented limitation.
+            // consumer that currently has no pending entries. Placeholder entries
+            // make deleted or trimmed pending ids claimable; they are removed
+            // after every group has restored its PEL.
             let mut consumers: Vec<&Vec<u8>> = group.consumers.keys().collect();
             consumers.sort();
             for consumer in consumers {
@@ -1985,6 +2014,10 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
                     output,
                 );
             }
+        }
+        for tombstone in &tombstones {
+            let id = id_text(*tombstone);
+            encode_request(&[b"XDEL", key, &id], output);
         }
         if needs_sentinel || !stream.entries.is_empty() || !stream.groups.is_empty() {
             let last = id_text(stream.last_generated);
