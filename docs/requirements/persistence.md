@@ -227,3 +227,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   an all-deleted stream, an empty stream with a group/consumer, and all execution
   modes. Documentation shall retain that consumer
   `seen_at`/`inactive` time and full consumer history are not restored.
+
+## Consumer activity-time durability (S121)
+
+- **R438 (event-driven):** When a journal snapshot or rewrite encodes a consumer,
+  it shall append one namespaced RESP `ECHO` record containing binary
+  length-prefixed key, group and consumer names plus the absolute millisecond
+  `seen_at`, after the group's `CREATECONSUMER`/`XCLAIM` records so claims cannot
+  overwrite the restored value.
+- **R439 (state-driven):** During replay, a well-formed consumer-activity record
+  shall set the existing consumer's `seen_at` before serving; a malformed record,
+  a missing key/group/consumer or trailing bytes shall fail replay closed rather
+  than being ignored. The record shall be covered by CRC32 and optional HMAC
+  authentication like every other transaction byte, and shall remain inert for
+  readers that do not implement the private replay interception.
+- **R440 (unwanted behavior):** The consumer-activity record shall not be
+  accepted or acted on through the normal client command path, shall not alter
+  stream entries or PEL contents, and shall clamp negative timestamps to zero.
+- **R441 (ubiquitous):** Tests shall cover binary names, record framing and
+  truncation, live-journal and rewrite restarts, consumers with and without
+  pending entries, exact `idle`/`inactive` aging across restart, malformed/
+  missing-target failure, and all execution modes. Documentation shall retain the
+  no-expiry clock shortcut, tombstone-claim semantics and the absence of history
+  for deleted/renamed consumers.

@@ -286,29 +286,26 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   instance, and states RPO/RTO and retention; or online backup/PITR are explicitly
   excluded from the production profile with a reviewed operational contract.
 
-- [ ] **D6. Stream pending and consumer state is volatile across restart.** [P0]
-  **Partial (2026-11-05): consumers and PEL now persist.** The journal rebuild
-  emits `XGROUP CREATECONSUMER` for every consumer and `XCLAIM ... TIME ...
-  RETRYCOUNT ... JUSTID FORCE` for every pending entry, so owners, delivery counts
-  and delivery timestamps survive restart; both the live journal and the
-  cooperative rewrite use the same encoder. `tests/persistence.rs` covers
-  consumers with and without pending entries, cross-consumer claims with an
-  explicit retry count, restart replay, and acknowledging the replayed PEL.
-  **Partial (2026-11-10): deleted/trimmed PEL tombstones persist.** For a pending
-  id missing from the stream, the encoder emits an ascending placeholder `XADD`,
-  restores every group's `XCLAIM` owner/time/count, then `XDEL`s the placeholder.
-  This works in both the live journal and the cooperative rewrite and uses only
-  standard RESP commands. Restart tests cover `XDEL`, `XTRIM`, highest and
-  intermediate deleted ids, preserved owners/delivery counts, acking, absence of
-  synthetic payloads from `XLEN`/`XRANGE`, an all-deleted stream, and an empty
-  stream with group and consumer metadata (recreated with `MKSTREAM`).
-  **Remaining:** consumer `seen_at`/`inactive` activity time is not restored (it
-  reflects replay time); `XCLAIM` on a tombstone removes it from the PEL, matching
-  the missing-entry behavior; consumer history beyond current objects/PEL is not
-  preserved.
-  **Closes when:** consumer activity time is preserved (or the profile excludes
-  activity-time semantics) and the remaining queue semantics have a reviewed
-  restart contract; or Streams are explicitly excluded as a durable queue.
+- [x] **D6. Stream pending and consumer state survives restart.** [P0]
+  **Complete (2026-11-11).** The journal rebuild emits `XGROUP CREATECONSUMER` for
+  every consumer and `XCLAIM ... TIME ... RETRYCOUNT ... JUSTID FORCE` for every
+  pending entry, so owners, delivery counts and delivery timestamps survive both
+  the live journal and the cooperative rewrite. Deleted/trimmed pending ids are
+  recreated with ascending placeholder `XADD`s, claimed into every referencing
+  group, then deleted, leaving ackable PEL tombstones without synthetic payloads.
+  An empty stream with only group/consumer metadata is recreated through
+  `MKSTREAM`. Consumer last-activity (`seen_at`) is persisted in an inert
+  namespaced ECHO record (binary key/group/consumer plus absolute timestamp) and
+  restored during replay, so `XINFO CONSUMERS` `idle`/`inactive` keep counting
+  from the original activity including downtime.
+  **Evidence:** `tests/persistence.rs` (consumers/PEL, empty group, trim),
+  `tests/stream_pel_tombstones.rs` (deleted/trimmed/all-deleted tombstones and
+  rewrite), `tests/stream_consumer_activity.rs` (live and rewrite activity aging),
+  plus journal framing/round-trip unit tests; all three worker modes.
+  **Retained limits:** activity is only tracked when the keyspace has an expiry
+  or field TTL (the existing clock shortcut otherwise records zero); `XCLAIM` of a
+  tombstone removes it per missing-entry semantics; historical state for deleted
+  or renamed consumers is not retained.
 
 - [ ] **D7. Signal-driven graceful drain is missing.** [P0]
   Managed shutdown joins workers and protocol `SHUTDOWN` flushes the journal, but

@@ -850,3 +850,38 @@ fn authentication_detects_modified_content_even_when_the_crc32_is_recomputed() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn consumer_seen_journal_records_are_binary_safe_and_strictly_framed() {
+    let key = b"key\x00with:colon";
+    let group = b"group\xffbinary";
+    let consumer = b"consumer\nname";
+    let record = super::consumer_seen_record(key, group, consumer, 1_700_000_000_123);
+    let mut command = None;
+    let mut payload = None;
+    let parsed = crate::protocol::dispatch_request(&record, Limits::default(), |args| {
+        command = Some(args[0].to_vec());
+        payload = Some(args[1].to_vec());
+        Some(())
+    });
+    assert!(parsed.unwrap().is_some());
+    assert_eq!(command.as_deref(), Some(b"ECHO".as_slice()));
+    let payload = payload.expect("consumer-seen payload");
+    assert_eq!(
+        super::parse_consumer_seen(&payload),
+        Some((
+            key.as_slice(),
+            group.as_slice(),
+            consumer.as_slice(),
+            1_700_000_000_123
+        ))
+    );
+
+    let mut truncated = payload.clone();
+    truncated.pop();
+    assert!(super::parse_consumer_seen(&truncated).is_none());
+    let mut trailing = payload;
+    trailing.push(b'x');
+    assert!(super::parse_consumer_seen(&trailing).is_none());
+    assert!(super::parse_consumer_seen(b"__RILLCACHE_CONSUMER_SEEN_V1__:").is_none());
+}
