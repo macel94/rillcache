@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:3725129a9b326a874e9d52a70fb6efa3d1e508e5ef5ed3d053ae4100ec079357",
+  "pageVersion": "sha256:1d8886dd3a70aa1c6673d536713ede8f452402f3de51d6103b7891467aa0e06c",
   "claims": [
     {
       "id": "claim_781d8e19dfb64a53a737bd52b8852132",
@@ -81,7 +81,7 @@
       "statement": "When append-only effects are enabled, the engine captures changed keys since the turn's sequence, encodes canonical writes and appends them before the turn completes; an append failure replaces the success reply with an append-only error.",
       "evidence": [
         {
-          "resource": "repo://src/engine/journal.rs#L1297-L1411",
+          "resource": "repo://src/engine/journal.rs#L1353-L1467",
           "version": "repo-lines-v1:sha256:6476caff4c515e7fcf3b76de98ede72eb28fc84bdde6d545142b5c5df48a0ee0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2OWNkYTZjZDQ2ZmY2MWM2Njk1YTc0MWFhNmU5MGNkYmM3OGJkZDFjY2EwMDk2YzU4ZTAwNjBmNGY2ODYwNjUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjODNhMGI1YTkwN2NkMDI3MzRkODc4YTU2YWIwZTA1N2IzM2ExNjI2NjE1OTlhYWU3YWUzYTE5MzZkMWNmYjIxIn0"
         }
       ]
@@ -113,6 +113,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-11T08:27:05.780Z"
+    "at": "2026-11-11T20:57:56.397Z"
   }
 }

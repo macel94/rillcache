@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:0aac9db8ca7cdd6fe60096804da7456dcebcd07e30d25b8494b4af15ec7ffacc",
+  "pageVersion": "sha256:8cc0d75d0f03017a4dcfeb42612edf4a785a9b6e92aeeba03c1cae5479524ee1",
   "claims": [
     {
       "id": "claim_b5cd236f2d98497a8b975d385e0dfae8",
@@ -94,19 +94,19 @@
     },
     {
       "id": "claim_b120b4782e6649b398766c9e59cf7b4e",
-      "statement": "The append-only journal remains best-effort: RDB and interoperable AOF are absent, there is no encryption at rest, no fork-based rewrite, no ENOSPC or disk-fault corpus, no online backup or point-in-time recovery, no portable signal-driven drain and no shared-filesystem writer coordination; CRC32 checksums, optional HMAC-SHA256 records, a local ownership lock, offline backup/restore and persisted stream PELs are implemented.",
+      "statement": "The append-only journal remains best-effort: RDB and interoperable AOF are absent, there is no encryption at rest, no fork-based rewrite, no ENOSPC or disk-fault corpus, no online backup or point-in-time recovery, no portable signal-driven drain and no shared-filesystem writer coordination; CRC32 checksums, optional HMAC-SHA256 records, a local ownership lock, offline backup/restore and persisted stream PEL and consumer-activity state are implemented.",
       "evidence": [
         {
-          "resource": "repo://docs/persistence.md#L366-L387",
-          "version": "repo-lines-v1:sha256:a1600364c9817e8712ddaf6a7600b0203e3d6890db4e6c3c169517f5d16a146d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwNTM3NmM2MTUyNWVlNjRiNjk1NzViMTIzNmQ4NTAxY2E2YjIwNzdkMzM0MWEzY2YwMWVjOTQ2YTk3YWY4ZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkZmUwNWE1MTdmYTUxMzM4MmU3YTlkNzEyOWJlNWYzN2EwODFlZGU0ZDA4MjY2ZDcwNDhmNmU3MGNkZjZkY2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjViNDdkOTI3NjI0ZTZhOGFhNTkyZWQ2MTc4ZTlhODliYjQ5MDNmZDRkNWYwZTU5YjhkOGRjMWNhZjkzZmQzNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI4ZjYzNjc1ZTAxMDJlMDQyYzM0M2Q2NzgwNTlkZWRjNzMyNTg3M2IwMzEyNjkxZjE0NWY1MTIzNzFhMWVkNDYifQ"
+          "resource": "repo://docs/persistence.md#L376-L397",
+          "version": "repo-lines-v1:sha256:a1600364c9817e8712ddaf6a7600b0203e3d6890db4e6c3c169517f5d16a146d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwNTM3NmM2MTUyNWVlNjRiNjk1NzViMTIzNmQ4NTAxY2E2YjIwNzdkMzM0MWEzY2YwMWVjOTQ2YTk3YWY4ZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkZmUwNWE1MTdmYTUxMzM4MmU3YTlkNzEyOWJlNWYzN2EwODFlZGU0ZDA4MjY2ZDcwNDhmNmU3MGNkZjZkY2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU2ZDE1NzA3ZjY3MDllODRhM2JhNmRlNzNjNzhiY2MxNTk2NjQ2ZDU5ZDkxNzgwMzQ0Nzg5YWMwMzk3NDE2ZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI4ZjYzNjc1ZTAxMDJlMDQyYzM0M2Q2NzgwNTlkZWRjNzMyNTg3M2IwMzEyNjkxZjE0NWY1MTIzNzFhMWVkNDYifQ"
         },
         {
           "resource": "repo://docs/production-readiness-gaps.md#L226-L287",
-          "version": "repo-lines-v1:sha256:e2afc7b8912b3e92d29d18deef4d205f81e0a8715c1acdf029e2ec99f9bc3b91:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiYmM1NzJlYzRiM2QzZDI5OWI0NDgwZWM0NWE4YzBiYTM0ODQ3NTcyMjZkNTEzOGQwNzMxNWE5MTFkMzdhYzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyYWNjNTdlMjJhZDE1NGJhYmJiY2FlMjRjYWI2NTM2ZmVlZmI0MDIzNDFlMjVkYTUwMWRkNTE2NWI0Y2RjNTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyNzA2NTlmOTcxYzkyMjAyMmVlYTE1NTQwYjc1MzQ0ODYyZDFmMjg5YTI2OTJkNmY4MTM1ZmYyZjgwMGQ1OGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZkMzBkMzE1MWFmMzNiMzNkNGMxODI0YWYwZGM2ZWIzODM0NGM3OGQ5YzRlNzNlZDZiZjk0NjY4NjkzNjEwOTcifQ"
+          "version": "repo-lines-v1:sha256:e2afc7b8912b3e92d29d18deef4d205f81e0a8715c1acdf029e2ec99f9bc3b91:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiYmM1NzJlYzRiM2QzZDI5OWI0NDgwZWM0NWE4YzBiYTM0ODQ3NTcyMjZkNTEzOGQwNzMxNWE5MTFkMzdhYzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyYWNjNTdlMjJhZDE1NGJhYmJiY2FlMjRjYWI2NTM2ZmVlZmI0MDIzNDFlMjVkYTUwMWRkNTE2NWI0Y2RjNTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyNzA2NTlmOTcxYzkyMjAyMmVlYTE1NTQwYjc1MzQ0ODYyZDFmMjg5YTI2OTJkNmY4MTM1ZmYyZjgwMGQ1OGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI1YWU3OTQ0ZTUzNTE5ZjQ1NjVlOWJhMDA1YmFkNTJkZTNiNzFmMzIzZDMyNTg2MjU5NDgwODExNjBjYzU2NTYifQ"
         },
         {
           "resource": "repo://docs/production-readiness-gaps.md#L289-L330",
-          "version": "repo-lines-v1:sha256:f0e41c1cb97108086b2e1c08e4eed6c2dd93533ae2b67c3abbecfc32a12dc717:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzOWM5MmFjMTVmZGY4NWY3ZjVjY2JmYWFkNThkYWU2MDMxNDZmNDMzNTJlOTNlZDlkMWFiYTRkOWFkNDI4OTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwZWQ1ZTJjYjNlMDM1YzQ1ZWVkZGE2MTkwN2M3NzA5N2U5Yjk4YmY5NzcxYjUzYTQ2MjdmYmFlNDQwYTNjOTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNGUwODgwMjc1MTViN2MwZDRkOTAxNmVjNWNiNGVlNzVlNzExNzhmMzNhYWIyMTA5MjNlYWQ5ZWM1NTY3NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ4MDRlZWNkMzI5N2Q0YjM1N2RlY2FlMzRiMTUzZGZhMTg2YzAyMzkwZmRlYzk0ODM4NDVmNTgzOGY0YmU0YmUifQ"
+          "version": "repo-lines-v1:sha256:72226e44ac9f7ac1e9c70f8f025dcbe6e68b000e2ed093f4a070d3e6a7ad437c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkMTgwNTI4Yjc3YmZhNWUwZDljYzM5NDdjZTJhNzcwZjk1ZGQ2MDU3NjI3NTNlYjk4NGM2MzU4ZGYwMDFhODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNGUwODgwMjc1MTViN2MwZDRkOTAxNmVjNWNiNGVlNzVlNzExNzhmMzNhYWIyMTA5MjNlYWQ5ZWM1NTY3NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3ZjU2OTEwZGIyYTU5ODMyZmUzZTRjODI0YWExODFjYTljYjZmMmI3YTY1NTZhODYyMDg5MWJhMTZlNzhkNzgifQ"
         }
       ]
     },
@@ -126,21 +126,21 @@
     },
     {
       "id": "claim_421e0c2777f74e43aa3b5c99d9838b27",
-      "statement": "Stream restart replay restores consumer objects and pending-entry owners, delivery counts and timestamps, including deleted or trimmed pending ids via placeholder XADD/XCLAIM/XDEL records; consumer activity time still reflects replay time.",
+      "statement": "Stream restart replay restores consumer objects and pending-entry owners, delivery counts, timestamps and last-activity when the keyspace tracks wall-clock time, including deleted or trimmed pending ids via placeholder XADD/XCLAIM/XDEL records; without tracked time the activity shortcut stores zero, and deleted or renamed consumer history is not retained.",
       "evidence": [
         {
-          "resource": "repo://docs/persistence.md#L344-L364",
-          "version": "repo-lines-v1:sha256:e35836004aa3a25dcdfbf6d8d278840deb269f273510283fe13e35e72e37b2d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3ZGEwMDI1MDlhYjRiNTYyMDc3NTlmMDYyYzdjMWE2OWIyMTgxMjAwOTA0Y2NlZjg1NTg3N2YwODNlYzJmODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NzU5NzNhNTQ2YTNkYWE2MDQzNGZkYWM1ZWI5NTMyMTE0MjE4YTdhOWI3ZWZlYTYxZDY0Mjk0ZWJlZmRhYjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmMWQ4MjMwYmYwOWE4NjllOGNkYjhiY2UwZTEwZjBlZWY4ZmZhNzNkZjNjNzI0ZjExMzA0ZWNlOTU5ZDExMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZjI5MjA3NmUxOWYzNmE0YjBkOGFmZTFiZmRjNDRhODVkMDdkMDJkZWMyMjY0OTBhN2M3NjNkMGNkYTQ1N2MifQ"
+          "resource": "repo://docs/persistence.md#L344-L374",
+          "version": "repo-lines-v1:sha256:651b8a60e35a96c7e5f699bd308148d284eaf5c619aff511e1f325f3039e9553:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3ZGEwMDI1MDlhYjRiNTYyMDc3NTlmMDYyYzdjMWE2OWIyMTgxMjAwOTA0Y2NlZjg1NTg3N2YwODNlYzJmODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMzhlNGI1YzdmNDdlOWIwNDI0YjViOWM1MTE2OTkwNmU5YTA3NDhkNzVlYzgxYTU2ZDJhY2RkODRmNWVmODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmMWQ4MjMwYmYwOWE4NjllOGNkYjhiY2UwZTEwZjBlZWY4ZmZhNzNkZjNjNzI0ZjExMzA0ZWNlOTU5ZDExMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZjI5MjA3NmUxOWYzNmE0YjBkOGFmZTFiZmRjNDRhODVkMDdkMDJkZWMyMjY0OTBhN2M3NjNkMGNkYTQ1N2MifQ"
         },
         {
-          "resource": "repo://docs/production-readiness-gaps.md#L289-L311",
-          "version": "repo-lines-v1:sha256:0cca1fefa233d570bb6b756921454ab7e8397f7a65e58b84fc21dc713a535293:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzOWM5MmFjMTVmZGY4NWY3ZjVjY2JmYWFkNThkYWU2MDMxNDZmNDMzNTJlOTNlZDlkMWFiYTRkOWFkNDI4OTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxY2JhMzU3OTlhODU2YjE0NDQ2MTFjOGU1MmI5ODhmODEwNzU4MmQ5MTMzOGM4OWMzMWQxMDM5NTg1ZDA3OTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNGUwODgwMjc1MTViN2MwZDRkOTAxNmVjNWNiNGVlNzVlNzExNzhmMzNhYWIyMTA5MjNlYWQ5ZWM1NTY3NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmM2Q0YzA0MjZkNzAwNjNhODU4OGYwYjI0MjM3MjY3Y2IxMDEzMWUxMmFjOTkyYmY2YzU5MWI1N2MxMGU0ZmMifQ"
+          "resource": "repo://docs/production-readiness-gaps.md#L289-L308",
+          "version": "repo-lines-v1:sha256:afa314a2d1389853d8c5c9a4cca2d76b3170f1b87d40bbfe1b689de73f4d1184:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkMTgwNTI4Yjc3YmZhNWUwZDljYzM5NDdjZTJhNzcwZjk1ZGQ2MDU3NjI3NTNlYjk4NGM2MzU4ZGYwMDFhODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlMmIwMjcxOWVkMTYxYzNkOTRkMjgzNTlhZGU5NWVmYjQxNTJkMjVhMWU2MzNhMTUyZWMwODFhMzUxNjRkY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNGUwODgwMjc1MTViN2MwZDRkOTAxNmVjNWNiNGVlNzVlNzExNzhmMzNhYWIyMTA5MjNlYWQ5ZWM1NTY3NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmM2Q0YzA0MjZkNzAwNjNhODU4OGYwYjI0MjM3MjY3Y2IxMDEzMWUxMmFjOTkyYmY2YzU5MWI1N2MxMGU0ZmMifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-11T08:27:05.780Z"
+    "at": "2026-11-11T20:57:56.397Z"
   }
 }

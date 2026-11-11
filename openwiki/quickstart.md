@@ -20,10 +20,10 @@ sources:
     resource: repo://docs/production-readiness-gaps.md
   - id: openwiki-source-dfa02c19f5d8e4215d36f9c0
     resource: repo://src/server.rs
-generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
+generated: { by: "opencode", at: "2026-11-11T20:57:56.397Z" }
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-11T08:27:05.780Z
+    at: 2026-11-11T20:57:56.397Z
 ---
 
 # Rillcache wiki quickstart
@@ -65,8 +65,8 @@ details against source and tests.
   fsync, CRC32 checksums, optional HMAC-SHA256 authentication, a local ownership
   lock, cooperative rewrite and offline backup/restore. Replay verifies complete
   groups, truncates only a torn tail and fails on committed corruption. Stream
-  consumers and PEL owners/counts/timestamps survive restart; consumer activity
-  time does not.
+  consumers, PEL owners/counts/timestamps and tracked last-activity survive
+  restart; activity is only tracked when the keyspace has an expiry or field TTL.
 - **Protocol:** RESP2 and a bounded RESP3 subset, plus Redis inline commands.
   Only database 0 exists.
 - **Security:** password or ACL-file auth, per-connection and optional per-source

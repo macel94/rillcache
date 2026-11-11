@@ -23,7 +23,7 @@ sources:
 generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-11T08:27:05.780Z
+    at: 2026-11-11T20:57:56.397Z
 ---
 
 # Configuration and startup

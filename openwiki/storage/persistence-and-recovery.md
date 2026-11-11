@@ -14,10 +14,10 @@ sources:
     resource: repo://src/engine/discovery/mod.rs
   - id: openwiki-source-350cb0ce838ab0c30fe785a9
     resource: repo://src/engine/journal.rs
-generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
+generated: { by: "opencode", at: "2026-11-11T20:57:56.397Z" }
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-11T08:27:05.780Z
+    at: 2026-11-11T20:57:56.397Z
 ---
 
 # Journal persistence and recovery
@@ -77,6 +77,7 @@ RPUSH/SADD/HSET/ZADD ...       rebuilt collection contents
 XADD / XGROUP CREATE / XSETID stream entries and group cursors
 XGROUP CREATECONSUMER ...      restored consumer objects
 XCLAIM ... JUSTID FORCE ...    restored PEL owner/count/time
+ECHO __RILLCACHE_CONSUMER_...  restored consumer last-activity
 HPEXPIREAT ...                 per-field deadlines
 PEXPIREAT key deadline         surviving key TTL
 FLUSHALL                       full snapshot or flush boundary
@@ -88,6 +89,9 @@ stream that has advanced beyond its last retained entry uses a sentinel
 `XADD`/`XDEL` pair so the last-generated ID survives replay. Group cursors and
 `XSETID` metadata are restored. A pending id whose entry was deleted or trimmed is
 kept as a PEL tombstone through placeholder `XADD`/`XCLAIM`/`XDEL` records.
+Consumer last-activity is written as one namespaced `ECHO` record per consumer and
+restored after the consumer/PEL records; the record carries an absolute timestamp
+and is inert for other Redis-compatible readers.
 
 Each new transaction is followed by a CRC32 `ECHO` marker containing its byte
 length and digest. A format header identifies the checksummed segment; legacy
@@ -153,7 +157,8 @@ store:
 
 1. read the file in bounded chunks;
 2. verify every complete checksum group and, when configured, the HMAC chain;
-3. execute each complete command through the ordinary command implementation;
+3. execute each complete command through the ordinary command implementation,
+   restoring consumer last-activity from its namespaced `ECHO` record;
 4. truncate a torn final transaction/checksum group to the previous verified
    boundary, or discard a crash-torn final unauthenticated group;
 5. fail startup with a byte offset on malformed RESP, a complete checksum mismatch,
@@ -255,9 +260,11 @@ backlog, fork and bio fields are omitted because they are not measured.
 - **No online backup, point-in-time recovery, retention policy or rotation.**
   Offline quiescent backup, verify and restore are implemented.
 - **No signal-driven drain.**
-- **Stream consumer activity time is not restored.** Consumer objects and PEL
-  owners, delivery counts and timestamps are restored, including deleted-id
-  tombstones; `seen_at`/`inactive` reflect replay time.
+- **Stream consumer last-activity has bounded tracking.** Consumer objects, PEL
+  owners, delivery counts, timestamps and last-activity are restored, including
+  deleted-id tombstones. Activity is tracked only when the keyspace has an expiry
+  or field TTL; otherwise the clock shortcut stores zero. History for deleted or
+  renamed consumers is not retained.
 
 The journal therefore narrows the loss window but does not close the production
 durability gate. The full checklist is in

@@ -30,10 +30,10 @@ sources:
     resource: repo://tests/discovery.rs
   - id: openwiki-source-fdf89b772c3fe634921300db
     resource: repo://tests/sessions.rs
-generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
+generated: { by: "opencode", at: "2026-11-11T20:57:56.397Z" }
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-11T08:27:05.780Z
+    at: 2026-11-11T20:57:56.397Z
 ---
 
 # Compatibility and production boundaries
@@ -54,9 +54,9 @@ The command registry contains **243 commands**. The supported surface includes:
 - bitmaps, `BITFIELD`, `LCS`, HyperLogLog and multi-key string operations;
 - lists, sets, hashes and sorted sets, including field TTLs, range algebra,
   random selection, multi-pop and blocking pops;
-- geospatial sorted sets, streams with consumer groups, pending-entry inspection
-  and persisted consumer/PEL state, bounded `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN`, and
-  `SORT`;
+- geospatial sorted sets, streams with consumer groups, pending-entry inspection,
+  persisted consumer/PEL state and consumer last-activity, bounded
+  `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN`, and `SORT`;
 - `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` with a bounded queue;
 - channel, pattern and sharded-channel pub/sub plus keyspace notifications;
 - password and ACL-file authentication, ACL selectors, denial logging and native
@@ -145,8 +145,11 @@ system of record:
 - no portable SIGTERM/SIGINT drain in the standalone binary;
 - no shared-filesystem writer coordination; journal ownership is a local advisory
   lock;
-- stream consumer activity time is not restored, although consumer objects and PEL
-  owners, delivery counts and timestamps persist, including deleted-id tombstones.
+- stream consumer last-activity is restored when the keyspace tracks wall-clock
+  time (it has an expiry or field TTL); without tracked time the clock shortcut
+  stores zero, and history for deleted or renamed consumers is not retained.
+  Consumer objects and PEL owners, delivery counts and timestamps persist,
+  including deleted-id tombstones.
 
 An `always` success is the strongest current acknowledgement guarantee. An
 `everysec` crash can lose roughly the last second of writes, and `no` relies on the

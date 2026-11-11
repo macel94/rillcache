@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:135dd0d77b3a0f4e1027f89b1713c76119258f6a12f934c3dcc72fe212bb14d2",
+  "pageVersion": "sha256:9388ab2882a269a2b52cc213b6cfa5477e2c6a016a469e223cbce581e92295c1",
   "claims": [
     {
       "id": "claim_574a7126e75641e7a825f93a39ff1995",
@@ -22,7 +22,7 @@
     },
     {
       "id": "claim_15e9fd087f74443cbad3e72f72ff5adc",
-      "statement": "Persistence is an opt-in private RESP journal with always, everysec and no fsync policies, CRC32 checksums, optional HMAC-SHA256 authentication, cooperative rewrite, a local ownership lock, offline backup/restore and durable stream consumer/PEL state; it has no RDB.",
+      "statement": "Persistence is an opt-in private RESP journal with always, everysec and no fsync policies, CRC32 checksums, optional HMAC-SHA256 authentication, cooperative rewrite, a local ownership lock, offline backup/restore and durable stream consumer/PEL/last-activity state; it has no RDB.",
       "evidence": [
         {
           "resource": "repo://docs/persistence.md#L147-L164",
@@ -37,8 +37,8 @@
           "version": "repo-lines-v1:sha256:456fd67e29b11acc45d693fcb37094f77e40874570ef58f79563c3bb52dc44d8:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiMTE3MzMyMWUzMDdmYmE2MmMxNjIzN2I2ZDczYTkxNzNmNTU2NGM2ZmY2ZTBjN2RkYTA2ZTFhOTI2YWJjODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiYThhOWJjYmNiOTdmNTkxMGQ3ZjgxN2FlMmRiMGY5M2E3ODg3ZDk2NzMzNTM0YzM2NWQ0Y2Y0YmI5NzFmNzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiZGIwYjQyZWQ3MDhlNzIyNTM0YWE0YTEwOGJjMjY1ZDMyYzNhYWFjMDFjMjFkOWM5MDM4MjY2OGViZjE1YzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3YjI5ZmFhMTM4MDAyZTNhNDczNjlmNWY1MzJlYTc3NGVhOTI4Y2QwOWU0MzJhOGRjMWNmM2U3OTkwMTQwOGQifQ"
         },
         {
-          "resource": "repo://docs/persistence.md#L344-L364",
-          "version": "repo-lines-v1:sha256:e35836004aa3a25dcdfbf6d8d278840deb269f273510283fe13e35e72e37b2d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3ZGEwMDI1MDlhYjRiNTYyMDc3NTlmMDYyYzdjMWE2OWIyMTgxMjAwOTA0Y2NlZjg1NTg3N2YwODNlYzJmODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NzU5NzNhNTQ2YTNkYWE2MDQzNGZkYWM1ZWI5NTMyMTE0MjE4YTdhOWI3ZWZlYTYxZDY0Mjk0ZWJlZmRhYjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmMWQ4MjMwYmYwOWE4NjllOGNkYjhiY2UwZTEwZjBlZWY4ZmZhNzNkZjNjNzI0ZjExMzA0ZWNlOTU5ZDExMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZjI5MjA3NmUxOWYzNmE0YjBkOGFmZTFiZmRjNDRhODVkMDdkMDJkZWMyMjY0OTBhN2M3NjNkMGNkYTQ1N2MifQ"
+          "resource": "repo://docs/persistence.md#L344-L374",
+          "version": "repo-lines-v1:sha256:651b8a60e35a96c7e5f699bd308148d284eaf5c619aff511e1f325f3039e9553:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3ZGEwMDI1MDlhYjRiNTYyMDc3NTlmMDYyYzdjMWE2OWIyMTgxMjAwOTA0Y2NlZjg1NTg3N2YwODNlYzJmODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMzhlNGI1YzdmNDdlOWIwNDI0YjViOWM1MTE2OTkwNmU5YTA3NDhkNzVlYzgxYTU2ZDJhY2RkODRmNWVmODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmMWQ4MjMwYmYwOWE4NjllOGNkYjhiY2UwZTEwZjBlZWY4ZmZhNzNkZjNjNzI0ZjExMzA0ZWNlOTU5ZDExMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZjI5MjA3NmUxOWYzNmE0YjBkOGFmZTFiZmRjNDRhODVkMDdkMDJkZWMyMjY0OTBhN2M3NjNkMGNkYTQ1N2MifQ"
         }
       ]
     },
@@ -77,6 +77,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-11T08:27:05.780Z"
+    "at": "2026-11-11T20:57:56.397Z"
   }
 }

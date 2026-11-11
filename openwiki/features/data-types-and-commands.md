@@ -32,10 +32,10 @@ sources:
     resource: repo://src/engine/hll.rs
   - id: openwiki-source-8202f4c5abca167cf478c403
     resource: repo://src/engine/string_algorithms.rs
-generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
+generated: { by: "opencode", at: "2026-11-11T20:57:56.397Z" }
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-11T08:27:05.780Z
+    at: 2026-11-11T20:57:56.397Z
 ---
 
 # Data types and command families
@@ -126,14 +126,17 @@ and `XINFO`. Stream IDs are unsigned 64-bit millisecond/sequence pairs. `XDEL`
 removes a message but deliberately leaves pending references, because deletion is
 not acknowledgement.
 
-Stream entries, last IDs, group cursors, consumer objects and pending-entry owners,
-delivery counts and timestamps are restored by journal replay. A pending id whose
-entry was deleted or trimmed is retained through placeholder `XADD`/`XCLAIM`/`XDEL`
-records, so `XPENDING` still reports it. Consumer activity time is not preserved:
-`inactive` reflects replay time. `XCLAIM` of a tombstone removes it from the PEL as
-for any missing entry. `entries-read` is reported as null and `nacked-count` as
-zero. Treat this subset as a bounded queue with those documented restart limits,
-not as a fully durable work queue.
+Stream entries, last IDs, group cursors, consumer objects, pending-entry owners,
+delivery counts, timestamps and consumer last-activity are restored by journal
+replay. A pending id whose entry was deleted or trimmed is retained through
+placeholder `XADD`/`XCLAIM`/`XDEL` records, so `XPENDING` still reports it.
+Consumer last-activity is restored when the keyspace tracks wall-clock time (it has
+an expiry or field TTL), so `XINFO CONSUMERS` `idle`/`inactive` keep counting
+through downtime. Without tracked time the clock shortcut stores zero, and history
+for deleted or renamed consumers is not retained. `XCLAIM` of a tombstone removes
+it from the PEL as for any missing entry. `entries-read` is reported as null and
+`nacked-count` as zero. Treat this subset as a bounded queue with those documented
+restart limits, not as a fully durable work queue.
 
 ## Geospatial values
 

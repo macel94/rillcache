@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:6c1c074bacbe66c74ac6ca26faa8479d8a432728fc995e14e9a12fee2492ab98",
+  "pageVersion": "sha256:ae830c0c27ae3676af65348aa0d58c20c5b36ec1f61b7b7e65a7bf2c04979601",
   "claims": [
     {
       "id": "claim_8336ce8b64a94ca699d56ed7df75796f",
@@ -46,11 +46,11 @@
     },
     {
       "id": "claim_bdb33065cc8747c1baf58ef7d105cffb",
-      "statement": "A stream stores ordered entries, last-generated and retention counters, and consumer groups with consumers and pending references; deletion retains pending references, and journal replay restores consumer objects and PEL owners, delivery counts and timestamps, including deleted-id tombstones, while consumer activity time is not preserved.",
+      "statement": "A stream stores ordered entries, last-generated and retention counters, and consumer groups with consumers and pending references; deletion retains pending references, and journal replay restores consumer objects, PEL owners, delivery counts, timestamps, deleted-id tombstones and last-activity when the keyspace tracks wall-clock time, while deleted or renamed consumer history and no-expiry activity history are not retained.",
       "evidence": [
         {
-          "resource": "repo://docs/persistence.md#L344-L364",
-          "version": "repo-lines-v1:sha256:e35836004aa3a25dcdfbf6d8d278840deb269f273510283fe13e35e72e37b2d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3ZGEwMDI1MDlhYjRiNTYyMDc3NTlmMDYyYzdjMWE2OWIyMTgxMjAwOTA0Y2NlZjg1NTg3N2YwODNlYzJmODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NzU5NzNhNTQ2YTNkYWE2MDQzNGZkYWM1ZWI5NTMyMTE0MjE4YTdhOWI3ZWZlYTYxZDY0Mjk0ZWJlZmRhYjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmMWQ4MjMwYmYwOWE4NjllOGNkYjhiY2UwZTEwZjBlZWY4ZmZhNzNkZjNjNzI0ZjExMzA0ZWNlOTU5ZDExMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZjI5MjA3NmUxOWYzNmE0YjBkOGFmZTFiZmRjNDRhODVkMDdkMDJkZWMyMjY0OTBhN2M3NjNkMGNkYTQ1N2MifQ"
+          "resource": "repo://docs/persistence.md#L344-L374",
+          "version": "repo-lines-v1:sha256:651b8a60e35a96c7e5f699bd308148d284eaf5c619aff511e1f325f3039e9553:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3ZGEwMDI1MDlhYjRiNTYyMDc3NTlmMDYyYzdjMWE2OWIyMTgxMjAwOTA0Y2NlZjg1NTg3N2YwODNlYzJmODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMzhlNGI1YzdmNDdlOWIwNDI0YjViOWM1MTE2OTkwNmU5YTA3NDhkNzVlYzgxYTU2ZDJhY2RkODRmNWVmODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmMWQ4MjMwYmYwOWE4NjllOGNkYjhiY2UwZTEwZjBlZWY4ZmZhNzNkZjNjNzI0ZjExMzA0ZWNlOTU5ZDExMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZjI5MjA3NmUxOWYzNmE0YjBkOGFmZTFiZmRjNDRhODVkMDdkMDJkZWMyMjY0OTBhN2M3NjNkMGNkYTQ1N2MifQ"
         },
         {
           "resource": "repo://docs/streams.md#L1-L20",
@@ -129,6 +129,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-11T08:27:05.780Z"
+    "at": "2026-11-11T20:57:56.397Z"
   }
 }
