@@ -1,12 +1,12 @@
 # Current benchmark performance
 
-Generated: 2026-11-02T16:09:22Z · [Benchmark run #14](https://github.com/macel94/rillcache/actions/runs/41477114469) · [Tested source `9692e07`](https://github.com/macel94/rillcache/commit/9692e074780dc9667f14962875f959fa1c2af348)
+Generated: 2026-11-10T16:37:06Z · [Benchmark run #17](https://github.com/macel94/rillcache/actions/runs/42854338669) · [Tested source `4209859`](https://github.com/macel94/rillcache/commit/42098598d2e3cf8fabef1cf32f06d529eb69b0f5)
 
 **Benchmark job: success. Data: validated. Copilot review: completed.**
 
 Benchmark attempt: 1; review attempt: 1. Preferred model: `gpt-6-luna` via **GitHub Copilot**.
 
-[This report's permanent copy](https://github.com/macel94/rillcache/blob/main/benchmarks/reports/41477114469-1.md) · [Report history](https://github.com/macel94/rillcache/tree/main/benchmarks/reports) · [Methodology](https://github.com/macel94/rillcache/blob/main/docs/benchmarks.md)
+[This report's permanent copy](https://github.com/macel94/rillcache/blob/main/benchmarks/reports/42854338669-1.md) · [Report history](https://github.com/macel94/rillcache/tree/main/benchmarks/reports) · [Methodology](https://github.com/macel94/rillcache/blob/main/docs/benchmarks.md)
 
 ## AI review
 
@@ -14,41 +14,42 @@ Actual model(s): **gpt-6-luna**. Selection: automatic-fallback. Authentication: 
 
 AI interpretation, **not measurements or a performance gate**. Verify claims against the deterministic tables below.
 
-> Bottom line: In this validated native cohort (180 records), Rillcache’s SET throughput is higher in
-> the measured workloads, including under an equal one-logical-CPU budget. This is a workload-specific
-> result, not a general Redis or Valkey victory.
+> Bottom line: In this validated native cohort of 180 records, Rillcache had higher SET throughput and
+> lower whole-batch p99 than Redis and Valkey in the measured workloads. This is workload-specific
+> evidence, not a general Redis/Valkey victory.
 > 
-> At equal CPU, SET throughput was 119,105 vs. Redis’s 110,504 commands/s at pipeline 1 (+7.8%), and
-> 1,509,416 vs. 1,132,680 at pipeline 16 (+33.3%). Median whole-batch p99 was 77.4 vs. 91.3 µs and
-> 97.3 vs. 162.9 µs, respectively. These are batch latencies—not per-request p99—and should not be
-> divided by pipeline length. Default-threading results are separate: SET was +6.3% at pipeline 1 and
-> +31.8% at pipeline 16 versus Redis.
+> Equal-one-logical-CPU: With the server pinned to one CPU, pipeline-1 SET reached 96,714 commands/s
+> versus Redis’s 88,206 (+9.6%); whole-batch p99 was 96.5 µs versus 118.1 µs. At pipeline-16,
+> throughput was 1,187,145 versus 879,861 (+34.9%), with batch p99 of 124.5 versus 217.0 µs. These are
+> batch percentiles—not per-request latency, and they should not be divided by pipeline length.
+> Rillcache’s CPU use was near 100% in both cases; at pipeline-16 it used 0.85 CPU µs/command versus
+> Redis’s 1.13. Default-threading results are separate: do not treat them as equal-CPU comparisons.
 > 
-> Resource observations: Native workload CPU was generally around one logical CPU; for pipeline-16
-> SET, CPU was 99.6% for Redis and 99.6% for Rillcache in the single-core profile, with reported CPU
-> time of 0.88 vs. 0.66 µs/command. CPU windows do not exactly match request timers. Rillcache’s
-> approximate RSS endpoints were lower (5.86 vs. 8.79 MiB for that profile), but these are not
-> workload peaks; VmHWM is a lifetime peak. Zero idle CPU ticks are quantized, not proof of zero cost.
-> Scheduling counts cover matched thread lifetimes only; for example, single-core pipeline-1 SET
-> voluntary switches were similar (0.00029 vs. 0.00026 per command), without establishing process-wide
-> totals or causation.
+> Resource and scheduling observations: At single-core pipeline-16, endpoint RSS was about 5.96 MiB
+> for Rillcache, 9.04 for Redis, and 8.34 for Valkey; RSS is approximate, while VmHWM is a lifetime
+> peak. Rillcache showed fewer voluntary switches per command in these rows, but matched
+> thread-lifetime counters are not guaranteed process totals and do not establish why throughput
+> differs. Idle CPU readings of zero are tick-quantized; they do not prove zero cost.
 > 
-> Uncertainty and next investigations: Results are three-run medians on a shared VM, with workload-
-> and pipeline-specific variability; the subset is not equivalent to full Redis/Valkey functionality.
-> First, investigate the separate fixed-worker measurements: four workers’ SET throughput was 53,990
-> vs. 1,281,104 commands/s for one worker, with batch p99 3,831 vs. 1,010 µs. This group lacks process
-> CPU/RSS accounting and is not equal-per-core evidence. Second, repeat native equal-CPU runs with
-> per-request latency distributions and more repetitions, especially pipeline-16 ping, whose
-> default-threading range was 1.75–2.61 million commands/s.
+> Uncertainty: Three runs per workload, shared-VM conditions, observation-window differences, and the
+> subset’s limited functionality constrain interpretation. NX-existing rejects writes; XX-existing
+> admits overwrites.
+> 
+> Next investigations: (1) Measure per-request latency distributions and repeat across client counts
+> and pipeline depths; current batch p99 rises from 96.5 µs at pipeline-1 to 124.5 µs at pipeline-16.
+> (2) Separately diagnose fixed-worker behavior: four-worker SET was about 49,722 commands/s with
+> 4,379.6 µs batch p99, versus one worker’s 973,883 and 965.7 µs. That embedded group is not a native
+> competitor or equal-per-core comparison and lacks CPU/RSS accounting; add those measurements while
+> examining queueing and worker coordination.
 
 ## Measurements
 
 **Data quality: complete.** 180/180 records validated across 4/4 complete profiles.
 
 
-Hardware: AMD EPYC 9V45 96-Core Processor. Rust 1.99.1 (58cf8f9c3 2026-10-13).
+Hardware: AMD EPYC 9V74 80-Core Processor. Rust 1.99.1 (58cf8f9c3 2026-10-13).
 
-References: Redis 8.10.2 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=33de5ea66c226878; Valkey 9.1.2 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=dc615266b03fe270.
+References: Redis 8.10.2 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=560571108c09b049; Valkey 9.1.2 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=fdee4c72b466a6c8.
 
 ### SET at a glance
 
@@ -56,10 +57,10 @@ Median commands/s and median of the three runs' **whole-batch p99** values (µs)
 
 | Profile | Rillcache cmd/s | Redis | Valkey | Rillcache vs Redis | Rillcache p99 µs | Redis p99 | Valkey p99 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| pipeline-1 | 117182 | 110191 | 106825 | +6.3% | 78.5 | 92.1 | 96.9 |
-| pipeline-16 | 1526766 | 1158289 | 1030536 | +31.8% | 97.4 | 158.7 | 181.5 |
-| single-core-pipeline-1 | 119105 | 110504 | 107512 | +7.8% | 77.4 | 91.3 | 95.2 |
-| single-core-pipeline-16 | 1509416 | 1132680 | 1036223 | +33.3% | 97.3 | 162.9 | 181.0 |
+| pipeline-1 | 97258 | 88692 | 85394 | +9.7% | 96.8 | 117.7 | 122.3 |
+| pipeline-16 | 1191438 | 878023 | 769265 | +35.7% | 125.4 | 217.8 | 252.9 |
+| single-core-pipeline-1 | 96714 | 88206 | 85653 | +9.6% | 96.5 | 118.1 | 122.1 |
+| single-core-pipeline-16 | 1187145 | 879861 | 760977 | +34.9% | 124.5 | 217.0 | 254.8 |
 
 CPU is relative to **one logical CPU**, so parallel servers can exceed 100%. Do not blend default-threading and single-core results or different pipelines. Shared VMs and unequal feature sets do not establish a general performance win or a cross-run regression.
 
@@ -70,27 +71,27 @@ Requests/workload/run: 100000; clients: 8; pipeline: 1; cyclic keys: 1024; value
 
 | Workload | Server | Median cmd/s | Min–max cmd/s | Batch p99 µs | CPU % | CPU µs/cmd | System % of CPU | RSS MiB | Voluntary switches/cmd | Involuntary/cmd | Thread endpoints |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| ping | rillcache | 139341 | 123199–141509 | 68.9 | 119.8 | 8.60 | 95.3 | 6.46 | 0.085850 | 0.014260 | unchanged |
-| ping | redis | 111925 | 111737–113704 | 93.1 | 100.5 | 9.00 | 92.2 | 8.93 | 0.000060 | 0.000030 | unchanged |
-| ping | valkey | 112235 | 112114–112975 | 90.2 | 99.4 | 8.80 | 91.0 | 8.27 | 0.000170 | 0.000060 | unchanged |
-| set | rillcache | 117182 | 115329–119761 | 78.5 | 100.6 | 8.60 | 94.0 | 6.46 | 0.002980 | 0.000060 | unchanged |
-| set | redis | 110191 | 109719–110205 | 92.1 | 100.2 | 9.10 | 90.0 | 8.93 | 0.000060 | 0.000030 | unchanged |
-| set | valkey | 106825 | 106291–107340 | 96.9 | 99.9 | 9.40 | 86.0 | 8.28 | 0.000150 | 0.000040 | unchanged |
-| get | rillcache | 119947 | 112686–120351 | 77.1 | 99.9 | 8.30 | 95.2 | 6.46 | 0.002860 | 0.000050 | unchanged |
-| get | redis | 110609 | 107090–111734 | 91.7 | 99.5 | 9.00 | 91.0 | 8.94 | 0.000240 | 0.000050 | unchanged |
-| get | valkey | 108514 | 107507–108936 | 93.6 | 99.9 | 9.20 | 89.1 | 8.29 | 0.000130 | 0.000050 | unchanged |
-| set-nx-existing | rillcache | 119676 | 118564–119830 | 77.4 | 100.5 | 8.40 | 94.0 | 6.46 | 0.002830 | 0.000040 | unchanged |
-| set-nx-existing | redis | 106135 | 103097–111839 | 221.9 | 99.5 | 9.50 | 89.6 | 8.95 | 0.000260 | 0.000050 | unchanged |
-| set-nx-existing | valkey | 108375 | 103527–108720 | 93.8 | 99.7 | 9.20 | 88.0 | 8.29 | 0.000110 | 0.000050 | unchanged |
-| set-xx-existing | rillcache | 117555 | 116626–119481 | 78.6 | 99.9 | 8.50 | 91.8 | 6.46 | 0.002540 | 0.000070 | unchanged |
-| set-xx-existing | redis | 109422 | 108265–109854 | 92.4 | 99.5 | 9.10 | 89.2 | 8.93 | 0.000030 | 0.000040 | unchanged |
-| set-xx-existing | valkey | 107600 | 107082–107882 | 95.6 | 99.2 | 9.20 | 88.0 | 8.27 | 0.000100 | 0.000040 | unchanged |
+| ping | rillcache | 101185 | 101128–102240 | 93.3 | 99.1 | 9.80 | 95.9 | 5.82 | 0.000010 | 0.000060 | unchanged |
+| ping | redis | 91607 | 91427–91709 | 111.0 | 99.8 | 10.90 | 90.8 | 8.94 | 0.000190 | 0.000050 | unchanged |
+| ping | valkey | 90098 | 88756–90240 | 113.9 | 100.1 | 11.10 | 90.1 | 8.28 | 0.000110 | 0.000080 | unchanged |
+| set | rillcache | 97258 | 96604–98883 | 96.8 | 99.5 | 10.20 | 91.3 | 5.82 | 0.000010 | 0.000050 | unchanged |
+| set | redis | 88692 | 88064–88711 | 117.7 | 99.5 | 11.30 | 86.8 | 8.95 | 0.000160 | 0.000050 | unchanged |
+| set | valkey | 85394 | 84601–85510 | 122.3 | 99.8 | 11.70 | 88.9 | 8.30 | 0.000550 | 0.000040 | unchanged |
+| get | rillcache | 99296 | 98423–99965 | 94.8 | 99.4 | 10.00 | 94.0 | 5.82 | 0.000010 | 0.000050 | unchanged |
+| get | redis | 89523 | 88847–89886 | 115.0 | 99.7 | 11.20 | 88.4 | 8.94 | 0.000070 | 0.000030 | unchanged |
+| get | valkey | 87081 | 86369–87231 | 120.1 | 100.1 | 11.50 | 87.0 | 8.29 | 0.000040 | 0.000060 | unchanged |
+| set-nx-existing | rillcache | 99079 | 98432–99136 | 95.0 | 100.1 | 10.10 | 92.1 | 5.82 | 0.000010 | 0.000060 | unchanged |
+| set-nx-existing | redis | 89069 | 88679–89424 | 116.2 | 99.7 | 11.20 | 87.6 | 8.94 | 0.000320 | 0.000030 | unchanged |
+| set-nx-existing | valkey | 85822 | 85647–86092 | 120.8 | 99.3 | 11.60 | 86.2 | 8.29 | 0.000140 | 0.000060 | unchanged |
+| set-xx-existing | rillcache | 98291 | 97533–99359 | 95.9 | 100.2 | 10.20 | 91.0 | 5.82 | 0.000010 | 0.000040 | unchanged |
+| set-xx-existing | redis | 88281 | 88010–88388 | 117.8 | 99.8 | 11.30 | 85.8 | 8.94 | 0.000390 | 0.000050 | unchanged |
+| set-xx-existing | valkey | 85481 | 84987–85521 | 122.9 | 100.2 | 11.80 | 86.3 | 8.28 | 0.000080 | 0.000050 | unchanged |
 
 | Idle server | Observation s | CPU % | RSS MiB | Lifetime peak MiB | Voluntary switches/s | Thread endpoints |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| rillcache | 1.000 | 0.000 | 5.11 | 5.11 | 395.9 | unchanged |
-| redis | 1.000 | 0.000 | 8.72 | 8.72 | 10.0 | unchanged |
-| valkey | 1.000 | 0.000 | 8.11 | 8.11 | 10.0 | unchanged |
+| rillcache | 1.000 | 0.000 | 4.66 | 4.66 | 99.0 | unchanged |
+| redis | 1.000 | 0.000 | 8.73 | 8.73 | 10.0 | unchanged |
+| valkey | 1.001 | 0.000 | 8.12 | 8.12 | 10.0 | unchanged |
 
 </details>
 
@@ -101,27 +102,27 @@ Requests/workload/run: 1000000; clients: 8; pipeline: 16; cyclic keys: 1024; val
 
 | Workload | Server | Median cmd/s | Min–max cmd/s | Batch p99 µs | CPU % | CPU µs/cmd | System % of CPU | RSS MiB | Voluntary switches/cmd | Involuntary/cmd | Thread endpoints |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| ping | rillcache | 2177772 | 1753792–2606808 | 72.0 | 121.9 | 0.56 | 92.9 | 6.06 | 0.003636 | 0.002044 | unchanged |
-| ping | redis | 1451854 | 1439476–1452599 | 120.7 | 99.3 | 0.69 | 73.5 | 8.91 | 0.000004 | 0.000003 | unchanged |
-| ping | valkey | 1384859 | 1255299–1420263 | 128.5 | 98.3 | 0.71 | 72.5 | 8.43 | 0.000008 | 0.000004 | unchanged |
-| set | rillcache | 1526766 | 1521611–1538922 | 97.4 | 99.2 | 0.65 | 69.2 | 6.12 | 0.000223 | 0.000006 | unchanged |
-| set | redis | 1158289 | 1154978–1162620 | 158.7 | 99.6 | 0.86 | 55.8 | 8.91 | 0.000003 | 0.000005 | unchanged |
-| set | valkey | 1030536 | 1014929–1032850 | 181.5 | 99.1 | 0.96 | 51.5 | 8.41 | 0.000006 | 0.000006 | unchanged |
-| get | rillcache | 1679927 | 1668477–1728698 | 87.8 | 100.2 | 0.60 | 83.3 | 6.12 | 0.000232 | 0.000003 | unchanged |
-| get | redis | 1265685 | 1263524–1266457 | 142.4 | 98.7 | 0.78 | 62.8 | 8.92 | 0.000003 | 0.000004 | unchanged |
-| get | valkey | 1167949 | 1117242–1183969 | 157.7 | 100.6 | 0.86 | 62.6 | 8.43 | 0.000017 | 0.000005 | unchanged |
-| set-nx-existing | rillcache | 1606444 | 1546754–1625171 | 92.3 | 100.5 | 0.63 | 77.8 | 6.12 | 0.000200 | 0.000005 | unchanged |
-| set-nx-existing | redis | 1196023 | 1166689–1196668 | 153.2 | 100.4 | 0.85 | 58.8 | 8.92 | 0.000005 | 0.000005 | unchanged |
-| set-nx-existing | valkey | 1130510 | 1101672–1168035 | 179.5 | 100.4 | 0.89 | 57.3 | 8.43 | 0.000003 | 0.000003 | unchanged |
-| set-xx-existing | rillcache | 1523201 | 1521580–1528169 | 97.7 | 99.0 | 0.65 | 69.7 | 6.12 | 0.000197 | 0.000005 | unchanged |
-| set-xx-existing | redis | 1121192 | 1110540–1126502 | 165.6 | 99.9 | 0.90 | 58.9 | 8.92 | 0.000002 | 0.000004 | unchanged |
-| set-xx-existing | valkey | 1008007 | 1005118–1009837 | 186.0 | 99.9 | 0.99 | 51.5 | 8.43 | 0.000003 | 0.000007 | unchanged |
+| ping | rillcache | 1572733 | 1560758–1574163 | 95.8 | 99.1 | 0.63 | 93.7 | 5.89 | 0.000001 | 0.000009 | unchanged |
+| ping | redis | 1163308 | 1126148–1170292 | 153.5 | 100.6 | 0.87 | 70.1 | 8.98 | 0.000004 | 0.000004 | unchanged |
+| ping | valkey | 1109782 | 1107894–1110020 | 164.0 | 100.8 | 0.91 | 68.1 | 8.45 | 0.000006 | 0.000003 | unchanged |
+| set | rillcache | 1191438 | 1187902–1195815 | 125.4 | 98.9 | 0.83 | 69.9 | 5.89 | 0.000001 | 0.000011 | unchanged |
+| set | redis | 878023 | 864589–879669 | 217.8 | 100.3 | 1.14 | 55.3 | 9.00 | 0.000004 | 0.000004 | unchanged |
+| set | valkey | 769265 | 765859–772194 | 252.9 | 99.6 | 1.30 | 47.7 | 8.45 | 0.000014 | 0.000006 | unchanged |
+| get | rillcache | 1379877 | 1369490–1383848 | 109.4 | 100.7 | 0.73 | 78.1 | 5.89 | 0.000001 | 0.000004 | unchanged |
+| get | redis | 977880 | 954376–980246 | 190.7 | 99.9 | 1.03 | 61.5 | 9.01 | 0.000002 | 0.000005 | unchanged |
+| get | valkey | 901855 | 899945–902504 | 209.5 | 100.1 | 1.11 | 61.3 | 8.46 | 0.000024 | 0.000004 | unchanged |
+| set-nx-existing | rillcache | 1317039 | 1293057–1329966 | 115.1 | 99.5 | 0.75 | 72.0 | 5.89 | 0.000001 | 0.000005 | unchanged |
+| set-nx-existing | redis | 906670 | 906307–910156 | 208.9 | 99.7 | 1.10 | 61.5 | 9.02 | 0.000005 | 0.000006 | unchanged |
+| set-nx-existing | valkey | 873669 | 872740–874896 | 218.0 | 100.4 | 1.15 | 53.9 | 8.45 | 0.000010 | 0.000003 | unchanged |
+| set-xx-existing | rillcache | 1174941 | 1160545–1191784 | 129.6 | 99.9 | 0.85 | 67.1 | 5.89 | 0.000001 | 0.000009 | unchanged |
+| set-xx-existing | redis | 849802 | 846296–850345 | 225.5 | 100.2 | 1.18 | 53.4 | 8.98 | 0.000005 | 0.000005 | unchanged |
+| set-xx-existing | valkey | 748586 | 728411–749017 | 260.0 | 100.3 | 1.34 | 41.8 | 8.45 | 0.000013 | 0.000005 | unchanged |
 
 | Idle server | Observation s | CPU % | RSS MiB | Lifetime peak MiB | Voluntary switches/s | Thread endpoints |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| rillcache | 1.000 | 0.000 | 4.84 | 4.84 | 395.9 | unchanged |
-| redis | 1.000 | 0.000 | 8.66 | 8.66 | 10.0 | unchanged |
-| valkey | 1.000 | 0.000 | 8.23 | 8.23 | 10.0 | unchanged |
+| rillcache | 1.000 | 0.000 | 4.80 | 4.80 | 99.0 | unchanged |
+| redis | 1.000 | 0.000 | 8.76 | 8.76 | 10.0 | unchanged |
+| valkey | 1.000 | 0.000 | 8.26 | 8.26 | 10.0 | unchanged |
 
 </details>
 
@@ -132,27 +133,27 @@ Requests/workload/run: 100000; clients: 8; pipeline: 1; cyclic keys: 1024; value
 
 | Workload | Server | Median cmd/s | Min–max cmd/s | Batch p99 µs | CPU % | CPU µs/cmd | System % of CPU | RSS MiB | Voluntary switches/cmd | Involuntary/cmd | Thread endpoints |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| ping | rillcache | 122995 | 122930–123399 | 75.1 | 99.9 | 8.10 | 95.1 | 5.81 | 0.000080 | 0.000040 | unchanged |
-| ping | redis | 114307 | 111939–114587 | 87.9 | 99.6 | 8.70 | 90.8 | 8.83 | 0.000140 | 0.000030 | unchanged |
-| ping | valkey | 113568 | 113137–113739 | 88.5 | 99.9 | 8.80 | 88.6 | 8.16 | 0.000080 | 0.000040 | unchanged |
-| set | rillcache | 119105 | 118065–121323 | 77.4 | 99.2 | 8.30 | 93.9 | 5.81 | 0.000290 | 0.000050 | unchanged |
-| set | redis | 110504 | 108196–111355 | 91.3 | 99.5 | 9.00 | 89.1 | 8.85 | 0.000260 | 0.000050 | unchanged |
-| set | valkey | 107512 | 104003–107851 | 95.2 | 100.3 | 9.40 | 87.1 | 8.17 | 0.000090 | 0.000040 | unchanged |
-| get | rillcache | 120796 | 120515–122011 | 76.5 | 100.0 | 8.30 | 95.2 | 5.81 | 0.000480 | 0.000040 | unchanged |
-| get | redis | 111981 | 111864–112234 | 89.8 | 99.9 | 8.90 | 90.0 | 8.87 | 0.000100 | 0.000030 | unchanged |
-| get | valkey | 109115 | 105508–109345 | 95.8 | 100.6 | 9.20 | 87.0 | 8.17 | 0.000170 | 0.000050 | unchanged |
-| set-nx-existing | rillcache | 121203 | 119313–121392 | 76.0 | 100.6 | 8.30 | 92.9 | 5.81 | 0.000410 | 0.000030 | unchanged |
-| set-nx-existing | redis | 110971 | 105874–111530 | 91.0 | 99.8 | 9.00 | 88.9 | 8.87 | 0.000090 | 0.000040 | unchanged |
-| set-nx-existing | valkey | 108921 | 108591–109425 | 93.1 | 100.2 | 9.20 | 87.0 | 8.17 | 0.000190 | 0.000040 | unchanged |
-| set-xx-existing | rillcache | 119292 | 118464–119669 | 77.1 | 100.2 | 8.40 | 91.8 | 5.81 | 0.000420 | 0.000050 | unchanged |
-| set-xx-existing | redis | 109980 | 109794–110007 | 91.8 | 101.0 | 9.20 | 89.1 | 8.84 | 0.000100 | 0.000030 | unchanged |
-| set-xx-existing | valkey | 107022 | 106642–107548 | 97.4 | 100.0 | 9.30 | 86.2 | 8.16 | 0.000170 | 0.000050 | unchanged |
+| ping | rillcache | 99686 | 99547–102348 | 93.5 | 99.3 | 9.90 | 96.0 | 5.94 | 0.000010 | 0.000030 | unchanged |
+| ping | redis | 91579 | 91317–91802 | 111.4 | 99.8 | 10.90 | 90.8 | 8.92 | 0.000120 | 0.000050 | unchanged |
+| ping | valkey | 89954 | 89867–90020 | 113.7 | 100.6 | 11.20 | 90.2 | 8.27 | 0.000180 | 0.000040 | unchanged |
+| set | rillcache | 96714 | 95126–98974 | 96.5 | 99.9 | 10.30 | 92.4 | 5.94 | 0.000010 | 0.000060 | unchanged |
+| set | redis | 88206 | 87900–88252 | 118.1 | 99.7 | 11.30 | 87.6 | 8.93 | 0.000070 | 0.000040 | unchanged |
+| set | valkey | 85653 | 85646–85751 | 122.1 | 100.2 | 11.70 | 83.8 | 8.30 | 0.000050 | 0.000050 | unchanged |
+| get | rillcache | 97680 | 97630–99576 | 95.0 | 100.5 | 10.20 | 93.2 | 5.94 | 0.000020 | 0.000040 | unchanged |
+| get | redis | 89194 | 89075–89412 | 115.4 | 99.7 | 11.20 | 90.2 | 8.92 | 0.000090 | 0.000060 | unchanged |
+| get | valkey | 87207 | 86054–87282 | 119.4 | 99.8 | 11.50 | 87.0 | 8.28 | 0.000090 | 0.000030 | unchanged |
+| set-nx-existing | rillcache | 96665 | 96474–97945 | 96.5 | 99.9 | 10.30 | 92.3 | 5.94 | 0.000010 | 0.000030 | unchanged |
+| set-nx-existing | redis | 88528 | 88484–89010 | 116.7 | 99.1 | 11.20 | 89.3 | 8.92 | 0.000080 | 0.000030 | unchanged |
+| set-nx-existing | valkey | 86691 | 86665–87033 | 120.5 | 100.5 | 11.60 | 85.3 | 8.28 | 0.000020 | 0.000030 | unchanged |
+| set-xx-existing | rillcache | 95998 | 95212–97488 | 97.4 | 99.8 | 10.40 | 91.3 | 5.94 | 0.000010 | 0.000040 | unchanged |
+| set-xx-existing | redis | 87744 | 87575–87931 | 118.8 | 99.8 | 11.40 | 86.7 | 8.92 | 0.000070 | 0.000040 | unchanged |
+| set-xx-existing | valkey | 85414 | 84961–85457 | 122.6 | 100.2 | 11.80 | 87.3 | 8.27 | 0.000090 | 0.000030 | unchanged |
 
 | Idle server | Observation s | CPU % | RSS MiB | Lifetime peak MiB | Voluntary switches/s | Thread endpoints |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| rillcache | 1.000 | 0.000 | 4.77 | 4.77 | 99.0 | unchanged |
-| redis | 1.000 | 0.000 | 8.63 | 8.63 | 10.0 | unchanged |
-| valkey | 1.000 | 0.000 | 7.99 | 7.99 | 10.0 | unchanged |
+| rillcache | 1.000 | 0.000 | 4.80 | 4.80 | 99.0 | unchanged |
+| redis | 1.000 | 0.000 | 8.71 | 8.71 | 10.0 | unchanged |
+| valkey | 1.001 | 0.000 | 8.11 | 8.11 | 10.0 | unchanged |
 
 </details>
 
@@ -163,27 +164,27 @@ Requests/workload/run: 1000000; clients: 8; pipeline: 16; cyclic keys: 1024; val
 
 | Workload | Server | Median cmd/s | Min–max cmd/s | Batch p99 µs | CPU % | CPU µs/cmd | System % of CPU | RSS MiB | Voluntary switches/cmd | Involuntary/cmd | Thread endpoints |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| ping | rillcache | 1943000 | 1912739–1950715 | 76.0 | 99.4 | 0.51 | 94.1 | 5.86 | 0.000011 | 0.000002 | unchanged |
-| ping | redis | 1418437 | 1352528–1447142 | 123.2 | 99.8 | 0.69 | 72.5 | 8.80 | 0.000008 | 0.000003 | unchanged |
-| ping | valkey | 1405046 | 1279479–1415436 | 125.0 | 99.8 | 0.71 | 73.2 | 8.33 | 0.000012 | 0.000003 | unchanged |
-| set | rillcache | 1509416 | 1484553–1545250 | 97.3 | 99.6 | 0.66 | 72.3 | 5.86 | 0.000017 | 0.000003 | unchanged |
-| set | redis | 1132680 | 1058948–1158632 | 162.9 | 99.6 | 0.88 | 58.9 | 8.79 | 0.000006 | 0.000004 | unchanged |
-| set | valkey | 1036223 | 978986–1036581 | 181.0 | 99.5 | 0.96 | 50.0 | 8.32 | 0.000006 | 0.000003 | unchanged |
-| get | rillcache | 1706589 | 1699995–1709587 | 86.6 | 100.7 | 0.59 | 81.4 | 5.86 | 0.000017 | 0.000003 | unchanged |
-| get | redis | 1257516 | 1229138–1268100 | 145.6 | 100.1 | 0.81 | 63.3 | 8.80 | 0.000005 | 0.000003 | unchanged |
-| get | valkey | 1173591 | 1099425–1177316 | 155.5 | 100.0 | 0.86 | 60.0 | 8.33 | 0.000006 | 0.000006 | unchanged |
-| set-nx-existing | rillcache | 1598664 | 1551344–1613260 | 93.2 | 99.3 | 0.62 | 78.1 | 5.86 | 0.000002 | 0.000004 | unchanged |
-| set-nx-existing | redis | 1181899 | 1119423–1198706 | 155.8 | 99.6 | 0.85 | 63.9 | 8.80 | 0.000005 | 0.000004 | unchanged |
-| set-nx-existing | valkey | 1166298 | 1157381–1174632 | 157.8 | 99.8 | 0.85 | 58.8 | 8.33 | 0.000003 | 0.000002 | unchanged |
-| set-xx-existing | rillcache | 1495616 | 1444760–1518132 | 97.6 | 100.2 | 0.67 | 68.7 | 5.86 | 0.000028 | 0.000004 | unchanged |
-| set-xx-existing | redis | 1107110 | 1029505–1125104 | 167.0 | 99.8 | 0.90 | 55.6 | 8.80 | 0.000002 | 0.000004 | unchanged |
-| set-xx-existing | valkey | 1001246 | 999950–1004224 | 188.0 | 100.0 | 1.00 | 52.5 | 8.33 | 0.000004 | 0.000005 | unchanged |
+| ping | rillcache | 1589294 | 1585371–1589719 | 94.1 | 100.1 | 0.63 | 93.7 | 5.96 | 0.000001 | 0.000001 | unchanged |
+| ping | redis | 1164166 | 1159109–1165294 | 153.3 | 100.1 | 0.86 | 72.1 | 9.02 | 0.000006 | 0.000003 | unchanged |
+| ping | valkey | 1109190 | 1102334–1110755 | 163.2 | 99.2 | 0.90 | 69.7 | 8.32 | 0.000005 | 0.000003 | unchanged |
+| set | rillcache | 1187145 | 1176245–1202787 | 124.5 | 100.0 | 0.85 | 70.6 | 5.96 | 0.000001 | 0.000006 | unchanged |
+| set | redis | 879861 | 879464–882051 | 217.0 | 99.4 | 1.13 | 57.5 | 9.04 | 0.000016 | 0.000003 | unchanged |
+| set | valkey | 760977 | 758824–761235 | 254.8 | 99.7 | 1.31 | 45.8 | 8.34 | 0.000017 | 0.000003 | unchanged |
+| get | rillcache | 1357093 | 1347328–1398341 | 110.3 | 99.3 | 0.73 | 78.1 | 5.96 | 0.000001 | 0.000001 | unchanged |
+| get | redis | 980689 | 954635–980936 | 190.1 | 99.0 | 1.01 | 59.4 | 9.04 | 0.000010 | 0.000005 | unchanged |
+| get | valkey | 903964 | 902225–905738 | 208.6 | 100.1 | 1.11 | 59.5 | 8.34 | 0.000011 | 0.000001 | unchanged |
+| set-nx-existing | rillcache | 1296556 | 1279855–1327665 | 114.6 | 100.9 | 0.77 | 72.4 | 5.96 | 0.000001 | 0.000002 | unchanged |
+| set-nx-existing | redis | 908705 | 887864–910717 | 207.9 | 99.9 | 1.10 | 60.9 | 9.05 | 0.000002 | 0.000003 | unchanged |
+| set-nx-existing | valkey | 872458 | 869449–875338 | 218.2 | 100.0 | 1.15 | 53.9 | 8.32 | 0.000012 | 0.000003 | unchanged |
+| set-xx-existing | rillcache | 1179200 | 1168121–1180719 | 126.1 | 100.4 | 0.86 | 67.4 | 5.96 | 0.000001 | 0.000004 | unchanged |
+| set-xx-existing | redis | 850861 | 848320–851779 | 224.4 | 100.4 | 1.18 | 51.3 | 9.02 | 0.000004 | 0.000003 | unchanged |
+| set-xx-existing | valkey | 739572 | 739445–739717 | 262.7 | 100.6 | 1.36 | 53.7 | 8.32 | 0.000009 | 0.000002 | unchanged |
 
 | Idle server | Observation s | CPU % | RSS MiB | Lifetime peak MiB | Voluntary switches/s | Thread endpoints |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| rillcache | 1.000 | 0.000 | 4.82 | 4.82 | 99.0 | unchanged |
-| redis | 1.000 | 0.000 | 8.54 | 8.54 | 10.0 | unchanged |
-| valkey | 1.000 | 0.000 | 8.14 | 8.14 | 10.0 | unchanged |
+| rillcache | 1.000 | 0.000 | 4.92 | 4.92 | 99.0 | unchanged |
+| redis | 1.000 | 0.000 | 8.80 | 8.80 | 10.0 | unchanged |
+| valkey | 1.000 | 0.000 | 8.15 | 8.15 | 10.0 | unchanged |
 
 </details>
 
@@ -193,11 +194,11 @@ Requests/workload/run: 1000000; clients: 8; pipeline: 16; cyclic keys: 1024; val
 
 | Workload | 1 worker median cmd/s | 1 worker min–max | 4 workers median cmd/s | 4 workers min–max | 1 worker batch p99 µs | 4 workers batch p99 µs |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| ping | 1540801 | 1488205–1595865 | 1649785 | 1335234–2068128 | 1012.9 | 1055.0 |
-| set | 1281104 | 1143591–1334995 | 53990 | 53451–54442 | 1010.4 | 3831.0 |
-| get | 1413038 | 1406743–1440641 | 53440 | 53391–53980 | 1012.6 | 3355.3 |
-| set-nx-existing | 1375489 | 1352576–1395144 | 55245 | 53910–56782 | 1015.8 | 3295.4 |
-| set-xx-existing | 1310209 | 1228370–1325165 | 54531 | 53708–55429 | 1019.9 | 3296.8 |
+| ping | 1321320 | 1124090–1382228 | 1773467 | 1382316–2111296 | 955.9 | 1068.8 |
+| set | 973883 | 917774–1036561 | 49722 | 49039–50062 | 965.7 | 4379.6 |
+| get | 1200768 | 1181329–1221614 | 49319 | 49038–50781 | 957.8 | 4153.5 |
+| set-nx-existing | 1125055 | 1101214–1149942 | 49670 | 49538–50187 | 945.5 | 4346.5 |
+| set-xx-existing | 1037940 | 1027496–1063003 | 49432 | 48831–50365 | 945.1 | 4648.7 |
 
 ### Interpretation limits
 
