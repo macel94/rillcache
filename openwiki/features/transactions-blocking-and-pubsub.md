@@ -4,8 +4,8 @@ title: Transactions, blocking and pub/sub
 description: How MULTI/EXEC and WATCH stay connection-local and atomic, how blocked clients are polled, and how pub/sub and keyspace notifications deliver at-most-once messages.
 tags: [transactions, watch, blocking, pubsub, notifications, delivery]
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T15:32:39.597Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 sources:
   - id: openwiki-source-25016b93f9cf5f97ffcc38b0
     resource: repo://docs/collections.md

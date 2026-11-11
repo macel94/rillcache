@@ -4,8 +4,8 @@ title: Data model, expiration and memory accounting
 description: Rillcache's per-key Entry, absolute key and field expiry, lazy and maintenance reaping, payload accounting, WATCH versions and bounded eviction policies.
 tags: [storage, expiry, ttl, accounting, eviction, watch]
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T15:32:39.597Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 sources:
   - id: openwiki-source-25016b93f9cf5f97ffcc38b0
     resource: repo://docs/collections.md

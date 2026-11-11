@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:457fc45aef08a6050fe57ce9f7a32e0f3219eafd6592fdb079dd48b28d00506e",
+  "pageVersion": "sha256:6c1c074bacbe66c74ac6ca26faa8479d8a432728fc995e14e9a12fee2492ab98",
   "claims": [
     {
       "id": "claim_8336ce8b64a94ca699d56ed7df75796f",
@@ -46,15 +46,19 @@
     },
     {
       "id": "claim_bdb33065cc8747c1baf58ef7d105cffb",
-      "statement": "A stream stores ordered entries, last-generated and retention counters, and consumer groups with consumers and pending references; deletion retains pending references and pending state is not restored by the journal.",
+      "statement": "A stream stores ordered entries, last-generated and retention counters, and consumer groups with consumers and pending references; deletion retains pending references, and journal replay restores consumer objects and PEL owners, delivery counts and timestamps, including deleted-id tombstones, while consumer activity time is not preserved.",
       "evidence": [
+        {
+          "resource": "repo://docs/persistence.md#L344-L364",
+          "version": "repo-lines-v1:sha256:e35836004aa3a25dcdfbf6d8d278840deb269f273510283fe13e35e72e37b2d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3ZGEwMDI1MDlhYjRiNTYyMDc3NTlmMDYyYzdjMWE2OWIyMTgxMjAwOTA0Y2NlZjg1NTg3N2YwODNlYzJmODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NzU5NzNhNTQ2YTNkYWE2MDQzNGZkYWM1ZWI5NTMyMTE0MjE4YTdhOWI3ZWZlYTYxZDY0Mjk0ZWJlZmRhYjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmMWQ4MjMwYmYwOWE4NjllOGNkYjhiY2UwZTEwZjBlZWY4ZmZhNzNkZjNjNzI0ZjExMzA0ZWNlOTU5ZDExMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZjI5MjA3NmUxOWYzNmE0YjBkOGFmZTFiZmRjNDRhODVkMDdkMDJkZWMyMjY0OTBhN2M3NjNkMGNkYTQ1N2MifQ"
+        },
         {
           "resource": "repo://docs/streams.md#L1-L20",
           "version": "repo-lines-v1:sha256:2cb74a192a0f79a45c42c7a689749d9768d5599f97f278f16b145d65ce3a3129:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyZjMwOWQyN2NhZDMxNmZmMWI4NmRkYmYwN2I2N2YyYjJkZGJlZWRmOWVhM2I4MWI5Mzg4OGQ2ZDBmZWE1YmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkMTA0YmVjMTkxODc5NzdkZGRkZGJlOGE2YmQxMGU5YmM5NGJjNmY2YzlhZTgyODRlZTg4MDRjMzUyNDZjODkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJjMjIxY2U1ZDlmZGYyZWNjNGIyMjI2MDIzOGYyZTE2NjlmNTdlMGIxNWY1OWQ1ZjY2ZTAwODQ5ZGQ5MTJhZWMifQ"
         },
         {
-          "resource": "repo://docs/streams.md#L87-L109",
-          "version": "repo-lines-v1:sha256:47cb12d86d4569d5e3cd7f8d17c39a908bb3858634dc84e9bf2ac07106a4b02a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmNjZkYWFmZmE3NTg5ZGM2YzI1ZTQ0OWFjNDk1N2I0MTJkNzkyMjc2OWMzMWQ3MjIyYzZmMGIyODllZWJkNjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3NGViNDg1MDBiZjRkYjUyZDFkZWU3OWM1OTUwMzIyODMyYzJlOWRiY2ExMzdhZTQ3ODE2NjRmMmUzYTIyYmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkMWNjNmRkZTVjMWFhYjJjYmNkMzQ3MzA2YzczYmY5Zjc0YTBhMzViZDA4MWVjYmQyZjZkNTgxOTgxMTVmM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI2NmJlZWQxOTIzYjM1MDMwYjM2ZjZkYTc3ZjE5ODYyY2QxNWVlNmVlODJmYzNlMmMyMzZhMmRjZTExOWE0ZDMifQ"
+          "resource": "repo://docs/streams.md#L82-L111",
+          "version": "repo-lines-v1:sha256:4772bb3134f93da66d584121246b9899a129168b7856cf99afb4e2ae5a0127ed:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjOTA5OTU3N2Y0YTFiYjliODM5OTFlZWRiMTZiMjUzNmRiMDE3MTBkMzUxY2NlZmUzZWU1YjMzZGFmY2ZlMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiZTczNjJiMTlhZmI4ZDNlMDliNDQyMmVlZWE2NzUyZmFkZWQyOTdiNTk2NDk3MjQwMzI4ZDA4NzliYjkxYTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjZWRjMzcxOTJhNWM0OGYzM2RmMDJhNjA5OTM2YjQ1ZTUzY2I3OTg0ZTYzYTI2Y2FmMjFlNzdmYWQ1NjQyM2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFiNjBmNjcyZWQ3NjI1ZWZhOTJiODcwMzE0YTE4NTc0YTZiNjg2NzQ0YjFlYjY5MmQ5ODM3ODQxZGNkYmY4YjgifQ"
         },
         {
           "resource": "repo://src/engine/data.rs#L181-L201",
@@ -113,7 +117,7 @@
       "statement": "Store commands are routed through the strings, keyspace, collections, streams, pubsub and admin family modules, while transaction, blocking, pubsub-session and client state remain in the session layer.",
       "evidence": [
         {
-          "resource": "repo://src/engine.rs#L1217-L1245",
+          "resource": "repo://src/engine.rs#L1222-L1250",
           "version": "repo-lines-v1:sha256:ca62fea4b8e5f2016d9c1775597b89ad90620727e5c5b71b9df39380909cfe8f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlZWM3N2EwMjk3YjViYzNjYTliNGNmMGFiODFhZTg1NTQ2MDE0ODNhYmNiY2Y0MTE4NmNmY2U5ZjdjOTc2NTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxYWNkODcyNDU5YmUyMmJiNWIxMzMyNjM5ZTFhNjU4NjUzZWRlOGZmNzlhZDRkYTk0ZTU2ZGM4YWZmNzVmMmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmOTQ1MGYyOTlhMTVhMjUyYjk3NDc1Yzg2OTUwNjIxMGY2Y2ZhMWVlNDBlN2ZjYWJkMTljNDIwYjdiODJmNzMifQ"
         },
         {
@@ -124,7 +128,7 @@
     }
   ],
   "verification": {
-    "by": "openwiki/0.7.3",
-    "at": "2026-11-02T16:04:12.575Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-11T08:27:05.780Z"
   }
 }

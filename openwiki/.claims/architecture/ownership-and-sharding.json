@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:dfd802f72ea6ee32e50fc6f763d7b163b8a60dcb79ed1a584299b430f312f4a8",
+  "pageVersion": "sha256:30c9b6e9e6dfd31498e96fc6cb44420fb34f516c2a6e48bfdd38c6d5a5793f5e",
   "claims": [
     {
       "id": "claim_517870a78cae42dd9fc242cb065cc05f",
       "statement": "ShardExecutor keeps Data in a RefCell and is deliberately !Send and !Sync; the default local path installs it on the socket thread, while journal, ACL-file and audit configurations use the external compatibility owner instead.",
       "evidence": [
         {
-          "resource": "repo://src/engine.rs#L275-L292",
-          "version": "repo-lines-v1:sha256:a97ff9e70d962c60dc5357c726ce72b3cb22715c2959bb497adfab9f45e6f54b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlODgzYTFlYTg2ODVmM2RiYjIzYzFlYzJiMTAwZTEzNWEzMzQ0NTliNWUyNjgxMDE3OWUzNWI1YTA1ZTgyNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4NDk3YWIzMTAxMjcxM2NkZDVmNzBiNDczZGVmNzdkMTdlYjBlYzBjNzgyMDFmYzJmNDcyYmVkNjZjOGVkNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4ZTYwZWI1YmQ0NjZmZTYxNjdlMTgyOWFmYmRmZTcyNDU2NGYwNTM3NmZiMmM0ZjJkMTdkZjNmMWJhM2JjZjkifQ"
+          "resource": "repo://src/engine.rs#L284-L303",
+          "version": "repo-lines-v1:sha256:7b7c5dd92fea70fc4c6143c3d6d2c957665f001d3d1c3a5d3d4ce5b5c1d7963a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlODgzYTFlYTg2ODVmM2RiYjIzYzFlYzJiMTAwZTEzNWEzMzQ0NTliNWUyNjgxMDE3OWUzNWI1YTA1ZTgyNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4NDk3YWIzMTAxMjcxM2NkZDVmNzBiNDczZGVmNzdkMTdlYjBlYzBjNzgyMDFmYzJmNDcyYmVkNjZjOGVkNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4ZTYwZWI1YmQ0NjZmZTYxNjdlMTgyOWFmYmRmZTcyNDU2NGYwNTM3NmZiMmM0ZjJkMTdkZjNmMWJhM2JjZjkifQ"
         },
         {
-          "resource": "repo://src/engine/bridge.rs#L232-L252",
+          "resource": "repo://src/engine/bridge.rs#L233-L253",
           "version": "repo-lines-v1:sha256:992ad1cf38c3cfde0a7426852236b8e02af3d2333d15ca4c1e012ad81e74c96b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxZWUzNTIxNGVmYmFiMDI4ZWJhYWQyODZhNWI3N2IyYWIzNTMzNTMyMjJlYTNmYTE4OGY0Yjg2YmQ3Mjk2OTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4YjhkNGVlY2FmNGQ2NzA3NWRlZDRiMzZhNjA1ZDhiZTU4OTBjNWVlZjQ3M2MzNGMxOWI1NWQxNmMyM2UyYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5OWJkZWZlZWFjYTYzNDBlMDI5MGRjODZlODg5Yzg5ZDVlMTg5YWE1YmE0NGI1ODViM2I3MDczNGY0YTYyZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhY2M5ZDhkMWMxNTM1OTYwMzNhZWU1YjFlNWFkOTZjODJiYmU0MzAxMmViYmY4ZjQyZGU4MDQxMzgxZmE1NjAifQ"
         }
       ]
@@ -164,7 +164,7 @@
     }
   ],
   "verification": {
-    "by": "openwiki/0.7.3",
-    "at": "2026-11-02T15:32:39.597Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-11T08:27:05.780Z"
   }
 }

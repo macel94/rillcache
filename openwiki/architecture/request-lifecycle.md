@@ -4,8 +4,8 @@ title: Request lifecycle
 description: Trace a Rillcache command from buffered socket bytes through bounded RESP decoding, session policy, owner execution, journal capture and reply writeback.
 tags: [request-path, resp, dispatch, journal, session, replies]
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T15:32:39.597Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 sources:
   - id: openwiki-source-ccfe8cc4504f25c304787a46
     resource: repo://src/engine.rs

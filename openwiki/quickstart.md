@@ -20,10 +20,10 @@ sources:
     resource: repo://docs/production-readiness-gaps.md
   - id: openwiki-source-dfa02c19f5d8e4215d36f9c0
     resource: repo://src/server.rs
-generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
+generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T16:04:12.575Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 ---
 
 # Rillcache wiki quickstart
@@ -62,8 +62,11 @@ details against source and tests.
   blocking rules, then the engine executes one command turn. Journal and
   notification effects commit before the turn returns.
 - **Persistence:** an optional private RESP journal with `always`/`everysec`/`no`
-  fsync. Replay truncates an incomplete tail and fails on mid-file corruption.
-  Rewrite is synchronous. Stream pending state is volatile.
+  fsync, CRC32 checksums, optional HMAC-SHA256 authentication, a local ownership
+  lock, cooperative rewrite and offline backup/restore. Replay verifies complete
+  groups, truncates only a torn tail and fails on committed corruption. Stream
+  consumers and PEL owners/counts/timestamps survive restart; consumer activity
+  time does not.
 - **Protocol:** RESP2 and a bounded RESP3 subset, plus Redis inline commands.
   Only database 0 exists.
 - **Security:** password or ACL-file auth, per-connection and optional per-source
@@ -85,6 +88,11 @@ For persistence:
 
 ```sh
 rillcache --appendonly yes --dir /data --appendfsync always
+
+# Optional journal authentication and an offline backup of a stopped server
+rillcache --appendonly yes --dir /data \
+  --aof-hmac-key-file /run/secrets/rillcache-aof.key
+rillcache-backup create --dir /data --output /backups/rillcache.rcb
 ```
 
 For TLS, pass a distinct listener and PEM files:

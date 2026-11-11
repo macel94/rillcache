@@ -10,6 +10,8 @@ sources:
     resource: repo://docs/geospatial.md
   - id: openwiki-source-f331fcc6e1b741a96877fa78
     resource: repo://docs/hyperloglog.md
+  - id: openwiki-source-0117ac68a72ed7ce495ae997
+    resource: repo://docs/persistence.md
   - id: openwiki-source-9f5af03ed107c6f63fe7cc85
     resource: repo://docs/streams.md
   - id: openwiki-source-4a2d40aaed8719ef5ea07197
@@ -30,10 +32,10 @@ sources:
     resource: repo://src/engine/hll.rs
   - id: openwiki-source-8202f4c5abca167cf478c403
     resource: repo://src/engine/string_algorithms.rs
-generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
+generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T16:04:12.575Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 ---
 
 # Data types and command families
@@ -124,11 +126,14 @@ and `XINFO`. Stream IDs are unsigned 64-bit millisecond/sequence pairs. `XDEL`
 removes a message but deliberately leaves pending references, because deletion is
 not acknowledgement.
 
-Pending owners, delivery counts and consumer activity are process-local. The
-journal rebuilds entries and group cursors, not the full PEL. Treat pending state
-as volatile across restart and do not use this subset as a durable work queue.
-`entries-read` is reported as null, `nacked-count` as zero and `inactive` as the
-same process-clock value as idle.
+Stream entries, last IDs, group cursors, consumer objects and pending-entry owners,
+delivery counts and timestamps are restored by journal replay. A pending id whose
+entry was deleted or trimmed is retained through placeholder `XADD`/`XCLAIM`/`XDEL`
+records, so `XPENDING` still reports it. Consumer activity time is not preserved:
+`inactive` reflects replay time. `XCLAIM` of a tombstone removes it from the PEL as
+for any missing entry. `entries-read` is reported as null and `nacked-count` as
+zero. Treat this subset as a bounded queue with those documented restart limits,
+not as a fully durable work queue.
 
 ## Geospatial values
 
