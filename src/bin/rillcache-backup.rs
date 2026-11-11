@@ -12,7 +12,9 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rillcache::engine::{Auth, FsyncPolicy, JournalAuth, Store, read_auth_key_file};
+use rillcache::engine::{
+    Auth, FsyncPolicy, JournalAuth, Store, read_auth_key_file, read_auth_keyring_file,
+};
 use rillcache::protocol::Limits;
 
 const MAGIC: &[u8] = b"RILLCACHE-AOF-BACKUP-V1\n";
@@ -20,7 +22,7 @@ const CHUNK: usize = 1024 * 1024;
 const DEFAULT_MAX_DATA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
-const HELP: &str = "rillcache-backup — offline AOF backup and restore\n\nUsage:\n  rillcache-backup create --dir DIR [--filename NAME] --output FILE [LIMITS]\n  rillcache-backup verify --input FILE [LIMITS]\n  rillcache-backup restore --input FILE --dir DIR [--filename NAME] [LIMITS]\n\nLIMITS: --max-data-bytes N --max-frame-bytes N --max-bulk-bytes N --max-arguments N\n       --aof-hmac-key-file PATH (authenticated journals)\n\nThe versioned archive stores a RESP AOF byte stream with its length and CRC32.\n`create` requires the source server to be stopped (the AOF lock enforces this).\n`restore` validates the archive and replays it in a temporary directory, then\ninstalls it only if the destination journal does not already exist. This is an\noffline, quiescent backup; it is not online backup or point-in-time recovery.\nCRC32 detects accidental corruption, not malicious modification.\n";
+const HELP: &str = "rillcache-backup — offline AOF backup and restore\n\nUsage:\n  rillcache-backup create --dir DIR [--filename NAME] --output FILE [LIMITS]\n  rillcache-backup verify --input FILE [LIMITS]\n  rillcache-backup restore --input FILE --dir DIR [--filename NAME] [LIMITS]\n\nLIMITS: --max-data-bytes N --max-frame-bytes N --max-bulk-bytes N --max-arguments N\n       --aof-hmac-key-file PATH (authenticated journals)\n       --aof-hmac-keyring-file PATH (hex rotation keyring)\n\nThe versioned archive stores a RESP AOF byte stream with its length and CRC32.\n`create` requires the source server to be stopped (the AOF lock enforces this).\n`restore` validates the archive and replays it in a temporary directory, then\ninstalls it only if the destination journal does not already exist. This is an\noffline, quiescent backup; it is not online backup or point-in-time recovery.\nCRC32 detects accidental corruption, not malicious modification.\n";
 
 #[derive(Debug)]
 struct Options {
@@ -32,6 +34,7 @@ struct Options {
     max_data_bytes: usize,
     limits: Limits,
     aof_hmac_key_file: Option<PathBuf>,
+    aof_hmac_keyring_file: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Option<Options>, String> {
@@ -64,6 +67,7 @@ fn parse_args() -> Result<Option<Options>, String> {
         max_data_bytes: DEFAULT_MAX_DATA_BYTES,
         limits: Limits::default(),
         aof_hmac_key_file: None,
+        aof_hmac_keyring_file: None,
     };
     while let Some(argument) = args.next() {
         let key = argument
@@ -76,11 +80,15 @@ fn parse_args() -> Result<Option<Options>, String> {
             "--dir" => options.dir = Some(PathBuf::from(value)),
             "--input" => options.input = Some(PathBuf::from(value)),
             "--output" => options.output = Some(PathBuf::from(value)),
-            "--aof-hmac-key-file" => {
+            "--aof-hmac-key-file" | "--aof-hmac-keyring-file" => {
                 if value.is_empty() {
-                    return Err("--aof-hmac-key-file requires a nonempty path".into());
+                    return Err(format!("{key} requires a nonempty path"));
                 }
-                options.aof_hmac_key_file = Some(PathBuf::from(value));
+                if key == "--aof-hmac-key-file" {
+                    options.aof_hmac_key_file = Some(PathBuf::from(value));
+                } else {
+                    options.aof_hmac_keyring_file = Some(PathBuf::from(value));
+                }
             }
             "--filename" => {
                 options.filename = value
@@ -112,6 +120,11 @@ fn parse_args() -> Result<Option<Options>, String> {
         || options.limits.max_arguments == 0
     {
         return Err("limits must be positive; max-frame-bytes must be at least 8 and max-bulk-bytes cannot exceed it".into());
+    }
+    if options.aof_hmac_key_file.is_some() && options.aof_hmac_keyring_file.is_some() {
+        return Err(
+            "--aof-hmac-key-file and --aof-hmac-keyring-file are mutually exclusive".into(),
+        );
     }
     validate_filename(&options.filename)?;
     match options.action.as_str() {
@@ -248,6 +261,11 @@ fn canonical_target(path: &Path) -> io::Result<PathBuf> {
 }
 
 fn journal_auth(options: &Options) -> io::Result<Option<JournalAuth>> {
+    if let Some(path) = options.aof_hmac_keyring_file.as_deref() {
+        return read_auth_keyring_file(path)
+            .and_then(|keys| JournalAuth::from_keys(keys, false))
+            .map(Some);
+    }
     options
         .aof_hmac_key_file
         .as_deref()

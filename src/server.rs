@@ -230,6 +230,8 @@ pub struct Config {
     pub audit_hmac_keyring_file: Option<PathBuf>,
     /// Optional key file for HMAC-SHA256 authentication of journal transactions.
     pub aof_hmac_key_file: Option<PathBuf>,
+    /// Optional hex rotation keyring; the first key signs, all may verify.
+    pub aof_hmac_keyring_file: Option<PathBuf>,
     /// One-time startup migration that seals an existing journal prefix.
     pub aof_hmac_migrate: bool,
     /// Enable the append-only command journal.
@@ -282,6 +284,7 @@ impl std::fmt::Debug for Config {
             .field("audit_hmac_key_file", &self.audit_hmac_key_file)
             .field("audit_hmac_keyring_file", &self.audit_hmac_keyring_file)
             .field("aof_hmac_key_file", &self.aof_hmac_key_file)
+            .field("aof_hmac_keyring_file", &self.aof_hmac_keyring_file)
             .field("aof_hmac_migrate", &self.aof_hmac_migrate)
             .field("appendonly", &self.appendonly)
             .field("appendfilename", &self.appendfilename)
@@ -325,6 +328,7 @@ impl Default for Config {
             audit_hmac_key_file: None,
             audit_hmac_keyring_file: None,
             aof_hmac_key_file: None,
+            aof_hmac_keyring_file: None,
             aof_hmac_migrate: false,
             appendonly: false,
             appendfilename: "appendonly.aof".into(),
@@ -387,8 +391,18 @@ impl Config {
                 .aof_hmac_key_file
                 .as_ref()
                 .is_some_and(|path| path.as_os_str().is_empty())
-            || (self.aof_hmac_migrate && self.aof_hmac_key_file.is_none())
-            || ((self.aof_hmac_key_file.is_some() || self.aof_hmac_migrate) && !self.appendonly)
+            || self
+                .aof_hmac_keyring_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || (self.aof_hmac_key_file.is_some() && self.aof_hmac_keyring_file.is_some())
+            || (self.aof_hmac_migrate
+                && self.aof_hmac_key_file.is_none()
+                && self.aof_hmac_keyring_file.is_none())
+            || ((self.aof_hmac_key_file.is_some()
+                || self.aof_hmac_keyring_file.is_some()
+                || self.aof_hmac_migrate)
+                && !self.appendonly)
             || self
                 .storage_owners
                 .is_some_and(|count| !(1..=64).contains(&count))
@@ -410,7 +424,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
+                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs exactly one nonempty key/keyring path, --appendonly yes and no migration flag without keys, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         Ok(())
@@ -440,10 +454,13 @@ impl Config {
         }
     }
 
-    fn load_aof_hmac_key(&self) -> io::Result<Option<Vec<u8>>> {
+    fn load_aof_hmac_keys(&self) -> io::Result<Option<Vec<Vec<u8>>>> {
+        if let Some(path) = &self.aof_hmac_keyring_file {
+            return crate::engine::read_auth_keyring_file(path).map(Some);
+        }
         self.aof_hmac_key_file
             .as_ref()
-            .map(|path| crate::engine::read_auth_key_file(path))
+            .map(|path| crate::engine::read_auth_key_file(path).map(|key| vec![key]))
             .transpose()
     }
 
@@ -508,10 +525,10 @@ impl Server {
         config.validate()?;
         let auth = config.load_auth()?;
         let audit_hmac_key = config.load_audit_hmac_key()?;
-        let aof_hmac_key = config.load_aof_hmac_key()?;
+        let aof_hmac_keys = config.load_aof_hmac_keys()?;
         let mut store = if config.appendonly {
-            let journal_auth = aof_hmac_key
-                .map(|key| JournalAuth::new(key, config.aof_hmac_migrate))
+            let journal_auth = aof_hmac_keys
+                .map(|keys| JournalAuth::from_keys(keys, config.aof_hmac_migrate))
                 .transpose()?;
             Store::with_auth_and_journal(
                 config.max_data_bytes,
@@ -1605,6 +1622,20 @@ mod tests {
             },
             Config {
                 aof_hmac_key_file: Some(PathBuf::from("/run/secrets/aof.key")),
+                ..Config::default()
+            },
+            Config {
+                aof_hmac_keyring_file: Some(PathBuf::new()),
+                ..Config::default()
+            },
+            Config {
+                aof_hmac_keyring_file: Some(PathBuf::from("/run/secrets/aof.keyring")),
+                ..Config::default()
+            },
+            Config {
+                appendonly: true,
+                aof_hmac_key_file: Some(PathBuf::from("/run/secrets/aof.key")),
+                aof_hmac_keyring_file: Some(PathBuf::from("/run/secrets/aof.keyring")),
                 ..Config::default()
             },
         ] {

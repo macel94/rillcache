@@ -31,19 +31,31 @@ const AUTH_RECORD_DOMAIN: &[u8] = b"rillcache-aof-auth-record-v1\0";
 /// Optional keyed authentication for journal transactions.
 #[derive(Clone)]
 pub struct JournalAuth {
-    key: Vec<u8>,
+    keys: Vec<Vec<u8>>,
     pub(crate) migrate: bool,
 }
 
 impl JournalAuth {
     pub fn new(key: Vec<u8>, migrate: bool) -> io::Result<Self> {
-        if !(16..=1024).contains(&key.len()) {
+        Self::from_keys(vec![key], migrate)
+    }
+
+    /// Create an authentication configuration from a rotation keyring. The first
+    /// key signs new records; every key may verify existing ones.
+    pub fn from_keys(keys: Vec<Vec<u8>>, migrate: bool) -> io::Result<Self> {
+        if keys.is_empty() || keys.len() > 8 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "journal authentication key must be 16..=1024 bytes",
+                "journal authentication keyring must contain 1..=8 keys",
             ));
         }
-        Ok(Self { key, migrate })
+        if keys.iter().any(|key| !(16..=1024).contains(&key.len())) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "journal authentication keys must be 16..=1024 bytes",
+            ));
+        }
+        Ok(Self { keys, migrate })
     }
 }
 
@@ -70,6 +82,10 @@ pub fn read_auth_key_file(path: &Path) -> io::Result<Vec<u8>> {
         ));
     }
     Ok(key)
+}
+
+pub fn read_auth_keyring_file(path: &Path) -> io::Result<Vec<Vec<u8>>> {
+    super::audit::read_keyring_labeled(path, "journal authentication")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -514,7 +530,7 @@ pub(super) struct Journal {
     rewrite: Option<RewriteState>,
     _ownership: Ownership,
     checksum_nonce: Option<String>,
-    auth_key: Option<Vec<u8>>,
+    auth_keys: Option<Vec<Vec<u8>>>,
     auth_migrate: bool,
     auth_tag: Option<[u8; 32]>,
     size: u64,
@@ -561,8 +577,8 @@ impl Journal {
             .truncate(false)
             .open(path)?;
         let size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-        let (auth_key, auth_migrate) = match auth {
-            Some(auth) => (Some(auth.key), auth.migrate),
+        let (auth_keys, auth_migrate) = match auth {
+            Some(auth) => (Some(auth.keys), auth.migrate),
             None => (None, false),
         };
         Ok(Self {
@@ -577,7 +593,7 @@ impl Journal {
             rewrite: None,
             _ownership: ownership,
             checksum_nonce: None,
-            auth_key,
+            auth_keys,
             auth_migrate,
             auth_tag: None,
             size,
@@ -730,7 +746,7 @@ impl Journal {
     /// the existing crash-tail recovery rule; a complete group with a missing or
     /// mismatched marker fails closed.
     fn validate_authentication(&mut self) -> io::Result<()> {
-        let Some(key) = self.auth_key.clone() else {
+        let Some(keys) = self.auth_keys.clone() else {
             self.auth_tag = None;
             return Ok(());
         };
@@ -749,12 +765,16 @@ impl Journal {
         let mut last_marker_end = 0u64;
         let mut anchor_tag: Option<[u8; 32]> = None;
         let mut previous_tag: Option<[u8; 32]> = None;
-        let mut anchor_hasher = Some({
-            let mut hmac = super::sha256::HmacSha256::new(&key);
-            hmac.update(AUTH_ANCHOR_DOMAIN);
-            hmac
-        });
-        let mut record_hasher: Option<super::sha256::HmacSha256> = None;
+        let mut anchor_hashers = Some(
+            keys.iter()
+                .map(|key| {
+                    let mut hmac = super::sha256::HmacSha256::new(key);
+                    hmac.update(AUTH_ANCHOR_DOMAIN);
+                    hmac
+                })
+                .collect::<Vec<_>>(),
+        );
+        let mut record_hashers: Option<Vec<super::sha256::HmacSha256>> = None;
         while !eof {
             while consumed < buffer.len() {
                 let parsed = dispatch_request(&buffer[consumed..], self.limits, |args| {
@@ -769,10 +789,14 @@ impl Journal {
                         let raw = &buffer[consumed..consumed + used];
                         match marker {
                             None => {
-                                if let Some(hasher) = record_hasher.as_mut() {
-                                    hasher.update(raw);
-                                } else if let Some(hasher) = anchor_hasher.as_mut() {
-                                    hasher.update(raw);
+                                if let Some(hashers) = record_hashers.as_mut() {
+                                    for hasher in hashers {
+                                        hasher.update(raw);
+                                    }
+                                } else if let Some(hashers) = anchor_hashers.as_mut() {
+                                    for hasher in hashers {
+                                        hasher.update(raw);
+                                    }
                                 }
                                 consumed += used;
                                 offset = offset.saturating_add(used as u64);
@@ -794,26 +818,34 @@ impl Journal {
                                         ),
                                     ));
                                 }
-                                let Some(mut hasher) = anchor_hasher.take() else {
+                                let Some(hashers) = anchor_hashers.take() else {
                                     return Err(io::Error::new(
                                         io::ErrorKind::InvalidData,
                                         "unexpected AOF authentication anchor",
                                     ));
                                 };
-                                hasher.update(nonce.as_bytes());
-                                hasher.update(&prefix_len.to_le_bytes());
-                                let computed = hasher.finish();
-                                if !super::sha256::constant_time_eq(&computed, &tag) {
+                                let computed = hashers.into_iter().find_map(|mut hasher| {
+                                    hasher.update(nonce.as_bytes());
+                                    hasher.update(&prefix_len.to_le_bytes());
+                                    let computed = hasher.finish();
+                                    super::sha256::constant_time_eq(&computed, &tag)
+                                        .then_some(computed)
+                                });
+                                let Some(computed) = computed else {
                                     return Err(io::Error::new(
                                         io::ErrorKind::InvalidData,
                                         format!(
                                             "AOF authentication anchor does not match at byte {offset}"
                                         ),
                                     ));
-                                }
+                                };
                                 anchor_tag = Some(computed);
                                 previous_tag = Some(computed);
-                                record_hasher = Some(auth_record_hasher(&key, &computed));
+                                record_hashers = Some(
+                                    keys.iter()
+                                        .map(|key| auth_record_hasher(key, &computed))
+                                        .collect(),
+                                );
                                 consumed += used;
                                 offset = offset.saturating_add(used as u64);
                                 last_marker_end = offset;
@@ -827,23 +859,31 @@ impl Journal {
                                         ),
                                     ));
                                 }
-                                let Some(hasher) = record_hasher.take() else {
+                                let Some(hashers) = record_hashers.take() else {
                                     return Err(io::Error::new(
                                         io::ErrorKind::InvalidData,
                                         "missing AOF authentication chain state",
                                     ));
                                 };
-                                let computed = hasher.finish();
-                                if !super::sha256::constant_time_eq(&computed, &tag) {
+                                let computed = hashers.into_iter().find_map(|hasher| {
+                                    let computed = hasher.finish();
+                                    super::sha256::constant_time_eq(&computed, &tag)
+                                        .then_some(computed)
+                                });
+                                let Some(computed) = computed else {
                                     return Err(io::Error::new(
                                         io::ErrorKind::InvalidData,
                                         format!(
                                             "AOF authentication chain mismatch at byte {offset}"
                                         ),
                                     ));
-                                }
+                                };
                                 previous_tag = Some(computed);
-                                record_hasher = Some(auth_record_hasher(&key, &computed));
+                                record_hashers = Some(
+                                    keys.iter()
+                                        .map(|key| auth_record_hasher(key, &computed))
+                                        .collect(),
+                                );
                                 consumed += used;
                                 offset = offset.saturating_add(used as u64);
                                 last_marker_end = offset;
@@ -883,7 +923,13 @@ impl Journal {
                     "append-only journal is not authenticated; start once with --aof-hmac-migrate after stopping the server",
                 ));
             }
-            self.write_auth_anchor(&key)?;
+            let signing = keys.first().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "journal authentication keyring is empty",
+                )
+            })?;
+            self.write_auth_anchor(signing)?;
             return Ok(());
         }
         if size > last_marker_end {
@@ -1040,7 +1086,12 @@ impl Journal {
         let crc = !crc32_update(!0u32, bytes);
         let mut transaction = Vec::with_capacity(new_header.len() + bytes.len() + 256);
         let mut authenticated_tag = None;
-        if let Some(key) = self.auth_key.as_deref() {
+        if let Some(key) = self
+            .auth_keys
+            .as_deref()
+            .and_then(|keys| keys.first())
+            .map(Vec::as_slice)
+        {
             let previous = match self.auth_tag {
                 Some(tag) => tag,
                 None => {
@@ -1160,7 +1211,12 @@ impl Journal {
             let mut file = file;
             let mut bytes_written = 0u64;
             let mut auth_tag = None;
-            if let Some(key) = self.auth_key.as_deref() {
+            if let Some(key) = self
+                .auth_keys
+                .as_deref()
+                .and_then(|keys| keys.first())
+                .map(Vec::as_slice)
+            {
                 let anchor_nonce = new_checksum_nonce()?;
                 let tag = auth_anchor_tag(key, &anchor_nonce, 0, &[]);
                 let anchor = auth_anchor_record(&anchor_nonce, 0, &tag);
@@ -1171,7 +1227,13 @@ impl Journal {
             let header = checksum_header(&nonce);
             file.write_all(&header)?;
             bytes_written = bytes_written.saturating_add(header.len() as u64);
-            if let (Some(key), Some(previous)) = (self.auth_key.as_deref(), auth_tag) {
+            if let (Some(key), Some(previous)) = (
+                self.auth_keys
+                    .as_deref()
+                    .and_then(|keys| keys.first())
+                    .map(Vec::as_slice),
+                auth_tag,
+            ) {
                 let tag = auth_record_tag(key, &previous, &header);
                 let marker = auth_mac_record(&tag);
                 file.write_all(&marker)?;
@@ -1213,7 +1275,12 @@ impl Journal {
         state.crc = crc32_update(state.crc, bytes);
         state.record_len = state.record_len.saturating_add(bytes.len() as u64);
         state.bytes = state.bytes.saturating_add(bytes.len() as u64);
-        if let Some(key) = self.auth_key.as_deref() {
+        if let Some(key) = self
+            .auth_keys
+            .as_deref()
+            .and_then(|keys| keys.first())
+            .map(Vec::as_slice)
+        {
             let Some(previous) = state.auth_tag else {
                 self.last_rewrite_failed = true;
                 self.abort_rewrite();
@@ -1256,7 +1323,12 @@ impl Journal {
             let marker = checksum_record(&state.nonce, state.record_len, !state.crc);
             state.file.write_all(&marker)?;
             state.bytes = state.bytes.saturating_add(marker.len() as u64);
-            if let Some(key) = self.auth_key.as_deref() {
+            if let Some(key) = self
+                .auth_keys
+                .as_deref()
+                .and_then(|keys| keys.first())
+                .map(Vec::as_slice)
+            {
                 let Some(previous) = state.auth_tag else {
                     return Err(io::Error::other(
                         "rewrite journal authentication is not initialized",

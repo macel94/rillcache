@@ -512,3 +512,128 @@ fn dirs_key(directory: &Path, name: &str, contents: &[u8]) -> PathBuf {
     std::fs::write(&path, contents).unwrap();
     path
 }
+
+#[test]
+fn authenticated_archives_accept_a_rotation_keyring() {
+    let source = temp_dir("keyring-source");
+    let archive_dir = temp_dir("keyring-archive");
+    let archive = archive_dir.join("snapshot.rcb");
+    let key_dir = temp_dir("keyring-keys");
+    let old = b"0123456789abcdef";
+    let new = b"fedcba9876543210";
+    let keyring = |name: &str, keys: &[&[u8]]| {
+        let path = key_dir.join(name);
+        let text = keys
+            .iter()
+            .map(|key| {
+                let mut line = key
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                line.push('\n');
+                line
+            })
+            .collect::<String>();
+        std::fs::write(&path, text).unwrap();
+        path
+    };
+    let old_ring = keyring("old.keyring", &[old]);
+    let rotated_ring = keyring("rotated.keyring", &[new, old]);
+    let new_only_ring = keyring("new.keyring", &[new]);
+    {
+        let server = Server::bind(Config {
+            aof_hmac_keyring_file: Some(old_ring.clone()),
+            ..config(&source)
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut stream = connect(&server);
+        assert_eq!(call(&mut stream, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    let both = command(&[
+        "create",
+        "--dir",
+        source.to_str().unwrap(),
+        "--output",
+        archive.to_str().unwrap(),
+        "--aof-hmac-key-file",
+        old_ring.to_str().unwrap(),
+        "--aof-hmac-keyring-file",
+        old_ring.to_str().unwrap(),
+    ]);
+    assert!(
+        !both.status.success(),
+        "key options must be mutually exclusive"
+    );
+    let made = command(&[
+        "create",
+        "--dir",
+        source.to_str().unwrap(),
+        "--output",
+        archive.to_str().unwrap(),
+        "--aof-hmac-keyring-file",
+        old_ring.to_str().unwrap(),
+    ]);
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let verified = command(&[
+        "verify",
+        "--input",
+        archive.to_str().unwrap(),
+        "--aof-hmac-keyring-file",
+        rotated_ring.to_str().unwrap(),
+    ]);
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let new_only = command(&[
+        "verify",
+        "--input",
+        archive.to_str().unwrap(),
+        "--aof-hmac-keyring-file",
+        new_only_ring.to_str().unwrap(),
+    ]);
+    assert!(
+        !new_only.status.success(),
+        "the new key alone cannot verify the old archive"
+    );
+
+    let destination = temp_dir("keyring-destination");
+    let restored = command(&[
+        "restore",
+        "--input",
+        archive.to_str().unwrap(),
+        "--dir",
+        destination.to_str().unwrap(),
+        "--aof-hmac-keyring-file",
+        rotated_ring.to_str().unwrap(),
+    ]);
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    {
+        let server = Server::bind(Config {
+            aof_hmac_keyring_file: Some(rotated_ring.clone()),
+            ..config(&destination)
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut stream = connect(&server);
+        assert_eq!(call(&mut stream, &[b"GET", b"k"]), b"$1\r\nv\r\n");
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&source);
+    let _ = std::fs::remove_dir_all(&archive_dir);
+    let _ = std::fs::remove_dir_all(&destination);
+    let _ = std::fs::remove_dir_all(&key_dir);
+}

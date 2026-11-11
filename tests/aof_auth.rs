@@ -90,6 +90,38 @@ fn write_auth_key(path: &Path, key: &[u8]) {
     std::fs::write(path, [key, b"\n"].concat()).unwrap();
 }
 
+fn auth_keyring_config(dir: &Path, keyring_file: &Path) -> Config {
+    let workers = match std::env::var("RILLCACHE_TEST_THREADS").as_deref() {
+        Ok("0") | Err(_) => None,
+        Ok("1") => Some(1),
+        Ok("4") => Some(4),
+        Ok(value) => panic!("invalid test worker mode {value}"),
+    };
+    Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        worker_threads: workers,
+        appendonly: true,
+        appendfsync: FsyncPolicy::Always,
+        dir: dir.to_path_buf(),
+        appendfilename: "test.aof".into(),
+        aof_hmac_keyring_file: Some(keyring_file.to_path_buf()),
+        ..Config::default()
+    }
+}
+
+fn write_auth_keyring(path: &Path, keys: &[&[u8]]) {
+    let mut text = String::new();
+    for key in keys {
+        text.push_str(
+            &key.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+        );
+        text.push('\n');
+    }
+    std::fs::write(path, text).unwrap();
+}
+
 #[test]
 fn journal_authentication_survives_restart_and_rejects_tampering_and_wrong_keys() {
     let dir = temp_dir("restart");
@@ -192,4 +224,50 @@ fn enabling_journal_authentication_requires_explicit_migration_then_stays_enforc
     }
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(key_file.parent().unwrap());
+}
+
+#[test]
+fn journal_authentication_keyring_rotates_without_rewriting_the_journal() {
+    let dir = temp_dir("keyring-rotation");
+    let keyring_file = temp_dir("keyring").join("journal.keyring");
+    let old = b"0123456789abcdef";
+    let new = b"fedcba9876543210";
+    write_auth_keyring(&keyring_file, &[old]);
+    {
+        let server = Server::bind(auth_keyring_config(&dir, &keyring_file))
+            .unwrap()
+            .spawn()
+            .unwrap();
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"SET", b"before", b"old"], b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    write_auth_keyring(&keyring_file, &[new, old]);
+    {
+        let server = Server::bind(auth_keyring_config(&dir, &keyring_file))
+            .unwrap()
+            .spawn()
+            .unwrap();
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"GET", b"before"], b"$3\r\nold\r\n");
+        send(&mut stream, &[b"SET", b"after", b"new"], b"+OK\r\n");
+        server.shutdown().unwrap();
+    }
+    {
+        let server = Server::bind(auth_keyring_config(&dir, &keyring_file))
+            .unwrap()
+            .spawn()
+            .unwrap();
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"GET", b"before"], b"$3\r\nold\r\n");
+        send(&mut stream, &[b"GET", b"after"], b"$3\r\nnew\r\n");
+        server.shutdown().unwrap();
+    }
+    write_auth_keyring(&keyring_file, &[old]);
+    assert!(
+        Server::bind(auth_keyring_config(&dir, &keyring_file)).is_err(),
+        "retiring the signing key before old links age out must fail closed"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(keyring_file.parent().unwrap());
 }

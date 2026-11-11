@@ -245,13 +245,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   wrong key, modified tags, migration refusal and completion, authenticated
   rewrite plus post-rewrite appends, torn markers, partial next appends, and real
   server/backup paths.
-  **Limit:** HMAC is not encryption. The key is a single operator-managed file with
-  no rotation/keyring, secure-store integration or file-permission enforcement;
+  **Partial (2026-11-11): rotation keyring added.** `--aof-hmac-keyring-file`
+  accepts up to eight hex keys; the first signs new records and every key verifies
+  old anchors/links. Operators can add a new signing key, restart, run
+  `BGREWRITEAOF` to re-anchor, then retire old keys. Backup `create`/`verify`/
+  `restore` accept the same keyring. History-link verification and rotation are
+  covered by unit/server/backup tests.
+  **Limit:** HMAC is not encryption. Every retained key remains able to
+  authenticate new links (there are no verify-only entries or key IDs), so old
+  keys must be removed after re-anchoring. Key material is operator-managed with
+  no HSM/KMS custody, secure-store integration, key IDs or enforced file permissions;
   a whole-journal replacement with an older valid file, and truncation of a
-  durable suffix, are not detectable without external anti-rollback state. If the
-  key is removed and new writes are appended, the next authenticated start
-  discards those unauthenticated writes. Legacy prefixes are only authenticated
-  after an explicit migration or rewrite.
+  durable suffix, are not detectable without external anti-rollback state. If
+  authentication is removed and new writes are appended, the next authenticated
+  start discards those unauthenticated writes. Legacy prefixes are only
+  authenticated after an explicit migration or rewrite. Retiring a signing key
+  before rewriting fails closed rather than silently accepting unverifiable
+  history.
   **Closes when:** the profile has a reviewed encryption-at-rest and key-management
   contract (or an explicit exclusion), and recovery authentication covers the
   deployment's rollback/truncation threat model with documented external state.

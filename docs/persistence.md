@@ -197,24 +197,44 @@ file. `--aof-hmac-migrate` without a key, or authentication without
 `--appendonly yes`, is rejected.
 
 Authentication covers transaction content, order and the migrated prefix. It does
-not provide encryption, key rotation/keyrings, protection from someone who can
-replace both the key and the whole journal, or detection of an externally replayed
-older complete journal. Bytes after the last durable marker can be removed
-exactly like a crash-torn tail, so an attacker can cause suffix data loss;
+not provide encryption, HSM/KMS custody, protection from someone who can replace
+both the key material and the whole journal, or detection of an externally
+replayed older complete journal. Bytes after the last durable marker can be
+removed exactly like a crash-torn tail, so an attacker can cause suffix data loss;
 truncating an older durable transaction is indistinguishable from rollback
 without external state.
-Keep the key file readable only by the service account with filesystem and
-secret-store controls, back it up separately from the journal, and do not remove
-the key from a running deployment and then append: those later unauthenticated
-writes are discarded by the next authenticated start. `BGREWRITEAOF` writes a
-fresh authenticated snapshot when a key is configured.
 
-The offline `rillcache-backup` tool accepts the same `--aof-hmac-key-file` for
-`create`, `verify` and `restore`; supply it to authenticate the inner AOF during
-archive validation. Without it, backup verification still checks the outer CRC and
-checksums but cannot detect keyed modification. `create` refuses a nonempty
-journal that has no anchor when a key is supplied; run the server once with
-`--aof-hmac-migrate` after stopping it, then stop the server and take the backup.
+`--aof-hmac-keyring-file PATH` loads up to eight unique 16..=1024-byte keys from
+hex lines (`#` comments and blank lines ignored, 64 KiB text bound). The first key
+signs new records; every listed key may verify old anchors and links. Operators
+can therefore rotate without rewriting immediately:
+
+1. Put the new key first and retain the old key in the keyring; restart. Old
+   links still verify with the old key and new appends sign with the new key.
+2. Run `BGREWRITEAOF` to re-anchor the compacted snapshot under the new signing
+   key.
+3. Remove the old key after the rewrite and restart.
+
+Without the rewrite, keep every key that signed historical links. Retiring a key
+too early fails startup closed. Records carry no key ID, so startup tries each
+keyring key for every anchor/chain link; verification cost therefore scales with
+the number of retained keys (at most eight). A retained key is not verify-only:
+any listed key can authenticate a new link, so remove retired keys after the
+re-anchor rewrite if they must no longer authorize writes. The key/keyring files
+are mutually exclusive.
+Keep them readable only by the service account with filesystem and secret-store
+controls, back them up separately from the journal, and do not remove
+authentication from a running deployment and then append: those later
+unauthenticated writes are discarded by the next authenticated start.
+`BGREWRITEAOF` writes a fresh authenticated snapshot when keys are configured.
+
+The offline `rillcache-backup` tool accepts `--aof-hmac-key-file` or
+`--aof-hmac-keyring-file` for `create`, `verify` and `restore`; supply the current
+keyring so historical links remain verifiable. Without it, backup verification
+still checks the outer CRC and checksums but cannot detect keyed modification.
+`create` refuses a nonempty journal that has no anchor when keys are supplied; run
+the server once with `--aof-hmac-migrate` after stopping it, then stop the server
+and take the backup.
 
 ## Single-process ownership
 
@@ -244,8 +264,8 @@ copying. A running writer therefore causes backup to fail without publishing an
 archive. The archive stores the AOF bytes with their length and CRC32, streams in
 1 MiB chunks, and is limited to 16 GiB. The temporary archive is mode 0600 on Unix,
 synced, then hard-linked into place without replacing an existing output. Pass
-`--aof-hmac-key-file` for an authenticated journal; see the authentication section
-above. The archive and destination must be on a local filesystem that supports same-directory
+`--aof-hmac-key-file` or `--aof-hmac-keyring-file` for an authenticated journal;
+see the authentication section above. The archive and destination must be on a local filesystem that supports same-directory
 hard links and directory fsync; shared/network filesystems are unsupported.
 
 ```text
@@ -375,11 +395,12 @@ activity (for consumers that were deleted or renamed) is not retained.
 
 ## Deliberate gaps
 
-- No RDB import/export, manifest/multi-part AOF, encryption at rest, key rotation
-  or replication of the log. New RESP transactions have CRC32 checksums, and an
-  optional HMAC-SHA256 chain authenticates transaction content/order when a key is
-  configured. HMAC is not encryption, does not protect a whole-file replacement by
-  an attacker with the key, and is not an anti-rollback mechanism.
+- No RDB import/export, manifest/multi-part AOF, encryption at rest, HSM/KMS key
+  custody or replication of the log. New RESP transactions have CRC32 checksums,
+  and an optional HMAC-SHA256 chain (single key or rotation keyring) authenticates
+  transaction content/order. HMAC is not encryption, does not protect a
+  whole-file replacement by an attacker with key material, and is not an
+  anti-rollback mechanism.
   `BGREWRITEAOF` is cooperative and incremental, but it is not Redis's fork-based
   rewrite: the key list is materialised in memory and the
   rewrite runs on the owner thread between maintenance ticks.

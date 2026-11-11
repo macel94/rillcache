@@ -40,6 +40,20 @@ fn open_with_auth(path: &std::path::Path, key: &[u8], migrate: bool) -> std::io:
     )
 }
 
+fn open_with_keys(path: &std::path::Path, keys: &[&[u8]], migrate: bool) -> std::io::Result<Store> {
+    Store::with_auth_and_journal(
+        16 * 1024 * 1024,
+        Auth::default(),
+        path,
+        FsyncPolicy::Always,
+        Limits::default(),
+        Some(JournalAuth::from_keys(
+            keys.iter().map(|key| key.to_vec()).collect(),
+            migrate,
+        )?),
+    )
+}
+
 fn run(store: &Store, arguments: &[&[u8]]) -> Vec<u8> {
     let mut output = Vec::new();
     store.execute(arguments, &mut output);
@@ -884,4 +898,60 @@ fn consumer_seen_journal_records_are_binary_safe_and_strictly_framed() {
     trailing.push(b'x');
     assert!(super::parse_consumer_seen(&trailing).is_none());
     assert!(super::parse_consumer_seen(b"__RILLCACHE_CONSUMER_SEEN_V1__:").is_none());
+}
+
+#[test]
+fn authentication_keyrings_verify_old_links_and_sign_new_appends_with_the_first_key() {
+    let path = aof_path("auth-keyring");
+    let old = b"0123456789abcdef";
+    let new = b"fedcba9876543210";
+    {
+        let store = open_with_auth(&path, old, false).unwrap();
+        assert_eq!(run(&store, &[b"SET", b"before", b"old"]), b"+OK\r\n");
+    }
+    {
+        let store = open_with_keys(&path, &[new, old], false).unwrap();
+        assert_eq!(run(&store, &[b"GET", b"before"]), b"$3\r\nold\r\n");
+        assert_eq!(run(&store, &[b"SET", b"after", b"new"]), b"+OK\r\n");
+    }
+    {
+        let store = open_with_keys(&path, &[new, old], false).unwrap();
+        assert_eq!(run(&store, &[b"GET", b"before"]), b"$3\r\nold\r\n");
+        assert_eq!(run(&store, &[b"GET", b"after"]), b"$3\r\nnew\r\n");
+    }
+    assert!(
+        open_with_keys(&path, &[old], false).is_err(),
+        "the retired key alone cannot verify the new append"
+    );
+    assert!(
+        open_with_keys(&path, &[new], false).is_err(),
+        "the new key alone cannot verify the old anchor"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn journal_authentication_keyrings_are_bounded_and_ignore_comments() {
+    let path = std::env::temp_dir().join(format!(
+        "rillcache-auth-keyring-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let first = "0123456789abcdef0123456789abcdef";
+    let second = "fedcba9876543210fedcba9876543210";
+    std::fs::write(&path, format!("# rotation\n{first}\n\n{second}\n{first}\n")).unwrap();
+    let keys = super::read_auth_keyring_file(&path).unwrap();
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0].len(), 16);
+    assert_eq!(keys[0][0], 0x01);
+    assert_eq!(keys[1][0], 0xfe);
+    std::fs::write(&path, "zz\n").unwrap();
+    assert!(super::read_auth_keyring_file(&path).is_err());
+    let too_many = (1..=9)
+        .map(|index| format!("{:032x}", index))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, too_many).unwrap();
+    assert!(super::read_auth_keyring_file(&path).is_err());
+    let _ = std::fs::remove_file(&path);
 }

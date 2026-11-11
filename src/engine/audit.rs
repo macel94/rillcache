@@ -133,16 +133,25 @@ pub(super) fn format_line(
 /// at most eight unique 16..=1024-byte keys are accepted. The first key is the
 /// signing key for this process, while a collector may verify against all.
 pub(super) fn read_keyring(path: &Path) -> io::Result<Vec<Vec<u8>>> {
+    read_keyring_labeled(path, "audit")
+}
+
+pub(super) fn read_keyring_labeled(path: &Path, label: &str) -> io::Result<Vec<Vec<u8>>> {
     let mut text = String::new();
     File::open(path)?
         .take((MAX_KEYRING_BYTES + 1) as u64)
         .read_to_string(&mut text)?;
-    parse_keyring(&text).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+    parse_keyring_labeled(&text, label)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
 }
 
 pub(super) fn parse_keyring(text: &str) -> Result<Vec<Vec<u8>>, String> {
+    parse_keyring_labeled(text, "audit")
+}
+
+pub(super) fn parse_keyring_labeled(text: &str, label: &str) -> Result<Vec<Vec<u8>>, String> {
     if text.len() > MAX_KEYRING_BYTES {
-        return Err("audit keyring text exceeds 64 KiB".into());
+        return Err(format!("{label} keyring text exceeds 64 KiB"));
     }
     let mut keys: Vec<Vec<u8>> = Vec::new();
     for (line_number, line) in text.lines().enumerate() {
@@ -152,25 +161,25 @@ pub(super) fn parse_keyring(text: &str) -> Result<Vec<Vec<u8>>, String> {
         }
         let Some(bytes) = hex_decode(line) else {
             return Err(format!(
-                "audit keyring line {} is not valid hex",
+                "{label} keyring line {} is not valid hex",
                 line_number + 1
             ));
         };
         if !(16..=1024).contains(&bytes.len()) {
             return Err(format!(
-                "audit keyring line {} must decode to 16..=1024 bytes",
+                "{label} keyring line {} must decode to 16..=1024 bytes",
                 line_number + 1
             ));
         }
         if !keys.iter().any(|existing| existing == &bytes) {
             if keys.len() >= 8 {
-                return Err("audit keyring accepts at most eight unique keys".into());
+                return Err(format!("{label} keyring accepts at most eight unique keys"));
             }
             keys.push(bytes);
         }
     }
     if keys.is_empty() {
-        return Err("audit keyring contains no keys".into());
+        return Err(format!("{label} keyring contains no keys"));
     }
     Ok(keys)
 }

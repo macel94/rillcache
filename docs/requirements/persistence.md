@@ -250,3 +250,27 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   missing-target failure, and all execution modes. Documentation shall retain the
   no-expiry clock shortcut, tombstone-claim semantics and the absence of history
   for deleted/renamed consumers.
+
+## Journal authentication keyring rotation (S122)
+
+- **R442 (event-driven):** `--aof-hmac-keyring-file PATH` shall load 1..=8 unique
+  16..=1024-byte hex keys from a bounded 64 KiB text file, ignoring blank lines
+  and `#` comments. It shall be mutually exclusive with `--aof-hmac-key-file`,
+  require `--appendonly yes`, and the first key shall sign new anchors and links
+  while every listed key may verify.
+- **R443 (state-driven):** While verifying, the server shall try every keyring key
+  for each anchor and chain link and shall continue the chain with the matched
+  tag. A journal containing links signed by different historical keys shall load
+  when the keyring contains all of them, and shall fail closed when any required
+  key is missing. Every retained key is therefore trusted to authenticate new
+  links until it is removed after re-anchoring; there is no verify-only key.
+- **R444 (event-driven):** `rillcache-backup` `create`, `verify` and `restore`
+  shall accept the same keyring, reject using both key options together, and use
+  it for inner-AOF verification. A migration anchor shall be signed with the first
+  key.
+- **R445 (ubiquitous):** Tests shall cover keyring parsing bounds, mutual
+  exclusion and configuration validation, old-link verification after rotation,
+  new appends signing with the first key, failure after retiring a required key,
+  authenticated backup/restore with a rotated keyring, and all execution modes.
+  Documentation shall state the add-key/re-anchor/retire procedure, the no-key-ID
+  verification cost, and the remaining encryption/HSM/anti-rollback gaps.
