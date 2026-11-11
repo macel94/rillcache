@@ -4,9 +4,11 @@ title: Testing and delivery
 description: The local feedback loop, test pyramid, protected GitHub checks, benchmark gates and delivery rules Rillcache contributors must preserve.
 tags: [testing, ci, benchmarks, delivery, pull-requests, workflow]
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T15:32:39.597Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 sources:
+  - id: openwiki-source-380a394a4ec8e02da4e26a7a
+    resource: repo://.github/workflows/openwiki-freshness.yml
   - id: openwiki-source-8037e2358a2c4f9b2c722a11
     resource: repo://AGENTS.md
   - id: openwiki-source-f317ee207e1653d2033c81a4
@@ -21,7 +23,7 @@ sources:
     resource: repo://Makefile
   - id: openwiki-source-09a820a7145b3cd5f8ae5126
     resource: repo://scripts/pr_gate_policy.py
-generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
+generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
 ---
 
 # Testing and delivery
@@ -144,10 +146,12 @@ repetitions. Every one of the 20 medians must be strictly higher than Valkey.
 **Official four-CPU gate — 10 comparisons.** The same five workloads at pipelines
 1 and 16 run with the official `valkey-benchmark` binary, eight connections, two
 generator threads, 1,024 random keys, 64-byte values, 8,000 warmups, ten-second
-samples, three repetitions and a fixed seed. Both servers receive the same four
-allowed logical CPUs. All ten medians must strictly beat Valkey. The same required
-job also compares the frozen Rillcache binary with Dragonfly on the identical
-traffic and requires ten more strict wins.
+samples and five alternating Valkey repetitions with a fixed seed. Both servers
+receive the same four allowed logical CPUs. The ten workload pairs run as parallel
+per-row jobs, and one aggregation job revalidates every partial cohort before
+deciding the required context; a missing or losing row fails. All ten medians must
+strictly beat Valkey. The same required job also compares the frozen Rillcache
+binary with Dragonfly on the identical traffic and requires ten more strict wins.
 
 Both gates validate raw files, argument/timer identity, binary hashes, source
 identity, reply/data integrity and complete cohorts before applying the threshold.
@@ -167,6 +171,14 @@ with recorded reasons. All other matrix members are live-required.
 The harness does not patch upstream Tcl, proxy protocol frames or emulate missing
 feedback. A prerequisite probe records support, but the original file still runs.
 Partial or unobserved results remain visible in the JSON and logs.
+
+## OpenWiki freshness
+
+A separate non-PR workflow audits grounded OpenWiki evidence on every `main` push
+and weekly. It runs the freshness fixtures and checks every saved Claim against the
+current source, opens or updates a maintenance issue when evidence is stale, and
+never rewrites or re-signs claims automatically. A semantic refresh is a reviewed
+change like any other documentation update.
 
 ## Delivery rules
 

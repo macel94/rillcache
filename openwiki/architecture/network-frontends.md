@@ -4,8 +4,8 @@ title: Network frontends and client handoff
 description: How Rillcache accepts sockets, schedules client I/O, moves data connections to the owner and selects the optional Tokio and TLS frontends.
 tags: [networking, mio, tokio, tls, reactors, backpressure]
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T15:32:39.597Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 sources:
   - id: openwiki-source-dfa02c19f5d8e4215d36f9c0
     resource: repo://src/server.rs
@@ -21,7 +21,7 @@ sources:
     resource: repo://src/server/tokio_io.rs
   - id: openwiki-source-b677509f3d7eabbfd760e3a9
     resource: repo://src/server/topology.rs
-generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
+generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
 ---
 
 # Network frontends and client handoff
@@ -65,9 +65,10 @@ scheduler delay does not discard work.
 
 ## Socket workers and owner migration
 
-When no persistence, ACL file, audit sink or TLS listener is configured, the
-default number of plain-TCP reactors is `min(4, allowed CPUs)`, or the explicit
-`--socket-workers` value from 1 to 16. The first reactor installs the owner-local
+On Unix without fixed workers, the plain-TCP reactor count defaults to one, or the
+explicit `--socket-workers` value from 1 to 16. Append-only persistence, an ACL
+file, an audit sink or a TLS listener forces one reactor because those paths need
+the external or bridge owner. The first reactor installs the owner-local
 `ShardExecutor`; additional reactors accept connections but execute only bare
 `PING`, `ECHO` and `QUIT` while the session is free of transaction, subscription,
 monitor, blocked and paused state. The first other command detaches the connection

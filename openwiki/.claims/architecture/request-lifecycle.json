@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:8a5092a89fc0929ccb50b2968e877b02bb2b10aa3daf97a96a013f9be9b7961f",
+  "pageVersion": "sha256:1d8886dd3a70aa1c6673d536713ede8f452402f3de51d6103b7891467aa0e06c",
   "claims": [
     {
       "id": "claim_781d8e19dfb64a53a737bd52b8852132",
@@ -67,7 +67,7 @@
       "statement": "ShardExecutor executes a command inside one synchronous owner turn and commits journal and notification effects before returning to the session.",
       "evidence": [
         {
-          "resource": "repo://src/engine.rs#L1161-L1181",
+          "resource": "repo://src/engine.rs#L1176-L1196",
           "version": "repo-lines-v1:sha256:3d3dc0ae6567534fa4c1a96df8fdcdbdfefe6d2a0808b72db6a518099720f0e0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4ZTg5NDQzODM2ZjJhMmQ5ZTg2ZmQxNDYyYzEzNDYxY2YyZDk4N2ViYmMwY2ExYWJhOWE2MTc0NTg1MDg1MjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRhZmY1YWYwY2I0ZjVlNDIzMWE1Yjc2N2NmZDcxYmIzZGJiNzAyYmMwNjRmY2Q2N2RlMWIxNDkyOGY2ZGVkYTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmNjQ2ODk1MDYyNTY5MWJhM2M2NTgxYWIzNjc4Yjg2NGFkMGU3MDc0ZDE5MDAzYTU3MTVjYzk3YTg1YTRiYjcifQ"
         },
         {
@@ -81,7 +81,7 @@
       "statement": "When append-only effects are enabled, the engine captures changed keys since the turn's sequence, encodes canonical writes and appends them before the turn completes; an append failure replaces the success reply with an append-only error.",
       "evidence": [
         {
-          "resource": "repo://src/engine/journal.rs#L345-L459",
+          "resource": "repo://src/engine/journal.rs#L1353-L1467",
           "version": "repo-lines-v1:sha256:6476caff4c515e7fcf3b76de98ede72eb28fc84bdde6d545142b5c5df48a0ee0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2OWNkYTZjZDQ2ZmY2MWM2Njk1YTc0MWFhNmU5MGNkYmM3OGJkZDFjY2EwMDk2YzU4ZTAwNjBmNGY2ODYwNjUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxOWU3NjM1NWNmMTE5OTQ4MGMzZjk5ODM2YjE0ODZjODQxZDg5MWZhYWQ5MDRjNjA4ZTA5MzAyMmQzNzU3YWVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjODNhMGI1YTkwN2NkMDI3MzRkODc4YTU2YWIwZTA1N2IzM2ExNjI2NjE1OTlhYWU3YWUzYTE5MzZkMWNmYjIxIn0"
         }
       ]
@@ -112,7 +112,7 @@
     }
   ],
   "verification": {
-    "by": "openwiki/0.7.3",
-    "at": "2026-11-02T15:32:39.597Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-11T20:57:56.397Z"
   }
 }

@@ -77,13 +77,17 @@ impl Server {
     }
 
     fn connect(&self) -> TcpStream {
+        self.connect_with_timeout(Duration::from_secs(5))
+    }
+
+    /// The rewrite-crash test pipelines 100 `appendfsync always` writes per
+    /// batch. A slow shared runner can need more than five seconds to fsync
+    /// those batches, so that test opts into a longer socket deadline instead
+    /// of treating scheduler/disk latency as a protocol failure.
+    fn connect_with_timeout(&self, timeout: Duration) -> TcpStream {
         let stream = TcpStream::connect(&self.addr).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        stream.set_read_timeout(Some(timeout)).unwrap();
+        stream.set_write_timeout(Some(timeout)).unwrap();
         stream.set_nodelay(true).unwrap();
         stream
     }
@@ -256,7 +260,7 @@ fn everysec_recovers_a_contiguous_prefix_without_holes_after_sigkill() {
 fn a_kill_during_a_background_rewrite_keeps_the_live_journal_and_all_acked_writes() {
     let dir = temp_dir("rewrite-crash");
     let server = Server::start(&dir, "always");
-    let mut stream = server.connect();
+    let mut stream = server.connect_with_timeout(Duration::from_secs(120));
     send(&mut stream, &[b"PING"], b"+PONG\r\n");
     const WRITES: usize = 20_000;
     let value = [b'v'; 64];
@@ -312,7 +316,7 @@ fn a_kill_during_a_background_rewrite_keeps_the_live_journal_and_all_acked_write
     // The old journal must still hold every acknowledged write; the temporary
     // rewrite file must not be replayed.
     let restarted = Server::start(&dir, "always");
-    let mut stream = restarted.connect();
+    let mut stream = restarted.connect_with_timeout(Duration::from_secs(120));
     send(&mut stream, &[b"PING"], b"+PONG\r\n");
     for index in 0..WRITES {
         let mut reply = Vec::new();

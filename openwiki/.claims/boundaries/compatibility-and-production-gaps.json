@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d6824aaa8e456b6a713edd35424e950c73cd80194f0a4f30b83b47d1604bdeb9",
+  "pageVersion": "sha256:8cc0d75d0f03017a4dcfeb42612edf4a785a9b6e92aeeba03c1cae5479524ee1",
   "claims": [
     {
       "id": "claim_b5cd236f2d98497a8b975d385e0dfae8",
@@ -63,7 +63,7 @@
       "statement": "The required upstream compatibility matrix runs only the original unit/type/string, unit/type/incr and unit/keyspace Tcl files, with native controls and documented scope exclusions; other upstream units are untested.",
       "evidence": [
         {
-          "resource": "repo://docs/upstream-ci.md#L70-L100",
+          "resource": "repo://docs/upstream-ci.md#L73-L103",
           "version": "repo-lines-v1:sha256:84d7f2581e2a053158b7e38c73449ec8d6f083dd0a72646801b293b799d15424:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmMzNlNDI3Nzc3YTMyOTA4NTY2ODU0ZjQwOTUyOGM5OWRjYjM1NjdkMTUzOWZmYThmZDRiOGExZDFkOGIxNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiMjRkYWQ1Y2E3NTllMmE3ZmQxNmE1NTkxYjQwZWYwY2E3ZjI3ODIyZDZiMDUyNzE2NWE0MmVkMGM3ODNlMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlZjBkMmY5YjZkODY2YmQxNGNiNjhmYjA3NGUwOTA2ODcxMjAxZmM0ZGEzY2I4NThiZTlmYmFhOTQ2MzU2NTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI1NTcyYzQ0ZTBjODUyZTNmMjFlODI2MmY3MDExZDk2NDU2NzAyYTdhNDk2NTMxZDY4NWQyZjlhZDhhY2I1MDQifQ"
         }
       ]
@@ -87,22 +87,26 @@
           "version": "repo-lines-v1:sha256:fb86e5dab9d81be09cbd7c065c8af8c2c0f565a2a056090bb70a11a77e21c144:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlMjAyOGY2NGY5YzA1ODM2OWIwYjkwN2E1OWQ0M2FmZDE2OTUyOTNiYTJlYzczYTI1NDM4Mjc2OWEzODVkZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhZmFhOThiM2E4MTNkYzBiYzFmZmI2MzY0MzFkMDI2ZDE1YmNkNzcwY2M4YjJhNjM0OTcyZjA2YjI4ZTViOWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmNjNkODM3MWFjMmE4ZDE3YjBjNjNlNjA2M2NkOGQ1NDI0ZjRhNjFlZmM5NjAzZjFhOWQ4YmVhMWVjZDllOGMifQ"
         },
         {
-          "resource": "repo://docs/upstream-ci.md#L1-L11",
-          "version": "repo-lines-v1:sha256:7cc4fda6500f9aafda48b711b70fd789a07a1798ef4486b40a2b9c71b9a92c4a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxZjExNmU1ZjU3YTQ1NTIyNTVmNjg0ZTMxNmRlMzYxM2ZmMDQwOWM1NTA3NzU1YThiZDFiM2U2MDUyZjY4OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1ZWRlNmQwZjM4MTMyZGQ0MTk2MzRlNTQ5YWMyYTdhNzc1NjQ2NzY0N2VlNGExY2UzNjI1NTBjYzM5ZWMwNjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJjNDI5NDRiYjg1N2IyZTE2OTEzMjk2MWE3YmVjZmYzMjI3ZWEzZDZmZGMyMWVkMjE4ODgxMDAxNmUyOTZjNWMifQ"
+          "resource": "repo://docs/upstream-ci.md#L1-L12",
+          "version": "repo-lines-v1:sha256:323113d2722f47bf12a21a78571e86145e0c6093eb1278a1b8859e42759b5a1b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxZjExNmU1ZjU3YTQ1NTIyNTVmNjg0ZTMxNmRlMzYxM2ZmMDQwOWM1NTA3NzU1YThiZDFiM2U2MDUyZjY4OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1ZWRlNmQwZjM4MTMyZGQ0MTk2MzRlNTQ5YWMyYTdhNzc1NjQ2NzY0N2VlNGExY2UzNjI1NTBjYzM5ZWMwNjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJjNDI5NDRiYjg1N2IyZTE2OTEzMjk2MWE3YmVjZmYzMjI3ZWEzZDZmZGMyMWVkMjE4ODgxMDAxNmUyOTZjNWMifQ"
         }
       ]
     },
     {
       "id": "claim_b120b4782e6649b398766c9e59cf7b4e",
-      "statement": "The append-only journal remains best-effort: there is no RDB, background rewrite, checksum, encryption, crash/ENOSPC validation, backup/restore drill, point-in-time recovery or portable signal-driven drain.",
+      "statement": "The append-only journal remains best-effort: RDB and interoperable AOF are absent, there is no encryption at rest, no fork-based rewrite, no ENOSPC or disk-fault corpus, no online backup or point-in-time recovery, no portable signal-driven drain and no shared-filesystem writer coordination; CRC32 checksums, optional HMAC-SHA256 records, a local ownership lock, offline backup/restore and persisted stream PEL and consumer-activity state are implemented.",
       "evidence": [
         {
-          "resource": "repo://docs/production-readiness.md#L15-L24",
-          "version": "repo-lines-v1:sha256:9d8f3c0fd0edee318ca94a67761afbdb802a825b13d7448501c63d63bdb7e778:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkNzExOWQyNTEwZjc1YzEwMmJkNzZiZWFjOWMwMWYzMjMwM2JkNTk2ZDAyZTdkZmFmYTg2MjQxNWEwZjgzMmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiYThhOWJjYmNiOTdmNTkxMGQ3ZjgxN2FlMmRiMGY5M2E3ODg3ZDk2NzMzNTM0YzM2NWQ0Y2Y0YmI5NzFmNzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjMDQ3NTRkMDY5YzY0OWQ0ZjRkODhmZWZjZjcyNmZkNDRkMjA1YzM1YjNiZTUwZDhjOTEwNWVlN2Y1NTVjYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzYThkNjc1ZDMzMDdjZTIzZWU3YzQxYTExYTQ4YjlkMmExNDQzODY2ZmM1YWY0NWYwNDM4YmNlZGYxMzdlNDIifQ"
+          "resource": "repo://docs/persistence.md#L376-L397",
+          "version": "repo-lines-v1:sha256:a1600364c9817e8712ddaf6a7600b0203e3d6890db4e6c3c169517f5d16a146d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwNTM3NmM2MTUyNWVlNjRiNjk1NzViMTIzNmQ4NTAxY2E2YjIwNzdkMzM0MWEzY2YwMWVjOTQ2YTk3YWY4ZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkZmUwNWE1MTdmYTUxMzM4MmU3YTlkNzEyOWJlNWYzN2EwODFlZGU0ZDA4MjY2ZDcwNDhmNmU3MGNkZjZkY2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU2ZDE1NzA3ZjY3MDllODRhM2JhNmRlNzNjNzhiY2MxNTk2NjQ2ZDU5ZDkxNzgwMzQ0Nzg5YWMwMzk3NDE2ZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI4ZjYzNjc1ZTAxMDJlMDQyYzM0M2Q2NzgwNTlkZWRjNzMyNTg3M2IwMzEyNjkxZjE0NWY1MTIzNzFhMWVkNDYifQ"
         },
         {
-          "resource": "repo://docs/production-readiness/durability.md#L3-L10",
-          "version": "repo-lines-v1:sha256:8a06582d213af65573e029036c9e736cebb1cf7970015fc4bef7256dd50d15c4:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjhhYjhjMDYzMWFmZWE0MTg1MDUzNjgwZDc0ZGE0NmI0NjM5YWZjNmU4MGI4MDVkNTE0NDhlODVjODJjZTczZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTE2M2Y3MjAwMGM4YTRlZjBkOGEzZjEwNWQxYWIxMTgwNGUzODZmYTQzYTNiOWZmYmRhZWJmZjYyNWIyZDYxYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2Y5MzI2NWZiYTcwMTYzOWI2MGJjYmQwMjVmNGY0MGI3YTYwYTEzNDAwNDZiNzhkMjkxMjQ3ZDUyNGFjYTJhZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+          "resource": "repo://docs/production-readiness-gaps.md#L226-L287",
+          "version": "repo-lines-v1:sha256:e2afc7b8912b3e92d29d18deef4d205f81e0a8715c1acdf029e2ec99f9bc3b91:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiYmM1NzJlYzRiM2QzZDI5OWI0NDgwZWM0NWE4YzBiYTM0ODQ3NTcyMjZkNTEzOGQwNzMxNWE5MTFkMzdhYzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyYWNjNTdlMjJhZDE1NGJhYmJiY2FlMjRjYWI2NTM2ZmVlZmI0MDIzNDFlMjVkYTUwMWRkNTE2NWI0Y2RjNTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyNzA2NTlmOTcxYzkyMjAyMmVlYTE1NTQwYjc1MzQ0ODYyZDFmMjg5YTI2OTJkNmY4MTM1ZmYyZjgwMGQ1OGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI1YWU3OTQ0ZTUzNTE5ZjQ1NjVlOWJhMDA1YmFkNTJkZTNiNzFmMzIzZDMyNTg2MjU5NDgwODExNjBjYzU2NTYifQ"
+        },
+        {
+          "resource": "repo://docs/production-readiness-gaps.md#L289-L330",
+          "version": "repo-lines-v1:sha256:72226e44ac9f7ac1e9c70f8f025dcbe6e68b000e2ed093f4a070d3e6a7ad437c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkMTgwNTI4Yjc3YmZhNWUwZDljYzM5NDdjZTJhNzcwZjk1ZGQ2MDU3NjI3NTNlYjk4NGM2MzU4ZGYwMDFhODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNGUwODgwMjc1MTViN2MwZDRkOTAxNmVjNWNiNGVlNzVlNzExNzhmMzNhYWIyMTA5MjNlYWQ5ZWM1NTY3NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3ZjU2OTEwZGIyYTU5ODMyZmUzZTRjODI0YWExODFjYTljYjZmMmI3YTY1NTZhODYyMDg5MWJhMTZlNzhkNzgifQ"
         }
       ]
     },
@@ -119,10 +123,24 @@
           "version": "repo-lines-v1:sha256:3611943dc9a4acd4e1c36119661ceb8c8581b535380efe12b1a2c6ab8a0380d1:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2Q0OTZmYTllY2UzOTI2ZTk5NzBjZDI5NzEyNDdmMzQwNWU5NmZmZmYzOTgyMDVmNjU4ZTIzZDRkNTY0MjVmMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2QyOWU4NTE3ZTQxODQ0NGU3ZTJiMjhkZmIzNDA5ZjYyM2Y1ODA2NjdjYzkxMWZjOGZiMTlhNDRhNjMzMzU2NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2ZjZDI4NTVlMDAzNWU1YTZhMGFmNWNmMWNlNGZjNzE5ZjNjODJiODE2YzU4YmZiMTgwMDBlZWU1YWU1OTE5MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODQyYTE4ZDk1OWU0N2E3ODE0M2M2NWNjMzU2OWMwZDQyNmVjNTlmZGQ5NDMyOGE5MjE0NTBkNGY4NmU4YmIxNiJ9"
         }
       ]
+    },
+    {
+      "id": "claim_421e0c2777f74e43aa3b5c99d9838b27",
+      "statement": "Stream restart replay restores consumer objects and pending-entry owners, delivery counts, timestamps and last-activity when the keyspace tracks wall-clock time, including deleted or trimmed pending ids via placeholder XADD/XCLAIM/XDEL records; without tracked time the activity shortcut stores zero, and deleted or renamed consumer history is not retained.",
+      "evidence": [
+        {
+          "resource": "repo://docs/persistence.md#L344-L374",
+          "version": "repo-lines-v1:sha256:651b8a60e35a96c7e5f699bd308148d284eaf5c619aff511e1f325f3039e9553:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3ZGEwMDI1MDlhYjRiNTYyMDc3NTlmMDYyYzdjMWE2OWIyMTgxMjAwOTA0Y2NlZjg1NTg3N2YwODNlYzJmODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMzhlNGI1YzdmNDdlOWIwNDI0YjViOWM1MTE2OTkwNmU5YTA3NDhkNzVlYzgxYTU2ZDJhY2RkODRmNWVmODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmMWQ4MjMwYmYwOWE4NjllOGNkYjhiY2UwZTEwZjBlZWY4ZmZhNzNkZjNjNzI0ZjExMzA0ZWNlOTU5ZDExMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZjI5MjA3NmUxOWYzNmE0YjBkOGFmZTFiZmRjNDRhODVkMDdkMDJkZWMyMjY0OTBhN2M3NjNkMGNkYTQ1N2MifQ"
+        },
+        {
+          "resource": "repo://docs/production-readiness-gaps.md#L289-L308",
+          "version": "repo-lines-v1:sha256:afa314a2d1389853d8c5c9a4cca2d76b3170f1b87d40bbfe1b689de73f4d1184:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkMTgwNTI4Yjc3YmZhNWUwZDljYzM5NDdjZTJhNzcwZjk1ZGQ2MDU3NjI3NTNlYjk4NGM2MzU4ZGYwMDFhODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlMmIwMjcxOWVkMTYxYzNkOTRkMjgzNTlhZGU5NWVmYjQxNTJkMjVhMWU2MzNhMTUyZWMwODFhMzUxNjRkY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNGUwODgwMjc1MTViN2MwZDRkOTAxNmVjNWNiNGVlNzVlNzExNzhmMzNhYWIyMTA5MjNlYWQ5ZWM1NTY3NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmM2Q0YzA0MjZkNzAwNjNhODU4OGYwYjI0MjM3MjY3Y2IxMDEzMWUxMmFjOTkyYmY2YzU5MWI1N2MxMGU0ZmMifQ"
+        }
+      ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.7.3",
-    "at": "2026-11-02T16:04:12.575Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-11T20:57:56.397Z"
   }
 }

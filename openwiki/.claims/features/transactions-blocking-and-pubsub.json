@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ed4a987868b22bf80effba0b54d99e015a1c719c19f7520af75f299c16a98fa6",
+  "pageVersion": "sha256:d7ae865c7a79c6d8b5fdd1a41926d0aa3a7bf0e1183fbdf402fd1f1d0e4f6e5d",
   "claims": [
     {
       "id": "claim_d70107cc891a4fceb6d508f0245eb2d3",
@@ -41,8 +41,8 @@
           "version": "repo-lines-v1:sha256:6dac7d305746db8f0387a5d297f1f08faa776f3fa92bb1faae6c6d0f20bf5515:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzUyYmQ0NmI1ZGVjNzViZTc4MDE0ZTI0YjQ5MDAzOWJlZDg1ZmQ5ZWIzNDczODYxNTEyNzJiYjIxODQ4MTFjYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzlmNzgzMGVlODUzN2FkNDI5Yjc2NmVjNDI5MzRlM2U0NjM5OWM2NzM5ODc3MTdiNzBiNTVhZGZkM2NiMWMyZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjIyMTAwYTdjY2UyMDAyMjAzMzc3NTdiY2ZjMzgzOTkxMDljMTk3MmIyMDY0ODdiYTM2OTM4N2E4ZTZkN2M2NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMThjNTBlMzVlYWI3NWQ0ZTMxY2I0MDliYmY4OGEyOWZkNWEyYzVlOWRhNWU4MTEzMDliYWUyNzM0NzUwMThiNiJ9"
         },
         {
-          "resource": "repo://src/engine/data.rs#L239-L267",
-          "version": "repo-lines-v1:sha256:311b14133ceade5e8926c245415a8d4d52c4b0e007a510a2e0f626843c9effe2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxNjM3ZGEwZTBjN2UwMDUyZDU3ODBjZTQ5MzA2MmQ2Nzg5MDkwMjY2YWFkMDNjYzE0ZDEyYTk3ZmQ5YTZiOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNGVkY2M3ODcwYTMyMmRhNjgyNzQ5NTE1ZWMzNGU1MDlhODQzYmUwYTQ4MGU2YjY2MzgwNGMxYTM2MGIyMzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YTFlZGQyMzA4NDE3MjI2MzEyNmVlNWI2YTg0YzE3YmZlMTZkNzY3MjIxYjJhYzU2MjgxNWQ3NWYzMDIxMjgifQ"
+          "resource": "repo://src/engine/data.rs#L239-L243",
+          "version": "repo-lines-v1:sha256:eb44bc827bd141edf8d66beaad570a8cb3692d2e281f072212eede45269f10e8:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDE2MzdkYTBlMGM3ZTAwNTJkNTc4MGNlNDkzMDYyZDY3ODkwOTAyNjZhYWQwM2NjMTRkMTJhOTdmZDlhNmI4ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzY4NjE0NGIwMmRlMTJjNTYwYTI5Yzk5OWYzOTIxYmYxOTUzOTIyOTJiZjg1ZTFjMDYxZThiMjkyZWZmZWU3MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTllNzYzNTVjZjExOTk0ODBjM2Y5OTgzNmIxNDg2Yzg0MWQ4OTFmYWFkOTA0YzYwOGUwOTMwMjJkMzc1N2FlZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTE2MWUxZjdlYTExYTAyYzI0NTA0ZmRlY2Q0YzEwYTVkNWQwNzY2ZWNlMGYzMTFkOTM0NjYzMzExYTI2NWZmNCJ9"
         },
         {
           "resource": "repo://src/engine/transaction.rs#L1-L75",
@@ -55,7 +55,7 @@
       "statement": "Blocking commands store a deadline and continuation without holding a data borrow, do not parse further input until unblocked, and are polled about every 10 milliseconds rather than woken by a condition variable.",
       "evidence": [
         {
-          "resource": "repo://docs/collections.md#L120-L142",
+          "resource": "repo://docs/collections.md#L121-L143",
           "version": "repo-lines-v1:sha256:e296fc01d947e4f841095ae19206a570a7f5b63db8f7fbe83bbbc9e3ca10a937:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzODEyNjRmNWYyZjYxZWRlNWUxODAyNjIyZjU5MjRjYTFjMjRiODA1NTQyY2U2YTdiNjFjN2I3NmIxYWM0NGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjYjk2Y2E4YzYzZTIyYzAwOTJhN2MwM2I0NzE0NTQ4MGE0ZDAyY2E1MzIwY2MwNzA3MmYyYjdiYTA2MWVjZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkMzA0YWE2ZWY0OThkOTc4NzBhY2VkMTRkODFhMjhiZDUzNTk2MjE3YjZiYjljMDI2ZjMyZjFjMThiNGE2MTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4YTcwNWFmMDAwMzM0ZjEyODAyYzdjZGVjZDE3NWU0YjVmZDZiMTYzMjE4NjM3YmNiNzFiNjY2MDk0ODkxMjYifQ"
         },
         {
@@ -126,7 +126,7 @@
     }
   ],
   "verification": {
-    "by": "openwiki/0.7.3",
-    "at": "2026-11-02T15:32:39.597Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-11T08:27:05.780Z"
   }
 }

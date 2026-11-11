@@ -4,8 +4,8 @@ title: Ownership, mailboxes and sharding
 description: How Rillcache keeps mutable data on one thread, routes keys through virtual partitions and coordinates cross-owner commands, blocking waits and shutdown.
 tags: [ownership, sharding, mailboxes, concurrency, atomicity, blocking]
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T15:32:39.597Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 sources:
   - id: openwiki-source-ccfe8cc4504f25c304787a46
     resource: repo://src/engine.rs
@@ -25,7 +25,7 @@ sources:
     resource: repo://src/engine/shard.rs
   - id: openwiki-source-879290b4e204edae388f4406
     resource: repo://src/server/multi.rs
-generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
+generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
 ---
 
 # Ownership, mailboxes and sharding
@@ -54,7 +54,8 @@ The synchronous public `Store` API remains a compatibility bridge. Complete owne
 operations and owned replies cross a bounded one-message mailbox; `Data` never
 does. Admission happens before argument copying, so concurrent callers cannot
 accumulate an unbounded queue of retained copies. This path is used by external
-embedders, cold configurations, mixed TLS and portable multi-worker modes.
+embedders, journal, ACL-file and audit configurations, mixed TLS and portable
+multi-worker modes.
 
 ## Virtual partitions
 

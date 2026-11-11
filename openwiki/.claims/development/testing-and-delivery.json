@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:7eaf113bbbb21e34a283fd03f21a4fdfcf21f32691c4f0f8cab3162c5f47c09a",
+  "pageVersion": "sha256:2c1a869ebb814ff755042bc95395809766049d3a809e4d144450f9e255424bf9",
   "claims": [
     {
       "id": "claim_01d58708d8e143a1a2e3176b7b30b30a",
@@ -41,8 +41,8 @@
       "statement": "The repository defines 14 app-pinned required contexts across six PR workflows, including CI, both Valkey gates, container verification and both native builds, the Tcl matrix and PR policy self-tests.",
       "evidence": [
         {
-          "resource": "repo://docs/actions-gate-audit.md#L38-L54",
-          "version": "repo-lines-v1:sha256:688d0d391519739ebe1f2319bbbf3ebd71a924fe2c56a51474df60173958604e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhYjhlYzIxODFjNjk5NmY2OTkyNDIxYmNmZGMxYWRjYzg5NTNiNDg3YTY5ODNiNTg0Nzk2ZjU0YzNmZTk2MmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViNGRhYTkzN2IzZWQwOTdjYzNiZTkzYjlmNGUwMGYzMDgxMDQ4ZjM0MGY2NDE4NWIyMWNlODE1ZjM0ZjIyMGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiOThjNjU0MjY0MDliNWMzN2MxYTU3NTAwNjNiOWVlMTg0NDczYWM4Mjg3NTBlMDIzM2U2NDViYTEzNzM2NTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2ZDBhMzMxNGE1ZDk4NWZjYTNiZWE1NmQ2NWI0ODVlMzk3ZDhkNzliMTI1MGYzYjUyYjZjNGFkODAzZTgzYzcifQ"
+          "resource": "repo://docs/actions-gate-audit.md#L38-L56",
+          "version": "repo-lines-v1:sha256:aabace94ba3d74de43b66e25a04460762fbd27874937ec63e808765db4231ae8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhYjhlYzIxODFjNjk5NmY2OTkyNDIxYmNmZGMxYWRjYzg5NTNiNDg3YTY5ODNiNTg0Nzk2ZjU0YzNmZTk2MmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0ZDkzZTcxZDhlZGY5MzU0ZGE5MGMzNDFhNzZmYWU4OGIxMjE2ODk1MjdmY2E1ZmNhZWM0ZjkyZmUzMTY4MDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiOThjNjU0MjY0MDliNWMzN2MxYTU3NTAwNjNiOWVlMTg0NDczYWM4Mjg3NTBlMDIzM2U2NDViYTEzNzM2NTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2ZDBhMzMxNGE1ZDk4NWZjYTNiZWE1NmQ2NWI0ODVlMzk3ZDhkNzliMTI1MGYzYjUyYjZjNGFkODAzZTgzYzcifQ"
         },
         {
           "resource": "repo://docs/pr-quality-gate.md#L12-L42",
@@ -62,11 +62,11 @@
     },
     {
       "id": "claim_62f7c8ddb1244cbe926b6ac5a74858cb",
-      "statement": "The official four-CPU gate requires all 10 Valkey medians and all 10 same-setup Dragonfly medians to be strictly higher, using the unchanged valkey-benchmark and ten-second samples on the same four allowed logical CPUs.",
+      "statement": "The official four-CPU gate requires all 10 Valkey medians and all 10 same-setup Dragonfly medians to be strictly higher, using the unchanged valkey-benchmark, ten-second samples, five alternating Valkey repetitions on the same four allowed logical CPUs and parallel per-workload cohorts.",
       "evidence": [
         {
-          "resource": "repo://docs/pr-quality-gate.md#L99-L179",
-          "version": "repo-lines-v1:sha256:6c03fc26282e4f8cdb75c5626b90af74122144356d90ba38399e076fa01b9af1:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliMzkyYjY3M2VkZTRjMjQ2ZTlmNGNjNGJiZDMxN2U1YmJkMWVjMjljODAzZDY0MmJjZjZlZjNhYTExZTZhMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhYTNkZWFiN2Q1N2JhN2RjYWVhZTBhMWU2MmZmYjZkNDA5NmI2MDc3MmYyNGVhMDExZTg0Njk5MmI5OTFhZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU1ZjJlZTI4NGM4OGFmOTJjZWQxNDZkNDdjMTViNzhiMDc3ZmY4ZWVlYzQ2YzdlZTdhMTYxYWY5ZjQ5ZDRlMDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJhMTc4ODA0MTA3NzA0ZDAyY2MxMGYxODAxN2Q0ZDQyMjJiODg0NmI4MDdiMGQ3N2UzY2QyN2E1YWMwNDZiZmMifQ"
+          "resource": "repo://docs/pr-quality-gate.md#L99-L206",
+          "version": "repo-lines-v1:sha256:6e6e48cd5ac81752ddfd723e4f3ae8aa814a4f9a0194483d19489eebd8b82a0f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5YjM5MmI2NzNlZGU0YzI0NmU5ZjRjYzRiYmQzMTdlNWJiZDFlYzI5YzgwM2Q2NDJiY2Y2ZWYzYWExMWU2YTMxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5ZTE1NGI3YmFkMGEzOTc3ZTM5ODcxYzMzYWFlNTlhZTNlOTIzMGRjZDNlNGY4ZTgzOTg3YmQ2YjZhMGQ4OGM2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1NWYyZWUyODRjODhhZjkyY2VkMTQ2ZDQ3YzE1Yjc4YjA3N2ZmOGVlZWM0NmM3ZWU3YTE2MWFmOWY0OWQ0ZTA1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwZjQyMjRjYzQxZDljNTdjZWEyNTQ2YzA1ZDkwOGNmMjQwNzllZDU2ZGNhZTAyYTlhMzYxMDhmY2M1MDFkN2I2In0"
         }
       ]
     },
@@ -75,7 +75,7 @@
       "statement": "The upstream compatibility matrix runs only three unchanged Redis/Valkey Tcl files with native controls first, records scope exclusions, and does not patch tests or proxy protocol frames.",
       "evidence": [
         {
-          "resource": "repo://docs/upstream-ci.md#L70-L124",
+          "resource": "repo://docs/upstream-ci.md#L73-L127",
           "version": "repo-lines-v1:sha256:2063e484dac457c95902c1df828e32c8f1073f7c8bbbd3453a414ad825c260ef:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmMzNlNDI3Nzc3YTMyOTA4NTY2ODU0ZjQwOTUyOGM5OWRjYjM1NjdkMTUzOWZmYThmZDRiOGExZDFkOGIxNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkwZWY2MzVhNzY4MGEzNmE5MWQxNjBmNGYzZDJmZGU0YjNiMGJkM2UyMzA5N2I1ZjBjODQ2ODViMWMyOTkzNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlZjBkMmY5YjZkODY2YmQxNGNiNjhmYjA3NGUwOTA2ODcxMjAxZmM0ZGEzY2I4NThiZTlmYmFhOTQ2MzU2NTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMDhjMDVhMGI1M2QwNzFmNTUzZGU3YTI4ODYzZGFlNWY3MTVkNGFiZmJjMDJmOGQwODYxZTNkOWIxMjZkY2UifQ"
         }
       ]
@@ -85,7 +85,7 @@
       "statement": "The policy checker audits every workflow and PR job against the tracked inventory and can verify live ruleset enforcement with bounded read-only GitHub queries, reporting redacted bypass lists as unverified.",
       "evidence": [
         {
-          "resource": "repo://docs/actions-gate-audit.md#L61-L85",
+          "resource": "repo://docs/actions-gate-audit.md#L63-L87",
           "version": "repo-lines-v1:sha256:b59020cfdee9654af944cbcb3c05115ebfbeffb447ec8174db8ce08febeb8f81:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkMjhmOTZmZTZiYzQzOGIxYzJlOTY0Y2ZlMmU3ODJiZmI4NGRmNWQzY2M3MmU4ODNlMjk5MDQ5OGY1ZDYxMzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5NzM4Y2M1YTc0Zjg1MWI1MWJhMDgzOTU4YTkwNjZjZTY1MDczOGFmYTcxYzc5Yjg1YmEwYjFkYjJkN2Y2YWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyZTY0ZTlkOWE3Nzg1NzY2NDRjMTg2ZjJkZWY2MDAwZjcxN2U2NWU4MzM5YjM0ZjJhNzA3MTY1MDc0Nzc2MTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEwYTAxNzhiYTRhODJmYzAzZWU1NTk4NGZjODRhODRiMDZkNjljYzMzZjBjYjljMTk4MDUyZTEzMWY5ZjUwYjMifQ"
         },
         {
@@ -107,10 +107,24 @@
           "version": "repo-lines-v1:sha256:cff93bdeb63fe92959f3c2ca6a90c34e53b9c700b5f24f28f28591257eea6af9:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4YjJhNzVjZTBmM2Y3ZDU0MGJkYWYwZGU2YjM3MDQzYzc0MWI5ZTZjZTU0NzRiNWI0YWI1ZTc4NzYxNDMwOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljY2I4ZmJkMGIzN2ZkODg3MjAwMDQ1OTZjMDU3MGY0ZDVhNDAwMWUxMTk1YWIyYmUzYmQ1MDY1NTRkNWUxODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlYjFmYTExZjdmNWU0N2YzZDg2MmEwYzdkZmU3Y2E4Y2JlN2Y2ZjEwMjIyMjMyMGUyMDdmZWVlNjgyYjg4NGUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_4fe8d5cb9cea4fffa1ffa8a8ada823f9",
+      "statement": "The OpenWiki freshness workflow runs on main pushes and weekly, checks saved Claim evidence with the pinned resolver, and opens or updates a maintenance issue without rewriting or re-signing claims.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/openwiki-freshness.yml#L1-L15",
+          "version": "repo-lines-v1:sha256:063d61ce537fc759329b084db4bb0097282d46b2ac6ee0d531dcb6631c373316:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkYWYxYWZkOGQzYzVkMGIzOGM2N2E0N2NiNWIwYWMxYWFiMmU0NjJkYWRkMjliY2QxOTE2MzM4YTNkMGI5YjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0YTAxZjI4YjZiMDRkNDVjYWQwZmU2Yjg2MmQxYTgwMmQ3YzFiYzVlNzdlYjg4NTgwMGI4ZDkxY2Y3ZjQ0ODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxNzI2YjYwYWMwYmY2MTI2NTZiZjRjZjQ3NzNkZjI0ZDhhMjM2YTU0ODExZTQ4ODMwNDRiM2E4OGIzZDJmMGUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-freshness.yml#L60-L78",
+          "version": "repo-lines-v1:sha256:832aea11b0ec4a5fb89aa04fd318e2ce53b7e9bb14e925ff7efb1578fff452ac:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwNmJjNTAxNzVhOTllNTY4MDQ2MWE5MWNjNWY0ZjMzZTY5YmI2MjcwM2Y3ZWIwMmE5YzFmNmZmZTI5ZDM5ZDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2NzU2NTM4MzQ4YTNmOTMzYzI3NGY3MWRlOTdhNGZhZDBkMmJlMmFlOTViMTQ3MDdiYzgwOTg1YTE2NzhiMTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3MTUxNzY1MTVjZjFkY2QxOGM5MDA3ZjVhNzhjMjA1OTRkZGZjODY0NmFjMGMxNDk2OGNmNjAwYzYzOTJiYTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMwNzcxNWI0ODdjNDU4Yzc0ZDdjNGFiNDhkYTYyYThkMWE2MTY3MDUxYzQ5NWY4OTdlNDNmOTNlNjNkYTdjNTEifQ"
+        }
+      ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.7.3",
-    "at": "2026-11-02T15:32:39.597Z"
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-11T08:27:05.780Z"
   }
 }
