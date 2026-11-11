@@ -9,7 +9,7 @@
 //! between client commands and swaps in the synced snapshot under a short gate.
 
 use super::ShardExecutor;
-use super::data::{Collection, Data};
+use super::data::{Collection, Data, StreamId};
 use super::notify::{Category as NotifyCategory, NotifyFlags};
 use crate::protocol::{Limits, dispatch_request, encode_request};
 use std::collections::VecDeque;
@@ -22,6 +22,54 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(1);
 const CHUNK_BUDGET: usize = 256 * 1024;
 const CHECKSUM_HEADER: &[u8] = b"__RILLCACHE_AOF_CRC32_V1__:";
 const CHECKSUM_RECORD: &[u8] = b"__RILLCACHE_RECORD_CRC32_V1__:";
+const AUTH_ANCHOR: &[u8] = b"__RILLCACHE_AOF_HMAC256_V1__:";
+const AUTH_RECORD: &[u8] = b"__RILLCACHE_RECORD_HMAC256_V1__:";
+const AUTH_ANCHOR_DOMAIN: &[u8] = b"rillcache-aof-auth-anchor-v1\0";
+const AUTH_RECORD_DOMAIN: &[u8] = b"rillcache-aof-auth-record-v1\0";
+
+/// Optional keyed authentication for journal transactions.
+#[derive(Clone)]
+pub struct JournalAuth {
+    key: Vec<u8>,
+    pub(crate) migrate: bool,
+}
+
+impl JournalAuth {
+    pub fn new(key: Vec<u8>, migrate: bool) -> io::Result<Self> {
+        if !(16..=1024).contains(&key.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "journal authentication key must be 16..=1024 bytes",
+            ));
+        }
+        Ok(Self { key, migrate })
+    }
+}
+
+pub fn read_auth_key_file(path: &Path) -> io::Result<Vec<u8>> {
+    let mut key = fs::read(path).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cannot read journal authentication key file {}: {error:?}",
+                path.display()
+            ),
+        )
+    })?;
+    if key.ends_with(b"\n") {
+        key.pop();
+        if key.ends_with(b"\r") {
+            key.pop();
+        }
+    }
+    if !(16..=1024).contains(&key.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "journal authentication key must be 16..=1024 bytes",
+        ));
+    }
+    Ok(key)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FsyncPolicy {
@@ -135,6 +183,124 @@ fn parse_checksum_record(value: &[u8]) -> Option<(String, u64, u32)> {
         return None;
     }
     Some((nonce.to_owned(), len, crc))
+}
+
+fn auth_anchor_record(nonce: &str, prefix_len: u64, tag: &[u8; 32]) -> Vec<u8> {
+    let payload = format!(
+        "{}{nonce}:{prefix_len}:{}",
+        String::from_utf8_lossy(AUTH_ANCHOR),
+        super::sha256::hex32(tag)
+    );
+    let mut out = Vec::new();
+    encode_request(&[b"ECHO", payload.as_bytes()], &mut out);
+    out
+}
+
+fn auth_mac_record(tag: &[u8; 32]) -> Vec<u8> {
+    let payload = format!(
+        "{}{}",
+        String::from_utf8_lossy(AUTH_RECORD),
+        super::sha256::hex32(tag)
+    );
+    let mut out = Vec::new();
+    encode_request(&[b"ECHO", payload.as_bytes()], &mut out);
+    out
+}
+
+fn parse_auth_anchor(value: &[u8]) -> Option<(String, u64, [u8; 32])> {
+    let suffix = value.strip_prefix(AUTH_ANCHOR)?;
+    let text = std::str::from_utf8(suffix).ok()?;
+    let mut parts = text.split(':');
+    let nonce = parts.next()?;
+    let prefix_len = parts.next()?.parse().ok()?;
+    let tag = super::sha256::parse_hex32(parts.next()?)?;
+    if parts.next().is_some()
+        || nonce.is_empty()
+        || nonce.len() > 96
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    {
+        return None;
+    }
+    Some((nonce.to_owned(), prefix_len, tag))
+}
+
+fn parse_auth_record(value: &[u8]) -> Option<[u8; 32]> {
+    let suffix = value.strip_prefix(AUTH_RECORD)?;
+    super::sha256::parse_hex32(std::str::from_utf8(suffix).ok()?)
+}
+
+fn auth_anchor_tag(key: &[u8], nonce: &str, prefix_len: u64, prefix: &[u8]) -> [u8; 32] {
+    let mut hmac = super::sha256::HmacSha256::new(key);
+    hmac.update(AUTH_ANCHOR_DOMAIN);
+    hmac.update(prefix);
+    hmac.update(nonce.as_bytes());
+    hmac.update(&prefix_len.to_le_bytes());
+    hmac.finish()
+}
+
+fn auth_record_tag(key: &[u8], previous: &[u8; 32], bytes: &[u8]) -> [u8; 32] {
+    let mut hmac = super::sha256::HmacSha256::new(key);
+    hmac.update(previous);
+    hmac.update(AUTH_RECORD_DOMAIN);
+    hmac.update(bytes);
+    hmac.finish()
+}
+
+fn auth_record_hasher(key: &[u8], previous: &[u8; 32]) -> super::sha256::HmacSha256 {
+    let mut hmac = super::sha256::HmacSha256::new(key);
+    hmac.update(previous);
+    hmac.update(AUTH_RECORD_DOMAIN);
+    hmac
+}
+
+enum AofMarker {
+    ChecksumHeader(String),
+    ChecksumRecord(String, u64, u32),
+    Authenticated,
+    Unknown,
+}
+
+fn parse_aof_marker(command: &[u8], payload: &[u8]) -> Option<AofMarker> {
+    if !command.eq_ignore_ascii_case(b"ECHO") {
+        return None;
+    }
+    if let Some(nonce) = parse_checksum_header(payload) {
+        return Some(AofMarker::ChecksumHeader(nonce));
+    }
+    if let Some((nonce, len, crc)) = parse_checksum_record(payload) {
+        return Some(AofMarker::ChecksumRecord(nonce, len, crc));
+    }
+    if payload.starts_with(AUTH_ANCHOR) || payload.starts_with(AUTH_RECORD) {
+        return Some(AofMarker::Authenticated);
+    }
+    if payload.starts_with(b"__RILLCACHE_AOF_") || payload.starts_with(b"__RILLCACHE_RECORD_") {
+        return Some(AofMarker::Unknown);
+    }
+    None
+}
+
+enum AuthMarker {
+    Anchor(String, u64, [u8; 32]),
+    Record([u8; 32]),
+    Malformed,
+}
+
+fn parse_auth_marker(command: &[u8], payload: &[u8]) -> Option<AuthMarker> {
+    if !command.eq_ignore_ascii_case(b"ECHO") {
+        return None;
+    }
+    if let Some((nonce, prefix_len, tag)) = parse_auth_anchor(payload) {
+        return Some(AuthMarker::Anchor(nonce, prefix_len, tag));
+    }
+    if let Some(tag) = parse_auth_record(payload) {
+        return Some(AuthMarker::Record(tag));
+    }
+    if payload.starts_with(AUTH_ANCHOR) || payload.starts_with(AUTH_RECORD) {
+        return Some(AuthMarker::Malformed);
+    }
+    None
 }
 
 pub(super) struct RewriteJob {
@@ -291,6 +457,7 @@ struct RewriteState {
     crc: u32,
     record_len: u64,
     bytes: u64,
+    auth_tag: Option<[u8; 32]>,
 }
 
 pub(super) struct Journal {
@@ -305,6 +472,9 @@ pub(super) struct Journal {
     rewrite: Option<RewriteState>,
     _ownership: Ownership,
     checksum_nonce: Option<String>,
+    auth_key: Option<Vec<u8>>,
+    auth_migrate: bool,
+    auth_tag: Option<[u8; 32]>,
     size: u64,
     rewrite_base: u64,
 }
@@ -321,7 +491,12 @@ pub(super) struct PersistenceStatus {
 impl Journal {
     /// Open (or create) the log, replay it into a fresh store, discard a partial
     /// tail and leave the file positioned for appends.
-    pub(super) fn open(path: &Path, policy: FsyncPolicy, limits: Limits) -> io::Result<Self> {
+    pub(super) fn open(
+        path: &Path,
+        policy: FsyncPolicy,
+        limits: Limits,
+        auth: Option<JournalAuth>,
+    ) -> io::Result<Self> {
         // Claim ownership before opening or replaying: a second process must not
         // read a journal it is about to corrupt.
         let ownership = Ownership::acquire(path)?;
@@ -344,6 +519,10 @@ impl Journal {
             .truncate(false)
             .open(path)?;
         let size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        let (auth_key, auth_migrate) = match auth {
+            Some(auth) => (Some(auth.key), auth.migrate),
+            None => (None, false),
+        };
         Ok(Self {
             file,
             path: path.to_path_buf(),
@@ -356,6 +535,9 @@ impl Journal {
             rewrite: None,
             _ownership: ownership,
             checksum_nonce: None,
+            auth_key,
+            auth_migrate,
+            auth_tag: None,
             size,
             rewrite_base: size,
         })
@@ -377,18 +559,12 @@ impl Journal {
         let mut crc = !0u32;
         let mut record_len = 0u64;
         let mut group_start = 0u64;
+        let mut group_open = false;
         while !eof {
             while consumed < buffer.len() {
                 let marker = dispatch_request(&buffer[consumed..], self.limits, |args| {
-                    let command = args.first().copied().unwrap_or_default();
-                    let payload = args.get(1).copied().unwrap_or_default();
-                    if args.len() == 2 && command.eq_ignore_ascii_case(b"ECHO") {
-                        Some((
-                            parse_checksum_header(payload),
-                            parse_checksum_record(payload),
-                            payload.starts_with(b"__RILLCACHE_AOF_")
-                                || payload.starts_with(b"__RILLCACHE_RECORD_"),
-                        ))
+                    if args.len() == 2 {
+                        parse_aof_marker(args[0], args[1])
                     } else {
                         None
                     }
@@ -399,16 +575,37 @@ impl Journal {
                         consumed += used;
                         offset = offset.saturating_add(used as u64);
                         match marker {
-                            Some((Some(header_nonce), _, _)) if nonce.is_none() => {
+                            Some(AofMarker::ChecksumHeader(header_nonce)) => {
+                                if nonce.is_some() {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "invalid or mismatched AOF checksum marker at byte {}",
+                                            offset - used as u64
+                                        ),
+                                    ));
+                                }
                                 nonce = Some(header_nonce);
                                 group_start = offset;
                                 valid_end = offset;
                                 crc = !0u32;
                                 record_len = 0;
+                                group_open = true;
                             }
-                            Some((_, Some((marker_nonce, expected_len, expected_crc)), _))
-                                if nonce.as_deref() == Some(marker_nonce.as_str()) =>
-                            {
+                            Some(AofMarker::ChecksumRecord(
+                                marker_nonce,
+                                expected_len,
+                                expected_crc,
+                            )) => {
+                                if nonce.as_deref() != Some(marker_nonce.as_str()) {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "invalid or mismatched AOF checksum marker at byte {}",
+                                            offset - used as u64
+                                        ),
+                                    ));
+                                }
                                 if expected_len != record_len || expected_crc != !crc {
                                     return Err(io::Error::new(
                                         io::ErrorKind::InvalidData,
@@ -419,8 +616,18 @@ impl Journal {
                                 group_start = offset;
                                 crc = !0u32;
                                 record_len = 0;
+                                group_open = false;
                             }
-                            Some((_, _, true)) => {
+                            // Authentication markers are inert for checksum framing:
+                            // they are excluded from the group CRC and length. A
+                            // completed transaction's marker is a recoverable
+                            // boundary, so a torn following append keeps it.
+                            Some(AofMarker::Authenticated) => {
+                                if !group_open {
+                                    valid_end = offset;
+                                }
+                            }
+                            Some(AofMarker::Unknown) => {
                                 return Err(io::Error::new(
                                     io::ErrorKind::InvalidData,
                                     format!(
@@ -433,6 +640,7 @@ impl Journal {
                                 if nonce.is_some() {
                                     crc = crc32_update(crc, raw);
                                     record_len = record_len.saturating_add(raw.len() as u64);
+                                    group_open = true;
                                 } else {
                                     // Legacy records before a format marker retain
                                     // the original partial-tail recovery behavior.
@@ -470,8 +678,230 @@ impl Journal {
         Ok(())
     }
 
+    /// Verify the optional keyed hash chain before any command is replayed.
+    ///
+    /// The chain starts at an anchor that seals every byte written before
+    /// authentication was enabled, then links each later transaction. An anchor
+    /// is mandatory once a key is configured unless this startup was explicitly
+    /// allowed to migrate an existing checksum-verified journal. A torn final
+    /// unauthenticated group is truncated to the last verified marker, matching
+    /// the existing crash-tail recovery rule; a complete group with a missing or
+    /// mismatched marker fails closed.
+    fn validate_authentication(&mut self) -> io::Result<()> {
+        let Some(key) = self.auth_key.clone() else {
+            self.auth_tag = None;
+            return Ok(());
+        };
+        let size = self.file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        if size == 0 {
+            self.auth_tag = None;
+            self.file.seek(SeekFrom::Start(0))?;
+            return Ok(());
+        }
+        self.file.seek(SeekFrom::Start(0))?;
+        let mut buffer = Vec::new();
+        let mut consumed = 0usize;
+        let mut chunk = [0u8; 64 * 1024];
+        let mut eof = false;
+        let mut offset = 0u64;
+        let mut last_marker_end = 0u64;
+        let mut anchor_tag: Option<[u8; 32]> = None;
+        let mut previous_tag: Option<[u8; 32]> = None;
+        let mut anchor_hasher = Some({
+            let mut hmac = super::sha256::HmacSha256::new(&key);
+            hmac.update(AUTH_ANCHOR_DOMAIN);
+            hmac
+        });
+        let mut record_hasher: Option<super::sha256::HmacSha256> = None;
+        while !eof {
+            while consumed < buffer.len() {
+                let parsed = dispatch_request(&buffer[consumed..], self.limits, |args| {
+                    if args.len() == 2 {
+                        parse_auth_marker(args[0], args[1])
+                    } else {
+                        None
+                    }
+                });
+                match parsed {
+                    Ok(Some((marker, used))) => {
+                        let raw = &buffer[consumed..consumed + used];
+                        match marker {
+                            None => {
+                                if let Some(hasher) = record_hasher.as_mut() {
+                                    hasher.update(raw);
+                                } else if let Some(hasher) = anchor_hasher.as_mut() {
+                                    hasher.update(raw);
+                                }
+                                consumed += used;
+                                offset = offset.saturating_add(used as u64);
+                            }
+                            Some(AuthMarker::Anchor(nonce, prefix_len, tag)) => {
+                                if anchor_tag.is_some() {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "multiple AOF authentication anchors at byte {offset}"
+                                        ),
+                                    ));
+                                }
+                                if prefix_len != offset {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "AOF authentication anchor declares {prefix_len} prefix bytes at byte {offset}"
+                                        ),
+                                    ));
+                                }
+                                let Some(mut hasher) = anchor_hasher.take() else {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "unexpected AOF authentication anchor",
+                                    ));
+                                };
+                                hasher.update(nonce.as_bytes());
+                                hasher.update(&prefix_len.to_le_bytes());
+                                let computed = hasher.finish();
+                                if !super::sha256::constant_time_eq(&computed, &tag) {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "AOF authentication anchor does not match at byte {offset}"
+                                        ),
+                                    ));
+                                }
+                                anchor_tag = Some(computed);
+                                previous_tag = Some(computed);
+                                record_hasher = Some(auth_record_hasher(&key, &computed));
+                                consumed += used;
+                                offset = offset.saturating_add(used as u64);
+                                last_marker_end = offset;
+                            }
+                            Some(AuthMarker::Record(tag)) => {
+                                if anchor_tag.is_none() {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "AOF authentication record precedes the anchor at byte {offset}"
+                                        ),
+                                    ));
+                                }
+                                let Some(hasher) = record_hasher.take() else {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "missing AOF authentication chain state",
+                                    ));
+                                };
+                                let computed = hasher.finish();
+                                if !super::sha256::constant_time_eq(&computed, &tag) {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "AOF authentication chain mismatch at byte {offset}"
+                                        ),
+                                    ));
+                                }
+                                previous_tag = Some(computed);
+                                record_hasher = Some(auth_record_hasher(&key, &computed));
+                                consumed += used;
+                                offset = offset.saturating_add(used as u64);
+                                last_marker_end = offset;
+                            }
+                            Some(AuthMarker::Malformed) => {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!("malformed AOF authentication marker at byte {offset}"),
+                                ));
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("corrupt AOF authentication framing at byte {offset}: {error}"),
+                        ));
+                    }
+                }
+            }
+            if consumed > 0 {
+                buffer.drain(..consumed);
+                consumed = 0;
+            }
+            let count = self.file.read(&mut chunk)?;
+            if count == 0 {
+                eof = true;
+            } else {
+                buffer.extend_from_slice(&chunk[..count]);
+            }
+        }
+        if anchor_tag.is_none() {
+            if !self.auth_migrate {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "append-only journal is not authenticated; start once with --aof-hmac-migrate after stopping the server",
+                ));
+            }
+            self.write_auth_anchor(&key)?;
+            return Ok(());
+        }
+        if size > last_marker_end {
+            // A crash can tear the final transaction/marker after its checksum
+            // group. Discard that unacknowledged suffix; authenticated history up
+            // to the previous marker remains intact.
+            self.file.set_len(last_marker_end)?;
+            self.size = last_marker_end;
+        }
+        self.auth_tag = previous_tag;
+        self.file.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+
+    /// Seal the existing checksum-verified prefix once, enabling authentication
+    /// for a journal created before a key was configured.
+    fn write_auth_anchor(&mut self, key: &[u8]) -> io::Result<()> {
+        let prefix_len = self.file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        let nonce = new_checksum_nonce()?;
+        let tag = {
+            let mut hmac = super::sha256::HmacSha256::new(key);
+            hmac.update(AUTH_ANCHOR_DOMAIN);
+            self.file.seek(SeekFrom::Start(0))?;
+            let mut chunk = [0u8; 64 * 1024];
+            let mut total = 0u64;
+            loop {
+                let read = self.file.read(&mut chunk)?;
+                if read == 0 {
+                    break;
+                }
+                total = total.saturating_add(read as u64);
+                hmac.update(&chunk[..read]);
+            }
+            if total != prefix_len {
+                return Err(io::Error::other(
+                    "journal changed while creating the authentication anchor",
+                ));
+            }
+            hmac.update(nonce.as_bytes());
+            hmac.update(&prefix_len.to_le_bytes());
+            hmac.finish()
+        };
+        let record = auth_anchor_record(&nonce, prefix_len, &tag);
+        self.file.seek(SeekFrom::End(0))?;
+        if let Err(error) = self
+            .file
+            .write_all(&record)
+            .and_then(|()| self.file.sync_all())
+        {
+            self.failed = true;
+            return Err(error);
+        }
+        self.size = prefix_len.saturating_add(record.len() as u64);
+        self.auth_tag = Some(tag);
+        Ok(())
+    }
+
     pub(super) fn replay(&mut self, store: &ShardExecutor) -> io::Result<()> {
         self.validate_checksums()?;
+        self.validate_authentication()?;
         self.file.seek(SeekFrom::Start(0))?;
         let mut buffer = Vec::new();
         let mut consumed = 0usize;
@@ -552,13 +982,41 @@ impl Journal {
             }
         };
         let crc = !crc32_update(!0u32, bytes);
-        let mut transaction = Vec::with_capacity(new_header.len() + bytes.len() + 128);
-        transaction.extend_from_slice(&new_header);
-        transaction.extend_from_slice(bytes);
-        transaction.extend_from_slice(&checksum_record(&nonce, bytes.len() as u64, crc));
+        let mut transaction = Vec::with_capacity(new_header.len() + bytes.len() + 256);
+        let mut authenticated_tag = None;
+        if let Some(key) = self.auth_key.as_deref() {
+            let previous = match self.auth_tag {
+                Some(tag) => tag,
+                None => {
+                    if self.size != 0 {
+                        return Err(io::Error::other(
+                            "append-only journal authentication is not initialized",
+                        ));
+                    }
+                    let anchor_nonce = new_checksum_nonce()?;
+                    let tag = auth_anchor_tag(key, &anchor_nonce, 0, &[]);
+                    transaction.extend_from_slice(&auth_anchor_record(&anchor_nonce, 0, &tag));
+                    tag
+                }
+            };
+            let link_start = transaction.len();
+            transaction.extend_from_slice(&new_header);
+            transaction.extend_from_slice(bytes);
+            transaction.extend_from_slice(&checksum_record(&nonce, bytes.len() as u64, crc));
+            let tag = auth_record_tag(key, &previous, &transaction[link_start..]);
+            transaction.extend_from_slice(&auth_mac_record(&tag));
+            authenticated_tag = Some(tag);
+        } else {
+            transaction.extend_from_slice(&new_header);
+            transaction.extend_from_slice(bytes);
+            transaction.extend_from_slice(&checksum_record(&nonce, bytes.len() as u64, crc));
+        }
         if let Err(error) = self.file.write_all(&transaction) {
             self.failed = true;
             return Err(error);
+        }
+        if let Some(tag) = authenticated_tag {
+            self.auth_tag = Some(tag);
         }
         self.checksum_nonce = Some(nonce);
         self.dirty = true;
@@ -625,37 +1083,66 @@ impl Journal {
                 .unwrap_or("appendonly.aof"),
             std::process::id()
         ));
-        let nonce = new_checksum_nonce()?;
-        #[cfg(unix)]
-        let file = {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            OpenOptions::new()
+        let state = (|| -> io::Result<RewriteState> {
+            #[cfg(unix)]
+            let file = {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&temporary)?
+            };
+            #[cfg(not(unix))]
+            let file = OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .mode(0o600)
-                .open(&temporary)?
-        };
-        #[cfg(not(unix))]
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temporary)?;
-        let header = checksum_header(&nonce);
-        let mut file = file;
-        file.write_all(&header)?;
-        self.rewrite = Some(RewriteState {
-            file,
-            temporary,
-            nonce,
-            crc: !0u32,
-            record_len: 0,
-            bytes: header.len() as u64,
-        });
-        Ok(())
+                .open(&temporary)?;
+            let nonce = new_checksum_nonce()?;
+            let mut file = file;
+            let mut bytes_written = 0u64;
+            let mut auth_tag = None;
+            if let Some(key) = self.auth_key.as_deref() {
+                let anchor_nonce = new_checksum_nonce()?;
+                let tag = auth_anchor_tag(key, &anchor_nonce, 0, &[]);
+                let anchor = auth_anchor_record(&anchor_nonce, 0, &tag);
+                file.write_all(&anchor)?;
+                bytes_written = bytes_written.saturating_add(anchor.len() as u64);
+                auth_tag = Some(tag);
+            }
+            let header = checksum_header(&nonce);
+            file.write_all(&header)?;
+            bytes_written = bytes_written.saturating_add(header.len() as u64);
+            if let (Some(key), Some(previous)) = (self.auth_key.as_deref(), auth_tag) {
+                let tag = auth_record_tag(key, &previous, &header);
+                let marker = auth_mac_record(&tag);
+                file.write_all(&marker)?;
+                bytes_written = bytes_written.saturating_add(marker.len() as u64);
+                auth_tag = Some(tag);
+            }
+            Ok(RewriteState {
+                file,
+                temporary: temporary.clone(),
+                nonce,
+                crc: !0u32,
+                record_len: 0,
+                bytes: bytes_written,
+                auth_tag,
+            })
+        })();
+        match state {
+            Ok(state) => {
+                self.rewrite = Some(state);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                Err(error)
+            }
+        }
     }
-
     /// Append encoded snapshot records to the temporary file. The caller holds
     /// the data gate only while encoding, never while these writes block.
     fn write_rewrite(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -670,6 +1157,24 @@ impl Journal {
         state.crc = crc32_update(state.crc, bytes);
         state.record_len = state.record_len.saturating_add(bytes.len() as u64);
         state.bytes = state.bytes.saturating_add(bytes.len() as u64);
+        if let Some(key) = self.auth_key.as_deref() {
+            let Some(previous) = state.auth_tag else {
+                self.last_rewrite_failed = true;
+                self.abort_rewrite();
+                return Err(io::Error::other(
+                    "rewrite journal authentication is not initialized",
+                ));
+            };
+            let tag = auth_record_tag(key, &previous, bytes);
+            let marker = auth_mac_record(&tag);
+            if let Err(error) = state.file.write_all(&marker) {
+                self.last_rewrite_failed = true;
+                self.abort_rewrite();
+                return Err(error);
+            }
+            state.auth_tag = Some(tag);
+            state.bytes = state.bytes.saturating_add(marker.len() as u64);
+        }
         Ok(())
     }
 
@@ -691,9 +1196,29 @@ impl Journal {
         let Some(mut state) = self.rewrite.take() else {
             return Err(io::Error::other("no rewrite in progress"));
         };
-        let marker = checksum_record(&state.nonce, state.record_len, !state.crc);
-        state.file.write_all(&marker)?;
-        state.bytes = state.bytes.saturating_add(marker.len() as u64);
+        let trailer = (|| -> io::Result<()> {
+            let marker = checksum_record(&state.nonce, state.record_len, !state.crc);
+            state.file.write_all(&marker)?;
+            state.bytes = state.bytes.saturating_add(marker.len() as u64);
+            if let Some(key) = self.auth_key.as_deref() {
+                let Some(previous) = state.auth_tag else {
+                    return Err(io::Error::other(
+                        "rewrite journal authentication is not initialized",
+                    ));
+                };
+                let tag = auth_record_tag(key, &previous, &marker);
+                let record = auth_mac_record(&tag);
+                state.file.write_all(&record)?;
+                state.auth_tag = Some(tag);
+                state.bytes = state.bytes.saturating_add(record.len() as u64);
+            }
+            Ok(())
+        })();
+        if let Err(error) = trailer {
+            self.last_rewrite_failed = true;
+            let _ = fs::remove_file(&state.temporary);
+            return Err(error);
+        }
         let result = (|| -> io::Result<u64> {
             state.file.flush()?;
             state.file.sync_all()?;
@@ -707,6 +1232,7 @@ impl Journal {
             replacement.seek(SeekFrom::End(0))?;
             self.file = replacement;
             self.checksum_nonce = Some(state.nonce.clone());
+            self.auth_tag = state.auth_tag;
             self.dirty = false;
             self.failed = false;
             self.last_sync = Instant::now();
@@ -1393,16 +1919,42 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
             );
         }
     } else if let Some(stream) = &entry.stream {
-        let mut last_entry = None;
+        // A PEL can outlive its stream entry after XDEL or trimming. Recreate
+        // those ids as short-lived placeholders in ascending order, claim every
+        // pending id, then delete only the placeholders. This uses standard RESP
+        // commands and leaves the PEL metadata attached to the surviving key.
+        let mut tombstones: Vec<StreamId> = stream
+            .groups
+            .values()
+            .flat_map(|group| group.pending.keys().copied())
+            .filter(|id| !stream.entries.contains_key(id))
+            .collect();
+        tombstones.sort_unstable();
+        tombstones.dedup();
+        let mut next_tombstone = 0usize;
+        let mut last_added = StreamId::default();
         for (id, record) in &stream.entries {
-            last_entry = Some(*id);
-            let id = id_text(*id);
-            let mut arguments: Vec<&[u8]> = vec![b"XADD", key, &id];
+            while let Some(tombstone) = tombstones.get(next_tombstone)
+                && *tombstone < *id
+            {
+                let text = id_text(*tombstone);
+                encode_request(&[b"XADD", key, &text, b"", b""], output);
+                last_added = last_added.max(*tombstone);
+                next_tombstone += 1;
+            }
+            let text = id_text(*id);
+            let mut arguments: Vec<&[u8]> = vec![b"XADD", key, &text];
             for (field, value) in &record.fields {
                 arguments.push(field);
                 arguments.push(value);
             }
             encode_request(&arguments, output);
+            last_added = *id;
+        }
+        for tombstone in &tombstones[next_tombstone..] {
+            let text = id_text(*tombstone);
+            encode_request(&[b"XADD", key, &text, b"", b""], output);
+            last_added = last_added.max(*tombstone);
         }
         let max_group_id = stream
             .groups
@@ -1410,28 +1962,31 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
             .map(|group| group.last_delivered)
             .max()
             .unwrap_or_default();
-        let last_entry = last_entry.unwrap_or_default();
-        let sentinel = stream.last_generated.max(max_group_id).max(last_entry);
-        let needs_sentinel = stream.last_generated > last_entry
-            || (stream.entries.is_empty()
-                && (stream.last_generated.ms != 0
-                    || stream.last_generated.seq != 0
-                    || !stream.groups.is_empty()));
+        let sentinel = stream.last_generated.max(max_group_id).max(last_added);
+        // A nonzero last-generated id with no visible entry needs a sentinel to
+        // make XSETID possible. An entirely empty stream that only has groups is
+        // created by the first XGROUP CREATE ... MKSTREAM instead, avoiding an
+        // invalid XADD 0-0.
+        let needs_sentinel = stream.last_generated > last_added;
         if needs_sentinel {
             let id = id_text(sentinel);
             encode_request(&[b"XADD", key, &id, b"_", b"_"], output);
             encode_request(&[b"XDEL", key, &id], output);
         }
-        for (name, group) in &stream.groups {
+        for (index, (name, group)) in stream.groups.iter().enumerate() {
             let id = id_text(group.last_delivered);
-            encode_request(&[b"XGROUP", b"CREATE", key, name, &id], output);
+            if index == 0 && stream.entries.is_empty() && tombstones.is_empty() && !needs_sentinel {
+                encode_request(&[b"XGROUP", b"CREATE", key, name, &id, b"MKSTREAM"], output);
+            } else {
+                encode_request(&[b"XGROUP", b"CREATE", key, name, &id], output);
+            }
             // Consumers and their pending entries are delivery state, not just
             // stream data: recreate the consumer object, then claim each pending
             // id back to its owner with the recorded delivery time and count.
             // XCLAIM FORCE creates the PEL entry; XGROUP CREATECONSUMER keeps a
-            // consumer that currently has no pending entries. Entries that were
-            // trimmed or deleted can no longer be claimed and are dropped, which
-            // matches this subset's documented limitation.
+            // consumer that currently has no pending entries. Placeholder entries
+            // make deleted or trimmed pending ids claimable; they are removed
+            // after every group has restored its PEL.
             let mut consumers: Vec<&Vec<u8>> = group.consumers.keys().collect();
             consumers.sort();
             for consumer in consumers {
@@ -1459,6 +2014,10 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
                     output,
                 );
             }
+        }
+        for tombstone in &tombstones {
+            let id = id_text(*tombstone);
+            encode_request(&[b"XDEL", key, &id], output);
         }
         if needs_sentinel || !stream.entries.is_empty() || !stream.groups.is_empty() {
             let last = id_text(stream.last_generated);

@@ -223,7 +223,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** the start pause is bounded independently of key count (or an
   accepted SLO is recorded) and progress reporting covers bytes/keys completed.
 
-- [ ] **D3. Journal integrity and encryption at rest are incomplete.** [P0]
+- [ ] **D3. Journal integrity and encryption at rest are Partial.** [P0]
   **Partial (2026-11-07): transaction CRC32 checksums added.** Each new journal
   transaction is followed by a standard RESP ECHO marker containing the byte
   length and CRC32. Legacy RESP-only journals remain readable and switch to a
@@ -232,13 +232,29 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   on valid-RESP corruption and truncates a torn final transaction to the previous
   verified boundary. Tests cover a standard CRC32 vector, valid-RESP corruption,
   legacy upgrade and a fully written transaction with a torn marker.
-  **Limit:** CRC32 detects accidental corruption, not malicious modification;
-  legacy prefixes have no retroactive checksums until rewritten. There is still no
-  authenticated record format, encryption-at-rest design or key-management
-  contract.
-  **Closes when:** every journal byte is authenticated (including legacy import),
-  recovery fails closed on malicious modification, and the profile documents disk
-  encryption/key ownership or implements application-level encryption.
+  **Partial (2026-11-10): optional HMAC-SHA256 journal authentication.** With
+  `--aof-hmac-key-file`, a streaming keyed hash chain covers every appended
+  transaction, checksum record and rewrite slice; startup verifies the chain
+  before replay and fails closed on modified or reordered content, an insertion
+  before the final marker, a malformed marker or the wrong key. An empty journal starts with an anchor on its
+  first append. Existing journals require the explicit, one-time
+  `--aof-hmac-migrate` startup seal, which authenticates the already checksummed
+  prefix as-is; later starts without an anchor fail closed. A torn final
+  unauthenticated group is discarded to the last verified marker. The offline
+  backup tool accepts the key for create/verify/restore. Tests cover restart,
+  wrong key, modified tags, migration refusal and completion, authenticated
+  rewrite plus post-rewrite appends, torn markers, partial next appends, and real
+  server/backup paths.
+  **Limit:** HMAC is not encryption. The key is a single operator-managed file with
+  no rotation/keyring, secure-store integration or file-permission enforcement;
+  a whole-journal replacement with an older valid file, and truncation of a
+  durable suffix, are not detectable without external anti-rollback state. If the
+  key is removed and new writes are appended, the next authenticated start
+  discards those unauthenticated writes. Legacy prefixes are only authenticated
+  after an explicit migration or rewrite.
+  **Closes when:** the profile has a reviewed encryption-at-rest and key-management
+  contract (or an explicit exclusion), and recovery authentication covers the
+  deployment's rollback/truncation threat model with documented external state.
 
 - [ ] **D4. Crash, ENOSPC and disk-fault behavior is unverified.** [P0]
   There is no fault-injection corpus for short writes, ENOSPC, quota, permission
@@ -263,7 +279,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   active-writer refusal, archive corruption, inner AOF corruption, strings, TTLs,
   stream PEL state and a restart from the restored journal. The format contains
   only the AOF; CRC32 is not authentication. Online copy, PITR, retention,
-  configuration/ACL capture and deployment-specific RPO/RTO remain open.
+  configuration/ACL capture and deployment-specific RPO/RTO remain open. Pass
+  `--aof-hmac-key-file` to create/verify/restore for authenticated journals.
   **Closes when:** a documented backup/restore procedure has tested quiescent and
   supported online copies, restores exact data/TTL/accounting into an isolated
   instance, and states RPO/RTO and retention; or online backup/PITR are explicitly
@@ -277,13 +294,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   cooperative rewrite use the same encoder. `tests/persistence.rs` covers
   consumers with and without pending entries, cross-consumer claims with an
   explicit retry count, restart replay, and acknowledging the replayed PEL.
-  **Remaining:** pending ids whose entries were trimmed or deleted cannot be
-  re-claimed on replay and are dropped; consumer `seen_at`/`inactive` time is not
-  restored (it reflects replay time); trim/claim-after-trim durability has no
-  dedicated test yet.
-  **Closes when:** deleted-entry PEL tombstones are represented, consumer activity
-  time is preserved, and trim/claim interactions are covered by restart tests; or
-  Streams are explicitly excluded as a durable queue.
+  **Partial (2026-11-10): deleted/trimmed PEL tombstones persist.** For a pending
+  id missing from the stream, the encoder emits an ascending placeholder `XADD`,
+  restores every group's `XCLAIM` owner/time/count, then `XDEL`s the placeholder.
+  This works in both the live journal and the cooperative rewrite and uses only
+  standard RESP commands. Restart tests cover `XDEL`, `XTRIM`, highest and
+  intermediate deleted ids, preserved owners/delivery counts, acking, absence of
+  synthetic payloads from `XLEN`/`XRANGE`, an all-deleted stream, and an empty
+  stream with group and consumer metadata (recreated with `MKSTREAM`).
+  **Remaining:** consumer `seen_at`/`inactive` activity time is not restored (it
+  reflects replay time); `XCLAIM` on a tombstone removes it from the PEL, matching
+  the missing-entry behavior; consumer history beyond current objects/PEL is not
+  preserved.
+  **Closes when:** consumer activity time is preserved (or the profile excludes
+  activity-time semantics) and the remaining queue semantics have a reviewed
+  restart contract; or Streams are explicitly excluded as a durable queue.
 
 - [ ] **D7. Signal-driven graceful drain is missing.** [P0]
   Managed shutdown joins workers and protocol `SHUTDOWN` flushes the journal, but

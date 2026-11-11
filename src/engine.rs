@@ -95,6 +95,7 @@ pub(crate) use data::StreamId;
 pub use error_dialect::ErrorDialect;
 pub use eviction::EvictionPolicy;
 pub use journal::FsyncPolicy;
+pub use journal::{JournalAuth, read_auth_key_file};
 pub use notify::{Category as NotifyCategory, NotifyFlags};
 mod bridge;
 pub use bridge::Store;

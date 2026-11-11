@@ -12,7 +12,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rillcache::engine::{Auth, FsyncPolicy, Store};
+use rillcache::engine::{Auth, FsyncPolicy, JournalAuth, Store, read_auth_key_file};
 use rillcache::protocol::Limits;
 
 const MAGIC: &[u8] = b"RILLCACHE-AOF-BACKUP-V1\n";
@@ -20,7 +20,7 @@ const CHUNK: usize = 1024 * 1024;
 const DEFAULT_MAX_DATA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
-const HELP: &str = "rillcache-backup — offline AOF backup and restore\n\nUsage:\n  rillcache-backup create --dir DIR [--filename NAME] --output FILE [LIMITS]\n  rillcache-backup verify --input FILE [LIMITS]\n  rillcache-backup restore --input FILE --dir DIR [--filename NAME] [LIMITS]\n\nLIMITS: --max-data-bytes N --max-frame-bytes N --max-bulk-bytes N --max-arguments N\n\nThe versioned archive stores a RESP AOF byte stream with its length and CRC32.\n`create` requires the source server to be stopped (the AOF lock enforces this).\n`restore` validates the archive and replays it in a temporary directory, then\ninstalls it only if the destination journal does not already exist. This is an\noffline, quiescent backup; it is not online backup or point-in-time recovery.\nCRC32 detects accidental corruption, not malicious modification.\n";
+const HELP: &str = "rillcache-backup — offline AOF backup and restore\n\nUsage:\n  rillcache-backup create --dir DIR [--filename NAME] --output FILE [LIMITS]\n  rillcache-backup verify --input FILE [LIMITS]\n  rillcache-backup restore --input FILE --dir DIR [--filename NAME] [LIMITS]\n\nLIMITS: --max-data-bytes N --max-frame-bytes N --max-bulk-bytes N --max-arguments N\n       --aof-hmac-key-file PATH (authenticated journals)\n\nThe versioned archive stores a RESP AOF byte stream with its length and CRC32.\n`create` requires the source server to be stopped (the AOF lock enforces this).\n`restore` validates the archive and replays it in a temporary directory, then\ninstalls it only if the destination journal does not already exist. This is an\noffline, quiescent backup; it is not online backup or point-in-time recovery.\nCRC32 detects accidental corruption, not malicious modification.\n";
 
 #[derive(Debug)]
 struct Options {
@@ -31,6 +31,7 @@ struct Options {
     filename: String,
     max_data_bytes: usize,
     limits: Limits,
+    aof_hmac_key_file: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Option<Options>, String> {
@@ -62,6 +63,7 @@ fn parse_args() -> Result<Option<Options>, String> {
         filename: "appendonly.aof".into(),
         max_data_bytes: DEFAULT_MAX_DATA_BYTES,
         limits: Limits::default(),
+        aof_hmac_key_file: None,
     };
     while let Some(argument) = args.next() {
         let key = argument
@@ -74,6 +76,12 @@ fn parse_args() -> Result<Option<Options>, String> {
             "--dir" => options.dir = Some(PathBuf::from(value)),
             "--input" => options.input = Some(PathBuf::from(value)),
             "--output" => options.output = Some(PathBuf::from(value)),
+            "--aof-hmac-key-file" => {
+                if value.is_empty() {
+                    return Err("--aof-hmac-key-file requires a nonempty path".into());
+                }
+                options.aof_hmac_key_file = Some(PathBuf::from(value));
+            }
             "--filename" => {
                 options.filename = value
                     .into_string()
@@ -239,13 +247,27 @@ fn canonical_target(path: &Path) -> io::Result<PathBuf> {
     Ok(fs::canonicalize(parent)?.join(name))
 }
 
-fn validate_journal(path: &Path, max_data_bytes: usize, limits: Limits) -> io::Result<()> {
+fn journal_auth(options: &Options) -> io::Result<Option<JournalAuth>> {
+    options
+        .aof_hmac_key_file
+        .as_deref()
+        .map(|path| read_auth_key_file(path).and_then(|key| JournalAuth::new(key, false)))
+        .transpose()
+}
+
+fn validate_journal(
+    path: &Path,
+    max_data_bytes: usize,
+    limits: Limits,
+    auth: Option<JournalAuth>,
+) -> io::Result<()> {
     let _store = Store::with_auth_and_journal(
         max_data_bytes,
         Auth::default(),
         path,
         FsyncPolicy::Always,
         limits,
+        auth,
     )?;
     // The store constructor has already replayed the log under the same exclusive
     // ownership lock. A forced sync guarantees the backup source is durable.
@@ -292,6 +314,7 @@ fn create_backup(options: &Options) -> io::Result<()> {
         &journal,
         FsyncPolicy::Always,
         options.limits,
+        journal_auth(options)?,
     )?;
     store.journal_flush()?;
     let mut source = File::open(&journal)?;
@@ -331,6 +354,7 @@ fn validate_archive(
     output_journal: Option<&Path>,
     max_data_bytes: usize,
     limits: Limits,
+    auth: Option<JournalAuth>,
 ) -> io::Result<u64> {
     let mut archive = File::open(path)?;
     let mut magic = vec![0u8; MAGIC.len()];
@@ -384,7 +408,7 @@ fn validate_archive(
     temporary_file.flush()?;
     temporary_file.sync_all()?;
     drop(temporary_file);
-    validate_journal(&temporary_path.0, max_data_bytes, limits).map_err(|error| {
+    validate_journal(&temporary_path.0, max_data_bytes, limits, auth).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("backup journal failed replay validation: {error}"),
@@ -420,6 +444,7 @@ fn restore_backup(options: &Options) -> io::Result<()> {
         Some(&destination),
         options.max_data_bytes,
         options.limits,
+        journal_auth(options)?,
     )?;
     println!("restored validated AOF to {}", destination.display());
     Ok(())
@@ -431,8 +456,17 @@ fn verify_backup(options: &Options) -> io::Result<()> {
         None,
         options.max_data_bytes,
         options.limits,
+        journal_auth(options)?,
     )?;
-    println!("verified Rillcache AOF backup: {length} journal bytes; CRC32 and replay are valid");
+    if options.aof_hmac_key_file.is_some() {
+        println!(
+            "verified Rillcache AOF backup: {length} journal bytes; CRC32, replay and HMAC-SHA256 authentication are valid"
+        );
+    } else {
+        println!(
+            "verified Rillcache AOF backup: {length} journal bytes; CRC32 and replay are valid (no authentication key supplied)"
+        );
+    }
     Ok(())
 }
 
