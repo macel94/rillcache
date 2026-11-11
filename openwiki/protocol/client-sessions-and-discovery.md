@@ -4,8 +4,8 @@ title: Client protocol, sessions and discovery
 description: Rillcache's RESP framing limits, HELLO/RESP2/RESP3 negotiation, per-connection state, CLIENT metadata, RESET, SELECT 0 and COMMAND discovery.
 tags: [protocol, resp, hello, client, discovery, sessions]
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T15:32:39.597Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 sources:
   - id: openwiki-source-b043a13fb5b305282e0ccf86
     resource: repo://docs/client-sessions.md
