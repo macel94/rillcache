@@ -10,7 +10,7 @@ Rillcache can persist supported keyspace mutations to an append-only command log
 This is a real recovery path with explicit failure semantics, but it is **not** a
 complete Redis durability implementation: there is no RDB format, no
 background/forked AOF rewrite, no shared-filesystem ownership, no redis.conf
-integration, and stream consumer activity timestamps are not restored.
+integration, and stream consumer activity is restored only for keyspaces where the server tracks wall-clock activity.
 
 ## Configuration
 
@@ -357,11 +357,21 @@ reports the original owner/count/time and `XACK` can remove it; `XLEN`/`XRANGE`
 never expose the synthetic payload. This uses ordinary RESP commands, so a
 Redis-compatible replay sees the same create/claim/delete sequence.
 
-Limits of this subset: consumer `seen_at`/`inactive` time still reflects replay
-time rather than the original activity, and `XCLAIM` of a tombstone removes it
-from the PEL (matching the command's missing-entry behavior) rather than returning
-a payload. Consumers with no pending entries are recreated, but their activity
-history is not preserved.
+Consumer last-activity (`seen_at`) is also rebuilt. After the group/consumer/PEL
+records the encoder writes one namespaced RESP `ECHO` record per consumer with a
+binary length-prefixed key/group/consumer and the absolute millisecond timestamp.
+The record is inert for other Redis-compatible readers; Rillcache's replay
+intercepts it and sets the existing consumer's `seen_at`. `XINFO CONSUMERS`
+`idle`/`inactive` therefore keep counting from the original activity time,
+including downtime, instead of resetting at replay. The record is covered by the
+same CRC32 and optional HMAC chain as every other transaction byte.
+
+Limits of this subset: the server's existing clock shortcut records activity as
+zero when the keyspace has no expirations or field TTLs, so `idle`/`inactive` stay
+zero before and after restart there; adding a TTL later makes the stored value
+meaningful. `XCLAIM` of a tombstone removes it from the PEL (matching the command's
+missing-entry behavior) rather than returning a payload, and full historical
+activity (for consumers that were deleted or renamed) is not retained.
 
 ## Deliberate gaps
 
