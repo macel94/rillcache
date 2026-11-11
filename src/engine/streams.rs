@@ -1831,6 +1831,35 @@ impl ShardExecutor {
         outcome
     }
 
+    /// Restore a consumer's last-activity timestamp during journal replay. The
+    /// journal carries this as an inert namespaced ECHO record because no
+    /// standard RESP command can set consumer seen time.
+    pub(super) fn restore_consumer_seen(
+        &self,
+        key: &[u8],
+        group: &[u8],
+        consumer: &[u8],
+        seen_at: i64,
+    ) -> bool {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
+            return false;
+        };
+        let Some(entry) = data.entries.get_mut(key) else {
+            return false;
+        };
+        let Some(stream) = entry.stream.as_mut() else {
+            return false;
+        };
+        let Some(group) = stream.groups.get_mut(group) else {
+            return false;
+        };
+        let Some(consumer) = group.consumers.get_mut(consumer) else {
+            return false;
+        };
+        consumer.seen_at = seen_at.max(0);
+        true
+    }
+
     fn xinfo_groups(&self, a: &[&[u8]], out: &mut Vec<u8>) {
         let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
@@ -2250,5 +2279,26 @@ mod tests {
             .groups[b"g".as_slice()];
         assert_eq!(group.pending.len(), 1);
         assert_eq!(group.consumers[b"c".as_slice()].pending.len(), 1);
+    }
+
+    #[test]
+    fn restoring_consumer_activity_requires_an_existing_target() {
+        let store = ShardExecutor::new(1000);
+        run(&store, &[b"XADD", b"s", b"1-0", b"f", b"v"]);
+        run(&store, &[b"XGROUP", b"CREATE", b"s", b"g", b"0"]);
+        run(&store, &[b"XGROUP", b"CREATECONSUMER", b"s", b"g", b"c"]);
+        assert!(store.restore_consumer_seen(b"s", b"g", b"c", 1234));
+        assert!(!store.restore_consumer_seen(b"s", b"g", b"missing", 1234));
+        assert!(!store.restore_consumer_seen(b"s", b"missing", b"c", 1234));
+        assert!(!store.restore_consumer_seen(b"missing", b"g", b"c", 1234));
+        assert!(store.restore_consumer_seen(b"s", b"g", b"c", -1));
+        let data = store.data.try_borrow().unwrap();
+        let consumer = &data.entries[b"s".as_slice()]
+            .stream
+            .as_ref()
+            .unwrap()
+            .groups[b"g".as_slice()]
+        .consumers[b"c".as_slice()];
+        assert_eq!(consumer.seen_at, 0);
     }
 }

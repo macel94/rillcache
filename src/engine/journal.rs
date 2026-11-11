@@ -8,9 +8,9 @@
 //! owner materialises the key list, then maintenance encodes bounded slices
 //! between client commands and swaps in the synced snapshot under a short gate.
 
-use super::ShardExecutor;
 use super::data::{Collection, Data, StreamId};
 use super::notify::{Category as NotifyCategory, NotifyFlags};
+use super::{Action, ShardExecutor};
 use crate::protocol::{Limits, dispatch_request, encode_request};
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
@@ -24,6 +24,7 @@ const CHECKSUM_HEADER: &[u8] = b"__RILLCACHE_AOF_CRC32_V1__:";
 const CHECKSUM_RECORD: &[u8] = b"__RILLCACHE_RECORD_CRC32_V1__:";
 const AUTH_ANCHOR: &[u8] = b"__RILLCACHE_AOF_HMAC256_V1__:";
 const AUTH_RECORD: &[u8] = b"__RILLCACHE_RECORD_HMAC256_V1__:";
+const CONSUMER_SEEN: &[u8] = b"__RILLCACHE_CONSUMER_SEEN_V1__:";
 const AUTH_ANCHOR_DOMAIN: &[u8] = b"rillcache-aof-auth-anchor-v1\0";
 const AUTH_RECORD_DOMAIN: &[u8] = b"rillcache-aof-auth-record-v1\0";
 
@@ -285,6 +286,47 @@ enum AuthMarker {
     Anchor(String, u64, [u8; 32]),
     Record([u8; 32]),
     Malformed,
+}
+
+fn consumer_seen_record(key: &[u8], group: &[u8], consumer: &[u8], seen_at: i64) -> Vec<u8> {
+    let mut payload =
+        Vec::with_capacity(CONSUMER_SEEN.len() + key.len() + group.len() + consumer.len() + 32);
+    payload.extend_from_slice(CONSUMER_SEEN);
+    for field in [key, group, consumer] {
+        payload.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        payload.extend_from_slice(field);
+    }
+    payload.extend_from_slice(&seen_at.to_le_bytes());
+    let mut out = Vec::new();
+    encode_request(&[b"ECHO", &payload], &mut out);
+    out
+}
+
+fn take_binary<'a>(rest: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let (length, tail) = rest.split_at_checked(4)?;
+    let length = u32::from_be_bytes(length.try_into().ok()?) as usize;
+    let (field, tail) = tail.split_at_checked(length)?;
+    *rest = tail;
+    Some(field)
+}
+
+type ConsumerSeen<'a> = (&'a [u8], &'a [u8], &'a [u8], i64);
+
+fn parse_consumer_seen(value: &[u8]) -> Option<ConsumerSeen<'_>> {
+    let mut rest = value.strip_prefix(CONSUMER_SEEN)?;
+    let key = take_binary(&mut rest)?;
+    let group = take_binary(&mut rest)?;
+    let consumer = take_binary(&mut rest)?;
+    let (timestamp, tail) = rest.split_at_checked(8)?;
+    if !tail.is_empty() {
+        return None;
+    }
+    Some((
+        key,
+        group,
+        consumer,
+        i64::from_le_bytes(timestamp.try_into().ok()?),
+    ))
 }
 
 fn parse_auth_marker(command: &[u8], payload: &[u8]) -> Option<AuthMarker> {
@@ -911,6 +953,20 @@ impl Journal {
         loop {
             while consumed < buffer.len() {
                 let parsed = dispatch_request(&buffer[consumed..], self.limits, |arguments| {
+                    if arguments.len() == 2
+                        && arguments[0].eq_ignore_ascii_case(b"ECHO")
+                        && arguments[1].starts_with(CONSUMER_SEEN)
+                    {
+                        let Some((key, group, consumer, seen_at)) =
+                            parse_consumer_seen(arguments[1])
+                        else {
+                            return Err(());
+                        };
+                        if !store.restore_consumer_seen(key, group, consumer, seen_at) {
+                            return Err(());
+                        }
+                        return Ok(Action::Continue);
+                    }
                     let mut output = Vec::new();
                     let action = store.execute_command(arguments, &mut output);
                     if output.first() == Some(&b'-') {
@@ -1989,8 +2045,11 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
             // after every group has restored its PEL.
             let mut consumers: Vec<&Vec<u8>> = group.consumers.keys().collect();
             consumers.sort();
-            for consumer in consumers {
-                encode_request(&[b"XGROUP", b"CREATECONSUMER", key, name, consumer], output);
+            for consumer in &consumers {
+                encode_request(
+                    &[b"XGROUP", b"CREATECONSUMER", key, name, consumer.as_slice()],
+                    output,
+                );
             }
             for (id, pending) in &group.pending {
                 let id = id_text(*id);
@@ -2013,6 +2072,19 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
                     ],
                     output,
                 );
+            }
+            // XCLAIM/XGROUP update activity to replay time; restore the recorded
+            // absolute value afterwards. The record is inert ECHO for other
+            // Redis-compatible readers and is intercepted only during replay.
+            for consumer in &consumers {
+                if let Some(details) = group.consumers.get(*consumer) {
+                    output.extend_from_slice(&consumer_seen_record(
+                        key,
+                        name,
+                        consumer.as_slice(),
+                        details.seen_at,
+                    ));
+                }
             }
         }
         for tombstone in &tombstones {
