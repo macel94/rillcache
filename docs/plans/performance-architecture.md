@@ -893,10 +893,11 @@ checksum-pinned archives, one server at a time (server CPUs 0–1, client CPUs
 2–3), eight clients, pipeline 1, three Latin-rotated rounds, and 64 B, 64 KiB and
 1 MiB values. **It is not usable.** The host is a shared k3s node running
 Longhorn and Flux controllers; load average was 10–19 on six logical CPUs and the
-64-byte control measured 5,414 ops/s for Rillcache instead of the ~114k of the
-daily cohort (section 2.19), a ~20x host distortion. The second server's file was
-empty because the run was stopped rather than completed. No large-value row and
-no direction is claimed. The incomplete files and logs are retained in the
+64-byte control measured 5,414 ops/s for Rillcache and 3,437 for Redis instead of
+the ~114k/113k of the daily cohort (section 2.19), a ~20–33x host distortion.
+Only those two control rows completed (Rillcache and Redis); the remaining
+rows were stopped, so there is no large-value row at all. No direction is
+claimed. The incomplete files and logs are retained in the
 development environment as failed evidence, not tracked source.
 
 The bound stands in place of a fake measurement. Removing one `N`-byte copy saves
@@ -1351,7 +1352,7 @@ only matter with `--socket-workers 2..16` or an opt-in multi-owner mode.
 64-byte line, a counter increment can pay up to `N-1` extra coherence transfers;
 at ~50–100 ns each and four reactors that is 150–300 ns of an 8.7 µs command
 (1.7–3.4%), which is large enough to matter only on a gate-rate host. A shared
-k3s host cannot resolve it (the 64-byte control measured ~20x low, section 2.21),
+k3s host cannot resolve it (the 64-byte controls measured ~20–33x low, section 2.21),
 and spending the protected runner on a layout the default no longer uses is not
 justified.
 
@@ -1785,7 +1786,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   large `Arc` creation costly, the threshold must be re-validated rather than
   assumed.
 - **Measurement-host risk:** this development host is a shared k3s node with
-  persistent Longhorn/Flux load. A 64-byte control measured ~20x below the daily
+  persistent Longhorn/Flux load. A 64-byte control measured ~20–33x below the daily
   cohort, so local screens can only diagnose mechanism, never rank servers
   (section 2.21). The daily CPU column also includes generator orchestration and
   is not a per-command measure (section 2.19).
@@ -1825,7 +1826,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Running the counter-padding A/B on the default gate | The one-reactor default has one counter writer, so the effect is zero by construction; the old four-reactor pass must not be cited for it (4.10). |
 | Zero-copy large replies without a clean large-value cohort | The 16 KiB copy-avoidance shape is real upstream, but building it on a failed shared-host screen or on theory alone violates the admission rule (2.21, 4.15). |
 | `SO_BUSY_POLL`, `recvmmsg`/`sendmmsg` or level-triggered `epoll` as a free tuning change | Needs raw socket options or FFI/selector work outside the reviewed Mio/`std` boundary; a policy decision, not an experiment (section 5). |
-| Ranking servers from the shared k3s development host | The 64-byte control measured ~20x below the daily cohort; local numbers diagnose mechanism only and never establish a win or loss (2.21). |
+| Ranking servers from the shared k3s development host | The 64-byte controls measured ~20–33x below the daily cohort; local numbers diagnose mechanism only and never establish a win or loss (2.21). |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
 
 ## 8. Acceptance criteria (EARS)
@@ -1963,9 +1964,10 @@ separate roadmap.
   artifact `daily-five-server-7b365dc…-43022929390-1`, 250/250 samples. Advisory;
   never a gate substitute.
 - Failed large-value screen (section 2.21): local 2026-11-11 attempt on the shared
-  k3s development host with pinned Redis 8.10.2/Valkey 9.1.2; 64-byte control
-  5,414 ops/s (~20x below the daily cohort), incomplete files retained in the
-  development environment. It admits nothing and is not tracked source.
+  k3s development host with pinned Redis 8.10.2/Valkey 9.1.2; only two 64-byte
+  control rows completed (5,414 and 3,437 ops/s, ~20–33x below the daily cohort),
+  no large-value row, remaining runs stopped. Files retained in the development
+  environment. It admits nothing and is not tracked source.
 - Source comparison refresh: Redis 8.10.2 `server.h` `COPY_AVOID_MIN_STRING_SIZE`
   16384 and `isCopyAvoidPreferred`; Valkey 9.1.2
   `min-string-size-avoid-copy-reply` 16384; both `kvstoreIncrementallyRehash`
