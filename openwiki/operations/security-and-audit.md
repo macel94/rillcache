@@ -26,8 +26,8 @@ sources:
     resource: repo://src/session/transaction.rs
 generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T16:04:12.575Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 ---
 
 # Security, TLS and audit

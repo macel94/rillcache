@@ -8,12 +8,10 @@ sources:
     resource: repo://docs/ci-benchmark-review.md
   - id: openwiki-source-491734283c0612f21b1858f0
     resource: repo://docs/compatibility.md
+  - id: openwiki-source-0117ac68a72ed7ce495ae997
+    resource: repo://docs/persistence.md
   - id: openwiki-source-c23acd0ff2503357d054416d
     resource: repo://docs/production-readiness-gaps.md
-  - id: openwiki-source-85b3cd0f317695a3155768a3
-    resource: repo://docs/production-readiness.md
-  - id: openwiki-source-c4ffe2571f4b3f3ab07b4a87
-    resource: repo://docs/production-readiness/durability.md
   - id: openwiki-source-c6698ebe740262f12ab4ce11
     resource: repo://docs/reference-conformance.md
   - id: openwiki-source-eb9d302b52d2c490966a1913
@@ -32,10 +30,10 @@ sources:
     resource: repo://tests/discovery.rs
   - id: openwiki-source-fdf89b772c3fe634921300db
     resource: repo://tests/sessions.rs
-generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
+generated: { by: "opencode", at: "2026-11-11T20:57:56.397Z" }
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T16:04:12.575Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T20:57:56.397Z
 ---
 
 # Compatibility and production boundaries
@@ -56,13 +54,15 @@ The command registry contains **243 commands**. The supported surface includes:
 - bitmaps, `BITFIELD`, `LCS`, HyperLogLog and multi-key string operations;
 - lists, sets, hashes and sorted sets, including field TTLs, range algebra,
   random selection, multi-pop and blocking pops;
-- geospatial sorted sets, streams with consumer groups and pending-entry
-  inspection, bounded `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN`, and `SORT`;
+- geospatial sorted sets, streams with consumer groups, pending-entry inspection,
+  persisted consumer/PEL state and consumer last-activity, bounded
+  `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN`, and `SORT`;
 - `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` with a bounded queue;
 - channel, pattern and sharded-channel pub/sub plus keyspace notifications;
 - password and ACL-file authentication, ACL selectors, denial logging and native
   TLS 1.3;
-- an opt-in append-only journal with restart replay and synchronous compaction;
+- an opt-in append-only journal with restart replay, CRC32 checksums, optional
+  HMAC-SHA256 authentication, cooperative compaction and offline backup/restore;
 - payload-budget eviction and a documented observation surface.
 
 The complete command-level detail lives in
@@ -130,16 +130,26 @@ as evidence only for the workloads and hardware it recorded.
 ## Durability is best-effort
 
 The append-only journal supports `always`, `everysec` and `no`, startup replay,
-partial-tail truncation, visible mid-file corruption and synchronous
-`BGREWRITEAOF`. It is still not a durable system of record:
+partial-tail truncation, visible mid-file corruption and cooperative
+`BGREWRITEAOF`. CRC32 checksums detect accidental transaction corruption, and an
+optional HMAC-SHA256 chain authenticates transaction content and order; neither
+provides encryption at rest or anti-rollback protection. It is still not a durable
+system of record:
 
-- no RDB, checksums, authenticated records or encryption at rest;
-- no background, incremental or forked rewrite;
+- no RDB import/export or interoperable multipart AOF, and no encryption at rest;
+- no fork-based or copy-on-write rewrite; `BGREWRITEAOF` materialises the key list
+  and advances in bounded slices between commands;
 - no crash, ENOSPC, power-loss or disk-fault injection corpus;
-- no backup/restore drill or point-in-time recovery;
+- no online backup, point-in-time recovery or retention policy; offline quiescent
+  backup, verification and restore exist;
 - no portable SIGTERM/SIGINT drain in the standalone binary;
-- no multi-process journal ownership guard;
-- stream consumer/pending state is not fully restored.
+- no shared-filesystem writer coordination; journal ownership is a local advisory
+  lock;
+- stream consumer last-activity is restored when the keyspace tracks wall-clock
+  time (it has an expiry or field TTL); without tracked time the clock shortcut
+  stores zero, and history for deleted or renamed consumers is not retained.
+  Consumer objects and PEL owners, delivery counts and timestamps persist,
+  including deleted-id tombstones.
 
 An `always` success is the strongest current acknowledgement guarantee. An
 `everysec` crash can lose roughly the last second of writes, and `no` relies on the

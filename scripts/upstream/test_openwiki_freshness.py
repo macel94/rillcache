@@ -80,6 +80,20 @@ class OpenWikiFreshnessTests(unittest.TestCase):
             reasons = " ".join(item["reason"] for item in report["stale_evidence"])
             self.assertIn("source or range disappeared", reasons)
 
+    def test_clean_audit_keeps_stdout_json_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, module = make_fixture(Path(tmp))
+            claims_path = repo / "openwiki/.claims/page.json"
+            sidecar = json.loads(claims_path.read_text())
+            sidecar["claims"] = [claim for claim in sidecar["claims"] if claim["id"] == "ok"]
+            claims_path.write_text(json.dumps(sidecar))
+            result = self.run_check(repo, module)
+            self.assertEqual(0, result.returncode, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual([], report["stale_evidence"])
+            self.assertIn("OpenWiki freshness:", result.stderr)
+            self.assertNotIn("OpenWiki freshness:", result.stdout)
+
     def test_missing_manifest_or_malformed_claims_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, module = make_fixture(Path(tmp))

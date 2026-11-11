@@ -4,13 +4,15 @@ title: Runtime architecture overview
 description: A map of Rillcache's binary, transport, session, engine, storage and persistence layers, including which thread owns each kind of state.
 tags: [architecture, runtime, threading, storage, persistence, overview]
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T16:04:12.575Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 sources:
   - id: openwiki-source-651d1fb6c9e49916a916ab51
     resource: repo://Cargo.toml
   - id: openwiki-source-0117ac68a72ed7ce495ae997
     resource: repo://docs/persistence.md
+  - id: openwiki-source-06147ad000681154d8484755
+    resource: repo://src/bin/rillcache-backup.rs
   - id: openwiki-source-ccfe8cc4504f25c304787a46
     resource: repo://src/engine.rs
   - id: openwiki-source-39b0609b5d3153459fb6d632
@@ -27,7 +29,7 @@ sources:
     resource: repo://src/main.rs
   - id: openwiki-source-dfa02c19f5d8e4215d36f9c0
     resource: repo://src/server.rs
-generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
+generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
 ---
 
 # Runtime architecture overview
@@ -41,20 +43,22 @@ startup and shutdown.
 
 | Layer | Main files | Responsibility |
 | --- | --- | --- |
-| Binary | `src/main.rs`, `src/healthcheck.rs` | Parse CLI options, validate them, bind, report the listener, run or probe |
+| Binary | `src/main.rs`, `src/healthcheck.rs`, `src/bin/rillcache-backup.rs` | Parse CLI options, validate them, bind, run or probe, and create, verify or restore an offline journal backup |
 | Transport | `src/server.rs`, `src/server/*` | Accept sockets, choose a scheduling policy, move connections, flush replies, join shutdown |
 | Protocol | `src/protocol.rs` | Bounded RESP2 and inline framing; binary-safe argument borrowing |
 | Session | `src/session/*` | Per-connection protocol, auth, ACL, transactions, blocking, pub/sub, client metadata |
 | Engine | `src/engine.rs`, `src/engine/dispatch/*` | Command-family routing, owner turns, observation, effects |
 | Data | `src/engine/data.rs`, `keyspace.rs`, `collections.rs`, `streams.rs`, `geo.rs`, `hll.rs` | Entries, collections, expiry, versions, accounting, eviction |
-| Effects | `src/engine/journal.rs`, `notify.rs`, `slowlog.rs`, `latency.rs` | Journal capture, keyspace events, observation collectors |
+| Effects | `src/engine/journal.rs`, `sha256.rs`, `notify.rs`, `slowlog.rs`, `latency.rs` | Journal capture, CRC32 and HMAC records, keyspace events, observation collectors |
 | Concurrency | `src/engine/shard.rs`, `partition.rs`, `mailbox.rs`, `owner_actor.rs`, `router.rs` | Routing, bounded mailboxes, reservations, multi-owner coordination |
 | Security | `src/engine/auth.rs`, `audit*.rs`, `src/server/tls.rs` | Passwords, ACLs, denial audit, TLS 1.3 |
 
 The library exposes `engine`, `protocol`, `server` and `session` modules plus
-`Config`, `Server` and `ServerHandle`. The package forbids unsafe code at every
-crate root and in `Cargo.toml`; only rustls, Mio, Tokio and `core_affinity` are
-approved dependency exceptions, with their required transitives vendored.
+`Config`, `Server` and `ServerHandle`. The package also builds the separate
+`rillcache-backup` binary for offline journal archives. The package forbids unsafe
+code at every crate root and in `Cargo.toml`; only rustls, Mio, Tokio and
+`core_affinity` are approved dependency exceptions, with their required
+transitives vendored.
 
 ## Startup
 
@@ -63,13 +67,15 @@ ports must be usable, limits must be positive and bounded, `--threads` is 1–64
 `--storage-owners` is 1–64, `--socket-workers` is 1–16, TLS requires a distinct
 listener with a certificate and key, and `requirepass` and `aclfile` are mutually
 exclusive. A password file is read, stripped of at most one line ending and bounded
-to 1024 bytes.
+to 1024 bytes. Journal authentication requires `--appendonly yes`, and
+`--aof-hmac-migrate` also requires a key.
 
 `Server::bind` then:
 
 1. validates the complete `Config`;
-2. loads authentication and audit HMAC material;
-3. opens the journal or creates the in-memory store;
+2. loads authentication, audit HMAC and optional journal HMAC material;
+3. opens the journal under its local ownership lock, or creates the in-memory
+   store;
 4. attaches audit sinks and publishes runtime settings into `ServerServices`;
 5. binds the plaintext listener and, optionally, the TLS listener;
 6. chooses an immutable `SchedulingPolicy` from CPU capacity and the configured
@@ -102,11 +108,11 @@ audit and mixed-TLS configurations instead use the bounded `Store` compatibility
 bridge: one owner thread constructs `Data`, executes complete owned requests and
 returns complete owned replies. `Data` never leaves that thread.
 
-`Data` stores a `Entry` per key. An entry may hold a string value, a collection, a
+`Data` stores an `Entry` per key. An entry may hold a string value, a collection, a
 stream, field TTLs, an absolute expiry deadline, a payload length and an access
-counter. The keyspace carries a sorted expiry index, bounded `WATCH` versions and a
-bounded mutation-event log. Expiry is absolute wall-clock milliseconds; an entry is
-alive while `now <= deadline`.
+counter. The keyspace carries a sorted expiry index, bounded `WATCH` versions, a
+bounded mutation-event log and cooperative rewrite tracking. Expiry is absolute
+wall-clock milliseconds; an entry is alive while `now <= deadline`.
 
 `ServerServices` is deliberately not one lock. It uses an atomic `security_word`
 and `observer_word` for hot checks, sharded command counters to avoid a single
@@ -150,24 +156,41 @@ state into the engine.
 
 ## Persistence
 
-The optional journal is a private sequence of RESP command arrays. There is no RDB
-writer, no multipart AOF compatibility, no checksum and no background or forked
-rewrite. Replay uses the ordinary command implementation and fails visibly on a
-damaged mid-file record; a partial tail is truncated under the documented recovery
-rules. `BGREWRITEAOF` is synchronous and pauses command service while it writes and
-renames a compact snapshot.
+The optional journal is a private sequence of RESP command arrays. Each new
+transaction is followed by a CRC32 checksum record; legacy journals remain readable
+and switch to a checksummed segment on the next append. Replay verifies checksum
+groups before executing anything, fails closed on complete corruption and truncates
+only a torn final group. An optional `--aof-hmac-key-file` adds an HMAC-SHA256 chain
+over every checksum group, with `--aof-hmac-migrate` as the one-time seal for an
+existing trusted journal. There is still no RDB writer, no multipart AOF
+compatibility and no background or forked rewrite; `BGREWRITEAOF` is a cooperative
+bounded-slice rewrite that swaps in a synced snapshot.
+
+Startup claims `<journal>.lock` with the owner PID and kernel start time, so a
+second process pointed at the same journal fails rather than interleaving appends.
+The lock is advisory and local-filesystem only; shared or network filesystems remain
+unsupported.
+
+The separate `rillcache-backup` binary creates, verifies and restores a versioned,
+bounded-memory archive of a quiescent journal. It acquires the same ownership lock to
+reject a live server, stores the journal length and CRC32, validates the archive by
+replay before publishing, refuses to overwrite existing output and accepts the
+journal HMAC key. This is offline backup, not online backup or point-in-time
+recovery.
 
 The fsync policy controls the acknowledgement window: `always` syncs before the
 reply, `everysec` writes immediately and syncs on maintenance, and `no` leaves
 durability to the OS and orderly shutdown. This is a real recovery path, not a
-production durability contract; crash, ENOSPC, backup and point-in-time recovery
-evidence is still missing.
+production durability contract; crash, ENOSPC and soak validation, point-in-time
+recovery and signal-driven drain evidence remain missing.
 
 ## Design boundaries
 
 - No replication, failover, Sentinel, cluster bus, modules, Lua or multiple logical
   databases.
-- No RDB import/export, no interoperable AOF and no cross-process journal lock.
+- No RDB import/export, no interoperable AOF and no shared-filesystem writer
+  coordination; the journal ownership lock is local and advisory.
+- Backup and restore are offline and quiescent, not online or point-in-time.
 - RESP3 is a bounded subset of the types this command set emits.
 - The default is one data owner. Multi-owner execution is opt-in and does not
   provide cluster semantics.

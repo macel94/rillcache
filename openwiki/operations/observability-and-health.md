@@ -10,6 +10,8 @@ sources:
     resource: repo://docs/introspection.md
   - id: openwiki-source-d7644d9029aaf56c189e640b
     resource: repo://docs/observability.md
+  - id: openwiki-source-0117ac68a72ed7ce495ae997
+    resource: repo://docs/persistence.md
   - id: openwiki-source-ccfe8cc4504f25c304787a46
     resource: repo://src/engine.rs
   - id: openwiki-source-f324750a2c32a18d17cf0054
@@ -24,10 +26,10 @@ sources:
     resource: repo://src/engine/slowlog.rs
   - id: openwiki-source-a49be758573b96f47b54fa8f
     resource: repo://src/healthcheck.rs
-generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
+generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T16:04:12.575Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T08:27:05.780Z
 ---
 
 # Observability and health
@@ -205,9 +207,10 @@ omitted rather than set to zero.
 ## Persistence status
 
 `INFO persistence` reports `aof_enabled` and, when enabled, the current size,
-latched write status, last synchronous rewrite status and
-`aof_rewrite_in_progress:0`. RDB, background rewrite, backlog, fork and bio fields
-are absent because they are not implemented or measured.
+latched write status, last rewrite status and `aof_rewrite_in_progress`. The
+rewrite is cooperative and advances in bounded slices between commands, not a
+background fork. RDB, fork, backlog and bio fields are absent because they are not
+implemented or measured.
 
 ## Healthcheck and readiness
 

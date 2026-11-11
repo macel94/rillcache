@@ -12,16 +12,18 @@ sources:
     resource: repo://docs/persistence.md
   - id: openwiki-source-0541899300248196690b9ec6
     resource: repo://src/engine/administration.rs
+  - id: openwiki-source-350cb0ce838ab0c30fe785a9
+    resource: repo://src/engine/journal.rs
   - id: openwiki-source-a49be758573b96f47b54fa8f
     resource: repo://src/healthcheck.rs
   - id: openwiki-source-b55a21a31ede1b56cd31a6a6
     resource: repo://src/main.rs
   - id: openwiki-source-dfa02c19f5d8e4215d36f9c0
     resource: repo://src/server.rs
-generated: { by: "opencode", at: "2026-11-02T15:32:39.597Z" }
+generated: { by: "opencode", at: "2026-11-11T08:27:05.780Z" }
 verified:
-  - by: openwiki/0.7.3
-    at: 2026-11-02T16:04:12.575Z
+  - by: openwiki/0.9.0
+    at: 2026-11-11T20:57:56.397Z
 ---
 
 # Configuration and startup
@@ -62,6 +64,15 @@ rillcache --aclfile /etc/rillcache/users.acl
 # Append-only journal with fsync on every acknowledged write
 rillcache --appendonly yes --dir /data --appendfsync always
 
+# Authenticated journal (the key requires --appendonly yes)
+rillcache --appendonly yes --dir /data \
+  --aof-hmac-key-file /run/secrets/rillcache-aof.key
+
+# Offline backup and restore of a stopped server's journal
+rillcache-backup create --dir /data --output /backups/rillcache.rcb
+rillcache-backup verify --input /backups/rillcache.rcb
+rillcache-backup restore --input /backups/rillcache.rcb --dir /restore
+
 # Opt-in async plaintext transport
 rillcache --io-mode tokio
 
@@ -91,10 +102,11 @@ private space. `--tls-client-ca-file` additionally requires client certificates.
 | Max bulk argument | 1 MiB | Must fit inside the frame |
 | Max arguments | 1024 | Per request |
 | Worker mode | Mio readiness | Tokio is explicit |
-| Socket workers | `min(4, CPUs)` | 1–16 when set |
+| Socket workers | 1 reactor | 1–16 when set; forced to 1 for journal/ACL/audit/TLS |
 | Storage owners | 1 local owner | 2–64 opt-in |
 | Append-only | Off | `everysec` when enabled |
 | Journal basename | `appendonly.aof` | Basename only, inside `--dir` |
+| Journal authentication | Off | HMAC key requires append-only mode |
 | Maxmemory policy | `noeviction` | Eviction is opt-in per policy |
 | Notifications | Off | Empty flag string |
 | Error dialect | `valkey` | Selects verified MSETEX wording |
@@ -119,6 +131,8 @@ than `--max-data-bytes`.
 - an empty audit path or an audit rotation bound outside 1 KiB–1 GiB;
 - an audit syslog port of zero;
 - both audit HMAC key file and keyring file;
+- an empty journal HMAC key path, `--aof-hmac-migrate` without a key, or journal
+  authentication without append-only mode;
 - `--storage-owners` outside 1–64;
 - TLS options without a TLS listener, a TLS listener without certificate and key,
   or identical TLS and plaintext addresses;
@@ -152,7 +166,14 @@ rillcache --appendonly yes --dir /data --appendfilename appendonly.aof \
 
 `--dir` must exist and be writable by the process. The journal file is created
 with mode `0600` on Unix. `--appendfilename` is a basename, not a path; `.` and
-`..` are rejected.
+`..` are rejected. Startup claims `<journal>.lock` with the owner PID and kernel
+start time, so a second process on the same journal fails rather than interleaving
+appends; the lock is advisory and local-filesystem only.
+
+`--aof-hmac-key-file` adds a keyed HMAC-SHA256 chain over every journal
+transaction. `--aof-hmac-migrate` is the one-time seal for an already checksummed
+journal; omit it on later starts. The offline `rillcache-backup` binary accepts the
+same key for create, verify and restore.
 
 At runtime, `CONFIG GET` can inspect `appendonly`, `appendfilename` and
 `appendfsync`. Only `appendfsync` is mutable with `CONFIG SET`; `appendonly` and
@@ -199,7 +220,8 @@ Rillcache does not implement:
 - `CONFIG REWRITE`;
 - hot certificate reload, SNI or OCSP;
 - a portable SIGTERM/SIGINT drain in the standalone binary;
-- multi-process journal ownership;
+- shared-filesystem journal coordination; ownership is a local advisory lock, not
+  a distributed lease;
 - a general TLS cipher/version policy beyond TLS 1.3 and the rustls provider.
 
 The container sets `STOPSIGNAL SIGTERM`, but the safe-std server has no portable
