@@ -57,7 +57,14 @@ diagnostic is closed by
 analysis rather than a gate-rate A/B: after 4.12 the default has one reactor
 writer, so the padded layout cannot affect the default rows (section 4.10).
 Nothing here changes the default runtime; the surviving candidate needs a
-measured large-value gap and its own protected evidence.
+measured large-value gap and its own protected evidence. A second pass extracts
+per-request P1 latency and process CPU from the same retained gate samples
+(section 2.22), records the failed docs-only cohort whose runtime was identical
+to a passing head (section 2.17), and adds the latency-attribution diagnostic
+4.19 with the conditional watch-free mutation candidate 4.20. It finds that
+typical P1 latency is lower in every command while the extreme tail of mutating
+commands is host-dependent, and that per-command CPU flips sign across hosts;
+neither is a stable deficit.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -650,19 +657,25 @@ A second clean cohort (`d5da908`, run 41633321852) repeated the direction at a
 faster host scale: P1 ping 171,233 vs 164,429 and 164,474, CPU 94.7% vs 86.4%
 and 86.2%, p99 0.091 vs 0.087/0.087. That is about 5.5 vs 5.25 µs per command
 (~5% more), and P1 SET is essentially equal (5.52 vs 5.54/5.52 µs). The P1 ping
-per-command gap is therefore small, ping-specific, and consistent across the two
-clean hosts (~5% and ~9%); the earlier manual cohort's opposite ordering is the
-outlier. Treat it as a small real cost, not a general inefficiency.
+per-command gap is therefore small and ping-specific on those two hosts (~5% and
+~9%).
+
+It is not stable in sign. The per-row #212 artifacts report process CPU seconds
+and measured commands over the same window, which gives 6.97 µs/command for P1
+ping and 6.06 for SET versus 7.27 and 7.60 for Valkey — Rillcache **cheaper** per
+command on that host. The difference is host- and accounting-dependent, so the
+honest conclusion is a small cost on some hosts and a small advantage on others,
+not a stable deficit. Do not build a candidate on it.
 
 **Verdict:** the merged architecture is confirmed as the right throughput
 direction on a clean host, including against Redis, which the protected gate does
 not compare. Do not trade the P1 win back for CPU without a measured alternative.
-The P1 total-CPU gap is mostly the higher rate plus a small ~5–9% ping-specific
-per-command difference; the variance cost is the bounded poll. Candidate 4.13 is
-closed after the miss-based, fixed-window and hybrid variants were rejected
-(section 4.13). A count-only reactor change is not a substitute. Redis remains
-outside the required four-CPU comparison, so this advisory cohort does not turn
-into a gate claim.
+The P1 total-CPU gap is mostly the higher rate plus a small host-dependent
+per-command difference whose sign flips across cohorts; the variance cost is the
+bounded poll. Candidate 4.13 is closed after the miss-based, fixed-window and
+hybrid variants were rejected (section 4.13). A count-only reactor change is not
+a substitute. Redis remains outside the required four-CPU comparison, so this
+advisory cohort does not turn into a gate claim.
 
 ### 2.15 Merged-default tail behavior
 
@@ -761,6 +774,18 @@ same runtime passed one opponent's P1 interval with a wide margin and lost the
 other opponent's strict row on a fast host. That is the gate's per-opponent rule
 working as intended, not a runtime regression.
 
+A third cohort is the clearest variance example. PR #216 (head `ddcc10c`, a
+docs-only change whose runtime is byte-identical to the merged `d357e2a`) failed
+the Valkey P1 ping row: 138,803.5 vs 139,745.7 req/s (−0.67%), 3/5 wins, median
+ratio 1.0030 [0.9371–1.0278]. Its five paired ratios were 0.986, 0.937, 1.028,
+1.015 and 1.003; Rillcache's run spread was 7.4% (133.7k–143.6k) against
+Valkey's 4.3% (136.8k–142.7k), while the same head passed ping P16 5/5 by
++49.7%. One low run (0.937) decided the strict median on a row whose interval
+contains 1.0. The same code passed this row in #212 and #215. That is the
+documented measurement limitation, not a runtime regression: do not re-push the
+head to fish for a pass and do not weaken the rule. The row remains the gate's
+open measurement risk (sections 2.9 and 2.15).
+
 **Verdict:** quote the paired interval for the P1 row, not a point estimate. A
 strict pass is not proof of a resolved 2.6% win, and a Dragonfly P1 loss on a
 fast host does not by itself justify a runtime change. The two cohorts reinforce
@@ -837,7 +862,7 @@ where a real mechanism difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Five things are still true even though every row now leads:
+Seven things are still true even though every row now leads:
 
 1. **Syscall shape.** The local tracepoint diagnostic (section 2.16) counts
    about 7.74 `epoll_wait`, 1.85 `recvfrom` and 1.03 `sendto` per P1 command for
@@ -879,6 +904,21 @@ Five things are still true even though every row now leads:
    [`valkey server.c#L1325`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L1325)).
    Our one-stop `HashMap` growth is invisible at the gate's 1024 keys; it is a
    large-keyspace concern, not a gate-row concern (section 4.18).
+6. **Extreme-tail latency on mutating P1 commands.** On the #212 host, SET/XX p99
+   is consistently ~50% above Valkey's in every paired round while p50/p95 are
+   lower (section 2.22); the daily host shows the opposite. The mechanism is not
+   isolated between server work, the bounded poll's parking, and generator
+   contention on a shared CPU budget, so the next evidence is a server-side
+   histogram (candidate 4.19), not a runtime guess.
+7. **Watch-free mutation bookkeeping.** Redis 8.10.2 and Valkey 9.1.2 return from
+   `touchWatchedKey` before any per-key work when no client is watching
+   ([`redis multi.c#L389`](https://github.com/redis/redis/blob/8.10.2/src/multi.c#L389),
+   [`valkey multi.c#L461`](https://github.com/valkey-io/valkey/blob/9.1.2/src/multi.c#L461));
+   our `Data::touch` advances a sequence and updates or inserts a
+   `versions: HashMap<Vec<u8>, u64>` entry on **every** mutation, allocating the
+   key on first write even when nothing watches (candidate 4.20). The throughput
+   bound is one hash lookup plus an occasional allocation, below gate noise; it
+   is a candidate only if 4.19 attributes part of the mutation tail to it.
 
 ### 2.21 Large-value screen attempt (failed evidence, not a result)
 
@@ -908,6 +948,62 @@ socket transfer. At 64 bytes it is zero. That upper bound is well above the
 gate does not run, so it is not admission to build. Admission for 4.15 requires a
 clean-runner large-value cohort (the hosted upstream lane or same-type four-CPU
 runners) with pinned servers and rotations; a shared k3s host cannot resolve it.
+
+### 2.22 Per-request P1 latency and process CPU from the retained gate samples
+
+The gate artifacts retain more than the summary table: each `sample.json` carries
+per-request `avg/p50/p95/p99/max` latency, process CPU seconds and RSS for the
+same measured window. Extracting the #212 partials (five paired rounds per row)
+gives a fuller latency picture than the p99-only table in section 2.18. Values are
+medians over the five runs; P1 only, because at P16 the reported latency is
+pipeline-batch latency.
+
+| Workload | Server | req/s | p50 ms | p95 ms | p99 ms | max ms | CPU µs/cmd |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ping | Rillcache | 142,813 | 0.039 | 0.055 | 0.071 | 2.471 | 6.97 |
+| ping | Valkey | 135,949 | 0.055 | 0.079 | 0.095 | 3.087 | 7.27 |
+| set | Rillcache | 164,084 | 0.039 | 0.063 | 0.143 | 6.183 | 6.06 |
+| set | Valkey | 130,861 | 0.055 | 0.079 | 0.095 | 3.463 | 7.60 |
+| get | Rillcache | 141,411 | 0.047 | 0.063 | 0.079 | 3.607 | 7.04 |
+| get | Valkey | 128,805 | 0.055 | 0.087 | 0.103 | 2.975 | 7.68 |
+| set-nx-existing | Rillcache | 141,208 | 0.047 | 0.063 | 0.095 | 3.111 | 7.06 |
+| set-nx-existing | Valkey | 127,234 | 0.055 | 0.087 | 0.103 | 3.303 | 7.82 |
+| set-xx-existing | Rillcache | 172,336 | 0.039 | 0.055 | 0.135 | 3.295 | 5.75 |
+| set-xx-existing | Valkey | 130,285 | 0.055 | 0.079 | 0.087 | 3.087 | 7.63 |
+
+Three observations:
+
+1. **Typical latency is better in every row.** Rillcache's p50 is 0.039–0.047 ms
+   against 0.055 ms, and p95 is lower in all five commands. The client-observed
+   distribution is not a tail-loss story at the median.
+2. **The extreme tail on mutating P1 commands is worse on this host.** SET p99 is
+   0.143 vs 0.095 ms and max 6.18 vs 3.46 ms; XX p99 is 0.135 vs 0.087 ms. This is
+   consistent in **every** paired round (SET p99 0.143/0.095, 0.143/0.095,
+   0.143/0.095, 0.151/0.087, 0.135/0.087; XX 0.135/0.095, 0.135/0.087,
+   0.119/0.087, 0.127/0.095, 0.135/0.087), so it is not one outlier run. The
+   non-mutating rows (ping, get, rejected NX) have a lower or equal p99 in the
+   same samples. The correlation with mutation is exact on this host: only SET and
+   XX write, and only they carry the extra p99/max population; ping, GET and
+   rejected NX do not touch the store's mutation path.
+3. **The direction is host-dependent.** On the single-host daily cohort (section
+   2.19) the same SET row had rill p99 0.111 vs Valkey 0.159 and XX 0.111 vs
+   0.151 — Rillcache better. The two cohorts disagree because they run on
+   different hosts and topologies, exactly the variance warning in sections 2.9
+   and 2.15. A client-observed tail cannot be attributed to the server without a
+   server-side histogram.
+
+The CPU column also reverses the earlier per-command conclusion (section 2.14):
+using process CPU seconds divided by measured commands, Rillcache is *cheaper*
+per command on this host (6.97 vs 7.27 µs ping, 6.06 vs 7.60 SET), whereas the
+first clean cohort found it ~9% more expensive. Per-command CPU is within about
+10% either way and its sign is host-dependent; it is not a stable deficit and
+must not drive a candidate.
+
+**Verdict:** the remaining latency risk is the extreme tail of P1 mutating
+commands on some hosts, not the typical request. Isolating it needs a
+server-side measurement, not another client percentile; that is candidate 4.19.
+No tail win or loss is claimed beyond the specific cohorts, and AC5 remains the
+acceptance rule.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -1051,9 +1147,11 @@ showing a real per-read scan cost.
   The earlier claim that only Valkey 9.1 had moved to `kvstore` is corrected here.
 - **Rillcache** uses `std::collections::HashMap<Vec<u8>, Entry>` with the
   standard randomized SipHash hasher and one `RwLock<Data>`; expiry is an ordered
-  `BTreeSet<(i64, Vec<u8>)>` and every mutation records a WATCH version
-  ([`data.rs#L304`](../../src/engine/data.rs#L304)). Equal-size SET reuses the
-  value allocation and GET reuses its lookup, as delivered earlier.
+  `BTreeSet<(i64, Vec<u8>)>`; equal-size SET reuses the value allocation and GET
+  reuses its lookup. Unlike the C servers, every mutation also advances a
+  sequence and inserts or updates a per-key `versions` entry even when no client
+  is watching ([`touch`](../../src/engine/data.rs#L369)), which is the
+  storage-path difference in section 2.20 item 7.
 - The map hasher is not exposed by `std`; replacing it would need a dependency or
   a home-grown keyed hash. Both are policy-sensitive (HashDoS resistance) and are
   not justified by the current 1024-key gate.
@@ -1164,7 +1262,7 @@ That is safe Rust with no new dependency.
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
 | Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adapt only if measured:** candidate 4.15 after a clean large-value cohort (2.21) and AC20; std `Arc`/`IoSlice` only |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
-| Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18) |
+| Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
 | Expiry | lazy + active cycle | lazy + active cycle | lazy on access + 100 ms purge tick | **Keep:** gate has no TTL rows; correctness covered by tests |
@@ -1182,8 +1280,10 @@ adaptive-poll direction (its naive and hybrid variants were rejected, and the
 remaining CPU is the measured P1 trade), and 4.14 is the rejected io_uring send
 attempt. This refresh adds 4.15 (the only surviving new candidate: large-bulk
 reply copy avoidance), 4.16 (the out-of-gate measurement program that must run
-before 4.15), and 4.17–4.18 (two ideas rejected by bound: command-lookup caching
-and incremental rehash).
+before 4.15), 4.17–4.18 (two ideas rejected by bound: command-lookup caching and
+incremental rehash), and 4.19 (a latency-attribution diagnostic for the remaining
+P1 write-tail question) plus 4.20 (a conditional storage candidate that only
+follows if 4.19 isolates that tail).
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -1697,6 +1797,74 @@ large-keyspace cohort (for example 1M keys) that shows a p99 spike during growth
 above the noise; then the mechanism would be a bounded-slice rehash inside the
 existing `RwLock<Data>` with unchanged atomicity, not a new dependency.
 
+### 4.19 P1 write-tail attribution (diagnostic; no runtime change unless isolated)
+
+**Mechanism under test.** The paired #212 samples show a consistent P1 SET/XX
+p99 gap on one host (SET 0.143 vs 0.095 ms, XX 0.135 vs 0.087 ms, every round)
+while p50 and p95 are lower (section 2.22). The single-host daily cohort shows
+the opposite direction on the same SET row (0.111 vs 0.159 ms). Client-observed
+latency includes the generator stack and CPU scheduling, so it cannot say whether
+the server or the client owns the tail.
+
+**Prediction.** If the tail is server-side, a diagnostic run with per-command
+server histograms enabled will show a matching SET/XX p99 population and the
+non-mutating rows will not. If it is client- or scheduler-side, the server p99
+will stay near p95 and the gap will shrink or disappear with disjoint client CPUs
+or a larger client CPU budget.
+
+**Method.** One host, pinned servers, the same generator, three rotations, both
+servers. Run (a) with server-side `commandstats`/`LATENCY` histograms enabled and
+(b) with shared versus disjoint client CPUs. Retain client per-request
+percentiles, server per-command percentiles, reactor syscall/scheduler counters,
+CPU and the exact placement. Enabling observers moves execution onto the checked
+dispatch, so label that pass diagnostic and do not report its throughput as a
+capability result.
+
+**Rejection condition.** If the server-side p99 is not elevated, close the
+direction as a measurement-topology limit and do not change the runtime. If only
+mutation shows a server-side tail, isolate the expensive step (WATCH-version
+bookkeeping, allocator, map growth, maintenance) with a targeted profile and open
+a bounded candidate with its own prediction.
+
+**Acceptance (AC21).** Both client- and server-observed p99 are reported for the
+same run with CPU placement; a client-only tail never justifies a runtime change;
+all raw histograms and the topology are retained. No dependency or runtime change
+is part of this diagnostic.
+
+### 4.20 Watch-free mutation bookkeeping (conditional on 4.19)
+
+**Mechanism.** Maintain the per-key `versions` map only while at least one client
+has an active `WATCH`, or while a scratch multi-owner executor needs its write
+set, mirroring the upstream early return when nothing watches. Registering a
+`WATCH` takes the data lock and flips the flag before recording versions; writes
+then update or insert as today. A `WATCH` started after earlier writes snapshots
+the current version (0 if untracked), and any subsequent write bumps or inserts a
+different value, so the CAS check still detects the change.
+
+**Prediction.** Removes one hash lookup and, on the first write per key, one
+allocation from every mutation while nothing watches: roughly 40–100 ns of a
+~6 µs command, well under 1%. That is **not** a throughput candidate under the
+admission rule. It is worth building only if 4.19 shows a server-side mutation
+tail or allocator pressure; in that case the prediction is a lower p99/max with
+unchanged p50 and rate, and no gate-row change.
+
+**Correctness obligations.** `WATCH` registration and the flag change happen
+under the same data borrow; `touched_keys()` keeps working for scratch multi-owner
+transactions (force tracking there); version-map overflow and epoch semantics stay
+unchanged; a key written before the `WATCH` and again after it must still abort
+`EXEC`; `FLUSHDB`/full-table paths and the bounded `MAX_TRACKED_VERSIONS` clear
+keep their current behavior.
+
+**Rejection condition.** Any `WATCH`/`EXEC`/`MULTI` regression, any change to
+multi-owner scratch write sets, no tail or CPU improvement in the matched A/B, or
+any gate-row loss. Then close as below-noise and keep unconditional tracking.
+
+**Acceptance (AC22).** Default-owner mutations perform no per-key `WATCH`
+bookkeeping while no client is watching; a `WATCH` registered later still aborts
+on a subsequent mutation; scratch multi-owner write sets are unchanged; the
+transaction/WATCH/multi-owner matrix passes; the matched A/B shows the claimed
+tail or CPU effect; and both protected gates pass on the exact head.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -1797,6 +1965,16 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 - **Attribution risk:** the counter-padding pass was measured under the old
   four-reactor default; citing it for the current one-reactor default would be
   wrong. Multi-reactor layout claims need their own A/B (section 4.10).
+- **Latency-attribution risk:** a client-observed p99 includes the generator and
+  scheduler. The #212 host shows a consistent SET/XX P1 tail against Valkey while
+  the daily host shows the reverse (section 2.22); neither proves a server-side
+  mechanism. Report both client and server percentiles before changing the
+  runtime (AC21, 4.19).
+- **WATCH-version risk (4.20):** skipping per-key versions while nothing watches
+  is only safe if `WATCH` registration and the tracking flag change under the
+  same data borrow and if scratch multi-owner executors keep tracking. A race or
+  a missed bump would silently accept a stale `EXEC`; the transaction matrix and
+  an explicit later-`WATCH` test are mandatory (AC22).
 
 ## 7. Rejected options
 
@@ -1827,6 +2005,8 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Zero-copy large replies without a clean large-value cohort | The 16 KiB copy-avoidance shape is real upstream, but building it on a failed shared-host screen or on theory alone violates the admission rule (2.21, 4.15). |
 | `SO_BUSY_POLL`, `recvmmsg`/`sendmmsg` or level-triggered `epoll` as a free tuning change | Needs raw socket options or FFI/selector work outside the reviewed Mio/`std` boundary; a policy decision, not an experiment (section 5). |
 | Ranking servers from the shared k3s development host | The 64-byte controls measured ~20–33x below the daily cohort; local numbers diagnose mechanism only and never establish a win or loss (2.21). |
+| Removing `WATCH` versions unconditionally from every mutation | Would accept a stale `EXEC` whenever a key was written after `WATCH`; only a watch-aware fast path with the lock proof is safe (4.20, AC22). |
+| Treating the #212 SET/XX P1 p99 gap as a server regression | The daily cohort shows the opposite direction and both are client-observed; no server histogram exists yet, so the correct action is 4.19, not a code change (2.22, AC21). |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
 
 ## 8. Acceptance criteria (EARS)
@@ -1936,6 +2116,17 @@ samples retained.
   readers and half-close; payload/expiry/backpressure accounting shall be
   unchanged; the matched large-value A/B shall show the predicted gain; and both
   protected gates shall pass on the exact head.
+- **AC21 (latency attribution).** When a latency-tail claim is made, the same run
+  shall report client-observed per-request p99 and server-observed per-command
+  p99 with CPU placement; a client-only p99 difference shall not justify a
+  runtime change, and any accepted tail candidate shall show the server-side
+  population and pass AC5 plus both protected gates.
+- **AC22 (watch-free mutation parity).** When no client has an active `WATCH` and
+  the default owner executes a mutation, no per-key `WATCH` state shall be
+  allocated or updated; a `WATCH` registered later shall still detect every
+  subsequent mutation; scratch multi-owner write sets shall be unchanged; the
+  transaction/WATCH/multi-owner matrix shall pass; and the matched A/B shall show
+  the claimed tail or CPU effect before both protected gates accept it.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the five
@@ -1960,6 +2151,16 @@ separate roadmap.
   merged as `7b365dc`; Valkey and Dragonfly each PASS 10/10 from per-workload
   partial jobs plus a merged artifact. Retain every partial even when the merged
   verdict passes.
+- Per-request latency and process CPU (section 2.22): derived from the five
+  `sample.json` files per P1 workload in the #212 partials above (run
+  42994675861); no new runs. Each sample records p50/p95/p99/max and
+  `server_cpu_seconds` for the measured window. Medians are over the five paired
+  runs; raw files remain in the run artifacts.
+- Failed docs-only cohort (section 2.17): PR #216, run 43113767982, head
+  `ddcc10c` (runtime identical to merged `d357e2a`); Valkey P1 ping 138,803.5 vs
+  139,745.7 (−0.67%, 3/5, ratio 1.0030 [0.9371–1.0278]), all other rows passed.
+  Retained as the variance evidence; not a runtime regression and not retried
+  until green.
 - Five-server daily cohort (section 2.19): run 43022929390 on source `7b365dc`,
   artifact `daily-five-server-7b365dc…-43022929390-1`, 250/250 samples. Advisory;
   never a gate substitute.
@@ -1973,6 +2174,14 @@ separate roadmap.
   `min-string-size-avoid-copy-reply` 16384; both `kvstoreIncrementallyRehash`
   1 ms budget; Redis `isCommandReusable`. These are code citations, not runtime
   measurements.
+- Watch-free mutation comparison (sections 2.20 and 4.20): Redis
+  `touchWatchedKey` early return
+  ([`multi.c#L389`](https://github.com/redis/redis/blob/8.10.2/src/multi.c#L389)),
+  Valkey
+  ([`multi.c#L461`](https://github.com/valkey-io/valkey/blob/9.1.2/src/multi.c#L461)),
+  against our `Data::touch` (`src/engine/data.rs`, around line 369). The upstream
+  early return is source evidence; the per-mutation cost on this host is not
+  measured, so the candidate stays conditional on 4.19.
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
@@ -2116,6 +2325,12 @@ separate roadmap.
   criterion: a future wakeup/poll change must measure p99 and reject a regression
   beyond AC5 even when throughput improves. Do not claim a tail win from
   throughput evidence.
+- The #212 samples refine that: typical P1 latency (p50/p95) is lower in every
+  command, while SET/XX p99 is ~50% higher on that host and lower on the daily
+  host (section 2.22). The sign is host-dependent and unisolated; 4.19 is the
+  measurement that must come before any runtime change. Per-command CPU also
+  flips sign between the clean cohorts and the #212 process-CPU/command ratio, so
+  neither is a stable deficit.
 - Several earlier single-runner cohorts (through #179) had `client_cpus` equal to
   `server_cpus` (`[0,1,2,3]`), so the load generator shared the server CPUs.
   That biases a multi-reactor server against a single-thread competitor and put
@@ -2136,6 +2351,10 @@ separate roadmap.
   layout claim needs the A/B in section 4.10. The one structural difference this
   refresh did find is large-bulk reply copy avoidance, and it is a candidate
   gated on a clean large-value cohort (4.15), not an implemented change.
+- Watch-free mutation bookkeeping (4.20) is a real source difference with a
+  below-noise throughput bound (~40–100 ns per mutation). It stays conditional on
+  4.19 isolating a server-side mutation tail; do not remove `WATCH` tracking
+  without the AC22 correctness proof and tests.
 - The reviewed dependency exceptions are rustls, Tokio, Mio and
   `core_affinity`, merged through their own PRs. A future head still needs fresh
   gates, and any further dependency needs its own review. The portable fallback
