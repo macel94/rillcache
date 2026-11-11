@@ -215,6 +215,14 @@ can therefore rotate without rewriting immediately:
    key.
 3. Remove the old key after the rewrite and restart.
 
+A rotation keyring is a hex key per line; the first line signs:
+
+```text
+# new signing key first, retained old keys after it
+8f4d2c1e9a7b6035d1e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6
+0123456789abcdef0123456789abcdef
+```
+
 Without the rewrite, keep every key that signed historical links. Retiring a key
 too early fails startup closed. Records carry no key ID, so startup tries each
 keyring key for every anchor/chain link; verification cost therefore scales with
