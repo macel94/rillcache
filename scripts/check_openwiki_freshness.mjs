@@ -106,4 +106,4 @@ if (stale.length > 0) {
   console.error(`OpenWiki freshness: ${stale.length} finding(s) across ${pages.length} page(s): ${pages.join(", ")}`);
   process.exit(1);
 }
-console.log(`OpenWiki freshness: ${pagesChecked} pages, ${claimsChecked} claims and ${evidenceChecked} evidence references current.`);
+console.error(`OpenWiki freshness: ${pagesChecked} pages, ${claimsChecked} claims and ${evidenceChecked} evidence references current.`);
