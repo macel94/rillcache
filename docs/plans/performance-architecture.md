@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.30).**
+gated (4.15, 4.20–4.27, 4.29–4.31).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -111,7 +111,10 @@ growth). A 10k-field `HGETALL` is **43% behind Redis** (313 vs 552 req/s) while 
 10,000-member sorted set is the largest read-side ratio measured so far:
 `ZRANGE 0 9` is 19.5× slower than Redis and 20.4× slower than Valkey (528 vs
 10,311/10,771 req/s) and the full range is 67–78% behind, admitting 4.30
-(sorted-set ordered index). Under
+(sorted-set ordered index). Cursor iteration is the largest per-call gap found
+in this record: a `SCAN COUNT 10` on 100k keys takes **42.6 ms p50 versus
+0.256/0.164 ms** (167–260×) and a full traversal 4.81 s versus 0.239/0.167 s,
+admitting 4.31 (incremental cursor). Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1027,7 +1030,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Eight things are still true even though every row now leads:
+Nine things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1099,6 +1102,15 @@ Eight things are still true even though every row now leads:
    The 2026-11-12 cohort measures a 10k `ZRANGE 0 9` at **528 req/s versus
    10,311/10,771** and a full range at 340 versus 1,581/1,036, with the
    128-member control at parity (section 3.2, candidate 4.30).
+9. **Cursor iteration.** Our `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN` rebuild a sorted
+   snapshot (and deep-copy collection elements) on every call, so per-call cost
+   is O(keyspace) instead of O(`COUNT`). Redis and Valkey use a reverse-binary
+   dict cursor with a bounded visited-bucket loop and return listpack collections
+   in one call ([`redis dict.c#L1529`](https://github.com/redis/redis/blob/8.10.2/src/dict.c#L1529),
+   [`valkey dict.c#L1177`](https://github.com/valkey-io/valkey/blob/9.1.2/src/dict.c#L1177)).
+   The 2026-11-12 cohort measures a 100k-key `SCAN COUNT 10` at **42.6 ms p50
+   versus 0.256/0.164** (167–260×) and a full traversal at 4.81 s versus
+   0.239/0.167 s (section 3.16, candidate 4.31).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1264,6 +1276,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, admitted | AC20 on the implemented change | none at 64 B |
 | Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, admitted | AC31 on the implemented change | none at 64 B |
 | Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, admitted | AC32 on the implemented change | none at 64 B |
+| Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1676,6 +1689,7 @@ for a production claim.
 | Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adopt:** measured 28.4% (64 KiB GET) and 42–45% (1 MiB GET) loss; 4.15, std `Arc`/`IoSlice`, AC20 |
 | Large multi-bulk replies (list/hash) | reply list/`writev`; hash iterated in internal order | same | list iterated directly; hash collects, sorts and encodes | **Adopt (list leads, hash lags):** 4.29 for 10k `HGETALL`; measured 43% behind Redis (3.2) |
 | Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, 128-member control at parity (3.2, AC32) |
+| Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
 | Large-frame input | reserves query-buffer capacity from the declared bulk length (`big_arg`/`sdsMakeRoomFor`) | same | appends 16 KiB reads into a growing `Vec` | **Adopt:** 4.25 bounded reservation; measured 28–32% 1 MiB SET loss (2.21, 3.3) |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
@@ -2136,6 +2150,54 @@ times, payload accounting, stream consumer/PEL state, HMAC verification and the
 tail/corruption policy. Do not weaken corruption detection or serve partial
 state.
 
+### 3.16 Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN)
+
+- **Valkey/Redis** iterate the hash table incrementally with a reverse-binary
+  cursor: each call scans a bounded number of buckets, `COUNT` is a hint, and a
+  `maxiterations` loop caps the empty-bucket search. No snapshot, no sort and no
+  keyspace-sized allocation; MATCH/TYPE are applied per visited element, and
+  listpack/intset-encoded collections return every element in one call with
+  cursor 0
+  ([`redis db.c#L1835`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1835),
+  [`#L1972`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1972),
+  [`dict.c#L1529`](https://github.com/redis/redis/blob/8.10.2/src/dict.c#L1529),
+  [`db.c#L1985`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1985);
+  [`valkey db.c#L1225`](https://github.com/valkey-io/valkey/blob/9.1.2/src/db.c#L1225),
+  [`dict.c#L1177`](https://github.com/valkey-io/valkey/blob/9.1.2/src/dict.c#L1177)).
+- **Rillcache** treats the cursor as an index into a **freshly collected and
+  sorted snapshot on every call**: `scan_keys` collects every key, sorts it, and
+  then slices `COUNT`; `scan_collection` deep-copies every field/value or member
+  (`field.to_vec(), value.to_vec()`) and sorts it before slicing. SCAN also calls
+  `data.reap(now, usize::MAX)` first, so one call can synchronously remove every
+  due expiry — work bounded by the keyspace, not by `COUNT`
+  ([`scan.rs`](../../src/engine/scan.rs#L112),
+  [`scan_collection`](../../src/engine/scan.rs#L144)). The module comment states
+  the design: "Cursors are decimal indexes into a freshly sorted snapshot per
+  call."
+- **Measured (2026-11-12).** A 100,000-key keyspace (`key:%06d`, 16-byte values)
+  plus a 10,000-field hash, one connection, 300 fixed SCAN calls with spread
+  cursors and `COUNT 10`, three rotations:
+
+  | Path | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SCAN` per call, `COUNT 10` | **42.6 ms p50 / 81.3 p99** | 0.256 / 2.08 ms | 0.164 / 3.72 ms |
+  | Full `SCAN`, `COUNT 1000` | **4.81 s** (101 calls) | 0.239 s (100) | 0.167 s (100) |
+  | Full `HSCAN`, `COUNT 10` (10k fields) | **5.05 s** (1,000 calls) | 0.257 s (~944) | 0.247 s (~800) |
+
+  The PING floor on the same connections is 0.21/0.16/0.10 ms. A single
+  default-COUNT call is therefore **167× Redis and 260× Valkey** at p50, and a
+  full traversal is 20–29× slower. Extrapolating the measured per-call p50 to
+  10,000 calls, a full 100k traversal at `COUNT 10` costs Rillcache ~426 s versus
+  ~2.6 s for Redis. The cost is keyspace-sized per call, not per requested
+  element. Candidate 4.31.
+
+**Verdict: adapt an incremental cursor (4.31).** Keep the cursor opaque,
+resume from the last emitted element in an ordered structure, and bound each call
+by `COUNT` plus index depth. The numeric index cursor and the router's
+`owner×2^40 + local` packing are an explicit compatibility decision, and the
+sorted-order test in `tests/scan.rs` must be updated to the chosen semantics. Do
+not keep a per-call full snapshot or an unbounded expiry sweep.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -2163,7 +2225,8 @@ section 3.3, 4.26 is the pooled/batched eviction candidate in section 3.10, and
 candidates to call sites, invariants and implementation priority, and 4.29 is
 the large-hash `HGETALL` reply candidate in section 3.2. 4.30 is the sorted-set
 ordered-index candidate for the measured 19.5–20.4× small-range loss in the same
-section.
+section. 4.31 is the incremental cursor for the measured 167–260× per-call
+`SCAN` loss in section 3.16.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2665,6 +2728,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    clean runner; the 2026-11-12 local cohort in section 3.10 already measures the
    steady-state penalty (−85.8% P16). Report RSS and read-hit retention as the
    quality signals.
+8. **Cursor iteration:** a 100k-key `SCAN` with spread cursors at `COUNT 10` and
+   `COUNT 1000`, a full traversal, and a 10k-field `HSCAN`, at P1. Confirms 4.31
+   and its bounded-work claim on a clean runner; the 2026-11-12 local cohort in
+   section 3.16 already measures 167–260× per call and 20–29× per traversal.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -2672,7 +2739,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all seven rows are complete for all three servers;
+runners, not a shared k3s host; all eight rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -3122,15 +3189,19 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.22/4.24 async wake | reactor `asynchronous` (`reactor.rs#L91`, `#L467`), `poll_blocked_on` (`blocking.rs#L436`), pub/sub and monitor flags | FIFO; timeout gaps; `CLIENT UNBLOCK`; ordering; shutdown; multi-owner | wake latency, idle CPU, fanout | large |
 | 4.23 rewrite start | `begin_rewrite` (`journal.rs#L1131`), maintenance tick (`reactor.rs#L443`) | atomic rename; replay; reconciliation | 20k/200k pause, kill/replay | medium |
 | 4.30 zset index | `zset_read` (`collections.rs`), `zset_add`, `zset_items`/`ZSet` (`data.rs`), accounting | total score order with member tie-break; ±0/NaN; rank/score/lex ranges; `ZSetPack` ≤128 unchanged; memory accounting; rewrite/replay | 10k `ZRANGE 0 9` / full-range A/B, ZADD regression, zset semantics | large |
+| 4.31 cursor scan | `scan_keys`/`scan_collection` (`scan.rs`), router `locked_scan`, `Data` keyspace index, `ZSet`/`Hash`/`Set` order, expiry reap | opaque cursor resume; full coverage on a stable keyspace; MATCH/COUNT/TYPE/NOVALUES; pack one-call behavior; bounded work; memory accounting | 100k `SCAN COUNT 10`, full scan, 10k `HSCAN`, SET/GET regression | large |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, and 4.26 for eviction.
 4.22/4.24 come last because they touch every asynchronous client path and carry
-the highest ordering risk. 4.30 is the largest measured read-side ratio (19.5×)
-but is a dual-structure change, so it follows the first journal slices; 4.29 is
-the smaller sibling and shares its collect+sort mechanism. 4.23 follows the
-existing bounded slices. 4.20 stays conditional on 4.19; 4.18 stays deferred.
+the highest ordering risk. 4.31 is the largest per-call ratio in the record but
+touches the keyspace, every collection type and the router cursor, so it follows
+the journal slices and 4.30's representation decision (the ordered hash/zset
+option can serve both). 4.30 is the largest measured read-side ratio (19.5×) but
+is a dual-structure change; 4.29 is the smaller sibling and shares its
+collect+sort mechanism. 4.23 follows the existing bounded slices. 4.20 stays
+conditional on 4.19; 4.18 stays deferred.
 
 ### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
 
@@ -3225,10 +3296,79 @@ baseline in a matched cohort; every zset command, tie-break, rewrite/replay and
 expiry test passes; the 128-member control and all gate commands unchanged; no
 new dependency; both protected gates green on the exact head.
 
+### 4.31 Incremental cursor iteration (candidate; admission measured)
+
+**Mechanism.** Make each `SCAN`-family call bounded by `COUNT` and index depth.
+For the keyspace, maintain a per-owner ordered key index beside `entries`
+(`BTreeSet<Arc<[u8]>>`, sharing the key allocation with the map, or
+`BTreeSet<Vec<u8>>` if the sharing change is deferred) and resume from the last
+emitted key. The cursor becomes an opaque `(owner, hex(last key))` token: the
+router stops packing `owner × 2^40 + local` and carries the owner prefix plus the
+token instead. A call does a range from the last key, applies MATCH/TYPE while
+visiting, and caps visited elements per call so a selective `MATCH` cannot
+degenerate into a keyspace walk; it returns a resume cursor. For collections,
+large hashes become `BTreeMap` (option (b) of 4.29, which also removes the
+`HGETALL` sort), large sets already use `BTreeSet` and can range directly, and
+large sorted sets use 4.30's ordered index with `ZSCAN` defined as score order
+(Redis leaves the order unspecified). Pack-encoded collections return all
+elements with cursor 0, matching the C servers' listpack path. Per-call expiry
+work becomes the normal bounded reap, not `reap(now, usize::MAX)`.
+
+**Fallback.** A lazily rebuilt sorted key snapshot with the current numeric
+cursor removes repeated sorts on a stable keyspace but still pays O(n log n) on
+the first call after a write; it does not meet a bounded-per-call criterion and is
+documented only as the fallback if the ordered index is rejected by its memory or
+mutation cohort.
+
+**Prediction.** 100k-key `SCAN COUNT 10` p50 falls from **42.6 ms** toward the C
+servers' sub-millisecond range; full traversal falls from 4.81 s to ~0.25 s; the
+10k `HSCAN` falls from 5.05 s to ~0.25 s; `SET`/`GET` stay within noise while
+`SET`/`HSET` pay one O(log n) index update.
+
+**Admission evidence (2026-11-12, section 3.16).** 100,000 keys plus a
+10,000-field hash, one connection, 300 spread-cursor `SCAN COUNT 10` calls and
+full traversals, three rotations: per-call p50 42.64/46.76/42.58 ms versus Redis
+0.26/0.32/0.24 and Valkey 0.10/0.16/0.22; full `SCAN COUNT 1000` 4.81 s over 101
+calls versus 0.239 s and 0.167 s; full `HSCAN COUNT 10` 5.05 s over 1,000 calls
+versus 0.257 s (~944) and 0.247 s (~800). PING floor 0.21/0.16/0.10 ms. The
+measured cost is the per-call snapshot, not the reply.
+
+**Risks and obligations.** The cursor format changes from a decimal index to an
+opaque token; `tests/scan.rs` asserts exact numeric cursors and sorted pages, and
+the router's `owner × 2^40 + local` packing must change deliberately with tests
+and a documented old-cursor behavior. Coverage on a stable keyspace must remain
+exact; `MATCH`/`TYPE` selectivity must not turn one call into a whole-keyspace
+walk; pack thresholds and conversions must keep their semantics; the index and
+shared keys must be counted by memory accounting and rebuilt by replay/rewrite;
+expiry must stay bounded; hex encoding must be binary-safe and dependency-free;
+multi-owner traversal must not repeat or skip an owner.
+
+**Rejected options.** A reverse-binary cursor over `std::collections::HashMap`
+(no stable bucket API; `RawTable` is unstable and unsafe), a 40-bit hash-prefix
+numeric cursor (collisions can skip keys and break coverage), the measured
+per-call full snapshot, and an unbounded expiry reap.
+
+**Rejection condition.** `SET`/`GET` or `HSET` loses more than 10% in a matched
+cohort, any gate row loses, a coverage test can miss a stable key or fail to
+terminate, pack semantics change, memory grows without an accounted bound, or no
+gain above the spread.
+
+**Acceptance (AC33).** On 100,000 keys, `SCAN COUNT 10` shall have p50 ≤ 1 ms and
+p99 ≤ 5 ms (≥40× and ≥16× faster than the 42.6/81.3 ms baseline, within ~4×
+Redis's 0.256 ms); a full `SCAN COUNT 1000` shall finish in ≤0.5 s (≥9× faster,
+within ~2× Redis's 0.239 s) and a full 10k-field `HSCAN COUNT 10` in ≤0.5 s
+(≥10× faster); each call's work shall be bounded by `COUNT` plus a fixed
+lookahead, with no keyspace-sized allocation/sort and no unbounded expiry sweep;
+a stable keyspace shall return every key exactly once across the traversal;
+MATCH/TYPE/NOVALUES, cursor errors and multi-owner traversal tests shall be updated
+to the chosen semantics and pass; `SET`/`GET` shall stay within noise; no
+dependency shall be added; and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
-`BTreeSet` and a local total-order helper, and the rest use the existing `std`
-I/O, parser and in-repo journal/crypto code. Each candidate lands as its own PR
-with AC5 plus the protected gates; no combined integration branch.
+`BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
+with the in-repo hex helper, and the rest use the existing `std` I/O, parser and
+in-repo journal/crypto code. Each candidate lands as its own PR with AC5 plus the
+protected gates; no combined integration branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -3273,7 +3413,7 @@ measurement tooling, 4.17–4.18 are rejected, 4.20 needs no crate, 4.21 is
 `std::fs`/`Write::write_all` plus the existing in-repo SHA-256/HMAC and CRC code,
 and 4.30 is a `std::collections::BTreeSet` plus a local `f64` total-order helper
 (`ordered-float`/`float-ord` are rejected as an unnecessary dependency for ~20
-lines).
+lines), and 4.31 is `std` `BTreeSet`/`BTreeMap` plus the in-repo hex helper.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
 it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
@@ -3393,6 +3533,14 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   the index's memory must be counted against `maxmemory`; a deep-start range is
   O(start + k) and must be documented rather than hidden. `ZADD` loss above 10%
   or any semantic test difference rejects the change (AC32).
+- **Cursor-scan risk (4.31):** replacing the decimal index cursor with an opaque
+  token changes the wire contract and the router's `owner × 2^40 + local`
+  packing; `tests/scan.rs` asserts exact cursors and sorted pages, so the change
+  must update them deliberately and keep a documented old-cursor behavior. A
+  buggy resume can skip or repeat keys on a stable keyspace, a selective MATCH
+  can degenerate into a keyspace walk, and a new key index adds memory and an
+  O(log n) mutation that must be accounted and rebuilt on replay/rewrite. Expiry
+  must stay bounded, and the index must keep `SET`/`GET` within noise (AC33).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -3442,6 +3590,9 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | A hand-written skiplist for sorted sets | Repeats the C servers' structure in safe Rust with substantial mutation code for the same asymptotics a `std` `BTreeSet` gives (4.30). |
 | Adding `ordered-float`/`float-ord` for sorted-set scores | A new dependency to express ~20 lines of `f64` total-order normalization; policy impact is not justified (4.30, section 5). |
 | Sorting only the requested `ZRANGE` slice | The slice's start rank is defined by the global `(score, member)` order, so this does not reduce the work and can change results (4.30). |
+| A reverse-binary cursor over `std::collections::HashMap` | `std` exposes no stable bucket cursor; `RawTable` is unstable and would put unsafe code in the project (4.31). |
+| A 40-bit hash-prefix numeric cursor for `SCAN` | Collisions can skip keys, breaking the "every key exactly once" coverage guarantee; an ordered index or an opaque key token is required (4.31). |
+| Keeping the per-call sorted key snapshot and only caching it | A cache still pays O(n log n) on the first call after every write and holds a duplicate key list; it does not bound per-call work (4.31). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -3639,6 +3790,17 @@ samples retained.
   rewrite/replay and expiry test shall pass; the 128-member control and all gate
   commands shall be unchanged; no dependency shall be added; and both protected
   gates shall pass on the exact head.
+- **AC33 (incremental cursor, only if 4.31 is implemented).** On 100,000 keys,
+  `SCAN COUNT 10` shall have p50 ≤1 ms and p99 ≤5 ms (≥40× and ≥16× faster than
+  the measured 42.6/81.3 ms, within ~4× Redis's 0.256 ms); a full
+  `SCAN COUNT 1000` shall finish in ≤0.5 s and a full 10,000-field
+  `HSCAN COUNT 10` in ≤0.5 s (≥9–10× faster than the measured 4.81/5.05 s); each
+  call shall do work bounded by `COUNT` plus a fixed lookahead, with no
+  keyspace-sized allocation/sort and no unbounded expiry sweep; a stable keyspace
+  shall yield every key exactly once across the traversal; MATCH/TYPE/NOVALUES,
+  cursor and multi-owner tests shall be updated to the chosen cursor semantics
+  and pass; `SET`/`GET` shall stay within noise; no dependency shall be added;
+  and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -3788,6 +3950,13 @@ separate roadmap.
   at ~301 req/s, `perf record -F 999 -g`; 21.5% sort code, 21.2% libc tuple
   moves in the sort, 6.4% `zset_items`, ~59% libc self and ~10% kernel.
   Diagnostic only; raw perf data retained (untracked).
+- Cursor-iteration cohort (section 3.16, candidate 4.31): 100,000 keys
+  (`key:%06d`, 16-byte values) plus a 10,000-field hash, one connection, 300
+  spread-cursor `SCAN COUNT 10` calls, a full `SCAN COUNT 1000` traversal and a
+  full `HSCAN COUNT 10` traversal, three rotations. Per-call p50 42.64/46.76/42.58
+  ms versus Redis 0.26/0.32/0.24 and Valkey 0.10/0.16/0.22; full scan 4.81 s
+  (101 calls) versus 0.239/0.167 s; full HSCAN 5.05 s (1,000 calls) versus
+  0.257/0.247 s. PING floor 0.21/0.16/0.10 ms. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -4149,3 +4318,9 @@ separate roadmap.
   precisely. The 128- and 1,024-member controls bound the size regime; the
   mechanism attribution is a single-client perf sample on a shared host, so it
   identifies cost, not a gate-rate win or loss.
+- The cursor cohort (section 3.16) measures single-connection per-call cost at
+  `COUNT 10`/`COUNT 1000` and full traversals on a stable 100k-key keyspace. It
+  does not measure concurrent SCAN with writes, `MATCH`/`TYPE` selectivity,
+  `SSCAN`/`ZSCAN` directly, TTL keys (the unbounded `reap(now, usize::MAX)` is
+  source-only), the cursor's compatibility cost, or the memory/RSS and mutation
+  cost of a key index; those are implementation-PR evidence under AC33.
