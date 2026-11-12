@@ -106,7 +106,9 @@ has a usable 64-byte control and measures **1 MiB GET at −42% to −45% (p99
 2.3–2.5×) and SET at −28% to −32%**, admitting 4.15 (reply copy) and 4.25 (input
 growth). Under continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
-servers, admitting 4.26 (pooled eviction). Section 2.24 is a one-page open-gap
+servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
+ready** (0.258 s at 50k and 1.10–1.24 s at 200k keys versus 0.011–0.061 s for the
+C servers), admitting 4.27 (single-pass replay). Section 2.24 is a one-page open-gap
 ledger that maps every remaining item to its evidence status, candidate and
 admission experiment.
 
@@ -1236,6 +1238,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
 | Eviction steady-state cost | storage | **measured**: P16 20,498 vs 144,365 no-eviction (−85.8%), p99 64.5 vs 8.0 ms; policy-independent; C servers ~no penalty | 4.26, admitted | AC29 on the implemented change | none (no maxmemory) |
+| Startup AOF replay | persistence, availability | **measured**: 0.258 s at 50k, 1.10–1.24 s at 200k vs 0.011–0.061 s for the C servers | 4.27, admitted | AC30 on the implemented change | none (startup) |
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
 | Incremental keyspace rehash | storage | bound at 1024 keys | deferred 4.18 | large-keyspace cohort | none |
 | Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s) | keep; needs a socket dependency/FFI | connection-storm / idle-socket cohort | none |
@@ -1517,6 +1520,7 @@ That is safe Rust with no new dependency.
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
 | Journal writes | buffered `aof_buf`, one write per event loop, 1 s background fsync | same | one framed write per journaled command, 1 s fsync | **Adopt:** batch per pass (4.21); measured −66.5% P1 / −90.2% P16 AOF-on loss; keep CRC/HMAC framing and write-before-reply ordering |
 | Journal rewrite | fork + COW child, parent serves; fork page-table pause | same | key-list materialisation (9–20 ms at 20k keys) then 512-key/1 MiB slices on the owner | **Keep:** no fork in safe Rust; reduce the start pause with 4.23 only if a rewrite-latency cohort shows it matters (3.13) |
+| AOF replay | single AOF load; no separate per-command CRC pass | single load | checksum parse + reparse + normal execute (200k: ~1.16 s) | **Adopt:** 4.27 single-pass loader; measured 20–45× slower to ready (3.15) |
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
 | Expiry | lazy + sampled active cycle, 25% CPU budget, fast 1 ms, effort levels | same | lazy + ordered `BTreeSet` reap, 128 due keys per 100 ms | **Keep:** ordered removals are exact and capped at ~0.1–0.3% CPU; adaptive bursts only with the 4.16 TTL row (3.10) |
@@ -1889,6 +1893,42 @@ setter outside `std` (a new dependency or FFI) or an OS-level sysctl, and is not
 justified without a connection-storm or idle-socket cohort. The 30 s app timeout
 is a different mechanism, not a keepalive substitute.
 
+### 3.15 Startup replay (time to ready)
+
+Recovery is part of the persistence latency and the steady-state gate never sees
+it: a restart must replay the journal before the listener accepts clients.
+
+- **Redis 8.10.2 and Valkey 9.1.2** load their append-only files once with the AOF
+  loader (manifest plus base/incremental files), then serve; a separate
+  per-command CRC pass is not part of the normal load.
+- **Rillcache** calls `Journal::replay`, which first runs `validate_checksums` — a
+  full parse and CRC pass over every transaction — and then reparses the file and
+  executes every command through the normal `store.execute_command` path
+  ([`journal.rs#L944`](../../src/engine/journal.rs#L944),
+  [`#L592`](../../src/engine/journal.rs#L592)). A 200k-key journal is therefore
+  parsed twice, and each command pays normal dispatch and execution cost before
+  the process binds.
+
+Measured (2026-11-12, 64-byte values, `everysec`, clean SIGTERM, time from process
+start to first successful PING; DBSIZE verified for Rillcache at 200k and Redis at
+50k):
+
+| Keys | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+| ---: | ---: | ---: | ---: |
+| 50,000 | 0.258 s | 0.011 s | 0.054 s |
+| 200,000 | **1.10–1.24 s** (median ~1.16) | 0.027–0.043 s | 0.051–0.061 s |
+
+Rillcache is ~20–45x slower to become ready. Absolute times are shared-host
+diagnostics, but the ratio is large and the source explains it.
+
+**Verdict: adapt a single-pass replay fast path (4.27).** Verify the CRC while
+replaying instead of in a separate pass, and apply commands through a loader that
+skips load-irrelevant side effects (WATCH version churn, notifications,
+observability counters, journal re-append) while preserving expiry absolute
+times, payload accounting, stream consumer/PEL state, HMAC verification and the
+tail/corruption policy. Do not weaken corruption detection or serve partial
+state.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -1911,7 +1951,8 @@ same-pass wakeup candidate for blocking commands in section 3.12. 4.23 is the
 conditional rewrite-start candidate for the fork-versus-slices trade in section
 3.13, and 4.24 is the event-driven async-client candidate for pub/sub and
 MONITOR in section 3.12. 4.25 is the large-frame input-reservation candidate in
-section 3.3, and 4.26 is the pooled/batched eviction candidate in section 3.10.
+section 3.3, 4.26 is the pooled/batched eviction candidate in section 3.10, and
+4.27 is the startup-replay fast path in section 3.15.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2791,6 +2832,46 @@ exact; every policy (`allkeys`/`volatile` × `lru`/`random`/`ttl`) and
 is not under pressure; the matched A/B shall show the gain; and both protected
 gates shall pass on the exact head.
 
+### 4.27 Single-pass replay fast path (candidate; admission measured)
+
+**Mechanism.** Merge checksum validation into the replay parse so each
+transaction is checked once and applied once, and run the command loader in a
+load mode that skips WATCH-version churn, keyspace notifications, observability
+counters and journal re-append, while preserving absolute expiry times, payload
+accounting, stream consumer/PEL state, HMAC chaining and the existing tail
+policy. A bad frame aborts before the listener binds; no partial state is served.
+
+**Prediction.** Time-to-ready at 200k keys falls from the measured **1.10–1.24 s
+(median ~1.16)** to **≤0.3 s** and at 50k from 0.258 s to ≤0.08 s, while
+DBSIZE, payload bytes and TTLs match the pre-replay state. Redis/Valkey remain at
+~0.03–0.06 s; the target is a ≥4× improvement, not a claim to match C.
+
+**Admission evidence (2026-11-12, section 3.15).** 50k keys: Rill 0.258 s vs
+Redis 0.011 and Valkey 0.054; 200k: Rill 1.10–1.24 s vs 0.027–0.043 and
+0.051–0.061, with DBSIZE 200,000 verified for Rill and 50,000 for Redis. The
+source shows two full parses (checksum pass + replay) plus normal command
+execution, which explains the ratio. Shared-host diagnostic.
+
+**Method.** 50k and 200k fixtures, three clean restarts and three SIGKILL
+restarts each, raw time-to-PING, DBSIZE, `INFO` bytes/TTLs, corruption/tail
+tests, HMAC on/off and stream consumer/PEL state.
+
+**Risks and obligations.** Corruption and tail policy must be decided before
+serving; HMAC verification must stay intact; expiry must remain absolute (not
+re-relative); accounting, WATCH versions after load, streams state and
+`noeviction` semantics must match. Do not skip a check that changes externally
+visible state.
+
+**Rejection condition.** Any missing or extra key, accounting/TTL mismatch,
+corruption accepted, HMAC failure, or any protected gate row loss.
+
+**Acceptance (AC30).** At 200,000 keys, time-to-PING shall be ≤0.3 s and at
+50,000 ≤0.08 s (measured baseline 1.10–1.24 and 0.258 s); the post-replay
+DBSIZE, payload bytes and TTLs shall match exactly; corrupt or truncated tails
+shall be handled by the documented policy and never served; SIGKILL/replay,
+HMAC on/off and stream consumer/PEL tests shall pass; both protected gates shall
+pass; and no dependency shall be added.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -2905,6 +2986,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   the data lock unboundedly, or change policy/accounting/expiry semantics. Bound
   keys/time per pass, keep `noeviction` and WATCH/journal order, and verify exact
   evicted-key and payload counts (AC29).
+- **Replay fast-path risk (4.27):** merging checksum validation into replay and
+  skipping load-irrelevant side effects must not accept corruption, change the
+  tail policy, re-relativize TTLs, break HMAC chaining, or alter stream/PEL
+  state. A bad frame must abort before the listener binds (AC30).
 - **WATCH-version risk (4.20):** skipping per-key versions while nothing watches
   is only safe if `WATCH` registration and the tracking flag change under the
   same data borrow and if scratch multi-owner executors keep tracking. A race or
@@ -3150,6 +3235,13 @@ samples retained.
   `lru`/`random`/`ttl` policy and `noeviction` shall behave as specified; there
   shall be no change when the budget is not under pressure; the matched A/B shall
   show the gain; and both protected gates shall pass on the exact head.
+- **AC30 (replay time to ready, only if 4.27 is implemented).** At 200,000 keys
+  time-to-PING shall be ≤0.3 s and at 50,000 ≤0.08 s (measured baseline 1.10–1.24
+  and 0.258 s); post-replay DBSIZE, payload bytes and TTLs shall match exactly;
+  corrupt or truncated tails shall be handled by the documented policy and never
+  served; SIGKILL/replay, HMAC on/off and stream consumer/PEL tests shall pass;
+  no dependency shall be added; and both protected gates shall pass on the exact
+  head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -3257,6 +3349,11 @@ separate roadmap.
   Absolute rates are shared-host diagnostics; the paired ratios and cross-server
   pattern are the evidence. HMAC was off; the framing cost is CRC plus the
   per-command write.
+- Startup replay measurement (section 3.15, candidate 4.27): 50k/200k SETs of
+  64 B with `appendonly yes`, clean SIGTERM, three restarts per size, time from
+  process start to first PING. Rill 0.258 s (50k) and 1.10–1.24 s (200k, DBSIZE
+  200,000); Redis 0.011/0.027–0.043 (50k DBSIZE verified 50,000); Valkey
+  0.054/0.051–0.061. Shared-host diagnostic; raw JSON retained (untracked).
 - Expiry and eviction comparison (section 3.10): Redis `expire.c` constants and
   `activeExpireCycle`, Valkey `active-expire-effort`, and the 16-entry eviction
   pool (`redis evict.c#L36`, `valkey evict.c#L54`) against our
@@ -3544,6 +3641,11 @@ separate roadmap.
   transaction per command while the C servers write a buffered batch per loop;
   4.21 is admitted and AC23 sets the implementation targets. Absolute rates are
   shared-host diagnostics, not a gate result.
+- Startup replay is also outside the gate but measured (section 3.15):
+  time-to-PING is 0.258 s at 50k keys and 1.10–1.24 s at 200k, versus
+  0.011–0.061 s for the C servers. The source shows a separate checksum parse
+  pass plus a reparse and normal execute; 4.27/AC30 cover it. Shared-host
+  diagnostic; DBSIZE was verified at 200k for Rill and 50k for Redis.
 - The hosted profile (section 2.23) is instrumented evidence: tracepoints and
   CPU-clock sampling perturb the workload, its rates are quarantined, and the
   per-reply syscall counts are neither latency nor throughput. It corrects the
