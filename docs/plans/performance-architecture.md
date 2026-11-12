@@ -1237,7 +1237,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, admitted | AC20 on the implemented change | none at 64 B |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
-| One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5% | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
+| One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
 | 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1% | 4.22, admitted; implementation next | AC25 on the implemented change | none |
 | Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
@@ -1635,6 +1635,15 @@ for a production claim.
   security feature's price: do not replace the hash, reduce the per-transaction
   chain or skip verification without a security review. Candidate 4.27 can fold
   the verification into the replay pass without changing the chain.
+- **`appendfsync always` (source only; local cohort failed).** Rillcache calls
+  `sync_data` inside every `append`, while the C servers fsync the buffer once
+  per event-loop flush; at pipeline K this is K fsyncs versus about one. A local
+  paired `always` attempt on 2026-11-12 was **unusable** because the shared host
+  was at load 10+ and the runs varied from 1.6k to 107k req/s (some `always`
+  runs were faster than `everysec`, which is physically implausible). No numbers
+  are claimed. The mechanism makes `always` the strongest case for 4.21's
+  batching: one durable write and one fsync per batch, with every acknowledged
+  command still covered.
 
 **Verdict:** the persistence-on gap is measured and large; 4.21 is admitted. Adapt
 the buffering shape, keep the per-transaction CRC/HMAC framing, do not move the
@@ -2661,7 +2670,8 @@ per-command append.
 
 **Acceptance (AC23).** With persistence on, a batch of K commands performs at
 most one journal write and one journal lock acquisition; every acknowledged
-command is present in the replayed journal; `always` still syncs before the reply;
+command is present in the replayed journal; `always` still syncs before the reply
+and performs at most one fsync per batch;
 `everysec` still syncs within its 1 s bound; **P16 AOF-on SET throughput is
 within 25% of AOF-off and P1 within 10%, and P16 p99 is no worse than 2× the
 AOF-off p99** (measured baseline −90.2%/−66.5% and 15.1 vs 3.1 ms; C servers
@@ -3251,7 +3261,8 @@ samples retained.
 - **AC23 (journal write coalescing, only if 4.21 is implemented).** With
   persistence on, a batch of K commands shall perform at most one journal write
   and one journal lock acquisition; every acknowledged command shall be present
-  in the replayed journal; `always` shall sync before the reply; `everysec` shall
+  in the replayed journal; `always` shall sync before the reply and perform at
+  most one fsync per batch; `everysec` shall
   sync within its 1 s bound; P16 AOF-on SET throughput shall be within 25% of
   AOF-off and P1 within 10%, and P16 p99 no worse than 2× AOF-off (baseline
   −90.2%/−66.5% and 15.1 vs 3.1 ms; C servers −8.5% to −33.5%); kill/replay,
@@ -3420,6 +3431,12 @@ separate roadmap.
   `everysec`. Append P1 14,355 vs 12,893 (−10.2%), P16 41,821 vs 31,938
   (−23.6%), p99 12.0 vs 11.5 ms; 50k replay 0.206 vs 0.749 s (3.6×), DBSIZE
   50,000 both. Shared-host diagnostic; raw JSON retained (untracked).
+- `appendfsync always` attempt (section 3.9): local 2026-11-12, two rounds, 2k
+  requests, P1/P16 across Rill/Redis/Valkey. The host was at load 10+ and the
+  runs ranged from 1.6k to 107k req/s, with some `always` runs faster than
+  `everysec`; the cohort is unusable and retained as failed evidence. No numbers
+  are claimed; the per-append-sync versus per-loop-fsync source difference and
+  the 4.21 one-fsync-per-batch requirement remain.
 - Startup replay measurement (section 3.15, candidate 4.27): 50k/200k SETs of
   64 B with `appendonly yes`, clean SIGTERM, three restarts per size, time from
   process start to first PING. Rill 0.258 s (50k) and 1.10–1.24 s (200k, DBSIZE
@@ -3727,7 +3744,10 @@ separate roadmap.
   vs 3.1 ms), against 8.5–33.5% for the C servers. The journal writes one framed
   transaction per command while the C servers write a buffered batch per loop;
   4.21 is admitted and AC23 sets the implementation targets. Absolute rates are
-  shared-host diagnostics, not a gate result.
+  shared-host diagnostics, not a gate result. The `always` policy is source-only:
+  our per-append `sync_data` versus the C servers' per-loop fsync, with a local
+  attempt that failed under host load (section 3.9); 4.21 requires one fsync per
+  batch.
 - Startup replay is also outside the gate but measured (section 3.15):
   time-to-PING is 0.258 s at 50k keys and 1.10–1.24 s at 200k, versus
   0.011–0.061 s for the C servers. The source shows a separate checksum parse
