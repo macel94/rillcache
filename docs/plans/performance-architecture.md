@@ -82,9 +82,10 @@ expiry and WATCH indexes and defers an encoding rewrite to a TTL/eviction RSS
 result. The blocking-wakeup comparison (section 3.12) finds a 0–1000 µs async-tick
 latency against same-loop ready-key signaling in the C servers, the largest
 unmeasured latency gap; candidate 4.22 and AC25 gate it. The rewrite comparison
-(section 3.13) adds the measured 9–20 ms key-list start pause against the C
-servers' fork/COW rewrite, reproduced at a 14.2 ms median on the current head
-with a concurrent GET p99 of 3.5 ms; candidate 4.23 and AC26 gate it.
+(section 3.13) adds the measured key-list start pause against the C servers'
+fork/COW rewrite: a **14.2 ms median at 20k keys** and **90.7 ms at 200k** on the
+current head, with concurrent GET max latency reaching the pause; candidate 4.23
+and AC26 gate it.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -1587,14 +1588,20 @@ C servers and Rillcache solve it structurally differently:
   cooperative rewrite replies in **9–20 ms** (key-list materialisation), encodes
   **1.6–2.4 ms** per 512-key slice, and completes the background pass in about
   4–5 s while clients are served between slices.
-- **Current-head reproduction (2026-11-12).** Re-ran the same 20k-key/64-byte
-  fixture on this head: 2.46 MB journal; five `BGREWRITEAOF` start pauses of
-  5.5, 10.5, 14.2, 19.5 and 20.1 ms (median **14.2 ms**), confirming the
-  persistence.md range. With one client issuing P1 GETs during a 5.0 ms start
-  pause, 3,289 requests saw p50 **0.396 ms**, p99 **3.51 ms** and max
-  **11.4 ms**; the stall is visible to normal traffic, not only to the admin
-  command. This is a single shared-host diagnostic consistent with the existing
-  method, not a cross-server cohort or a gate result.
+- **Current-head reproduction (2026-11-12).** Re-ran the fixture on this head at
+  two sizes, with one client issuing P1 GETs during a start pause:
+
+  | Keys | Journal | `BGREWRITEAOF` start pause, median [min–max] | Concurrent GET p99 / max |
+  | ---: | ---: | ---: | ---: |
+  | 20,000 | 2.46 MB | 14.2 [5.5–20.1] ms | 3.51 / 11.4 ms (3,289 reqs) |
+  | 200,000 | 24.8 MB | **90.7 [83.3–107.9] ms** | 14.5 / **88.8 ms** (1,019 reqs) |
+
+  The pause scales roughly linearly with the key count (10× keys → 6.4× median),
+  as expected from materialising the whole key list in one turn. At production
+  keyspaces it is tens to hundreds of milliseconds, not the small-fixture
+  9–20 ms, and the concurrent client's max latency matches the pause. This is a
+  single shared-host diagnostic consistent with the existing method, not a
+  cross-server cohort or a gate result.
 - Consequence: on a small dataset the fork path pays a short page-table pause
   while our start pause is 9–20 ms; on a large dataset the fork's
   page-table/COW cost can become the worse pause. This is a real latency trade,
@@ -2315,11 +2322,12 @@ the previous round" reconciliation to cover keys created or deleted during
 materialisation). The `+Background...` reply can be sent before the list is
 complete because the snapshot is not installed until the final atomic rename.
 
-**Prediction.** The command pause drops from the measured 9–20 ms at 20k keys to
-the batch bound (target ≤2 ms) and scales with the batch rather than the
-keyspace; total completion may grow by a few maintenance ticks and must stay
-within 25% of the current ~4–5 s for the 20k-key fixture. Concurrent GET/SET p99
-during the start window improves.
+**Prediction.** The command pause drops from the measured 14.2 ms at 20k keys
+and **90.7 ms at 200k keys** to the batch bound (targets ≤2 ms and ≤20 ms
+respectively) and scales with the batch rather than the keyspace; total
+completion may grow by a few maintenance ticks and must stay within 25% of the
+current ~4–5 s (20k) / ~40–50 s (200k) pass. Concurrent GET p99 during the start
+window improves.
 
 **Method.** 20k- and 200k-key fixtures of 64-byte values; measure the
 `BGREWRITEAOF` reply latency, per-slice encode time, total completion, concurrent
@@ -2338,10 +2346,11 @@ completion more than 25% slower; any crash/replay failure; or any protected gate
 row loss. Then keep the single materialisation and record the 9–20 ms bound.
 
 **Acceptance (AC26).** At 20,000 keys the `BGREWRITEAOF` reply pause shall be
-≤2 ms; concurrent writes during materialisation shall appear exactly once in the
-replayed snapshot; kill/replay shall recover; total completion shall stay within
-25% of the current implementation; both protected gates shall pass; and no
-dependency shall be added.
+≤2 ms and at 200,000 keys ≤20 ms, i.e. bounded by the materialisation slice
+rather than linear in the keyspace; concurrent writes during materialisation
+shall appear exactly once in the replayed snapshot; kill/replay shall recover;
+total completion shall stay within 25% of the current implementation; both
+protected gates shall pass; and no dependency shall be added.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -2509,7 +2518,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Removing the 1 ms fallback and trusting the ready signal never misses | One missed signal would strand a blocked client indefinitely; the fallback is required by AC25. |
 | Forking a copy-on-write rewrite child via unsafe/FFI | Outside the safe-Rust/no-FFI boundary; the cooperative slices are the reviewed adaptation (3.13). |
 | Keeping the synchronous full rewrite | Measured at 130 ms of blocked service on the 20k-key fixture; already replaced by cooperative slices (docs/persistence.md). |
-| Ignoring the 9–20 ms rewrite start pause | It is a measured latency cost the gate cannot see; 4.23 is the bounded candidate (AC26), not a non-issue (3.13). |
+| Ignoring the rewrite start pause | It is a measured 14.2 ms at 20k keys and ~91 ms at 200k, a latency cost the gate cannot see; 4.23 is the bounded candidate (AC26), not a non-issue (3.13). |
 | Copying Redis/Valkey's unauthenticated AOF byte stream | Drops the CRC32 transaction boundary and optional HMAC record that this project's durability/security increments added (3.9). |
 | Per-command fsync under `everysec` | Multiplies fsync cost without changing the stated 1 s durability bound; the policy stays 1 s (3.9). |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
@@ -2651,12 +2660,13 @@ samples retained.
   `XREAD BLOCK` wakeups; FIFO, ordering, timeout, `CLIENT UNBLOCK`, multi-owner
   and shutdown tests shall pass; the 1 ms fallback shall remain; no dependency
   shall be added; and both protected gates shall pass on the exact head.
-- **AC26 (rewrite start pause, only if 4.23 is implemented).** At 20,000 keys a
-  `BGREWRITEAOF` shall reply within 2 ms; concurrent writes during
-  materialisation shall appear exactly once in the replayed snapshot; kill/replay
-  shall recover; total completion shall stay within 25% of the current
-  implementation; both protected gates shall pass; and no dependency shall be
-  added.
+- **AC26 (rewrite start pause, only if 4.23 is implemented).** A
+  `BGREWRITEAOF` shall reply within 2 ms at 20,000 keys and within 20 ms at
+  200,000 keys, i.e. bounded by the materialisation slice rather than linear in
+  the keyspace; concurrent writes during materialisation shall appear exactly
+  once in the replayed snapshot; kill/replay shall recover; total completion
+  shall stay within 25% of the current implementation; both protected gates shall
+  pass; and no dependency shall be added.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -2764,12 +2774,13 @@ separate roadmap.
   [persistence.md](../persistence.md) on the 20k-key/2.5 MB fixture. The numbers
   are dev-host diagnostics, not a gate result; 4.23 is the conditional start-pause
   candidate.
-- Current-head rewrite reproduction (section 3.13): local run 2026-11-12 on the
-  shared k3s host, 20k keys × 64 B, 2.46 MB journal; five `BGREWRITEAOF` start
-  pauses of 5.5, 10.5, 14.2, 19.5 and 20.1 ms (median 14.2); one concurrent P1
-  GET run saw p50 0.396 ms, p99 3.51 ms and max 11.4 ms over 3,289 requests.
-  Raw result retained in the development environment (untracked); a diagnostic,
-  not a cross-server cohort.
+- Current-head rewrite reproduction (section 3.13): local runs 2026-11-12 on the
+  shared k3s host. 20k keys × 64 B, 2.46 MB journal: five start pauses
+  5.5–20.1 ms, median 14.2; concurrent P1 GET p50 0.396 ms, p99 3.51, max 11.4
+  over 3,289 requests. 200k keys, 24.8 MB journal: three pauses 83.3–107.9 ms,
+  median 90.7; concurrent GET p50 0.836, p99 14.5, max 88.8 over 1,019 requests.
+  Raw results retained in the development environment (untracked); diagnostics,
+  not cross-server cohorts.
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
@@ -2931,11 +2942,12 @@ separate roadmap.
   signal within the same event-loop iteration. The protected gate has no blocking
   command, so no gate row sees it; 4.22 is the candidate and its own
   blocked-wake cohort is the admission evidence (AC25).
-- Rewrite scheduling has a measured **9–20 ms** start pause at 20k keys (section
-  3.13) where the C servers fork a copy-on-write child; the gate runs with
-  persistence off, so no gate row sees it. The figures are dev-host diagnostics
-  from [persistence.md](../persistence.md), not a cross-server cohort; 4.23 is the
-  only candidate and needs a rewrite-latency measurement (AC26).
+- Rewrite scheduling has a measured **9–20 ms** start pause at 20k keys and
+  **~91 ms at 200k keys** (section 3.13) where the C servers fork a copy-on-write
+  child; the gate runs with persistence off, so no gate row sees it. The figures
+  are dev-host diagnostics from [persistence.md](../persistence.md) and the
+  current-head reproduction, not a cross-server cohort; 4.23 is the only
+  candidate and needs a rewrite-latency measurement (AC26).
 - P1 p99 is not consistently better under the merged bounded-poll default
   (section 2.15). The throughput gate passes on medians, but AC5 remains a design
   criterion: a future wakeup/poll change must measure p99 and reject a regression
