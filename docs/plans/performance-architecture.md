@@ -85,7 +85,9 @@ unmeasured latency gap; candidate 4.22 and AC25 gate it. The rewrite comparison
 (section 3.13) adds the measured key-list start pause against the C servers'
 fork/COW rewrite: medians of **9–14 ms at 20k keys** and **91–107 ms at 200k**,
 with full passes of 4.85 s and 43.4 s and concurrent GET p99 of 10.8/18.8 ms;
-candidate 4.23 and AC26 gate it.
+candidate 4.23 and AC26 gate it. Section 2.24 is a one-page open-gap ledger that
+maps every remaining item to its evidence status, candidate and admission
+experiment.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -1129,6 +1131,28 @@ already rejected. This is not a first-order gate loss and it is not a reason to
 change the runtime. The instrumented profile is mechanism evidence only: no
 throughput, latency or production claim follows from it.
 
+### 2.24 Open-gap ledger (state at this revision)
+
+A map of what is still open, what was closed by bound, and which experiment would
+admit a change. It repeats no new evidence; the linked sections are authoritative.
+
+| Gap | Dimension | Evidence now | Candidate / decision | Admission evidence | Gate row |
+| --- | --- | --- | --- | --- | --- |
+| P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; 1.0% vs Redis in the daily cohort; p99 lower | no runtime candidate; measurement/topology | disjoint client CPUs is a CI/policy decision | the row itself |
+| P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the daily host | 4.19 attribution first | paired client + server p99 histograms | none |
+| Large bulk reply copy | replies | source only; local screen failed | 4.15 (std `Arc`/`IoSlice`) | clean large-value cohort (4.16 row 2) | none at 64 B |
+| Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
+| One journal write per command | persistence | source | 4.21, conditional | 4.16 row 5 + A/B | none (persistence off) |
+| 1 ms blocked-client wake | latency | source + arithmetic (0–1000 µs) | 4.22 | blocked-wake cohort | none |
+| Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
+| Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
+| Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
+| Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
+| Incremental keyspace rehash | storage | bound at 1024 keys | deferred 4.18 | large-keyspace cohort | none |
+| Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s) | keep; needs a socket dependency/FFI | connection-storm / idle-socket cohort | none |
+| Drain probe; parser cursor; cached clock; last-command cache; deferred write coalescing | syscalls, parsing, latency | +12%/+37% syscalls but removal lost P1; others under noise | closed/rejected (2.6, 4.2, 4.5, 4.9, 4.17) | named workload only | none |
+| Level-triggered epoll, `SO_BUSY_POLL`, `recvmmsg`/`sendmmsg` | syscalls | source; outside the Mio/`std` boundary | policy decision, not a candidate | explicit policy review | none |
+
 ## 3. Per-component comparison with Redis and Valkey
 
 Pins: Valkey `9.1.2` and Redis `8.10.2` source tags, as in
@@ -1383,6 +1407,7 @@ That is safe Rust with no new dependency.
 | Readiness | level-triggered epoll, single loop | level-triggered epoll, single loop | Mio edge-triggered reactor with drain probe | **Keep/adapt:** edge-triggered through reviewed Mio; level-triggered needs unsafe FFI or a new selector policy |
 | Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one owner-local reactor plus an opt-in 2–16 connection-local worker override | **Adapt, bounded:** the measured four-CPU P1 gate favored one reactor plus a bounded poll; preserve CPU/tail costs and measure larger fan-out before choosing parallel workers |
 | Blocking wakeups | same-loop `signalKeyAsReady` after the command | same | blocked clients re-enqueued every 1 ms, no ready-key signal | **Adapt if measured:** 4.22 same-pass wake with the 1 ms fallback; no gate effect (3.12) |
+| Connection setup | backlog 511, TCP keepalive 300 s, NODELAY | same | std backlog 128, NODELAY, 30 s app idle timeout | **Keep:** backlog/keepalive need a socket dependency or FFI; no measured connection-storm gap (3.14) |
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
 | Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adapt only if measured:** candidate 4.15 after a clean large-value cohort (2.21) and AC20; std `Arc`/`IoSlice` only |
@@ -1617,6 +1642,31 @@ outside the safe-Rust boundary without a new unsafe/FFI dependency, and the
 current commit path is already crash-tested. Reduce the start pause with
 candidate 4.23 (bounded key-list materialisation) only against a rewrite-latency
 cohort; a missed key or a replay regression rejects it.
+
+### 3.14 Connection setup and idle sockets
+
+- **Redis 8.10.2 and Valkey 9.1.2** use a configurable, startup-immutable
+  `tcp-backlog` (default **511**) and `tcp-keepalive` (default **300 s**); an
+  accepted socket gets `SO_KEEPALIVE` plus `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/
+  `TCP_KEEPCNT` from `anetKeepAlive`
+  ([`redis config.c#L3526`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3526),
+  [`redis anet.c#L115`](https://github.com/redis/redis/blob/8.10.2/src/anet.c#L115);
+  [`valkey config.c#L3408`](https://github.com/valkey-io/valkey/blob/9.1.2/src/config.c#L3408))
+  and `TCP_NODELAY`.
+- **Rillcache** uses `std::net::TcpListener::bind` and sets `TCP_NODELAY` on
+  accepted sockets. A local `strace` of this build shows `SO_REUSEADDR` and
+  `listen(..., 128)`; `std` exposes no safe API for the listen backlog or TCP
+  keepalive. The application-level `--idle-timeout-ms` (default 30 s) closes
+  idle connections instead.
+- Consequence: under a reconnect storm our accept queue is 128 where the C
+  servers use 511, and idle NAT/firewall state relies on the app timeout rather
+  than TCP keepalive probes. The protected gate keeps eight persistent
+  connections and is unaffected.
+
+**Verdict: keep.** Raising the backlog or enabling keepalive needs a socket
+setter outside `std` (a new dependency or FFI) or an OS-level sysctl, and is not
+justified without a connection-storm or idle-socket cohort. The 30 s app timeout
+is a different mechanism, not a keepalive substitute.
 
 ## 4. Candidate architectures
 
@@ -2786,6 +2836,12 @@ separate roadmap.
   Raw results retained in the development environment (untracked); diagnostics,
   not cross-server cohorts. The maxima include shared-host scheduling beyond the
   rewrite.
+- Connection-setup comparison (section 3.14): Redis/Valkey `tcp-backlog` 511 and
+  `tcp-keepalive` 300 s with `anetKeepAlive`
+  ([`redis config.c#L3526`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3526),
+  [`anet.c#L115`](https://github.com/redis/redis/blob/8.10.2/src/anet.c#L115));
+  a local `strace` of this build shows `SO_REUSEADDR` and `listen(..., 128)` with
+  no keepalive option. Source/trace evidence; no connection-storm cohort.
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
@@ -2954,6 +3010,11 @@ separate roadmap.
   [persistence.md](../persistence.md) and the current-head reproduction, not a
   cross-server cohort; 4.23 is the only candidate and needs a rewrite-latency
   measurement (AC26).
+- Connection setup differs from the C servers: local `strace` shows a listen
+  backlog of 128 and no TCP keepalive, where Redis/Valkey default to 511 and
+  300 s (section 3.14). The gate's eight persistent connections do not exercise
+  this; no connection-storm or idle-socket cohort exists, so no production claim
+  is made.
 - P1 p99 is not consistently better under the merged bounded-poll default
   (section 2.15). The throughput gate passes on medians, but AC5 remains a design
   criterion: a future wakeup/poll change must measure p99 and reject a regression
