@@ -121,7 +121,8 @@ deferred. A
 every deep row, with only P1 SET near parity. Section
 2.24 is a one-page open-gap
 ledger that maps every remaining item to its evidence status, candidate and
-admission experiment.
+admission experiment. Section 4.28 fixes the call sites, invariants and
+priority for implementing the admitted candidates.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -2036,7 +2037,8 @@ conditional rewrite-start candidate for the fork-versus-slices trade in section
 3.13, and 4.24 is the event-driven async-client candidate for pub/sub and
 MONITOR in section 3.12. 4.25 is the large-frame input-reservation candidate in
 section 3.3, 4.26 is the pooled/batched eviction candidate in section 3.10, and
-4.27 is the startup-replay fast path in section 3.15.
+4.27 is the startup-replay fast path in section 3.15. 4.28 maps the admitted
+candidates to call sites, invariants and implementation priority.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2968,6 +2970,34 @@ DBSIZE, payload bytes and TTLs shall match exactly; corrupt or truncated tails
 shall be handled by the documented policy and never served; SIGKILL/replay,
 HMAC on/off and stream consumer/PEL tests shall pass; both protected gates shall
 pass; and no dependency shall be added.
+
+### 4.28 Implementation map and priority for admitted candidates
+
+The research is now measurement-limited on the shared host: the remaining
+admitted items need code and their own protected gates, not more local screens.
+This map fixes call sites, invariants and test surface so the next increment
+starts from source. Approximate diff sizes are relative scope, not estimates.
+
+| Candidate | Primary call sites | Invariants | Test / evidence | Scope |
+| --- | --- | --- | --- | --- |
+| 4.21 AOF batching | `Journal::append` (`journal.rs#L1028`), `Store::execute_command` (`engine.rs#L1228`), reactor run loop | write before reply; per-transaction CRC/HMAC; 1 s everysec; one fsync per batch; batch failure unacknowledges every reply | kill/replay, HMAC/CRC, everysec/always, multi-owner | medium |
+| 4.27 replay | `Journal::replay` (`#L944`), `validate_checksums` (`#L592`), `execute_command` | corruption/tail policy; HMAC chain; absolute TTL; accounting; streams/PEL | 50k/200k time-to-PING, DBSIZE/bytes/TTL, SIGKILL | medium |
+| 4.25 input reservation | `Client::receive` (`pool.rs#L109`), `parse_request` (`protocol.rs#L64`) | frame/bulk limits; fragmentation; truncated/malformed frames | 1 MiB SET, lying length, limits | small |
+| 4.15 large reply | `Entry.value` (`data.rs#L205`), `encode_bulk` (`protocol.rs#L398`), `Client::flush` (`pool.rs#L73`) | reply order; partial writes; backpressure; payload accounting | 1 MiB GET, slow reader, pipelined GETs | medium |
+| 4.26 eviction | `Data::reserve` (`data.rs#L646`), `eviction.rs` | policy semantics; accounting; expiry/WATCH order; `noeviction` | pressure cohort, every policy | medium |
+| 4.22/4.24 async wake | reactor `asynchronous` (`reactor.rs#L91`, `#L467`), `poll_blocked_on` (`blocking.rs#L436`), pub/sub and monitor flags | FIFO; timeout gaps; `CLIENT UNBLOCK`; ordering; shutdown; multi-owner | wake latency, idle CPU, fanout | large |
+| 4.23 rewrite start | `begin_rewrite` (`journal.rs#L1131`), maintenance tick (`reactor.rs#L443`) | atomic rename; replay; reconciliation | 20k/200k pause, kill/replay | medium |
+
+**Priority.** 4.21 and 4.27 first: they address the largest measured
+steady-state (AOF-on) and availability (replay) gaps and are contained in the
+journal path. Then 4.25 and 4.15 for large values, and 4.26 for eviction.
+4.22/4.24 come last because they touch every asynchronous client path and carry
+the highest ordering risk. 4.23 follows the existing bounded slices. 4.20 stays
+conditional on 4.19; 4.18 stays deferred.
+
+None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, and the rest use the
+existing `std` I/O, parser and in-repo journal/crypto code. Each candidate lands
+as its own PR with AC5 plus the protected gates; no combined integration branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
