@@ -88,8 +88,9 @@ expiry and WATCH indexes and defers an encoding rewrite to a TTL/eviction RSS
 result. The blocking-wakeup comparison (section 3.12) is now measured, not just
 source-based: after the LPUSH reply, Rillcache takes **1.16 ms p50 / 1.92 ms p99**
 to wake a BLPOP against **0.03/0.22 ms** for Redis and Valkey on the same host
-(900 wakeups each), the largest measured latency gap; candidate 4.22 is
-admission-ready and AC25 gates the implementation. The rewrite comparison
+(900 wakeups each), and an idle blocked client costs **5.6% of a core (22.2% at
+1000)** against <1% for the C servers — the largest measured latency and
+idle-CPU gap; candidate 4.22 is admission-ready and AC25 gates the implementation. The rewrite comparison
 (section 3.13) adds the measured key-list start pause against the C servers'
 fork/COW rewrite: medians of **9–14 ms at 20k keys** and **91–107 ms at 200k**,
 with full passes of 4.85 s and 43.4 s and concurrent GET p99 of 10.8/18.8 ms;
@@ -1201,7 +1202,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large bulk reply copy | replies | source only; local screen failed | 4.15 (std `Arc`/`IoSlice`) | clean large-value cohort (4.16 row 2) | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | source | 4.21, conditional | 4.16 row 5 + A/B | none (persistence off) |
-| 1 ms blocked-client wake | latency | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms on the C servers (900 wakeups each) | 4.22, admitted; implementation next | AC25 on the implemented change | none |
+| 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1% | 4.22, admitted; implementation next | AC25 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
@@ -1464,7 +1465,7 @@ That is safe Rust with no new dependency.
 | --- | --- | --- | --- | --- |
 | Readiness | level-triggered epoll, single loop | level-triggered epoll, single loop | Mio edge-triggered reactor with drain probe | **Keep/adapt:** edge-triggered through reviewed Mio; level-triggered needs unsafe FFI or a new selector policy |
 | Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one owner-local reactor plus an opt-in 2–16 connection-local worker override | **Adapt, bounded:** the measured four-CPU P1 gate favored one reactor plus a bounded poll; preserve CPU/tail costs and measure larger fan-out before choosing parallel workers |
-| Blocking wakeups | same-loop `signalKeyAsReady` after the command | same | blocked clients re-enqueued every 1 ms, no ready-key signal | **Adapt if measured:** 4.22 same-pass wake with the 1 ms fallback; no gate effect (3.12) |
+| Blocking wakeups | same-loop `signalKeyAsReady` after the command | same | blocked clients re-enqueued and polled every 1 ms; no ready-key signal | **Adopt:** 4.22 same-pass wake + deadline timer; measured 1.16 ms p50 and 5.6–22% idle CPU vs <1%; no gate effect (3.12) |
 | Connection setup | backlog 511, TCP keepalive 300 s, NODELAY | same | std backlog 128, NODELAY, 30 s app idle timeout | **Keep:** backlog/keepalive need a socket dependency or FFI; no measured connection-storm gap (3.14) |
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
@@ -1659,6 +1660,27 @@ as the memory acceptance signal.
   matches the 1 ms tick, not a parser or storage cost, and the C servers stay
   around 30 µs. This is a shared-host diagnostic, not a cross-server cohort, but
   the relative gap is large and consistent across rotations.
+- **Idle CPU with blocked clients (2026-11-12).** The same 1 ms tick also keeps
+  the reactor busy when nothing is pushed. Server process CPU over a 5 s window
+  with N idle `BLPOP` clients, no traffic:
+
+  | Idle blocked clients | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | ---: | ---: | ---: | ---: |
+  | 0 | 0.6% | 0.4% | 0.4% |
+  | 1 | **5.6%** | — | — |
+  | 10 | 6.8% | — | — |
+  | 50 | 13.0% | — | — |
+  | 100 | **17.8%** | 0.2% | 0.4% |
+  | 1000 | **22.2%** | 0.6% | 0.6% |
+
+  One blocked client already costs ~5.6% of a core, and 1000 costs ~22%, while
+  the C servers stay under 1%. The mechanism is visible in the reactor: a blocked
+  poll that makes no progress still returns `Served::Runnable(false)`, the loop
+  counts it as `serviced`, and the 20 µs `FAST_POLL` window is armed after every
+  1 ms tick; on top of that, every blocked client is re-enqueued and re-polled
+  each tick. Event-driven wake plus a deadline timer removes both, and the
+  implementation should stop counting a no-progress blocked poll as productive
+  work so the spin is not re-armed.
 
 **Verdict: the gap is measured, not just arithmetic, and 4.22 is admission-ready.**
 Adapt the same-pass ready-key wake; keep the 1 ms tick for timeouts and
@@ -2412,8 +2434,11 @@ or multi-owner transfer, a lost wake), so a missed signal degrades to today's
 behavior rather than a lost wake.
 
 **Prediction.** Wake p50/p99 for BLPOP/BRPOP/BLMOVE/BZPOPMIN/BZPOPMAX and
-`XREAD BLOCK` drops from the 0–1000 µs tick quantization (about 500 µs average)
-to the reactor's service latency (tens of µs); the protected gate, which has no
+`XREAD BLOCK` drops from the 0–1000 µs tick quantization (measured 1.16 ms p50)
+to the reactor's service latency (tens of µs), and idle CPU with blocked clients
+falls from 5.6% (1 client) / 22% (1000) toward the C servers' <1%, because the
+tick no longer re-enqueues and re-polls every blocked client and a no-progress
+poll no longer arms the 20 µs `FAST_POLL` spin. The protected gate, which has no
 blocking command, is unchanged; throughput is unchanged because the ready set is
 empty when nothing blocks.
 
@@ -2427,8 +2452,10 @@ UNBLOCK`, and a pipeline where the push and the wake are in the same batch.
 Latin-rotated runs per server, randomized 0.5–2.5 ms push delay: after the LPUSH
 reply, Rillcache p50 **1.16 ms** / p99 **1.92 ms** against Redis **0.031/0.221**
 and Valkey **0.025/0.220** ms on the same host. The gap matches the 1 ms tick and
-is far outside host noise; it admits the candidate. Implementation still needs
-the obligations below and the AC25 acceptance.
+is far outside host noise. The same tick costs **5.6% of a core with one idle
+blocked client and 22.2% with 1000**, against <1% for the C servers. Both the
+latency and CPU gaps admit the candidate. Implementation still needs the
+obligations below and the AC25 acceptance.
 
 **Risks and obligations.** Service after the batch, never re-enter the store
 inside the mutating command; bound the ready set and the number of waiters
@@ -2438,14 +2465,16 @@ transfers working (the owner must retain or transfer the waiter set). The 1 ms
 fallback stays.
 
 **Rejection condition.** Any lost, duplicated or out-of-order wake; any timeout or
-`CLIENT UNBLOCK` regression; no measured latency improvement; or any protected
-gate row loss. Then keep the tick and record the 1 ms bound.
+`CLIENT UNBLOCK` regression; no measured latency improvement; no idle-CPU
+improvement in the blocked-client cohort; or any protected gate row loss. Then
+keep the tick and record the 1 ms bound.
 
 **Acceptance (AC25).** A matched blocked-wake cohort shall show p99 within 200 µs
 of Valkey and at least 2× better than the pre-change head (the ~1 ms tick
-baseline); FIFO, ordering, timeout, unblock, multi-owner and shutdown tests shall
-pass; the protected gates shall pass on the exact head; and no dependency is
-added.
+baseline); with 1 and 1000 idle blocked clients and no traffic, server CPU shall
+stay at or below 1% and shall not scale with the client count; FIFO, ordering,
+timeout, unblock, multi-owner and shutdown tests shall pass; the protected gates
+shall pass on the exact head; and no dependency is added.
 
 ### 4.23 Bounded rewrite key-list materialisation (candidate, gated on rewrite latency)
 
@@ -2791,12 +2820,15 @@ samples retained.
   collection and journal semantics; no hot-path allocation or refcount shall be
   added without a matched rate/tail result; and both protected gates shall pass on
   the exact head.
-- **AC25 (blocked wake latency, only if 4.22 is implemented).** A matched
-  blocked-wake cohort shall show p99 within 200 µs of Valkey and at least 2×
-  better than the pre-change 1 ms tick baseline for BLPOP-style and
-  `XREAD BLOCK` wakeups; FIFO, ordering, timeout, `CLIENT UNBLOCK`, multi-owner
-  and shutdown tests shall pass; the 1 ms fallback shall remain; no dependency
-  shall be added; and both protected gates shall pass on the exact head.
+- **AC25 (blocked wake latency and idle CPU, only if 4.22 is implemented).** A
+  matched blocked-wake cohort shall show p99 within 200 µs of Valkey and at
+  least 2× better than the pre-change 1 ms tick baseline for BLPOP-style and
+  `XREAD BLOCK` wakeups; with 1 and 1000 idle blocked clients and no traffic,
+  server CPU shall stay at or below 1% and shall not scale with the client count
+  (the measured baseline is 5.6% and 22.2% versus <1% for the C servers); FIFO,
+  ordering, timeout, `CLIENT UNBLOCK`, multi-owner and shutdown tests shall pass;
+  the 1 ms fallback shall remain; no dependency shall be added; and both
+  protected gates shall pass on the exact head.
 - **AC26 (rewrite start pause, only if 4.23 is implemented).** A
   `BGREWRITEAOF` shall reply within 2 ms at 20,000 keys and within 20 ms at
   200,000 keys, i.e. bounded by the materialisation slice rather than linear in
@@ -2919,7 +2951,10 @@ separate roadmap.
   runs per server (900 each), randomized 0.5–2.5 ms push delay; after-push p50/p99
   were 1.16/1.92 ms (Rillcache), 0.031/0.221 (Redis 8.10.2) and 0.025/0.220
   (Valkey 9.1.2). Shared-host diagnostic; raw JSON retained in the development
-  environment (untracked).
+  environment (untracked). Idle-CPU run (same day): 5 s process-CPU windows with
+  0/1/10/50/100/1000 idle BLPOP clients; Rillcache 0.6/5.6/6.8/13.0/17.8/22.2%,
+  Redis 0.4/—/—/—/0.2/0.6%, Valkey 0.4/—/—/—/0.4/0.6%. Raw JSON retained; not a
+  gate.
 - Rewrite scheduling comparison (section 3.13): Redis/Valkey
   `rewriteAppendOnlyFileBackground` forks a COW child
   (`redis aof.c#L3239`, `valkey aof.c#L2595`); our cooperative slices and the
@@ -3099,11 +3134,12 @@ separate roadmap.
   always allocate a `Vec`. No encoding rewrite is justified without the TTL or
   eviction RSS cohort, and no rate/tail claim follows from the gate's 64-byte
   rows.
-- Blocking commands are the largest **measured** latency gap in this review
-  (section 3.12): after the push reply, blocked clients wake in 1.16 ms p50 /
-  1.92 ms p99 versus 0.03/0.22 ms for Redis/Valkey on the same host, matching
-  the 1 ms tick. The protected gate has no blocking command, so no gate row sees
-  it; 4.22 is admitted and AC25 gates the implementation.
+- Blocking commands are the largest **measured** latency and idle-CPU gap in this
+  review (section 3.12): after the push reply, blocked clients wake in 1.16 ms p50
+  / 1.92 ms p99 versus 0.03/0.22 ms for Redis/Valkey on the same host, and one
+  idle blocked client costs 5.6% of a core (22.2% at 1000) versus <1%. The
+  protected gate has no blocking command, so no gate row sees it; 4.22 is admitted
+  and AC25 gates the implementation.
 - Rewrite scheduling has measured start-pause medians of **9–14 ms at 20k keys**
   and **91–107 ms at 200k** (section 3.13), with 4.85 s / 43.4 s full passes,
   where the C servers fork a copy-on-write child; the gate runs with persistence
