@@ -48,7 +48,13 @@ the newest merged head `7b365dc` passed both four-CPU comparisons 10/10 with a
 clear P1 ping margin (+5.05% against Valkey, +9.62% against Dragonfly) whose
 paired interval still contains 1.0 (section 2.18), and a fresh five-server daily
 cohort on the same head leads every measured row, with only four P1 rows inside
-the advisory noise band (section 2.19). Second, source comparison locates the one
+the advisory noise band (section 2.19). A second manual five-server cohort on
+`bcd4768` (run 43164876654) repeats the throughput lead at +21.7–32.6% P1
+against Redis/Valkey but reverses **all five** P1 p99 rows; the tail direction is
+therefore explicitly host-dependent (sections 2.15, 2.19 and 2.22). Every
+inspected gate manifest shares client/server CPUs `[0,1,2,3]` because the runner
+has four logical CPUs, so placement is not a controllable variable there
+(section 2.9). Second, source comparison locates the one
 structural reply-path difference left — Redis 8.10.2 and Valkey 9.1.2 avoid the
 value copy for bulk replies of at least 16 KiB — and an attempted local
 large-value screen is retained as failed evidence because the shared host could
@@ -413,6 +419,16 @@ review) or a different scheduling mechanism that does not add runnable server
 threads. The docs-only record must not be re-pushed repeatedly to fish for a
 noise pass.
 
+**Placement is never disjoint on this runner.** Inspecting the manifests of every
+recent cohort — #212 (pass), #217 (pass), #218 (fail), #220 (fail) and #223
+(fail) — all report `client_cpus == server_cpus == allowed_cpus == [0, 1, 2, 3]`.
+The runner exposes exactly four logical CPUs, so the workflow's "disjoint client
+CPUs when available" clause cannot be satisfied on this runner type. Pass and
+fail therefore cannot be attributed to placement, and the current one-reactor
+default still shares the four CPUs with two generator threads. A true disjoint
+control needs a different runner type (a CI/policy decision), not a configuration
+change; until then the P1 ping row remains residual host/scheduler noise.
+
 ### 2.10 Post-refresh cohorts: command-counter isolation and two both-gates passes
 
 Main then advanced to `9692e07`, which pads each of the 64 sharded command
@@ -720,6 +736,8 @@ than 5% above the pre-change head or lower than Valkey's. The observed rows:
 | #175 docs gate (run 41564296997) | 8 | 0.119 | — | 0.087 | 0.055 | +21.77% |
 | #176 docs gate (run 41566914311) | 8 | 0.071 | — | 0.087 | 0.071 | +0.44% |
 | #179 docs gate (run 41582234348) | 8 | 0.119 | — | 0.087 | 0.063 | +23.54% |
+| Five-server daily (run 43022929390) | 8 | 0.103 | 0.135 | 0.151 | 0.103 | +13.17% |
+| Five-server daily, manual (run 43164876654) | 8 | 0.111 | 0.079 | 0.087 | 0.063 | +29.49% |
 | Clean-runner upstream (run 41563160515) | 16 | 0.119 | 0.111 | 0.111 | — | +7.10% |
 | Clean-runner upstream, repeat (run 41633321852) | 16 | 0.091 | 0.087 | 0.087 | — | +4.10% |
 
@@ -839,7 +857,9 @@ the win is resolved with an interval above 1.0. Neither a loss nor a win proves 
 code change on a single cohort; the strict median of this one shared-runner row
 moves by roughly 16 points while the binary is unchanged. The row is the gate's
 measurement risk, not a stable deficit, and the clean-host direction remains
-positive.
+positive. Every inspected manifest behind these cohorts reports the same
+`client_cpus == server_cpus == [0, 1, 2, 3]` (section 2.9), so placement is not a
+variable the gate can control on this runner.
 
 The Dragonfly comparison shows the same shape. The #220 docs head (base
 `cd8fa1b`, runtime identical) lost the Dragonfly P1 ping row by **0.12%**
@@ -928,11 +948,45 @@ column in the artifact is not a per-command measure: every server reports about
 the clean-runner estimates in section 2.14 remain the only per-command CPU
 evidence.
 
-**What this means.** On the gate's small-string workloads there is no measured
-throughput or tail loss left to any of the four references; the residual against
-Redis is a 1–6% P1 band that the current cohort cannot resolve, plus the
-ping-specific per-command CPU cost from section 2.14. The next section states
-where a real mechanism difference remains.
+**Second cohort on the same runtime (manual dispatch).** A second five-server run
+on merged `bcd4768` (runtime `7b365dc`, same code) completed 250/250 samples on a
+faster runner (run 43164876654). Rillcache again led all ten rows, but both the
+margin and the tail direction differ sharply:
+
+| Workload | P | Rillcache | Redis | Valkey | vs Redis | vs Valkey | p99 R/Rd/V ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| ping | 1 | 177,056.00 | 144,519.20 | 136,729.70 | +22.52% | +29.49% | 0.111/0.079/0.087 |
+| ping | 16 | 2,500,598.50 | 1,621,520.00 | 1,480,833.62 | +54.22% | +68.86% | 0.087/0.111/0.127 |
+| set | 1 | 169,595.70 | 134,291.91 | 130,702.70 | +26.29% | +29.76% | 0.127/0.087/0.087 |
+| set | 16 | 1,881,206.38 | 1,078,412.75 | 948,028.81 | +74.44% | +98.43% | 0.095/0.175/0.191 |
+| get | 1 | 160,354.00 | 131,724.41 | 131,327.41 | +21.73% | +22.10% | 0.143/0.087/0.095 |
+| get | 16 | 2,144,225.50 | 1,197,080.00 | 1,121,528.00 | +79.12% | +91.20% | 0.231/0.151/0.159 |
+| set-nx-existing | 1 | 168,511.20 | 130,726.20 | 130,270.50 | +28.90% | +29.36% | 0.119/0.087/0.095 |
+| set-nx-existing | 16 | 2,111,110.50 | 1,133,843.25 | 1,110,832.00 | +86.19% | +90.05% | 0.127/0.159/0.159 |
+| set-xx-existing | 1 | 171,948.30 | 129,706.40 | 135,451.00 | +32.57% | +26.94% | 0.127/0.087/0.087 |
+| set-xx-existing | 16 | 1,895,451.25 | 1,054,452.75 | 947,304.00 | +79.75% | +100.10% | 0.095/0.167/0.183 |
+
+The P1 throughput lead is now +21.7% to +32.6% against Redis and +22.1% to
++29.5% against Valkey, outside the advisory band in every row, while P1 p99 is
+**worse** than both references in all five (0.111–0.143 vs 0.079–0.095 ms). At
+P16 the throughput lead is 54–100%; p99 is better for ping/set/NX/XX but worse for
+GET (0.231 vs 0.151/0.159). RSS is lower (5.2–6.0 MiB vs 6.7–7.2 MiB). The
+CPU-seconds column again includes generator orchestration and is not a
+per-command measure.
+
+This is a second host for identical code, and it resolves two points: the 1.0%
+P1 ping margin of the first cohort was a host artifact, not the true direction;
+and the P1 tail is host-dependent rather than a fixed win or loss. Throughput and
+tail can move in opposite directions on the same binary, which is exactly why AC5
+and the server-side attribution test (4.19) exist.
+
+**What this means.** Across the two four-CPU cohorts on identical code,
+throughput leads every row, but the size of the P1 margin (1.0–22.5% vs Redis)
+and the direction of the P1 tail (lower in one cohort, higher in the other) both
+depend on the host. There is no stable throughput loss in these cohorts; the
+residual is host-dependent latency and variance plus the per-command CPU sign
+flip from section 2.14. The next section states where a real mechanism
+difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
@@ -1061,12 +1115,14 @@ Three observations:
    same samples. The correlation with mutation is exact on this host: only SET and
    XX write, and only they carry the extra p99/max population; ping, GET and
    rejected NX do not touch the store's mutation path.
-3. **The direction is host-dependent.** On the single-host daily cohort (section
-   2.19) the same SET row had rill p99 0.111 vs Valkey 0.159 and XX 0.111 vs
-   0.151 — Rillcache better. The two cohorts disagree because they run on
-   different hosts and topologies, exactly the variance warning in sections 2.9
-   and 2.15. A client-observed tail cannot be attributed to the server without a
-   server-side histogram.
+3. **The direction is host-dependent.** On the first single-host daily cohort
+   (section 2.19) the same SET row had rill p99 0.111 vs Valkey 0.159 and XX
+   0.111 vs 0.151 — Rillcache better. The second daily cohort on identical code
+   (`bcd4768`) reverses **all five** P1 rows: rill 0.111–0.143 vs Redis
+   0.079–0.087 and Valkey 0.087–0.095, while throughput leads by 21.7–32.6%.
+   The cohorts disagree because they run on different hosts and topologies,
+   exactly the variance warning in sections 2.9 and 2.15. A client-observed tail
+   cannot be attributed to the server without a server-side histogram.
 
 The CPU column also reverses the earlier per-command conclusion (section 2.14):
 using process CPU seconds divided by measured commands, Rillcache is *cheaper*
@@ -1138,8 +1194,8 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 
 | Gap | Dimension | Evidence now | Candidate / decision | Admission evidence | Gate row |
 | --- | --- | --- | --- | --- | --- |
-| P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; 1.0% vs Redis in the daily cohort; p99 lower | no runtime candidate; measurement/topology | disjoint client CPUs is a CI/policy decision | the row itself |
-| P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the daily host | 4.19 attribution first | paired client + server p99 histograms | none |
+| P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; +1.0% and +22.5% vs Redis across two daily cohorts; p99 flips with host | no runtime candidate; measurement/topology | disjoint CPUs need a different runner type; all recent cohorts share `[0,1,2,3]` | the row itself |
+| P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
 | Large bulk reply copy | replies | source only; local screen failed | 4.15 (std `Arc`/`IoSlice`) | clean large-value cohort (4.16 row 2) | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | source | 4.21, conditional | 4.16 row 5 + A/B | none (persistence off) |
@@ -2758,6 +2814,12 @@ separate roadmap.
   0.9819 [0.9388–1.0209]), P16 ping 5/5 at +48.9%, all other rows passed. Kept
   with #216/#217 as the identical-code variance evidence; not retried until
   green.
+- Placement evidence (section 2.9): the manifests of #212 (run 42994675861),
+  #217 (43128571502), #218 (43134573112), #220 (43147853671) and #223
+  (43171755325) all report `client_cpus == server_cpus == allowed_cpus ==
+  [0,1,2,3]`; the runner has exactly four logical CPUs. Pass/fail therefore
+  cannot be attributed to placement, and a disjoint control needs a different
+  runner type.
 - Per-request latency and process CPU (section 2.22): derived from the five
   `sample.json` files per P1 workload in the #212 partials above (run
   42994675861); no new runs. Each sample records p50/p95/p99/max and
@@ -2779,6 +2841,12 @@ separate roadmap.
 - Five-server daily cohort (section 2.19): run 43022929390 on source `7b365dc`,
   artifact `daily-five-server-7b365dc…-43022929390-1`, 250/250 samples. Advisory;
   never a gate substitute.
+- Second five-server cohort (section 2.19): manual dispatch run 43164876654 on
+  `bcd4768` (runtime `7b365dc`), 250/250 samples. Rillcache leads all ten rows;
+  P1 ping 177,056 vs Redis 144,519 and Valkey 136,730 (+22.5%/+29.5%), P16
+  throughput +54–100%, but all five P1 p99 are worse (0.111–0.143 vs
+  0.079–0.095 ms) and P16 GET p99 is 0.231 vs 0.151/0.159. Advisory; retained as
+  the host-dependent tail evidence, not a gate.
 - Failed large-value screen (section 2.21): local 2026-11-11 attempt on the shared
   k3s development host with pinned Redis 8.10.2/Valkey 9.1.2; only two 64-byte
   control rows completed (5,414 and 3,437 ops/s, ~20–33x below the daily cohort),
@@ -2959,13 +3027,15 @@ separate roadmap.
   The manual cohort shows Rillcache ahead on all five measured workloads at
   P1/P16, but it is not a gate and does not cover unseen commands or mixed
   workloads. The clean-runner upstream cohort confirms the same direction on the
-  merged default (section 2.14), and the newest daily five-server cohort leads
-  every row with only four P1 rows inside its advisory band (section 2.19). The
-  remaining measured gaps against Redis/Valkey are a small P1 per-command CPU
-  difference whose sign is host-dependent, run-to-run variance, and the
-  large-value reply copy that the 64-byte gate cannot see (sections 2.20–2.22).
-  The persistence-on journal write shape (section 3.9) is a further unmeasured
-  difference; the gate runs with persistence off.
+  merged default (section 2.14); the first daily five-server cohort leads every
+  row with only four P1 rows inside its advisory band, and the second daily
+  cohort on identical code leads every row by 21.7–32.6% P1 against Redis/Valkey
+  while all five P1 p99 are worse (section 2.19). The remaining measured gaps
+  against Redis/Valkey are a small P1 per-command CPU difference whose sign is
+  host-dependent, host-dependent P1 tail variance, and the large-value reply copy
+  that the 64-byte gate cannot see (sections 2.20–2.22). The persistence-on
+  journal write shape (section 3.9) is a further unmeasured difference; the gate
+  runs with persistence off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
   within-row alternating comparison, but cross-row absolute rates are not
@@ -3030,10 +3100,11 @@ separate roadmap.
   `server_cpus` (`[0,1,2,3]`), so the load generator shared the server CPUs.
   That biases a multi-reactor server against a single-thread competitor and put
   the P1 ping row inside a +2.9% to −4.3% run-to-run band for an unchanged
-  runtime (section 2.9). The current gate states disjoint client CPUs when
-  available and otherwise shares them; a disjoint-client-CPU runner measures the
-  server's lower p99 without generator contention. Changing the runner is a
-  CI/policy decision, not a server tuning knob.
+  runtime (section 2.9). The gate states disjoint client CPUs "when available",
+  but every recent cohort reports `[0,1,2,3]` for both because the runner has
+  exactly four logical CPUs; a disjoint control therefore needs a different
+  runner type, not a configuration change. Changing the runner is a CI/policy
+  decision, not a server tuning knob.
 - Cross-client write coalescing (4.5) is closed: it has no target row, and the
   current per-client batch already leads every P16 row (sections 2.19 and 4.5).
   The resumable parser (4.2) is closed by bound: incomplete frames rescan only
