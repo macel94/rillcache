@@ -101,9 +101,14 @@ cover the event-driven async-client shape. The rewrite comparison
 (section 3.13) adds the measured key-list start pause against the C servers'
 fork/COW rewrite: medians of **9–14 ms at 20k keys** and **91–107 ms at 200k**,
 with full passes of 4.85 s and 43.4 s and concurrent GET p99 of 10.8/18.8 ms;
-candidate 4.23 and AC26 gate it. Section 2.24 is a one-page open-gap ledger that
-maps every remaining item to its evidence status, candidate and admission
-experiment.
+candidate 4.23 and AC26 gate it. The 2026-11-12 large-value retry (section 2.21)
+has a usable 64-byte control and measures **1 MiB GET at −42% to −45% (p99
+2.3–2.5×) and SET at −28% to −32%**, admitting 4.15 (reply copy) and 4.25 (input
+growth). Under continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
+SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
+servers, admitting 4.26 (pooled eviction). Section 2.24 is a one-page open-gap
+ledger that maps every remaining item to its evidence status, candidate and
+admission experiment.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -1060,34 +1065,49 @@ Seven things are still true even though every row now leads:
    bound is one hash lookup plus an occasional allocation, below gate noise; it
    is a candidate only if 4.19 attributes part of the mutation tail to it.
 
-### 2.21 Large-value screen attempt (failed evidence, not a result)
+### 2.21 Large-value screen: first attempt failed, retry measured
 
 Mechanism under test: Rillcache copies a bulk value into the client output `Vec`,
 while both pins keep a reference to the stored object for values of at least
 16 KiB (section 2.20). The prediction was a large-GET deficit that grows with
 value size and is absent at 64 bytes.
 
-A local paired screen was attempted on 2026-11-11 with a release build of
-`7b365dc`, Redis 8.10.2 and Valkey 9.1.2 built from the repository's
-checksum-pinned archives, one server at a time (server CPUs 0–1, client CPUs
-2–3), eight clients, pipeline 1, three Latin-rotated rounds, and 64 B, 64 KiB and
-1 MiB values. **It is not usable.** The host is a shared k3s node running
-Longhorn and Flux controllers; load average was 10–19 on six logical CPUs and the
-64-byte control measured 5,414 ops/s for Rillcache and 3,437 for Redis instead of
-the ~114k/113k of the daily cohort (section 2.19), a ~20–33x host distortion.
-Only those two control rows completed (Rillcache and Redis); the remaining
-rows were stopped, so there is no large-value row at all. No direction is
-claimed. The incomplete files and logs are retained in the
-development environment as failed evidence, not tracked source.
+**First attempt (2026-11-11, failed).** A local paired screen with a release
+build of `7b365dc` and the pinned Redis/Valkey archives was unusable: load
+average was 10–19 on the shared six-CPU k3s node and the 64-byte control measured
+5,414 ops/s for Rillcache and 3,437 for Redis, a ~20–33x distortion; the run was
+stopped and no large-value row existed. Those files remain as failed evidence.
 
-The bound stands in place of a fake measurement. Removing one `N`-byte copy saves
-`N / copy_bandwidth`: about 100–200 µs of user time per 1 MiB GET at a
-conservative 5–10 GB/s, and 6–13 µs per 64 KiB GET, before the kernel copy and
-socket transfer. At 64 bytes it is zero. That upper bound is well above the
-1.5–3% gate noise, but it applies only to a large-value workload the protected
-gate does not run, so it is not admission to build. Admission for 4.15 requires a
-clean-runner large-value cohort (the hosted upstream lane or same-type four-CPU
-runners) with pinned servers and rotations; a shared k3s host cannot resolve it.
+**Retry (2026-11-12, measured).** The same host at load ~2.7 produced a usable
+cohort: server pinned to CPU 5, client to CPUs 0–3, eight clients, pipeline 1,
+three Latin-rotated rounds, 64 B/1024 keys, 64 KiB/128 keys and 1 MiB/32 keys.
+The 64-byte control is 39.6k/33.9k/32.2k req/s (Rill/Redis/Valkey), about 3.5x
+below the gate but far from the failed 20–33x distortion, so the paired ratios
+are usable as a shared-host diagnostic:
+
+| Value | Workload | Rillcache | Redis | Valkey | Rill vs Redis/Valkey | p99 R/Rd/V ms |
+| ---: | --- | ---: | ---: | ---: | ---: | --- |
+| 64 B | SET | 39,633 | 33,951 | 32,151 | +16.7% / +23.3% | 1.46/0.80/0.84 |
+| 64 B | GET | 40,728 | 27,437 | 32,196 | +48.4% / +26.5% | 1.39/1.22/0.91 |
+| 64 KiB | SET | 14,125 | 11,537 | 12,670 | +22.4% / +11.5% | 1.82/2.58/2.25 |
+| 64 KiB | GET | 10,734 | 10,970 | 14,998 | −2.2% / **−28.4%** | 3.93/1.61/1.21 |
+| 1 MiB | SET | 1,337 | 1,861 | 1,959 | **−28.2% / −31.8%** | 9.79/7.37/7.82 |
+| 1 MiB | GET | 776 | 1,340 | 1,409 | **−42.1% / −44.9%** | 24.93/9.87/10.91 |
+
+The gap crosses over between 64 B and 64 KiB and grows with value size: at
+1 MiB, GET is 42–45% slower with a 2.3–2.5x worse p99, and SET is 28–32% slower.
+One Rillcache 1 MiB GET round stalled at 135 req/s (host), but the other two were
+776 and 822 against 1,340–1,410 for the C servers, so the direction is
+consistent. Absolute rates are shared-host diagnostics, not a gate result.
+
+**What remains to be separated.** The GET loss matches the reply copy exactly
+(candidate 4.15). The SET loss is the same direction but cannot be the reply
+copy (a SET reply is small); the likely cause is the input buffer growing in
+16 KiB reads, while Redis/Valkey reserve capacity from the declared bulk length
+(`big_arg`/`sdsMakeRoomFor`, section 3.3). Candidate 4.25 covers that input
+reservation. The previous copy-bandwidth bound (100–200 µs per 1 MiB at
+5–10 GB/s, zero at 64 B) remains the mechanism estimate for 4.15 and is now
+supported by a measured slope rather than arithmetic alone.
 
 ### 2.22 Per-request P1 latency and process CPU from the retained gate samples
 
@@ -1206,7 +1226,8 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | --- | --- | --- | --- | --- | --- |
 | P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; +1.0% and +22.5% vs Redis across two daily cohorts; p99 flips with host | no runtime candidate; measurement/topology | disjoint CPUs need a different runner type; all recent cohorts share `[0,1,2,3]` | the row itself |
 | P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
-| Large bulk reply copy | replies | source only; local screen failed | 4.15 (std `Arc`/`IoSlice`) | clean large-value cohort (4.16 row 2) | none at 64 B |
+| Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, admitted | AC20 on the implemented change | none at 64 B |
+| Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5% | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
 | 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1% | 4.22, admitted; implementation next | AC25 on the implemented change | none |
@@ -1214,6 +1235,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
+| Eviction steady-state cost | storage | **measured**: P16 20,498 vs 144,365 no-eviction (−85.8%), p99 64.5 vs 8.0 ms; policy-independent; C servers ~no penalty | 4.26, admitted | AC29 on the implemented change | none (no maxmemory) |
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
 | Incremental keyspace rehash | storage | bound at 1024 keys | deferred 4.18 | large-keyspace cohort | none |
 | Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s) | keep; needs a socket dependency/FFI | connection-storm / idle-socket cohort | none |
@@ -1308,9 +1330,9 @@ flushing: at P1 only one client is ready per pass, so it has no target row, and
 at P16 the current path already leads by 54–153% (section 2.19). The one real
 reply-side difference is large values: both Redis 8.10.2 and Valkey 9.1.2 keep a
 refcounted reference instead of copying a value of at least 16 KiB, while we
-copy it into the output `Vec`. That is candidate 4.15, gated on a clean-runner
-large-value measurement (section 2.21) and on AC20; the 64 KiB per-event cap
-remains a design confirmation rather than a missing mechanism.
+copy it into the output `Vec`. That is candidate 4.15, now admitted by the
+2026-11-12 large-value cohort (section 2.21) and gated on AC20; the 64 KiB
+per-event cap remains a design confirmation rather than a missing mechanism.
 
 ### 3.3 Parsing
 
@@ -1333,6 +1355,15 @@ remains a design confirmation rather than a missing mechanism.
   re-scans the bytes already buffered. For ordinary 14–128-byte commands this is
   irrelevant; for multi-megabyte bulk arguments split over many reads it is
   quadratic in the number of reads.
+- **Large-frame input growth.** The retry in section 2.21 measures a **28–32%
+  1 MiB SET** loss that the reply copy cannot explain (the SET reply is small).
+  Redis and Valkey reserve query-buffer capacity from the declared bulk length
+  (`big_arg` plus `sdsMakeRoomFor` in
+  [`redis networking.c#L3893`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L3893),
+  [`valkey networking.c#L4300`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L4300)),
+  while our input `Vec` grows by appending each 16 KiB read, so a 1 MiB frame
+  reallocates and copies the growing buffer several times before the final
+  parse. This is not the rescan bound above; it is capacity management.
 
 **Verdict:** do not copy the C object/refcount parser and do not build a
 resumable cursor. The parser re-reads only the small length headers of an
@@ -1340,8 +1371,10 @@ incomplete frame, so for K reads the extra work is O(K·headers), not O(K·frame
 a 64-byte header scanned 16 times is about 1 KiB of extra scanning, far below
 the gate's per-command noise. Redis's last-command reuse and Valkey's
 `cmd_queue` avoid a lookup/reparse that our few byte comparisons already do
-cheaply (section 2.20). Reopen 4.2 only with a measured multi-megabyte workload
-showing a real per-read scan cost.
+cheaply (section 2.20). **Adapt the input-reservation idea** as candidate 4.25:
+after a validated bulk header declares length `L`, reserve bounded input
+capacity toward the frame end so a large SET does not repeatedly reallocate. The
+rescan candidate 4.2 stays closed; this is a different mechanism.
 
 ### 3.4 Storage, hashing and expiry
 
@@ -1478,15 +1511,16 @@ That is safe Rust with no new dependency.
 | Connection setup | backlog 511, TCP keepalive 300 s, NODELAY | same | std backlog 128, NODELAY, 30 s app idle timeout | **Keep:** backlog/keepalive need a socket dependency or FFI; no measured connection-storm gap (3.14) |
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
-| Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adapt only if measured:** candidate 4.15 after a clean large-value cohort (2.21) and AC20; std `Arc`/`IoSlice` only |
+| Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adopt:** measured 28.4% (64 KiB GET) and 42–45% (1 MiB GET) loss; 4.15, std `Arc`/`IoSlice`, AC20 |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
+| Large-frame input | reserves query-buffer capacity from the declared bulk length (`big_arg`/`sdsMakeRoomFor`) | same | appends 16 KiB reads into a growing `Vec` | **Adopt:** 4.25 bounded reservation; measured 28–32% 1 MiB SET loss (2.21, 3.3) |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
 | Journal writes | buffered `aof_buf`, one write per event loop, 1 s background fsync | same | one framed write per journaled command, 1 s fsync | **Adopt:** batch per pass (4.21); measured −66.5% P1 / −90.2% P16 AOF-on loss; keep CRC/HMAC framing and write-before-reply ordering |
 | Journal rewrite | fork + COW child, parent serves; fork page-table pause | same | key-list materialisation (9–20 ms at 20k keys) then 512-key/1 MiB slices on the owner | **Keep:** no fork in safe Rust; reduce the start pause with 4.23 only if a rewrite-latency cohort shows it matters (3.13) |
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
 | Expiry | lazy + sampled active cycle, 25% CPU budget, fast 1 ms, effort levels | same | lazy + ordered `BTreeSet` reap, 128 due keys per 100 ms | **Keep:** ordered removals are exact and capped at ~0.1–0.3% CPU; adaptive bursts only with the 4.16 TTL row (3.10) |
-| Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Keep with a quality gap:** reads do not refresh LRU; revisit only with a measured eviction row (3.10, 4.16) |
+| Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Adopt:** 4.26 pooled/batched eviction; measured 85.8% P16 loss under pressure, policy-independent; read-aware LRU still unmeasured (3.10) |
 | Value/key encoding | embstr ≤44 B, int objects, shared key with expires, listpack/intset small collections | same | `Vec<u8>` values, key duplicated in expiry/version indexes, ordinary collection containers | **Avoid rewrite:** short strings are one allocation either way and no gate row pays it; only a TTL/eviction RSS result could justify removing the duplicate key (3.11) |
 
 ### 3.9 Persistence write path (append-only journal)
@@ -1584,6 +1618,29 @@ only by unit/durability tests. Their shapes still differ:
   25% CPU. Our ordered reap is more aggressive than the single-DB baseline and
   never removes a live key; their sampled cycle can miss due keys but bursts
   harder under a high stale ratio.
+- **Eviction steady-state measurement (2026-11-12).** 100k SET requests over a
+  100k-key space, 64-byte values, 8 clients, pipeline 1/16, `allkeys-lru`;
+  controls are the same servers without a memory limit. Rill uses a 500 KB
+  payload budget (median 7,073 evictions), Redis/Valkey 2 MB `maxmemory`
+  (~4,000 evictions):
+
+  | Workload | Server | No eviction | Eviction | Change | p99 no/evict ms |
+  | --- | --- | ---: | ---: | ---: | ---: |
+  | P1 SET | Rillcache | 14,895 | 8,339 | **−44.0%** | 5.95/8.20 |
+  | P1 SET | Redis 8.10.2 | 12,371 | 12,150 | −1.8% | 6.20/6.40 |
+  | P1 SET | Valkey 9.1.2 | 11,888 | 13,265 | +11.6% | 6.33/5.24 |
+  | P16 SET | Rillcache | 144,365 | **20,498** | **−85.8%** | 8.01/64.51 |
+  | P16 SET | Redis 8.10.2 | 130,085 | 171,696 | +32.0% (noisy) | 7.09/4.67 |
+  | P16 SET | Valkey 9.1.2 | 117,044 | 137,789 | +17.7% (noisy) | 9.54/5.56 |
+
+  A policy A/B on the same budget shows the LRU choice is not the cause:
+  Rillcache `allkeys-lru` 27.1–31.3k and `allkeys-random` 25.3–27.6k at P16, both
+  far below the no-eviction control, while Redis shows no penalty under either
+  policy. The cost is the eviction path itself: per-write bounded candidate scans
+  under continuous pressure versus the C servers' sampled pool that evicts in a
+  pass. The budgets differ (payload vs RSS) and Rillcache evicts ~1.75× more
+  keys, but that does not explain a 5–7× throughput difference. Shared-host
+  diagnostic, not a gate result.
 - Eviction quality: mutation-time LRU is a real policy gap, not a measured
   throughput loss. A read-heavy keyspace under `allkeys-lru` can evict keys that
   Redis/Valkey just read and would keep. Read-aware LRU would need an atomic or
@@ -1591,14 +1648,11 @@ only by unit/durability tests. Their shapes still differ:
   policy is active), which adds work to the hot read path; it is not justified
   without an eviction cohort.
 
-**Verdict: keep the fixed, ordered, bounded purge and the current eviction
-approximation.** The only scenario where our expiry can lose is sustained
-high-churn TTL with memory pressure, where 1,280/s may leave stale keys longer
-than a 25%-CPU burst cycle; that is exactly the TTL row in 4.16, and the
-eviction-quality question needs a sixth row there. If either shows a gap, adapt
-in bounded slices between command batches (the journal-rewrite shape) rather than
-one large locked purge, and only then consider a read-aware access stamp. Do not
-copy the adaptive effort levels or LFU counters speculatively.
+**Verdict: keep the ordered purge; the eviction path is now admitted as 4.26.**
+The measured eviction penalty is the per-write admission scan, not the LRU
+quality; a pooled/batched eviction pass is the candidate. The TTL high-churn
+question remains for 4.16 row 1, and a read-aware access stamp remains
+unmeasured. Do not copy adaptive expiry effort or LFU counters speculatively.
 
 ### 3.11 Key and value representation (memory, not gate rate)
 
@@ -1856,7 +1910,8 @@ candidate for the journal write shape in section 3.9, and 4.22 is the conditiona
 same-pass wakeup candidate for blocking commands in section 3.12. 4.23 is the
 conditional rewrite-start candidate for the fork-versus-slices trade in section
 3.13, and 4.24 is the event-driven async-client candidate for pub/sub and
-MONITOR in section 3.12.
+MONITOR in section 3.12. 4.25 is the large-frame input-reservation candidate in
+section 3.3, and 4.26 is the pooled/batched eviction candidate in section 3.10.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2273,7 +2328,7 @@ paired ratio is 0.9989 with a 95% interval of [0.9802-1.0128]. Closing it needs 
 mechanism that changes the syscall or TCP work itself, not the reactor's
 bookkeeping.
 
-### 4.15 Large-bulk reply copy avoidance (candidate, gated on measurement)
+### 4.15 Large-bulk reply copy avoidance (candidate; admission measured)
 
 **Mechanism.** Keep values below a 16 KiB threshold in the existing
 capacity-reusing `Vec<u8>` (so the gate path does not change), and store values at
@@ -2295,12 +2350,18 @@ the protected 64-byte gate rows are unchanged and must remain so. Large
 overwrites trade the current capacity reuse for a new immutable `Arc`, so the
 screen includes SET as well as GET; a write-side regression rejects the candidate.
 
-**Admission and baseline.** Do not implement before 4.16 produces a clean-runner
-large-value cohort showing a gap above its spread (the failed local attempt in
-section 2.21 is not admission). Then freeze the current and candidate binaries,
-alternate them on one host with the same pinned generator, and run 64 B (control),
-64 KiB and 1 MiB GET/SET at P1 and P16 with at least three rotated repetitions,
-raw JSON, p99 and CPU.
+**Admission evidence (2026-11-12, section 2.21).** On a quieter pass of the same
+host, 64 KiB GET is 28.4% behind Valkey (p99 3.93 vs 1.21 ms) and 1 MiB GET is
+**42.1% behind Redis and 44.9% behind Valkey** (p99 24.9 vs 9.9/10.9 ms), while
+the 64-byte control leads. The gap crosses between 64 B and 64 KiB and grows with
+value size, matching the copy mechanism; the SET loss is handled separately by
+4.25 because a SET reply is small. Admission is met; implementation still needs
+the ordering/backpressure obligations and AC20.
+
+**Admission and baseline.** Freeze the current and candidate binaries, alternate
+them on one host with the same pinned generator, and run 64 B (control), 64 KiB
+and 1 MiB GET/SET at P1 and P16 with at least three rotated repetitions, raw
+JSON, p99 and CPU.
 
 **Rejection condition.** No large-GET gain above the cohort spread; any original
 or four-CPU gate row loss; any ordering, partial-write, slow-reader or shutdown
@@ -2308,9 +2369,11 @@ failure; any reprocessing of a reply; or a memory increase beyond the existing
 payload accounting. Revert rather than adding a size knob or a benchmark mode.
 
 **Acceptance (AC20).** Values below the threshold keep the current single-copy
-path; large values are written without a user-space copy; every reply is delivered
-exactly once and in order under fragmentation, pipelining, slow readers and
-half-close; payload/expiry/backpressure accounting is unchanged; the matched
+path; large values are written without a user-space copy; **at 1 MiB GET,
+throughput shall be within 5% of the best reference and p99 no worse than 1.25×
+it** (measured baseline −42% to −45% and 24.9 vs 9.9/10.9 ms); every reply is
+delivered exactly once and in order under fragmentation, pipelining, slow readers
+and half-close; payload/expiry/backpressure accounting is unchanged; the matched
 large-value A/B shows the predicted gain; and both protected gates pass on the
 exact head.
 
@@ -2328,8 +2391,9 @@ the same generator, host, CPU placement and at least three rotated repetitions:
 1. **TTL-heavy P1:** every key has a deadline; SET with EX and GET on hit/miss.
    Tests the clock path that the no-TTL gate never executes (candidate 4.9) and
    reports RSS as the signal for the duplicated expiry key (section 3.11).
-2. **Large values:** 64 KiB and 1 MiB SET and GET at P1 and P16. Tests 4.15 and
-   the parse/store copy.
+2. **Large values:** 64 KiB and 1 MiB SET and GET at P1 and P16. Confirms 4.15
+   (reply copy) and 4.25 (input growth) on a clean runner; the 2026-11-12 local
+   retry in section 2.21 already measures the gap.
 3. **Large multi-bulk replies:** a 1,000-element list/hash/set read, and a 1 MiB
    single bulk, at P1. Tests the reply-list shape our output `Vec` replaces.
 4. **Mixed pipeline:** alternating PING/SET/GET/INCR in one 16-command batch.
@@ -2339,10 +2403,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    increments since #194 have their own tests; this row is the performance
    counterpart).
 6. **Eviction pressure:** `maxmemory` set just below the working set,
-   `allkeys-lru`, and a read-heavy mixed GET/SET stream. Tests the mutation-time
-   LRU approximation and bounded eviction scans against the C servers' sampled
-   pool (section 3.10); report RSS and the read-hit retention as the quality
-   signals.
+   `allkeys-lru`, and a read-heavy mixed GET/SET stream. Confirms 4.26 on a
+   clean runner; the 2026-11-12 local cohort in section 3.10 already measures the
+   steady-state penalty (−85.8% P16). Report RSS and read-hit retention as the
+   quality signals.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -2650,6 +2714,83 @@ delivery p99 shall be within 200 µs of Valkey and at least 2× better than the
 shall pass; no dependency shall be added; and both protected gates shall pass on
 the exact head.
 
+### 4.25 Large-frame input reservation (candidate; admission measured)
+
+**Mechanism.** After parsing and validating a bulk header of length `L`, ensure
+the input buffer has capacity for the remaining frame (capped by the configured
+frame/bulk limits) instead of appending 16 KiB reads into a repeatedly growing
+`Vec`. Reserve in bounded steps (for example 64 KiB at a time up to the declared
+frame end) so a client cannot force a huge allocation by lying about the length.
+The read loop, parser, limits and fragmented/truncated behavior stay unchanged.
+
+**Prediction.** Removes the O(log n) reallocation-and-copy sequence for a large
+frame. The measured baseline is a **28.2% (Redis) / 31.8% (Valkey)** 1 MiB SET
+loss with p99 9.79 vs 7.37/7.82 ms (section 2.21); a reservation should move the
+SET row toward the C servers. The 64-byte rows do not reserve and must not change.
+
+**Admission evidence (2026-11-12, section 2.21).** The SET loss cannot be the
+reply copy (the reply is small), and it appears only at large sizes; the C
+servers reserve from the declared bulk length (`big_arg`/`sdsMakeRoomFor`,
+section 3.3), while our buffer grows in 16 KiB reads. A matched A/B of the
+reservation against the current parser must isolate the parse copy from the store
+and socket copies before a throughput claim.
+
+**Risks and obligations.** A declared-length reservation is a memory-DoS surface:
+bound the total by `max_frame`/`max_bulk`, reserve in bounded steps, and keep
+admission and per-client limits unchanged. Fragmented, truncated, malformed and
+over-limit frames must behave exactly as today; no hot-path branch for small
+frames beyond the existing header parse.
+
+**Rejection condition.** No 1 MiB SET gain above the spread; any unbounded or
+over-limit reservation from a lying length; any parser/limit/close regression; or
+any protected gate row loss.
+
+**Acceptance (AC28).** At 1 MiB SET, throughput shall be within 10% of the best
+reference and p99 no worse than 1.25× it (measured baseline −28% to −32% and 9.79
+vs 7.37/7.82 ms); a declared length that exceeds the limits shall reserve no more
+than the configured bound; fragmented, truncated and malformed frames keep their
+current behavior; the matched A/B shows the gain; and both protected gates pass
+on the exact head.
+
+### 4.26 Pooled/batched eviction pass (candidate; admission measured)
+
+**Mechanism.** When a write needs memory, run one bounded eviction pass that
+samples candidates into a small pool and evicts until the budget is satisfied or
+a bounded key/time count is reached, instead of rescanning candidates on every
+admitted write. Keep the policy semantics (`allkeys`/`volatile`,
+`lru`/`random`/`ttl`), the mutation-time approximation, accounting and expiry;
+if the budget cannot be met, return the existing OOM reply. Bound the pass so one
+write cannot hold the data lock for an unbounded time.
+
+**Prediction.** Under continuous eviction, P16 moves from the measured **20,498
+vs 144,365 req/s (−85.8%, p99 64.5 vs 8.0 ms)** toward the no-eviction control,
+and P1 from 8,339 vs 14,895; the C servers show no penalty. Target: P16 within
+25% of the no-eviction control and p99 within 2× it, with no change when the
+budget is not under pressure.
+
+**Admission evidence (2026-11-12, section 3.10).** The penalty is policy-
+independent on this host (Rill `allkeys-lru` 27.1–31.3k and `allkeys-random`
+25.3–27.6k at P16, both far below the control; Redis shows no penalty for
+either), so it is the admission scan, not the LRU quality. Rill evicts ~1.75×
+more keys than the 2 MB C servers, which does not explain a 5–7× throughput
+difference. Shared-host diagnostic; a matched frozen-binary A/B is still needed.
+
+**Risks and obligations.** Evicting more than necessary, holding the data lock,
+and changing policy semantics are the failure modes. Preserve exact accounting,
+expiry/TTL ordering, WATCH/journal order and `noeviction`; bound keys/time per
+pass; keep the existing reply when the budget cannot be met.
+
+**Rejection condition.** No gain above the spread; over-eviction or accounting
+error; any policy-semantics change; any protected gate row loss.
+
+**Acceptance (AC29).** Under continuous eviction, P16 SET throughput shall be
+within 25% of the no-eviction control and p99 within 2× it (measured baseline
+−85.8%, 64.5 vs 8.0 ms); evicted-key counts and payload accounting shall be
+exact; every policy (`allkeys`/`volatile` × `lru`/`random`/`ttl`) and
+`noeviction` shall behave as specified; there shall be no change when the budget
+is not under pressure; the matched A/B shall show the gain; and both protected
+gates shall pass on the exact head.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -2735,6 +2876,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   replies, and a partial non-blocking write must retain the `Arc` and offset.
   Getting this wrong reorders or duplicates replies; tests must cover partial
   writes, slow readers, pipelined GETs and shutdown before any gate claim.
+- **Large-frame reservation risk (4.25):** a bulk length is attacker-controlled.
+  Reserve only within the configured `max_frame`/`max_bulk` and in bounded steps,
+  or one client can force a large allocation. Fragment, truncation and limit
+  behavior must not change (AC28).
 - **Threshold risk (4.15):** the 16 KiB split is copied from the upstream
   reference, not measured for this allocator; if a future allocation change makes
   large `Arc` creation costly, the threshold must be re-validated rather than
@@ -2756,6 +2901,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   the daily host shows the reverse (section 2.22); neither proves a server-side
   mechanism. Report both client and server percentiles before changing the
   runtime (AC21, 4.19).
+- **Eviction-batching risk (4.26):** an eviction pass must not over-evict, hold
+  the data lock unboundedly, or change policy/accounting/expiry semantics. Bound
+  keys/time per pass, keep `noeviction` and WATCH/journal order, and verify exact
+  evicted-key and payload counts (AC29).
 - **WATCH-version risk (4.20):** skipping per-key versions while nothing watches
   is only safe if `WATCH` registration and the tracking flag change under the
   same data borrow and if scratch multi-owner executors keep tracking. A race or
@@ -2929,7 +3078,9 @@ samples retained.
 - **AC20 (large-reply copy avoidance, only if 4.15 is implemented).** When a bulk
   value of at least the measured threshold is returned, the server shall write it
   without copying the value into the session output buffer, while values below the
-  threshold keep the current path; every reply shall be delivered exactly once
+  threshold keep the current path; at 1 MiB GET, throughput shall be within 5% of
+  the best reference and p99 no worse than 1.25× it (measured baseline −42% to
+  −45% and 24.9 vs 9.9/10.9 ms); every reply shall be delivered exactly once
   and in order under fragmentation, pipelining, partial non-blocking writes, slow
   readers and half-close; payload/expiry/backpressure accounting shall be
   unchanged; the matched large-value A/B shall show the predicted gain; and both
@@ -2985,6 +3136,20 @@ samples retained.
   fanout, ordering, unsubscribe, timeout and shutdown tests shall pass; no
   dependency shall be added; and both protected gates shall pass on the exact
   head.
+- **AC28 (large-frame input reservation, only if 4.25 is implemented).** At 1 MiB
+  SET, throughput shall be within 10% of the best reference and p99 no worse than
+  1.25× it (measured baseline −28% to −32% and 9.79 vs 7.37/7.82 ms); a declared
+  length beyond the configured limits shall reserve no more than that bound;
+  fragmented, truncated and malformed frames shall keep their current behavior;
+  the matched A/B shall show the gain; and both protected gates shall pass on the
+  exact head.
+- **AC29 (pooled eviction, only if 4.26 is implemented).** Under continuous
+  eviction, P16 SET throughput shall be within 25% of the no-eviction control and
+  p99 within 2× it (measured baseline −85.8%, 64.5 vs 8.0 ms); evicted-key counts
+  and payload accounting shall be exact; every `allkeys`/`volatile` ×
+  `lru`/`random`/`ttl` policy and `noeviction` shall behave as specified; there
+  shall be no change when the budget is not under pressure; the matched A/B shall
+  show the gain; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -3059,7 +3224,11 @@ separate roadmap.
   k3s development host with pinned Redis 8.10.2/Valkey 9.1.2; only two 64-byte
   control rows completed (5,414 and 3,437 ops/s, ~20–33x below the daily cohort),
   no large-value row, remaining runs stopped. Files retained in the development
-  environment. It admits nothing and is not tracked source.
+  environment. It admits nothing and is not tracked source. **Retry 2026-11-12**
+  (same host, load ~2.7) produced a usable cohort: 64 B control 39.6k/33.9k/32.2k
+  (Rill/Redis/Valkey); 64 KiB GET 10,734/10,970/14,998; 1 MiB GET
+  776/1,340/1,409 with p99 24.9/9.9/10.9 ms; 1 MiB SET 1,337/1,861/1,959.
+  Shared-host diagnostic; raw JSON retained (untracked).
 - Source comparison refresh: Redis 8.10.2 `server.h` `COPY_AVOID_MIN_STRING_SIZE`
   16384 and `isCopyAvoidPreferred`; Valkey 9.1.2
   `min-string-size-avoid-copy-reply` 16384; both `kvstoreIncrementallyRehash`
@@ -3091,8 +3260,16 @@ separate roadmap.
 - Expiry and eviction comparison (section 3.10): Redis `expire.c` constants and
   `activeExpireCycle`, Valkey `active-expire-effort`, and the 16-entry eviction
   pool (`redis evict.c#L36`, `valkey evict.c#L54`) against our
-  `purge_expired(128)` per 100 ms tick and bounded candidate scans. Code
-  citations; no TTL or eviction cohort exists yet (4.16 rows 1 and 6).
+  `purge_expired(128)` per 100 ms tick and bounded candidate scans.
+- Eviction measurement (section 3.10, candidate 4.26): 100k SET requests over a
+  100k-key space, 64 B, 8 clients, P1/P16, `allkeys-lru`, controls without a
+  memory limit; three rotated rounds. Rill 500 KB payload (7,073 evictions),
+  Redis/Valkey 2 MB (~4,000). P16 SET 144,365 no-eviction vs 20,498 evicted
+  (−85.8%, p99 8.01/64.51 ms); P1 14,895 vs 8,339 (−44.0%). Redis P16 130,085 vs
+  171,696 and Valkey 117,044 vs 137,789 (noisy, no penalty). A policy A/B shows
+  Rill LRU 27.1–31.3k vs random 25.3–27.6k at P16, both far below control, while
+  Redis shows no policy penalty. Shared-host diagnostic; raw JSON retained
+  (untracked).
 - Encoding comparison (section 3.11): Redis embstr limit 44 B and
   `tryObjectEncoding`, listpack/intset thresholds (`redis config.c#L3511`,
   `#L3593`, `#L3603`), against our `Entry` `Vec` value and the duplicated key in
@@ -3265,7 +3442,8 @@ separate roadmap.
   while all five P1 p99 are worse (section 2.19). The remaining measured gaps
   against Redis/Valkey are a small P1 per-command CPU difference whose sign is
   host-dependent, host-dependent P1 tail variance, the large-value reply copy
-  that the 64-byte gate cannot see (sections 2.20–2.22), and the persistence-on
+  and input-growth copies that the 64-byte gate cannot see — **1 MiB GET −42% to
+  −45%, SET −28% to −32%** (sections 2.20–2.22) — and the persistence-on
   journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
   for the C servers (section 3.9). The gate runs with persistence off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
@@ -3289,11 +3467,13 @@ separate roadmap.
   on shared four-CPU runners. That −1.35% to +15.4% swing for identical code is
   the clearest measurement-risk evidence in the record; judge a change on its
   own fresh cohort, never by picking the favorable one.
-- Expiry and eviction are outside the gate. Our fixed 1,280 due reaps/s is
-  bounded and ordered, but sustained high-churn TTL under memory pressure could
-  leave stale keys longer than a 25%-CPU burst cycle, and mutation-time LRU
-  ignores reads. Both are unmeasured (4.16 rows 1 and 6); no production claim
-  either way (section 3.10).
+- Expiry is outside the gate: our fixed 1,280 due reaps/s is bounded and ordered,
+  but sustained high-churn TTL under memory pressure could leave stale keys longer
+  than a 25%-CPU burst cycle; that remains unmeasured (4.16 row 1). Eviction is
+  now measured (section 3.10): under continuous pressure P16 SET loses **85.8%**
+  and p99 rises to 64.5 vs 8.0 ms, policy-independent, while the C servers show
+  little penalty; 4.26/AC29 cover it. Budgets differ (payload vs RSS) and the host
+  is shared, so the absolute rates are diagnostic.
 - Value and key representation is a memory axis, not a gate row (section 3.11).
   A TTL key that has been written can own four buffers (main key, value, expiry
   key, version key) where the C servers share one key object; integer values
@@ -3351,8 +3531,9 @@ separate roadmap.
 - The 128-byte command-counter padding is inert on the current one-reactor
   default and must not be cited as a cause of its P1 margins; a multi-reactor
   layout claim needs the A/B in section 4.10. The one structural difference this
-  refresh did find is large-bulk reply copy avoidance, and it is a candidate
-  gated on a clean large-value cohort (4.15), not an implemented change.
+  refresh did find is large-bulk reply copy avoidance and large-frame input
+  growth, both measured on 2026-11-12 and now admitted as 4.15/4.25, not
+  implemented changes.
 - Watch-free mutation bookkeeping (4.20) is a real source difference with a
   below-noise throughput bound (~40–100 ns per mutation). It stays conditional on
   4.19 isolating a server-side mutation tail; do not remove `WATCH` tracking
