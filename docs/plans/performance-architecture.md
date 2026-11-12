@@ -1707,6 +1707,9 @@ as the memory acceptance signal.
   no-progress poll arms the 20 µs spin after each tick. This is a scheduling and
   CPU-efficiency gap, not a message-path cost; candidate 4.24 covers the
   event-driven servicing shape and shares the no-progress-spin fix with 4.22.
+  The no-progress spin component is implemented separately in PR #226 (pending
+  its protected checks); its own bound is about two CPU points per 1 ms tick, so
+  it does not remove the per-client scan that dominates these numbers.
 
 **Verdict: the gap is measured, not just arithmetic, and 4.22 is admission-ready.**
 Adapt the same-pass ready-key wake; keep the 1 ms tick for timeouts and
@@ -2489,7 +2492,9 @@ inside the mutating command; bound the ready set and the number of waiters
 serviced per pass; preserve FIFO order among waiters; keep the wake-versus-timeout
 race single-winner; keep `CLIENT UNBLOCK` and shutdown correct; keep multi-owner
 transfers working (the owner must retain or transfer the waiter set). The 1 ms
-fallback stays.
+fallback stays. The no-progress spin component is handled separately in PR #226;
+this candidate still needs to remove the 1 ms re-enqueue and re-poll of every
+blocked client.
 
 **Rejection condition.** Any lost, duplicated or out-of-order wake; any timeout or
 `CLIENT UNBLOCK` regression; no measured latency improvement; no idle-CPU
