@@ -106,7 +106,9 @@ with full passes of 4.85 s and 43.4 s and concurrent GET p99 of 10.8/18.8 ms;
 candidate 4.23 and AC26 gate it. The 2026-11-12 large-value retry (section 2.21)
 has a usable 64-byte control and measures **1 MiB GET at −42% to −45% (p99
 2.3–2.5×) and SET at −28% to −32%**, admitting 4.15 (reply copy) and 4.25 (input
-growth). Under continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
+growth). A 10k-field `HGETALL` is **43% behind Redis** (313 vs 552 req/s) while a
+10k `LRANGE` leads by 39–75%, admitting 4.29 (large-hash reply path). Under
+continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
 ready** (0.258 s at 50k and 1.10–1.24 s at 200k keys versus 0.011–0.061 s for the
@@ -1243,6 +1245,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; +1.0% and +22.5% vs Redis across two daily cohorts; p99 flips with host | no runtime candidate; measurement/topology | disjoint CPUs need a different runner type; all recent cohorts share `[0,1,2,3]` | the row itself |
 | P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
 | Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, admitted | AC20 on the implemented change | none at 64 B |
+| Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, admitted | AC31 on the implemented change | none at 64 B |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1369,6 +1372,26 @@ change, and the measured drain-elision attempt confirms the probe is load-bearin
   ([`protocol.rs`](../../src/protocol.rs), [`session/mod.rs`](../../src/session/mod.rs)).
   There is no per-reply allocation, but also no cross-client write coalescing:
   each ready client's output is written in its own pass.
+- **Large multi-bulk replies (2026-11-12).** A local paired cohort preloaded a
+  10,000-element list (16-byte values) and a 10,000-field hash, then measured
+  `LRANGE 0 9999` (230 KB reply) and `HGETALL` (350 KB reply), 4 clients, 250
+  requests each, three rotations:
+
+  | Command | Rillcache req/s (p50/p99 ms) | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `LRANGE` 10k | **1,272** (2.09/15.5) | 913 (3.9/10.9) | 726 (4.9/18.4) |
+  | `HGETALL` 10k | 313 (11.6/32.1) | **552** (7.0/16.3) | 336 (11.4/26.4) |
+
+  Rillcache leads the list reply by 39% over Redis and 75% over Valkey, but
+  `HGETALL` is **43% behind Redis** (near Valkey), and its per-byte rate is far
+  below its own `LRANGE` rate (30 vs 110 MB/s per request at p50). Source:
+  `HGETALL` collects every field/value reference into a `Vec`, sorts it for
+  deterministic output, then encodes 20,000 bulks, while `LRANGE` iterates the
+  deque directly
+  ([`collections.rs`](../../src/engine/collections.rs)). Redis iterates its hash
+  in internal order. This is candidate 4.29; the full sort/allocation is the
+  first suspect, but the chosen order semantics and the persistence test that
+  compares exact `HGETALL` bytes must be preserved or explicitly changed.
 
 **Verdict:** the formatting and allocation posture is already competitive for the
 gate's 64-byte values: no per-reply allocation, specialized headers, bounded
@@ -1571,6 +1594,7 @@ for a production claim.
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
 | Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adopt:** measured 28.4% (64 KiB GET) and 42–45% (1 MiB GET) loss; 4.15, std `Arc`/`IoSlice`, AC20 |
+| Large multi-bulk replies (list/hash) | reply list/`writev`; hash iterated in internal order | same | list iterated directly; hash collects, sorts and encodes | **Adopt (list leads, hash lags):** 4.29 for 10k `HGETALL`; measured 43% behind Redis (3.2) |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
 | Large-frame input | reserves query-buffer capacity from the declared bulk length (`big_arg`/`sdsMakeRoomFor`) | same | appends 16 KiB reads into a growing `Vec` | **Adopt:** 4.25 bounded reservation; measured 28–32% 1 MiB SET loss (2.21, 3.3) |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
@@ -2055,7 +2079,8 @@ conditional rewrite-start candidate for the fork-versus-slices trade in section
 MONITOR in section 3.12. 4.25 is the large-frame input-reservation candidate in
 section 3.3, 4.26 is the pooled/batched eviction candidate in section 3.10, and
 4.27 is the startup-replay fast path in section 3.15. 4.28 maps the admitted
-candidates to call sites, invariants and implementation priority.
+candidates to call sites, invariants and implementation priority, and 4.29 is
+the large-hash `HGETALL` reply candidate in section 3.2.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2539,7 +2564,9 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    (reply copy) and 4.25 (input growth) on a clean runner; the 2026-11-12 local
    retry in section 2.21 already measures the gap.
 3. **Large multi-bulk replies:** a 1,000-element list/hash/set read, and a 1 MiB
-   single bulk, at P1. Tests the reply-list shape our output `Vec` replaces.
+   single bulk, at P1. The 2026-11-12 local cohort in section 3.2 already measures
+   a 10k `LRANGE`/`HGETALL`; this row confirms on a clean runner and covers the
+   hash path admitted as 4.29.
 4. **Mixed pipeline:** alternating PING/SET/GET/INCR in one 16-command batch.
    Tests dispatch and per-command overhead without a single-command cache.
 5. **Persistence-on writes:** append-only `everysec` SET at P1, to locate journal
@@ -3015,6 +3042,42 @@ journal path. Then 4.25 and 4.15 for large values, and 4.26 for eviction.
 the highest ordering risk. 4.23 follows the existing bounded slices. 4.20 stays
 conditional on 4.19; 4.18 stays deferred.
 
+### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
+
+**Mechanism.** Remove the full field/value reference `Vec` and O(n log n) sort
+from `HGETALL` on large hashes. Options: (a) iterate the `HashMap` directly and
+emit internal order, matching Redis's unspecified `HGETALL` order (the exact-byte
+persistence test and any order-sensitive tests would need to compare unordered);
+(b) keep deterministic order with a `BTreeMap`-backed large hash, so iteration is
+sorted without an extra allocation and sort (measure the write cost); or (c)
+maintain a sorted index on mutation. Pick the option with the best measured
+tradeoff, not the first.
+
+**Prediction.** A 10k-field `HGETALL` moves from the measured **313 req/s
+(11.6/32.1 ms p50/p99)** toward Redis's 552 (7.0/16.3), while `LRANGE`, small
+hashes and the protected gate are unchanged. The 43% gap and the per-byte
+difference versus our own `LRANGE` (30 vs 110 MB/s per request) point at the
+sort/allocation, not the socket write.
+
+**Admission evidence (2026-11-12, section 3.2).** Preloaded 10k-field hash,
+4 clients, 250 requests each, three rotations: Rill 313/312/339 req/s, Redis
+552/486/582, Valkey 345/329/336; p50 11.6 vs 7.0/11.4 ms. The source path is
+`collections.rs`'s `hash_items()` + sort + 20k `encode_bulk` calls.
+
+**Risks and obligations.** `HGETALL` order is unspecified in Redis but this
+repository's persistence test compares exact bytes; changing order is an explicit
+compatibility/test decision, not an incidental optimization. A `BTreeMap` change
+must preserve `HSET`/`HDEL`/`HGET` semantics and measure the write cost.
+
+**Rejection condition.** No gain above the spread; any order change without an
+explicit documented decision and updated tests; any gate row loss.
+
+**Acceptance (AC31).** A 10k-field `HGETALL` shall be within 10% of Redis or at
+least 30% faster than the measured baseline; ordering semantics shall be
+explicitly documented and all order-sensitive tests updated to match; small
+hashes and the list path shall be unchanged; the matched A/B shall show the gain;
+and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, and the rest use the
 existing `std` I/O, parser and in-repo journal/crypto code. Each candidate lands
 as its own PR with AC5 plus the protected gates; no combined integration branch.
@@ -3108,6 +3171,11 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   Reserve only within the configured `max_frame`/`max_bulk` and in bounded steps,
   or one client can force a large allocation. Fragment, truncation and limit
   behavior must not change (AC28).
+- **HGETALL order and reply-path risk (4.29):** Redis leaves `HGETALL` order
+  unspecified, but this repository's deterministic sort is deliberate and the
+  persistence test compares exact bytes. Changing order needs an explicit
+  documented decision and updated tests; a `BTreeMap` or sorted index must not
+  regress `HSET`/`HDEL` or the gate (AC31).
 - **Threshold risk (4.15):** the 16 KiB split is copied from the upstream
   reference, not measured for this allocator; if a future allocation change makes
   large `Arc` creation costly, the threshold must be re-validated rather than
@@ -3395,6 +3463,12 @@ samples retained.
   served; SIGKILL/replay, HMAC on/off and stream consumer/PEL tests shall pass;
   no dependency shall be added; and both protected gates shall pass on the exact
   head.
+- **AC31 (large-hash HGETALL, only if 4.29 is implemented).** A 10,000-field
+  `HGETALL` shall be within 10% of Redis or at least 30% faster than the measured
+  baseline (313 req/s, 11.6/32.1 ms p50/p99; Redis 552, 7.0/16.3); ordering
+  semantics shall be explicitly documented and every order-sensitive test updated
+  to match; small hashes and `LRANGE` shall be unchanged; the matched A/B shall
+  show the gain; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -3522,6 +3596,11 @@ separate roadmap.
   clients at P16, 100k requests, 64 B, 1024 keys, three rotations. Rill leads
   Redis/Valkey by 29–122% in every P≥16 and 64-client row; P1 SET +3.0/+2.5% and
   P1 GET +16.5/+10.0%. Shared-host diagnostic; raw JSON retained (untracked).
+- Large multi-bulk replies (section 3.2, candidate 4.29): 10,000-element list and
+  10,000-field hash, 4 clients, 250 requests each, three rotations. `LRANGE 0 9999`
+  (230 KB): Rill 1,272 req/s (p50/p99 2.09/15.5), Redis 913 (3.9/10.9), Valkey 726
+  (4.9/18.4). `HGETALL` (350 KB): Rill 313 (11.6/32.1), Redis 552 (7.0/16.3),
+  Valkey 336 (11.4/26.4). Shared-host diagnostic; raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -3727,7 +3806,8 @@ separate roadmap.
   against Redis/Valkey are a small P1 per-command CPU difference whose sign is
   host-dependent, host-dependent P1 tail variance, the large-value reply copy
   and input-growth copies that the 64-byte gate cannot see — **1 MiB GET −42% to
-  −45%, SET −28% to −32%** (sections 2.20–2.22) — and the persistence-on
+  −45%, SET −28% to −32%** (sections 2.20–2.22) — the large multi-bulk hash
+  reply (10k `HGETALL` **−43% vs Redis**, section 3.2) and the persistence-on
   journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
   for the C servers (section 3.9). The gate runs with persistence off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
