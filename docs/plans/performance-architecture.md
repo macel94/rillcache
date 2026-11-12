@@ -108,7 +108,9 @@ growth). Under continuous eviction, the 2026-11-12 cohort measures an **85.8% P1
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
 ready** (0.258 s at 50k and 1.10–1.24 s at 200k keys versus 0.011–0.061 s for the
-C servers), admitting 4.27 (single-pass replay). Section 2.24 is a one-page open-gap
+C servers), admitting 4.27 (single-pass replay). A limited TTL-heavy diagnostic
+(section 3.7) finds no consistent TTL-vs-plain penalty, keeping 4.9 closed. Section
+2.24 is a one-page open-gap
 ledger that maps every remaining item to its evidence status, candidate and
 admission experiment.
 
@@ -1236,6 +1238,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
+| TTL index and clock | latency, storage | **measured null** in a limited 8-client cohort (~110–125k/s; differences inside host spread) | no candidate; 4.9 stays closed | clean TTL cohort (4.16 row 1) | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
 | Eviction steady-state cost | storage | **measured**: P16 20,498 vs 144,365 no-eviction (−85.8%), p99 64.5 vs 8.0 ms; policy-independent; C servers ~no penalty | 4.26, admitted | AC29 on the implemented change | none (no maxmemory) |
 | Startup AOF replay | persistence, availability | **measured**: 0.258 s at 50k, 1.10–1.24 s at 200k vs 0.011–0.061 s for the C servers | 4.27, admitted | AC30 on the implemented change | none (startup) |
@@ -1502,6 +1505,17 @@ shows a clock share above the noise, adapt the snapshot idea behind the existing
 `Clock` trait: publish one millisecond value per reactor pass and let commands
 read it, keeping the injectable test clock and single-command time consistency.
 That is safe Rust with no new dependency.
+
+**TTL-heavy check (2026-11-12).** A limited local diagnostic used 8 Python
+pipelined clients (16 deep), 1024 keys, 64-byte values, 160k commands per run and
+three rotations, comparing plain keys with keys carrying a 10,000 s TTL. Medians
+(req/s, plain/TTL): Rillcache SET 117k/125k, GET 112k/113k; Redis SET 111k/106k,
+GET 91k/125k; Valkey SET 110k/122k, GET 120k/111k. Every within-server difference
+is inside the host spread, and Rillcache is not slower than the C servers on
+either form. The client and shared host bound the absolute rate (~110–125k/s), so
+this is not a clean TTL cohort; it does support keeping 4.9 closed and not adding
+a TTL fast path speculatively. A clean TTL cohort (4.16 row 1) is still required
+for a production claim.
 
 ### 3.8 Decision matrix: best of each project
 
@@ -3354,6 +3368,12 @@ separate roadmap.
   process start to first PING. Rill 0.258 s (50k) and 1.10–1.24 s (200k, DBSIZE
   200,000); Redis 0.011/0.027–0.043 (50k DBSIZE verified 50,000); Valkey
   0.054/0.051–0.061. Shared-host diagnostic; raw JSON retained (untracked).
+- TTL-heavy diagnostic (section 3.7): 8 Python pipelined clients (16 deep), 1024
+  keys, 64 B, 160k commands per run, three rotations, plain vs 10,000 s TTL.
+  Medians: Rill SET 117k/125k, GET 112k/113k; Redis SET 111k/106k, GET 91k/125k;
+  Valkey SET 110k/122k, GET 120k/111k. Differences are inside the host spread and
+  the client bounds the rate; it supports keeping 4.9 closed, not a production
+  claim. Raw JSON retained (untracked).
 - Expiry and eviction comparison (section 3.10): Redis `expire.c` constants and
   `activeExpireCycle`, Valkey `active-expire-effort`, and the 16-entry eviction
   pool (`redis evict.c#L36`, `valkey evict.c#L54`) against our
@@ -3566,7 +3586,9 @@ separate roadmap.
   own fresh cohort, never by picking the favorable one.
 - Expiry is outside the gate: our fixed 1,280 due reaps/s is bounded and ordered,
   but sustained high-churn TTL under memory pressure could leave stale keys longer
-  than a 25%-CPU burst cycle; that remains unmeasured (4.16 row 1). Eviction is
+  than a 25%-CPU burst cycle; that remains unmeasured (4.16 row 1). A limited TTL
+  diagnostic (section 3.7) found no consistent TTL-vs-plain penalty, but it is
+  client- and host-bound and does not replace a clean TTL cohort. Eviction is
   now measured (section 3.10): under continuous pressure P16 SET loses **85.8%**
   and p99 rises to 64.5 vs 8.0 ms, policy-independent, while the C servers show
   little penalty; 4.26/AC29 cover it. Budgets differ (payload vs RSS) and the host
