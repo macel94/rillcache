@@ -104,8 +104,11 @@ with full passes of 4.85 s and 43.4 s and concurrent GET p99 of 10.8/18.8 ms;
 candidate 4.23 and AC26 gate it. The 2026-11-12 large-value retry (section 2.21)
 has a usable 64-byte control and measures **1 MiB GET at −42% to −45% (p99
 2.3–2.5×) and SET at −28% to −32%**, admitting 4.15 (reply copy) and 4.25 (input
-growth). Section 2.24 is a one-page open-gap ledger that maps every remaining
-item to its evidence status, candidate and admission experiment.
+growth). Under continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
+SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
+servers, admitting 4.26 (pooled eviction). Section 2.24 is a one-page open-gap
+ledger that maps every remaining item to its evidence status, candidate and
+admission experiment.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -1232,6 +1235,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
+| Eviction steady-state cost | storage | **measured**: P16 20,498 vs 144,365 no-eviction (−85.8%), p99 64.5 vs 8.0 ms; policy-independent; C servers ~no penalty | 4.26, admitted | AC29 on the implemented change | none (no maxmemory) |
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
 | Incremental keyspace rehash | storage | bound at 1024 keys | deferred 4.18 | large-keyspace cohort | none |
 | Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s) | keep; needs a socket dependency/FFI | connection-storm / idle-socket cohort | none |
@@ -1516,7 +1520,7 @@ That is safe Rust with no new dependency.
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
 | Expiry | lazy + sampled active cycle, 25% CPU budget, fast 1 ms, effort levels | same | lazy + ordered `BTreeSet` reap, 128 due keys per 100 ms | **Keep:** ordered removals are exact and capped at ~0.1–0.3% CPU; adaptive bursts only with the 4.16 TTL row (3.10) |
-| Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Keep with a quality gap:** reads do not refresh LRU; revisit only with a measured eviction row (3.10, 4.16) |
+| Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Adopt:** 4.26 pooled/batched eviction; measured 85.8% P16 loss under pressure, policy-independent; read-aware LRU still unmeasured (3.10) |
 | Value/key encoding | embstr ≤44 B, int objects, shared key with expires, listpack/intset small collections | same | `Vec<u8>` values, key duplicated in expiry/version indexes, ordinary collection containers | **Avoid rewrite:** short strings are one allocation either way and no gate row pays it; only a TTL/eviction RSS result could justify removing the duplicate key (3.11) |
 
 ### 3.9 Persistence write path (append-only journal)
@@ -1614,6 +1618,29 @@ only by unit/durability tests. Their shapes still differ:
   25% CPU. Our ordered reap is more aggressive than the single-DB baseline and
   never removes a live key; their sampled cycle can miss due keys but bursts
   harder under a high stale ratio.
+- **Eviction steady-state measurement (2026-11-12).** 100k SET requests over a
+  100k-key space, 64-byte values, 8 clients, pipeline 1/16, `allkeys-lru`;
+  controls are the same servers without a memory limit. Rill uses a 500 KB
+  payload budget (median 7,073 evictions), Redis/Valkey 2 MB `maxmemory`
+  (~4,000 evictions):
+
+  | Workload | Server | No eviction | Eviction | Change | p99 no/evict ms |
+  | --- | --- | ---: | ---: | ---: | ---: |
+  | P1 SET | Rillcache | 14,895 | 8,339 | **−44.0%** | 5.95/8.20 |
+  | P1 SET | Redis 8.10.2 | 12,371 | 12,150 | −1.8% | 6.20/6.40 |
+  | P1 SET | Valkey 9.1.2 | 11,888 | 13,265 | +11.6% | 6.33/5.24 |
+  | P16 SET | Rillcache | 144,365 | **20,498** | **−85.8%** | 8.01/64.51 |
+  | P16 SET | Redis 8.10.2 | 130,085 | 171,696 | +32.0% (noisy) | 7.09/4.67 |
+  | P16 SET | Valkey 9.1.2 | 117,044 | 137,789 | +17.7% (noisy) | 9.54/5.56 |
+
+  A policy A/B on the same budget shows the LRU choice is not the cause:
+  Rillcache `allkeys-lru` 27.1–31.3k and `allkeys-random` 25.3–27.6k at P16, both
+  far below the no-eviction control, while Redis shows no penalty under either
+  policy. The cost is the eviction path itself: per-write bounded candidate scans
+  under continuous pressure versus the C servers' sampled pool that evicts in a
+  pass. The budgets differ (payload vs RSS) and Rillcache evicts ~1.75× more
+  keys, but that does not explain a 5–7× throughput difference. Shared-host
+  diagnostic, not a gate result.
 - Eviction quality: mutation-time LRU is a real policy gap, not a measured
   throughput loss. A read-heavy keyspace under `allkeys-lru` can evict keys that
   Redis/Valkey just read and would keep. Read-aware LRU would need an atomic or
@@ -1621,14 +1648,11 @@ only by unit/durability tests. Their shapes still differ:
   policy is active), which adds work to the hot read path; it is not justified
   without an eviction cohort.
 
-**Verdict: keep the fixed, ordered, bounded purge and the current eviction
-approximation.** The only scenario where our expiry can lose is sustained
-high-churn TTL with memory pressure, where 1,280/s may leave stale keys longer
-than a 25%-CPU burst cycle; that is exactly the TTL row in 4.16, and the
-eviction-quality question needs a sixth row there. If either shows a gap, adapt
-in bounded slices between command batches (the journal-rewrite shape) rather than
-one large locked purge, and only then consider a read-aware access stamp. Do not
-copy the adaptive effort levels or LFU counters speculatively.
+**Verdict: keep the ordered purge; the eviction path is now admitted as 4.26.**
+The measured eviction penalty is the per-write admission scan, not the LRU
+quality; a pooled/batched eviction pass is the candidate. The TTL high-churn
+question remains for 4.16 row 1, and a read-aware access stamp remains
+unmeasured. Do not copy adaptive expiry effort or LFU counters speculatively.
 
 ### 3.11 Key and value representation (memory, not gate rate)
 
@@ -1887,7 +1911,7 @@ same-pass wakeup candidate for blocking commands in section 3.12. 4.23 is the
 conditional rewrite-start candidate for the fork-versus-slices trade in section
 3.13, and 4.24 is the event-driven async-client candidate for pub/sub and
 MONITOR in section 3.12. 4.25 is the large-frame input-reservation candidate in
-section 3.3.
+section 3.3, and 4.26 is the pooled/batched eviction candidate in section 3.10.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2379,10 +2403,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    increments since #194 have their own tests; this row is the performance
    counterpart).
 6. **Eviction pressure:** `maxmemory` set just below the working set,
-   `allkeys-lru`, and a read-heavy mixed GET/SET stream. Tests the mutation-time
-   LRU approximation and bounded eviction scans against the C servers' sampled
-   pool (section 3.10); report RSS and the read-hit retention as the quality
-   signals.
+   `allkeys-lru`, and a read-heavy mixed GET/SET stream. Confirms 4.26 on a
+   clean runner; the 2026-11-12 local cohort in section 3.10 already measures the
+   steady-state penalty (−85.8% P16). Report RSS and read-hit retention as the
+   quality signals.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -2728,6 +2752,45 @@ than the configured bound; fragmented, truncated and malformed frames keep their
 current behavior; the matched A/B shows the gain; and both protected gates pass
 on the exact head.
 
+### 4.26 Pooled/batched eviction pass (candidate; admission measured)
+
+**Mechanism.** When a write needs memory, run one bounded eviction pass that
+samples candidates into a small pool and evicts until the budget is satisfied or
+a bounded key/time count is reached, instead of rescanning candidates on every
+admitted write. Keep the policy semantics (`allkeys`/`volatile`,
+`lru`/`random`/`ttl`), the mutation-time approximation, accounting and expiry;
+if the budget cannot be met, return the existing OOM reply. Bound the pass so one
+write cannot hold the data lock for an unbounded time.
+
+**Prediction.** Under continuous eviction, P16 moves from the measured **20,498
+vs 144,365 req/s (−85.8%, p99 64.5 vs 8.0 ms)** toward the no-eviction control,
+and P1 from 8,339 vs 14,895; the C servers show no penalty. Target: P16 within
+25% of the no-eviction control and p99 within 2× it, with no change when the
+budget is not under pressure.
+
+**Admission evidence (2026-11-12, section 3.10).** The penalty is policy-
+independent on this host (Rill `allkeys-lru` 27.1–31.3k and `allkeys-random`
+25.3–27.6k at P16, both far below the control; Redis shows no penalty for
+either), so it is the admission scan, not the LRU quality. Rill evicts ~1.75×
+more keys than the 2 MB C servers, which does not explain a 5–7× throughput
+difference. Shared-host diagnostic; a matched frozen-binary A/B is still needed.
+
+**Risks and obligations.** Evicting more than necessary, holding the data lock,
+and changing policy semantics are the failure modes. Preserve exact accounting,
+expiry/TTL ordering, WATCH/journal order and `noeviction`; bound keys/time per
+pass; keep the existing reply when the budget cannot be met.
+
+**Rejection condition.** No gain above the spread; over-eviction or accounting
+error; any policy-semantics change; any protected gate row loss.
+
+**Acceptance (AC29).** Under continuous eviction, P16 SET throughput shall be
+within 25% of the no-eviction control and p99 within 2× it (measured baseline
+−85.8%, 64.5 vs 8.0 ms); evicted-key counts and payload accounting shall be
+exact; every policy (`allkeys`/`volatile` × `lru`/`random`/`ttl`) and
+`noeviction` shall behave as specified; there shall be no change when the budget
+is not under pressure; the matched A/B shall show the gain; and both protected
+gates shall pass on the exact head.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -2838,6 +2901,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   the daily host shows the reverse (section 2.22); neither proves a server-side
   mechanism. Report both client and server percentiles before changing the
   runtime (AC21, 4.19).
+- **Eviction-batching risk (4.26):** an eviction pass must not over-evict, hold
+  the data lock unboundedly, or change policy/accounting/expiry semantics. Bound
+  keys/time per pass, keep `noeviction` and WATCH/journal order, and verify exact
+  evicted-key and payload counts (AC29).
 - **WATCH-version risk (4.20):** skipping per-key versions while nothing watches
   is only safe if `WATCH` registration and the tracking flag change under the
   same data borrow and if scratch multi-owner executors keep tracking. A race or
@@ -3076,6 +3143,13 @@ samples retained.
   fragmented, truncated and malformed frames shall keep their current behavior;
   the matched A/B shall show the gain; and both protected gates shall pass on the
   exact head.
+- **AC29 (pooled eviction, only if 4.26 is implemented).** Under continuous
+  eviction, P16 SET throughput shall be within 25% of the no-eviction control and
+  p99 within 2× it (measured baseline −85.8%, 64.5 vs 8.0 ms); evicted-key counts
+  and payload accounting shall be exact; every `allkeys`/`volatile` ×
+  `lru`/`random`/`ttl` policy and `noeviction` shall behave as specified; there
+  shall be no change when the budget is not under pressure; the matched A/B shall
+  show the gain; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -3186,8 +3260,16 @@ separate roadmap.
 - Expiry and eviction comparison (section 3.10): Redis `expire.c` constants and
   `activeExpireCycle`, Valkey `active-expire-effort`, and the 16-entry eviction
   pool (`redis evict.c#L36`, `valkey evict.c#L54`) against our
-  `purge_expired(128)` per 100 ms tick and bounded candidate scans. Code
-  citations; no TTL or eviction cohort exists yet (4.16 rows 1 and 6).
+  `purge_expired(128)` per 100 ms tick and bounded candidate scans.
+- Eviction measurement (section 3.10, candidate 4.26): 100k SET requests over a
+  100k-key space, 64 B, 8 clients, P1/P16, `allkeys-lru`, controls without a
+  memory limit; three rotated rounds. Rill 500 KB payload (7,073 evictions),
+  Redis/Valkey 2 MB (~4,000). P16 SET 144,365 no-eviction vs 20,498 evicted
+  (−85.8%, p99 8.01/64.51 ms); P1 14,895 vs 8,339 (−44.0%). Redis P16 130,085 vs
+  171,696 and Valkey 117,044 vs 137,789 (noisy, no penalty). A policy A/B shows
+  Rill LRU 27.1–31.3k vs random 25.3–27.6k at P16, both far below control, while
+  Redis shows no policy penalty. Shared-host diagnostic; raw JSON retained
+  (untracked).
 - Encoding comparison (section 3.11): Redis embstr limit 44 B and
   `tryObjectEncoding`, listpack/intset thresholds (`redis config.c#L3511`,
   `#L3593`, `#L3603`), against our `Entry` `Vec` value and the duplicated key in
@@ -3385,11 +3467,13 @@ separate roadmap.
   on shared four-CPU runners. That −1.35% to +15.4% swing for identical code is
   the clearest measurement-risk evidence in the record; judge a change on its
   own fresh cohort, never by picking the favorable one.
-- Expiry and eviction are outside the gate. Our fixed 1,280 due reaps/s is
-  bounded and ordered, but sustained high-churn TTL under memory pressure could
-  leave stale keys longer than a 25%-CPU burst cycle, and mutation-time LRU
-  ignores reads. Both are unmeasured (4.16 rows 1 and 6); no production claim
-  either way (section 3.10).
+- Expiry is outside the gate: our fixed 1,280 due reaps/s is bounded and ordered,
+  but sustained high-churn TTL under memory pressure could leave stale keys longer
+  than a 25%-CPU burst cycle; that remains unmeasured (4.16 row 1). Eviction is
+  now measured (section 3.10): under continuous pressure P16 SET loses **85.8%**
+  and p99 rises to 64.5 vs 8.0 ms, policy-independent, while the C servers show
+  little penalty; 4.26/AC29 cover it. Budgets differ (payload vs RSS) and the host
+  is shared, so the absolute rates are diagnostic.
 - Value and key representation is a memory axis, not a gate row (section 3.11).
   A TTL key that has been written can own four buffers (main key, value, expiry
   key, version key) where the C servers share one key object; integer values
