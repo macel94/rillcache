@@ -51,7 +51,10 @@ cohort on the same head leads every measured row, with only four P1 rows inside
 the advisory noise band (section 2.19). A second manual five-server cohort on
 `bcd4768` (run 43164876654) repeats the throughput lead at +21.7–32.6% P1
 against Redis/Valkey but reverses **all five** P1 p99 rows; the tail direction is
-therefore explicitly host-dependent (sections 2.15, 2.19 and 2.22). Second, source comparison locates the one
+therefore explicitly host-dependent (sections 2.15, 2.19 and 2.22). Every
+inspected gate manifest shares client/server CPUs `[0,1,2,3]` because the runner
+has four logical CPUs, so placement is not a controllable variable there
+(section 2.9). Second, source comparison locates the one
 structural reply-path difference left — Redis 8.10.2 and Valkey 9.1.2 avoid the
 value copy for bulk replies of at least 16 KiB — and an attempted local
 large-value screen is retained as failed evidence because the shared host could
@@ -415,6 +418,16 @@ is either a gate runner with disjoint client CPUs (CI/policy change, owner
 review) or a different scheduling mechanism that does not add runnable server
 threads. The docs-only record must not be re-pushed repeatedly to fish for a
 noise pass.
+
+**Placement is never disjoint on this runner.** Inspecting the manifests of every
+recent cohort — #212 (pass), #217 (pass), #218 (fail), #220 (fail) and #223
+(fail) — all report `client_cpus == server_cpus == allowed_cpus == [0, 1, 2, 3]`.
+The runner exposes exactly four logical CPUs, so the workflow's "disjoint client
+CPUs when available" clause cannot be satisfied on this runner type. Pass and
+fail therefore cannot be attributed to placement, and the current one-reactor
+default still shares the four CPUs with two generator threads. A true disjoint
+control needs a different runner type (a CI/policy decision), not a configuration
+change; until then the P1 ping row remains residual host/scheduler noise.
 
 ### 2.10 Post-refresh cohorts: command-counter isolation and two both-gates passes
 
@@ -844,7 +857,9 @@ the win is resolved with an interval above 1.0. Neither a loss nor a win proves 
 code change on a single cohort; the strict median of this one shared-runner row
 moves by roughly 16 points while the binary is unchanged. The row is the gate's
 measurement risk, not a stable deficit, and the clean-host direction remains
-positive.
+positive. Every inspected manifest behind these cohorts reports the same
+`client_cpus == server_cpus == [0, 1, 2, 3]` (section 2.9), so placement is not a
+variable the gate can control on this runner.
 
 The Dragonfly comparison shows the same shape. The #220 docs head (base
 `cd8fa1b`, runtime identical) lost the Dragonfly P1 ping row by **0.12%**
@@ -1179,7 +1194,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 
 | Gap | Dimension | Evidence now | Candidate / decision | Admission evidence | Gate row |
 | --- | --- | --- | --- | --- | --- |
-| P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; +1.0% and +22.5% vs Redis across two daily cohorts; p99 flips with host | no runtime candidate; measurement/topology | disjoint client CPUs is a CI/policy decision | the row itself |
+| P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; +1.0% and +22.5% vs Redis across two daily cohorts; p99 flips with host | no runtime candidate; measurement/topology | disjoint CPUs need a different runner type; all recent cohorts share `[0,1,2,3]` | the row itself |
 | P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
 | Large bulk reply copy | replies | source only; local screen failed | 4.15 (std `Arc`/`IoSlice`) | clean large-value cohort (4.16 row 2) | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
@@ -2799,6 +2814,12 @@ separate roadmap.
   0.9819 [0.9388–1.0209]), P16 ping 5/5 at +48.9%, all other rows passed. Kept
   with #216/#217 as the identical-code variance evidence; not retried until
   green.
+- Placement evidence (section 2.9): the manifests of #212 (run 42994675861),
+  #217 (43128571502), #218 (43134573112), #220 (43147853671) and #223
+  (43171755325) all report `client_cpus == server_cpus == allowed_cpus ==
+  [0,1,2,3]`; the runner has exactly four logical CPUs. Pass/fail therefore
+  cannot be attributed to placement, and a disjoint control needs a different
+  runner type.
 - Per-request latency and process CPU (section 2.22): derived from the five
   `sample.json` files per P1 workload in the #212 partials above (run
   42994675861); no new runs. Each sample records p50/p95/p99/max and
@@ -3079,10 +3100,11 @@ separate roadmap.
   `server_cpus` (`[0,1,2,3]`), so the load generator shared the server CPUs.
   That biases a multi-reactor server against a single-thread competitor and put
   the P1 ping row inside a +2.9% to −4.3% run-to-run band for an unchanged
-  runtime (section 2.9). The current gate states disjoint client CPUs when
-  available and otherwise shares them; a disjoint-client-CPU runner measures the
-  server's lower p99 without generator contention. Changing the runner is a
-  CI/policy decision, not a server tuning knob.
+  runtime (section 2.9). The gate states disjoint client CPUs "when available",
+  but every recent cohort reports `[0,1,2,3]` for both because the runner has
+  exactly four logical CPUs; a disjoint control therefore needs a different
+  runner type, not a configuration change. Changing the runner is a CI/policy
+  decision, not a server tuning knob.
 - Cross-client write coalescing (4.5) is closed: it has no target row, and the
   current per-client batch already leads every P16 row (sections 2.19 and 4.5).
   The resumable parser (4.2) is closed by bound: incomplete frames rescan only
