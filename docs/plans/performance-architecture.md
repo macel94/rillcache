@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15).**
+gated (4.15, 4.20, 4.21).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -64,7 +64,13 @@ to a passing head (section 2.17), and adds the latency-attribution diagnostic
 4.19 with the conditional watch-free mutation candidate 4.20. It finds that
 typical P1 latency is lower in every command while the extreme tail of mutating
 commands is host-dependent, and that per-command CPU flips sign across hosts;
-neither is a stable deficit.
+neither is a stable deficit. A hosted gate-rate profile (section 2.23) corrects
+the local syscall picture: the bounded poll costs 0.20–0.36 `epoll_wait` per reply
+and fewer context switches than Valkey, while the edge-triggered drain probe is
+the remaining +12%/+37% total-syscall difference. Finally, the persistence-on
+write-path source comparison (section 3.9) adds candidate 4.21: the C servers
+buffer AOF bytes and write once per event loop, while we write one framed
+transaction per command.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -596,6 +602,12 @@ arguments (eight clients, two threads, 1024 random keys, 64-byte values, seed 42
 and the server and generator both pinned to CPUs `0-3`, with 6 s measured
 samples (the protected gate uses 10 s).
 
+The switch figures above are host-local and do not transfer to gate rates. The
+hosted profile (section 2.23) measures 0.0002 (ping) and 0.00013 (GET) context
+switches per reply for Rillcache against Valkey's 0.0019 and 0.0008, so the
+bounded poll's runnable window does remove the sleep/wake pair at gate rates. The
+local absolute counts stay diagnostic.
+
 The final merged head (`c4d4698`, run 41552051338) passed both required four-CPU
 comparisons:
 
@@ -730,22 +742,28 @@ inside the perf window:
 The 20 µs bounded poll is a zero-timeout `epoll_wait` spin, so it accounts for
 most of the ~8 epoll waits per command on this slow host. `recvfrom` is about one
 receive plus the edge-triggered drain probe; `sendto` is about one reply write.
-At gate rates the window usually returns on an event earlier, so this is a
-mechanism diagnostic, not a gate prediction. It explains the CPU cost and why the
-hybrid timed wait (section 4.13) reduced epoll calls but regressed p99: it traded
-the spin for sleep/wake latency.
+The local window also spends the full 20 µs per command because the next request
+is far away. **A hosted gate-rate profile measures 0.20–0.36 `epoll_wait` per
+reply, not ~8 (section 2.23);** the local count is a slow-host mechanism
+diagnostic, not a gate prediction. It explains the CPU cost and why the hybrid
+timed wait (section 4.13) reduced epoll calls but regressed p99: it traded the
+spin for sleep/wake latency.
 
 Compared with the pre-readiness diagnostic (section 2.4, ~6.2 receive-class
-syscalls per command), the readiness reactor cut receive-side work to ~1.85, but
-the bounded poll spends the savings on epoll waits. Redis and Valkey use
-level-triggered single loops that amortize one wait over all ready clients; Rill
-cannot copy that without raw `epoll` FFI or a different selector policy, and a
-sleeping wait was measured worse on the tail.
+syscalls per command), the readiness reactor cut receive-side work to ~1.85 at
+the slow local rate; the bounded poll spends those savings on epoll waits *on
+that host*. At gate rates the hosted profile (section 2.23) shows 0.20–0.36
+`epoll_wait` per reply and fewer context switches than Valkey, so the trade is
+not an epoll excess there; the remaining excess is the drain probe. Redis and
+Valkey use level-triggered single loops that amortize one wait over all ready
+clients; Rill cannot copy that without raw `epoll` FFI or a different selector
+policy, and a sleeping wait was measured worse on the tail.
 
-**Verdict:** record the syscall trade as the measured mechanism behind the P1 CPU
-cost. Do not add another poll-window variant; the remaining safe options are
-outside the Mio boundary. The local counts are diagnostic only and must not be
-substituted for gate evidence.
+**Verdict:** record the local syscall/tail trade as the mechanism behind the P1
+CPU policy, but use the hosted profile (2.23) for gate-rate syscall counts. Do not
+add another poll-window variant; the remaining safe options are outside the Mio
+boundary. The local counts are diagnostic only and must not be substituted for
+gate evidence.
 
 ### 2.17 Five-round cohorts: the paired interval exposes near-parity
 
@@ -864,13 +882,15 @@ where a real mechanism difference remains.
 
 Seven things are still true even though every row now leads:
 
-1. **Syscall shape.** The local tracepoint diagnostic (section 2.16) counts
-   about 7.74 `epoll_wait`, 1.85 `recvfrom` and 1.03 `sendto` per P1 command for
-   the bounded-poll default, against roughly 0.4, 1.0 and 1.0 for the C servers
-   (section 2.4). That is the deliberate trade that removed the sleep/wake pair;
-   the rate and CPU evidence says it is not currently buying a loss, but the
-   per-command syscall count is still several times the reference and is the
-   first thing that would matter on a higher-cost kernel or a busier host.
+1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
+   (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
+   ping and 1.710 + 1.000 + 0.362 for GET, against 1.000 + 1.000 + 0.264 and
+   1.000 + 1.000 + 0.237 for Valkey. Total syscalls per reply are therefore +12%
+   (ping) and +37% (GET); the excess is the edge-triggered drain probe, not the
+   bounded poll, whose epoll count is comparable. Context switches are **lower**
+   (0.0002 vs 0.0019 ping; 0.00013 vs 0.0008 GET). The local 7.74-epoll figure
+   from section 2.16 was a slow-host artifact. This is not a first-order loss and
+   the probe's removal is already rejected (section 2.6), so do not reopen it.
 2. **Large-value reply copies.** Rillcache encodes a bulk value into the
    client's output `Vec` and writes that `Vec`, so a large GET copies the value
    once into output and again into the kernel. Redis 8.10.2 and Valkey 9.1.2
@@ -1004,6 +1024,56 @@ commands on some hosts, not the typical request. Isolating it needs a
 server-side measurement, not another client percentile; that is candidate 4.19.
 No tail win or loss is claimed beyond the specific cohorts, and AC5 remains the
 acceptance rule.
+
+### 2.23 Hosted gate-rate syscall and scheduler profile
+
+Section 2.16's per-command syscall counts came from the shared six-CPU VM at
+about 1.2k ops/s, where the bounded poll spins for a large share of each slow
+command; it explicitly could not predict gate rates. A hosted instrumented
+profile (run 43125144121, source `8b38d0b`, owned `perf` capture, eight clients,
+two generator threads, 64-byte values, 1024 keys, P1, four shared logical CPUs)
+now measures the same counters at 118–139k req/s. The values below are syscall
+counts divided by reply syscalls (`sendto`/`write`), not throughput or wall
+latency; the instrumented rates are quarantined and never used as a ranking.
+
+| Workload | Server | Replies in 8 s | process CPU µs/reply | recv/read per reply | send/write per reply | epoll_wait per reply | context switches per reply |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ping | Rillcache | 991,114 | 8.07 | 1.336 (`recvfrom`) | 1.000 (`sendto`) | 0.200 | 0.000226 |
+| ping | Valkey | 1,038,700 | 7.67 | 1.000 (`read`) | 1.000 (`write`) | 0.264 | 0.001898 |
+| get | Rillcache | 1,037,694 | 7.71 | 1.710 (`recvfrom`) | 1.000 (`sendto`) | 0.362 | 0.000133 |
+| get | Valkey | 904,895 | 8.83 | 1.000 (`read`) | 1.000 (`write`) | 0.237 | 0.000800 |
+
+The CPU column is process `task-clock` divided by replies (instrumented, not wall
+latency); every rate in this capture is quarantined and cannot rank servers or
+clear a gate. The syscall ratios are the counters' purpose and match the
+per-operation method used in section 2.16.
+
+Three corrections to the local picture follow:
+
+1. **The bounded poll is not an epoll storm at gate rates.** It costs 0.200
+   (ping) and 0.362 (GET) `epoll_wait` per reply, comparable to Valkey's 0.264
+   and 0.237 — not the ~7.7/command seen on the slow local host (section 2.16).
+   At gate rates the window usually returns on an event; the local number was the
+   slow host spending the full window per command. The doc's earlier "several
+   times the reference" framing is corrected here.
+2. **The remaining syscall difference is the edge-triggered drain probe.** Rill
+   does 1.336/1.710 receives per reply against 1.000, so total syscalls per reply
+   are +12% (ping) and +37% (GET). That is the probe that PR #155 removed and
+   that lost two Valkey P1 medians; this profile explains why it is load-bearing
+   but not free. Do not reopen drain elision or poll tuning on this evidence.
+3. **Scheduler churn is lower at gate rates, not higher.** Rill performs 0.0002
+   (ping) and 0.00013 (GET) context switches per reply against 0.0019 and
+   0.0008: the runnable window avoids the sleep/wake pair. The manual cohort's
+   0.086/0.014 figures (section 2.11) were a slow-host, shared-CPU measurement.
+   CPU per reply is 8.07 vs 7.67 µs (ping, +5%) and 7.71 vs 8.83 (GET, −13%),
+   consistent with the host-dependent sign in section 2.14.
+
+**Verdict:** at gate-like rates the syscall and scheduling dimensions are within
+about +12% total syscalls (ping) and +37% (GET), with fewer scheduler switches and
+comparable epoll waits; the difference is the drain probe, whose removal is
+already rejected. This is not a first-order gate loss and it is not a reason to
+change the runtime. The instrumented profile is mechanism evidence only: no
+throughput, latency or production claim follows from it.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -1263,9 +1333,48 @@ That is safe Rust with no new dependency.
 | Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adapt only if measured:** candidate 4.15 after a clean large-value cohort (2.21) and AC20; std `Arc`/`IoSlice` only |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
+| Journal writes | buffered `aof_buf`, one write per event loop, 1 s background fsync | same | one framed write per journaled command, 1 s fsync | **Adapt only if the persistence-on row shows a gap:** batch per pass (4.21), keep CRC/HMAC framing and write-before-reply ordering |
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
 | Expiry | lazy + active cycle | lazy + active cycle | lazy on access + 100 ms purge tick | **Keep:** gate has no TTL rows; correctness covered by tests |
+
+### 3.9 Persistence write path (append-only journal)
+
+- **Redis 8.10.2 and Valkey 9.1.2** append each write command's RESP encoding to
+  a shared in-memory `aof_buf` (`feedAppendOnlyFile`) and write the accumulated
+  buffer once per event-loop iteration from `beforeSleep` or cron
+  ([`redis aof.c#L1661`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L1661),
+  [`redis flushAppendOnlyFile#L1399`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L1399),
+  [`redis server.c#L2057`](https://github.com/redis/redis/blob/8.10.2/src/server.c#L2057);
+  [`valkey aof.c#L1446`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L1446),
+  [`valkey flushAppendOnlyFile#L1178`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L1178),
+  [`valkey server.c#L1830`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L1830)).
+  `everysec` fsyncs when at least one second has elapsed, in a background bio
+  thread ([`redis aof.c#L1233`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L1233),
+  [`valkey aof.c#L908`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L908));
+  `always` fsyncs the batch before the replies are considered durable; `no` never
+  fsyncs. A pipeline of K writes therefore costs about one `write` per event-loop
+  batch plus at most one background fsync per second, not K writes.
+- **Rillcache** encodes and appends one authenticated transaction per journaled
+  command inside `execute_locked`, taking the journal mutex and calling
+  `write_all` per command
+  ([`journal.rs#L1028`](../../src/engine/journal.rs#L1028),
+  [`#L1070`](../../src/engine/journal.rs#L1070)); `everysec` syncs when one
+  second has elapsed ([`#L1102`](../../src/engine/journal.rs#L1102)) and `always`
+  syncs each append. Its transaction framing adds a CRC32 record and an optional
+  HMAC record per transaction, which the C servers do not have.
+- Consequence: at pipeline 1 the two shapes are equivalent (one command per
+  batch). At pipeline K>1 with persistence on, each of our K journaled commands
+  pays a separate write syscall, a mutex acquisition and a framing allocation,
+  while the C servers pay one buffered write for the batch. This is invisible to
+  the protected gate (persistence off) and is a production-relevant **unmeasured**
+  difference, not a measured gate loss.
+
+**Verdict:** adapt the buffering shape (candidate 4.21) only after the
+persistence-on row in 4.16 shows a gap above its spread. Do not copy the
+unauthenticated AOF format, do not move the write after the reply flush, and do
+not change the 1 s everysec policy. The candidate keeps the per-transaction
+CRC/HMAC framing and the accepted robustness boundary.
 
 ## 4. Candidate architectures
 
@@ -1283,7 +1392,8 @@ reply copy avoidance), 4.16 (the out-of-gate measurement program that must run
 before 4.15), 4.17–4.18 (two ideas rejected by bound: command-lookup caching and
 incremental rehash), and 4.19 (a latency-attribution diagnostic for the remaining
 P1 write-tail question) plus 4.20 (a conditional storage candidate that only
-follows if 4.19 isolates that tail).
+follows if 4.19 isolates that tail). 4.21 is the conditional persistence-on
+candidate for the journal write shape in section 3.9.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -1628,7 +1738,9 @@ variants are rejected analytically, and the hybrid busy/sleep split is rejected
 on measurement. The busy-window CPU and its variance are the direct cost of
 keeping the reactor runnable for successful windows; the local tracepoint count
 attributes about eight `epoll_wait` calls per command to the zero-timeout spin
-(section 2.16). Any mechanism that stops burning it reintroduces the sleep/wake
+(section 2.16), but the hosted gate-rate profile measures only 0.20–0.36 per reply
+and fewer context switches than Valkey (section 2.23), so the local eight is not
+a gate-rate cost. Any mechanism that stops burning it reintroduces the sleep/wake
 pair that the window exists to remove.
 The headline 95% total CPU is mostly the higher measured rate, with a small
 ~5–9% ping-specific per-command difference on the two clean cohorts (section
@@ -1865,6 +1977,52 @@ on a subsequent mutation; scratch multi-owner write sets are unchanged; the
 transaction/WATCH/multi-owner matrix passes; the matched A/B shows the claimed
 tail or CPU effect; and both protected gates pass on the exact head.
 
+### 4.21 Per-batch journal write coalescing (conditional on persistence-on evidence)
+
+**Mechanism.** During one reactor service batch, encode each journaled command
+into a reusable per-batch buffer (the existing CRC32/HMAC transaction frames,
+concatenated) and perform one `write_all` under one journal-mutex acquisition
+before the client's replies are flushed, instead of one write and one lock per
+command. The 1 s `everysec` sync and the `always` sync-before-reply semantics are
+unchanged; only the page-cache write is coalesced. `always` then syncs the batch
+once, so every acknowledged command in it is durable, matching the C servers'
+per-loop flush shape.
+
+**Prediction.** At pipeline K, the journal path replaces K writes, K mutex
+acquisitions and K transaction-buffer allocations with one of each. At K=16 and
+0.5–1.5 µs per write, that is roughly 8–22 µs saved per batch; with the
+persistence-on P16 server cost in the low microseconds per command, the upper
+bound is material. At pipeline 1 it is zero, and on the protected gate
+(persistence off) it is exactly zero. This is why it is not a gate candidate.
+
+**Failure contract (required design).** Commands execute in memory before the
+batch is durable, so a batch-write failure must be handled explicitly: mark the
+journal failed (the existing state that rejects further appends), replace every
+reply in the batch with the journal error rather than acknowledging any of them,
+and stop accepting writes until the operator restarts. No acknowledged command
+may be missing from the journal; unacknowledged in-memory effects may be lost on
+restart, which is the same contract the current per-command error path has, only
+Wider. A `SIGKILL`/replay test must prove that every reply the client received is
+present in the replayed journal.
+
+**Admission and baseline.** Implement only after 4.16 row 5 measures
+persistence-on SET at P1 and P16 against the C servers and shows a gap above the
+cohort spread. Freeze the current and candidate binaries, alternate them on one
+host with the same generator, `appendfsync everysec` and `always`, and retain raw
+JSON, p99, CPU, journal-size and replay checks.
+
+**Rejection condition.** Any durability/replay failure, any reply-before-write
+ordering, any HMAC-chain or CRC boundary error, any gate row loss, no gain above
+the spread in the persistence-on row, or unbounded batch memory. Then keep the
+per-command append.
+
+**Acceptance (AC23).** With persistence on, a batch of K commands performs at
+most one journal write and one journal lock acquisition; every acknowledged
+command is present in the replayed journal; `always` still syncs before the reply;
+`everysec` still syncs within its 1 s bound; kill/replay, HMAC, CRC, rewrite and
+multi-owner tests pass; the matched persistence-on A/B shows the gain; and both
+protected gates pass on the exact head.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -1904,8 +2062,9 @@ same native evidence and protected gates as any other runtime change. The
 rejected eight-reactor experiment and the closed candidates add no package: 4.9
 stays inside `std::time`/the existing `Clock` trait, 4.15 needs only
 `std::sync::Arc`, `std::io::IoSlice` and `Write::write_vectored`, 4.16 is
-measurement tooling, and 4.17–4.18 are rejected. No new dependency, build
-script, allocator or FFI is requested by this refresh. Level-triggered readiness
+measurement tooling, 4.17–4.18 are rejected, 4.20 needs no crate, and 4.21 is
+`std::fs`/`Write::write_all` plus the existing in-repo SHA-256/HMAC and CRC code.
+No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
 it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 `recvmmsg`/`sendmmsg` are likewise outside the current Mio/`std` boundary.
@@ -1975,6 +2134,14 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   same data borrow and if scratch multi-owner executors keep tracking. A race or
   a missed bump would silently accept a stale `EXEC`; the transaction matrix and
   an explicit later-`WATCH` test are mandatory (AC22).
+- **Journal-batching durability risk (4.21):** a batch write must complete before
+  any reply in the batch leaves; a failure must unacknowledge the whole batch and
+  stop writes. A SIGKILL/replay test must prove every acknowledged reply is in
+  the journal. Do not trade this for throughput (AC23).
+- **Persistence blind spot:** the protected gate runs with persistence off, so
+  none of its rows exercises the journal write, fsync or HMAC framing. A
+  persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
+  AOF parity (section 3.9).
 
 ## 7. Rejected options
 
@@ -2007,6 +2174,9 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Ranking servers from the shared k3s development host | The 64-byte controls measured ~20–33x below the daily cohort; local numbers diagnose mechanism only and never establish a win or loss (2.21). |
 | Removing `WATCH` versions unconditionally from every mutation | Would accept a stale `EXEC` whenever a key was written after `WATCH`; only a watch-aware fast path with the lock proof is safe (4.20, AC22). |
 | Treating the #212 SET/XX P1 p99 gap as a server regression | The daily cohort shows the opposite direction and both are client-observed; no server histogram exists yet, so the correct action is 4.19, not a code change (2.22, AC21). |
+| Writing the journal after the reply flush, or acknowledging before the write | Would acknowledge data that a crash can lose; the write must precede the reply (3.9, 4.21). |
+| Copying Redis/Valkey's unauthenticated AOF byte stream | Drops the CRC32 transaction boundary and optional HMAC record that this project's durability/security increments added (3.9). |
+| Per-command fsync under `everysec` | Multiplies fsync cost without changing the stated 1 s durability bound; the policy stays 1 s (3.9). |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
 
 ## 8. Acceptance criteria (EARS)
@@ -2127,6 +2297,13 @@ samples retained.
   subsequent mutation; scratch multi-owner write sets shall be unchanged; the
   transaction/WATCH/multi-owner matrix shall pass; and the matched A/B shall show
   the claimed tail or CPU effect before both protected gates accept it.
+- **AC23 (journal write coalescing, only if 4.21 is implemented).** With
+  persistence on, a batch of K commands shall perform at most one journal write
+  and one journal lock acquisition; every acknowledged command shall be present
+  in the replayed journal; `always` shall sync before the reply; `everysec` shall
+  sync within its 1 s bound; kill/replay, HMAC, CRC, rewrite and multi-owner
+  tests shall pass; the matched persistence-on A/B shall show the gain; and both
+  protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the five
@@ -2161,6 +2338,14 @@ separate roadmap.
   139,745.7 (−0.67%, 3/5, ratio 1.0030 [0.9371–1.0278]), all other rows passed.
   Retained as the variance evidence; not a runtime regression and not retried
   until green.
+- Hosted gate-rate profile (section 2.23): run 43125144121, source `8b38d0b`,
+  artifact
+  `reactor-profile-8b38d0b…-43125144121-1`, validated with
+  `python3 scripts/reactor-profile.py --check <artifact>/reactor-profile`. It is
+  a manual instrumented diagnosis, not a gate, ranking or latency result. Per
+  reply, tell-tale counts: ping 1.336 recv + 1.000 send + 0.200 epoll; GET 1.710 +
+  1.000 + 0.362; Valkey 1.000 + 1.000 + 0.264/0.237. Replies are the `sendto`/
+  `write` tracepoint totals in the 8 s capture.
 - Five-server daily cohort (section 2.19): run 43022929390 on source `7b365dc`,
   artifact `daily-five-server-7b365dc…-43022929390-1`, 250/250 samples. Advisory;
   never a gate substitute.
@@ -2182,6 +2367,14 @@ separate roadmap.
   against our `Data::touch` (`src/engine/data.rs`, around line 369). The upstream
   early return is source evidence; the per-mutation cost on this host is not
   measured, so the candidate stays conditional on 4.19.
+- Persistence write comparison (section 3.9, candidate 4.21): Redis/Valkey buffer
+  AOF bytes in `aof_buf` and write once per event-loop flush, with a 1 s
+  background fsync for `everysec`
+  ([`redis aof.c#L1399`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L1399),
+  [`valkey aof.c#L1178`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L1178));
+  our `Journal::append` writes one framed transaction per journaled command
+  (`src/engine/journal.rs`, around line 1028). Source evidence only; the
+  persistence-on row is not measured and the gate runs with persistence off.
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
@@ -2302,8 +2495,10 @@ separate roadmap.
   merged default (section 2.14), and the newest daily five-server cohort leads
   every row with only four P1 rows inside its advisory band (section 2.19). The
   remaining measured gaps against Redis/Valkey are a small P1 per-command CPU
-  difference, run-to-run variance, and the large-value reply copy that the
-  64-byte gate cannot see (sections 2.20–2.21).
+  difference whose sign is host-dependent, run-to-run variance, and the
+  large-value reply copy that the 64-byte gate cannot see (sections 2.20–2.22).
+  The persistence-on journal write shape (section 3.9) is a further unmeasured
+  difference; the gate runs with persistence off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
   within-row alternating comparison, but cross-row absolute rates are not
@@ -2355,6 +2550,18 @@ separate roadmap.
   below-noise throughput bound (~40–100 ns per mutation). It stays conditional on
   4.19 isolating a server-side mutation tail; do not remove `WATCH` tracking
   without the AC22 correctness proof and tests.
+- Persistence-on behavior remains outside the protected gate. The journal writes
+  one framed transaction per command while the C servers write a buffered batch
+  per loop (section 3.9); the upper bound is material only with persistence on,
+  so 4.21 waits for the 4.16 row-5 cohort. No cross-server persistence result is
+  claimed from gate or daily numbers.
+- The hosted profile (section 2.23) is instrumented evidence: tracepoints and
+  CPU-clock sampling perturb the workload, its rates are quarantined, and the
+  per-reply syscall counts are neither latency nor throughput. It corrects the
+  local ~8-epoll figure (0.20–0.36 per reply at gate rates) and shows lower
+  context switches, but it does not replace a gate. The drain-probe excess
+  (+12%/+37% total syscalls) is real per reply, and its removal still lowered P1
+  medians in PR #155, so it stays rejected.
 - The reviewed dependency exceptions are rustls, Tokio, Mio and
   `core_affinity`, merged through their own PRs. A future head still needs fresh
   gates, and any further dependency needs its own review. The portable fallback
