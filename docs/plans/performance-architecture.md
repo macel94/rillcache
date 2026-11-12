@@ -70,7 +70,11 @@ and fewer context switches than Valkey, while the edge-triggered drain probe is
 the remaining +12%/+37% total-syscall difference. Finally, the persistence-on
 write-path source comparison (section 3.9) adds candidate 4.21: the C servers
 buffer AOF bytes and write once per event loop, while we write one framed
-transaction per command.
+transaction per command. The latest cohort (#217, section 2.18) resolves P1 ping
+at +15.4% with an interval excluding 1.0, while the same runtime lost that row in
+#216; the pair is kept as the measurement-risk evidence. The expiry and eviction
+comparison (section 3.10) finds our ordered 1,280-reaps/s purge bounded and
+acceptable, with a read-aware-LRU quality gap that stays unmeasured.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -804,6 +808,15 @@ documented measurement limitation, not a runtime regression: do not re-push the
 head to fish for a pass and do not weaken the rule. The row remains the gate's
 open measurement risk (sections 2.9 and 2.15).
 
+Two hours after that failure, the same runtime (docs-only head `bd4f25d`, base
+`8b38d0b`) passed the same row at 181,489 vs 157,268 req/s (+15.4%, 5/5, ratio
+1.1301 [1.1219–1.2376], run 43128571502). The two cohorts bracket the row for
+identical code: −0.67% and +15.4%. Neither the loss nor the win proves a code
+change; together they show that the strict median of one shared-runner P1 row can
+move by roughly 16 points while the code is unchanged. The row is the gate's
+measurement risk, not a stable deficit, and the clean-host direction remains
+positive.
+
 **Verdict:** quote the paired interval for the P1 row, not a point estimate. A
 strict pass is not proof of a resolved 2.6% win, and a Dragonfly P1 loss on a
 fast host does not by itself justify a runtime change. The two cohorts reinforce
@@ -840,6 +853,18 @@ lower than Valkey for ping, get and nx, higher for set and xx; every P16 p99 is
 lower. That is consistent with section 2.15: throughput and tail
 are separate acceptance criteria, and this cohort does not establish a tail win
 on the two P1 write rows.
+
+The newest cohort on the same runtime is #217 (merge candidate `ce3ca13`, base
+`8b38d0b`): PASS 10/10 against both references. P1 ping was 181,489 vs 157,268
+req/s (+15.4%, 5/5, paired ratio 1.1301 [1.1219–1.2376] — the first cohort in
+this record whose interval excludes 1.0), P1 get +4.7% (4/5, ratio 1.0692
+[0.9781–1.0965]), set +7.2%, NX +8.3% and XX +29.6%; P16 ping +84.5% and P16 GET
++93.8%. p99 was 0.079/0.087 (ping), 0.087/0.103 (get), 0.111/0.151 (set) and
+0.127/0.087 (XX); Dragonfly also passed 10/10 with P1 ping 117,847 vs 94,227.
+This is the current acceptance evidence. The same runtime **lost** the P1 ping
+median in #216 (section 2.17), so the pair is the clearest demonstration that the
+row's outcome depends on the runner even when the code is identical: the
+direction is not in doubt, the single-runner median is.
 
 ### 2.19 Five-server daily cohort on the same head
 
@@ -1336,7 +1361,8 @@ That is safe Rust with no new dependency.
 | Journal writes | buffered `aof_buf`, one write per event loop, 1 s background fsync | same | one framed write per journaled command, 1 s fsync | **Adapt only if the persistence-on row shows a gap:** batch per pass (4.21), keep CRC/HMAC framing and write-before-reply ordering |
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
-| Expiry | lazy + active cycle | lazy + active cycle | lazy on access + 100 ms purge tick | **Keep:** gate has no TTL rows; correctness covered by tests |
+| Expiry | lazy + sampled active cycle, 25% CPU budget, fast 1 ms, effort levels | same | lazy + ordered `BTreeSet` reap, 128 due keys per 100 ms | **Keep:** ordered removals are exact and capped at ~0.1–0.3% CPU; adaptive bursts only with the 4.16 TTL row (3.10) |
+| Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Keep with a quality gap:** reads do not refresh LRU; revisit only with a measured eviction row (3.10, 4.16) |
 
 ### 3.9 Persistence write path (append-only journal)
 
@@ -1375,6 +1401,59 @@ persistence-on row in 4.16 shows a gap above its spread. Do not copy the
 unauthenticated AOF format, do not move the write after the reply flush, and do
 not change the 1 s everysec policy. The candidate keeps the per-transaction
 CRC/HMAC framing and the accepted robustness boundary.
+
+### 3.10 Expiry and eviction under memory pressure
+
+The protected gate has no TTLs and no `maxmemory`, so both paths are exercised
+only by unit/durability tests. Their shapes still differ:
+
+- **Redis 8.10.2 and Valkey 9.1.2** expire lazily on access and run an active
+  cycle from cron: 20 keys per DB per iteration
+  ([`redis expire.c#L96`](https://github.com/redis/redis/blob/8.10.2/src/expire.c#L96),
+  [`valkey expire.c#L122`](https://github.com/valkey-io/valkey/blob/9.1.2/src/expire.c#L122)),
+  up to `CRON_DBS_PER_CALL` 16 DBs at `hz` 10
+  ([`redis server.h#L123`](https://github.com/redis/redis/blob/8.10.2/src/server.h#L123)),
+  a slow-cycle budget of 25% of one CPU and a 1 ms fast cycle when more than 10%
+  of the sampled keys are stale
+  ([`redis expire.c#L287`](https://github.com/redis/redis/blob/8.10.2/src/expire.c#L287));
+  `active-expire-effort` 0–9 scales keys per loop, fast duration and the
+  acceptable-stale threshold
+  ([`valkey expire.c#L202`](https://github.com/valkey-io/valkey/blob/9.1.2/src/expire.c#L202)).
+  Eviction samples keys into a 16-entry pool
+  ([`redis evict.c#L36`](https://github.com/redis/redis/blob/8.10.2/src/evict.c#L36),
+  [`valkey evict.c#L54`](https://github.com/valkey-io/valkey/blob/9.1.2/src/evict.c#L54)),
+  updates an LRU clock on access and optionally keeps LFU counters.
+- **Rillcache** expires lazily on access and calls `purge_expired(128)` on the
+  100 ms maintenance tick
+  ([`reactor.rs#L443`](../../src/server/reactor.rs#L443),
+  [`pool.rs#L586`](../../src/server/pool.rs#L586)) under the data borrow; the
+  ordered `BTreeSet<(deadline, key)>` reaps the earliest due keys exactly
+  ([`Data::reap`](../../src/engine/data.rs#L599)), so 128 reaps are 128 real
+  removals, not 128 random samples. Eviction uses bounded candidate scans and
+  approximates LRU by **mutation** time because reads do not take the write lock
+  ([`eviction.rs`](../../src/engine/eviction.rs)); there is no LFU.
+- Arithmetic: our fixed cap is 128 × 10 = **1,280 due removals/s** at a bounded
+  ~0.1–0.3% CPU and a short lock hold. Redis/Valkey's slow cycle samples 20 keys
+  per active DB per 100 ms (200/s for a single active DB; 3,200/s aggregate over
+  16 DBs) and can burst to 1 ms cycles when >10% of samples are stale, at up to
+  25% CPU. Our ordered reap is more aggressive than the single-DB baseline and
+  never removes a live key; their sampled cycle can miss due keys but bursts
+  harder under a high stale ratio.
+- Eviction quality: mutation-time LRU is a real policy gap, not a measured
+  throughput loss. A read-heavy keyspace under `allkeys-lru` can evict keys that
+  Redis/Valkey just read and would keep. Read-aware LRU would need an atomic or
+  per-entry access update on GET (Redis stores the clock on lookup when an LRU
+  policy is active), which adds work to the hot read path; it is not justified
+  without an eviction cohort.
+
+**Verdict: keep the fixed, ordered, bounded purge and the current eviction
+approximation.** The only scenario where our expiry can lose is sustained
+high-churn TTL with memory pressure, where 1,280/s may leave stale keys longer
+than a 25%-CPU burst cycle; that is exactly the TTL row in 4.16, and the
+eviction-quality question needs a sixth row there. If either shows a gap, adapt
+in bounded slices between command batches (the journal-rewrite shape) rather than
+one large locked purge, and only then consider a read-aware access stamp. Do not
+copy the adaptive effort levels or LFU counters speculatively.
 
 ## 4. Candidate architectures
 
@@ -1874,6 +1953,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    stalls that the gate's persistence-off rows cannot show (the AOF/streams
    increments since #194 have their own tests; this row is the performance
    counterpart).
+6. **Eviction pressure:** `maxmemory` set just below the working set,
+   `allkeys-lru`, and a read-heavy mixed GET/SET stream. Tests the mutation-time
+   LRU approximation and bounded eviction scans against the C servers' sampled
+   pool (section 3.10).
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -1881,7 +1964,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all five rows are complete for all three servers;
+runners, not a shared k3s host; all six rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -2306,11 +2389,13 @@ samples retained.
   protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
-candidate if it loses): independently valuable and testable, with the five
+candidate if it loses): independently valuable and testable, with the six
 workload rows in section 4.16, one recorded mechanism per resulting candidate,
 a matched baseline and a rejection condition. Pipeline-1 ping is no longer the
-open item: the newest gate leads it by 5.05% against Valkey, and the daily cohort
-is only 1.0% ahead of Redis inside the advisory band. Definition of done:
+open item: the newest gate leads it by 15.4% against Valkey with an interval
+excluding 1.0 (section 2.18), while the same runtime lost it once on a shared
+runner (section 2.17); the daily cohort is only 1.0% ahead of Redis inside the
+advisory band. Definition of done:
 AC1–AC15 as applicable, `make ci`, both performance gates, all 14 contexts, an
 up-to-date head, owner review for any dependency/policy change, and a concise
 evidence report that keeps every failed cohort. The phased
@@ -2328,6 +2413,12 @@ separate roadmap.
   merged as `7b365dc`; Valkey and Dragonfly each PASS 10/10 from per-workload
   partial jobs plus a merged artifact. Retain every partial even when the merged
   verdict passes.
+- Newest cohort (section 2.18): run 43128571502 for PR #217, merge candidate
+  `ce3ca13` on base `8b38d0b`; Valkey and Dragonfly PASS 10/10. P1 ping
+  181,489 vs 157,268 (+15.4%, 5/5, ratio 1.1301 [1.1219–1.2376]), P1 get +4.7%
+  (4/5, interval contains 1.0), P16 ping +84.5%, P16 get +93.8%. The same runtime
+  lost the P1 ping median in #216 (section 2.17), so both cohorts are required
+  context, not a contradiction.
 - Per-request latency and process CPU (section 2.22): derived from the five
   `sample.json` files per P1 workload in the #212 partials above (run
   42994675861); no new runs. Each sample records p50/p95/p99/max and
@@ -2375,6 +2466,11 @@ separate roadmap.
   our `Journal::append` writes one framed transaction per journaled command
   (`src/engine/journal.rs`, around line 1028). Source evidence only; the
   persistence-on row is not measured and the gate runs with persistence off.
+- Expiry and eviction comparison (section 3.10): Redis `expire.c` constants and
+  `activeExpireCycle`, Valkey `active-expire-effort`, and the 16-entry eviction
+  pool (`redis evict.c#L36`, `valkey evict.c#L54`) against our
+  `purge_expired(128)` per 100 ms tick and bounded candidate scans. Code
+  citations; no TTL or eviction cohort exists yet (4.16 rows 1 and 6).
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
@@ -2515,6 +2611,16 @@ separate roadmap.
   merged as PR #172 after passing both four-CPU gates (section 2.13). The
   remaining P1 question is host-sensitive measurement and other workloads, not a
   larger thread count.
+- The same docs-only runtime lost the P1 ping median in #216 (−0.67%) and won it
+  in #217 (+15.4%, interval excluding 1.0) within two hours on shared four-CPU
+  runners. That ~16-point swing for identical code is the clearest
+  measurement-risk evidence in the record; judge a change on its own fresh
+  cohort, never by picking the favorable one.
+- Expiry and eviction are outside the gate. Our fixed 1,280 due reaps/s is
+  bounded and ordered, but sustained high-churn TTL under memory pressure could
+  leave stale keys longer than a 25%-CPU burst cycle, and mutation-time LRU
+  ignores reads. Both are unmeasured (4.16 rows 1 and 6); no production claim
+  either way (section 3.10).
 - P1 p99 is not consistently better under the merged bounded-poll default
   (section 2.15). The throughput gate passes on medians, but AC5 remains a design
   criterion: a future wakeup/poll change must measure p99 and reject a regression
