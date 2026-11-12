@@ -114,7 +114,9 @@ is accepted as the security price and verification folds into 4.27.
 `appendfsync always` stays source-only after two failed local cohorts (the
 host's fsync cost is not stable enough to resolve it), and a Python connect-storm
 attempt was client-bound and inconclusive. A limited TTL-heavy diagnostic
-(section 3.7) finds no consistent TTL-vs-plain penalty, keeping 4.9 closed. A
+(section 3.7) finds no consistent TTL-vs-plain penalty, keeping 4.9 closed, and a
+262k-key growth attempt was host-dominated and inconclusive, leaving 4.18
+deferred. A
 64-client/P64–P256 scaling check (section 2.25) leads Redis/Valkey by 29–122% in
 every deep row, with only P1 SET near parity. Section
 2.24 is a one-page open-gap
@@ -1251,7 +1253,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Startup AOF replay | persistence, availability | **measured**: 0.258 s at 50k, 1.10–1.24 s at 200k vs 0.011–0.061 s for the C servers | 4.27, admitted | AC30 on the implemented change | none (startup) |
 | AOF HMAC | persistence, security | **measured**: append −10.2% P1 / −23.6% P16; 50k replay 0.21→0.75 s | accept the append cost; fold verification into 4.27 | AC30 HMAC on/off | none (persistence off) |
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
-| Incremental keyspace rehash | storage | bound at 1024 keys | deferred 4.18 | large-keyspace cohort | none |
+| Incremental keyspace rehash | storage | bound at 1024 keys; local 262k growth attempt inconclusive (host-bound max 371 ms) | deferred 4.18 | clean large-keyspace cohort | none |
 | Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s); Python connect storm inconclusive (2,232 vs 2,189/3,796 conn/s) | keep; needs a socket dependency/FFI | kernel-level connection-storm / idle-socket cohort | none |
 | Pipeline depth and client count | scheduling | **measured**: leads every P≥16 and 64-client row by 29–122%; P1 SET +2.5–3.0% | no candidate | n/a | none |
 | Drain probe; parser cursor; cached clock; last-command cache; deferred write coalescing | syscalls, parsing, latency | +12%/+37% syscalls but removal lost P1; others under noise | closed/rejected (2.6, 4.2, 4.5, 4.9, 4.17) | named workload only | none |
@@ -2565,6 +2567,16 @@ large-keyspace cohort (for example 1M keys) that shows a p99 spike during growth
 above the noise; then the mechanism would be a bounded-slice rehash inside the
 existing `RwLock<Data>` with unchanged atomicity, not a new dependency.
 
+**Local growth attempt (2026-11-12), inconclusive.** 262,144 keys × 64 B, P16,
+8 clients: a fresh-server growth run (500k SET, warmup 2k) followed by a
+post-growth run (200k SET) on the same server. Medians: Rillcache 192k/124k req/s,
+p99 5.0/10.1 ms, max 64/81 ms; Redis 150k/172k, 6.3/4.6, 80/28; Valkey
+144k/116k, 5.8/10.2, 50/125. Post-growth runs were **not** faster than growth for
+Rillcache or Valkey, and maxima reached 371 ms on the shared host. The cohort is
+dominated by host scheduling and cannot resolve a rehash stall, so 4.18 stays
+deferred and a clean large-keyspace cohort is still required. No numbers are
+claimed as evidence of a growth tail.
+
 ### 4.19 P1 write-tail attribution (diagnostic; no runtime change unless isolated)
 
 **Mechanism under test.** The paired #212 samples show a consistent P1 SET/XX
@@ -3460,6 +3472,12 @@ separate roadmap.
   clients at P16, 100k requests, 64 B, 1024 keys, three rotations. Rill leads
   Redis/Valkey by 29–122% in every P≥16 and 64-client row; P1 SET +3.0/+2.5% and
   P1 GET +16.5/+10.0%. Shared-host diagnostic; raw JSON retained (untracked).
+- Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
+  growth run (500k SET) then a post-growth run (200k SET) on the same server,
+  three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
+  150k/172k, 6.3/4.6, 80/28; Valkey 144k/116k, 5.8/10.2, 50/125. Post was not
+  faster and maxima reached 371 ms; host-dominated and inconclusive, so 4.18
+  stays deferred. Raw JSON retained (untracked).
 - TTL-heavy diagnostic (section 3.7): 8 Python pipelined clients (16 deep), 1024
   keys, 64 B, 160k commands per run, three rotations, plain vs 10,000 s TTL.
   Medians: Rill SET 117k/125k, GET 112k/113k; Redis SET 111k/106k, GET 91k/125k;
@@ -3746,7 +3764,9 @@ separate roadmap.
   length headers, and a multi-megabyte workload would be needed to reopen it.
   The cached clock (4.9) and incremental rehash (4.18) are closed/deferred for
   the gate's keyspace and workload; only a matched TTL-heavy or large-keyspace
-  cohort can reopen them.
+  cohort can reopen them. A local 262k-key growth attempt (4.18) was
+  host-dominated and inconclusive (post-growth not faster; maxima to 371 ms), so
+  the rehash question remains open for a clean cohort.
 - The 128-byte command-counter padding is inert on the current one-reactor
   default and must not be cited as a cause of its P1 margins; a multi-reactor
   layout claim needs the A/B in section 4.10. The one structural difference this
