@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20, 4.21).**
+gated (4.15, 4.20–4.27, 4.29–4.30).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -54,8 +54,8 @@ against Redis/Valkey but reverses **all five** P1 p99 rows; the tail direction i
 therefore explicitly host-dependent (sections 2.15, 2.19 and 2.22). Every
 inspected gate manifest shares client/server CPUs `[0,1,2,3]` because the runner
 has four logical CPUs, so placement is not a controllable variable there
-(section 2.9). Second, source comparison locates the one
-structural reply-path difference left — Redis 8.10.2 and Valkey 9.1.2 avoid the
+(section 2.9). Second, source comparison locates a
+structural reply-path difference — Redis 8.10.2 and Valkey 9.1.2 avoid the
 value copy for bulk replies of at least 16 KiB — and an attempted local
 large-value screen is retained as failed evidence because the shared host could
 not resolve it (sections 2.20–2.21 and 4.15). Third, the counter-padding
@@ -107,7 +107,11 @@ candidate 4.23 and AC26 gate it. The 2026-11-12 large-value retry (section 2.21)
 has a usable 64-byte control and measures **1 MiB GET at −42% to −45% (p99
 2.3–2.5×) and SET at −28% to −32%**, admitting 4.15 (reply copy) and 4.25 (input
 growth). A 10k-field `HGETALL` is **43% behind Redis** (313 vs 552 req/s) while a
-10k `LRANGE` leads by 39–75%, admitting 4.29 (large-hash reply path). Under
+10k `LRANGE` leads by 39–75%, admitting 4.29 (large-hash reply path). A
+10,000-member sorted set is the largest read-side ratio measured so far:
+`ZRANGE 0 9` is 19.5× slower than Redis and 20.4× slower than Valkey (528 vs
+10,311/10,771 req/s) and the full range is 67–78% behind, admitting 4.30
+(sorted-set ordered index). Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1023,7 +1027,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Seven things are still true even though every row now leads:
+Eight things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1046,8 +1050,9 @@ Seven things are still true even though every row now leads:
    [`config.c#L3387`](https://github.com/valkey-io/valkey/blob/9.1.2/src/config.c#L3387)
    and `isCopyAvoidPreferred`
    [`networking.c#L287`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L287)).
-   This is the one place where their source does something structurally cheaper
-   that ours does not, and it is invisible to the 64-byte gate (section 2.21).
+   This is one reply-side place where their source does something structurally
+   cheaper that ours does not, and it is invisible to the 64-byte gate (section
+   2.21); the sorted-set index (item 8) is the other.
 3. **Large-value parse/store copies.** Both C servers also allocate one
    `robj`/sds copy of an incoming bulk argument and store that object; our path
    copies the frame slice into a new key/value pair. That is the same one-copy
@@ -1082,6 +1087,18 @@ Seven things are still true even though every row now leads:
    key on first write even when nothing watches (candidate 4.20). The throughput
    bound is one hash lookup plus an occasional allocation, below gate noise; it
    is a candidate only if 4.19 attributes part of the mutation tail to it.
+8. **Sorted-set ordering.** Our large sorted set is `HashMap<Vec<u8>, f64>`, so
+   every `ZRANGE` collects all members and fully sorts them before slicing, and
+   `ZSCORE` linearly scans the collection. Redis 8.10.2 and Valkey 9.1.2 keep a
+   dict from member to skiplist node plus a skiplist (listpack below
+   `zset-max-listpack-entries`), giving O(1) `ZSCORE` and O(log n + k) rank
+   ranges ([`redis t_zset.c#L1539`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L1539),
+   [`#L3413`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3413);
+   [`valkey t_zset.c#L1420`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L1420),
+   [`#L3099`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3099)).
+   The 2026-11-12 cohort measures a 10k `ZRANGE 0 9` at **528 req/s versus
+   10,311/10,771** and a full range at 340 versus 1,581/1,036, with the
+   128-member control at parity (section 3.2, candidate 4.30).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1246,6 +1263,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
 | Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, admitted | AC20 on the implemented change | none at 64 B |
 | Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, admitted | AC31 on the implemented change | none at 64 B |
+| Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, admitted | AC32 on the implemented change | none at 64 B |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1392,18 +1410,69 @@ change, and the measured drain-elision attempt confirms the probe is load-bearin
   in internal order. This is candidate 4.29; the full sort/allocation is the
   first suspect, but the chosen order semantics and the persistence test that
   compares exact `HGETALL` bytes must be preserved or explicitly changed.
+- **Perf attribution (2026-11-12, diagnostic).** A single-client 10k `HGETALL`
+  loop (~268 req/s) sampled with `perf record -F 999 -g`: **11.9%** of samples in
+  `core::slice::sort::unstable` (quicksort 6.9% + small-sort 5.0%), **7.8%** in
+  `hash_items` collecting the reference vector, **3.3%** in `encode_bulk`, with
+  libc self at ~59% (field comparisons and memcpy) and the kernel at ~15%.
+  `LRANGE` on the same data has **no sort** and is ~46% kernel. The per-reply
+  sort and reference collection are the measured mechanism behind the hash gap,
+  not the socket write; 4.29 may remove the sort (with an explicit order
+  decision), keep a sorted index, or change the large-hash representation, and
+  must re-measure the chosen option.
+- **Sorted-set point lookups and range replies (2026-11-12).** Same paired method
+  with a 10,000-member sorted set (6-byte members, 3-digit scores), 4 clients,
+  250 requests each (1,000 `ZSCORE` requests per client), three rotations:
+
+  | Command | Rillcache req/s (p50/p99 ms) | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `ZSCORE` | 6,913 (0.37/2.95) | 8,607 (0.32/2.17) | **10,019** (0.28/1.58) |
+  | `ZRANGE 0 9` | 528 (4.61/13.9) | **10,311** (0.24/1.49) | 10,771 (0.28/1.37) |
+  | `ZRANGE 0 9999` (120 KB) | 340 (11.3/20.3) | **1,581** (2.30/6.04) | 1,036 (3.58/7.61) |
+
+  A ten-element range on a large set is **19.5× slower than Redis and 20.4×
+  slower than Valkey** (p50 4.61 vs 0.24/0.28 ms); the full range is 78% behind
+  Redis and 67% behind Valkey; `ZSCORE` is 20–31% behind (its three rotations
+  ran 2,399–7,806 req/s, so the median is host-noisy, and the p50 gap is
+  smaller). Controls put the loss on cardinality, not on sorted sets generally:
+  a 128-member set (the listpack-size regime) is inside the host spread for all
+  three, and a 1,024-member set is 17–20% behind on `ZRANGE 0 9` (p50 0.58 vs
+  0.40/0.43 ms). Source: every `zset_read` calls `zset_items()`, which collects
+  all member/score references into a `Vec`, then copies and fully sorts it
+  before slicing, even for `0 9`; `ZSCORE` linearly scans the same `Vec`
+  ([`collections.rs`](../../src/engine/collections.rs),
+  [`data.rs`](../../src/engine/data.rs)). Redis and Valkey keep a dict from
+  member to skiplist node for O(1) `ZSCORE` and walk the skiplist (or listpack)
+  for an O(log n + k) rank range
+  ([`redis t_zset.c#L1539`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L1539),
+  [`#L3413`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3413),
+  [`#L708`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L708);
+  [`valkey t_zset.c#L1420`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L1420),
+  [`#L3099`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3099),
+  [`#L617`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L617)).
+  Candidate 4.30.
+- **Sorted-set perf attribution (2026-11-12, diagnostic).** A single-client
+  10k-member `ZRANGE 0 9` loop (~301 req/s) sampled with `perf record -F 999 -g`:
+  **21.5%** in `core::slice::sort::unstable` (quicksort 11.8% + small-sort 8.4%
+  + 1.2% comparison helper), a further **21.2%** in a libc copy routine the sort
+  uses for its 24-byte tuple moves (`memmove`/`memcpy`), and **6.4%** in
+  `zset_items`; libc self totals ~59% (including `malloc`/`free` for the
+  per-request `Vec`) and the kernel is ~10%. The cost is the per-request
+  collect + sort, not the 125-byte reply.
 
 **Verdict:** the formatting and allocation posture is already competitive for the
 gate's 64-byte values: no per-reply allocation, specialized headers, bounded
 output. Do not add shared-object tables (they need reference counting and
 unsafe-adjacent ownership machinery), and do not add cross-client deferred
 flushing: at P1 only one client is ready per pass, so it has no target row, and
-at P16 the current path already leads by 54–153% (section 2.19). The one real
-reply-side difference is large values: both Redis 8.10.2 and Valkey 9.1.2 keep a
-refcounted reference instead of copying a value of at least 16 KiB, while we
-copy it into the output `Vec`. That is candidate 4.15, now admitted by the
-2026-11-12 large-value cohort (section 2.21) and gated on AC20; the 64 KiB
-per-event cap remains a design confirmation rather than a missing mechanism.
+at P16 the current path already leads by 54–153% (section 2.19). The remaining
+reply-side differences are large values and collection ordering: both Redis
+8.10.2 and Valkey 9.1.2 keep a refcounted reference instead of copying a value
+of at least 16 KiB, while we copy it into the output `Vec` (candidate 4.15,
+admitted by the 2026-11-12 large-value cohort, section 2.21, gated on AC20),
+and they keep an ordered index rather than re-sorting a large hash or sorted
+set per read (candidates 4.29 and 4.30, sections 3.2). The 64 KiB per-event cap
+remains a design confirmation rather than a missing mechanism.
 
 ### 3.3 Parsing
 
@@ -1471,6 +1540,15 @@ rescan candidate 4.2 stays closed; this is a different mechanism.
   sequence and inserts or updates a per-key `versions` entry even when no client
   is watching ([`touch`](../../src/engine/data.rs#L369)), which is the
   storage-path difference in section 2.20 item 7.
+- Sorted sets are an unordered `HashMap<Vec<u8>, f64>` above the listpack
+  threshold, so rank order and score order exist only inside each read. Redis and
+  Valkey store a member→score dict plus a skiplist ordered by `(score, member)`,
+  which is what makes point lookup O(1) and a rank range O(log n + k)
+  ([`redis t_zset.c#L1539`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L1539),
+  [`#L3413`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3413),
+  [`valkey t_zset.c#L1420`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L1420),
+  [`#L3099`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3099)).
+  The measured 19.5–20.4× small-range loss is candidate 4.30 (section 3.2).
 - The map hasher is not exposed by `std`; replacing it would need a dependency or
   a home-grown keyed hash. Both are policy-sensitive (HashDoS resistance) and are
   not justified by the current 1024-key gate.
@@ -1480,7 +1558,9 @@ incremental-rehash benefit is real but is not a per-command cost at the gate's
 1024 keys: a single growth rehash of ~1k entries is a one-off few-thousand-entry
 move, and even a 1 MiB keyspace would rehash off the request path. Revisit only
 with a large-keyspace measurement that shows a p99 spike during growth
-(candidate 4.18).
+(candidate 4.18). The sorted-set fix in 4.30 is contained in the collection
+module and uses `std` ordered containers, so it does not reopen this storage
+verdict.
 
 ### 3.5 Per-command dispatch and observability
 
@@ -1595,6 +1675,7 @@ for a production claim.
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
 | Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adopt:** measured 28.4% (64 KiB GET) and 42–45% (1 MiB GET) loss; 4.15, std `Arc`/`IoSlice`, AC20 |
 | Large multi-bulk replies (list/hash) | reply list/`writev`; hash iterated in internal order | same | list iterated directly; hash collects, sorts and encodes | **Adopt (list leads, hash lags):** 4.29 for 10k `HGETALL`; measured 43% behind Redis (3.2) |
+| Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, 128-member control at parity (3.2, AC32) |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
 | Large-frame input | reserves query-buffer capacity from the declared bulk length (`big_arg`/`sdsMakeRoomFor`) | same | appends 16 KiB reads into a growing `Vec` | **Adopt:** 4.25 bounded reservation; measured 28–32% 1 MiB SET loss (2.21, 3.3) |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
@@ -2080,7 +2161,9 @@ MONITOR in section 3.12. 4.25 is the large-frame input-reservation candidate in
 section 3.3, 4.26 is the pooled/batched eviction candidate in section 3.10, and
 4.27 is the startup-replay fast path in section 3.15. 4.28 maps the admitted
 candidates to call sites, invariants and implementation priority, and 4.29 is
-the large-hash `HGETALL` reply candidate in section 3.2.
+the large-hash `HGETALL` reply candidate in section 3.2. 4.30 is the sorted-set
+ordered-index candidate for the measured 19.5–20.4× small-range loss in the same
+section.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2566,14 +2649,18 @@ the same generator, host, CPU placement and at least three rotated repetitions:
 3. **Large multi-bulk replies:** a 1,000-element list/hash/set read, and a 1 MiB
    single bulk, at P1. The 2026-11-12 local cohort in section 3.2 already measures
    a 10k `LRANGE`/`HGETALL`; this row confirms on a clean runner and covers the
-   hash path admitted as 4.29.
+   hash path admitted as 4.29 and the sorted-set rank ranges admitted as 4.30.
 4. **Mixed pipeline:** alternating PING/SET/GET/INCR in one 16-command batch.
    Tests dispatch and per-command overhead without a single-command cache.
-5. **Persistence-on writes:** append-only `everysec` SET at P1, to locate journal
+5. **Sorted-set ranks:** a 10k-member zset with `ZRANGE 0 9`, `ZRANGE 0 9999`,
+   `ZSCORE` and a write-heavy `ZADD` control at P1. Confirms 4.30 and the
+   write-cost trade on a clean runner; the 2026-11-12 local cohort in section 3.2
+   already measures the read gap (19.5–20.4×) and the 128/1,024 controls.
+6. **Persistence-on writes:** append-only `everysec` SET at P1, to locate journal
    stalls that the gate's persistence-off rows cannot show (the AOF/streams
    increments since #194 have their own tests; this row is the performance
    counterpart).
-6. **Eviction pressure:** `maxmemory` set just below the working set,
+7. **Eviction pressure:** `maxmemory` set just below the working set,
    `allkeys-lru`, and a read-heavy mixed GET/SET stream. Confirms 4.26 on a
    clean runner; the 2026-11-12 local cohort in section 3.10 already measures the
    steady-state penalty (−85.8% P16). Report RSS and read-hit retention as the
@@ -2585,7 +2672,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all six rows are complete for all three servers;
+runners, not a shared k3s host; all seven rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -3034,13 +3121,16 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.26 eviction | `Data::reserve` (`data.rs#L646`), `eviction.rs` | policy semantics; accounting; expiry/WATCH order; `noeviction` | pressure cohort, every policy | medium |
 | 4.22/4.24 async wake | reactor `asynchronous` (`reactor.rs#L91`, `#L467`), `poll_blocked_on` (`blocking.rs#L436`), pub/sub and monitor flags | FIFO; timeout gaps; `CLIENT UNBLOCK`; ordering; shutdown; multi-owner | wake latency, idle CPU, fanout | large |
 | 4.23 rewrite start | `begin_rewrite` (`journal.rs#L1131`), maintenance tick (`reactor.rs#L443`) | atomic rename; replay; reconciliation | 20k/200k pause, kill/replay | medium |
+| 4.30 zset index | `zset_read` (`collections.rs`), `zset_add`, `zset_items`/`ZSet` (`data.rs`), accounting | total score order with member tie-break; ±0/NaN; rank/score/lex ranges; `ZSetPack` ≤128 unchanged; memory accounting; rewrite/replay | 10k `ZRANGE 0 9` / full-range A/B, ZADD regression, zset semantics | large |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, and 4.26 for eviction.
 4.22/4.24 come last because they touch every asynchronous client path and carry
-the highest ordering risk. 4.23 follows the existing bounded slices. 4.20 stays
-conditional on 4.19; 4.18 stays deferred.
+the highest ordering risk. 4.30 is the largest measured read-side ratio (19.5×)
+but is a dual-structure change, so it follows the first journal slices; 4.29 is
+the smaller sibling and shares its collect+sort mechanism. 4.23 follows the
+existing bounded slices. 4.20 stays conditional on 4.19; 4.18 stays deferred.
 
 ### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
 
@@ -3062,7 +3152,10 @@ sort/allocation, not the socket write.
 **Admission evidence (2026-11-12, section 3.2).** Preloaded 10k-field hash,
 4 clients, 250 requests each, three rotations: Rill 313/312/339 req/s, Redis
 552/486/582, Valkey 345/329/336; p50 11.6 vs 7.0/11.4 ms. The source path is
-`collections.rs`'s `hash_items()` + sort + 20k `encode_bulk` calls.
+`collections.rs`'s `hash_items()` + sort + 20k `encode_bulk` calls. A perf
+profile attributes ~11.9% of samples to `sort::unstable`, 7.8% to `hash_items`,
+3.3% to `encode_bulk`, ~59% libc self and ~15% kernel; `LRANGE` has no sort and
+is kernel-dominated.
 
 **Risks and obligations.** `HGETALL` order is unspecified in Redis but this
 repository's persistence test compares exact bytes; changing order is an explicit
@@ -3078,9 +3171,64 @@ explicitly documented and all order-sensitive tests updated to match; small
 hashes and the list path shall be unchanged; the matched A/B shall show the gain;
 and both protected gates shall pass on the exact head.
 
-None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, and the rest use the
-existing `std` I/O, parser and in-repo journal/crypto code. Each candidate lands
-as its own PR with AC5 plus the protected gates; no combined integration branch.
+### 4.30 Sorted-set ordered index (candidate; admission measured)
+
+**Mechanism.** Stop collecting and sorting all members per range read. Keep the
+existing `HashMap<Vec<u8>, f64>` for point lookups and add an ordered index
+maintained on `ZADD`/`ZINCRBY`/`ZREM`: a `BTreeSet<(ScoreKey, Vec<u8>)>` where
+`ScoreKey` wraps `f64` with an `Ord` built on `f64::total_cmp` after normalizing
+`-0.0` to `0.0` and rejecting NaN at parse, so iteration is `(score, member)`
+order and ties match Redis. `ZSCORE` becomes the map lookup; `ZRANGE` walks the
+index and skips `start` entries. A `std` `BTreeSet` has no rank-select, so a
+range that starts deep into the set is O(start + k) rather than O(log n + k);
+that is a documented trade, and the measured workload starts at 0. The second
+option, a lazily rebuilt sorted `Vec` snapshot invalidated on mutation, removes
+per-read sorting entirely but pays O(n log n) on the first read after a write
+and duplicates members; it is the fallback only if a write-heavy `ZADD` cohort
+rejects the index.
+
+**Prediction.** 10k `ZRANGE 0 9` moves from **528 req/s (4.61 ms p50)** toward
+the C servers' ~10k (0.24–0.28 ms), because the per-request collect and sort
+disappear; the full range moves from 340 toward Redis's 1.5k; `ZSCORE` improves
+from the linear scan; `ZADD` pays one extra O(log n) insert/remove and the
+memory of a second member copy (or a shared `Arc<[u8]>` key).
+
+**Admission evidence (2026-11-12, section 3.2).** 10,000-member zset, 4 clients,
+250 requests each, three rotations: Rill `ZRANGE 0 9` 528/483/605 req/s versus
+Redis 10,311/8,361/13,229 and Valkey 10,771/12,789/9,239; full range 340/332/379
+versus 1,424/1,581/1,824 and 1,036/759/1,091; the 128-member control is inside
+the host spread and the 1,024-member small range is 17–20% behind. Perf: ~21.5%
+sort code, ~21.2% libc tuple moves in the sort, 6.4% `zset_items`.
+
+**Risks and obligations.** Two structures must stay consistent under `ZADD`,
+`ZINCRBY`, `ZREM`, `ZREMRANGEBY*`, expiry and replay; score equality and ±0.0;
+member ties must be lexicographic; `ZSetPack` (≤128) must keep its current
+behavior and convert atomically; `WITHSCORES` formatting and the
+`ZRANGEBYSCORE`/`ZRANGEBYLEX`/`ZRANK` semantics must be unchanged; memory
+accounting and `maxmemory` eviction must count the index; WATCH/version and
+transaction ordering stay as they are.
+
+**Rejected options.** A Rust skiplist of our own adds a large hand-written
+ordered structure to every mutation for the same asymptotic result as the `std`
+`BTreeSet`; the `ordered-float`/`float-ord` crates add a dependency for ~20 lines
+of total-order code; sorting only the requested slice is impossible because the
+slice's start rank requires the global order.
+
+**Rejection condition.** `ZADD` loses more than 10% in a matched cohort, memory
+grows without an accounted bound, any zset semantic test differs, or a gate row
+loses; no gain above the spread.
+
+**Acceptance (AC32).** 10k `ZRANGE 0 9` ≥ 8,000 req/s (≥15× the 528 baseline,
+within ~25% of Redis) and `ZRANGE 0 9999` ≥ 1,500 req/s (≥4.4× baseline) or
+within 10% of Redis; `ZSCORE` not slower than baseline; `ZADD` within 10% of its
+baseline in a matched cohort; every zset command, tie-break, rewrite/replay and
+expiry test passes; the 128-member control and all gate commands unchanged; no
+new dependency; both protected gates green on the exact head.
+
+None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
+`BTreeSet` and a local total-order helper, and the rest use the existing `std`
+I/O, parser and in-repo journal/crypto code. Each candidate lands as its own PR
+with AC5 plus the protected gates; no combined integration branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -3121,8 +3269,11 @@ same native evidence and protected gates as any other runtime change. The
 rejected eight-reactor experiment and the closed candidates add no package: 4.9
 stays inside `std::time`/the existing `Clock` trait, 4.15 needs only
 `std::sync::Arc`, `std::io::IoSlice` and `Write::write_vectored`, 4.16 is
-measurement tooling, 4.17–4.18 are rejected, 4.20 needs no crate, and 4.21 is
-`std::fs`/`Write::write_all` plus the existing in-repo SHA-256/HMAC and CRC code.
+measurement tooling, 4.17–4.18 are rejected, 4.20 needs no crate, 4.21 is
+`std::fs`/`Write::write_all` plus the existing in-repo SHA-256/HMAC and CRC code,
+and 4.30 is a `std::collections::BTreeSet` plus a local `f64` total-order helper
+(`ordered-float`/`float-ord` are rejected as an unnecessary dependency for ~20
+lines).
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
 it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
@@ -3234,6 +3385,14 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   any reply in the batch leaves; a failure must unacknowledge the whole batch and
   stop writes. A SIGKILL/replay test must prove every acknowledged reply is in
   the journal. Do not trade this for throughput (AC23).
+- **Sorted-set index risk (4.30):** a second ordered structure must stay exactly
+  consistent under `ZADD`/`ZINCRBY`/`ZREM`/`ZREMRANGEBY*`, expiry, replay and
+  rewrite; a stale index would return the wrong rank order or a member that no
+  longer exists. Score total order must handle ±0.0 and reject NaN at parse,
+  ties must break by member like Redis, `ZSetPack` must convert atomically, and
+  the index's memory must be counted against `maxmemory`; a deep-start range is
+  O(start + k) and must be documented rather than hidden. `ZADD` loss above 10%
+  or any semantic test difference rejects the change (AC32).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -3280,6 +3439,9 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Copying Redis/Valkey's unauthenticated AOF byte stream | Drops the CRC32 transaction boundary and optional HMAC record that this project's durability/security increments added (3.9). |
 | Per-command fsync under `everysec` | Multiplies fsync cost without changing the stated 1 s durability bound; the policy stays 1 s (3.9). |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
+| A hand-written skiplist for sorted sets | Repeats the C servers' structure in safe Rust with substantial mutation code for the same asymptotics a `std` `BTreeSet` gives (4.30). |
+| Adding `ordered-float`/`float-ord` for sorted-set scores | A new dependency to express ~20 lines of `f64` total-order normalization; policy impact is not justified (4.30, section 5). |
+| Sorting only the requested `ZRANGE` slice | The slice's start rank is defined by the global `(score, member)` order, so this does not reduce the work and can change results (4.30). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -3469,6 +3631,14 @@ samples retained.
   semantics shall be explicitly documented and every order-sensitive test updated
   to match; small hashes and `LRANGE` shall be unchanged; the matched A/B shall
   show the gain; and both protected gates shall pass on the exact head.
+- **AC32 (sorted-set ordered index, only if 4.30 is implemented).** A
+  10,000-member `ZRANGE 0 9` shall reach ≥8,000 req/s (≥15× the measured 528
+  baseline and within ~25% of Redis) and `ZRANGE 0 9999` ≥1,500 req/s (≥4.4× the
+  340 baseline and within 10% of Redis); `ZSCORE` shall not regress; `ZADD` shall
+  stay within 10% of its matched baseline; every zset command, member tie-break,
+  rewrite/replay and expiry test shall pass; the 128-member control and all gate
+  commands shall be unchanged; no dependency shall be added; and both protected
+  gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -3601,6 +3771,23 @@ separate roadmap.
   (230 KB): Rill 1,272 req/s (p50/p99 2.09/15.5), Redis 913 (3.9/10.9), Valkey 726
   (4.9/18.4). `HGETALL` (350 KB): Rill 313 (11.6/32.1), Redis 552 (7.0/16.3),
   Valkey 336 (11.4/26.4). Shared-host diagnostic; raw JSON retained (untracked).
+- HGETALL perf attribution (section 3.2): single-client 10k `HGETALL` loop at
+  ~268 req/s, `perf record -F 999 -g`; 11.9% `sort::unstable`, 7.8% `hash_items`,
+  3.3% `encode_bulk`, ~59% libc self, ~15% kernel. `LRANGE` on the same data is
+  ~46% kernel with no sort. Diagnostic only; raw perf data retained in the
+  development environment (untracked).
+- Sorted-set cohort (section 3.2, candidate 4.30): 10,000-member zset (6-byte
+  members, 3-digit scores), 4 clients, 250 requests each (1,000 `ZSCORE` per
+  client), three rotations. `ZSCORE` 6,913 (p50/p99 0.37/2.95), Redis 8,607
+  (0.32/2.17), Valkey 10,019 (0.28/1.58). `ZRANGE 0 9` 528 (4.61/13.9), Redis
+  10,311 (0.24/1.49), Valkey 10,771 (0.28/1.37). `ZRANGE 0 9999` 340 (11.3/20.3),
+  Redis 1,581 (2.30/6.04), Valkey 1,036 (3.58/7.61). Controls at 128 members
+  (inside the host spread) and 1,024 members (17–20% behind on the small range).
+  Raw JSON retained (untracked).
+- Sorted-set perf attribution (section 3.2): single-client 10k `ZRANGE 0 9` loop
+  at ~301 req/s, `perf record -F 999 -g`; 21.5% sort code, 21.2% libc tuple
+  moves in the sort, 6.4% `zset_items`, ~59% libc self and ~10% kernel.
+  Diagnostic only; raw perf data retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -3955,3 +4142,10 @@ separate roadmap.
   different readiness mechanism and fresh evidence.
 - Redis 8.10.2 and Valkey 9.1.2 are pins, not an evergreen "latest" claim; source
   links are immutable tags.
+- The sorted-set cohort (section 3.2) measures only rank ranges starting at 0,
+  plain `ZRANGE`, and `ZSCORE`, on one 10,000-member set with duplicate scores.
+  It does not measure deep-start ranks, `ZRANGEBYSCORE`/`BYLEX`, `WITHSCORES`,
+  `ZADD` write cost, memory/RSS of an ordered index, or the 1,024–10,000 knee
+  precisely. The 128- and 1,024-member controls bound the size regime; the
+  mechanism attribution is a single-client perf sample on a shared host, so it
+  identifies cost, not a gate-rate win or loss.
