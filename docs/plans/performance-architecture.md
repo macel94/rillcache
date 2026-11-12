@@ -92,8 +92,10 @@ to wake a BLPOP against **0.03/0.22 ms** for Redis and Valkey on the same host
 1000)** against <1% for the C servers — the largest measured latency and
 idle-CPU gap; candidate 4.22 is admission-ready and AC25 gates the implementation.
 Idle subscribers and monitors show the same tick cost — **6.0% of a core with one
-idle subscriber, 22–27% with 1000**, against <1% for the C servers — so candidate
-4.24 and AC27 cover the event-driven async-client shape. The rewrite comparison
+idle subscriber, 22–27% with 1000**, against <1% for the C servers — and delivery
+waits for the tick too: **1.05/3.60 ms** pub/sub p50/p99 and **0.37/6.15 ms** for
+a MONITOR line, versus ≤0.08/1.19 ms for the C servers. Candidate 4.24 and AC27
+cover the event-driven async-client shape. The rewrite comparison
 (section 3.13) adds the measured key-list start pause against the C servers'
 fork/COW rewrite: medians of **9–14 ms at 20k keys** and **91–107 ms at 200k**,
 with full passes of 4.85 s and 43.4 s and concurrent GET p99 of 10.8/18.8 ms;
@@ -1206,7 +1208,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | source | 4.21, conditional | 4.16 row 5 + A/B | none (persistence off) |
 | 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1% | 4.22, admitted; implementation next | AC25 on the implemented change | none |
-| Idle pub/sub and MONITOR clients | CPU, scheduling | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1% | 4.24, admitted | AC27 on the implemented change | none |
+| Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
@@ -1711,6 +1713,21 @@ as the memory acceptance signal.
   The no-progress spin component is implemented separately in PR #226, merged as
   `b7f5694`; its own bound is about two CPU points per 1 ms tick, so it does not
   remove the per-client scan that dominates these numbers (they are pre-fix).
+- **Async delivery latency (2026-11-12).** The same tick delays the message or
+  monitor line. 300 publishes/commands per run, three rotated runs per server,
+  randomized 0.5–2.5 ms phase; `after` is measured from the publishing or
+  monitored command's reply to the subscriber/monitor receipt:
+
+  | Path | Rillcache p50 / p99 | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | PUBLISH → subscriber | **1.05 / 3.60 ms** | 0.075 / 1.19 ms | 0.064 / 0.56 ms |
+  | PING → MONITOR line | **0.37 / 6.15 ms** | 0.050 / 0.64 ms | 0.048 / 0.49 ms |
+
+  Rillcache is ~14–16× slower at p50 for pub/sub and ~3–6× at p99, and ~7× at p50
+  for the MONITOR line, because delivery waits for the 1 ms tick; the C servers
+  deliver within the command's event-loop iteration. Total latency adds the
+  command round trip and shared-host scheduling. Candidate 4.24 covers both the
+  CPU and this delivery latency; the measured baselines are what AC27 targets.
 
 **Verdict: the gap is measured, not just arithmetic, and 4.22 is admission-ready.**
 Adapt the same-pass ready-key wake; keep the 1 ms tick for timeouts and
@@ -2565,13 +2582,21 @@ together avoids two separate tick paths.
 **Prediction.** Idle CPU falls from the measured 6.0%/17.8%/22.2% (1/100/1000
 idle subscribers) and 5.8%/20.8%/27.4% (monitors) to the C servers' under 1%,
 with no scaling beyond the client count's bookkeeping; publish and monitor
-delivery latency drops from the 1 ms tick to same-pass service. The protected
-gate has no pub/sub or MONITOR client and is unchanged.
+delivery latency drops from the measured 1.05/3.60 ms (pub/sub p50/p99) and
+0.37/6.15 ms (MONITOR) to same-pass service, near the C servers' 0.05–0.08 ms
+p50. The protected gate has no pub/sub or MONITOR client and is unchanged.
 
 **Method.** The idle-CPU windows above, then a matched delivery cohort: N
 subscribers receiving a PUBLISH fanout and N monitors observing a P1 command
 stream, p50/p99 for Rillcache, Redis 8.10.2 and Valkey 9.1.2 on one host with at
 least three rotations.
+
+**Admission evidence (2026-11-12, section 3.12).** Idle CPU is 6.0/17.8/22.2%
+(1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) versus under 1% for the C
+servers. Delivery after the publishing/monitored command's reply: pub/sub
+1.05/3.60 ms p50/p99 against Redis 0.075/1.19 and Valkey 0.064/0.56; MONITOR
+0.37/6.15 ms against 0.050/0.64 and 0.048/0.49. Both the CPU and delivery gaps
+admit the candidate; implementation still needs the obligations below and AC27.
 
 **Risks and obligations.** A missed wake would strand a subscriber or monitor;
 duplicate or out-of-order delivery, fanout memory, unsubscribe while a message is
@@ -3047,6 +3072,11 @@ separate roadmap.
   Redis 0.2/0.2/0.6/0.4%, Valkey 0.4/0.4/0.6/0.4%; MONITOR: Rillcache
   0.6/5.8/20.8/27.4%, Redis 1.6/0.4/0.4/0.4%, Valkey 0.4/0.4/0.4/0.8%.
   Shared-host diagnostic; raw JSON retained (untracked), not a gate.
+- Async delivery latency (section 3.12, candidate 4.24): 300 publishes/PINGs per
+  run, three rotated runs, randomized phase; after-PUBLISH p50/p99 1.05/3.60 ms
+  (Rillcache), 0.075/1.19 (Redis 8.10.2), 0.064/0.56 (Valkey 9.1.2); after-PING
+  MONITOR line 0.37/6.15, 0.050/0.64 and 0.048/0.49. Shared-host diagnostic; raw
+  JSON retained (untracked).
 - Rewrite scheduling comparison (section 3.13): Redis/Valkey
   `rewriteAppendOnlyFileBackground` forks a COW child
   (`redis aof.c#L3239`, `valkey aof.c#L2595`); our cooperative slices and the
@@ -3231,8 +3261,10 @@ separate roadmap.
   / 1.92 ms p99 versus 0.03/0.22 ms for Redis/Valkey on the same host, and one
   idle blocked client costs 5.6% of a core (22.2% at 1000) versus <1%. Idle
   subscribers and monitors show the same tick cost (6.0% at one, 22–27% at 1000)
-  and are covered by 4.24. The protected gate has no such client, so no gate row
-  sees either gap; 4.22/4.24 are admitted and AC25/AC27 gate the implementation.
+  and delivery waits for the tick too: pub/sub 1.05/3.60 ms p50/p99 and MONITOR
+  0.37/6.15 ms versus ≤0.08/1.19 ms for the C servers; both are covered by 4.24.
+  The protected gate has no such client, so no gate row sees either gap;
+  4.22/4.24 are admitted and AC25/AC27 gate the implementation.
 - Rewrite scheduling has measured start-pause medians of **9–14 ms at 20k keys**
   and **91–107 ms at 200k** (section 3.13), with 4.85 s / 43.4 s full passes,
   where the C servers fork a copy-on-write child; the gate runs with persistence
