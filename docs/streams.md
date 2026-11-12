@@ -21,7 +21,9 @@ owned value/tree after checking NX rejection and final payload admission.
   event only; use XTRIM when an `xtrim` event is required.
 - `XDEL key id [id ...]`, `XLEN key`.
 - `XGROUP CREATE key group id|$ [MKSTREAM]`, `SETID`, `DESTROY`, `CREATECONSUMER`
-  and `DELCONSUMER`.
+  and `DELCONSUMER`. `CREATECONSUMER` returns 1 for a new consumer, or 0 without
+  changing an existing consumer's activity timestamp, pending deliveries,
+  WATCH version or journal. `DELCONSUMER` removes that consumer's PEL references.
 - `XREADGROUP GROUP group consumer [COUNT n] [BLOCK ms] [NOACK] STREAMS key
   [key ...] id [id ...]` for one or more streams. Each ID is independently `>` for
   new entries or a history ID for that consumer's pending entries. COUNT is per
