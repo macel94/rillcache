@@ -110,7 +110,10 @@ servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower 
 ready** (0.258 s at 50k and 1.10–1.24 s at 200k keys versus 0.011–0.061 s for the
 C servers), admitting 4.27 (single-pass replay). AOF HMAC costs **−10.2% P1 /
 −23.6% P16** on append and makes a 50k replay **0.21 → 0.75 s**; the append cost
-is accepted as the security price and verification folds into 4.27. A limited TTL-heavy diagnostic
+is accepted as the security price and verification folds into 4.27.
+`appendfsync always` stays source-only after two failed local cohorts (the
+host's fsync cost is not stable enough to resolve it), and a Python connect-storm
+attempt was client-bound and inconclusive. A limited TTL-heavy diagnostic
 (section 3.7) finds no consistent TTL-vs-plain penalty, keeping 4.9 closed. A
 64-client/P64–P256 scaling check (section 2.25) leads Redis/Valkey by 29–122% in
 every deep row, with only P1 SET near parity. Section
@@ -1249,7 +1252,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | AOF HMAC | persistence, security | **measured**: append −10.2% P1 / −23.6% P16; 50k replay 0.21→0.75 s | accept the append cost; fold verification into 4.27 | AC30 HMAC on/off | none (persistence off) |
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
 | Incremental keyspace rehash | storage | bound at 1024 keys | deferred 4.18 | large-keyspace cohort | none |
-| Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s) | keep; needs a socket dependency/FFI | connection-storm / idle-socket cohort | none |
+| Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s); Python connect storm inconclusive (2,232 vs 2,189/3,796 conn/s) | keep; needs a socket dependency/FFI | kernel-level connection-storm / idle-socket cohort | none |
 | Pipeline depth and client count | scheduling | **measured**: leads every P≥16 and 64-client row by 29–122%; P1 SET +2.5–3.0% | no candidate | n/a | none |
 | Drain probe; parser cursor; cached clock; last-command cache; deferred write coalescing | syscalls, parsing, latency | +12%/+37% syscalls but removal lost P1; others under noise | closed/rejected (2.6, 4.2, 4.5, 4.9, 4.17) | named workload only | none |
 | Level-triggered epoll, `SO_BUSY_POLL`, `recvmmsg`/`sendmmsg` | syscalls | source; outside the Mio/`std` boundary | policy decision, not a candidate | explicit policy review | none |
@@ -1635,15 +1638,18 @@ for a production claim.
   security feature's price: do not replace the hash, reduce the per-transaction
   chain or skip verification without a security review. Candidate 4.27 can fold
   the verification into the replay pass without changing the chain.
-- **`appendfsync always` (source only; local cohort failed).** Rillcache calls
+- **`appendfsync always` (source only; local cohorts failed).** Rillcache calls
   `sync_data` inside every `append`, while the C servers fsync the buffer once
-  per event-loop flush; at pipeline K this is K fsyncs versus about one. A local
-  paired `always` attempt on 2026-11-12 was **unusable** because the shared host
-  was at load 10+ and the runs varied from 1.6k to 107k req/s (some `always`
-  runs were faster than `everysec`, which is physically implausible). No numbers
-  are claimed. The mechanism makes `always` the strongest case for 4.21's
-  batching: one durable write and one fsync per batch, with every acknowledged
-  command still covered.
+  per event-loop flush; at pipeline K this is K fsyncs versus about one. Two
+  local paired attempts on 2026-11-12 were **unusable**. The first, at host load
+  10+, varied from 1.6k to 107k req/s with some `always` runs faster than
+  `everysec`. The second, at load ~3 with 5k requests and three rounds, still
+  produced `always` above `everysec` for the C servers at P16 (Redis 148.8k vs
+  137.4k, Valkey 143.8k vs 120.4k) and Rillcache P16 37.5k vs 32.7k, which is
+  physically implausible if the sync is real. The host filesystem/overlay does
+  not expose a stable fsync cost, so no numbers are claimed. The mechanism still
+  makes `always` the strongest case for 4.21's batching: one durable write and
+  one fsync per batch, with every acknowledged command still covered.
 
 **Verdict:** the persistence-on gap is measured and large; 4.21 is admitted. Adapt
 the buffering shape, keep the per-transaction CRC/HMAC framing, do not move the
@@ -1953,11 +1959,18 @@ cohort; a missed key or a replay regression rejects it.
   servers use 511, and idle NAT/firewall state relies on the app timeout rather
   than TCP keepalive probes. The protected gate keeps eight persistent
   connections and is unaffected.
+- **Local attempt (2026-11-12), inconclusive.** Eight Python threads opened
+  1,000 short-lived connect/PING/close connections each (SO_LINGER 0), three
+  rotations: Rillcache 2,232 conn/s (p50 1.85 ms, p99 30.9), Redis 3,796
+  (1.53/7.9), Valkey 2,189 (1.82/26.8). The Python client and high variance bound
+  the rate, so no direction is claimed. A kernel-level client is needed to resolve
+  the accept path; the source difference (128/no keepalive vs 511/300 s) remains.
 
 **Verdict: keep.** Raising the backlog or enabling keepalive needs a socket
 setter outside `std` (a new dependency or FFI) or an OS-level sysctl, and is not
-justified without a connection-storm or idle-socket cohort. The 30 s app timeout
-is a different mechanism, not a keepalive substitute.
+justified without a kernel-level connection-storm or idle-socket cohort; the
+Python attempt above is inconclusive. The 30 s app timeout is a different
+mechanism, not a keepalive substitute.
 
 ### 3.15 Startup replay (time to ready)
 
@@ -3431,12 +3444,13 @@ separate roadmap.
   `everysec`. Append P1 14,355 vs 12,893 (−10.2%), P16 41,821 vs 31,938
   (−23.6%), p99 12.0 vs 11.5 ms; 50k replay 0.206 vs 0.749 s (3.6×), DBSIZE
   50,000 both. Shared-host diagnostic; raw JSON retained (untracked).
-- `appendfsync always` attempt (section 3.9): local 2026-11-12, two rounds, 2k
-  requests, P1/P16 across Rill/Redis/Valkey. The host was at load 10+ and the
-  runs ranged from 1.6k to 107k req/s, with some `always` runs faster than
-  `everysec`; the cohort is unusable and retained as failed evidence. No numbers
-  are claimed; the per-append-sync versus per-loop-fsync source difference and
-  the 4.21 one-fsync-per-batch requirement remain.
+- `appendfsync always` attempts (section 3.9): two local 2026-11-12 cohorts
+  (2 rounds/2k requests at load 10+; 3 rounds/5k requests at load ~3, P1/P16,
+  Rill/Redis/Valkey). Both were unusable: the first varied 1.6k–107k req/s, the
+  second still had `always` above `everysec` for the C servers at P16. Retained
+  as failed evidence; no numbers claimed. The per-append-sync versus
+  per-loop-fsync source difference and the 4.21 one-fsync-per-batch requirement
+  remain.
 - Startup replay measurement (section 3.15, candidate 4.27): 50k/200k SETs of
   64 B with `appendonly yes`, clean SIGTERM, three restarts per size, time from
   process start to first PING. Rill 0.258 s (50k) and 1.10–1.24 s (200k, DBSIZE
@@ -3513,7 +3527,10 @@ separate roadmap.
   ([`redis config.c#L3526`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3526),
   [`anet.c#L115`](https://github.com/redis/redis/blob/8.10.2/src/anet.c#L115));
   a local `strace` of this build shows `SO_REUSEADDR` and `listen(..., 128)` with
-  no keepalive option. Source/trace evidence; no connection-storm cohort.
+  no keepalive option. Source/trace evidence. A local connect/PING storm attempt
+  (section 3.14) was client-bound and inconclusive: 2,232 conn/s for Rill,
+  3,796 for Redis, 2,189 for Valkey (p99 30.9/7.9/26.8 ms), so no direction is
+  claimed; a kernel-level client is still needed.
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
@@ -3700,8 +3717,9 @@ separate roadmap.
 - Connection setup differs from the C servers: local `strace` shows a listen
   backlog of 128 and no TCP keepalive, where Redis/Valkey default to 511 and
   300 s (section 3.14). The gate's eight persistent connections do not exercise
-  this; no connection-storm or idle-socket cohort exists, so no production claim
-  is made.
+  this; a Python connect-storm attempt was client-bound and inconclusive
+  (2,232 vs 2,189/3,796 conn/s), so a kernel-level cohort is still needed and no
+  production claim is made.
 - P1 p99 is not consistently better under the merged bounded-poll default
   (section 2.15). The throughput gate passes on medians, but AC5 remains a design
   criterion: a future wakeup/poll change must measure p99 and reject a regression
