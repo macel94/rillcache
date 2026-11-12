@@ -83,7 +83,8 @@ result. The blocking-wakeup comparison (section 3.12) finds a 0–1000 µs async
 latency against same-loop ready-key signaling in the C servers, the largest
 unmeasured latency gap; candidate 4.22 and AC25 gate it. The rewrite comparison
 (section 3.13) adds the measured 9–20 ms key-list start pause against the C
-servers' fork/COW rewrite; candidate 4.23 and AC26 gate it.
+servers' fork/COW rewrite, reproduced at a 14.2 ms median on the current head
+with a concurrent GET p99 of 3.5 ms; candidate 4.23 and AC26 gate it.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -837,6 +838,13 @@ moves by roughly 16 points while the binary is unchanged. The row is the gate's
 measurement risk, not a stable deficit, and the clean-host direction remains
 positive.
 
+The Dragonfly comparison shows the same shape. The #220 docs head (base
+`cd8fa1b`, runtime identical) lost the Dragonfly P1 ping row by **0.12%**
+(159,195.8 vs 159,392.2 req/s, p99 0.143/0.071) while passing every other row,
+including Dragonfly P16 at +7.1%. A 0.12% strict-median loss on unchanged code is
+the same measurement limitation against the second opponent, not a runtime
+direction.
+
 **Verdict:** quote the paired interval for the P1 row, not a point estimate. A
 strict pass is not proof of a resolved 2.6% win, and a Dragonfly P1 loss on a
 fast host does not by itself justify a runtime change. The two cohorts reinforce
@@ -1579,6 +1587,14 @@ C servers and Rillcache solve it structurally differently:
   cooperative rewrite replies in **9–20 ms** (key-list materialisation), encodes
   **1.6–2.4 ms** per 512-key slice, and completes the background pass in about
   4–5 s while clients are served between slices.
+- **Current-head reproduction (2026-11-12).** Re-ran the same 20k-key/64-byte
+  fixture on this head: 2.46 MB journal; five `BGREWRITEAOF` start pauses of
+  5.5, 10.5, 14.2, 19.5 and 20.1 ms (median **14.2 ms**), confirming the
+  persistence.md range. With one client issuing P1 GETs during a 5.0 ms start
+  pause, 3,289 requests saw p50 **0.396 ms**, p99 **3.51 ms** and max
+  **11.4 ms**; the stall is visible to normal traffic, not only to the admin
+  command. This is a single shared-host diagnostic consistent with the existing
+  method, not a cross-server cohort or a gate result.
 - Consequence: on a small dataset the fork path pays a short page-table pause
   while our start pause is 9–20 ms; on a large dataset the fork's
   page-table/COW cost can become the worse pause. This is a real latency trade,
@@ -2748,6 +2764,12 @@ separate roadmap.
   [persistence.md](../persistence.md) on the 20k-key/2.5 MB fixture. The numbers
   are dev-host diagnostics, not a gate result; 4.23 is the conditional start-pause
   candidate.
+- Current-head rewrite reproduction (section 3.13): local run 2026-11-12 on the
+  shared k3s host, 20k keys × 64 B, 2.46 MB journal; five `BGREWRITEAOF` start
+  pauses of 5.5, 10.5, 14.2, 19.5 and 20.1 ms (median 14.2); one concurrent P1
+  GET run saw p50 0.396 ms, p99 3.51 ms and max 11.4 ms over 3,289 requests.
+  Raw result retained in the development environment (untracked); a diagnostic,
+  not a cross-server cohort.
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
