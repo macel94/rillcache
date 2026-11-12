@@ -427,8 +427,14 @@ platforms retain timeout-based fallback admission.
   timeout, max clients, session isolation and joined shutdown. Documentation
   shall state that no key is sharded, no per-command owner hop is added, and that
   protected-gate evidence decides any throughput claim.
-- **R-SOCKET4 (bounded latency poll):** When a plain readiness reactor has just
-  serviced at least one client, has no queued client and no pending accept, it
+- **R-SOCKET4 (bounded latency poll):** When a plain readiness reactor has made
+  actual I/O or command progress, has no queued client and no pending accept, it
   shall poll readiness without blocking for at most 20 µs before parking for the
-  normal stop tick. Only another serviced pass shall renew the window; stopping
-  shall be checked within it. CPU and tail-latency tradeoffs shall remain visible.
+  normal stop tick. A no-progress blocked, paused, subscriber or WouldBlock probe
+  shall not renew the window. Queue continuation/retry bookkeeping shall remain
+  independent of progress, and stopping shall be checked within the window.
+  Tests shall distinguish idle blocked/subscriber polls from admitting commands,
+  delivering blocked replies and publishing subscription messages. The 1 ms
+  asynchronous fallback remains; this does not implement event-driven blocked
+  wakeups or claim a measured CPU reduction. CPU and tail-latency tradeoffs shall
+  remain visible.

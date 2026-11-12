@@ -37,7 +37,8 @@ struct ReadyKey {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Served {
-    Runnable(bool),
+    /// Actual I/O/command progress, independent of queued retry continuation.
+    Polled(bool),
     Closed,
     Migrated,
 }
@@ -327,7 +328,7 @@ impl<E: Execution> Reactor<E> {
                     connection.queued = true;
                     self.ready.push_back(key);
                 }
-                Ok(Served::Runnable(runnable))
+                Ok(Served::Polled(made))
             }
         }
     }
@@ -490,18 +491,21 @@ impl<E: Execution> Reactor<E> {
             if self.accept_ready {
                 self.accept()?;
             }
-            let mut serviced = 0usize;
+            let mut productive = false;
             for _ in 0..RUN_QUANTUM {
                 let Some(key) = self.ready.pop_front() else {
                     break;
                 };
                 match self.service(key, &mut chunk) {
-                    Ok(Served::Runnable(_)) => serviced += 1,
+                    Ok(Served::Polled(made)) => productive |= made,
                     Ok(Served::Closed) | Err(_) => self.remove(key),
                     Ok(Served::Migrated) => {}
                 }
             }
-            if serviced > 0 && self.ready.is_empty() && !self.accept_ready {
+            // Timer-driven blocked/paused/subscription checks and WouldBlock
+            // probes are not productive work. Only real progress renews the
+            // short busy-poll window; retry continuations stay queued separately.
+            if productive && self.ready.is_empty() && !self.accept_ready {
                 let deadline = Instant::now() + FAST_POLL;
                 loop {
                     match self.poll.poll(&mut events, Some(Duration::ZERO)) {
@@ -821,13 +825,90 @@ mod tests {
             .extend_from_slice(b"PING\r\n");
         assert_eq!(
             reactor.service(key, &mut [0; 1024]).unwrap(),
-            Served::Runnable(true)
+            Served::Polled(true)
         );
         assert!(reactor.clients[key.slot].as_ref().unwrap().queued);
         assert_eq!(reactor.ready.iter().copied().collect::<Vec<_>>(), vec![key]);
         reactor.enqueue(key);
         assert_eq!(reactor.ready.len(), 1);
         assert!(reactor.asynchronous.is_empty());
+    }
+
+    #[test]
+    fn idle_blocked_polls_are_not_progress_but_delivery_is() {
+        let mut reactor = fixture();
+        let _peer = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
+        reactor.accept().unwrap();
+        let key = reactor.ready.pop_front().unwrap();
+        reactor.clients[key.slot]
+            .as_mut()
+            .unwrap()
+            .client_mut()
+            .input
+            .extend_from_slice(b"BLPOP queue 0\r\n");
+        assert_eq!(
+            reactor.service(key, &mut [0; 1024]).unwrap(),
+            Served::Polled(true),
+            "admitting the blocking command is progress"
+        );
+        assert!(reactor.asynchronous.contains(&key));
+        assert_eq!(reactor.ready.pop_front(), Some(key));
+        assert_eq!(
+            reactor.service(key, &mut [0; 1024]).unwrap(),
+            Served::Polled(false),
+            "an empty blocked poll must not renew busy spinning"
+        );
+        assert!(reactor.ready.is_empty());
+        assert!(
+            reactor.asynchronous.contains(&key),
+            "keep the async fallback"
+        );
+        let mut reply = Vec::new();
+        reactor
+            .store
+            .execute(&[b"RPUSH", b"queue", b"value"], &mut reply);
+        assert_eq!(reply, b":1\r\n");
+        reactor.enqueue(key);
+        assert_eq!(reactor.ready.pop_front(), Some(key));
+        assert_eq!(
+            reactor.service(key, &mut [0; 1024]).unwrap(),
+            Served::Polled(true),
+            "completing a blocked command is productive work"
+        );
+        assert!(!reactor.asynchronous.contains(&key));
+    }
+
+    #[test]
+    fn idle_subscriber_polls_are_not_progress_but_publication_is() {
+        let mut reactor = fixture();
+        let _peer = TcpStream::connect(reactor.listener.local_addr().unwrap()).unwrap();
+        reactor.accept().unwrap();
+        let key = reactor.ready.pop_front().unwrap();
+        reactor.clients[key.slot]
+            .as_mut()
+            .unwrap()
+            .client_mut()
+            .input
+            .extend_from_slice(b"SUBSCRIBE channel\r\n");
+        assert_eq!(
+            reactor.service(key, &mut [0; 1024]).unwrap(),
+            Served::Polled(true)
+        );
+        assert_eq!(reactor.ready.pop_front(), Some(key));
+        assert_eq!(
+            reactor.service(key, &mut [0; 1024]).unwrap(),
+            Served::Polled(false)
+        );
+        assert!(reactor.ready.is_empty());
+        assert!(reactor.asynchronous.contains(&key));
+        assert_eq!(reactor.store.publish(b"channel", b"message"), 1);
+        reactor.enqueue(key);
+        assert_eq!(reactor.ready.pop_front(), Some(key));
+        assert_eq!(
+            reactor.service(key, &mut [0; 1024]).unwrap(),
+            Served::Polled(true)
+        );
+        assert!(reactor.asynchronous.contains(&key));
     }
 
     #[test]
