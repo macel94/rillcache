@@ -90,7 +90,10 @@ source-based: after the LPUSH reply, Rillcache takes **1.16 ms p50 / 1.92 ms p99
 to wake a BLPOP against **0.03/0.22 ms** for Redis and Valkey on the same host
 (900 wakeups each), and an idle blocked client costs **5.6% of a core (22.2% at
 1000)** against <1% for the C servers — the largest measured latency and
-idle-CPU gap; candidate 4.22 is admission-ready and AC25 gates the implementation. The rewrite comparison
+idle-CPU gap; candidate 4.22 is admission-ready and AC25 gates the implementation.
+Idle subscribers and monitors show the same tick cost — **6.0% of a core with one
+idle subscriber, 22–27% with 1000**, against <1% for the C servers — so candidate
+4.24 and AC27 cover the event-driven async-client shape. The rewrite comparison
 (section 3.13) adds the measured key-list start pause against the C servers'
 fork/COW rewrite: medians of **9–14 ms at 20k keys** and **91–107 ms at 200k**,
 with full passes of 4.85 s and 43.4 s and concurrent GET p99 of 10.8/18.8 ms;
@@ -1203,6 +1206,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | source | 4.21, conditional | 4.16 row 5 + A/B | none (persistence off) |
 | 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1% | 4.22, admitted; implementation next | AC25 on the implemented change | none |
+| Idle pub/sub and MONITOR clients | CPU, scheduling | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1% | 4.24, admitted | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
@@ -1466,6 +1470,7 @@ That is safe Rust with no new dependency.
 | Readiness | level-triggered epoll, single loop | level-triggered epoll, single loop | Mio edge-triggered reactor with drain probe | **Keep/adapt:** edge-triggered through reviewed Mio; level-triggered needs unsafe FFI or a new selector policy |
 | Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one owner-local reactor plus an opt-in 2–16 connection-local worker override | **Adapt, bounded:** the measured four-CPU P1 gate favored one reactor plus a bounded poll; preserve CPU/tail costs and measure larger fan-out before choosing parallel workers |
 | Blocking wakeups | same-loop `signalKeyAsReady` after the command | same | blocked clients re-enqueued and polled every 1 ms; no ready-key signal | **Adopt:** 4.22 same-pass wake + deadline timer; measured 1.16 ms p50 and 5.6–22% idle CPU vs <1%; no gate effect (3.12) |
+| Async client servicing (pub/sub, MONITOR) | event-driven push per message/command; idle clients untouched | same | 1 ms tick re-enqueues every subscriber/monitor; idle CPU 6–27% | **Adopt:** 4.24 event-driven wake + deadline timer; measured gap; no gate effect (3.12) |
 | Connection setup | backlog 511, TCP keepalive 300 s, NODELAY | same | std backlog 128, NODELAY, 30 s app idle timeout | **Keep:** backlog/keepalive need a socket dependency or FFI; no measured connection-storm gap (3.14) |
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
@@ -1662,7 +1667,7 @@ as the memory acceptance signal.
   the relative gap is large and consistent across rotations.
 - **Idle CPU with blocked clients (2026-11-12).** The same 1 ms tick also keeps
   the reactor busy when nothing is pushed. Server process CPU over a 5 s window
-  with N idle `BLPOP` clients, no traffic:
+  with N idle `BLPOP` clients, no traffic (measured before the #226 spin fix):
 
   | Idle blocked clients | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
   | ---: | ---: | ---: | ---: |
@@ -1681,6 +1686,31 @@ as the memory acceptance signal.
   each tick. Event-driven wake plus a deadline timer removes both, and the
   implementation should stop counting a no-progress blocked poll as productive
   work so the spin is not re-armed.
+
+- **Idle pub/sub and MONITOR clients (2026-11-12).** The same `asynchronous` set
+  also holds subscribers and monitoring clients, so an idle one costs CPU too
+  (measured before the #226 spin fix):
+
+  | Mode | Idle clients | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: | ---: |
+  | SUBSCRIBE | 0 | 0.8% | 0.2% | 0.4% |
+  | SUBSCRIBE | 1 | **6.0%** | 0.2% | 0.4% |
+  | SUBSCRIBE | 100 | 17.8% | 0.6% | 0.6% |
+  | SUBSCRIBE | 1000 | **22.2%** | 0.4% | 0.4% |
+  | MONITOR | 0 | 0.6% | 1.6% | 0.4% |
+  | MONITOR | 1 | **5.8%** | 0.4% | 0.4% |
+  | MONITOR | 100 | 20.8% | 0.4% | 0.4% |
+  | MONITOR | 1000 | **27.4%** | 0.4% | 0.8% |
+
+  One idle subscriber or monitor already costs ~6% of a core; 1000 costs 22–27%,
+  against under 1% for the C servers. The mechanism is identical: the 1 ms tick
+  re-enqueues every `is_subscribed()`/`is_monitoring()` client, and the
+  no-progress poll arms the 20 µs spin after each tick. This is a scheduling and
+  CPU-efficiency gap, not a message-path cost; candidate 4.24 covers the
+  event-driven servicing shape and shares the no-progress-spin fix with 4.22.
+  The no-progress spin component is implemented separately in PR #226, merged as
+  `b7f5694`; its own bound is about two CPU points per 1 ms tick, so it does not
+  remove the per-client scan that dominates these numbers (they are pre-fix).
 
 **Verdict: the gap is measured, not just arithmetic, and 4.22 is admission-ready.**
 Adapt the same-pass ready-key wake; keep the 1 ms tick for timeouts and
@@ -1786,7 +1816,8 @@ follows if 4.19 isolates that tail). 4.21 is the conditional persistence-on
 candidate for the journal write shape in section 3.9, and 4.22 is the conditional
 same-pass wakeup candidate for blocking commands in section 3.12. 4.23 is the
 conditional rewrite-start candidate for the fork-versus-slices trade in section
-3.13.
+3.13, and 4.24 is the event-driven async-client candidate for pub/sub and
+MONITOR in section 3.12.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2462,7 +2493,9 @@ inside the mutating command; bound the ready set and the number of waiters
 serviced per pass; preserve FIFO order among waiters; keep the wake-versus-timeout
 race single-winner; keep `CLIENT UNBLOCK` and shutdown correct; keep multi-owner
 transfers working (the owner must retain or transfer the waiter set). The 1 ms
-fallback stays.
+fallback stays. The no-progress spin component is handled separately in PR #226
+(merged as `b7f5694`); this candidate still needs to remove the 1 ms re-enqueue
+and re-poll of every blocked client.
 
 **Rejection condition.** Any lost, duplicated or out-of-order wake; any timeout or
 `CLIENT UNBLOCK` regression; no measured latency improvement; no idle-CPU
@@ -2517,6 +2550,46 @@ shall appear exactly once in the replayed snapshot; kill/replay shall recover;
 total completion shall stay within 25% of the measured 4.85 s (20k) and 43.4 s
 (200k) baselines; both protected gates shall pass; and no dependency shall be
 added.
+
+### 4.24 Event-driven async-client servicing for pub/sub and MONITOR (candidate, admission measured)
+
+**Mechanism.** Register subscribers and monitoring clients for event-driven wake
+instead of the 1 ms `asynchronous` set: a `PUBLISH` (or a command while a monitor
+is attached) schedules the target client or clients in a bounded queue, and the
+reactor services them after the current command batch. Timeouts and pause
+deadlines use a timer. A no-progress async poll must stop counting as `serviced`
+so it does not arm the 20 µs `FAST_POLL` window; keep the 1 ms fallback for a
+lost signal. The same shape covers blocked clients (4.22); implementing them
+together avoids two separate tick paths.
+
+**Prediction.** Idle CPU falls from the measured 6.0%/17.8%/22.2% (1/100/1000
+idle subscribers) and 5.8%/20.8%/27.4% (monitors) to the C servers' under 1%,
+with no scaling beyond the client count's bookkeeping; publish and monitor
+delivery latency drops from the 1 ms tick to same-pass service. The protected
+gate has no pub/sub or MONITOR client and is unchanged.
+
+**Method.** The idle-CPU windows above, then a matched delivery cohort: N
+subscribers receiving a PUBLISH fanout and N monitors observing a P1 command
+stream, p50/p99 for Rillcache, Redis 8.10.2 and Valkey 9.1.2 on one host with at
+least three rotations.
+
+**Risks and obligations.** A missed wake would strand a subscriber or monitor;
+duplicate or out-of-order delivery, fanout memory, unsubscribe while a message is
+queued, monitor command ordering and shutdown with queued pushes are the failure
+modes. Keep the 1 ms fallback, bound the queue, and preserve the existing
+message ordering.
+
+**Rejection condition.** Any missed, duplicated or out-of-order delivery; any
+unsubscribe or shutdown regression; no idle-CPU improvement; or any protected
+gate row loss.
+
+**Acceptance (AC27).** With 1 and 1000 idle subscribers and monitors, server CPU
+shall stay at or below 1% and shall not scale materially with the count (baseline
+6.0/22.2% and 5.8/27.4% versus <1% for the C servers); PUBLISH and MONITOR
+delivery p99 shall be within 200 µs of Valkey and at least 2× better than the
+1 ms tick baseline; fanout, ordering, unsubscribe, timeout and shutdown tests
+shall pass; no dependency shall be added; and both protected gates shall pass on
+the exact head.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -2634,6 +2707,11 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   timeout/wake races and `CLIENT UNBLOCK` are the failure modes. Service after
   the batch, bound the ready set, preserve FIFO, and keep the 1 ms fallback so a
   missed signal degrades to today's latency rather than a hang (AC25).
+- **Async-wake risk (4.24):** a missed wake strands a subscriber or MONITOR
+  client; duplicate or out-of-order delivery, fanout memory, unsubscribe while a
+  message is queued, monitor command ordering and shutdown with queued pushes are
+  the failure modes. Keep the 1 ms fallback, bound the queue and preserve message
+  ordering (AC27).
 - **Rewrite-start risk (4.23):** the current 9–20 ms pause is a real latency cost
   for small datasets; spreading key materialisation makes the list
   non-point-in-time, so reconciliation must cover additions and deletions or a
@@ -2681,6 +2759,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Treating the #212 SET/XX P1 p99 gap as a server regression | The daily cohort shows the opposite direction and both are client-observed; no server histogram exists yet, so the correct action is 4.19, not a code change (2.22, AC21). |
 | Writing the journal after the reply flush, or acknowledging before the write | Would acknowledge data that a crash can lose; the write must precede the reply (3.9, 4.21). |
 | Busy-polling blocked clients, or shortening the 1 ms async tick for every connection | Spends CPU on all clients instead of targeting the ready-key event; the same-pass signal is the correct shape (3.12, 4.22). |
+| Polling every subscriber and monitor at 1 ms as the default | Measured 22–27% of a core at 1000 idle clients versus <1% for the C servers; event-driven wake is the correct shape (3.12, 4.24). |
 | Removing the 1 ms fallback and trusting the ready signal never misses | One missed signal would strand a blocked client indefinitely; the fallback is required by AC25. |
 | Forking a copy-on-write rewrite child via unsafe/FFI | Outside the safe-Rust/no-FFI boundary; the cooperative slices are the reviewed adaptation (3.13). |
 | Keeping the synchronous full rewrite | Measured at 130 ms of blocked service on the 20k-key fixture; already replaced by cooperative slices (docs/persistence.md). |
@@ -2836,6 +2915,14 @@ samples retained.
   once in the replayed snapshot; kill/replay shall recover; total completion
   shall stay within 25% of the measured 4.85 s (20k) and 43.4 s (200k)
   baselines; both protected gates shall pass; and no dependency shall be added.
+- **AC27 (async-client idle CPU and delivery, only if 4.24 is implemented).**
+  With 1 and 1000 idle subscribers and monitors, server CPU shall stay at or
+  below 1% and shall not scale materially with the count (baseline 6.0/22.2% and
+  5.8/27.4% versus <1% for the C servers); PUBLISH and MONITOR delivery p99 shall
+  be within 200 µs of Valkey and at least 2× better than the 1 ms tick baseline;
+  fanout, ordering, unsubscribe, timeout and shutdown tests shall pass; no
+  dependency shall be added; and both protected gates shall pass on the exact
+  head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -2955,6 +3042,11 @@ separate roadmap.
   0/1/10/50/100/1000 idle BLPOP clients; Rillcache 0.6/5.6/6.8/13.0/17.8/22.2%,
   Redis 0.4/—/—/—/0.2/0.6%, Valkey 0.4/—/—/—/0.4/0.6%. Raw JSON retained; not a
   gate.
+- Async-client idle CPU (section 3.12, candidate 4.24): 5 s process-CPU windows
+  with 0/1/100/1000 idle SUBSCRIBE clients: Rillcache 0.8/6.0/17.8/22.2%,
+  Redis 0.2/0.2/0.6/0.4%, Valkey 0.4/0.4/0.6/0.4%; MONITOR: Rillcache
+  0.6/5.8/20.8/27.4%, Redis 1.6/0.4/0.4/0.4%, Valkey 0.4/0.4/0.4/0.8%.
+  Shared-host diagnostic; raw JSON retained (untracked), not a gate.
 - Rewrite scheduling comparison (section 3.13): Redis/Valkey
   `rewriteAppendOnlyFileBackground` forks a COW child
   (`redis aof.c#L3239`, `valkey aof.c#L2595`); our cooperative slices and the
@@ -3137,9 +3229,10 @@ separate roadmap.
 - Blocking commands are the largest **measured** latency and idle-CPU gap in this
   review (section 3.12): after the push reply, blocked clients wake in 1.16 ms p50
   / 1.92 ms p99 versus 0.03/0.22 ms for Redis/Valkey on the same host, and one
-  idle blocked client costs 5.6% of a core (22.2% at 1000) versus <1%. The
-  protected gate has no blocking command, so no gate row sees it; 4.22 is admitted
-  and AC25 gates the implementation.
+  idle blocked client costs 5.6% of a core (22.2% at 1000) versus <1%. Idle
+  subscribers and monitors show the same tick cost (6.0% at one, 22–27% at 1000)
+  and are covered by 4.24. The protected gate has no such client, so no gate row
+  sees either gap; 4.22/4.24 are admitted and AC25/AC27 gate the implementation.
 - Rewrite scheduling has measured start-pause medians of **9–14 ms at 20k keys**
   and **91–107 ms at 200k** (section 3.13), with 4.85 s / 43.4 s full passes,
   where the C servers fork a copy-on-write child; the gate runs with persistence
