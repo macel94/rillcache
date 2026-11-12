@@ -76,7 +76,9 @@ and fewer context switches than Valkey, while the edge-triggered drain probe is
 the remaining +12%/+37% total-syscall difference. Finally, the persistence-on
 write-path source comparison (section 3.9) adds candidate 4.21: the C servers
 buffer AOF bytes and write once per event loop, while we write one framed
-transaction per command. The latest cohort (#217, section 2.18) resolves P1 ping
+transaction per command. A 2026-11-12 paired AOF-on cohort measures a **−66.5%
+P1 / −90.2% P16** SET loss (P16 p99 15.1 vs 3.1 ms) against 8.5–33.5% for the C
+servers, so 4.21 is admitted and AC23 sets the targets. The latest cohort (#217, section 2.18) resolves P1 ping
 at +15.4% with an interval excluding 1.0, while the same runtime lost that row in
 #216; the pair is kept as the measurement-risk evidence. The expiry and eviction
 comparison (section 3.10) finds our ordered 1,280-reaps/s purge bounded and
@@ -1206,7 +1208,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
 | Large bulk reply copy | replies | source only; local screen failed | 4.15 (std `Arc`/`IoSlice`) | clean large-value cohort (4.16 row 2) | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
-| One journal write per command | persistence | source | 4.21, conditional | 4.16 row 5 + A/B | none (persistence off) |
+| One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5% | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
 | 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1% | 4.22, admitted; implementation next | AC25 on the implemented change | none |
 | Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
@@ -1479,7 +1481,7 @@ That is safe Rust with no new dependency.
 | Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adapt only if measured:** candidate 4.15 after a clean large-value cohort (2.21) and AC20; std `Arc`/`IoSlice` only |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
-| Journal writes | buffered `aof_buf`, one write per event loop, 1 s background fsync | same | one framed write per journaled command, 1 s fsync | **Adapt only if the persistence-on row shows a gap:** batch per pass (4.21), keep CRC/HMAC framing and write-before-reply ordering |
+| Journal writes | buffered `aof_buf`, one write per event loop, 1 s background fsync | same | one framed write per journaled command, 1 s fsync | **Adopt:** batch per pass (4.21); measured −66.5% P1 / −90.2% P16 AOF-on loss; keep CRC/HMAC framing and write-before-reply ordering |
 | Journal rewrite | fork + COW child, parent serves; fork page-table pause | same | key-list materialisation (9–20 ms at 20k keys) then 512-key/1 MiB slices on the owner | **Keep:** no fork in safe Rust; reduce the start pause with 4.23 only if a rewrite-latency cohort shows it matters (3.13) |
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
@@ -1516,14 +1518,34 @@ That is safe Rust with no new dependency.
   batch). At pipeline K>1 with persistence on, each of our K journaled commands
   pays a separate write syscall, a mutex acquisition and a framing allocation,
   while the C servers pay one buffered write for the batch. This is invisible to
-  the protected gate (persistence off) and is a production-relevant **unmeasured**
-  difference, not a measured gate loss.
+  the protected gate (persistence off).
+- **Current-head measurement (2026-11-12).** Paired local SET runs, three
+  Latin-rotated rounds, `appendonly yes`, `appendfsync everysec`, 8 clients,
+  1024 keys, 64 B, 50k requests, fresh journal per run. Absolute rates are far
+  below the gate because the host is shared; the paired AOF-on/off ratio and the
+  cross-server pattern are the signal:
 
-**Verdict:** adapt the buffering shape (candidate 4.21) only after the
-persistence-on row in 4.16 shows a gap above its spread. Do not copy the
-unauthenticated AOF format, do not move the write after the reply flush, and do
-not change the 1 s everysec policy. The candidate keeps the per-transaction
-CRC/HMAC framing and the accepted robustness boundary.
+  | Workload | Server | AOF off | AOF on | Change | p99 off/on |
+  | --- | --- | ---: | ---: | ---: | ---: |
+  | P1 SET | Rillcache | 35,387 | 11,856 | **−66.5%** | 1.53/5.53 ms |
+  | P1 SET | Redis 8.10.2 | 24,983 | 27,977 | +12.0% (noise) | 1.73/1.42 ms |
+  | P1 SET | Valkey 9.1.2 | 25,428 | 20,923 | −17.7% | 1.72/2.47 ms |
+  | P16 SET | Rillcache | 406,549 | **39,927** | **−90.2%** | 3.09/15.12 ms |
+  | P16 SET | Redis 8.10.2 | 294,371 | 195,669 | −33.5% | 1.55/1.98 ms |
+  | P16 SET | Valkey 9.1.2 | 168,126 | 153,763 | −8.5% | 5.08/3.50 ms |
+
+  The rill P16 ratio is 4.0–12.5× per round (off runs varied 169k–488k; the
+  AOF-on rate was stable at 39–42k), while the C servers lose at most ~1.9× in a
+  round. At P1 AOF-on, Rillcache (11.9k) is slower than Valkey (20.9k) even though
+  it leads with AOF off (35.4k vs 25.4k). This is a large, consistent persistence
+  penalty, not host noise; HMAC was off, so the framing cost here is CRC plus the
+  per-command write, not authentication.
+
+**Verdict:** the persistence-on gap is measured and large; 4.21 is admitted. Adapt
+the buffering shape, keep the per-transaction CRC/HMAC framing, do not move the
+write after the reply flush, and do not change the 1 s everysec policy. Do not
+copy the unauthenticated AOF format. Absolute rates in the table are shared-host
+diagnostics, not a gate result.
 
 ### 3.10 Expiry and eviction under memory pressure
 
@@ -1829,7 +1851,7 @@ reply copy avoidance), 4.16 (the out-of-gate measurement program that must run
 before 4.15), 4.17–4.18 (two ideas rejected by bound: command-lookup caching and
 incremental rehash), and 4.19 (a latency-attribution diagnostic for the remaining
 P1 write-tail question) plus 4.20 (a conditional storage candidate that only
-follows if 4.19 isolates that tail). 4.21 is the conditional persistence-on
+follows if 4.19 isolates that tail). 4.21 is the admitted persistence-on
 candidate for the journal write shape in section 3.9, and 4.22 is the conditional
 same-pass wakeup candidate for blocking commands in section 3.12. 4.23 is the
 conditional rewrite-start candidate for the fork-versus-slices trade in section
@@ -2424,7 +2446,7 @@ on a subsequent mutation; scratch multi-owner write sets are unchanged; the
 transaction/WATCH/multi-owner matrix passes; the matched A/B shows the claimed
 tail or CPU effect; and both protected gates pass on the exact head.
 
-### 4.21 Per-batch journal write coalescing (conditional on persistence-on evidence)
+### 4.21 Per-batch journal write coalescing (candidate; admission measured)
 
 **Mechanism.** During one reactor service batch, encode each journaled command
 into a reusable per-batch buffer (the existing CRC32/HMAC transaction frames,
@@ -2436,11 +2458,20 @@ once, so every acknowledged command in it is durable, matching the C servers'
 per-loop flush shape.
 
 **Prediction.** At pipeline K, the journal path replaces K writes, K mutex
-acquisitions and K transaction-buffer allocations with one of each. At K=16 and
-0.5–1.5 µs per write, that is roughly 8–22 µs saved per batch; with the
-persistence-on P16 server cost in the low microseconds per command, the upper
-bound is material. At pipeline 1 it is zero, and on the protected gate
-(persistence off) it is exactly zero. This is why it is not a gate candidate.
+acquisitions and K transaction-buffer allocations with one of each. The measured
+baseline is a **−66.5% P1 and −90.2% P16** SET loss with AOF on (section 3.9) and
+P16 p99 15.1 ms versus 3.1 ms off; the C servers lose 8–34%. Coalescing should
+move the P16 loss toward the C servers' single-digit-to-mid range and the P1 loss
+toward Valkey's ~18%, with P16 p99 back near the AOF-off value. On the protected
+gate (persistence off) the effect is exactly zero, which is why this is not a
+gate candidate.
+
+**Admission evidence (2026-11-12, section 3.9).** Three Latin-rotated local
+rounds with fresh journals: AOF-on/off SET throughput is −66.5% (P1) and −90.2%
+(P16) for Rillcache, against +12%/−33.5% (Redis) and −17.7%/−8.5% (Valkey); the
+rill P16 ratio is 4.0–12.5× per round while the AOF-on rate is stable. The gap is
+large and consistent enough to admit the candidate; the shared-host absolute
+rates are not a gate claim.
 
 **Failure contract (required design).** Commands execute in memory before the
 batch is durable, so a batch-write failure must be handled explicitly: mark the
@@ -2452,11 +2483,11 @@ restart, which is the same contract the current per-command error path has, only
 Wider. A `SIGKILL`/replay test must prove that every reply the client received is
 present in the replayed journal.
 
-**Admission and baseline.** Implement only after 4.16 row 5 measures
-persistence-on SET at P1 and P16 against the C servers and shows a gap above the
-cohort spread. Freeze the current and candidate binaries, alternate them on one
-host with the same generator, `appendfsync everysec` and `always`, and retain raw
-JSON, p99, CPU, journal-size and replay checks.
+**Admission and baseline.** Admission is met by the 2026-11-12 persistence-on
+cohort (section 3.9). For the implementation, freeze the current and candidate
+binaries, alternate them on one host with the same generator, `appendfsync
+everysec` and `always`, and retain raw JSON, p99, CPU, journal-size and replay
+checks.
 
 **Rejection condition.** Any durability/replay failure, any reply-before-write
 ordering, any HMAC-chain or CRC boundary error, any gate row loss, no gain above
@@ -2466,9 +2497,12 @@ per-command append.
 **Acceptance (AC23).** With persistence on, a batch of K commands performs at
 most one journal write and one journal lock acquisition; every acknowledged
 command is present in the replayed journal; `always` still syncs before the reply;
-`everysec` still syncs within its 1 s bound; kill/replay, HMAC, CRC, rewrite and
-multi-owner tests pass; the matched persistence-on A/B shows the gain; and both
-protected gates pass on the exact head.
+`everysec` still syncs within its 1 s bound; **P16 AOF-on SET throughput is
+within 25% of AOF-off and P1 within 10%, and P16 p99 is no worse than 2× the
+AOF-off p99** (measured baseline −90.2%/−66.5% and 15.1 vs 3.1 ms; C servers
+−8.5% to −33.5%); kill/replay, HMAC, CRC, rewrite and multi-owner tests pass; the
+matched persistence-on A/B shows the gain; and both protected gates pass on the
+exact head.
 
 ### 4.22 Same-pass blocked-client wakeup (candidate; admission evidence collected)
 
@@ -2915,9 +2949,12 @@ samples retained.
   persistence on, a batch of K commands shall perform at most one journal write
   and one journal lock acquisition; every acknowledged command shall be present
   in the replayed journal; `always` shall sync before the reply; `everysec` shall
-  sync within its 1 s bound; kill/replay, HMAC, CRC, rewrite and multi-owner
-  tests shall pass; the matched persistence-on A/B shall show the gain; and both
-  protected gates shall pass on the exact head.
+  sync within its 1 s bound; P16 AOF-on SET throughput shall be within 25% of
+  AOF-off and P1 within 10%, and P16 p99 no worse than 2× AOF-off (baseline
+  −90.2%/−66.5% and 15.1 vs 3.1 ms; C servers −8.5% to −33.5%); kill/replay,
+  HMAC, CRC, rewrite and multi-owner tests shall pass; the matched
+  persistence-on A/B shall show the gain; and both protected gates shall pass on
+  the exact head.
 - **AC24 (memory representation, only if 3.11 is implemented).** When duplicate
   key or value representation is changed, a cohort of at least one million TTL
   and counter keys shall show the RSS reduction with identical expiry, WATCH,
@@ -3042,8 +3079,15 @@ separate roadmap.
   ([`redis aof.c#L1399`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L1399),
   [`valkey aof.c#L1178`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L1178));
   our `Journal::append` writes one framed transaction per journaled command
-  (`src/engine/journal.rs`, around line 1028). Source evidence only; the
-  persistence-on row is not measured and the gate runs with persistence off.
+  (`src/engine/journal.rs`, around line 1028).
+- Persistence-on measurement (section 3.9, candidate 4.21): paired local SET
+  runs, three Latin-rotated rounds, `appendonly yes`, `appendfsync everysec`,
+  8 clients, 64 B, 50k requests, fresh journal per run. AOF-on/off medians:
+  P1 11,856/35,387 (−66.5%) p99 5.53/1.53 ms; P16 39,927/406,549 (−90.2%) p99
+  15.12/3.09 ms. Redis P1 +12.0%, P16 −33.5%; Valkey P1 −17.7%, P16 −8.5%.
+  Absolute rates are shared-host diagnostics; the paired ratios and cross-server
+  pattern are the evidence. HMAC was off; the framing cost is CRC plus the
+  per-command write.
 - Expiry and eviction comparison (section 3.10): Redis `expire.c` constants and
   `activeExpireCycle`, Valkey `active-expire-effort`, and the 16-entry eviction
   pool (`redis evict.c#L36`, `valkey evict.c#L54`) against our
@@ -3220,10 +3264,10 @@ separate roadmap.
   cohort on identical code leads every row by 21.7–32.6% P1 against Redis/Valkey
   while all five P1 p99 are worse (section 2.19). The remaining measured gaps
   against Redis/Valkey are a small P1 per-command CPU difference whose sign is
-  host-dependent, host-dependent P1 tail variance, and the large-value reply copy
-  that the 64-byte gate cannot see (sections 2.20–2.22). The persistence-on
-  journal write shape (section 3.9) is a further unmeasured difference; the gate
-  runs with persistence off.
+  host-dependent, host-dependent P1 tail variance, the large-value reply copy
+  that the 64-byte gate cannot see (sections 2.20–2.22), and the persistence-on
+  journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
+  for the C servers (section 3.9). The gate runs with persistence off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
   within-row alternating comparison, but cross-row absolute rates are not
@@ -3313,11 +3357,12 @@ separate roadmap.
   below-noise throughput bound (~40–100 ns per mutation). It stays conditional on
   4.19 isolating a server-side mutation tail; do not remove `WATCH` tracking
   without the AC22 correctness proof and tests.
-- Persistence-on behavior remains outside the protected gate. The journal writes
-  one framed transaction per command while the C servers write a buffered batch
-  per loop (section 3.9); the upper bound is material only with persistence on,
-  so 4.21 waits for the 4.16 row-5 cohort. No cross-server persistence result is
-  claimed from gate or daily numbers.
+- Persistence-on behavior remains outside the protected gate but is now measured
+  (section 3.9): AOF-on SET loses **66.5% at P1 and 90.2% at P16** (P16 p99 15.1
+  vs 3.1 ms), against 8.5–33.5% for the C servers. The journal writes one framed
+  transaction per command while the C servers write a buffered batch per loop;
+  4.21 is admitted and AC23 sets the implementation targets. Absolute rates are
+  shared-host diagnostics, not a gate result.
 - The hosted profile (section 2.23) is instrumented evidence: tracepoints and
   CPU-clock sampling perturb the workload, its rates are quarantined, and the
   per-reply syscall counts are neither latency nor throughput. It corrects the
