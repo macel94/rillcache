@@ -108,7 +108,9 @@ growth). Under continuous eviction, the 2026-11-12 cohort measures an **85.8% P1
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
 ready** (0.258 s at 50k and 1.10–1.24 s at 200k keys versus 0.011–0.061 s for the
-C servers), admitting 4.27 (single-pass replay). A limited TTL-heavy diagnostic
+C servers), admitting 4.27 (single-pass replay). AOF HMAC costs **−10.2% P1 /
+−23.6% P16** on append and makes a 50k replay **0.21 → 0.75 s**; the append cost
+is accepted as the security price and verification folds into 4.27. A limited TTL-heavy diagnostic
 (section 3.7) finds no consistent TTL-vs-plain penalty, keeping 4.9 closed. Section
 2.24 is a one-page open-gap
 ledger that maps every remaining item to its evidence status, candidate and
@@ -1242,6 +1244,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
 | Eviction steady-state cost | storage | **measured**: P16 20,498 vs 144,365 no-eviction (−85.8%), p99 64.5 vs 8.0 ms; policy-independent; C servers ~no penalty | 4.26, admitted | AC29 on the implemented change | none (no maxmemory) |
 | Startup AOF replay | persistence, availability | **measured**: 0.258 s at 50k, 1.10–1.24 s at 200k vs 0.011–0.061 s for the C servers | 4.27, admitted | AC30 on the implemented change | none (startup) |
+| AOF HMAC | persistence, security | **measured**: append −10.2% P1 / −23.6% P16; 50k replay 0.21→0.75 s | accept the append cost; fold verification into 4.27 | AC30 HMAC on/off | none (persistence off) |
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
 | Incremental keyspace rehash | storage | bound at 1024 keys | deferred 4.18 | large-keyspace cohort | none |
 | Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s) | keep; needs a socket dependency/FFI | connection-storm / idle-socket cohort | none |
@@ -1592,6 +1595,15 @@ for a production claim.
   it leads with AOF off (35.4k vs 25.4k). This is a large, consistent persistence
   penalty, not host noise; HMAC was off, so the framing cost here is CRC plus the
   per-command write, not authentication.
+- **HMAC cost (2026-11-12).** With `--aof-hmac-key-file` on the same server,
+  AOF-on SET is 12,893 vs 14,355 req/s at P1 (−10.2%) and 31,938 vs 41,821 at P16
+  (−23.6%), p99 12.0 vs 11.5 ms. A 50k-key replay takes 0.48–0.88 s (median 0.75)
+  versus 0.20–0.23 s (median 0.21), a 3.6× startup increase with DBSIZE 50,000 in
+  both. The append cost is one SHA-256 per transaction (in-repo safe Rust); the
+  replay cost is the separate authentication pass (section 3.15). This is the
+  security feature's price: do not replace the hash, reduce the per-transaction
+  chain or skip verification without a security review. Candidate 4.27 can fold
+  the verification into the replay pass without changing the chain.
 
 **Verdict:** the persistence-on gap is measured and large; 4.21 is admitted. Adapt
 the buffering shape, keep the per-transaction CRC/HMAC framing, do not move the
@@ -1933,7 +1945,10 @@ start to first successful PING; DBSIZE verified for Rillcache at 200k and Redis 
 | 200,000 | **1.10–1.24 s** (median ~1.16) | 0.027–0.043 s | 0.051–0.061 s |
 
 Rillcache is ~20–45x slower to become ready. Absolute times are shared-host
-diagnostics, but the ratio is large and the source explains it.
+diagnostics, but the ratio is large and the source explains it. With AOF HMAC on,
+the 50k replay rises from 0.21 s to 0.75 s (3.6×) because the authentication pass
+reads and hashes the journal again; 4.27 must fold HMAC verification into the
+single replay pass while preserving the chain.
 
 **Verdict: adapt a single-pass replay fast path (4.27).** Verify the CRC while
 replaying instead of in a separate pass, and apply commands through a loader that
@@ -2864,7 +2879,9 @@ DBSIZE, payload bytes and TTLs match the pre-replay state. Redis/Valkey remain a
 Redis 0.011 and Valkey 0.054; 200k: Rill 1.10–1.24 s vs 0.027–0.043 and
 0.051–0.061, with DBSIZE 200,000 verified for Rill and 50,000 for Redis. The
 source shows two full parses (checksum pass + replay) plus normal command
-execution, which explains the ratio. Shared-host diagnostic.
+execution, which explains the ratio. With AOF HMAC on, the 50k replay is 0.75 s
+versus 0.21 s, so the separate authentication pass is part of the target
+(section 3.9). Shared-host diagnostic.
 
 **Method.** 50k and 200k fixtures, three clean restarts and three SIGKILL
 restarts each, raw time-to-PING, DBSIZE, `INFO` bytes/TTLs, corruption/tail
@@ -3004,6 +3021,11 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   skipping load-irrelevant side effects must not accept corruption, change the
   tail policy, re-relativize TTLs, break HMAC chaining, or alter stream/PEL
   state. A bad frame must abort before the listener binds (AC30).
+- **HMAC cost and crypto risk:** the measured −10% P1 / −24% P16 append cost and
+  the 3.6× HMAC replay are the price of per-transaction authentication. Do not
+  replace the in-repo SHA-256, shorten the chain, or skip verification without a
+  security review; only fold the existing verification into the replay pass
+  (3.9, 3.15).
 - **WATCH-version risk (4.20):** skipping per-key versions while nothing watches
   is only safe if `WATCH` registration and the tracking flag change under the
   same data borrow and if scratch multi-owner executors keep tracking. A race or
@@ -3363,6 +3385,10 @@ separate roadmap.
   Absolute rates are shared-host diagnostics; the paired ratios and cross-server
   pattern are the evidence. HMAC was off; the framing cost is CRC plus the
   per-command write.
+- AOF HMAC measurement (section 3.9, Rill only): key on/off, three rounds, AOF
+  `everysec`. Append P1 14,355 vs 12,893 (−10.2%), P16 41,821 vs 31,938
+  (−23.6%), p99 12.0 vs 11.5 ms; 50k replay 0.206 vs 0.749 s (3.6×), DBSIZE
+  50,000 both. Shared-host diagnostic; raw JSON retained (untracked).
 - Startup replay measurement (section 3.15, candidate 4.27): 50k/200k SETs of
   64 B with `appendonly yes`, clean SIGTERM, three restarts per size, time from
   process start to first PING. Rill 0.258 s (50k) and 1.10–1.24 s (200k, DBSIZE
@@ -3668,6 +3694,11 @@ separate roadmap.
   0.011–0.061 s for the C servers. The source shows a separate checksum parse
   pass plus a reparse and normal execute; 4.27/AC30 cover it. Shared-host
   diagnostic; DBSIZE was verified at 200k for Rill and 50k for Redis.
+- AOF HMAC adds a measured **−10.2% P1 / −23.6% P16** append cost and a 3.6×
+  50k replay (0.21 → 0.75 s). That is the price of per-transaction
+  authentication; the append cost is accepted, and only the existing
+  verification is folded into the 4.27 replay pass. The C servers have no
+  equivalent, so this is an internal A/B, not a cross-server gap claim.
 - The hosted profile (section 2.23) is instrumented evidence: tracepoints and
   CPU-clock sampling perturb the workload, its rates are quarantined, and the
   per-reply syscall counts are neither latency nor throughput. It corrects the
