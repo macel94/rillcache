@@ -79,7 +79,9 @@ runtime also lost P1 ping again in #218 (−1.35%, 2/5), giving a three-cohort
 identical-code spread of −1.35% to +15.4% (section 2.17). The key/value
 representation comparison (section 3.11) locates the duplicate key buffers in the
 expiry and WATCH indexes and defers an encoding rewrite to a TTL/eviction RSS
-result.
+result. The blocking-wakeup comparison (section 3.12) finds a 0–1000 µs async-tick
+latency against same-loop ready-key signaling in the C servers, the largest
+unmeasured latency gap; candidate 4.22 and AC25 gate it.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -1369,6 +1371,7 @@ That is safe Rust with no new dependency.
 | --- | --- | --- | --- | --- |
 | Readiness | level-triggered epoll, single loop | level-triggered epoll, single loop | Mio edge-triggered reactor with drain probe | **Keep/adapt:** edge-triggered through reviewed Mio; level-triggered needs unsafe FFI or a new selector policy |
 | Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one owner-local reactor plus an opt-in 2–16 connection-local worker override | **Adapt, bounded:** the measured four-CPU P1 gate favored one reactor plus a bounded poll; preserve CPU/tail costs and measure larger fan-out before choosing parallel workers |
+| Blocking wakeups | same-loop `signalKeyAsReady` after the command | same | blocked clients re-enqueued every 1 ms, no ready-key signal | **Adapt if measured:** 4.22 same-pass wake with the 1 ms fallback; no gate effect (3.12) |
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
 | Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adapt only if measured:** candidate 4.15 after a clean large-value cohort (2.21) and AC20; std `Arc`/`IoSlice` only |
@@ -1517,6 +1520,39 @@ not put a refcount or an index lookup on the GET/SET hot path without a matched
 measurement. Add RSS reporting to the TTL and eviction rows (4.16 rows 1 and 6)
 as the memory acceptance signal.
 
+### 3.12 Blocking-command wakeups (latency)
+
+- **Redis 8.10.2 and Valkey 9.1.2** park a blocked client and, when a mutation
+  makes one of its keys ready, call `signalKeyAsReady` from the mutation path
+  (for example `dbAdd`/`dbOverwrite` and list pushes:
+  [`redis db.c#L445`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L445),
+  [`#L790`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L790),
+  [`valkey db.c#L223`](https://github.com/valkey-io/valkey/blob/9.1.2/src/db.c#L223)).
+  `processCommand` then calls `handleClientsBlockedOnKeys()` immediately after
+  `call()`
+  ([`redis server.c#L4846`](https://github.com/redis/redis/blob/8.10.2/src/server.c#L4846),
+  [`valkey server.c#L4647`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L4647)),
+  so the woken client is served in the same event-loop iteration without waiting
+  for a timer.
+- **Rillcache** adds a blocked session to the reactor's `asynchronous` set and
+  re-enqueues it only every `ASYNC_TICK` = 1 ms
+  ([`reactor.rs#L20`](../../src/server/reactor.rs#L20),
+  [`#L467`](../../src/server/reactor.rs#L467)); the session then polls the
+  blocking pop ([`session/blocking.rs#L436`](../../src/session/blocking.rs#L436)).
+  Fixed-worker lanes park for 1 ms and behave the same, and there is no
+  ready-key signal from the mutating command.
+- Arithmetic: wake latency is quantized to 0–1000 µs (about 500 µs on average)
+  plus service, against a same-loop wake in the C servers. At a blocking p99
+  target below 1 ms this is the difference between meeting and missing the SLO,
+  even though the protected gate has no blocking command and sees exactly zero
+  effect. It is the largest unmeasured latency gap found in this review.
+
+**Verdict: adapt a same-pass ready-key wake (4.22) only after a blocked-wake
+cohort measures the gap.** Keep the 1 ms tick for timeouts and cross-thread or
+fallback paths, do not busy-poll blocked clients, and add no dependency: the
+signal is an in-memory ready set owned by the same owner that holds the data
+lock.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -1534,7 +1570,8 @@ before 4.15), 4.17–4.18 (two ideas rejected by bound: command-lookup caching a
 incremental rehash), and 4.19 (a latency-attribution diagnostic for the remaining
 P1 write-tail question) plus 4.20 (a conditional storage candidate that only
 follows if 4.19 isolates that tail). 4.21 is the conditional persistence-on
-candidate for the journal write shape in section 3.9.
+candidate for the journal write shape in section 3.9, and 4.22 is the conditional
+same-pass wakeup candidate for blocking commands in section 3.12.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2170,6 +2207,46 @@ command is present in the replayed journal; `always` still syncs before the repl
 multi-owner tests pass; the matched persistence-on A/B shows the gain; and both
 protected gates pass on the exact head.
 
+### 4.22 Same-pass blocked-client wakeup (candidate, gated on a latency cohort)
+
+**Mechanism.** While executing a mutation under the owner data borrow, if the
+command makes a key ready for a blocked type (list push/move, sorted-set add,
+stream add), record the key in a bounded ready set. After the current command
+batch and before the reactor parks, enqueue the blocked clients waiting on those
+keys and service them in the same pass. Keep the 1 ms `ASYNC_TICK` as the
+timeout/fallback path for clients whose key is not signalled (expiry, cross-thread
+or multi-owner transfer, a lost wake), so a missed signal degrades to today's
+behavior rather than a lost wake.
+
+**Prediction.** Wake p50/p99 for BLPOP/BRPOP/BLMOVE/BZPOPMIN/BZPOPMAX and
+`XREAD BLOCK` drops from the 0–1000 µs tick quantization (about 500 µs average)
+to the reactor's service latency (tens of µs); the protected gate, which has no
+blocking command, is unchanged; throughput is unchanged because the ready set is
+empty when nothing blocks.
+
+**Method.** Matched cohort with one client blocked on a key and another pushing
+after a fixed delay; measure wake p50/p95/p99 for Rillcache, Redis 8.10.2 and
+Valkey 9.1.2, at least three rotated repetitions, on one host or the same-type
+runners. Add a many-waiter FIFO case, a timeout-versus-push race, `CLIENT
+UNBLOCK`, and a pipeline where the push and the wake are in the same batch.
+
+**Risks and obligations.** Service after the batch, never re-enter the store
+inside the mutating command; bound the ready set and the number of waiters
+serviced per pass; preserve FIFO order among waiters; keep the wake-versus-timeout
+race single-winner; keep `CLIENT UNBLOCK` and shutdown correct; keep multi-owner
+transfers working (the owner must retain or transfer the waiter set). The 1 ms
+fallback stays.
+
+**Rejection condition.** Any lost, duplicated or out-of-order wake; any timeout or
+`CLIENT UNBLOCK` regression; no measured latency improvement; or any protected
+gate row loss. Then keep the tick and record the 1 ms bound.
+
+**Acceptance (AC25).** A matched blocked-wake cohort shall show p99 within 200 µs
+of Valkey and at least 2× better than the pre-change head (the ~1 ms tick
+baseline); FIFO, ordering, timeout, unblock, multi-owner and shutdown tests shall
+pass; the protected gates shall pass on the exact head; and no dependency is
+added.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -2281,6 +2358,11 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   same data borrow and if scratch multi-owner executors keep tracking. A race or
   a missed bump would silently accept a stale `EXEC`; the transaction matrix and
   an explicit later-`WATCH` test are mandatory (AC22).
+- **Blocking-wake risk (4.22):** serving a woken client inside the mutating
+  command would re-enter the store; lost, duplicated or out-of-order wakes,
+  timeout/wake races and `CLIENT UNBLOCK` are the failure modes. Service after
+  the batch, bound the ready set, preserve FIFO, and keep the 1 ms fallback so a
+  missed signal degrades to today's latency rather than a hang (AC25).
 - **Journal-batching durability risk (4.21):** a batch write must complete before
   any reply in the batch leaves; a failure must unacknowledge the whole batch and
   stop writes. A SIGKILL/replay test must prove every acknowledged reply is in
@@ -2322,6 +2404,8 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Removing `WATCH` versions unconditionally from every mutation | Would accept a stale `EXEC` whenever a key was written after `WATCH`; only a watch-aware fast path with the lock proof is safe (4.20, AC22). |
 | Treating the #212 SET/XX P1 p99 gap as a server regression | The daily cohort shows the opposite direction and both are client-observed; no server histogram exists yet, so the correct action is 4.19, not a code change (2.22, AC21). |
 | Writing the journal after the reply flush, or acknowledging before the write | Would acknowledge data that a crash can lose; the write must precede the reply (3.9, 4.21). |
+| Busy-polling blocked clients, or shortening the 1 ms async tick for every connection | Spends CPU on all clients instead of targeting the ready-key event; the same-pass signal is the correct shape (3.12, 4.22). |
+| Removing the 1 ms fallback and trusting the ready signal never misses | One missed signal would strand a blocked client indefinitely; the fallback is required by AC25. |
 | Copying Redis/Valkey's unauthenticated AOF byte stream | Drops the CRC32 transaction boundary and optional HMAC record that this project's durability/security increments added (3.9). |
 | Per-command fsync under `everysec` | Multiplies fsync cost without changing the stated 1 s durability bound; the policy stays 1 s (3.9). |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
@@ -2457,6 +2541,12 @@ samples retained.
   collection and journal semantics; no hot-path allocation or refcount shall be
   added without a matched rate/tail result; and both protected gates shall pass on
   the exact head.
+- **AC25 (blocked wake latency, only if 4.22 is implemented).** A matched
+  blocked-wake cohort shall show p99 within 200 µs of Valkey and at least 2×
+  better than the pre-change 1 ms tick baseline for BLPOP-style and
+  `XREAD BLOCK` wakeups; FIFO, ordering, timeout, `CLIENT UNBLOCK`, multi-owner
+  and shutdown tests shall pass; the 1 ms fallback shall remain; no dependency
+  shall be added; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -2551,6 +2641,12 @@ separate roadmap.
   `#L3593`, `#L3603`), against our `Entry` `Vec` value and the duplicated key in
   `expirations`/`versions`. Code citations; memory is only measured by the RSS
   column of the 4.16 rows.
+- Blocking-wake comparison (section 3.12): Redis `signalKeyAsReady` from the
+  mutation path (`redis db.c#L445`, `#L790`) and
+  `handleClientsBlockedOnKeys` immediately after `call()` (`server.c#L4846`);
+  Valkey the same (`db.c#L223`, `server.c#L4647`); against our 1 ms
+  `ASYNC_TICK` re-enqueue without a ready-key signal (`reactor.rs#L20`,
+  `#L467`). Source evidence; the wake-latency cohort does not exist yet (4.22).
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
@@ -2707,6 +2803,11 @@ separate roadmap.
   always allocate a `Vec`. No encoding rewrite is justified without the TTL or
   eviction RSS cohort, and no rate/tail claim follows from the gate's 64-byte
   rows.
+- Blocking commands are the largest unmeasured latency gap in this review
+  (section 3.12): blocked clients wake on a 0–1000 µs tick while the C servers
+  signal within the same event-loop iteration. The protected gate has no blocking
+  command, so no gate row sees it; 4.22 is the candidate and its own
+  blocked-wake cohort is the admission evidence (AC25).
 - P1 p99 is not consistently better under the merged bounded-poll default
   (section 2.15). The throughput gate passes on medians, but AC5 remains a design
   criterion: a future wakeup/poll change must measure p99 and reject a regression
