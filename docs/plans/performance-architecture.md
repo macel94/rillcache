@@ -111,7 +111,9 @@ ready** (0.258 s at 50k and 1.10–1.24 s at 200k keys versus 0.011–0.061 s fo
 C servers), admitting 4.27 (single-pass replay). AOF HMAC costs **−10.2% P1 /
 −23.6% P16** on append and makes a 50k replay **0.21 → 0.75 s**; the append cost
 is accepted as the security price and verification folds into 4.27. A limited TTL-heavy diagnostic
-(section 3.7) finds no consistent TTL-vs-plain penalty, keeping 4.9 closed. Section
+(section 3.7) finds no consistent TTL-vs-plain penalty, keeping 4.9 closed. A
+64-client/P64–P256 scaling check (section 2.25) leads Redis/Valkey by 29–122% in
+every deep row, with only P1 SET near parity. Section
 2.24 is a one-page open-gap
 ledger that maps every remaining item to its evidence status, candidate and
 admission experiment.
@@ -1248,8 +1250,37 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
 | Incremental keyspace rehash | storage | bound at 1024 keys | deferred 4.18 | large-keyspace cohort | none |
 | Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s) | keep; needs a socket dependency/FFI | connection-storm / idle-socket cohort | none |
+| Pipeline depth and client count | scheduling | **measured**: leads every P≥16 and 64-client row by 29–122%; P1 SET +2.5–3.0% | no candidate | n/a | none |
 | Drain probe; parser cursor; cached clock; last-command cache; deferred write coalescing | syscalls, parsing, latency | +12%/+37% syscalls but removal lost P1; others under noise | closed/rejected (2.6, 4.2, 4.5, 4.9, 4.17) | named workload only | none |
 | Level-triggered epoll, `SO_BUSY_POLL`, `recvmmsg`/`sendmmsg` | syscalls | source; outside the Mio/`std` boundary | policy decision, not a candidate | explicit policy review | none |
+
+### 2.25 Pipeline depth and client-count scaling (scope check)
+
+The protected gate covers 8 clients at pipeline 1 and 16. A local paired cohort
+extended the matrix to 8 clients at P1/16/64/256 and 64 clients at P16, with 100k
+requests, 64-byte values, 1024 keys and three rotations. The host is shared and
+host-limited (P1 median ~31k vs the gate's ~140k), so only the paired ratios are
+read:
+
+| Clients | Pipeline | Workload | Rill vs Redis | Rill vs Valkey |
+| ---: | ---: | --- | ---: | ---: |
+| 8 | 1 | SET | +3.0% | +2.5% |
+| 8 | 1 | GET | +16.5% | +10.0% |
+| 8 | 16 | SET | +49.7% | +79.7% |
+| 8 | 16 | GET | +60.8% | +99.5% |
+| 8 | 64 | SET | +79.6% | +114.4% |
+| 8 | 64 | GET | +98.2% | +122.5% |
+| 8 | 256 | SET | +54.4% | +71.2% |
+| 8 | 256 | GET | +51.4% | +53.5% |
+| 64 | 16 | SET | +29.5% | +36.6% |
+| 64 | 16 | GET | +83.8% | +54.9% |
+
+Rillcache leads every deep-pipeline and 64-client row, with the largest margins at
+P64/P256. The only near-parity cell is P1 SET (+2.5–3.0%), consistent with the
+host-sensitive P1 rows in sections 2.17 and 2.19. No scaling candidate is opened;
+the P256 SET dip below P64 is shared-host noise, not a mechanism. This also
+confirms that the 8-client/P16 gate result is not an artifact of a small client
+set.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -3394,6 +3425,10 @@ separate roadmap.
   process start to first PING. Rill 0.258 s (50k) and 1.10–1.24 s (200k, DBSIZE
   200,000); Redis 0.011/0.027–0.043 (50k DBSIZE verified 50,000); Valkey
   0.054/0.051–0.061. Shared-host diagnostic; raw JSON retained (untracked).
+- Pipeline/client scaling (section 2.25): 8 clients at P1/P16/P64/P256 and 64
+  clients at P16, 100k requests, 64 B, 1024 keys, three rotations. Rill leads
+  Redis/Valkey by 29–122% in every P≥16 and 64-client row; P1 SET +3.0/+2.5% and
+  P1 GET +16.5/+10.0%. Shared-host diagnostic; raw JSON retained (untracked).
 - TTL-heavy diagnostic (section 3.7): 8 Python pipelined clients (16 deep), 1024
   keys, 64 B, 160k commands per run, three rotations, plain vs 10,000 s TTL.
   Medians: Rill SET 117k/125k, GET 112k/113k; Redis SET 111k/106k, GET 91k/125k;
@@ -3594,6 +3629,10 @@ separate roadmap.
   within-row alternating comparison, but cross-row absolute rates are not
   comparable, and a per-row host shift can move a margin. Earlier cohorts that
   used one shared runner are labeled as such in their sections.
+- The gate scope is 8 clients at P1/P16. A local 8-client P64/P256 and 64-client
+  P16 check (section 2.25) leads the C servers by 29–122% in every deep row, with
+  P1 SET at +2.5–3.0%; no scaling loss is measured. The absolute rates are
+  shared-host diagnostics and do not substitute for a gate row.
 - The P1 ping row is host-sensitive. The refreshed runtime passed both four-CPU
   comparisons twice (section 2.10), but earlier identical binaries also lost that
   row by up to 4.32% on the same shared runner (section 2.9). Readiness was
