@@ -85,9 +85,11 @@ runtime also lost P1 ping again in #218 (−1.35%, 2/5), giving a three-cohort
 identical-code spread of −1.35% to +15.4% (section 2.17). The key/value
 representation comparison (section 3.11) locates the duplicate key buffers in the
 expiry and WATCH indexes and defers an encoding rewrite to a TTL/eviction RSS
-result. The blocking-wakeup comparison (section 3.12) finds a 0–1000 µs async-tick
-latency against same-loop ready-key signaling in the C servers, the largest
-unmeasured latency gap; candidate 4.22 and AC25 gate it. The rewrite comparison
+result. The blocking-wakeup comparison (section 3.12) is now measured, not just
+source-based: after the LPUSH reply, Rillcache takes **1.16 ms p50 / 1.92 ms p99**
+to wake a BLPOP against **0.03/0.22 ms** for Redis and Valkey on the same host
+(900 wakeups each), the largest measured latency gap; candidate 4.22 is
+admission-ready and AC25 gates the implementation. The rewrite comparison
 (section 3.13) adds the measured key-list start pause against the C servers'
 fork/COW rewrite: medians of **9–14 ms at 20k keys** and **91–107 ms at 200k**,
 with full passes of 4.85 s and 43.4 s and concurrent GET p99 of 10.8/18.8 ms;
@@ -1199,7 +1201,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large bulk reply copy | replies | source only; local screen failed | 4.15 (std `Arc`/`IoSlice`) | clean large-value cohort (4.16 row 2) | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | source | 4.21, conditional | 4.16 row 5 + A/B | none (persistence off) |
-| 1 ms blocked-client wake | latency | source + arithmetic (0–1000 µs) | 4.22 | blocked-wake cohort | none |
+| 1 ms blocked-client wake | latency | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms on the C servers (900 wakeups each) | 4.22, admitted; implementation next | AC25 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
@@ -1638,13 +1640,31 @@ as the memory acceptance signal.
   plus service, against a same-loop wake in the C servers. At a blocking p99
   target below 1 ms this is the difference between meeting and missing the SLO,
   even though the protected gate has no blocking command and sees exactly zero
-  effect. It is the largest unmeasured latency gap found in this review.
+  effect.
+- **Current-head measurement (2026-11-12).** A paired local harness ran 300
+  `BLPOP`/`LPUSH` wakeups per run, three Latin-rotated runs per server (900
+  wakeups each), with a randomized 0.5–2.5 ms delay between the blocking command
+  and the push so the 1 ms tick phase is not aligned. `after-push` is measured
+  from the LPUSH reply to the BLPOP reply; `total` includes the push round trip:
 
-**Verdict: adapt a same-pass ready-key wake (4.22) only after a blocked-wake
-cohort measures the gap.** Keep the 1 ms tick for timeouts and cross-thread or
-fallback paths, do not busy-poll blocked clients, and add no dependency: the
-signal is an in-memory ready set owned by the same owner that holds the data
-lock.
+  | Server | after-push p50 | after-push p99 | total p50 | total p99 |
+  | --- | ---: | ---: | ---: | ---: |
+  | Rillcache | **1.16 ms** | **1.92 ms** | 1.39 ms | 2.43 ms |
+  | Redis 8.10.2 | 0.031 ms | 0.221 ms | 0.505 ms | 2.21 ms |
+  | Valkey 9.1.2 | 0.025 ms | 0.220 ms | 0.412 ms | 2.88 ms |
+
+  After the push reply, Rillcache is ~37–46× slower at p50 and ~9× at p99 than
+  the C servers on the same host; the total gap is ~2.7–3.4× because the LPUSH
+  round trip and shared-host scheduling dominate it. The measured ~1.16 ms p50
+  matches the 1 ms tick, not a parser or storage cost, and the C servers stay
+  around 30 µs. This is a shared-host diagnostic, not a cross-server cohort, but
+  the relative gap is large and consistent across rotations.
+
+**Verdict: the gap is measured, not just arithmetic, and 4.22 is admission-ready.**
+Adapt the same-pass ready-key wake; keep the 1 ms tick for timeouts and
+cross-thread or fallback paths, do not busy-poll blocked clients, and add no
+dependency: the signal is an in-memory ready set owned by the same owner that
+holds the data lock.
 
 ### 3.13 Rewrite scheduling (fork versus cooperative slices)
 
@@ -2380,7 +2400,7 @@ command is present in the replayed journal; `always` still syncs before the repl
 multi-owner tests pass; the matched persistence-on A/B shows the gain; and both
 protected gates pass on the exact head.
 
-### 4.22 Same-pass blocked-client wakeup (candidate, gated on a latency cohort)
+### 4.22 Same-pass blocked-client wakeup (candidate; admission evidence collected)
 
 **Mechanism.** While executing a mutation under the owner data borrow, if the
 command makes a key ready for a blocked type (list push/move, sorted-set add,
@@ -2402,6 +2422,13 @@ after a fixed delay; measure wake p50/p95/p99 for Rillcache, Redis 8.10.2 and
 Valkey 9.1.2, at least three rotated repetitions, on one host or the same-type
 runners. Add a many-waiter FIFO case, a timeout-versus-push race, `CLIENT
 UNBLOCK`, and a pipeline where the push and the wake are in the same batch.
+
+**Admission evidence (2026-11-12, section 3.12).** 300 wakeups per run, three
+Latin-rotated runs per server, randomized 0.5–2.5 ms push delay: after the LPUSH
+reply, Rillcache p50 **1.16 ms** / p99 **1.92 ms** against Redis **0.031/0.221**
+and Valkey **0.025/0.220** ms on the same host. The gap matches the 1 ms tick and
+is far outside host noise; it admits the candidate. Implementation still needs
+the obligations below and the AC25 acceptance.
 
 **Risks and obligations.** Service after the batch, never re-enter the store
 inside the mutating command; bound the ready set and the number of waiters
@@ -2888,7 +2915,11 @@ separate roadmap.
   `handleClientsBlockedOnKeys` immediately after `call()` (`server.c#L4846`);
   Valkey the same (`db.c#L223`, `server.c#L4647`); against our 1 ms
   `ASYNC_TICK` re-enqueue without a ready-key signal (`reactor.rs#L20`,
-  `#L467`). Source evidence; the wake-latency cohort does not exist yet (4.22).
+  `#L467`). Measured 2026-11-12: 300 BLPOP/LPUSH wakeups per run, three rotated
+  runs per server (900 each), randomized 0.5–2.5 ms push delay; after-push p50/p99
+  were 1.16/1.92 ms (Rillcache), 0.031/0.221 (Redis 8.10.2) and 0.025/0.220
+  (Valkey 9.1.2). Shared-host diagnostic; raw JSON retained in the development
+  environment (untracked).
 - Rewrite scheduling comparison (section 3.13): Redis/Valkey
   `rewriteAppendOnlyFileBackground` forks a COW child
   (`redis aof.c#L3239`, `valkey aof.c#L2595`); our cooperative slices and the
@@ -3068,11 +3099,11 @@ separate roadmap.
   always allocate a `Vec`. No encoding rewrite is justified without the TTL or
   eviction RSS cohort, and no rate/tail claim follows from the gate's 64-byte
   rows.
-- Blocking commands are the largest unmeasured latency gap in this review
-  (section 3.12): blocked clients wake on a 0–1000 µs tick while the C servers
-  signal within the same event-loop iteration. The protected gate has no blocking
-  command, so no gate row sees it; 4.22 is the candidate and its own
-  blocked-wake cohort is the admission evidence (AC25).
+- Blocking commands are the largest **measured** latency gap in this review
+  (section 3.12): after the push reply, blocked clients wake in 1.16 ms p50 /
+  1.92 ms p99 versus 0.03/0.22 ms for Redis/Valkey on the same host, matching
+  the 1 ms tick. The protected gate has no blocking command, so no gate row sees
+  it; 4.22 is admitted and AC25 gates the implementation.
 - Rewrite scheduling has measured start-pause medians of **9–14 ms at 20k keys**
   and **91–107 ms at 200k** (section 3.13), with 4.85 s / 43.4 s full passes,
   where the C servers fork a copy-on-write child; the gate runs with persistence
