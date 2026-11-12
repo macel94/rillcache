@@ -93,6 +93,8 @@ to wake a BLPOP against **0.03/0.22 ms** for Redis and Valkey on the same host
 (900 wakeups each), and an idle blocked client costs **5.6% of a core (22.2% at
 1000)** against <1% for the C servers — the largest measured latency and
 idle-CPU gap; candidate 4.22 is admission-ready and AC25 gates the implementation.
+A post-#226 re-measurement (5.0/21.4% for blocked, 4.6/22.4% subscribers,
+4.2/26.6% monitors) shows the merged spin fix left the per-client scan intact.
 Idle subscribers and monitors show the same tick cost — **6.0% of a core with one
 idle subscriber, 22–27% with 1000**, against <1% for the C servers — and delivery
 waits for the tick too: **1.05/3.60 ms** pub/sub p50/p99 and **0.37/6.15 ms** for
@@ -1244,8 +1246,8 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
-| 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1% | 4.22, admitted; implementation next | AC25 on the implemented change | none |
-| Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
+| 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1%, post-#226 5.0/21.4 | 4.22, admitted; implementation next | AC25 on the implemented change | none |
+| Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%, post-#226 4.6/13.6/22.4 and 4.2/20.8/26.6; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | TTL index and clock | latency, storage | **measured null** in a limited 8-client cohort (~110–125k/s; differences inside host spread) | no candidate; 4.9 stays closed | clean TTL cohort (4.16 row 1) | none |
@@ -1883,6 +1885,21 @@ as the memory acceptance signal.
   deliver within the command's event-loop iteration. Total latency adds the
   command round trip and shared-host scheduling. Candidate 4.24 covers both the
   CPU and this delivery latency; the measured baselines are what AC27 targets.
+
+- **Post-#226 re-measurement (current head, 2026-11-12).** The no-progress spin
+  fix is merged, so the tables above were re-run on the current binary:
+  - idle `BLPOP`: 0.6 / 5.0 / 6.6 / 12.4 / 20.4 / 21.4% at 0/1/10/50/100/1000
+    clients (pre-fix 0.6 / 5.6 / 6.8 / 13.0 / 17.8 / 22.2);
+  - idle `SUBSCRIBE`: 0.8 / 4.6 / 13.6 / 22.4% at 0/1/100/1000 (pre-fix
+    0.8 / 6.0 / 17.8 / 22.2);
+  - idle `MONITOR`: 1.0 / 4.2 / 20.8 / 26.6% at 0/1/100/1000 (pre-fix
+    0.6 / 5.8 / 20.8 / 27.4).
+
+  The values are within run-to-run noise of the pre-fix tables. The spin fix
+  removed its roughly two-point component but **did not remove the per-client
+  1 ms scan**, which still costs ~4–5% of a core with one idle asynchronous
+  client and 20–27% at 1000 versus <1% for the C servers. 4.22/4.24 remain the
+  required mechanism; the measured baselines are unchanged for AC25/AC27.
 
 **Verdict: the gap is measured, not just arithmetic, and 4.22 is admission-ready.**
 Adapt the same-pass ready-key wake; keep the 1 ms tick for timeouts and
@@ -2722,7 +2739,9 @@ behavior rather than a lost wake.
 to the reactor's service latency (tens of µs), and idle CPU with blocked clients
 falls from 5.6% (1 client) / 22% (1000) toward the C servers' <1%, because the
 tick no longer re-enqueues and re-polls every blocked client and a no-progress
-poll no longer arms the 20 µs `FAST_POLL` spin. The protected gate, which has no
+poll no longer arms the 20 µs `FAST_POLL` spin. The post-#226 re-measurement is
+5.0% (1) / 21.4% (1000), showing the spin fix alone left the per-client scan
+intact. The protected gate, which has no
 blocking command, is unchanged; throughput is unchanged because the ready set is
 empty when nothing blocks.
 
@@ -2816,8 +2835,9 @@ lost signal. The same shape covers blocked clients (4.22); implementing them
 together avoids two separate tick paths.
 
 **Prediction.** Idle CPU falls from the measured 6.0%/17.8%/22.2% (1/100/1000
-idle subscribers) and 5.8%/20.8%/27.4% (monitors) to the C servers' under 1%,
-with no scaling beyond the client count's bookkeeping; publish and monitor
+idle subscribers) and 5.8%/20.8%/27.4% (monitors) — post-#226 4.6%/13.6%/22.4%
+and 4.2%/20.8%/26.6% — to the C servers' under 1%, with no scaling beyond the
+client count's bookkeeping; publish and monitor
 delivery latency drops from the measured 1.05/3.60 ms (pub/sub p50/p99) and
 0.37/6.15 ms (MONITOR) to same-pass service, near the C servers' 0.05–0.08 ms
 p50. The protected gate has no pub/sub or MONITOR client and is unchanged.
@@ -3550,6 +3570,10 @@ separate roadmap.
   Redis 0.2/0.2/0.6/0.4%, Valkey 0.4/0.4/0.6/0.4%; MONITOR: Rillcache
   0.6/5.8/20.8/27.4%, Redis 1.6/0.4/0.4/0.4%, Valkey 0.4/0.4/0.4/0.8%.
   Shared-host diagnostic; raw JSON retained (untracked), not a gate.
+- Post-#226 idle re-measurement (section 3.12): current binary, 5 s CPU windows.
+  Blocked: 0.6/5.0/6.6/12.4/20.4/21.4% at 0/1/10/50/100/1000; SUBSCRIBE:
+  0.8/4.6/13.6/22.4% at 0/1/100/1000; MONITOR: 1.0/4.2/20.8/26.6%. Values are
+  within pre-fix noise; the per-client scan remains. Raw JSON retained.
 - Async delivery latency (section 3.12, candidate 4.24): 300 publishes/PINGs per
   run, three rotated runs, randomized phase; after-PUBLISH p50/p99 1.05/3.60 ms
   (Rillcache), 0.075/1.19 (Redis 8.10.2), 0.064/0.56 (Valkey 9.1.2); after-PING
@@ -3749,8 +3773,11 @@ separate roadmap.
 - Blocking commands are the largest **measured** latency and idle-CPU gap in this
   review (section 3.12): after the push reply, blocked clients wake in 1.16 ms p50
   / 1.92 ms p99 versus 0.03/0.22 ms for Redis/Valkey on the same host, and one
-  idle blocked client costs 5.6% of a core (22.2% at 1000) versus <1%. Idle
-  subscribers and monitors show the same tick cost (6.0% at one, 22–27% at 1000)
+  idle blocked client costs 5.6% of a core (22.2% at 1000) versus <1%; the
+  post-#226 re-measurement is 5.0/21.4%, so the spin fix left the per-client scan
+  intact. Idle
+  subscribers and monitors show the same tick cost (6.0% at one, 22–27% at 1000;
+  post-#226 4.6/22.4% and 4.2/26.6%)
   and delivery waits for the tick too: pub/sub 1.05/3.60 ms p50/p99 and MONITOR
   0.37/6.15 ms versus ≤0.08/1.19 ms for the C servers; both are covered by 4.24.
   The protected gate has no such client, so no gate row sees either gap;
