@@ -74,7 +74,12 @@ transaction per command. The latest cohort (#217, section 2.18) resolves P1 ping
 at +15.4% with an interval excluding 1.0, while the same runtime lost that row in
 #216; the pair is kept as the measurement-risk evidence. The expiry and eviction
 comparison (section 3.10) finds our ordered 1,280-reaps/s purge bounded and
-acceptable, with a read-aware-LRU quality gap that stays unmeasured.
+acceptable, with a read-aware-LRU quality gap that stays unmeasured. The same
+runtime also lost P1 ping again in #218 (−1.35%, 2/5), giving a three-cohort
+identical-code spread of −1.35% to +15.4% (section 2.17). The key/value
+representation comparison (section 3.11) locates the duplicate key buffers in the
+expiry and WATCH indexes and defers an encoding rewrite to a TTL/eviction RSS
+result.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -810,10 +815,21 @@ open measurement risk (sections 2.9 and 2.15).
 
 Two hours after that failure, the same runtime (docs-only head `bd4f25d`, base
 `8b38d0b`) passed the same row at 181,489 vs 157,268 req/s (+15.4%, 5/5, ratio
-1.1301 [1.1219–1.2376], run 43128571502). The two cohorts bracket the row for
-identical code: −0.67% and +15.4%. Neither the loss nor the win proves a code
-change; together they show that the strict median of one shared-runner P1 row can
-move by roughly 16 points while the code is unchanged. The row is the gate's
+1.1301 [1.1219–1.2376], run 43128571502). A later docs-only head (`506325d`,
+same base, run 43134573112) failed it again at 138,976 vs 140,875 req/s
+(−1.35%, 2/5, ratio 0.9819 [0.9388–1.0209]), while its P16 ping passed 5/5 at
++48.9%. All three heads carry the identical `7b365dc` runtime:
+
+| Cohort | Docs head | P1 ping R/V req/s | Delta | Wins | Paired ratio | P16 ping |
+| --- | --- | ---: | ---: | ---: | --- | ---: |
+| #216 | `ddcc10c` | 138,803.5 / 139,745.7 | −0.67% | 3/5 | 1.0030 [0.9371–1.0278] | 5/5, +49.7% |
+| #217 | `bd4f25d` | 181,489 / 157,268 | +15.4% | 5/5 | 1.1301 [1.1219–1.2376] | 5/5, +84.5% |
+| #218 | `506325d` | 138,976.1 / 140,875.2 | −1.35% | 2/5 | 0.9819 [0.9388–1.0209] | 5/5, +48.9% |
+
+The identical-code spread is −1.35% to +15.4%: both losses are within 1.4% and
+the win is resolved with an interval above 1.0. Neither a loss nor a win proves a
+code change on a single cohort; the strict median of this one shared-runner row
+moves by roughly 16 points while the binary is unchanged. The row is the gate's
 measurement risk, not a stable deficit, and the clean-host direction remains
 positive.
 
@@ -1363,6 +1379,7 @@ That is safe Rust with no new dependency.
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
 | Expiry | lazy + sampled active cycle, 25% CPU budget, fast 1 ms, effort levels | same | lazy + ordered `BTreeSet` reap, 128 due keys per 100 ms | **Keep:** ordered removals are exact and capped at ~0.1–0.3% CPU; adaptive bursts only with the 4.16 TTL row (3.10) |
 | Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Keep with a quality gap:** reads do not refresh LRU; revisit only with a measured eviction row (3.10, 4.16) |
+| Value/key encoding | embstr ≤44 B, int objects, shared key with expires, listpack/intset small collections | same | `Vec<u8>` values, key duplicated in expiry/version indexes, ordinary collection containers | **Avoid rewrite:** short strings are one allocation either way and no gate row pays it; only a TTL/eviction RSS result could justify removing the duplicate key (3.11) |
 
 ### 3.9 Persistence write path (append-only journal)
 
@@ -1454,6 +1471,51 @@ eviction-quality question needs a sixth row there. If either shows a gap, adapt
 in bounded slices between command batches (the journal-rewrite shape) rather than
 one large locked purge, and only then consider a read-aware access stamp. Do not
 copy the adaptive effort levels or LFU counters speculatively.
+
+### 3.11 Key and value representation (memory, not gate rate)
+
+The gate's 64-byte string values hide the representation differences that matter
+for memory-heavy workloads:
+
+- **Redis 8.10.2 and Valkey 9.1.2** store a short string in one embstr
+  allocation (≤44 bytes,
+  [`redis object.c#L337`](https://github.com/redis/redis/blob/8.10.2/src/object.c#L337)),
+  encode an integer value as an `int` object with no byte buffer
+  ([`tryObjectEncoding`](https://github.com/redis/redis/blob/8.10.2/src/object.c#L372),
+  used by SET at
+  [`t_string.c#L442`](https://github.com/redis/redis/blob/8.10.2/src/t_string.c#L442)),
+  and keep small collections in a single listpack/intset block (hash 512,
+  zset 128, set 512 entries by default,
+  [`redis config.c#L3511`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3511),
+  [`#L3593`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3593),
+  [`#L3603`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3603)).
+  The expiry dict shares the key pointer with the main dict; watched-key state
+  exists only for clients that watch.
+- **Rillcache** stores `value: Vec<u8>` for every string
+  ([`Entry`](../../src/engine/data.rs#L204)), always one heap buffer even for an
+  integer, and builds collections as ordinary Rust containers. TTL and WATCH
+  state duplicate the full key: `expirations:
+  BTreeSet<(i64, Vec<u8>)>`
+  ([`data.rs#L251`](../../src/engine/data.rs#L251)) and
+  `versions: HashMap<Vec<u8>, u64>`
+  ([`#L252`](../../src/engine/data.rs#L252)). A TTL key that has been written can
+  therefore own four buffers (main key, value, expiry key, version key) where the
+  C servers own one key object, one value object and two pointer/index entries.
+- Gate scope: the 64-byte non-TTL, non-WATCH SET/GET rows use exactly two
+  buffers per key (main key + value), the same order as the C servers' raw
+  encoding. None of the duplication above is on a protected row.
+
+**Verdict: do not add an encoding rewrite.** Embstr is not obviously cheaper
+than the current `Vec` (both are one allocation for short strings), integer
+encoding would save one buffer per counter but the clean cohort already leads the
+`incr` rows, and listpack for every collection is a large storage rewrite that
+would touch the collection, expiry, stream and journal encodings for no gate row.
+The actionable item is the duplicate **key** buffers: 4.20 removes the version
+copy whenever nothing watches, and a shared-key/index representation is a
+possible follow-up only if the TTL row's RSS shows it matters. That design must
+not put a refcount or an index lookup on the GET/SET hot path without a matched
+measurement. Add RSS reporting to the TTL and eviction rows (4.16 rows 1 and 6)
+as the memory acceptance signal.
 
 ## 4. Candidate architectures
 
@@ -1942,7 +2004,8 @@ Required workload rows, each against pinned Redis 8.10.2 and Valkey 9.1.2 with
 the same generator, host, CPU placement and at least three rotated repetitions:
 
 1. **TTL-heavy P1:** every key has a deadline; SET with EX and GET on hit/miss.
-   Tests the clock path that the no-TTL gate never executes (candidate 4.9).
+   Tests the clock path that the no-TTL gate never executes (candidate 4.9) and
+   reports RSS as the signal for the duplicated expiry key (section 3.11).
 2. **Large values:** 64 KiB and 1 MiB SET and GET at P1 and P16. Tests 4.15 and
    the parse/store copy.
 3. **Large multi-bulk replies:** a 1,000-element list/hash/set read, and a 1 MiB
@@ -1956,7 +2019,8 @@ the same generator, host, CPU placement and at least three rotated repetitions:
 6. **Eviction pressure:** `maxmemory` set just below the working set,
    `allkeys-lru`, and a read-heavy mixed GET/SET stream. Tests the mutation-time
    LRU approximation and bounded eviction scans against the C servers' sampled
-   pool (section 3.10).
+   pool (section 3.10); report RSS and the read-hit retention as the quality
+   signals.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -2387,6 +2451,12 @@ samples retained.
   sync within its 1 s bound; kill/replay, HMAC, CRC, rewrite and multi-owner
   tests shall pass; the matched persistence-on A/B shall show the gain; and both
   protected gates shall pass on the exact head.
+- **AC24 (memory representation, only if 3.11 is implemented).** When duplicate
+  key or value representation is changed, a cohort of at least one million TTL
+  and counter keys shall show the RSS reduction with identical expiry, WATCH,
+  collection and journal semantics; no hot-path allocation or refcount shall be
+  added without a matched rate/tail result; and both protected gates shall pass on
+  the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -2419,6 +2489,11 @@ separate roadmap.
   (4/5, interval contains 1.0), P16 ping +84.5%, P16 get +93.8%. The same runtime
   lost the P1 ping median in #216 (section 2.17), so both cohorts are required
   context, not a contradiction.
+- Failed docs-only cohort #218 (section 2.17): run 43134573112, head `506325d`,
+  base `8b38d0b`; Valkey P1 ping 138,976.1 vs 140,875.2 (−1.35%, 2/5, ratio
+  0.9819 [0.9388–1.0209]), P16 ping 5/5 at +48.9%, all other rows passed. Kept
+  with #216/#217 as the identical-code variance evidence; not retried until
+  green.
 - Per-request latency and process CPU (section 2.22): derived from the five
   `sample.json` files per P1 workload in the #212 partials above (run
   42994675861); no new runs. Each sample records p50/p95/p99/max and
@@ -2471,6 +2546,11 @@ separate roadmap.
   pool (`redis evict.c#L36`, `valkey evict.c#L54`) against our
   `purge_expired(128)` per 100 ms tick and bounded candidate scans. Code
   citations; no TTL or eviction cohort exists yet (4.16 rows 1 and 6).
+- Encoding comparison (section 3.11): Redis embstr limit 44 B and
+  `tryObjectEncoding`, listpack/intset thresholds (`redis config.c#L3511`,
+  `#L3593`, `#L3603`), against our `Entry` `Vec` value and the duplicated key in
+  `expirations`/`versions`. Code citations; memory is only measured by the RSS
+  column of the 4.16 rows.
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
@@ -2611,16 +2691,22 @@ separate roadmap.
   merged as PR #172 after passing both four-CPU gates (section 2.13). The
   remaining P1 question is host-sensitive measurement and other workloads, not a
   larger thread count.
-- The same docs-only runtime lost the P1 ping median in #216 (−0.67%) and won it
-  in #217 (+15.4%, interval excluding 1.0) within two hours on shared four-CPU
-  runners. That ~16-point swing for identical code is the clearest
-  measurement-risk evidence in the record; judge a change on its own fresh
-  cohort, never by picking the favorable one.
+- The same docs-only runtime lost the P1 ping median in #216 (−0.67%) and #218
+  (−1.35%) and won it in #217 (+15.4%, interval excluding 1.0) within three hours
+  on shared four-CPU runners. That −1.35% to +15.4% swing for identical code is
+  the clearest measurement-risk evidence in the record; judge a change on its
+  own fresh cohort, never by picking the favorable one.
 - Expiry and eviction are outside the gate. Our fixed 1,280 due reaps/s is
   bounded and ordered, but sustained high-churn TTL under memory pressure could
   leave stale keys longer than a 25%-CPU burst cycle, and mutation-time LRU
   ignores reads. Both are unmeasured (4.16 rows 1 and 6); no production claim
   either way (section 3.10).
+- Value and key representation is a memory axis, not a gate row (section 3.11).
+  A TTL key that has been written can own four buffers (main key, value, expiry
+  key, version key) where the C servers share one key object; integer values
+  always allocate a `Vec`. No encoding rewrite is justified without the TTL or
+  eviction RSS cohort, and no rate/tail claim follows from the gate's 64-byte
+  rows.
 - P1 p99 is not consistently better under the merged bounded-poll default
   (section 2.15). The throughput gate passes on medians, but AC5 remains a design
   criterion: a future wakeup/poll change must measure p99 and reject a regression
