@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.46).**
+gated (4.15, 4.20–4.27, 4.29–4.47).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -158,7 +158,10 @@ rows are competitive; 4.46 slices the source directly. Large listings repeat
 the pattern at 100k: `HGETALL` is **132.3 vs 25.7–37.8 ms**, `HKEYS`/`HVALS`
 98–102 vs 15.8–19.7, `KEYS` 91 vs 21–43 and `RANDOMKEY` 0.52 vs 0.21–0.29
 because each sorts a fresh snapshot; 4.29 and 4.31 are extended to cover them.
-Under
+HyperLogLog is the remaining CPU gap: 100k pipelined adds cost **1.70 vs 0.39–0.41 s**
+and 10k repeated counts **2.66 vs 0.033–0.036 s** because every command
+decodes/encodes 16 KB of registers and nothing is cached; 4.47 keeps them in
+place and caches the count. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1074,7 +1077,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-four things are still true even though every row now leads:
+Twenty-five things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1229,6 +1232,11 @@ Twenty-four things are still true even though every row now leads:
     `KEYS key:*` 91 versus 21–43, and `RANDOMKEY` 0.52 versus 0.21–0.29, because
     each listing sorts a fresh snapshot; `HMGET` and the 10-member controls are at
     the floor (section 3.31, extending 4.29 and 4.31).
+25. **HyperLogLog add/count.** 100k pipelined `PFADD` cost **1.70 s (16.96
+    µs/add)** versus 4.1/3.9 µs and 10k repeated `PFCOUNT` **2.66 s (265 µs/call)**
+    versus 3.3–3.6 µs, because every command decodes/encodes the 16 KB register
+    set and there is no cached cardinality; single-call p50 and the 10-element
+    controls are at the floor (section 3.32, candidate 4.47).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1405,6 +1413,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` 7.96 ms (p99 17.2) vs 0.12/0.16; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, admitted | AC48 | none |
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
+| HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1836,6 +1845,7 @@ for a production claim.
 | SORT `BY nosort` | source-order slice without sorting or copying | same | clone every element and build an `Item` before applying `LIMIT` | **Adapt:** 4.46 direct nosort slice; measured 100k 7.96 vs 0.12/0.16 ms; sorted/ALPHA/weighted rows 0.9–1.5× (3.30, AC48) |
 | Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
 | Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
+| HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -3090,6 +3100,50 @@ the 10k `HGETALL` row; 4.31's ordered key index must serve `KEYS` and
 `RANDOMKEY` samples without an O(n) walk. Ordering for both is unspecified in
 Redis, so the deterministic-order change is an explicit test decision.
 
+### 3.32 HyperLogLog add and count (PFADD/PFCOUNT)
+
+- **Redis 8.10.2 and Valkey 9.1.2** keep the HLL registers in the string object,
+  update one register in place on `PFADD`, and store a cached cardinality in the
+  HLL header (`card[8]` with the valid/dirty bit) so a repeated `PFCOUNT` is O(1)
+  until the next add/merge
+  ([`redis hyperloglog.c#L182`](https://github.com/redis/redis/blob/8.10.2/src/hyperloglog.c#L182),
+  [`#L191`](https://github.com/redis/redis/blob/8.10.2/src/hyperloglog.c#L191),
+  [`#L1642`](https://github.com/redis/redis/blob/8.10.2/src/hyperloglog.c#L1642),
+  [`#L1696`](https://github.com/redis/redis/blob/8.10.2/src/hyperloglog.c#L1696);
+  [`valkey hyperloglog.c#L208`](https://github.com/valkey-io/valkey/blob/9.1.2/src/hyperloglog.c#L208),
+  [`#L1664`](https://github.com/valkey-io/valkey/blob/9.1.2/src/hyperloglog.c#L1664),
+  [`#L1699`](https://github.com/valkey-io/valkey/blob/9.1.2/src/hyperloglog.c#L1699)).
+- **Rillcache** decodes the stored HLL on every command: for the dense
+  representation `inspect` copies all 16,384 register bytes, `PFADD` mutates the
+  copy, `serialize()` builds a new header+registers vector, and `data.put` copies
+  that into the entry again — three full copies per add. `PFCOUNT` builds a new
+  empty HLL, merges the stored registers into it (another copy) and scans all
+  16,384 registers every call; there is no cached cardinality
+  ([`hll.rs`](../../src/engine/hll.rs#L240),
+  [`#L285`](../../src/engine/hll.rs#L285)).
+- **Measured (2026-11-12).** 100,000 distinct elements added in 2,000-command
+  pipelines, then 10,000 repeated `PFCOUNT` calls, three rotations; a 10-element
+  HLL is the control:
+
+  | Operation | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `PFADD` 100k (pipelined) | **1,695 ms (16.96 µs/add)** | 410 (4.10) | 392 (3.92) |
+  | `PFCOUNT` 10k (pipelined) | **2,655 ms (265.5 µs/call)** | 35.7 (3.57) | 33.1 (3.31) |
+  | `PFADD` single p50 | 0.187 ms | 0.151 | 0.302 |
+  | `PFCOUNT` single p50 | 0.484 | 0.169 | 0.059 |
+  | 10-element controls | 0.164/0.185 | 0.195/0.228 | 0.073/0.123 |
+
+  Adds are **4.1–4.3×** and repeated counts **74–80×** slower; the single-call
+  p50 hides the count cost behind the client floor, but a pipelined or repeated
+  counter workload pays it every time. Candidate 4.47.
+
+**Verdict: adapt in-place registers and a cached count (4.47).** Keep the HLL
+mutable inside the entry (no decode/serialize/put copies on `PFADD`), and store a
+cached cardinality in the header that `PFADD`/`PFMERGE` invalidate, so
+`PFCOUNT` is O(1) when nothing changed. Preserve the exact/dense
+representations, serialization/rewrite/replay, the error bound and merge
+semantics.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3138,7 +3192,9 @@ direct-probe candidate for the measured 30–1461× multi-member lookup loss in
 section 3.28. 4.45 is the bounded-lazy-expiry candidate for the measured 37–76×
 mass-expiry stall in section 3.29. 4.46 is the direct `BY nosort` slice candidate
 for the measured 50–66× loss in section 3.30. Section 3.31 extends 4.29 to
-`HKEYS`/`HVALS` and 4.31 to `KEYS`/`RANDOMKEY` at 100k.
+`HKEYS`/`HVALS` and 4.31 to `KEYS`/`RANDOMKEY` at 100k. 4.47 is the HyperLogLog
+in-place-register and cached-count candidate for the measured 4× add and 74–80×
+count throughput losses in section 3.32.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3709,6 +3765,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    controls. Extends 4.29/4.31 on a clean runner; the 2026-11-12 local cohort in
    section 3.31 already measures 132/98/102 ms for the hash listings and 91 ms
    for `KEYS` versus 15.8–43 ms.
+24. **HyperLogLog:** 100k pipelined `PFADD`, 10k repeated `PFCOUNT`, single-call
+   p50s, and a 10-element control. Confirms 4.47 on a clean runner; the
+   2026-11-12 local cohort in section 3.32 already measures 1.70 s versus 0.39–0.41
+   for adds and 2.66 s versus 0.033–0.036 for counts.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3716,7 +3776,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty-three rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-four rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4184,32 +4244,34 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.44 multi-member probes | `set_mismember` (`collection_commands.rs#L3043`), `zmscore` (`collections.rs#L490`), `contains_member`/`zset_score` | SetInt/SetPack; duplicates/order; missing/empty/wrong type; no reply change | 100k `SMISMEMBER`/`ZMSCORE` at 1/10/100, `HMGET` control | small |
 | 4.45 bounded expiry | `KEYS`/`RANDOMKEY`/`DBSIZE` (`keyspace.rs#L183`), `MGET`/`MSET`/`MSETEX` (`multikey.rs#L160`), `SCAN` (`scan.rs#L122`), `Data::reap`/`reserve` (`data.rs#L599`, `#L646`) | expired values unreadable; DBSIZE semantics; admission bound; TTL/WATCH/notifications | 30k-expiry wave: `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`, lazy `GET` | small |
 | 4.46 nosort slice | `sort`/`source_values` (`sort.rs#L120`, `#L228`), `ITEMS`/limit/STORE | source order for set/zset; offset/count; STORE; missing key; no reply change | 100k `BY nosort LIMIT`, controls, other SORT rows | small |
+| 4.47 HLL in place | `pfadd`/`pfcount`/`pfmerge` (`hll.rs#L240`, `#L285`, `#L313`), `Hll`/`inspect`/`serialize`, `Data::put` | cache invalidation; exact↔dense; count accuracy; serialization/rewrite/replay | 100k pipelined `PFADD`, 10k `PFCOUNT`, controls | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
-for the measured synchronous `UNLINK`/`ASYNC` drop. 4.40, 4.41, 4.44 and 4.46 are
-the smallest, highest-certainty fixes (O(1) counts/membership, in-place list
-seek, per-member probes, direct nosort slice) and can land immediately. 4.42 is
-the stream sibling of 4.35's in-place write and shares the delta-accounting
-shape. 4.35 is next: every collection write currently clones the collection, the
-gaps are 3.5–262×, and it reuses 4.34's admit-then-mutate shape. 4.37 is small
-and shares 4.34's in-place string path: it removes the two copies in `SETBIT` and
-the byte loop in `BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir
-slice and then the dense index; its 100k gaps are 35–298×. 4.30, 4.38 and 4.43
-are the largest measured read-side ratios (378–927× and 10–53×) and should share
-one ordered structure: 4.30 covers point/score/start-0 reads, 4.38 the
-rank-select, and 4.43 the geohash cell ranges. 4.39 is a contract/reliability fix
-on the pub/sub path already admitted as 4.24 and should land with them. 4.34
-itself removes two full-value copies per `APPEND`/`SETRANGE`. 4.32 follows as the
-structural memory and CPU fix (142–143 → target ≤24 B/element) and may reuse
-4.31's ordered-list direction. 4.22/4.24 come last because they touch every
-asynchronous client path and carry the highest ordering risk (4.39 rides with
-them). 4.31 is the largest per-call ratio in the record but touches the keyspace,
-every collection type and the router cursor, so it follows the journal slices and
-the ordered-structure decision. 4.23 follows the existing bounded slices. 4.20
-stays conditional on 4.19; 4.18 stays deferred.
+for the measured synchronous `UNLINK`/`ASYNC` drop. 4.40, 4.41, 4.44, 4.46 and
+4.47 are the smallest, highest-certainty fixes (O(1) counts/membership, in-place
+list seek, per-member probes, direct nosort slice, in-place HLL + cached count)
+and can land immediately. 4.42 is the stream sibling of 4.35's in-place write and
+shares the delta-accounting shape. 4.35 is next: every collection write currently
+clones the collection, the gaps are 3.5–262×, and it reuses 4.34's
+admit-then-mutate shape. 4.37 is small and shares 4.34's in-place string path: it
+removes the two copies in `SETBIT` and the byte loop in `BITCOUNT` (5–17×). 4.36
+follows, first as a no-copy reservoir slice and then the dense index; its 100k
+gaps are 35–298×. 4.30, 4.38 and 4.43 are the largest measured read-side ratios
+(378–927× and 10–53×) and should share one ordered structure: 4.30 covers
+point/score/start-0 reads, 4.38 the rank-select, and 4.43 the geohash cell
+ranges. 4.39 is a contract/reliability fix on the pub/sub path already admitted
+as 4.24 and should land with them. 4.34 itself removes two full-value copies per
+`APPEND`/`SETRANGE`. 4.32 follows as the structural memory and CPU fix
+(142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list direction.
+4.22/4.24 come last because they touch every asynchronous client path and carry
+the highest ordering risk (4.39 rides with them). 4.31 is the largest per-call
+ratio in the record but touches the keyspace, every collection type and the
+router cursor, so it follows the journal slices and the ordered-structure
+decision. 4.23 follows the existing bounded slices. 4.20 stays conditional on
+4.19; 4.18 stays deferred.
 
 ### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
 
@@ -5087,6 +5149,50 @@ be unchanged; offset/count edges, `STORE`, missing keys and set/zset sources
 shall pass; no dependency shall be added; and both protected gates shall pass on
 the exact head.
 
+### 4.47 In-place HyperLogLog registers with a cached count (candidate; admission measured)
+
+**Mechanism.** Keep the HLL in the entry as today (exact/dense), but mutate the
+dense registers in place under `entries.get_mut` instead of decode → serialize →
+`put`, updating `payload_len` by the delta. Add a cached cardinality and dirty
+bit in the header (as Redis's `card[8]`): `PFADD`/`PFMERGE` invalidate,
+`PFCOUNT` returns the cache when valid and otherwise computes once and stores it.
+Merging mutates the destination registers in place.
+
+**Prediction.** 100k pipelined adds fall from **1.70 s to ≤0.6 s** (≤6 µs/add)
+and 10k repeated counts from **2.66 s to ≤0.15 s** (≤15 µs/call); the
+single-call p50 (client floor) and the 10-element controls are unchanged.
+
+**Admission evidence (2026-11-12, section 3.32).** 100,000 distinct elements
+added in 2,000-command pipelines, then 10,000 `PFCOUNT` calls, three rotations:
+`PFADD` 1,709/1,664/1,696 ms (16.96 µs/add) versus Redis 410/421/367 (4.10) and
+Valkey 389/487/392 (3.92); `PFCOUNT` 2,655/2,771/2,646 ms (265.5 µs/call) versus
+35.7 (3.57) and 33.1 (3.31); single `PFADD`/`PFCOUNT` p50 0.187/0.484 versus
+0.151/0.169 and 0.302/0.059; 10-element controls 0.164/0.185 versus 0.195/0.228
+and 0.073/0.123.
+
+**Risks and obligations.** Every add/merge and every exact↔dense conversion must
+invalidate the cache; a stale cache returns a wrong count. The serialized header
+must stay compatible with rewrite/replay/restore, counts must stay within the
+HLL error bound (0.81% at 16k registers) and identical before/after
+serialization, and expiry/TTL/accounting must see the same payload.
+
+**Rejected options.** Keeping a count cache outside the HLL payload
+(accounting/rewrite divergence), recomputing every count (the measured 74–80×),
+and a sparse-encoding rewrite (not needed for the measured gap).
+
+**Rejection condition.** Any count, merge, serialization or conversion result
+differs, the controls regress, or no gain above the spread.
+
+**Acceptance (AC49).** 100,000 pipelined `PFADD` shall finish in ≤0.6 s
+(≤6 µs/add, ≥2.8× faster than the measured 1.70 s and within ~1.6× the faster C
+server); 10,000 repeated `PFCOUNT` calls shall finish in ≤0.15 s (≤15 µs/call,
+≥17× faster than 2.66 s and within ~5× the faster C server); single-call p50 and
+the 10-element controls shall stay within noise; counts shall be within the HLL
+error bound and identical before/after serialization; the cache shall be
+invalidated by add/merge and exact↔dense conversion; rewrite/replay/restore and
+TTL tests shall pass; no dependency shall be added; and both protected gates
+shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -5097,10 +5203,11 @@ in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
 the existing channels and `sync_channel`, 4.40 uses the existing containers'
 lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the
 existing stream map, 4.43 uses geohash score ranges, 4.44 uses the existing
-set/zset members, 4.45 uses the existing lazy expire path, and 4.46 slices the
-existing source order. The rest use the existing `std` I/O, parser and in-repo
-journal/crypto code. Each candidate lands as its own PR with AC5 plus the
-protected gates; no combined integration branch.
+set/zset members, 4.45 uses the existing lazy expire path, 4.46 slices the
+existing source order, and 4.47 mutates the existing HLL registers. The rest use
+the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
+lands as its own PR with AC5 plus the protected gates; no combined integration
+branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -5154,7 +5261,8 @@ existing collection containers in place; 4.36 uses `Vec` plus
 existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
 and probes; 4.41 walks the existing list chunks; 4.42 mutates the existing stream map;
 4.43 uses geohash score ranges; 4.44 uses the existing set/zset members; 4.45 uses the existing lazy expire path;
-4.46 slices the existing source order. None adds a crate, build script,
+4.46 slices the existing source order; 4.47 mutates the existing HLL registers.
+None adds a crate, build script,
 allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
@@ -5364,6 +5472,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   persistence/listing tests. `KEYS`/`RANDOMKEY` must still exclude expired keys
   (4.45), and the keyspace index must be memory-counted and rebuilt on
   replay/rewrite (AC31/AC33).
+- **HLL risk (4.47):** a stale cached cardinality returns a wrong count, so every
+  add/merge and exact↔dense conversion must invalidate it; the serialized header
+  must stay compatible with rewrite/replay/restore, and counts must stay within
+  the error bound and identical before/after serialization (AC49).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -5441,6 +5553,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Purging every due key on the first command after a mass expiry | The measured stall is 36–46 ms for 30k expired keys and scales with the backlog; reads should expire only what they touch (4.45). |
 | Materializing the whole source for `SORT ... BY nosort LIMIT` | The measured 7.96 vs 0.12–0.16 ms is a full copy of 100k values for a 10-element slice; the other SORT rows are already 0.9–1.5× (4.46). |
 | Keeping per-call sorts for `HKEYS`/`HVALS`/`KEYS` | At 100k the hash listings are 3.5–6.2× and `KEYS` 2.1–4.3× behind; 4.29's ordered hash and 4.31's key index remove the sort without changing reply contents (3.31). |
+| A count cache outside the HLL payload | A separate counter diverges from rewrite/replay/restore and accounting; the cache belongs in the serialized header (4.47). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -5787,6 +5900,16 @@ samples retained.
   unchanged; offset/count edges, `STORE`, missing keys and set/zset sources shall
   pass; no dependency shall be added; and both protected gates shall pass on the
   exact head.
+- **AC49 (in-place HyperLogLog with cached count, only if 4.47 is implemented).**
+  100,000 pipelined `PFADD` shall finish in ≤0.6 s (≤6 µs/add, ≥2.8× faster than
+  the measured 1.70 s and within ~1.6× the faster C server); 10,000 repeated
+  `PFCOUNT` calls shall finish in ≤0.15 s (≤15 µs/call, ≥17× faster than 2.66 s
+  and within ~5× the faster C server); single-call p50 and the 10-element controls
+  shall stay within noise; counts shall be within the HLL error bound and
+  identical before/after serialization; the cache shall be invalidated by
+  add/merge and exact↔dense conversion; rewrite/replay/restore and TTL tests shall
+  pass; no dependency shall be added; and both protected gates shall pass on the
+  exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -6062,6 +6185,13 @@ separate roadmap.
   `KEYS key:0000*` 32.7 versus 35.1/7.0; `KEYS nope*` 23.7 versus 26.7/5.5;
   `RANDOMKEY` 0.52 versus 0.21/0.29; `HMGET` 100 0.49 versus 0.47/0.22;
   10-member controls 0.40/0.25. Raw JSON retained (untracked).
+- HyperLogLog cohort (section 3.32, candidate 4.47): 100,000 distinct elements
+  added in 2,000-command pipelines, then 10,000 `PFCOUNT` calls, three rotations.
+  `PFADD` 1,709/1,664/1,696 ms (16.96 µs/add) versus Redis 410/421/367 (4.10) and
+  Valkey 389/487/392 (3.92); `PFCOUNT` 2,655/2,771/2,646 ms (265.5 µs/call)
+  versus 35.7 (3.57) and 33.1 (3.31); single `PFADD`/`PFCOUNT` p50
+  0.187/0.484 versus 0.151/0.169 and 0.302/0.059; 10-element controls
+  0.164/0.185 versus 0.195/0.228 and 0.073/0.123. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -6512,3 +6642,8 @@ separate roadmap.
   hash field TTLs, `KEYS` with expensive glob patterns, or the ordered-index
   memory. Those are implementation-PR evidence under AC31/AC33. The C-server
   `KEYS` prefix/none rows show a wide Redis–Valkey spread (5.5–35 ms).
+- The HyperLogLog cohort (section 3.32) measures one key with 100k distinct
+  elements and repeated counts in pipelines; it does not measure sparse
+  encodings, `PFMERGE`, `PFCOUNT` over multiple keys, serialization/rewrite
+  compatibility or the exact↔dense threshold. Those are implementation-PR
+  evidence under AC49.
