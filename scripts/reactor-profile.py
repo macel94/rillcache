@@ -7,12 +7,16 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("reactor_profile_tools", ROOT / "scripts/dev-performance.py")
 D = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(D)
 G, C = D.G, D.COMMON
+tcp_spec = importlib.util.spec_from_file_location("owned_tcp_info", ROOT / "scripts/upstream/tcp_info.py")
+T = importlib.util.module_from_spec(tcp_spec)
+tcp_spec.loader.exec_module(T)
 OUT = ROOT / "target/upstream/evidence/reactor-profile"
 ORIGINAL_TERMINATE = G["terminate"]
 
@@ -72,6 +76,23 @@ def build(source):
     return {name: str((D.BIN / name).resolve()) for name in ("rillcache", "valkey", "generator")}
 
 
+def tcp_profiler_jobs(original, port, perf, cpu_event, mode, server_pid, generator_pid, directory):
+    jobs = original(perf, cpu_event, mode, server_pid, generator_pid, directory)
+    argv = [sys.executable, str(ROOT / "scripts/upstream/tcp_info.py"),
+            "--pid", str(server_pid), "--port", str(port), "--out", str(directory)]
+    try:
+        with (directory / "tcp-profiler.log").open("wb") as log:
+            proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
+                                    start_new_session=True,
+                                    env={**D.SAFE_ENV, "GITHUB_ACTIONS": os.environ.get("GITHUB_ACTIONS", "")})
+        jobs.append(("tcp", proc, argv))
+        return jobs
+    except BaseException:
+        for _, proc, _ in jobs:
+            G["terminate"](proc)
+        raise
+
+
 def sample(binaries, identity, cpus, perf):
     mode, workload, variant = identity
     directory = OUT / "captures" / "-".join(identity)
@@ -85,7 +106,15 @@ def sample(binaries, identity, cpus, perf):
             G["read_generator"](directory / "warmup", workload, warm)
             before = D.snapshot(server.pid)
             argv = load_argv(binaries["generator"], port, workload, cpus)
-            command = D.measured_load(argv, directory / "measured", server, mode, perf, "cpu-clock")
+            original = D.profiler_jobs
+            D.profiler_jobs = lambda *args: tcp_profiler_jobs(original, port, *args)
+            try:
+                command = D.measured_load(argv, directory / "measured", server, mode, perf, "cpu-clock")
+            finally:
+                D.profiler_jobs = original
+            tcp = G["read_json"](directory / "measured" / "tcp-info.json")
+            assert tcp["valid"] and tcp["pid"] == server.pid and tcp["port"] == port
+            result["tcp_info"] = tcp
             after = D.snapshot(server.pid)
             assert before["start_ticks"] == after["start_ticks"]
             assert command["wall_seconds"] >= 20
@@ -122,6 +151,16 @@ def report(samples):
         target = f"captures/{name}/server-self.txt" if mode == "cpu" else f"captures/{name}/measured/server-syscalls.txt"
         lines.append(f"| {name} | {after['user_ticks'] - before['user_ticks']} / "
                      f"{after['system_ticks'] - before['system_ticks']} | [raw]({target}) |")
+    lines += ["", "## Owned TCP segment counters (diagnostic only)", "",
+              "Eight stable owned sockets, an independent eight-second observation during each profiled load. "
+              "segs_out minus data_segs_out estimates ACK-only segments, not CPU cost or throughput. "
+              "No normal-performance conclusion follows from this instrumented observation.", "",
+              "| Capture | Data segments out | ACK-only out | ACK-only / data out |",
+              "| --- | ---: | ---: | ---: |"]
+    for s in samples:
+        tcp = s["tcp_info"]["delta"]
+        lines.append(f"| {'-'.join(s['identity'])} | {tcp['data_segs_out']} | "
+                     f"{tcp['ack_only_out']} | {tcp['ack_only_per_data_out']:.6f} |")
     return "\n".join(lines) + "\n"
 
 
@@ -129,6 +168,7 @@ def check(root):
     root = Path(root)
     m = G["read_json"](root / "manifest.json")
     assert m["complete"] is True and m["instrumented"] is True and m["normal_performance_evidence"] is False
+    assert m["tcp_observation_schema"] == 1, "use the matching harness for earlier profiles"
     assert re.fullmatch(r"[0-9a-f]{40}", m["application_source"])
     assert len(m["cpus"]) == len(set(m["cpus"])) == 4
     hardware = G["read_json"](root / "hardware.json")
@@ -160,6 +200,22 @@ def check(root):
         assert server["argv"] == G["server_argv"](m["binary_paths"][variant], kind, server["port"], m["cpus"], original_directory)
         assert server["joined"] is True and server["pid"] == before["pid"]
         assert server["exit_before_cleanup"] is None and server["exit_after_cleanup"] is not None
+        tcp = G["read_json"](directory / "measured" / "tcp-info.json")
+        assert tcp == s["tcp_info"] and tcp["valid"] is True
+        assert tcp["pid"] == server["pid"] and tcp["port"] == server["port"]
+        assert tcp["start_ticks"] == before["start_ticks"]
+        assert tcp["after"]["time"] - tcp["before"]["time"] >= 8
+        tcp_capture = G["read_json"](directory / "measured" / "tcp-profiler.json")
+        assert tcp_capture["exit_code"] == 0
+        tcp_argv = tcp_capture["argv"]
+        assert len(tcp_argv) == 8 and Path(tcp_argv[1]).name == "tcp_info.py"
+        assert tcp_argv[2:6] == ["--pid", str(server["pid"]), "--port", str(server["port"])]
+        assert tcp_argv[6:] == ["--out", str(original_directory / "measured")]
+        for phase in ("before", "after"):
+            assert tcp[phase]["argv"] == T.ss_argv(server["port"])
+            raw = (directory / "measured" / f"tcp-{phase}.stdout").read_text()
+            assert T.parse_ss(raw, server["pid"]) == tcp[phase]["sockets"]
+        assert T.deltas(tcp["before"]["sockets"], tcp["after"]["sockets"]) == tcp["delta"]
         for role, pid in (("server", before["pid"]), ("generator", command["pid"])):
             capture = G["read_json"](directory / "measured" / f"{role}-profiler.json")
             assert capture["exit_code"] == 0
@@ -198,6 +254,7 @@ def main(argv=None):
     D.OUT, D.BIN = OUT, OUT / "frozen-binaries"
     G["terminate"] = terminate_owned
     m = {"instrumented": True, "normal_performance_evidence": False, "complete": False,
+         "tcp_observation_schema": 1,
          "application_source": args.source, "samples": []}
     try:
         hardware = D.HARDWARE["probe"]()

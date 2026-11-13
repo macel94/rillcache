@@ -18,6 +18,7 @@ def fixture(root):
     hardware = {"selected_cpus": cpus, "rust": f"rustc {common.PINS['rust']} (fixture)", "build_environment": {}}
     common.save(root / "hardware.json", hardware)
     m = {"complete": True, "instrumented": True, "normal_performance_evidence": False,
+         "tcp_observation_schema": 1,
          "application_source": "a" * 40, "cpus": cpus, "samples": [], "binary_paths": {},
          "binary_sha256": {}, "launch_directory": str(root),
          "hardware_fingerprint": P.D.HARDWARE["fingerprint"](hardware)}
@@ -61,8 +62,24 @@ def fixture(root):
         common.save(directory / "server.json", {"pid": pid, "port": port, "joined": True,
             "exit_before_cleanup": None, "exit_after_cleanup": -15,
             "argv": P.G["server_argv"](m["binary_paths"][variant], variant, port, cpus, directory)})
+        tcp = {"pid": pid, "port": port, "valid": True, "start_ticks": 10}
+        for phase, count in (("before", 100), ("after", 200)):
+            raw = "\n".join(
+                f'0 0 127.0.0.1:{port} 127.0.0.1:1234 users:(("app",pid={pid},fd=5)) '
+                f'ino:{i} segs_out:{count * 2} segs_in:{count} data_segs_out:{count} '
+                f'data_segs_in:{count} bytes_sent:{count * 7}' for i in range(8))
+            (measured / f"tcp-{phase}.stdout").write_text(raw)
+            tcp[phase] = {"time": 1 if phase == "before" else 9,
+                          "argv": P.T.ss_argv(port), "sockets": P.T.parse_ss(raw, pid)}
+        tcp["delta"] = P.T.deltas(tcp["before"]["sockets"], tcp["after"]["sockets"])
+        common.save(measured / "tcp-info.json", tcp)
+        common.save(measured / "tcp-profiler.json", {
+            "argv": ["/usr/bin/python3", str(common.ROOT / "scripts/upstream/tcp_info.py"),
+                     "--pid", str(pid), "--port", str(port), "--out", str(measured)],
+            "exit_code": 0})
         s = {"identity": list(identity), "valid": True, "instrumented": True,
-             "before": before, "after": after, "command": command, "metrics": metrics}
+             "before": before, "after": after, "command": command, "metrics": metrics,
+             "tcp_info": tcp}
         common.save(directory / "sample.json", s)
         m["samples"].append(s)
     (root / "summary.md").write_text(P.report(m["samples"]))
