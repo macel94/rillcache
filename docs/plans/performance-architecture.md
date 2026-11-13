@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); every other runtime item
-here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.51).**
+here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.52).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -144,7 +144,10 @@ shape: `ZINTERCARD` is **220.6 vs 40.4/17.1 ms** (5.5–12.9×) and
 `ZINTERSTORE`/`ZDIFFSTORE` are 306.6/331.3 vs 102–111/61–62, because every source
 is copied into an owned map and the result is re-sorted; the set-store variants
 already lead, so 4.51 borrows the zset sources and builds one destination.
-Stream consumer-group reads are
+Observability has one keyspace-sized walk: `INFO keyspace` (and plain `INFO`)
+costs **2.79 ms at 100k keys and 10.0 ms at 500k versus 0.13–0.30 ms** (16–40×)
+while `INFO stats`, `DBSIZE` and `PING` stay at the floor; 4.52 maintains the
+counters. Stream consumer-group reads are
 the counter-example: at a 10k-entry PEL, `XREADGROUP` history, `XPENDING` and
 `XCLAIM` are at parity and the largest batch forms are only **1.3–2.1×** behind
 (new read 1000 8.99 vs 5.19/6.43 ms, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50)
@@ -1109,7 +1112,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Thirty-three observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty-four observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1311,6 +1314,12 @@ rest are still true even though every row now leads:
     306.6/331.3 versus 102–111/61–62 (2.8–5.4×), because every source is copied
     into an owned map and the result is re-sorted; `ZUNIONSTORE` is 1.3–1.7×
     behind and set-store variants already lead (section 3.41, candidate 4.51).
+34. **INFO keyspace over a large keyspace.** With no TTLs, `INFO keyspace` costs
+    **2.79 ms at 100k keys and 10.0 ms at 500k** versus 0.13–0.30 ms for the C
+    servers (16–40×), and plain `INFO` pays the same walk, while `INFO stats`,
+    `DBSIZE` and `PING` stay at the floor because the keyspace section counts
+    every entry instead of reading maintained sizes (section 3.42, candidate
+    4.52).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1504,6 +1513,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor; 16 MB `BITFIELD` write 4.39–4.68 vs 0.087–0.12 (37–52×) while `BITFIELD_RO` reads are at the floor | 4.37 (extended to `BITFIELD` writes) | AC39 on the implemented change | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured; no candidate**: 100k SINTER 52.5 vs 38.9/23.2 ms, SINTERCARD 52.0 vs 35.7/15.3, SDIFF 49.9 vs 66.9/40.1, SUNION 76.8 vs 105.4/78.8 (Rill leads Redis); 10k 5.4–7.8 ms | keep; 1.2–3.4× is inside the reply/algorithm mix | n/a | none |
 | Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
+| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, plain `INFO` the same, while `INFO stats`/`DBSIZE`/`PING` stay at the floor because the section walks every entry | 4.52, admitted | AC54 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1919,6 +1929,7 @@ for a production claim.
 | Sorted-set rank-select | skiplist span counts: O(log n) `ZRANK`, deep `ZRANGE` seek | same | rank requires a full materialize+sort+linear position scan | **Adapt:** 4.38 order-statistic index; measured 100k `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12 (3.22, AC40) |
 | Sorted-set lex ranges and counts | skiplist lex seek (`zslNthInLexRange`) and first/last rank subtraction for `ZLEXCOUNT`/`ZCOUNT` | same | `BYLEX` sorts the whole set before slicing; counts materialize and filter every member | **Adapt:** 4.50 seek + span counts on 4.30/4.38's index; measured 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 vs 0.18–0.74 ms (163–371×), `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 even when empty (3.38, AC52) |
 | Sorted-set algebra and cardinality | one generic pass: sort sources by cardinality, iterate the smallest, `zuiFind` probe, count with early LIMIT or insert directly into the destination | same | `owned_zset` copy per source, result `HashMap` with cloned keys, full `ordered_zset` sort; `ZINTERCARD` clones into a `BTreeSet` | **Adapt:** 4.51 borrowed-source probe and single destination build; measured 100k `ZINTERCARD` 220.6 vs 40.4/17.1 ms (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4 (3.41, AC53) |
+| INFO keyspace accounting | container sizes plus maintained `avg_ttl`; O(number of databases) | same | walk every entry on each `INFO`/`INFO keyspace` to count live/expiring/subexpiry keys and sum TTLs | **Adapt:** 4.52 maintained counters and exact TTL sum; measured 500k `INFO keyspace` 10.0 vs 0.249/0.295 ms (34–40×), 100k 2.79 vs 0.171/0.134, while `INFO stats`/`DBSIZE` stay at the floor (3.42, AC54) |
 | Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain; monitors share the queue and silently drop lines | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms, and 1,024/2,000 monitor lines vs 2,000 (3.23, 3.37, AC41) |
 | Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
 | List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
@@ -3665,6 +3676,46 @@ source, probe the others in place, count with an early `LIMIT` exit, and for the
 store forms build the destination once (no intermediate map, no re-sort of a
 materialised result). Keep the set-store paths as they are.
 
+### 3.42 INFO keyspace over a large keyspace
+
+- **Redis 8.10.2 and Valkey 9.1.2** answer `INFO keyspace` from maintained
+  container sizes: `kvstoreSize(db->keys)`, `kvstoreSize(db->expires)`,
+  `estoreSize(db->subexpires)` and a maintained `avg_ttl`, one iteration per
+  database, so the section is **O(number of databases)** regardless of key count
+  ([`redis server.c#L7073`](https://github.com/redis/redis/blob/8.10.2/src/server.c#L7073);
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c) keeps the
+  same counters).
+- **Rillcache** builds the same fields by walking **every entry**:
+  `info` filters `data.entries.values()` by `alive(now)` to count live,
+  expiring and subexpiry keys and sums the remaining TTLs
+  ([`discovery/mod.rs`](../../src/engine/discovery/mod.rs#L1016)). The walk runs
+  whenever the requested sections include `keyspace`, `default` or `all`, which
+  includes a plain `INFO`; `INFO stats` does not pay it.
+- **Measured (2026-11-13).** 10,000, 100,000 and 500,000 plain string keys (no
+  TTLs), preloaded with pipelined `SET`s, 20 repetitions, three rotations:
+
+  | Keyspace | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | ---: | --- | ---: | ---: | ---: |
+  | 10k | `INFO keyspace` | 0.208 ms | 0.188 ms | 0.137 ms |
+  | 100k | `INFO keyspace` | **2.791** | 0.171 | 0.134 |
+  | 500k | `INFO keyspace` | **10.004** | 0.249 | 0.295 |
+  | 500k | `INFO` (default) | **10.147** | 0.365 | 0.260 |
+  | 500k | `INFO stats` | 0.238 | 0.178 | 0.202 |
+  | 500k | `DBSIZE` | 0.185 | 0.133 | 0.181 |
+  | 500k | `PING` | 0.237 | 0.103 | 0.284 |
+
+  The cost grows linearly with the keyspace: **16–21×** behind at 100k and
+  **34–40×** at 500k, while `INFO stats`, `DBSIZE` and `PING` stay at the command
+  floor. That isolates the walk to the keyspace section, not to `INFO` parsing or
+  the shared counters. With no TTLs, `DBSIZE` is O(1) here; a large expiring set
+  additionally pays the admitted 4.45 mass-expiry path. Candidate 4.52.
+
+**Verdict: adapt maintained keyspace accounting (4.52).** Keep live/expiring/
+subexpiry key counts and a TTL sum updated on every mutation (insert, overwrite,
+expire, persist, remove, reap, eviction, flush, rename/copy, replay), or read the
+container sizes plus a Redis-style maintained/sampled average, and answer the
+section in O(1).
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3724,6 +3775,8 @@ the seek-based lex-range and span-count candidate for the measured 163–371×
 `ZRANGEBYLEX` and 5–71× `ZLEXCOUNT`/`ZCOUNT` losses in section 3.38; it reuses
 4.30/4.38's ordered index. 4.51 is the borrowed-source zset-algebra candidate for
 the measured 5.5–12.9× `ZINTERCARD` and 2.8–5.4× store losses in section 3.41.
+4.52 is the maintained-keyspace-counter candidate for the measured 16–40×
+`INFO` walk in section 3.42.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -4341,6 +4394,11 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    controls. Confirms 4.51 on a clean runner; the 2026-11-13 local cohort in
    section 3.41 already measures `ZINTERCARD` 220.6 ms versus 40.4/17.1 and the
    store forms 306.6–477.6 versus 61.4–366.6.
+34. **INFO keyspace:** `INFO keyspace`, plain `INFO` and `INFO stats` at 10k,
+   100k and 500k keys, with `DBSIZE` and `PING` controls, before and after
+   expiry/field-TTL churn. Confirms 4.52 on a clean runner; the 2026-11-13 local
+   cohort in section 3.42 already measures 2.79 ms at 100k and 10.0 ms at 500k
+   versus 0.13–0.30 with the other sections at the floor.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4348,7 +4406,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all thirty-three rows are complete for all three servers;
+runners, not a shared k3s host; all thirty-four rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4821,6 +4879,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.49 zset pops | `zset_pop` (`collection_commands.rs#L4817`), `owned_zset`/`ordered_zset`, ordered index | ties/scores; empty/negative count; key deletion; ZSetPack; blocking; accounting/rewrite | 100k `ZPOPMIN`/`ZPOPMAX`/`ZPOPMIN 10`/`ZMPOP`, 100-member control | medium |
 | 4.50 lex seek and span counts | `select_zset`/`ordered_zset` (`collection_commands.rs#L798`), `zset_range` (`#L4185`), `zset_count` (`#L3866`), `zset_lex_count` (`#L4556`), `zset_items` (`data.rs#L111`), ordered/rank index | bound parsing; exclusive/infinite bounds; reverse + LIMIT arithmetic; mixed-score order; pack conversion; store/accounting; TTL/WATCH/journal | 100k `ZRANGEBYLEX`/`ZREVRANGEBYLEX` LIMIT forms, full reply, `ZLEXCOUNT`/`ZCOUNT` (full/matching/empty), 10-member control | medium |
 | 4.51 zset algebra | `zset_algebra` (`collection_commands.rs#L4330`), `zset_intercard` (`#L4492`), `owned_zset`/`ordered_zset`, `encode_zset` | source order; destination-as-source; weights/aggregate/NaN; LIMIT early exit; empty/missing/wrong type; store TTL/accounting; SetPack/`ZSetPack`; WATCH/journal/rewrite | 100k `ZINTERCARD`/`ZINTERSTORE`/`ZDIFFSTORE`/`ZUNIONSTORE`, 10-member controls, set-store regression | medium |
+| 4.52 INFO keyspace counters | `info` keyspace section (`discovery/mod.rs#L1016`), `Data` (`data.rs#L247`), insert/remove/expire/reap/evict/flush/rename/copy/replay paths, `field_ttls` | every counter delta; avg_ttl empty case; no reap on INFO; section selection; replay/rewrite/eviction/flush | 10k/100k/500k `INFO keyspace`/`INFO`/`INFO stats`/`DBSIZE`, TTL churn correctness | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
@@ -4846,7 +4905,9 @@ geohash cell ranges, and 4.49 the min/max pops; 4.50 adds the lex seek and
 span-count queries to the same index (163–371× for a 10-element lex range).
 4.51 is independent of that structure: it removes the per-source owned copy and
 the result re-sort from `ZINTERCARD`/`ZINTERSTORE`/`ZDIFFSTORE` (5.5–12.9× and
-2.8–5.4×) by probing borrowed sources.
+2.8–5.4×) by probing borrowed sources. 4.52 is a small, contained observability
+fix: it replaces the O(keyspace) `INFO` walk with maintained counters (16–40×)
+and can land with 4.40's length work.
 4.39 is a contract/reliability
 fix on the pub/sub and MONITOR path already admitted as 4.24 (section 3.37) and
 should land with them. 4.34
@@ -6041,6 +6102,59 @@ SUM`, NaN/infinite scores, missing/empty keys, destination-as-source, TTL/
 WATCH/journal/rewrite and accounting tests shall pass; no dependency shall be
 added; and both protected gates shall pass on the exact head.
 
+### 4.52 O(1) INFO keyspace accounting (candidate; admission measured)
+
+**Mechanism.** Stop walking the keyspace to answer `INFO keyspace`/`INFO`/
+`INFO all`. Maintain in `Data` the four values the section reports — live keys,
+expiring keys, subexpiry keys and a TTL sum — updated by delta on every path that
+can change them: insert/overwrite, `EXPIRE`/`PERSIST`, key removal, expiry reap
+(including field-TTL deletion), eviction, `FLUSH*`, `RENAME`/`RENAMENX`/`COPY`,
+and replay/rewrite load. Keep the `field_ttls` field count and add a key-level
+subexpiry count (or reuse an index); `avg_ttl` is the maintained sum divided by
+the expiring count. `INFO keyspace` then formats the counters and the expiration
+index length in O(1); a plain `INFO` no longer touches every entry. Reaping stays
+where it is today (the maintenance tick and lazy `expire_key`), so the reply does
+not gain a reaping side effect. No dependency, no new container beyond integer
+counters.
+
+**Prediction.** At 500,000 keys, `INFO keyspace` and plain `INFO` fall from
+**10.0/10.1 ms to ≤0.4 ms** (≥25×, within ~1.5× the faster C server) and stop
+scaling with key count; at 100,000 from 2.79 ms to ≤0.25 ms; 10k, `INFO stats`,
+`DBSIZE` and `PING` are unchanged.
+
+**Admission evidence (2026-11-13, section 3.42).** 10k/100k/500k plain string
+keys, 20 repetitions, three rotations: `INFO keyspace` 0.15/0.41/0.21 at 10k
+versus 0.19/0.10/0.22 and 0.53/0.14/0.09; 2.94/2.79/2.70 at 100k versus
+0.11/0.17/0.19 and 0.13/0.12/0.22; 10.93/10.00/9.14 at 500k versus
+0.13/0.25/0.28 and 0.13/0.30/0.38; plain `INFO` 10.19/10.15/9.40 at 500k versus
+0.35/0.36/0.48 and 0.22/0.37/0.26; `INFO stats` 0.11–0.30 and `DBSIZE`
+0.10–0.43 at 500k, both at the floor.
+
+**Risks and obligations.** A drifting counter is invisible and wrong: every
+mutation, expiry, eviction, flush, rename/copy, field-TTL add/remove, rewrite and
+replay path must update it exactly; `avg_ttl` must stay a non-negative integer
+and handle an empty expiration set; the reported `keys`/`expires`/`subexpiry`
+must match a full scan after mixed churn; `INFO all` and section selection must
+not change; no reaping side effect may be added to `INFO`; `payload_bytes` and
+other counters remain untouched.
+
+**Rejected options.** Caching the formatted `INFO` reply (invalidated by every
+mutation and still O(n) to build on the first call); sampling the keyspace and
+extrapolating `keys` (reports a wrong count); iterating only the expiration set
+for `keys` (misses non-expiring keys and dead-entry semantics).
+
+**Rejection condition.** Any counter differs from a full scan after insert/
+expire/persist/remove/reap/evict/flush/rename/copy/replay churn; `INFO` gains a
+reap; the controls or reads regress; or no gain above the spread.
+
+**Acceptance (AC54).** At 500,000 keys, `INFO keyspace` and plain `INFO` shall
+have p50 ≤0.4 ms and p99 ≤2 ms (≥25× faster than the measured 10.0/10.1 ms and
+within ~2× the faster C server), and at 100,000 keys p50 ≤0.25 ms; the reported
+`keys`, `expires`, `subexpiry` and `avg_ttl` shall match a full scan after mixed
+TTL/field-TTL/expiry/reap/eviction/flush/rename/copy/replay churn; `INFO stats`,
+`DBSIZE`, `PING` and all other sections shall be unchanged; no dependency shall
+be added; and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -6054,8 +6168,9 @@ existing stream map, 4.43 uses geohash score ranges, 4.44 uses the existing
 set/zset members, 4.45 uses the existing lazy expire path, 4.46 slices the
 existing source order, 4.47 mutates the existing HLL registers, 4.48 mutates the
 existing stream groups, 4.49 pops from the ordered zset index, 4.50 seeks the
-same index and adds no storage, and 4.51 borrows the existing zset containers and
-builds the destination once. The rest use
+same index and adds no storage, 4.51 borrows the existing zset containers and
+builds the destination once, and 4.52 adds integer counters to the existing
+`Data`. The rest use
 the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
 lands as its own PR with AC5 plus the protected gates; no combined integration
 branch.
@@ -6351,6 +6466,11 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   returned count; empty/missing keys, wrong type, store TTL clearing, accounting,
   `ZSetPack` conversion and WATCH/journal/rewrite must stay exact, and the count
   path must not allocate a destination (AC53).
+- **INFO-counter risk (4.52):** a delta applied on only some mutation paths
+  drifts silently, so every insert/overwrite/expire/persist/remove/reap/evict/
+  flush/rename/copy/replay path needs a test that compares the counters with a
+  full scan; `avg_ttl` must handle an empty expiration set; `INFO` must not gain
+  a reaping side effect; section selection and `INFO all` must stay exact (AC54).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -6433,6 +6553,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Keeping the full clone/sort for `ZPOPMIN`/`ZPOPMAX` | The measured 100k pop is 373–974× behind; the ordered index already gives the min/max element, so no sort is needed (4.49). |
 | Sorting the whole zset to answer a bounded `BYLEX`/`ZCOUNT` query | A seek plus rank subtraction is O(log n); the measured 10-element lex range pays 56–70 ms for an O(n log n) sort and a narrow count scans all 100k members (4.50). Caching the sorted snapshot or adding a second lex index would duplicate storage and invalidation work for the same query. |
 | Copying every source before a zset algebra or cardinality query | The measured 100k `ZINTERCARD` pays 220 ms for two owned maps plus a `BTreeSet`, while probing the smallest borrowed source and counting matches is O(smallest × keys) with no destination; the store forms already build one destination and re-sort a materialised map a second time (4.51). A borrowed `HashSet` of the smaller source only trades one allocation for another and was rejected. |
+| Caching the formatted `INFO` reply instead of maintaining counters | The measured 10 ms walk happens on every `INFO`/`INFO keyspace`; a cache would still pay O(keyspace) to rebuild after the first mutation and would need a full invalidation contract. Sampling the keyspace or counting only the expiration index reports a wrong `keys` value (4.52). |
 | Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
 
 ## 8. Acceptance criteria (EARS)
@@ -6831,6 +6952,14 @@ samples retained.
   destination-as-source, TTL/WATCH/journal/rewrite and accounting tests shall
   pass; no dependency shall be added; and both protected gates shall pass on the
   exact head.
+- **AC54 (O(1) INFO keyspace, only if 4.52 is implemented).** At 500,000 keys,
+  `INFO keyspace` and plain `INFO` shall have p50 ≤0.4 ms and p99 ≤2 ms (≥25×
+  faster than the measured 10.0/10.1 ms and within ~2× the faster C server), and
+  at 100,000 keys p50 ≤0.25 ms; the reported `keys`, `expires`, `subexpiry` and
+  `avg_ttl` shall match a full scan after insert, expire, persist, remove, reap,
+  eviction, flush, rename/copy and replay churn; `INFO stats`, `DBSIZE`, `PING`
+  and every other section shall be unchanged; no dependency shall be added; and
+  both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -7197,6 +7326,15 @@ separate roadmap.
   `SINTERCARD` 52.6/40.8/41.5 versus 39.0/29.6/29.2 and 11.4/15.0/13.6;
   10-member controls 0.16–0.25. Preload (four 100k collections) took 16.0 s
   versus 1.5–1.7 s, the 4.35 write path. Raw JSON retained (untracked).
+- INFO-keyspace cohort (section 3.42, candidate 4.52): 10k, 100k and 500k plain
+  string keys with no TTLs, 20 repetitions, three rotations. `INFO keyspace`
+  0.15/0.41/0.21 ms at 10k versus Redis 0.19/0.10/0.22 and Valkey
+  0.53/0.14/0.09; 2.94/2.79/2.70 at 100k versus 0.11/0.17/0.19 and
+  0.13/0.12/0.22; 10.93/10.00/9.14 at 500k versus 0.13/0.25/0.28 and
+  0.13/0.30/0.38. Plain `INFO` 10.19/10.15/9.40 at 500k versus 0.35/0.36/0.48
+  and 0.22/0.37/0.26; `INFO stats` 0.11–0.30 and `DBSIZE` 0.10–0.43 at 500k.
+  Preload (500k pipelined `SET`) 2.7 s versus 2.1–2.7 s. Raw JSON retained
+  (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -7708,3 +7846,9 @@ separate roadmap.
   implementation obligations for 4.51 rather than measured claims. It also
   re-confirms that the set-store variants lead; the `SCARD` control's 43.5 ms is
   the admitted 4.40 cardinality path, not a floor.
+- The INFO-keyspace cohort (section 3.42) uses string keys with no TTLs, no field
+  TTLs and one database on one connection, so it isolates the walk; it does not
+  measure a large expiring set (the 4.45 mass-expiry path), `INFO all` reply
+  formatting cost at much larger section counts, or concurrent writers during
+  `INFO`. The candidate's correctness burden — counters equal to a full scan
+  under churn — is an implementation obligation, not measured here.
