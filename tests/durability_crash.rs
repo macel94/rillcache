@@ -14,8 +14,9 @@
 //!    the write order. A crash may drop un-fsynced writes, but it must never
 //!    recover a hole or a later write without the earlier ones.
 //!
-//! ENOSPC, fsync failure and permission loss are not injectable without either
-//! privileges or unsafe syscalls, so they remain open in the readiness checklist.
+//! ENOSPC append failure is covered separately with Linux `/dev/full` in the
+//! journal unit tests. Fsync failure, permission loss, quotas and power loss remain
+//! open in the readiness checklist.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;

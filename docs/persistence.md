@@ -1,9 +1,10 @@
 # Append-only persistence and recovery
 
 > **Current scope:** durability completeness is explicitly deferred. The journal
-> remains implemented and tested as best-effort, but there is no RDB, authenticated
-> journal records, background fork/COW rewrite, ENOSPC/soak validation, backup drill,
-> point-in-time recovery or signal-driven drain. Do not treat it as a durable
+> remains implemented and tested as best-effort, with transaction checksums and
+> optional HMAC-SHA256 authentication, but there is no RDB, encryption at rest,
+> background fork/COW rewrite, ENOSPC/soak validation, production backup/restore
+> drill, point-in-time recovery or signal-driven drain. Do not treat it as a durable
 > system of record.
 
 Rillcache can persist supported keyspace mutations to an append-only command log.
@@ -84,8 +85,9 @@ translated into the final state of the keys it changed:
 
 This is a Redis-compatible command subset, not a byte-format claim. A real Redis
 AOF containing commands this server does not implement fails startup visibly
-rather than being silently skipped. Our log has no embedded checksums; corruption
-is detected by RESP parsing and command failure. Without an explicit rewrite the
+rather than being silently skipped. New transactions carry CRC32 checksums, and
+optional HMAC-SHA256 authentication can detect keyed modification and reordering;
+these mechanisms do not provide encryption at rest. Without an explicit rewrite the
 file grows with every write and old records remain as history.
 
 No file is created when `--appendonly no`. ACL users are separate and live in the

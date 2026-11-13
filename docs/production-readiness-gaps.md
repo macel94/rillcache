@@ -257,16 +257,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   deployment's rollback/truncation threat model with documented external state.
 
 - [ ] **D4. Crash, ENOSPC and disk-fault behavior is unverified.** [P0]
-  There is no fault-injection corpus for short writes, ENOSPC, quota, permission
-  loss, fsync failure, process kill or power loss at each journal/rewrite
-  boundary. The journal latches a failed state, but the full acknowledgment and
-  recovery contract is not proven.
+  **Partial evidence (2026-11-13):** a Linux `/dev/full` unit test injects
+  deterministic ENOSPC on append and verifies the journal reports and latches
+  failure; the real-binary SIGKILL tests below cover `always` and `everysec` crash
+  recovery. There is still no fault-injection corpus for short writes, quota,
+  permission loss, fsync failure or process/power loss at each journal/rewrite
+  boundary. The complete acknowledgment and recovery contract is not proven.
   **Partial evidence (2026-11-05):** `tests/durability_crash.rs` spawns the real
   binary and asserts, after a `SIGKILL` and restart, that every client-acknowledged
   write survives with `appendfsync always` (so the reply cannot precede the
   durable append) and that `everysec` recovery yields a contiguous prefix with no
-  holes. ENOSPC, quota, permission loss, fsync failure, power loss and kill during
-  rewrite remain unverified.
+  holes. Quota, permission loss, fsync failure, power loss and fault injection
+  during rewrite remain unverified; Linux `/dev/full` append failure is covered by
+  the partial evidence above.
   **Closes when:** a crash/fault harness injects each failure at every boundary,
   proves no applied-but-unlogged success reply, bounds the loss window, and
   verifies restart recovery and visible failure states.

@@ -23,9 +23,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R120 (ubiquitous):** Persistence tests shall run offline in all execution modes
   and cover strings/binary values, all supported collections, streams/groups, TTLs,
   transactions, concurrent writers, flushes, partial tails, mid-file corruption and
-  restart. Documentation shall retain missing RDB/AOF-rewrite, compaction,
-  checksums, encryption, multi-process ownership, backup drills, signal drain,
-  stream-pending durability and disk-fault/soak guarantees.
+  restart. Documentation shall retain missing RDB/Redis-format AOF interoperability,
+  encryption at rest, multi-process ownership guarantees, production backup/restore
+  drills, signal drain, stream-pending durability and disk-fault/soak guarantees.
 
 ## Journal compaction (S32)
 
@@ -66,8 +66,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R309 (ubiquitous):** Tests shall cover defaults, `CONFIG GET/SET` round trips
   and validation, growth/baseline triggering, no-op thresholds/disabled journals,
   maintenance-triggered compaction, restart replay and all worker modes.
-  Documentation shall retain the absence of background/incremental rewrite,
-  checksums, encryption and crash-consistency guarantees.
+  Documentation shall retain the absence of Redis-style background/forked rewrite,
+  encryption at rest and complete crash-consistency guarantees.
 
 ## Truthful persistence status (S80)
 
@@ -85,8 +85,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R315 (ubiquitous):** Tests shall cover disabled and enabled servers, the
   measured field set, nonempty size after a write, status after rewrite, `INFO
   all` inclusion and every worker mode. Documentation shall retain the absence
-  of RDB, asynchronous/background rewrite, checksum, encryption, ENOSPC and
-  crash-recovery guarantees.
+  of RDB, Redis-style asynchronous/forked rewrite, encryption at rest, ENOSPC and
+  complete crash-recovery guarantees.
 
 ## Journal configuration visibility and runtime fsync (S87)
 

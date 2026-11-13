@@ -1,5 +1,6 @@
 use crate::engine::{Auth, FsyncPolicy, JournalAuth, PopOutcome, Store};
 use crate::protocol::Limits;
+use std::fs::OpenOptions;
 use std::io::Write;
 
 #[test]
@@ -884,4 +885,32 @@ fn consumer_seen_journal_records_are_binary_safe_and_strictly_framed() {
     trailing.push(b'x');
     assert!(super::parse_consumer_seen(&trailing).is_none());
     assert!(super::parse_consumer_seen(b"__RILLCACHE_CONSUMER_SEEN_V1__:").is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn enospc_latches_journal_append_failure() {
+    let path = aof_path("enospc");
+    let mut journal =
+        super::Journal::open(&path, FsyncPolicy::Always, Limits::default(), None).unwrap();
+    // Linux's /dev/full returns ENOSPC on every write, allowing deterministic
+    // error-path coverage without filesystem exhaustion or privileged setup.
+    journal.file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+
+    let first = journal.append(b"*1\r\n$4\r\nPING\r\n").unwrap_err();
+    assert_eq!(first.raw_os_error(), Some(28), "expected ENOSPC: {first}");
+    assert!(journal.status().write_failed);
+
+    let second = journal.append(b"*1\r\n$4\r\nPING\r\n").unwrap_err();
+    assert!(
+        second.to_string().contains("failed state"),
+        "later appends must fail closed: {second}"
+    );
+    assert!(journal.status().write_failed);
+    drop(journal);
+    let _ = std::fs::remove_file(path);
 }
