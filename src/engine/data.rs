@@ -815,6 +815,62 @@ impl Data {
         self.touch(key);
     }
 
+    /// Mutate an admitted string without rebuilding its unchanged bytes.
+    /// Reserve before invoking `mutate`: an allocation failure must not alter the
+    /// target or its mutation metadata. Callers validate type and final length.
+    pub(super) fn mutate_string(
+        &mut self,
+        key: &[u8],
+        length: usize,
+        payload: usize,
+        maximum: usize,
+        mutate: impl FnOnce(&mut Vec<u8>),
+    ) -> Result<(), std::collections::TryReserveError> {
+        let prepare = |value: &mut Vec<u8>| -> Result<(), std::collections::TryReserveError> {
+            if value.capacity() < length {
+                // Amortize repeated growth, without requesting spare capacity
+                // beyond the remaining logical payload budget.
+                let capacity = value
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(length)
+                    .min(length.saturating_add(maximum.saturating_sub(payload)));
+                value.try_reserve_exact(capacity - value.len())?;
+            }
+            Ok(())
+        };
+        let access = self.access_seq.wrapping_add(1);
+        if let Some(entry) = self.entries.get_mut(key) {
+            debug_assert!(entry.is_string());
+            prepare(&mut entry.value)?;
+            mutate(&mut entry.value);
+            debug_assert_eq!(entry.value.len(), length);
+            entry.payload_len = length;
+            entry.last_access = access;
+        } else {
+            let mut value = Vec::new();
+            prepare(&mut value)?;
+            mutate(&mut value);
+            debug_assert_eq!(value.len(), length);
+            self.entries.insert(
+                key.to_vec(),
+                Entry {
+                    value,
+                    collection: None,
+                    stream: None,
+                    payload_len: length,
+                    expires: None,
+                    field_ttl: Default::default(),
+                    last_access: access,
+                },
+            );
+        }
+        self.access_seq = access;
+        self.payload_bytes = payload;
+        self.touch(key);
+        Ok(())
+    }
+
     /// Install an already admitted owned value without copying its buffers or tree.
     /// `payload` is the final total, including replacement of any destination.
     pub fn put_owned(&mut self, key: &[u8], mut entry: Entry, payload: usize, _now: i64) {
