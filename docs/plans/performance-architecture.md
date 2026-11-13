@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); every other runtime item
-here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.54).**
+here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -191,7 +191,10 @@ the pattern at 100k: `HGETALL` is **132.3 vs 25.7–37.8 ms**, `HKEYS`/`HVALS`
 because each sorts a fresh snapshot; 4.29 and 4.31 are extended to cover them.
 The set sibling is the counter-example: `SMEMBERS` at 100k costs **84.8 vs
 88.7/86.4 ms** (lead) and is at parity at 10k because the 1.5 MB reply hides the
-collect+sort, so 4.29 stays scoped to hashes.
+collect+sort, so 4.29 stays scoped to hashes. One boundary is not latency at all:
+Rill rejects any request above **1,024 total arguments** while Redis/Valkey
+execute `MGET` 10,000 and `MSET` 600 pairs; 4.55 derives the cap from the frame
+budget (section 3.47).
 HyperLogLog is the remaining CPU gap: 100k pipelined adds cost **1.70 vs 0.39–0.41 s**
 and 10k repeated counts **2.66 vs 0.033–0.036 s** because every command
 decodes/encodes 16 KB of registers and nothing is cached; 4.47 keeps them in
@@ -1125,7 +1128,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Thirty-eight observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty-nine observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1353,6 +1356,11 @@ rest are still true even though every row now leads:
     9.33/9.58), despite the same collect+sort+encode shape as the hash listings,
     because the 1.5 MB reply dominates; this bounds 4.29 and keeps it scoped to
     hashes (section 3.46, measured lead/null).
+39. **Multi-key argument cap.** Rill rejects any request above **1,024 total
+    arguments** (`MGET` 1,023 keys accepted, 1,024 rejected) while Redis/Valkey
+    execute `MGET` 10,000, `MSET` 600 pairs and `DEL` 2,000; at 1,000 keys the
+    latency is at parity or leads (`MGET` 1.74 vs 2.23/2.34 ms), so the boundary,
+    not the per-command cost, is the gap (section 3.47, candidate 4.55).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1551,6 +1559,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
 | List element edits | latency, storage | **measured**: 200k `LINSERT` head 19.1 ms vs 0.09/0.24 (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), `LINSERT` middle 21.0 vs 3.51/4.33, `LREM` tail 21.1 vs 6.97/7.28, `LPOS RANK -1` 1.59 vs 0.16/0.27; 10-element controls at the floor | 4.54, admitted (extends 4.35/4.41) | AC56 | none |
 | Set membership reply | replies | **measured lead/null**: `SMEMBERS` 100k 84.75 ms vs 88.71/86.37, 10k 9.95 vs 9.33/9.58, 1k 0.97 vs 1.11/1.24, 10-member control at the floor; the 1.5 MB reply hides the collect+sort | no candidate; keep 4.29 scoped to hashes | n/a | none |
+| Multi-key argument cap | parsing, compatibility | **measured boundary**: 1,024 total args accepted, 1,025 rejected; Redis/Valkey execute `MGET` 10,000, `MSET` 600 pairs and `DEL` 2,000; 1,000-key latency is at parity or leads (`MGET` 1.74 vs 2.23/2.34) | 4.55, admitted | AC57 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1973,6 +1982,7 @@ for a production claim.
 | Two-key moves | `setTypeRemove`/`setTypeAdd`; list pop/push on two borrowed containers | same | `owned_set` clones both sets; `list_values` flattens and clones both lists; both re-encode | **Adapt:** 4.53 in-place remove/insert and chunk pop/push, same-key rotate in place; measured `SMOVE` 100k 25.5 vs 0.40/0.28 ms (64–91×), `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×), rotate 20.5 vs 0.26/0.21 (3.43, AC55) |
 | List element edits | quicklist node insert/replace/unlink; split/merge at listpack bounds | same | flatten and clone the whole list, edit the `VecDeque`, re-encode | **Adapt:** 4.54 chunk walk and in-place edit, reusing 4.41/4.35; measured 200k `LINSERT` head 19.1 vs 0.09/0.24 ms (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), middle insert/tail removal 4.9–6.0×/2.9–3.0× (3.45, AC56) |
 | Set membership reply | dict/intset/listpack iteration, unspecified order | same | collect every member into a `Vec`, sort, encode | **Keep:** measured `SMEMBERS` 100k 84.75 vs 88.71/86.37 ms (lead), 10k 9.95 vs 9.33/9.58, 1k within spread; the reply hides the collect+sort, so do not extend 4.29 to sets (3.46) |
+| Argument-count parsing | multi-bulk count from the declared length; no fixed 1,024 ceiling | no fixed count limit observed; `.argv` grows as declared within `proto-max-bulk-len` | `Limits.max_arguments = 1024` rejects larger arrays with `too many arguments`, no CLI override | **Adapt:** 4.55 frame-derived cap (`max(1024, frame/4)`); measured boundary at 1,024 args, while Redis/Valkey accept `MGET` 10,000 (3.47, AC57) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
@@ -3919,6 +3929,56 @@ index, edit one element or node, and split/merge only at chunk bounds; reuse
 order and do not extend 4.29 to `SMEMBERS`; the hash path stays the scoped
 target.
 
+### 3.47 Multi-key commands and the argument cap
+
+- **Redis 8.10.2 and Valkey 9.1.2** parse a multi-bulk array from the declared
+  count and accept large commands; in the same probe, `MGET` with 10,000 keys,
+  `MSET` with 600 pairs and `DEL` with 2,000 keys all executed. Their parser does
+  not impose a 1,024-argument ceiling
+  ([`redis networking.c#L3304`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L3304);
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c) is
+  the same). The frame and `proto-max-bulk-len` budgets, not an argument count,
+  bound the request.
+- **Rillcache** sets `max_arguments: 1024` in the default `Limits`
+  ([`protocol.rs#L17`](../../src/protocol.rs#L17)) and rejects a larger array with
+  `-ERR Protocol error: too many arguments`. There is no CLI override. The parser
+  already bounds memory by `max_frame_bytes` (2 MiB default), so the fixed count
+  is stricter than the byte budget: a 90 KB `MGET` with 10,000 keys is refused
+  while a 2 MiB frame is accepted.
+- **Measured (2026-11-13).** Boundary probe, one command per connection:
+
+  | Request | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | --- | --- | --- |
+  | `MGET` 1,023 keys (1,024 args) | accepted | accepted | accepted |
+  | `MGET` 1,024 keys (1,025 args) | **rejected** | accepted | accepted |
+  | `MGET` 10,000 keys | **rejected** | accepted | accepted |
+  | `MSET` 600 pairs (1,201 args) | **rejected** | accepted | accepted |
+  | `DEL` 2,000 keys | **rejected** | accepted | accepted |
+
+  The accepted limit is exactly `max_arguments` total arguments (command plus
+  keys), so a 1,000-key `MGET` fits but a 1,000-pair `MSET` (2,001 args) does
+  not. The C servers execute all of them.
+- **Multi-key latency at 1,000 keys** (within the cap; 120k-key keyspace, 20
+  repetitions, three rotations):
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `MGET` 1,000 | 1.74 ms | 2.23 ms | 2.34 ms |
+  | `MSET` 500 pairs | 1.18 | 0.58 | 1.08 |
+  | `EXISTS` 1,000 | 0.88 | 0.42 | 0.95 |
+  | `TOUCH` 1,000 | 0.98 | 0.93 | 0.62 |
+  | `DEL` 1,000 | 1.63 | 0.98 | 1.01 |
+  | 10-key controls | 0.16–0.37 | 0.17–0.31 | 0.33–0.53 |
+
+  `MGET` leads; the write forms are 1.6–2.1× behind Redis but within ~1.1× of
+  Valkey and inside the host spread, so no latency candidate. The actionable
+  finding is the cap, not the per-command cost. Candidate 4.55.
+
+**Verdict: adapt a frame-derived argument cap (4.55).** Replace the fixed 1,024
+with a bound derived from `max_frame_bytes` (for example `max(1024, frame/4)`)
+so legitimate large multi-key commands parse while memory stays bounded by the
+frame; keep the frame and bulk limits as the request budget.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3984,7 +4044,9 @@ section 3.44 extends it to the set path and the `LIMIT` early exit
 `INFO` walk in section 3.42. 4.53 is the in-place two-key-move candidate for the
 measured 64–489× `SMOVE`/`LMOVE`/`RPOPLPUSH` loss in section 3.43; it reuses
 4.35's in-place mutation and 4.41's chunk access. 4.54 is the in-place list-edit
-candidate for the measured 59–212× `LINSERT`/`LSET` loss in section 3.45.
+candidate for the measured 59–212× `LINSERT`/`LSET` loss in section 3.45. 4.55
+is the frame-derived argument-cap candidate for the measured 1,024-argument
+rejection in section 3.47.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -4624,6 +4686,11 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    control. Confirms the measured lead/null in section 3.46 on a clean runner;
    the 2026-11-13 local cohort already measures 84.75 ms at 100k versus
    88.71/86.37 and parity at 10k.
+39. **Multi-key arguments:** the `MGET` 1,023/1,024-key boundary, `MGET` 10,000,
+   `MSET` 600 pairs and `DEL` 2,000, plus 1,000-key `MGET`/`MSET`
+   (`500` pairs)/`EXISTS`/`TOUCH`/`DEL` latency and 10-key controls. Confirms
+   4.55 and the parity in section 3.47 on a clean runner; the 2026-11-13 local
+   cohort already measures the 1,024 boundary and 1.74 ms `MGET` 1,000.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4631,7 +4698,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all thirty-eight rows are complete for all three servers;
+runners, not a shared k3s host; all thirty-nine rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -5107,6 +5174,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.52 INFO keyspace counters | `info` keyspace section (`discovery/mod.rs#L1016`), `Data` (`data.rs#L247`), insert/remove/expire/reap/evict/flush/rename/copy/replay paths, `field_ttls` | every counter delta; avg_ttl empty case; no reap on INFO; section selection; replay/rewrite/eviction/flush | 10k/100k/500k `INFO keyspace`/`INFO`/`INFO stats`/`DBSIZE`, TTL churn correctness | small |
 | 4.53 two-key moves | `set_move` (`collection_commands.rs#L3073`), `list_move_in_data` (`#L2541`), `owned_set`, `Collection::list_values` (`data.rs#L41`), blocking wake | admit destination first; OOM leaves both keys unchanged; same-key rotate; empty-source deletion; TTLs per key; chunk split/merge; blocking/timeout; WATCH/journal/notification/rewrite; accounting | 100k `SMOVE`, 200k `LMOVE`/`RPOPLPUSH`/rotate, 10-element controls, blocking variants | medium |
 | 4.54 list element edits | `list_insert` (`collection_commands.rs#L2698`), `list_remove` (`#L2750`), `list_set` (`#L2820`), `list_position` (`#L2321`), `Collection::list_values` (`data.rs#L41`) | pivot/index/count semantics; missing/empty; chunk split/merge; emptied-key deletion; TTL/WATCH/journal/rewrite; accounting | 200k `LINSERT` head/middle, `LSET` mid, `LREM` tail, `LPOS RANK -1`, 10-element controls | medium |
+| 4.55 frame-derived argument cap | `Limits`/`parse_request` (`protocol.rs#L5`, `#L17`), `dispatch_request`, server `--max-frame-bytes`/`--max-bulk-bytes` plumbing | count bound derived from the frame; frame error unchanged; PING fast path; arity/protocol tests; bounded slice memory | `MGET` 10k, `DEL`/`EXISTS`/`TOUCH` 2k, `MSET` 600 pairs, 1,023/1,024 boundary, over-frame rejection | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
@@ -5138,7 +5206,9 @@ fix: it replaces the O(keyspace) `INFO` walk with maintained counters (16–40×
 and can land with 4.40's length work. 4.53 is the two-key-move counterpart of
 4.35/4.41: it removes a full copy of both keys per element moved (64–489×). 4.54
 completes the list edits: `LINSERT`/`LSET`/`LREM` stop flattening the list
-(59–212× on the O(1)-to-O(nodes) forms).
+(59–212× on the O(1)-to-O(nodes) forms). 4.55 is a small compatibility fix: it
+derives the argument cap from the frame budget so 2,000–10,000-argument commands
+parse as they do in Redis/Valkey.
 4.39 is a contract/reliability
 fix on the pub/sub and MONITOR path already admitted as 4.24 (section 3.37) and
 should land with them. 4.34
@@ -6514,6 +6584,61 @@ count semantics, emptied-key deletion, chunk split/merge, TTL/WATCH/journal/
 rewrite and accounting tests shall pass; no dependency shall be added; and both
 protected gates shall pass on the exact head.
 
+### 4.55 Frame-derived argument cap (candidate; boundary measured)
+
+**Mechanism.** Stop rejecting a request at 1,024 total arguments. Derive the
+count bound from the byte budget it protects, for example
+`max_arguments = max(1024, max_frame_bytes / MIN_ARG_BYTES)` with
+`MIN_ARG_BYTES = 4` (the smallest complete bulk `$0\r\n`), or simply raise the
+default to Redis's scale while keeping the frame bound. The parser already
+rejects a frame above `max_frame_bytes`, and the argument vector is one
+`&[u8]` per argument, so total slice memory stays below
+`max_frame_bytes / 4 × 16 B` (≈8 MiB at the 2 MiB default, transient). Keep the
+PING fast path, the canonical/fragment path and the error text unchanged; keep
+`max_bulk_bytes` and `max_frame_bytes` as the real request budgets. No
+dependency, no `unsafe`.
+
+**Prediction.** At the default 2 MiB frame, `MGET`/`DEL`/`EXISTS`/`TOUCH` with
+2,000–10,000 keys and `MSET` with 600–1,000 pairs are accepted and execute;
+the `too many arguments` rejection disappears below the frame bound; a frame
+above 2 MiB is still rejected before execution; command latency and the gate
+rows are unchanged.
+
+**Admission evidence (2026-11-13, section 3.47).** Boundary probe, one command
+per connection: Rill accepted `MGET` 1,023 keys (1,024 args) and rejected 1,024
+keys (1,025 args), 10,000 keys, `MSET` 600 pairs and `DEL` 2,000 keys with
+`-ERR Protocol error: too many arguments`; Redis/Valkey accepted every case.
+The 1,000-key latency cohort (120k keys, 20 repetitions, three rotations):
+`MGET` 1.74 versus 2.23/2.34 ms (lead), `MSET` 500 pairs 1.18 versus 0.58/1.08,
+`EXISTS` 0.88 versus 0.42/0.95, `TOUCH` 0.98 versus 0.93/0.62, `DEL` 1.63 versus
+0.98/1.01, 10-key controls 0.16–0.53.
+
+**Risks and obligations.** The bound must stay derived from the byte budget so a
+large frame cannot create an unbounded argument vector; a request that exceeds
+`max_frame_bytes` must still fail with the frame error, not allocate; the
+`max_arguments` unit (total arguments, including the command name) must stay
+documented; the parser's fast path must not change; all command arity checks and
+the existing protocol tests must keep passing; no gate row may change.
+
+**Rejected options.** Removing the count bound entirely (an argument vector not
+tied to a byte budget); raising `max_frame_bytes` as the fix (it does not change
+the count ceiling and increases bulk memory); a per-command argument table
+(duplicates the parser budget and drifts from the frame limit).
+
+**Rejection condition.** Any request below the frame bound is still rejected, a
+request above the frame bound is executed, parser memory grows beyond the stated
+bound, the PING fast path or gate rows change, or any protocol/arity test
+differs.
+
+**Acceptance (AC57).** At the default 2 MiB frame, `MGET` with 10,000 keys,
+`DEL` with 2,000 keys, `EXISTS` with 2,000 keys, `TOUCH` with 2,000 keys and
+`MSET` with 600 pairs shall be accepted and return the correct result; the
+1,024-key boundary rejection shall be gone; a request whose complete frame
+exceeds `max_frame_bytes` shall still be rejected before command execution; the
+parser's transient memory shall be bounded by `max_frame_bytes`; the PING fast
+path, all arity/protocol tests and both protected gates shall pass on the exact
+head; and no dependency shall be added.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -6530,7 +6655,8 @@ existing stream groups, 4.49 pops from the ordered zset index, 4.50 seeks the
 same index and adds no storage, 4.51 borrows the existing zset containers and
 builds the destination once, 4.52 adds integer counters to the existing
 `Data`, 4.53 reuses the existing set/list containers for a two-key move, and
-4.54 walks the existing list chunks for an element edit. The
+4.54 walks the existing list chunks for an element edit; 4.55 derives its bound
+from the existing frame limit. The
 rest use
 the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
 lands as its own PR with AC5 plus the protected gates; no combined integration
@@ -6842,6 +6968,11 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   indexes, `LREM` positive/negative/zero count semantics and emptied-key
   deletion must match; chunk split/merge and element order; `LPOS` rank/count/
   maxlen; TTL/WATCH/journal/rewrite and delta accounting must stay exact (AC56).
+- **Argument-cap risk (4.55):** the count bound must remain derived from
+  `max_frame_bytes`, so a large frame cannot create an unbounded argument
+  vector; a request above the frame must still fail before execution; the
+  `max_arguments` unit and CLI behaviour must stay documented; the PING fast
+  path, arity checks and protocol tests must not change (AC57).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -6926,6 +7057,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Copying every source before a zset algebra or cardinality query | The measured 100k `ZINTERCARD` pays 220 ms for two owned maps plus a `BTreeSet`, while probing the smallest borrowed source and counting matches is O(smallest × keys) with no destination; the store forms already build one destination and re-sort a materialised map a second time (4.51). A borrowed `HashSet` of the smaller source only trades one allocation for another and was rejected. |
 | Applying `SINTERCARD`/`ZINTERCARD` `LIMIT` after the full intersection | The measured `LIMIT 10` still pays 50.7/267.2 ms, exactly the no-limit cost; a positive limit is a work bound and must stop the probe loop after `limit` matches, while `LIMIT 0` keeps the unlimited cost (4.51). |
 | Flattening a list to insert, replace or remove one element | The measured 200k head insert and indexed replace pay 19.1/16.5 ms for a full element copy and re-encode, while the chunk deque already supports a local edit; skipping only the re-encode still leaves the O(n) flatten (4.54). |
+| A fixed 1,024-argument protocol cap | The measured boundary rejects a 90 KB `MGET` 10,000 while a 2 MiB frame is accepted, and Redis/Valkey execute it; the byte frame already bounds parser memory, so the count should be derived from it rather than fixed (4.55). Raising `max_frame_bytes` or removing the bound entirely was rejected because it does not tie count to memory. |
 | Caching the formatted `INFO` reply instead of maintaining counters | The measured 10 ms walk happens on every `INFO`/`INFO keyspace`; a cache would still pay O(keyspace) to rebuild after the first mutation and would need a full invalidation contract. Sampling the keyspace or counting only the expiration index reports a wrong `keys` value (4.52). |
 | Rebuilding both keys for a one-element two-key move | The measured 100k `SMOVE` and 200k `LMOVE`/`RPOPLPUSH` pay 20–41 ms for a full clone of both sides; a set remove/insert and a list pop/push are O(1)/O(log n) in the existing containers, and reusing the old clone for one side still leaves the other O(n) (4.53). |
 | Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
@@ -7358,6 +7490,15 @@ samples retained.
   semantics, emptied-key deletion, chunk split/merge, TTL/WATCH/journal/rewrite
   and accounting tests shall pass; no dependency shall be added; and both
   protected gates shall pass on the exact head.
+- **AC57 (frame-derived argument cap, only if 4.55 is implemented).** At the
+  default 2 MiB frame, `MGET` with 10,000 keys, `DEL` with 2,000 keys, `EXISTS`
+  with 2,000 keys, `TOUCH` with 2,000 keys and `MSET` with 600 pairs shall be
+  accepted and return the correct result; the 1,024-key boundary rejection shall
+  be gone; a request whose complete frame exceeds `max_frame_bytes` shall still
+  be rejected before command execution; the parser's transient memory shall be
+  bounded by `max_frame_bytes`; the PING fast path, all arity/protocol tests and
+  both protected gates shall pass on the exact head; and no dependency shall be
+  added.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -7770,6 +7911,16 @@ separate roadmap.
   8.79/9.60/9.58; 1k 1.47/0.97/0.91 versus 1.56/1.11/0.79 and
   1.24/1.40/0.89; 10-member control 0.08–0.34. Preload 1.9 s versus 0.3–0.4 s,
   the 4.35 write path. Raw JSON retained (untracked).
+- Multi-key cohort (section 3.47, candidate 4.55): 120,000-key keyspace, 1,000
+  keys per command (`MSET` 500 pairs), 20 repetitions, three rotations. `MGET`
+  2.30/1.74/1.12 ms versus Redis 1.65/2.23/2.84 and Valkey 2.63/2.34/2.09;
+  `MSET` 500 pairs 2.30/1.11/1.18 versus 0.38/0.85/0.58 and 0.53/1.25/1.08;
+  `EXISTS` 0.85/0.94/0.88 versus 0.30/0.42/1.72 and 1.47/0.40/0.95; `TOUCH`
+  0.55/0.99/0.98 versus 0.32/0.93/1.38 and 0.62/0.66/0.48; `DEL` 1,000 fresh
+  keys 1.63/2.01/1.27 versus 0.75/0.98/1.04 and 0.77/1.03/1.01; 10-key controls
+  0.11–0.65. Boundary probe: Rill accepts `MGET` 1,023 keys and rejects 1,024
+  with `-ERR Protocol error: too many arguments`; Redis/Valkey accept `MGET`
+  10,000, `MSET` 600 pairs and `DEL` 2,000. Raw JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -8311,3 +8462,9 @@ separate roadmap.
   during the reply, `SetInt`/`SetPack` mixed encodings, or a 1M-member set; the
   conclusion is scoped to "do not extend 4.29 to sets", not a per-byte claim
   across sizes.
+- The multi-key cohort (section 3.47) stays below the current argument cap
+  (`MSET` 500 pairs), uses one connection and 10-key controls, and does not
+  measure pipelined batches, 2,000+-key commands (currently rejected), or a
+  frame-boundary argument set; the boundary probe issues one command per
+  connection, so it observes the rejection reply, not how a pipelined batch
+  behaves after it.
