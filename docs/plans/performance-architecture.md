@@ -137,7 +137,12 @@ and score reads are the largest ratio in the record at 100k: **57–72 ms** for
 rank-select paths. Lex ranges repeat it: a 10-element `ZRANGEBYLEX ... LIMIT 10`
 costs **56.0–69.8 vs 0.18–0.43 ms** (163–371×) because it sorts the whole set
 first, and a narrow `ZLEXCOUNT` is **15.0 vs 0.21–0.22 ms** because it scans
-every member; 4.50 adds seek and span counts. Pub/sub loses a 2,000-message
+every member; 4.50 adds seek and span counts. Stream consumer-group reads are
+the counter-example: at a 10k-entry PEL, `XREADGROUP` history, `XPENDING` and
+`XCLAIM` are at parity and the largest batch forms are only **1.3–2.1×** behind
+(new read 1000 8.99 vs 5.19/6.43 ms, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50)
+because only reply entries and PEL records are cloned, not the stream; section
+3.39 records a measured null. Pub/sub loses a 2,000-message
 burst at **1,024 delivered and
 drops the subscription** (C servers: 2,000 and keep it), and a `PUBLISH` among
 10,000 channels is 3–6× slower; 4.39 covers the burst contract and channel
@@ -1097,7 +1102,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Thirty observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty-one observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1281,6 +1286,13 @@ rest are still true even though every row now leads:
     set before filtering, and `ZLEXCOUNT`/`ZCOUNT` scan every member
     (**1.25–15.0 ms versus 0.13–0.39**, including an empty `ZCOUNT`); section
     3.38, candidate 4.50 on 4.30/4.38's ordered index.
+31. **Stream consumer-group reads.** `XREADGROUP` history/new, `XPENDING`,
+    `XCLAIM` and `XAUTOCLAIM` on a 10k-entry stream with a 10k-entry PEL stay
+    within **1.3–2.1×** of Redis/Valkey (largest forms: new-read 1000 8.99 vs
+    5.19/6.43 ms, autoclaim 1000 9.84 vs 4.67/7.50), while 100-entry history,
+    `XPENDING` and `XCLAIM` are at parity; per-entry `StreamEntry`/`Pending` clones
+    and the consumer-name copy are the residual, below the candidate threshold
+    (section 3.39, measured null).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1462,6 +1474,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
+| Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 ms vs 0.42/0.34, `ZPOPMAX` 159.9 vs 0.21/0.29, `ZPOPMIN 10` 146.6 vs 0.35/0.16, `ZMPOP` 155.8 vs 0.16/0.20 (373–974×); 100-member control at the floor | 4.49, admitted | AC51 | none |
 | Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
@@ -1899,6 +1912,7 @@ for a production claim.
 | HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
 | Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
 | Stream `XGROUP CREATE` | insert one group in the stream dict; O(1) | same | deep-clone the whole stream, fold payload, replace via `put_stream` | **Adapt:** 4.48 in-place group insert; measured 5k 8.26 vs 0.083/0.094 ms (88–99×), other XGROUP ops at parity (3.34, AC50) |
+| Stream consumer-group reads | radix PEL with a consumer pointer; reply writes stored fields directly | same | per-entry `StreamEntry` clone, two PEL inserts and a consumer-name copy per pending entry | **Keep:** measured near-parity at 10k; the 1,000-entry forms are 1.7× (new read) and 2.1× (`XAUTOCLAIM`), while 100-entry history/`XPENDING`/`XCLAIM` are at parity; re-measure after 4.42 (3.39, no candidate) |
 | Sorted-set pops | skiplist head/tail pop, O(log n) | same | clone, sort and replace the whole set per pop | **Adapt:** 4.49 ordered `(score, member)` index pop; measured 100k `ZPOPMIN` 156.7 vs 0.42/0.34 ms, `ZMPOP` 155.8, `ZPOPMIN 10` 146.6 (373–974×), 100-member control at the floor (3.35, AC51) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
@@ -3475,6 +3489,64 @@ span counts.** Seek the first and last in-range position by `(score, member)`
 and derive counts from rank subtraction; a full-range count is just the
 cardinality. Do not sort to answer a bounded range and do not scan to count.
 
+### 3.39 Stream consumer-group reads, claims and pending queries
+
+- **Redis 8.10.2 and Valkey 9.1.2** keep stream entries in a radix tree and the
+  group/consumer PEL in radix trees keyed by ID. A `streamNACK` stores a
+  **consumer pointer**, delivery time and count — not a copy of the consumer name
+  ([`redis t_stream.c#L3339`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L3339)).
+  `streamReplyWithRange` writes the stored field objects into the reply directly,
+  and `xautoclaimCommand` walks the PEL from a cursor, examining at most
+  `COUNT × 10` entries ([`#L4778`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L4778));
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L3331)
+  is the same. There is no per-entry value copy on a read.
+- **Rillcache** stores `StreamEntry { fields: Vec<(Vec<u8>, Vec<u8>)> }` and, per
+  pending entry, `Pending { consumer: Vec<u8>, deliveries, delivered_at }` in
+  **both** the group and consumer `BTreeMap`s
+  ([`data.rs`](../../src/engine/data.rs#L157)). `xreadgroup_multi` clones every
+  delivered entry into the reply and inserts two PEL entries, cloning the
+  consumer-name `Vec` per pending entry
+  ([`streams.rs#L1668`](../../src/engine/streams.rs#L1668)); `xclaim` and
+  `xautoclaim` clone each `Pending` and each `StreamEntry` into their reply
+  ([`#L985`](../../src/engine/streams.rs#L985),
+  [`#L1154`](../../src/engine/streams.rs#L1154)). The clone share grows with the
+  batch, not with the stream.
+- **Measured (2026-11-13).** One 10,000-entry stream with a single 16-byte field,
+  one group whose consumer owns all 10,000 entries, 20 repetitions per row (40
+  fresh groups for the `NEW` rows), three rotations:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `XREADGROUP ... 0 COUNT 100` (history) | 0.91 ms | 1.14 ms | 0.62 ms |
+  | `XREADGROUP ... 0 COUNT 1000` (history) | 7.00 | 7.40 | 5.80 |
+  | `XREADGROUP ... > COUNT 100` (new) | 0.92 | 0.57 | 0.69 |
+  | `XREADGROUP ... > COUNT 1000` (new) | **8.99** | 5.19 | 6.43 |
+  | `XPENDING` summary | 0.22 | 0.16 | 0.23 |
+  | `XPENDING - + 100` | 0.71 | 0.47 | 0.50 |
+  | `XPENDING - + 1000` | 3.57 | 2.93 | 3.72 |
+  | `XAUTOCLAIM COUNT 100` | **1.17** | 0.58 | 1.03 |
+  | `XAUTOCLAIM COUNT 1000` | **9.84** | 4.67 | 7.50 |
+  | `XCLAIM` 100 ids | 1.17 | 1.35 | 1.01 |
+  | `XCLAIM` 100 ids `JUSTID` | 0.66 | 0.63 | 0.65 |
+  | `XLEN` / `XADD` controls | 0.25 / 0.19 | 0.14 / 0.21 | 0.09 / 0.14 |
+
+  Every command is within **1.3–2.1×** of Redis and usually inside Valkey's
+  spread. The residual is concentrated in the two largest batch forms:
+  `XREADGROUP > COUNT 1000` (1.7×) and `XAUTOCLAIM COUNT 1000` (2.1×), where Rill
+  clones 1,000 entries or up to 10,000 `Pending` values (each with a heap
+  consumer name) while the C servers link or reference them. Preloading the
+  10,000 entries took **16.2 s** in Rill versus 0.1–0.2 s in both C servers — the
+  already-admitted `XADD` clone-per-append path (4.42), not a new read cost.
+
+**Verdict: measured near-parity; no candidate.** The read/claim path does not
+clone the stream and stays within ~2× on the largest batches, below the
+record's candidate threshold and inside the host spread. Record it as a boundary,
+not an optimization target. If 4.42 changes the stream representation, or a
+cohort with multi-field entries and a 100k-entry PEL shows more than ~3× with the
+clone share above ~30%, the bounded fix is to iterate entries by reference and
+store a consumer ID instead of a name per pending entry; that changes storage,
+so it needs its own measured admission rather than being folded into 4.42.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -4134,6 +4206,12 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    runner; the 2026-11-13 local cohort in section 3.38 already measures
    56.0–69.8 ms versus 0.18–0.74 and a narrow lex count of 15.0 ms versus
    0.21–0.22.
+31. **Stream consumer-group reads:** `XREADGROUP` history and new (100 and 1000),
+   `XPENDING` summary and extended (100/1000), `XCLAIM` (with and without
+   `JUSTID`) and `XAUTOCLAIM` (100/1000) on a 10k-entry stream with a 10k-entry
+   PEL, plus `XLEN`/`XADD` controls. Confirms the measured near-parity in
+   section 3.39 on a clean runner; the 2026-11-13 local cohort already measures
+   1.3–2.1× at the largest batches and parity at 100.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4141,7 +4219,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all thirty rows are complete for all three servers;
+runners, not a shared k3s host; all thirty-one rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -5356,7 +5434,8 @@ trim) by the delta. No `stream.clone()`, no `payload_bytes()` fold and no
 
 **Prediction.** 5k `XADD` falls from **1.36 ms to ≤0.2 ms** (p99 11.6 → ≤2) and
 1k from 0.263 to ≤0.15, so the 1k→5k ratio becomes ≤2× (flat); `XLEN`,
-`XRANGE`, `XREVRANGE` and the 10-entry control are unchanged.
+`XRANGE`, `XREVRANGE` and the 10-entry control are unchanged. The consumer-group
+read path is independent of this clone and measured near-parity in section 3.39.
 
 **Admission evidence (2026-11-12, section 3.26).** A 1,000- and a 5,000-entry
 stream, 30/50 repetitions, three rotations: 5k `XADD` p50 1.36/1.53/1.22 versus
@@ -6845,6 +6924,18 @@ separate roadmap.
   0.21–0.42/0.07–0.34; `ZCOUNT` 1.07–2.45 versus 0.14–0.78/0.18–1.20; full
   100k lex reply 137.9/159.3/144.8 versus 85.1–91.0 and 99.2–110.5; 10-member
   controls 0.25–0.47 versus 0.09–0.33/0.17–0.22. Raw JSON retained (untracked).
+- Stream consumer-group cohort (section 3.39, measured null): one 10,000-entry
+  stream with one 16-byte field, one group owning all 10,000 entries, 20
+  repetitions per row (40 fresh groups for the `NEW` rows), three rotations.
+  History 100 0.61/1.26/0.91 ms versus Redis 1.14/0.88/1.50 and Valkey
+  0.50/0.72/0.62; history 1000 5.90/7.68/7.00 versus 7.21/7.40/11.10 and
+  4.76/5.80/6.64; new 100 0.84/1.14/0.92 versus 0.55/0.57/1.32 and
+  0.69/0.75/0.62; new 1000 7.96/8.99/9.36 versus 4.73/5.19/7.51 and
+  6.55/5.84/6.43; `XPENDING` extended 1000 3.57/4.36/3.25 versus 2.55/2.93/3.93
+  and 2.96/3.72/4.49; `XAUTOCLAIM` 1000 9.84/10.54/9.05 versus 4.67/4.44/5.66
+  and 6.13/8.16/7.50; `XCLAIM` 100 at parity; `XLEN`/`XADD` controls 0.18–0.43/
+  0.19–0.39. Preload (10,000 `XADD`) took 16.2 s versus 0.1–0.2 s, the 4.42
+  clone path. Raw JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -7337,3 +7428,9 @@ separate roadmap.
   covers a 100k set only, one connection, and no `ZRANGESTORE`/`ZREMRANGEBY*`
   rows, slow readers or fragmentation; the full 100k reply is reply-bound and
   its 1.4–1.7× is reported as that, not as a seek cost.
+- The stream consumer-group cohort (section 3.39) uses one 16-byte field per
+  entry, one group and one owning consumer, and a 10k-entry PEL on one
+  connection. It does not measure multi-field or large-field entries (where the
+  per-entry clone share could grow), 100k-entry PELs, many consumers/groups,
+  blocking `XREADGROUP`, or `XREAD`/`XRANGE` reply construction. The 1.3–2.1×
+  residuals are single-cohort observations on a shared host, not a candidate.
