@@ -22,20 +22,17 @@ spec.loader.exec_module(D)
 G, C = D.G, D.COMMON
 OUT = ROOT / "target/upstream/evidence/reactor-study"
 VARIANTS = ("baseline", "candidate", "valkey")
-CASES = (("append-64", 64, "APPEND", 8, 200),
-         ("setrange-64", 64, "SETRANGE", 8, 200),
-         ("append-1m", 1024 * 1024, "APPEND", 64, 200),
-         ("setrange-1m", 1024 * 1024, "SETRANGE", 16, 200),
-         ("append-32m", 32 * 1024 * 1024, "APPEND", 64, 100),
-         ("setrange-32m", 32 * 1024 * 1024, "SETRANGE", 16, 100),
-         ("getrange-32m", 32 * 1024 * 1024, "GETRANGE", 16, 100))
+MODES = ("shared-four", "disjoint-one")
+CASES = (("append-64", 64, "APPEND", 8, 50000),
+         ("ping-control", 64, "PING", 0, 50000))
 
 
 def identities():
-    for case in CASES:
-        for round_index in range(3):
-            for variant in VARIANTS[round_index:] + VARIANTS[:round_index]:
-                yield case, round_index + 1, variant
+    for mode in MODES:
+        for case in CASES:
+            for round_index in range(3):
+                for variant in VARIANTS[round_index:] + VARIANTS[:round_index]:
+                    yield case, mode, round_index + 1, variant
 
 
 def initial_value(size):
@@ -46,7 +43,7 @@ def expected_value(case):
     _, size, verb, count, repetitions = case
     value = bytearray(initial_value(size))
     if verb == "APPEND":
-        value.extend(bytes([0xa5]) * count * repetitions)
+        value.extend(bytes([0xa5]) * count * min(200, repetitions))
     elif verb == "SETRANGE":
         value[:count] = bytes([0xa5]) * count
     return value
@@ -54,6 +51,8 @@ def expected_value(case):
 
 def command_for(case):
     _, _, verb, count, _ = case
+    if verb == "PING":
+        return ("PING",)
     if verb == "APPEND":
         return ("APPEND", "k", bytes([0xa5]) * count)
     if verb == "SETRANGE":
@@ -63,8 +62,10 @@ def command_for(case):
 
 def expected_reply(case, index):
     _, size, verb, count, _ = case
+    if verb == "PING":
+        return b"PONG".hex()
     if verb == "APPEND":
-        return size + count * (index + 1)
+        return size + count * (index % 200 + 1)
     if verb == "SETRANGE":
         return size
     return initial_value(count).hex()
@@ -78,18 +79,31 @@ def percentiles(latencies):
             "max_ms": ordered[-1] / 1e6}
 
 
-def name_for(case, round_number, variant):
-    return f"{case[0]}-r{round_number}-{variant}"
+def name_for(case, mode, round_number, variant):
+    return f"{mode}-{case[0]}-r{round_number}-{variant}"
+
+
+def affinities(mode, cpus):
+    return (cpus, cpus) if mode == "shared-four" else (cpus[:1], cpus[1:])
+
+
+def cpu_us_per_call(sample):
+    before, after = sample["before"], sample["after"]
+    ticks = after["user_ticks"] + after["system_ticks"] - before["user_ticks"] - before["system_ticks"]
+    assert ticks >= 0
+    return ticks / before["clock_ticks_per_second"] * 1e6 / sample["case"][4]
 
 
 def sample(binaries, identity, cpus):
-    case, round_number, variant = identity
+    case, mode, round_number, variant = identity
+    server_cpus, client_cpus = affinities(mode, cpus)
+    os.sched_setaffinity(0, client_cpus)
     directory = OUT / name_for(*identity)
     directory.mkdir()
-    result = {"case": list(case), "round": round_number, "variant": variant,
+    result = {"case": list(case), "mode": mode, "round": round_number, "variant": variant,
               "valid": False, "instrumented": False, "latencies_ns": [], "replies": []}
     try:
-        with D.owned_server(binaries[variant], variant, cpus, directory) as (server, port):
+        with D.owned_server(binaries[variant], variant, server_cpus, directory) as (server, port):
             result["port"] = port
             with G["Client"](port) as client:
                 # Bounded requests; setup, full-value verification and readiness
@@ -103,6 +117,8 @@ def sample(binaries, identity, cpus):
                 result["before"] = D.snapshot(server.pid)
                 args = command_for(case)
                 for index in range(case[4]):
+                    if case[2] == "APPEND" and index and index % 200 == 0:
+                        assert client.call("SET", "k", seed) == b"OK"
                     start = time.perf_counter_ns()
                     reply = client.call(*args)
                     elapsed = time.perf_counter_ns() - start
@@ -129,30 +145,39 @@ def sample(binaries, identity, cpus):
 
 
 def report(samples):
-    lines = ["# Normal-build matched large-string RTT diagnostic", "",
-             "Advisory; NOT a protected throughput gate. Same host/toolchain, four shared logical CPUs, "
-             "one sequential Python RESP connection, no perf/trace instrumentation or operation warmup. "
-             "Includes first growth. 200 calls for small/1 MiB cases, 100 for 32 MiB. "
-             "Three Latin-rotated baseline/candidate/Valkey rounds. Setup and full byte verification excluded. "
-             "RTT includes Python encode/parse and scheduling; not isolated engine latency. "
-             "All rounds, p99 and max retained; no selected or pooled favorable samples.", "",
-             "| Case | Round | Baseline p50 / p99 / max ms | Candidate p50 / p99 / max ms | Valkey p50 / p99 / max ms |",
-             "| --- | ---: | ---: | ---: | ---: |"]
-    for case in CASES:
-        for round_number in range(1, 4):
-            values = []
-            for variant in VARIANTS:
-                sample = next(s for s in samples if (s["case"][0], s["round"], s["variant"]) == (case[0], round_number, variant))
-                metrics = sample["metrics"]
-                values.append(" / ".join(f"{metrics[k]:.6f}" for k in ("p50_ms", "p99_ms", "max_ms")))
-            lines.append(f"| {case[0]} | {round_number} | " + " | ".join(values) + " |")
+    lines = ["# Small-APPEND execution versus scheduling diagnosis", "",
+             "Advisory normal release builds, NOT a protected gate or isolated engine timing. "
+             "Same host/toolchain, one Python RESP connection, 50,000 measured calls/sample. "
+             "APPEND retains the original initial64B/growing200-call geometry, resetting with SET outside "
+             "RTT timers every200 calls. No operation warmup hides growth. CPU brackets include249 resets "
+             "and server spinning; 100Hz CPU quantization is0.2us/call. PING is an unmodified-path control. "
+             "Shared-four: both use the same4CPUs. Disjoint-one: server firstCPU, client remaining3. "
+             "Three Latin rotations in each mode; all RTTs, replies, p99/max and CPU retained. "
+             "Earlier63-record large-string evidence is unchanged and includes its small-control losses.", "",
+             "| Mode | Case | Round | Baseline p50/p99/max ms; CPU us/call | Candidate p50/p99/max ms; CPU us/call | Valkey p50/p99/max ms; CPU us/call |",
+             "| --- | --- | ---: | ---: | ---: | ---: |"]
+    for mode in MODES:
+        for case in CASES:
+            for round_number in range(1, 4):
+                values = []
+                for variant in VARIANTS:
+                    sample = next(s for s in samples if (s["case"][0], s["mode"], s["round"], s["variant"]) == (case[0], mode, round_number, variant))
+                    metrics = sample["metrics"]
+                    text = " / ".join(f"{metrics[k]:.6f}" for k in ("p50_ms", "p99_ms", "max_ms"))
+                    values.append(text + f"; CPU {cpu_us_per_call(sample):.3f}")
+                lines.append(f"| {mode} | {case[0]} | {round_number} | " + " | ".join(values) + " |")
     return "\n".join(lines) + "\n"
+
+
+def sample_index(root):
+    return [{"name": name_for(*identity), "sha256": C.digest(Path(root) / name_for(*identity) / "sample.json")}
+            for identity in identities()]
 
 
 def check(root):
     root = Path(root)
     manifest = G["read_json"](root / "manifest.json")
-    assert manifest["complete"] and manifest["diagnostic_only"] and manifest["study"] == "in-place-strings-v1"
+    assert manifest["complete"] and manifest["diagnostic_only"] and manifest["study"] == "string-controls-v2"
     assert manifest["instrumented"] is False and manifest["protected_gate"] is False
     assert all(re.fullmatch(r"[0-9a-f]{40}", manifest[k]) for k in ("base_source", "candidate_source", "runtime_candidate"))
     assert manifest["base_source"] != manifest["candidate_source"]
@@ -164,16 +189,17 @@ def check(root):
     assert len(set(cpus)) == len(cpus) == 4
     assert set(manifest["binaries"]) == {"baseline", "candidate", "valkey", "generator"}
     assert set(manifest["binary_sha256"]) == set(manifest["binaries"])
-    assert len(list(root.glob("*-r*/sample.json"))) == 63
+    assert len(list(root.glob("*-r*/sample.json"))) == 36
     for name, digest in manifest["binary_sha256"].items():
         assert C.digest(root / "frozen-binaries" / name) == digest
     samples = []
     for identity in identities():
-        case, round_number, variant = identity
+        case, mode, round_number, variant = identity
+        server_cpus, client_cpus = affinities(mode, cpus)
         directory = root / name_for(*identity)
         s = G["read_json"](directory / "sample.json")
         assert s["valid"] is True and s["instrumented"] is False
-        assert (s["case"], s["round"], s["variant"]) == (list(case), round_number, variant)
+        assert (s["case"], s["mode"], s["round"], s["variant"]) == (list(case), mode, round_number, variant)
         assert len(s["latencies_ns"]) == case[4]
         assert s["replies"] == [expected_reply(case, i) for i in range(case[4])]
         assert s["metrics"] == percentiles(s["latencies_ns"])
@@ -182,19 +208,20 @@ def check(root):
         assert s["actual_sha256"] == s["expected_sha256"] == hashlib.sha256(expected).hexdigest()
         before, after = s["before"], s["after"]
         assert before["pid"] == after["pid"] and before["start_ticks"] == after["start_ticks"]
-        assert before["actual_cpus"] == after["actual_cpus"] == cpus
+        assert before["actual_cpus"] == after["actual_cpus"] == server_cpus
         driver_before, driver_after = s["generator_before"], s["generator_after"]
         assert driver_before["pid"] == driver_after["pid"]
         assert driver_before["start_ticks"] == driver_after["start_ticks"]
-        assert driver_before["actual_cpus"] == driver_after["actual_cpus"] == cpus
+        assert driver_before["actual_cpus"] == driver_after["actual_cpus"] == client_cpus
+        assert math.isfinite(cpu_us_per_call(s))
         server = G["read_json"](directory / "server.json")
         launch = Path(manifest["launch_directory"]) / name_for(*identity)
         kind = "valkey" if variant == "valkey" else "rillcache"
-        assert server["argv"] == G["server_argv"](manifest["binaries"][variant], kind, s["port"], cpus, launch)
+        assert server["argv"] == G["server_argv"](manifest["binaries"][variant], kind, s["port"], server_cpus, launch)
         assert server["pid"] == before["pid"] and server["port"] == s["port"]
         assert server["joined"] and server["exit_before_cleanup"] is None and server["exit_after_cleanup"] is not None
         samples.append(s)
-    assert G["read_json"](root / "samples.json") == samples
+    assert G["read_json"](root / "sample-index.json") == sample_index(root)
     assert (root / "summary.md").read_text() == report(samples)
     return samples
 
@@ -217,7 +244,7 @@ def main():
     assert args.base != args.candidate
     assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip() == args.candidate
     OUT.mkdir(parents=True, exist_ok=False)
-    manifest = {"study": "in-place-strings-v1", "diagnostic_only": True, "protected_gate": False,
+    manifest = {"study": "string-controls-v2", "diagnostic_only": True, "protected_gate": False,
                 "instrumented": False, "complete": False, "base_source": args.base, "candidate_source": args.candidate,
                 "runtime_candidate": subprocess.check_output(["git", "log", "-1", "--format=%H", "--", "src", "Cargo.toml", "Cargo.lock", "vendor"], cwd=ROOT).decode().strip(),
                 "launch_directory": str(OUT)}
@@ -236,8 +263,9 @@ def main():
             assert all(C.digest(path) == hashes[name] for name, path in binaries.items())
             samples.append(sample(binaries, identity, hardware["selected_cpus"]))
             print(name_for(*identity), "validated", flush=True)
+        os.sched_setaffinity(0, hardware["selected_cpus"])
         D.HARDWARE["require_match"](D.HARDWARE["probe"](), fingerprint)
-        C.save(OUT / "samples.json", samples)
+        C.save(OUT / "sample-index.json", sample_index(OUT))
         (OUT / "summary.md").write_text(report(samples))
         manifest.update(complete=True, evidence_sha256=D.evidence_hashes(OUT))
         C.save(OUT / "manifest.json", manifest)
