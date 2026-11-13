@@ -1,8 +1,9 @@
 # Performance architecture: measured gaps and candidate designs
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
-both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.47).**
+both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); every other runtime item
+here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33,
+4.35–4.47).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -1079,7 +1080,8 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-six things are still true even though every row now leads:
+Twenty-six observations; item 11 is now closed by PR #258 (`d334cde`), and the
+rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1165,11 +1167,10 @@ Twenty-six things are still true even though every row now leads:
     so a 200k-element 8-byte list costs 6.2–7.3 ms to unlink and 143 B/element
     RSS, versus 0.13–0.32 ms and 7.5 B/element for the C servers' packed
     quicklist/listpack plus bio lazy free (section 3.17, candidates 4.32/4.33).
-11. **In-place string mutation.** `APPEND` and `SETRANGE` rebuild and re-copy the
-    whole value (twice), so on a 32 MB string they cost **7.2–7.35 ms** versus
-    0.13–0.18 ms for the C servers' in-place sds mutation, while the 64 B
-    controls and `GETRANGE` are at the command floor (section 3.18, candidate
-    4.34).
+11. **In-place string mutation (closed).** `APPEND` and `SETRANGE` rebuilt and
+    re-copied the whole value (twice), costing **7.2–7.35 ms** on a 32 MB string
+    versus 0.13–0.18 ms for the C servers; PR #258 (`d334cde`) mutates in place
+    and the post-fix cohort measures **0.13–0.19 ms** (section 3.18).
 12. **In-place collection mutation.** Every write rebuilds the whole collection:
     a single `HSET` into a 10k hash, `ZADD` into a 10k zset, `SADD` into a 10k
     set and `RPUSH`/`LPOP` on a 200k list cost **1.2–18.3 ms** versus 0.07–0.35 ms
@@ -1424,7 +1425,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
-| In-place string mutation | latency, storage | **measured**: `APPEND` 64 B to 32 MB 7.35 ms vs 0.137/0.133; `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls and `GETRANGE` at the command floor | 4.34, admitted | AC36 on the implemented change | none |
+| In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor | 4.37, admitted | AC39 on the implemented change | none |
@@ -1856,7 +1857,7 @@ for a production claim.
 | Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
-| String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
+| String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | pre-fix: rebuild full-length `Vec` and copy twice; now mutates the entry in place (#258) | **Done:** 4.34 in-place mutation; measured 32 MB post-fix `APPEND` 0.131 vs 0.142/0.219 ms and `SETRANGE` 0.185 vs 0.222/0.289 (3.18, AC36) |
 | Collection writes | in-place dict/skiplist/listpack/quicklist update | same | clone the whole collection, re-encode and replace it per write | **Adapt:** 4.35 in-place mutation; measured 10k `HSET` 6.45 vs 0.111/0.093 ms, 200k `RPUSH` 18.3 vs 0.08/0.07, `LPOP` 17.8 vs 0.07–0.34; controls at the floor (3.19, AC37) |
 | Random-member selection | `dictGetRandomKey`/`dictGetSomeKeys`, intset/listpack fast paths | same | clone and sort/copy the whole collection per call | **Adapt:** 4.36 dense member index after a no-copy reservoir slice; measured 100k `SRANDMEMBER` 11.54 vs 0.199/0.326 ms, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164; 10k 1–2.6 ms, controls at the floor (3.20, AC38) |
 | Bitmaps | in-place sds bit write; word/AVX2 popcount | same (scalar/AVX2/NEON popcount) | rebuild the value for `SETBIT` (two copies); byte-at-a-time `BITCOUNT` | **Adapt:** 4.37 in-place `SETBIT` (4.34 shape) + `u64` chunk popcount; measured 16 MB 5.32 vs 0.349/0.312 ms and 23.01 vs 3.37/4.56; controls at the floor (3.21, AC39) |
@@ -2467,13 +2468,30 @@ default; do not weaken accounting, notifications, journal ordering or WATCH.
   or below the C servers' command floor. The 7.2–7.35 ms matches two 32 MB copies
   at roughly 9 GB/s, and the 1 MB row is the same mechanism masked by the
   ~0.1–0.2 ms client floor. Candidate 4.34.
+- **Post-fix validation (2026-11-13, PR #258 `d334cde`).** The landed
+  `Data::mutate_string` path reserves first and then mutates the entry's own
+  `Vec`; the same 1 MB/32 MB cohort now measures:
+
+  | Command | Rillcache pre-fix | Rillcache post-fix | Redis | Valkey |
+  | --- | ---: | ---: | ---: | ---: |
+  | `APPEND` 64 B to 1 MB | 0.344 ms | 0.124 ms | 0.238 | 0.208 |
+  | `SETRANGE` 16 B, 1 MB | 0.208 | 0.217 | 0.146 | 0.068 |
+  | `APPEND` 64 B to 32 MB | **7.35** (p99 14.5) | **0.131** (p99 1.22) | 0.142 (p99 1.21) | 0.219 (p99 2.24) |
+  | `SETRANGE` 16 B, 32 MB | **7.19** (p99 9.5) | **0.185** (p99 1.32) | 0.222 (p99 1.69) | 0.289 (p99 3.31) |
+  | 64 B controls | 0.080/0.135 | 0.189/0.188 | 0.234/0.242 | 0.165/0.071 |
+
+  The 32 MB mutations are **56×** and **39×** faster than the pre-fix baseline
+  and now at or below the C servers' p50; the 1 MB rows, `GETRANGE` and the 64 B
+  controls remain at the command floor. AC36 is met; candidate 4.34 is
+  implemented.
 
 **Verdict: adapt in-place mutation (4.34).** Add a mutable string-update path that
 reserves/admits first, then grows and patches the entry's own `Vec` in place
 (`extend_from_slice`, `resize`, slice copy) and updates payload accounting and
 `touch` without rebuilding or re-copying the value. Keep the exact bytes, the
 zero-fill growth rule, the 512 MiB limit, TTL, WATCH/version, journal and
-rewrite behavior.
+rewrite behavior. **Implemented in PR #258 (`d334cde`); the post-fix cohort is
+the regression evidence.**
 
 ### 3.19 In-place collection mutation (HSET/ZADD/SADD/LPUSH/LPOP)
 
@@ -3216,7 +3234,8 @@ section. 4.31 is the incremental cursor for the measured 167–260× per-call
 `SCAN` loss in section 3.16. 4.32 and 4.33 cover the measured large-collection
 RSS and deferred-drop gaps in section 3.17. 4.34 is the in-place string mutation
 candidate for the measured 39–75× `APPEND`/`SETRANGE` loss on a 32 MB value in
-section 3.18. 4.35 is the in-place collection mutation candidate for the measured
+section 3.18; it merged as PR #258 (`d334cde`) and the post-fix cohort measures
+0.13–0.19 ms. 4.35 is the in-place collection mutation candidate for the measured
 3.5–262× write loss in section 3.19. 4.36 is the constant-time random-member
 candidate for the measured 35–298× sampling loss in section 3.20. 4.37 is the
 bitmap candidate for the measured 5–17× `SETBIT`/`BITCOUNT` loss in section 3.21.
@@ -3748,9 +3767,9 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    section 3.17 already measures 142–143 vs 7.5 B/element, 6.2–7.3 vs
    0.13–0.32 ms unlink, and 9.2 ms ASYNC flush.
 10. **String mutation:** `APPEND` and `SETRANGE` on a 1 MB and a 32 MB value,
-   with 64 B controls and a `GETRANGE`. Confirms 4.34 on a clean runner; the
-   2026-11-12 local cohort in section 3.18 already measures 7.2–7.35 ms for the
-   32 MB mutations versus 0.13–0.18 ms for the C servers.
+   with 64 B controls and a `GETRANGE`. 4.34 landed in #258; the 2026-11-13
+   post-fix cohort in section 3.18 measures 0.131/0.185 ms at 32 MB versus
+   0.142–0.289 for the C servers. Keep the row as the regression check.
 11. **Collection writes:** a single `HSET`/`ZADD`/`SADD` into 10k-member
    collections, `RPUSH`/`LPOP` on a 200k list, and 10-element controls.
    Confirms 4.35 on a clean runner; the 2026-11-12 local cohort in section 3.19
@@ -4277,7 +4296,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.31 cursor scan | `scan_keys`/`scan_collection` (`scan.rs`), `KEYS`/`RANDOMKEY` (`keyspace.rs`), router `locked_scan`, `Data` keyspace index, `ZSet`/`Hash`/`Set` order, expiry reap | opaque cursor resume; full coverage on a stable keyspace; MATCH/COUNT/TYPE/NOVALUES; pack one-call behavior; bounded work; KEYS/RANDOMKEY order; memory accounting | 100k `SCAN COUNT 10`, full scan, 10k `HSCAN`, 100k `KEYS`/`RANDOMKEY`, SET/GET regression | large |
 | 4.32 packed list nodes | `Collection::ListPack`/`ListQuick` (`data.rs`), list commands (`collections.rs`), `payload_len`, rewrite encoding | node index arithmetic; split/merge; binary safety; max element size; accounting; iteration order; blocking pop | 200k-list RSS and `DEL` A/B, RPUSH/LRANGE/LINSERT/blocking | large |
 | 4.33 deferred drop | `DEL`/`UNLINK` (`dispatch/keyspace.rs`), `FLUSH*` (`administration.rs`), `Data::flush`/`remove`, maintenance tick (`reactor.rs`), accounting | queue bound; pending bytes counted; key recreation; notification/journal order; shutdown drain; SYNC unchanged | `UNLINK`/`FLUSH ASYNC` A/B, DBSIZE/EXISTS/SCAN, drain-on-shutdown | small |
-| 4.34 in-place strings | `append`/`setrange` (`string_ranges.rs`), `Data::reserve`/`put`/`remove` (`data.rs#L646`, `#L774`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small |
+| 4.34 in-place strings (implemented, #258) | `append`/`setrange` (`string_ranges.rs`), `Data::mutate_string`/`reserve`/`put` (`data.rs`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small, landed |
 | 4.35 in-place collection writes | `hash_set`/`zset_add`/`set_add`/`push_list`/`pop_list` (`collections.rs`), `Data::entries.get_mut`, `payload_len`, field TTL, blocking wake | admit before mutate; pack↔large conversion only at thresholds; delta accounting; empty-collection removal; field TTL; WATCH/journal | 10k `HSET`/`ZADD`/`SADD`, 200k `RPUSH`/`LPOP`, 10-element controls | medium |
 | 4.36 random members | `set_random_member`/`set_pop`/`hash_random_field`/`zset_random_member` (`collection_commands.rs`), `owned_set`, `set_items`, `hash_items`, `zset_items`, collection representation | sample without materializing; uniform distribution; count/negative-count semantics; `SPOP` removal and empty deletion; ordering decision; small pack paths | 10k/100k `SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`/`SPOP`, distribution test | medium |
 | 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`, `#L524`), `find_bit` (`#L432`), `Data::reserve`/`put`, range normalization | in-place write after admission; `u64` chunk popcount and bit scan with masked head/tail; BYTE/BIT ranges; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`/`BITPOS`, 64 B controls, range cases | small |
@@ -4309,8 +4328,8 @@ gaps are 35–298×. 4.30, 4.38 and 4.43 are the largest measured read-side rati
 (378–927× and 10–53×) and should share one ordered structure: 4.30 covers
 point/score/start-0 reads, 4.38 the rank-select, and 4.43 the geohash cell
 ranges. 4.39 is a contract/reliability fix on the pub/sub path already admitted
-as 4.24 and should land with them. 4.34 itself removes two full-value copies per
-`APPEND`/`SETRANGE`. 4.32 follows as the structural memory and CPU fix
+as 4.24 and should land with them. 4.34 (landed in #258) removed two full-value copies per
+`APPEND`/`SETRANGE` and post-fix measures 0.13–0.19 ms at 32 MB. 4.32 follows as the structural memory and CPU fix
 (142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list direction.
 4.22/4.24 come last because they touch every asynchronous client path and carry
 the highest ordering risk (4.39 rides with them). 4.31 is the largest per-call
@@ -4597,7 +4616,7 @@ shall drain; `DEL` and `FLUSHALL SYNC` shall stay within 10% of baseline;
 notification/journal/WATCH ordering and persistence tests shall pass; no
 dependency shall be added; and both protected gates shall pass on the exact head.
 
-### 4.34 In-place string mutation (candidate; admission measured)
+### 4.34 In-place string mutation (implemented in PR #258, `d334cde`)
 
 **Mechanism.** Add a mutable update path: after admission/eviction through
 `Data::reserve`, borrow the entry's value mutably and either `extend_from_slice`
@@ -4647,6 +4666,13 @@ allocated/copied per operation shall be bounded by the delta plus amortized
 growth; exact bytes, zero-fill growth, the 512 MiB limit,
 TTL/WATCH/journal/replay/rewrite and accounting shall pass; no dependency shall
 be added; and both protected gates shall pass on the exact head.
+
+**Post-fix validation (2026-11-13, section 3.18).** With `Data::mutate_string`
+merged, 32 MB `APPEND` p50 is **0.131 ms (p99 1.22)** and `SETRANGE` **0.185 ms
+(p99 1.32)**, versus Redis 0.142/0.222 and Valkey 0.219/0.289; the 1 MB rows and
+controls are at the command floor. AC36 is met (56×/39× faster than the
+pre-fix baseline), and the landed persistence tests cover exact bytes, growth
+and journal/replay. The acceptance stays as the regression contract.
 
 ### 4.35 In-place collection mutation (candidate; admission measured)
 
@@ -5251,7 +5277,7 @@ shall pass on the exact head.
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
-bounded queue plus the existing maintenance tick, 4.34 uses the existing `Vec`
+bounded queue plus the existing maintenance tick, 4.34 (landed in #258) uses the existing `Vec`
 in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes, 4.37 uses in-place `Vec` writes plus
 `u64::count_ones`, 4.38 uses a `Vec` of sorted blocks plus counts, 4.39 uses
@@ -5457,12 +5483,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   under eviction, shutdown must drain, and a recreated key must not observe the
   old pending value. Journal/notification ordering must be unchanged, and the
   synchronous fallback must be explicit rather than silent (AC35).
-- **In-place string risk (4.34):** `reserve` can evict the key being mutated, so
-  the code must re-look it up and treat absence as a fresh value; an OOM after a
-  partial `resize`/copy would corrupt the value, so growth must be reserved
-  first; zero-fill growth, the 512 MiB limit, TTL, WATCH versions, journal
-  ordering and rewrite snapshots must not change. Small-value controls and
-  `GETRANGE` must not regress (AC36).
+- **In-place string risk (4.34, implemented in #258):** the landed `mutate_string`
+  path keeps the admission/re-lookup, OOM-before-mutation, zero-fill, 512 MiB,
+  TTL/WATCH/journal/rewrite obligations; the post-fix cohort and persistence
+  tests cover them. It remains a regression surface, not an open candidate.
 - **In-place collection risk (4.35):** `reserve` can evict the key being mutated,
   pack↔large conversion must preserve order and compact semantics, and an OOM
   after a partial insert/pop corrupts the collection. Delta accounting, field
@@ -5845,16 +5869,16 @@ samples retained.
   notification/journal/WATCH ordering and persistence tests shall pass; no
   dependency shall be added; and both protected gates shall pass on the exact
   head.
-- **AC36 (in-place string mutation, only if 4.34 is implemented).** `APPEND` of
-  64 B to a 32 MB value shall have p50 ≤0.5 ms and p99 ≤2 ms (≥14× faster than
-  the measured 7.35/14.5 ms and within ~4× Redis's 0.137/1.05 ms); `SETRANGE` of
-  16 B at offset 0 of a 32 MB value shall have p50 ≤0.5 ms (≥14× faster than the
-  measured 7.19 ms and within ~3× Redis's 0.184 ms); a 1 MB value shall move to
-  the command floor; the 64 B controls and `GETRANGE` shall be unchanged; bytes
+- **AC36 (in-place string mutation, met by PR #258).** `APPEND` of 64 B to a
+  32 MB value shall have p50 ≤0.5 ms and p99 ≤2 ms; `SETRANGE` of 16 B at offset
+  0 of a 32 MB value shall have p50 ≤0.5 ms; a 1 MB value shall stay at the
+  command floor; the 64 B controls and `GETRANGE` shall be unchanged; bytes
   copied per operation shall be bounded by the delta plus amortized growth; exact
   bytes, zero-fill growth, the 512 MiB limit, TTL/WATCH/journal/replay/rewrite
   and accounting shall pass; no dependency shall be added; and both protected
-  gates shall pass on the exact head.
+  gates shall pass on the exact head. Post-fix: `APPEND` 0.131 ms (p99 1.22) and
+  `SETRANGE` 0.185 ms (p99 1.32), both 56×/39× faster than the pre-fix
+  baseline and at or below the C servers' p50.
 - **AC37 (in-place collection writes, only if 4.35 is implemented).** `HSET` into
   a 10,000-field hash, `ZADD` into a 10,000-member sorted set and `SADD` into a
   10,000-member set shall each have p50 ≤0.3 ms (within ~3× the faster C server
@@ -6261,6 +6285,12 @@ separate roadmap.
   209.4 versus 4.79/5.96; `BITPOS 1` 0.12 versus 0.60/0.09; `BITCOUNT` 23.46
   versus 4.04/4.78; 64 B `BITPOS 0` 0.32 versus 0.55/0.10. Raw JSON retained
   (untracked).
+- Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
+  the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
+  Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
+  0.222 (1.69) and 0.289 (3.31); 1 MB `APPEND`/`SETRANGE` 0.124/0.217 versus
+  0.238/0.146 and 0.208/0.068; 64 B controls and `GETRANGE` at the floor.
+  Pre-fix medians were 7.35/7.19 ms. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -6639,8 +6669,8 @@ separate roadmap.
   latency for 1 MB and 32 MB values built by `APPEND`, with 64 B controls and a
   small `GETRANGE`. It does not measure concurrent mutation, persistence-on
   appends, the full 512 MiB ceiling, capacity retained after shrink, or the exact
-  bytes copied (the mechanism is inferred from the ~9 GB/s copy time and the
-  source). Small- and large-value `SET` copies remain 4.15/4.25 territory.
+  bytes copied. 4.34 landed in #258 and its post-fix cohort is now the regression
+  evidence; small- and large-value `SET` copies remain 4.15/4.25 territory.
 - The collection-write cohort (section 3.19) measures single-connection latency
   for one write into preloaded collections, with 10-element controls. It does
   not measure pipelined/batched writes (e.g. `HSET` with 500 pairs), concurrent
