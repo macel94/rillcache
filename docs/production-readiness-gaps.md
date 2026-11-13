@@ -482,6 +482,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   maps, indexes, thread stacks, connection buffers, kernel sockets and allocator
   fragmentation can make actual memory much larger; the kernel can OOM-kill the
   process.
+  **Partial (2026-11-13): process RSS is observable.** `INFO memory` and
+  `MEMORY STATS` report `used_memory_rss`, `used_memory_rss_human` and an explicit
+  scope from Linux `/proc/self/status`; unsupported platforms report unavailable
+  instead of a fake value. The field is observational only and is not used for
+  admission or eviction. Allocator accounting, cgroup limits, a documented
+  headroom contract and OOM behavior remain absent.
   **Closes when:** operators can observe and enforce a documented memory bound
   (cgroup/RSS/allocator) with headroom guidance, and OOM behavior is tested.
 

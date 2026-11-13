@@ -1,3 +1,4 @@
+use super::process_memory;
 use super::*;
 
 impl ShardExecutor {
@@ -164,6 +165,7 @@ impl ShardExecutor {
             expires,
             limit: self.payload_limit(),
             policy: data.eviction,
+            resident_bytes: process_memory::snapshot().map(|memory| memory.resident_bytes),
         })
     }
 
@@ -173,7 +175,8 @@ impl ShardExecutor {
             return;
         };
         let percentage = memory_percentage(snapshot.payload, snapshot.limit);
-        let _ = write!(out, "*14\r\n");
+        let resident = snapshot.resident_bytes;
+        let _ = write!(out, "*20\r\n");
         encode_bulk(Some(b"peak.allocated"), out);
         let _ = write!(out, ":{}\r\n", snapshot.peak);
         encode_bulk(Some(b"total.allocated"), out);
@@ -184,10 +187,31 @@ impl ShardExecutor {
         let _ = write!(out, ":{}\r\n", snapshot.payload);
         encode_bulk(Some(b"dataset.percentage"), out);
         encode_bulk(Some(format!("{percentage:.2}").as_bytes()), out);
+        encode_bulk(Some(b"used_memory_rss"), out);
+        let _ = write!(out, ":{}\r\n", resident.unwrap_or(0));
+        encode_bulk(Some(b"used_memory_rss_human"), out);
+        encode_bulk(
+            Some(
+                resident
+                    .map(process_memory::human_bytes)
+                    .unwrap_or_else(|| "0B".to_owned())
+                    .as_bytes(),
+            ),
+            out,
+        );
         encode_bulk(Some(b"rillcache.payload.limit_bytes"), out);
         let _ = write!(out, ":{}\r\n", snapshot.limit);
         encode_bulk(Some(b"rillcache.payload.scope"), out);
         encode_bulk(Some(MEMORY_SCOPE), out);
+        encode_bulk(Some(b"rillcache.rss.scope"), out);
+        encode_bulk(
+            Some(if resident.is_some() {
+                RSS_SCOPE
+            } else {
+                RSS_UNAVAILABLE
+            }),
+            out,
+        );
     }
 
     fn memory_doctor(&self, out: &mut Vec<u8>) {
@@ -196,25 +220,31 @@ impl ShardExecutor {
             return;
         };
         let percentage = memory_percentage(snapshot.payload, snapshot.limit);
+        let rss = match snapshot.resident_bytes {
+            Some(bytes) => format!(
+                "Process RSS is {} ({} bytes); it includes allocator, thread, socket and shared pages and is observational, not enforced.",
+                process_memory::human_bytes(bytes),
+                bytes
+            ),
+            None => "Process RSS is unavailable on this platform.".to_owned(),
+        };
+        let scope = format!("{MEMORY_SCOPE_SENTENCE} {rss}");
         let text = if snapshot.keys == 0 && snapshot.payload == 0 {
-            format!(
-                "Rillcache payload is empty: 0 bytes across 0 live keys. {}",
-                MEMORY_SCOPE_SENTENCE
-            )
+            format!("Rillcache payload is empty: 0 bytes across 0 live keys. {scope}")
         } else if percentage >= 90.0 && snapshot.policy == EvictionPolicy::NoEviction {
             format!(
-                "Payload pressure is high: {} bytes across {} live keys ({percentage:.1}% of the {} byte limit) with noeviction; new writes may fail with OOM. {}",
-                snapshot.payload, snapshot.keys, snapshot.limit, MEMORY_SCOPE_SENTENCE
+                "Payload pressure is high: {} bytes across {} live keys ({percentage:.1}% of the {} byte limit) with noeviction; new writes may fail with OOM. {scope}",
+                snapshot.payload, snapshot.keys, snapshot.limit
             )
         } else if percentage >= 75.0 {
             format!(
-                "Payload is using {:.1} of the {} byte limit across {} live keys. Monitor growth; {}",
-                percentage, snapshot.limit, snapshot.keys, MEMORY_SCOPE_SENTENCE
+                "Payload is using {:.1} of the {} byte limit across {} live keys. Monitor growth; {scope}",
+                percentage, snapshot.limit, snapshot.keys
             )
         } else {
             format!(
-                "Payload is using {:.1} of the {} byte limit across {} live keys ({} with a deadline); no payload pressure detected. {}",
-                percentage, snapshot.limit, snapshot.keys, snapshot.expires, MEMORY_SCOPE_SENTENCE
+                "Payload is using {:.1} of the {} byte limit across {} live keys ({} with a deadline); no payload pressure detected. {scope}",
+                percentage, snapshot.limit, snapshot.keys, snapshot.expires
             )
         };
         encode_bulk(Some(text.as_bytes()), out);
@@ -228,11 +258,13 @@ struct MemorySnapshot {
     expires: usize,
     limit: usize,
     policy: EvictionPolicy,
+    resident_bytes: Option<u64>,
 }
 
 const MEMORY_SCOPE: &[u8] = b"key_and_value_bytes_not_RSS";
-const MEMORY_SCOPE_SENTENCE: &str =
-    "This report uses key and value payload accounting, not RSS or allocator metrics.";
+const MEMORY_SCOPE_SENTENCE: &str = "This report uses key and value payload accounting; allocator, index, thread and socket memory are excluded.";
+const RSS_SCOPE: &[u8] = b"process_resident_set_includes_shared_and_allocator_pages_not_payload";
+const RSS_UNAVAILABLE: &[u8] = b"unavailable_on_this_platform";
 
 fn memory_percentage(payload: usize, limit: usize) -> f64 {
     if limit == 0 {
@@ -413,8 +445,11 @@ mod tests {
             b"keys.count",
             b"dataset.bytes",
             b"dataset.percentage",
+            b"used_memory_rss",
+            b"used_memory_rss_human",
             b"rillcache.payload.limit_bytes",
             b"rillcache.payload.scope",
+            b"rillcache.rss.scope",
         ] {
             assert!(
                 empty_stats.windows(field.len()).any(|part| part == field),
@@ -431,6 +466,7 @@ mod tests {
         }
         let stats = run(&store, &[b"MEMORY", b"STATS"]);
         let text = String::from_utf8_lossy(&stats);
+        assert!(text.contains("*20\r\n"), "{text}");
         assert!(text.contains("$14\r\npeak.allocated\r\n:"), "{text}");
         assert!(text.contains("$15\r\ntotal.allocated\r\n:0\r\n"), "{text}");
         assert!(text.contains("key_and_value_bytes_not_RSS"), "{text}");
@@ -439,7 +475,7 @@ mod tests {
         let doctor = run(&store, &[b"MEMORY", b"DOCTOR"]);
         let text = String::from_utf8_lossy(&doctor);
         assert!(text.contains("Payload pressure is high"), "{text}");
-        assert!(text.contains("not RSS"), "{text}");
+        assert!(text.contains("Process RSS is"), "{text}");
         let help = run(&store, &[b"MEMORY", b"HELP"]);
         assert!(help.windows(b"STATS".len()).any(|part| part == b"STATS"));
         assert!(run(&store, &[b"MEMORY", b"STATS", b"extra"]).starts_with(b"-ERR"));
