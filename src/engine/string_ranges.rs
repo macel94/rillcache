@@ -69,7 +69,6 @@ impl ShardExecutor {
         }
         let entry = data.entries.get(key);
         let previous = entry.map(Entry::payload_len);
-        let expires = entry.and_then(|entry| entry.expires);
         let Some(length) = previous
             .unwrap_or(0)
             .checked_add(suffix.len())
@@ -82,16 +81,15 @@ impl ShardExecutor {
             output.extend_from_slice(OOM);
             return;
         };
-        let mut value = Vec::new();
-        if value.try_reserve_exact(length).is_err() {
+        if data
+            .mutate_string(key, length, payload, self.payload_limit(), |value| {
+                value.extend_from_slice(suffix);
+            })
+            .is_err()
+        {
             output.extend_from_slice(OOM);
             return;
         }
-        if let Some(entry) = data.entries.get(key) {
-            value.extend_from_slice(&entry.value);
-        }
-        value.extend_from_slice(suffix);
-        data.put(key, &value, expires, payload, now);
         integer(length as i64, output);
     }
 
@@ -185,7 +183,6 @@ impl ShardExecutor {
         let entry = data.entries.get(key);
         let previous = entry.map(Entry::payload_len);
         let old_len = previous.unwrap_or(0);
-        let expires = entry.and_then(|entry| entry.expires);
         if replacement.is_empty() {
             integer(old_len as i64, output);
             return;
@@ -202,17 +199,16 @@ impl ShardExecutor {
             output.extend_from_slice(OOM);
             return;
         };
-        let mut value = Vec::new();
-        if value.try_reserve_exact(length).is_err() {
+        if data
+            .mutate_string(key, length, payload, self.payload_limit(), |value| {
+                value.resize(length, 0);
+                value[offset..end].copy_from_slice(replacement);
+            })
+            .is_err()
+        {
             output.extend_from_slice(OOM);
             return;
         }
-        if let Some(entry) = data.entries.get(key) {
-            value.extend_from_slice(&entry.value);
-        }
-        value.resize(length, 0);
-        value[offset..end].copy_from_slice(replacement);
-        data.put(key, &value, expires, payload, now);
         integer(length as i64, output);
     }
 }
@@ -229,6 +225,153 @@ mod tests {
             self.0.load(Ordering::SeqCst)
         }
     }
+    #[test]
+    fn in_place_mutation_reuses_capacity_and_updates_metadata_once() {
+        let store = ShardExecutor::with_clock(4096, Arc::new(TestClock(AtomicI64::new(1000))));
+        let mut out = Vec::new();
+        store.execute(&[b"SET", b"k", &[b'a'; 32], b"PX", b"100"], &mut out);
+        assert_eq!(out, b"+OK\r\n");
+        let mut grows = 0;
+        for length in (40..=1632).step_by(8) {
+            let (old_capacity, old_version, old_access) = {
+                let data = store.data.borrow();
+                let entry = &data.entries[b"k".as_slice()];
+                (
+                    entry.value.capacity(),
+                    data.version(b"k").unwrap(),
+                    entry.last_access,
+                )
+            };
+            out.clear();
+            store.execute_string_ranges(&[b"APPEND", b"k", b"\0\xffabcdef"], &mut out);
+            assert_eq!(out, format!(":{length}\r\n").as_bytes());
+            let data = store.data.borrow();
+            let entry = &data.entries[b"k".as_slice()];
+            grows += usize::from(entry.value.capacity() != old_capacity);
+            assert_eq!(entry.payload_len, length);
+            assert_eq!(data.payload_bytes, 1 + length);
+            assert_eq!(data.version(b"k"), Some(old_version + 1));
+            assert!(entry.last_access > old_access);
+            assert_eq!(entry.expires, Some(1100));
+            assert!(data.expirations.contains(&(1100, b"k".to_vec())));
+        }
+        assert!(grows <= 6, "growth must be amortized, not per append");
+        let (pointer, capacity, version) = {
+            let data = store.data.borrow();
+            let value = &data.entries[b"k".as_slice()].value;
+            (
+                value.as_ptr(),
+                value.capacity(),
+                data.version(b"k").unwrap(),
+            )
+        };
+        out.clear();
+        store.execute_string_ranges(&[b"SETRANGE", b"k", b"10", b"\xff\0"], &mut out);
+        assert_eq!(out, b":1632\r\n");
+        let data = store.data.borrow();
+        let entry = &data.entries[b"k".as_slice()];
+        assert_eq!(entry.value.as_ptr(), pointer);
+        assert_eq!(entry.value.capacity(), capacity);
+        assert_eq!(&entry.value[10..12], b"\xff\0");
+        assert_eq!(data.payload_bytes, 1633);
+        assert_eq!(data.version(b"k"), Some(version + 1));
+    }
+
+    #[test]
+    fn growth_spare_capacity_is_bounded_and_rejections_do_not_touch_the_target() {
+        let store = ShardExecutor::with_clock(97, Arc::new(TestClock(AtomicI64::new(1000))));
+        let mut out = Vec::new();
+        store.execute(&[b"SET", b"k", &[b'a'; 32]], &mut out);
+        out.clear();
+        store.execute_string_ranges(&[b"APPEND", b"k", &[b'b'; 32]], &mut out);
+        assert_eq!(out, b":64\r\n");
+        out.clear();
+        store.execute_string_ranges(&[b"APPEND", b"k", &[b'c'; 8]], &mut out);
+        assert_eq!(out, b":72\r\n");
+        let (before, version) = {
+            let data = store.data.borrow();
+            let entry = &data.entries[b"k".as_slice()];
+            assert!(entry.value.capacity() <= 96);
+            (entry.clone(), data.version(b"k"))
+        };
+        for (args, reply) in [
+            (vec![b"APPEND".as_slice(), b"k", &[b'x'; 25]], OOM),
+            (vec![b"SETRANGE".as_slice(), b"k", b"90", b"1234567"], OOM),
+            (
+                vec![b"SETRANGE".as_slice(), b"k", b"536870912", b"x"],
+                RANGE_LIMIT,
+            ),
+        ] {
+            out.clear();
+            store.execute_string_ranges(&args, &mut out);
+            assert_eq!(out, reply);
+            let data = store.data.borrow();
+            assert_eq!(&data.entries[b"k".as_slice()], &before);
+            assert_eq!(data.version(b"k"), version);
+            assert_eq!(data.payload_bytes, 73);
+        }
+    }
+
+    #[test]
+    fn growth_eviction_preserves_target_and_reports_journal_and_rewrite_changes() {
+        let store = ShardExecutor::with_clock(97, Arc::new(TestClock(AtomicI64::new(1000))));
+        assert!(store.set_eviction_policy(super::super::EvictionPolicy::AllKeysLru));
+        let mut out = Vec::new();
+        store.execute(&[b"SET", b"k", &[b'a'; 64], b"PX", b"500"], &mut out);
+        assert_eq!(out, b"+OK\r\n");
+        out.clear();
+        store.execute(&[b"SET", b"victim", &[b'b'; 24]], &mut out);
+        assert_eq!(out, b"+OK\r\n");
+        let sequence = {
+            let mut data = store.data.borrow_mut();
+            data.set_collect_events(true);
+            data.begin_rewrite_tracking();
+            data.journal_seq()
+        };
+        out.clear();
+        store.execute_string_ranges(&[b"APPEND", b"k", &[b'c'; 16]], &mut out);
+        assert_eq!(out, b":80\r\n");
+        let mut data = store.data.borrow_mut();
+        assert_eq!(data.entries.len(), 1);
+        let entry = &data.entries[b"k".as_slice()];
+        assert_eq!(&entry.value[..64], &[b'a'; 64]);
+        assert_eq!(&entry.value[64..], &[b'c'; 16]);
+        assert_eq!(entry.expires, Some(1500));
+        assert_eq!(entry.payload_len, 80);
+        assert_eq!(data.payload_bytes, 81);
+        let keys = vec![b"k".to_vec(), b"victim".to_vec()];
+        assert_eq!(data.changes_since(sequence), (keys.clone(), false));
+        assert_eq!(data.take_rewrite_changes(), (keys, false));
+    }
+
+    #[test]
+    fn fallible_capacity_failure_preserves_existing_and_missing_keys() {
+        let mut data = super::super::data::Data::default();
+        data.set_collect_events(true);
+        data.put(b"k", b"original", Some(123), 9, 0);
+        let before = data.entries[b"k".as_slice()].clone();
+        let version = data.version(b"k");
+        let sequence = data.journal_seq();
+        data.begin_rewrite_tracking();
+        for key in [b"k".as_slice(), b"absent"] {
+            assert!(
+                data.mutate_string(key, usize::MAX, usize::MAX, usize::MAX, |_| panic!(
+                    "allocation must succeed before mutation"
+                ))
+                .is_err()
+            );
+            assert_eq!(&data.entries[b"k".as_slice()], &before);
+            assert_eq!(data.entries.len(), 1);
+            assert_eq!(data.version(b"k"), version);
+            assert_eq!(data.version(b"absent"), None);
+            assert_eq!(data.payload_bytes, 9);
+            assert_eq!(data.journal_seq(), sequence);
+            assert_eq!(data.changes_since(sequence), (vec![], false));
+            assert_eq!(data.take_rewrite_changes(), (vec![], false));
+            assert!(data.expirations.contains(&(123, b"k".to_vec())));
+        }
+    }
+
     #[test]
     fn append_and_setrange_keep_live_expiry() {
         let clock = Arc::new(TestClock(AtomicI64::new(1000)));
