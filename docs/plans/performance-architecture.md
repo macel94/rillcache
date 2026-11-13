@@ -130,7 +130,9 @@ Random sampling is the widest cardinality-scaling loss: at 100k members
 **11.5 vs 0.2–0.3 ms**, `HRANDFIELD` **33.7 vs 0.11–0.34 ms** and
 `ZRANDMEMBER` **21.3 vs 0.16–0.25 ms**, because each call clones the collection
 (4.36). Bitmaps show both write-copy and scan gaps: on 16 MB, `SETBIT` is **5.3
-vs 0.31–0.35 ms** and `BITCOUNT` **23.0 vs 3.4–4.6 ms** (4.37). Sorted-set rank
+vs 0.31–0.35 ms**, `BITCOUNT` **23.0 vs 3.4–4.6 ms**, and a one-byte `BITFIELD`
+write **4.39–4.68 vs 0.087–0.12 ms** while its read-only form is at the floor
+(4.37, extended). Sorted-set rank
 and score reads are the largest ratio in the record at 100k: **57–72 ms** for
 `ZRANK`/`ZRANGEBYSCORE`/`ZRANGE` versus 0.07–0.17 ms (378–927×), and `ZSCORE`
 3.3 ms because it scans; 4.30 covers point/score/start-0 ranges and 4.38 the
@@ -1102,7 +1104,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Thirty-one observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty-two observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1206,8 +1208,10 @@ rest are still true even though every row now leads:
 14. **Bitmap mutation and popcount.** `SETBIT` rebuilds the value (two full
     copies) and `BITCOUNT` runs a byte-at-a-time popcount, so on a 16 MB bitmap
     they cost **5.3 ms** and **23.0 ms** versus 0.31–0.35 and 3.4–4.6 ms, while
-    `GETBIT`, `STRLEN` and the 64 B controls are at the floor (section 3.21,
-    candidate 4.37).
+    `GETBIT`, `STRLEN` and the 64 B controls are at the floor; the same two-copy
+    write makes a one-byte `BITFIELD SET` **4.39–4.68 ms** versus 0.087–0.12,
+    while read-only `BITFIELD` is already copy-free (sections 3.21 and 3.40,
+    candidate 4.37 extended).
 15. **Sorted-set rank, score-range and point reads.** At 100k members `ZRANK`,
     `ZREVRANK`, `ZRANGEBYSCORE LIMIT` and `ZRANGE` cost **57–72 ms** versus
     0.07–0.17 ms for the C servers' skiplist (378–927×), and `ZSCORE` costs
@@ -1293,6 +1297,10 @@ rest are still true even though every row now leads:
     `XPENDING` and `XCLAIM` are at parity; per-entry `StreamEntry`/`Pending` clones
     and the consumer-name copy are the residual, below the candidate threshold
     (section 3.39, measured null).
+32. **BITFIELD writes on large values.** A one-byte `BITFIELD SET`/`INCRBY` on a
+    16 MB value costs **4.39–4.68 ms versus 0.087–0.12** (37–52×) while
+    `BITFIELD_RO`/all-`GET` reads are at the floor, because the write path clones
+    the value and `put` copies it again; section 3.40, extending 4.37.
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1483,7 +1491,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; at 100k `HSET`/`HDEL` 92.7–99.4 vs 0.08–0.32, `ZADD`/`ZREM` 61.4–63.9 vs 0.10–0.23, `SADD`/`SREM` 10.7–11.2 vs 0.08–0.60 (18–1160×); 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
-| Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor | 4.37, admitted | AC39 on the implemented change | none |
+| Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor; 16 MB `BITFIELD` write 4.39–4.68 vs 0.087–0.12 (37–52×) while `BITFIELD_RO` reads are at the floor | 4.37 (extended to `BITFIELD` writes) | AC39 on the implemented change | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured; no candidate**: 100k SINTER 52.5 vs 38.9/23.2 ms, SINTERCARD 52.0 vs 35.7/15.3, SDIFF 49.9 vs 66.9/40.1, SUNION 76.8 vs 105.4/78.8 (Rill leads Redis); 10k 5.4–7.8 ms | keep; 1.2–3.4× is inside the reply/algorithm mix | n/a | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
@@ -1919,7 +1927,7 @@ for a production claim.
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | pre-fix: rebuild full-length `Vec` and copy twice; now mutates the entry in place (#258) | **Done:** 4.34 in-place mutation; measured 32 MB post-fix `APPEND` 0.131 vs 0.142/0.219 ms and `SETRANGE` 0.185 vs 0.222/0.289 (3.18, AC36) |
 | Collection writes | in-place dict/skiplist/listpack/quicklist update | same | clone the whole collection, re-encode and replace it per write | **Adapt:** 4.35 in-place mutation; measured 10k `HSET` 6.45 vs 0.111/0.093 ms, 200k `RPUSH` 18.3 vs 0.08/0.07, `LPOP` 17.8 vs 0.07–0.34; 100k `HSET`/`HDEL` 92.7–99.4 vs 0.08–0.32 and `ZADD`/`ZREM` 61.4–63.9 vs 0.10–0.23 (18–1160×); controls at the floor (3.19, AC37) |
 | Random-member selection | `dictGetRandomKey`/`dictGetSomeKeys`, intset/listpack fast paths | same | clone and sort/copy the whole collection per call | **Adapt:** 4.36 dense member index after a no-copy reservoir slice; measured 100k `SRANDMEMBER` 11.54 vs 0.199/0.326 ms, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164; 10k 1–2.6 ms, controls at the floor (3.20, AC38) |
-| Bitmaps | in-place sds bit write; word/AVX2 popcount | same (scalar/AVX2/NEON popcount) | rebuild the value for `SETBIT` (two copies); byte-at-a-time `BITCOUNT` | **Adapt:** 4.37 in-place `SETBIT` (4.34 shape) + `u64` chunk popcount; measured 16 MB 5.32 vs 0.349/0.312 ms and 23.01 vs 3.37/4.56; controls at the floor (3.21, AC39) |
+| Bitmaps | in-place sds bit write; word/AVX2 popcount | same (scalar/AVX2/NEON popcount) | rebuild the value for `SETBIT` and `BITFIELD` writes (two copies); byte-at-a-time `BITCOUNT` | **Adapt:** 4.37 in-place `SETBIT`/`BITFIELD` (4.34 shape) + `u64` chunk popcount; measured 16 MB 5.32 vs 0.349/0.312 ms, `BITFIELD` write 4.39–4.68 vs 0.087–0.12, and 23.01 vs 3.37/4.56; controls at the floor (3.21, 3.40, AC39) |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
 | Large-frame input | reserves query-buffer capacity from the declared bulk length (`big_arg`/`sdsMakeRoomFor`) | same | appends 16 KiB reads into a growing `Vec` | **Adopt:** 4.25 bounded reservation; measured 28–32% 1 MiB SET loss (2.21, 3.3) |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
@@ -3547,6 +3555,51 @@ clone share above ~30%, the bounded fix is to iterate entries by reference and
 store a consumer ID instead of a name per pending entry; that changes storage,
 so it needs its own measured admission rather than being folded into 4.42.
 
+### 3.40 BITFIELD writes on large strings
+
+- **Redis 8.10.2 and Valkey 9.1.2** execute `BITFIELD` subcommands against the
+  value's `sds` in place: `bitfieldGeneric` looks the string up with room for the
+  highest write offset (`lookupStringForBitCommand`) and then each `SET`/`INCRBY`
+  reads and writes the buffer with no copy
+  ([`redis bitops.c#L1886`](https://github.com/redis/redis/blob/8.10.2/src/bitops.c#L1886),
+  [`#L2125`](https://github.com/redis/redis/blob/8.10.2/src/bitops.c#L2125);
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/bitops.c#L1425) is
+  the same). A one-byte write is O(1) regardless of value size.
+- **Rillcache** already borrows the value on the read path: `BITFIELD` with only
+  `GET` subcommands and `BITFIELD_RO` read `entry.value.as_slice()` with no copy
+  ([`bitfield.rs#L302`](../../src/engine/bitfield.rs#L302)). The **write path**
+  clones the whole value (`entry.value.clone()`, [`#L316`](../../src/engine/bitfield.rs#L316))
+  before applying the subcommands, then calls `data.put(key, &bytes, …)` with the
+  full slice ([`#L382`](../../src/engine/bitfield.rs#L382)) — two full-value
+  copies per call for a one-byte `SET`, the same shape 4.34 removed from
+  `APPEND`/`SETRANGE` and 4.37 targets for `SETBIT`.
+- **Measured (2026-11-13).** One 16 MB `0x01` value, one 1 MB value and a 64 B
+  control, 20 repetitions, three rotations:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | 16 MB `SETBIT 0 1` (known 4.37 path) | 4.37 ms | 0.260 ms | 0.150 ms |
+  | 16 MB `BITFIELD SET u8 0 1` | **4.56** | 0.087 | 0.089 |
+  | 16 MB `BITFIELD INCRBY u8 0 1` | **4.68** | 0.118 | 0.111 |
+  | 16 MB `BITFIELD SET u63 0 1` | **4.39** | 0.113 | 0.120 |
+  | 16 MB `BITFIELD` × 100 `INCRBY u8` | **4.58** | 0.305 | 0.307 |
+  | 16 MB `BITFIELD_RO GET u8 0` | 0.34 | 0.25 | 0.14 |
+  | 16 MB `BITFIELD GET u8 0` | 0.25 | 0.42 | 0.21 |
+  | 1 MB `BITFIELD SET u8` | 0.51 | 0.34 | 0.17 |
+  | 64 B `BITFIELD SET u8` | 0.19 | 0.21 | 0.09 |
+  | 16 MB `GETRANGE 0 9` control | 0.12 | 0.23 | 0.12 |
+
+  A one-byte `BITFIELD` write is **37–52×** slower at 16 MB and scales with value
+  size (1 MB: 1.5–3×; 64 B: at the floor). The 100-subcommand form costs the same
+  as one write because the copy, not the subcommands, dominates. The read-only
+  forms are already at the floor, so only the mutation path needs the in-place
+  treatment. Candidate 4.37, extended.
+
+**Verdict: extend 4.37 to `BITFIELD` writes.** Apply the same admit-then-mutate
+shape: reserve for the highest write offset, borrow the entry's `Vec`, zero-fill
+only when the offset passes the end, and apply the subcommands in place; keep the
+read path borrowed and unmodified.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -4212,6 +4265,11 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    PEL, plus `XLEN`/`XADD` controls. Confirms the measured near-parity in
    section 3.39 on a clean runner; the 2026-11-13 local cohort already measures
    1.3–2.1× at the largest batches and parity at 100.
+32. **BITFIELD writes:** one-byte `SET`/`INCRBY` (u8, u63) and a 100-subcommand
+   `INCRBY` write on a 16 MB value, plus 1 MB and 64 B forms and the
+   `BITFIELD_RO`/all-`GET` read controls. Extends 4.37 on a clean runner; the
+   2026-11-13 local cohort in section 3.40 already measures 4.39–4.68 ms versus
+   0.087–0.12 ms with reads at the floor.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4219,7 +4277,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all thirty-one rows are complete for all three servers;
+runners, not a shared k3s host; all thirty-two rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4677,7 +4735,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.34 in-place strings (implemented, #258) | `append`/`setrange` (`string_ranges.rs`), `Data::mutate_string`/`reserve`/`put` (`data.rs`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small, landed |
 | 4.35 in-place collection writes | `hash_set`/`zset_add`/`set_add`/`push_list`/`pop_list` (`collections.rs`), `Data::entries.get_mut`, `payload_len`, field TTL, blocking wake | admit before mutate; pack↔large conversion only at thresholds; delta accounting; empty-collection removal; field TTL; WATCH/journal | 10k/100k `HSET`/`ZADD`/`SADD` plus updates/deletes, 200k `RPUSH`/`LPOP`, 10-element controls | medium |
 | 4.36 random members | `set_random_member`/`set_pop`/`hash_random_field`/`zset_random_member` (`collection_commands.rs`), `owned_set`, `set_items`, `hash_items`, `zset_items`, collection representation | sample without materializing; uniform distribution; count/negative-count semantics; `SPOP` removal and empty deletion; ordering decision; small pack paths | 10k/100k `SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`/`SPOP`, distribution test | medium |
-| 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`, `#L524`), `find_bit` (`#L432`), `Data::reserve`/`put`, range normalization | in-place write after admission; `u64` chunk popcount and bit scan with masked head/tail; BYTE/BIT ranges; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`/`BITPOS`, 64 B controls, range cases | small |
+| 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`, `#L524`), `bitfield` (`bitfield.rs#L258`, write clone at `#L316`, put at `#L382`), `find_bit` (`#L432`), `Data::reserve`/`put`, range normalization | in-place write after admission (`SETBIT` and `BITFIELD` write forms); read-only `BITFIELD` stays borrowed; `u64` chunk popcount and bit scan with masked head/tail; BYTE/BIT ranges; `OVERFLOW` policies; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`/`BITPOS`/`BITFIELD` writes, `BITFIELD_RO`, 64 B controls, range cases | small |
 | 4.38 zset rank index | `zset_rank` (`collection_commands.rs#L3744`), `zset_range_by_score` (`#L3896`), `zset_read` (`collections.rs#L433`), `ZAdd`/`ZRem` paths, block index | rank-select over `(score, member)`; score moves; block split/merge; negative/reverse ranges; `ZSetPack`; accounting; replay/rewrite | 100k `ZRANK`/`ZREVRANK`/deep `ZRANGE`/`ZRANGEBYSCORE`, ZADD regression | medium |
 | 4.39 pub/sub fan-out | `PubSub::publish` (`pubsub.rs#L121`), `queue_capacity`, subscriber drain (`pool.rs#L159`), reactor async tick | channel lookup by key; byte-bounded queue; no silent unsubscribe; counted drop or documented disconnect; shared frame; ordering/pattern/shard; shutdown | 2,000-message burst, 10k-channel PUBLISH, 100 subscribers, NUMSUB | medium |
 | 4.40 O(1) counts | `set_read`/`hash_read`/`zset_read`/`list_len` (`collections.rs#L240`, `#L355`, `#L478`, `#L658`), `Collection` length/probe methods | SetInt/SetPack semantics; missing/empty/wrong type; no reply or ordering change; LLEN node walk | 100k `SISMEMBER`/`SCARD`/`HLEN`/`ZCARD`, 200k `LLEN`, 10-element controls | small |
@@ -4706,8 +4764,9 @@ write and shares the delta-accounting shape. 4.35 is next: every collection writ
 currently clones the collection, the gaps are **3.5–1160×** (3.5–69× at 10k,
 18–1160× at 100k), and it reuses 4.34's
 admit-then-mutate shape. 4.37 is small and shares 4.34's in-place string path: it
-removes the two copies in `SETBIT` and the byte loop in `BITCOUNT`/`BITPOS`
-(5–44×). 4.36 follows, first as a no-copy reservoir slice and then the dense
+removes the two copies in `SETBIT` and the `BITFIELD` write forms and the byte
+loop in `BITCOUNT`/`BITPOS` (5–44×, and 37–52× for a 16 MB `BITFIELD` write).
+4.36 follows, first as a no-copy reservoir slice and then the dense
 index; its 100k gaps are 35–298×. 4.30, 4.38, 4.43 and 4.49 are the largest
 measured read/pop ratios (378–974× and 10–53×) and should share one ordered
 structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select, 4.43 the
@@ -5181,7 +5240,11 @@ the exact head.
 
 **Mechanism.** `SETBIT` reserves/admits the new length, then extends and patches
 the entry's own `Vec` in place (zero-filling only when the offset passes the end)
-instead of building a new value and copying it twice. `BITCOUNT` sums
+instead of building a new value and copying it twice. The same in-place mutation
+applies to the `BITFIELD`/`BITFIELD_RO` write forms: reserve for the highest
+write offset, borrow the value, and apply `SET`/`INCRBY` subcommands directly;
+the read-only `BITFIELD` path already borrows and stays unchanged. `BITCOUNT`
+sums
 `chunks_exact(8)` as little-endian `u64::count_ones()` and handles the head and
 tail with per-byte popcount; `BITPOS` finds the first matching bit the same way
 (`trailing_zeros` of the word, or of its complement for bit 0) with masked
@@ -5189,45 +5252,61 @@ head/tail words. BYTE and BIT ranges normalize to a byte span with edge masks.
 `GETBIT` stays a direct read.
 
 **Prediction.** 16 MB `SETBIT` falls from **5.32 ms to ≤0.5 ms**, `BITCOUNT`
-from 23.0 to ≤6 ms, and a not-found `BITPOS 0` from **201.6 ms to ≤8 ms** (within
-~1.6× Redis); the 1 MB rows move to the command floor; the 64 B controls and a
+from 23.0 to ≤6 ms, a not-found `BITPOS 0` from **201.6 ms to ≤8 ms** (within
+~1.6× Redis), and a one-byte 16 MB `BITFIELD SET`/`INCRBY` from **4.39–4.68 ms
+to ≤0.5 ms**; the 1 MB rows move to the command floor; the 64 B controls and a
 first-bit hit are unchanged.
 
-**Admission evidence (2026-11-12, sections 3.21 and 3.33).** One 1 MB and one
+**Admission evidence (2026-11-12, sections 3.21 and 3.33; 2026-11-13, section
+3.40).** One 1 MB and one
 16 MB `0xff` bitmap (the 16 MB one built by 512 KiB `APPEND`s), 100/30
 repetitions, three rotations: 16 MB `SETBIT` 5.32/5.58/4.85 ms versus Redis
 0.09/0.71/0.35 and Valkey 0.31/0.53/0.22; `BITCOUNT` 22.48/23.24/23.01 versus
 3.52/3.13/3.37 and 3.77/4.56/5.70; `BITPOS 0` 200.1/201.6/206.7 versus
 5.3/5.1/4.9 and 5.7/4.6/5.1; `BITPOS 0 0 -1` 209.4 versus 4.79/5.96;
 `BITPOS 1` 0.12 versus 0.60/0.09; 1 MB 0.331/1.85 versus 0.09–0.26/0.17–0.31;
-64 B controls at the floor.
+64 B controls at the floor. The `BITFIELD` cohort (16 MB, 20 repetitions, three
+rotations): `SET u8` 4.38/6.09/4.56 versus 0.24/0.06/0.09 and 0.42/0.09/0.07;
+`INCRBY u8` 4.69/3.83/4.68 versus 0.24/0.08/0.12 and 0.55/0.11/0.07;
+`SET u63` 4.38/4.71/4.39 versus 0.11/0.11/0.30 and 0.12/0.19/0.10; 100×
+`INCRBY u8` 3.83/4.89/4.58 versus 0.31/0.24/0.41 and 0.31/0.54/0.25;
+`BITFIELD_RO GET` 0.21/0.47/0.33 versus 0.28/0.25/0.14 and 0.20/0.09/0.14;
+1 MB `SET u8` 0.14/0.59/0.51 versus 0.34/0.40/0.13 and 0.17/0.63/0.08; 64 B
+controls at the floor.
 
 **Risks and obligations.** `reserve` can evict the key being written, so re-look
 it up; an OOM after a partial extend corrupts the value; zero-fill growth, the
 offset cap and the 512 MiB limit must not change; BYTE/BIT range normalization
 (negative indices, inverted ranges) and MSB-first bit numbering must be exact;
 the not-found return values (`len*8` for bit 0 without an explicit end, `-1`
-otherwise) must stay; TTL, WATCH, journal and rewrite must see the same value;
+otherwise) must stay; `BITFIELD` integer widths/signs, `OVERFLOW` policies
+(`WRAP`/`SAT`/`FAIL`), old-value replies and the highest-write-offset reservation
+must stay exact, and the read-only path must not start copying; TTL, WATCH,
+journal and rewrite must see the same value;
 the popcount and bit scan must stay safe Rust (no target-feature intrinsics).
 
 **Rejected options.** SIMD intrinsics or a CPU-feature dependency (unsafe or a
 new crate for a path that a `u64` loop nearly closes), the current byte-and-bit
-scan, and the rebuild-and-copy write.
+scan, and the rebuild-and-copy write (for `BITFIELD` as well as `SETBIT`).
 
 **Rejection condition.** Any bit or range semantics test differs, an OOM leaves a
 partial value, the controls or reads regress, or no gain above the spread.
 
 **Acceptance (AC39).** `SETBIT` at offset 0 of a 16 MB bitmap shall have p50
 ≤0.5 ms and p99 ≤2 ms (≥10× faster than the measured 5.32 ms and within ~2×
-Redis's 0.349 ms); `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms and p99
+Redis's 0.349 ms); a one-byte `BITFIELD SET`/`INCRBY` (u8 and u63) and a
+100-subcommand write on the 16 MB value shall each have p50 ≤0.5 ms and p99
+≤2 ms (≥8× faster than the measured 4.39–4.68 ms and within ~2× the faster C
+server); `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms and p99
 ≤10 ms (≥3.8× faster than 23.0 ms and within ~2× Redis's 3.37 ms); a not-found
 `BITPOS 0` shall have p50 ≤8 ms and p99 ≤15 ms (≥25× faster than 201.6 ms and
 within ~1.6× Redis's 5.08 ms) while a first-bit hit stays at the floor; the 1 MB
 rows shall be at the command floor; the 64 B controls, `GETBIT` and `STRLEN`
-shall be unchanged; BYTE and BIT ranges including negative indices, the offset
-and 512 MiB limits, zero-fill, TTL/WATCH/journal/replay and accounting shall
-pass; no dependency shall be added; and both protected gates shall pass on the
-exact head.
+shall be unchanged; `BITFIELD_RO` and all-`GET` `BITFIELD` shall stay copy-free;
+BYTE and BIT ranges including negative indices, the offset and 512 MiB limits,
+zero-fill, `BITFIELD` widths/`OVERFLOW` policies, TTL/WATCH/journal/replay and
+accounting shall pass; no dependency shall be added; and both protected gates
+shall pass on the exact head.
 
 ### 4.38 Order-statistic sorted-set rank (candidate; admission measured)
 
@@ -6057,7 +6136,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   a mis-normalized negative BYTE/BIT range or an MSB/LSB mask error silently
   returns wrong bits. The popcount must count all bits in a word regardless of
   byte order but mask partial head/tail bytes in Redis's bit order; offset and
-  512 MiB limits, TTL/WATCH/journal/rewrite and accounting stay unchanged (AC39).
+  512 MiB limits, TTL/WATCH/journal/rewrite and accounting stay unchanged. The
+  `BITFIELD` write form additionally must reserve the highest write offset,
+  honor `OVERFLOW WRAP`/`SAT`/`FAIL`, return the same old/new values, and leave
+  the read-only path copy-free (AC39).
 - **Rank-index risk (4.38):** a score update moves a member between blocks; a
   stale cumulative count returns a wrong rank silently. Block split/merge,
   duplicate-score tie-break, `ZREM` count maintenance, negative/reverse ranges
@@ -6936,6 +7018,18 @@ separate roadmap.
   and 6.13/8.16/7.50; `XCLAIM` 100 at parity; `XLEN`/`XADD` controls 0.18–0.43/
   0.19–0.39. Preload (10,000 `XADD`) took 16.2 s versus 0.1–0.2 s, the 4.42
   clone path. Raw JSON retained (untracked).
+- BITFIELD cohort (section 3.40, extending 4.37): one 16 MB `0x01` value, one
+  1 MB value and a 64 B control, 20 repetitions, three rotations. 16 MB
+  `BITFIELD SET u8` 4.38/6.09/4.56 ms versus Redis 0.24/0.06/0.09 and Valkey
+  0.42/0.09/0.07; `INCRBY u8` 4.69/3.83/4.68 versus 0.24/0.08/0.12 and
+  0.55/0.11/0.07; `SET u63` 4.38/4.71/4.39 versus 0.11/0.11/0.30 and
+  0.12/0.19/0.10; 100× `INCRBY u8` 3.83/4.89/4.58 versus 0.31/0.24/0.41 and
+  0.31/0.54/0.25; `BITFIELD_RO GET` 0.21/0.47/0.33 versus 0.28/0.25/0.14 and
+  0.20/0.09/0.14; 1 MB `SET u8` 0.14/0.59/0.51 versus 0.34/0.40/0.13 and
+  0.17/0.63/0.08; 64 B control 0.06/0.30/0.19. The same pass re-measured
+  `SETBIT` 4.08/4.37/4.96 versus 0.07/0.38/0.26 and 0.15/0.27/0.06, `GETBIT`,
+  `GETRANGE` and `BITFIELD` all-`GET` at the floor. Raw JSON retained
+  (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -7434,3 +7528,9 @@ separate roadmap.
   per-entry clone share could grow), 100k-entry PELs, many consumers/groups,
   blocking `XREADGROUP`, or `XREAD`/`XRANGE` reply construction. The 1.3–2.1×
   residuals are single-cohort observations on a shared host, not a candidate.
+- The BITFIELD cohort (section 3.40) covers one 16 MB and one 1 MB value on one
+  connection, with u8/u63 widths, `WRAP` overflow and no `FAIL`/`SAT` or signed
+  widths; it does not measure multi-key `BITFIELD`, values near the 512 MiB cap,
+  or a value that grows past its current end under concurrent readers. The write
+  timing is dominated by two full-value copies and scales with value size, which
+  the 1 MB and 64 B rows confirm; it is not a per-subcommand claim.
