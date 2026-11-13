@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.44).**
+gated (4.15, 4.20–4.27, 4.29–4.45).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -148,7 +148,10 @@ ms** and `GEOPOS` 100 is **24.9 vs 0.47–0.61 ms**, because every query scans a
 members; 4.43 adds neighbor-cell search and direct lookups. Multi-member lookups
 are the largest ratio yet: `ZMSCORE` with 100 members is **273 ms versus 0.19–0.63**
 and `SMISMEMBER` 100 is 11.8 versus 0.21–0.39, because each requested member
-rescans the materialized collection; 4.44 probes directly. Under
+rescans the materialized collection; 4.44 probes directly. Expiry is the last
+systemic stall: the first `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` after 30k keys
+expire costs **36–46 vs 0.6–1.0 ms** because each calls `reap(now, usize::MAX)`,
+while a lazy `GET` is at parity; 4.45 bounds the command-path expiry. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1064,7 +1067,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-one things are still true even though every row now leads:
+Twenty-two things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1205,6 +1208,11 @@ Twenty-one things are still true even though every row now leads:
     all members once per requested member (**8.0/33.4/273 ms** for 1/10/100
     members versus 0.10–0.63), while `HMGET` and the 10-member controls are at
     the floor (section 3.28, candidate 4.44).
+22. **Mass expiry on command paths.** `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` call
+    `reap(now, usize::MAX)`, so the first command after 30k keys expire stalls
+    **36–46 ms** versus 0.6–1.0 ms (37–76×) while a per-key lazy `GET` is at
+    parity; the purge costs ~1.2–1.5 µs per expired key (section 3.29, candidate
+    4.45).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1377,6 +1385,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
+| Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 ms vs 0.69/0.98, `KEYS` 43.6 vs 0.63/0.80, `RANDOMKEY` 45.5 vs 0.65/0.60, `DBSIZE` 41.2 vs 0.58/0.83; lazy `GET` at parity | 4.45, admitted | AC47 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1804,6 +1813,7 @@ for a production claim.
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
+| Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Adapt:** 4.45 bounded lazy expiry; measured after 30k expire `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` 36–46 vs 0.6–1.0 ms, lazy `GET` at parity (3.29, AC47) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -2917,6 +2927,53 @@ requested member; no `set_items()` clone/sort and no all-member `Vec`. Keep
 `SISMEMBER`/`ZSCORE` (4.40/4.30), missing/invalid members, duplicates and reply
 order unchanged.
 
+### 3.29 Mass expiry and command latency
+
+- **Redis 8.10.2 and Valkey 9.1.2** do not purge the whole keyspace on a normal
+  command: reads expire only the keys they touch, the active cycle removes a
+  bounded sample on its own schedule, `KEYS` filters expired entries while it
+  scans, `RANDOMKEY` loops for a live key, and `DBSIZE` returns the dict size
+  without forcing a purge
+  ([`redis expire.c#L287`](https://github.com/redis/redis/blob/8.10.2/src/expire.c#L287),
+  [`db.c#L2179`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L2179),
+  [`#L1605`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1605),
+  [`#L1593`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1593);
+  [`valkey expire.c#L459`](https://github.com/valkey-io/valkey/blob/9.1.2/src/expire.c#L459)).
+- **Rillcache** calls `data.reap(now, usize::MAX)` in `KEYS`, `RANDOMKEY`,
+  `DBSIZE`, `MGET`, `MSET`/`MSETEX`, `SCAN`, and in the `Data::reserve`
+  admission fallback: the first command after a mass expiry synchronously removes
+  **every due key** on the command thread, so its latency is proportional to the
+  expired backlog, not to the command
+  ([`keyspace.rs`](../../src/engine/keyspace.rs#L183),
+  [`multikey.rs`](../../src/engine/multikey.rs#L160),
+  [`scan.rs`](../../src/engine/scan.rs#L122),
+  [`data.rs`](../../src/engine/data.rs#L646)).
+- **Measured (2026-11-12).** 30,000 keys set with `PX 400`, then a 0.7 s wait so
+  every key is due; one command per fresh wave, two waves per command, three
+  rotations; `GET` on one expired key is the control:
+
+  | First command after 30k expire | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `MGET` 100 keys | **36.3 ms** | 0.69 ms | 0.98 ms |
+  | `KEYS k0000*` | **43.6** | 0.63 | 0.80 |
+  | `RANDOMKEY` | **45.5** | 0.65 | 0.60 |
+  | `DBSIZE` | **41.2** | 0.58 | 0.83 |
+  | `GET` one expired key | 0.92 | 0.75 | 0.72 |
+
+  The purge costs **~1.2–1.5 µs per expired key** (~36–45 ms for 30k), so
+  `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` are **37–76×** slower than the C servers,
+  while the per-key lazy `GET` is at parity. A larger backlog scales the stall
+  linearly. Candidate 4.45.
+
+**Verdict: adapt bounded lazy expiry (4.45).** Remove `usize::MAX` from the
+command paths: expire only the keys a read touches, filter `KEYS`/`SCAN` results
+by liveness, retry `RANDOMKEY` a bounded number of times, and let `DBSIZE`
+return the Redis-compatible dict size (expired-but-unreaped keys may still be
+counted) or count live keys without a purge. Keep the bounded periodic purge
+(128/100 ms) and use a bounded reap plus eviction/admission policy on writes so
+an expiry wave can never stall one command. Document the DBSIZE semantics change
+and keep expired values unreadable.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -2962,7 +3019,8 @@ the in-place stream-append candidate for the measured 13–18× `XADD` loss in
 section 3.26. 4.43 is the geospatial neighbor-cell candidate for the measured
 10–53× search and point-lookup loss in section 3.27. 4.44 is the per-member
 direct-probe candidate for the measured 30–1461× multi-member lookup loss in
-section 3.28.
+section 3.28. 4.45 is the bounded-lazy-expiry candidate for the measured 37–76×
+mass-expiry stall in section 3.29.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3520,6 +3578,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    100k, `HMGET` as a control, and 10-member controls. Confirms 4.44 on a clean
    runner; the 2026-11-12 local cohort in section 3.28 already measures
    7.9–11.8 ms and 8.0–273 ms versus 0.07–0.63 ms.
+21. **Mass expiry:** 30k keys set with a 400 ms TTL, a 0.7 s wait, then one
+   `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`GET` per fresh wave. Confirms 4.45 on a
+   clean runner; the 2026-11-12 local cohort in section 3.29 already measures
+   36–46 ms versus 0.6–1.0 ms and lazy `GET` at parity.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3527,7 +3589,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-one rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -3993,30 +4055,31 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.42 stream append | `xadd` (`streams.rs#L310`), `Stream`/`payload_bytes` (`data.rs#L182`), `put_stream` (`#L877`), trim/groups | append + delta accounting; IDs/counters; groups/PEL; trim; TTL/WATCH/journal/rewrite | 1k/5k `XADD`, reads, 10-entry control | small |
 | 4.43 geosearch | `run_search` (`geo.rs#L350`), `geopos` (`#L203`), geohash cell helpers, ordered zset index | cell ranges/neighbours; dateline/pole; dedupe; ASC/DESC/COUNT; WGS-84; STORE | 50k 1 km/box `GEOSEARCH`, `GEOPOS` 1/100, `GEODIST`, boundary fixture | medium |
 | 4.44 multi-member probes | `set_mismember` (`collection_commands.rs#L3043`), `zmscore` (`collections.rs#L490`), `contains_member`/`zset_score` | SetInt/SetPack; duplicates/order; missing/empty/wrong type; no reply change | 100k `SMISMEMBER`/`ZMSCORE` at 1/10/100, `HMGET` control | small |
+| 4.45 bounded expiry | `KEYS`/`RANDOMKEY`/`DBSIZE` (`keyspace.rs#L183`), `MGET`/`MSET`/`MSETEX` (`multikey.rs#L160`), `SCAN` (`scan.rs#L122`), `Data::reap`/`reserve` (`data.rs#L599`, `#L646`) | expired values unreadable; DBSIZE semantics; admission bound; TTL/WATCH/notifications | 30k-expiry wave: `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`, lazy `GET` | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
-journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, and 4.33 —
-small and contract-visible — for the measured synchronous `UNLINK`/`ASYNC` drop.
-4.40, 4.41 and 4.44 are the smallest, highest-certainty fixes (O(1)
-counts/membership, in-place list seek, per-member probes) and can land
-immediately. 4.42 is the stream sibling of 4.35's in-place write and shares the
-delta-accounting shape. 4.35 is next: every collection write currently clones the
-collection, the gaps are 3.5–262×, and it reuses 4.34's admit-then-mutate shape.
-4.37 is small and shares 4.34's in-place string path: it removes the two copies
-in `SETBIT` and the byte loop in `BITCOUNT` (5–17×). 4.36 follows, first as a
-no-copy reservoir slice and then the dense index; its 100k gaps are 35–298×.
-4.30, 4.38 and 4.43 are the largest measured read-side ratios (378–927× and
-10–53×) and should share one ordered structure: 4.30 covers point/score/start-0
-reads, 4.38 the rank-select, and 4.43 the geohash cell ranges. 4.39 is a
-contract/reliability fix on the pub/sub path already admitted as 4.24 and should
-land with them. 4.34 itself removes two full-value copies per
-`APPEND`/`SETRANGE`. 4.32 follows as the structural memory and CPU fix
-(142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list direction.
-4.22/4.24 come last because they touch every asynchronous client path and carry
-the highest ordering risk (4.39 rides with them). 4.31 is the largest per-call
-ratio in the record but touches the keyspace, every collection type and the
-router cursor, so it follows the journal slices and the ordered-structure
+journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
+the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
+for the measured synchronous `UNLINK`/`ASYNC` drop. 4.40, 4.41 and 4.44 are the
+smallest, highest-certainty fixes (O(1) counts/membership, in-place list seek,
+per-member probes) and can land immediately. 4.42 is the stream sibling of
+4.35's in-place write and shares the delta-accounting shape. 4.35 is next: every
+collection write currently clones the collection, the gaps are 3.5–262×, and it
+reuses 4.34's admit-then-mutate shape. 4.37 is small and shares 4.34's in-place
+string path: it removes the two copies in `SETBIT` and the byte loop in
+`BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir slice and then the
+dense index; its 100k gaps are 35–298×. 4.30, 4.38 and 4.43 are the largest
+measured read-side ratios (378–927× and 10–53×) and should share one ordered
+structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select, and 4.43
+the geohash cell ranges. 4.39 is a contract/reliability fix on the pub/sub path
+already admitted as 4.24 and should land with them. 4.34 itself removes two
+full-value copies per `APPEND`/`SETRANGE`. 4.32 follows as the structural memory
+and CPU fix (142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list
+direction. 4.22/4.24 come last because they touch every asynchronous client path
+and carry the highest ordering risk (4.39 rides with them). 4.31 is the largest
+per-call ratio in the record but touches the keyspace, every collection type and
+the router cursor, so it follows the journal slices and the ordered-structure
 decision. 4.23 follows the existing bounded slices. 4.20 stays conditional on
 4.19; 4.18 stays deferred.
 
@@ -4791,6 +4854,51 @@ non-integer and duplicate members and the `SetInt`/`SetPack` semantics shall pas
 no dependency shall be added; and both protected gates shall pass on the exact
 head.
 
+### 4.45 Bounded lazy expiry on command paths (candidate; admission measured)
+
+**Mechanism.** Replace every `reap(now, usize::MAX)` on a command path: reads
+expire only the keys they touch (`expire_key`, already present); `KEYS` filters
+`entry.alive(now)` while it already scans all keys; `SCAN` filters per visited
+element (4.31); `RANDOMKEY` picks a random live key with a bounded retry and a
+fallback scan; `DBSIZE` returns the Redis-compatible dict size (expired but
+unreaped keys may still be counted) as an explicit semantic decision; `MSET`/
+`MSETEX` expire only their destination keys; admission uses a bounded reap (e.g.
+128) and then eviction/policy. A mass expiry can no longer force O(backlog) work
+inside one command.
+
+**Prediction.** After 30k keys expire, `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` fall
+from **36–46 ms to ≤2 ms**, the lazy `GET` stays ~0.9 ms, the periodic purge
+drains the backlog over later ticks, and no expired value is ever returned.
+
+**Admission evidence (2026-11-12, section 3.29).** 30,000 keys with `PX 400`, a
+0.7 s wait, one command per fresh wave, two waves per command, three rotations:
+`MGET` 36.29 ms (samples 29.31/51.17, 27.95/43.26, 26.94/51.35) versus Redis
+0.69 and Valkey 0.98; `KEYS` 43.58 versus 0.63/0.80; `RANDOMKEY` 45.45 versus
+0.65/0.60; `DBSIZE` 41.21 versus 0.58/0.83; lazy `GET` 0.92 versus 0.75/0.72.
+The purge costs ~1.2–1.5 µs per expired key.
+
+**Risks and obligations.** `DBSIZE` becomes approximate like Redis, so its tests
+and documentation must say so; `KEYS`/`SCAN`/`RANDOMKEY`/`MGET` must never return
+an expired value; admission after a mass expiry may temporarily refuse or evict
+until the bounded purge catches up — a documented, bounded behavior instead of an
+unbounded stall; TTL notifications, WATCH and accounting order stay exact.
+
+**Rejected options.** Keeping the unbounded purge (the measured stall), raising
+the periodic purge rate without bound (CPU cost), and reaping on a detached
+thread (ordering/accounting complexity for no extra gain).
+
+**Rejection condition.** Any expired key is returned, a TTL/accounting/WATCH test
+differs, the admission path can stall proportionally to the backlog, or the
+measured command stall remains.
+
+**Acceptance (AC47).** After 30,000 keys expire with no intervening command,
+`MGET` (100 keys), `KEYS prefix*`, `RANDOMKEY` and `DBSIZE` shall have p50 ≤2 ms
+and p99 ≤5 ms (≥18× faster than the measured 36–46 ms and within ~5× the faster
+C server); a lazy `GET` shall stay ≤1 ms; reads shall never return an expired
+value; the `DBSIZE` semantics shall be documented with tests updated; admission
+shall stay bounded and atomic; TTL expiry/notification/WATCH tests shall pass; no
+dependency shall be added; and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -4799,8 +4907,9 @@ in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes, 4.37 uses in-place `Vec` writes plus
 `u64::count_ones`, 4.38 uses a `Vec` of sorted blocks plus counts, 4.39 uses
 the existing channels and `sync_channel`, 4.40 uses the existing containers'
-lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the existing stream map, and
-4.43 uses geohash score ranges, and 4.44 uses the existing set/zset members. The rest use the
+lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the
+existing stream map, 4.43 uses geohash score ranges, 4.44 uses the existing
+set/zset members, and 4.45 uses the existing lazy expire path. The rest use the
 existing `std` I/O, parser and in-repo journal/crypto code. Each candidate lands
 as its own PR with AC5 plus the protected gates; no combined integration branch.
 
@@ -4855,7 +4964,8 @@ existing collection containers in place; 4.36 uses `Vec` plus
 `u64::count_ones`; 4.38 uses a `Vec` of sorted blocks plus counts; 4.39 uses the
 existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
 and probes; 4.41 walks the existing list chunks; 4.42 mutates the existing stream map;
-4.43 uses geohash score ranges; 4.44 uses the existing set/zset members. None adds a crate, build script,
+4.43 uses geohash score ranges; 4.44 uses the existing set/zset members; 4.45 uses the existing lazy expire path.
+None adds a crate, build script,
 allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
@@ -5052,6 +5162,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   probes exactly as today; duplicates, order, missing/empty keys, wrong types and
   `ZSetPack`/`SetPack` remain; no reply shape, accounting or read path changes
   (AC46).
+- **Expiry-stall risk (4.45):** removing the full purge must not let any read
+  return an expired value, `DBSIZE` becomes approximate (documented/tests), and
+  write admission must stay bounded without a false permanent OOM; the periodic
+  purge drains the backlog (AC47).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -5126,6 +5240,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Keeping the stream clone and only removing the second payload fold | Still deep-copies every entry and folds the payload once per `XADD`, so the measured O(n) cost remains (4.42). |
 | Keeping the linear geohash scan or caching distances per query | The scan is the measured 25–53× cost; a per-query cache is stale on updates and O(n) memory, while cell ranges reuse the ordered zset (4.43). |
 | Keeping `set_items`/`zset_items` with a per-member scan | Every requested member rescans the materialized collection, so the measured 30–1461× cost grows with the member count (4.44). |
+| Purging every due key on the first command after a mass expiry | The measured stall is 36–46 ms for 30k expired keys and scales with the backlog; reads should expire only what they touch (4.45). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -5451,6 +5566,14 @@ samples retained.
   10-member controls shall be unchanged; missing, non-integer and duplicate
   members and the `SetInt`/`SetPack` semantics shall pass; no dependency shall be
   added; and both protected gates shall pass on the exact head.
+- **AC47 (bounded lazy expiry, only if 4.45 is implemented).** After 30,000 keys
+  expire with no intervening command, `MGET` (100 keys), `KEYS prefix*`,
+  `RANDOMKEY` and `DBSIZE` shall have p50 ≤2 ms and p99 ≤5 ms (≥18× faster than
+  the measured 36–46 ms and within ~5× the faster C server); a lazy `GET` shall
+  stay ≤1 ms; reads shall never return an expired value; the `DBSIZE` semantics
+  shall be documented with tests updated; admission shall stay bounded and
+  atomic; TTL expiry/notification/WATCH tests shall pass; no dependency shall be
+  added; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -5704,6 +5827,12 @@ separate roadmap.
   0.102/0.422/0.630 and 0.112/0.328/0.187; `HMGET` 1/10/100
   0.23/0.36/0.32 versus 0.47/0.30/0.52 and 0.11/0.07/0.17; controls
   0.33/0.26/0.26. Raw JSON retained (untracked).
+- Mass-expiry cohort (section 3.29, candidate 4.45): 30,000 keys with `PX 400`,
+  a 0.7 s wait, one command per fresh wave, two waves per command, three
+  rotations. `MGET` p50 36.29 ms (per-wave 29.31/51.17, 27.95/43.26,
+  26.94/51.35) versus Redis 0.69 and Valkey 0.98; `KEYS` 43.58 versus 0.63/0.80;
+  `RANDOMKEY` 45.45 versus 0.65/0.60; `DBSIZE` 41.21 versus 0.58/0.83; lazy
+  `GET` 0.92 versus 0.75/0.72. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -6140,3 +6269,8 @@ separate roadmap.
   members, `SetInt` encodings, `ZSetPack`, or larger member counts. Those are
   implementation-PR evidence under AC46; the ratio is expected to grow linearly
   with the member count because the scan is repeated.
+- The mass-expiry cohort (section 3.29) measures one command after a single
+  uniform expiry wave; it does not measure staggered expiry, admission under
+  `maxmemory`, the periodic purge rate, or commands that touch few expired keys.
+  Those are implementation-PR evidence under AC47. The C-server MGET samples
+  include one 14.7 ms outlier; the median is used.
