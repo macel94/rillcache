@@ -351,6 +351,88 @@ fn a_partial_tail_is_recovered_and_corruption_is_visible() {
 }
 
 #[test]
+fn in_place_string_mutations_keep_watch_expiry_and_incremental_and_rewritten_aof() {
+    let dir = temp_dir("in-place-string");
+    let expected = b"$9\r\nab\0\xff\0\0\0\0z\r\n";
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        let mut watcher = connect(&server);
+        send(
+            &mut stream,
+            &[b"SET", b"k", b"ab", b"PX", b"60000"],
+            b"+OK\r\n",
+        );
+        send(&mut watcher, &[b"WATCH", b"k"], b"+OK\r\n");
+        send(&mut stream, &[b"APPEND", b"k", b"\0\xff"], b":4\r\n");
+        send(&mut watcher, &[b"MULTI"], b"+OK\r\n");
+        send(&mut watcher, &[b"PING"], b"+QUEUED\r\n");
+        send(&mut watcher, &[b"EXEC"], b"*-1\r\n");
+        send(&mut stream, &[b"SETRANGE", b"k", b"8", b"z"], b":9\r\n");
+        send(&mut stream, &[b"GET", b"k"], expected);
+        send(&mut watcher, &[b"WATCH", b"k"], b"+OK\r\n");
+        let before = std::fs::read(dir.join("test.aof")).unwrap();
+        send(&mut stream, &[b"SETRANGE", b"k", b"999", b""], b":9\r\n");
+        send(
+            &mut stream,
+            &[b"SETRANGE", b"k", b"536870912", b"x"],
+            b"-ERR string exceeds maximum allowed size (proto-max-bulk-len)\r\n",
+        );
+        assert_eq!(std::fs::read(dir.join("test.aof")).unwrap(), before);
+        send(&mut watcher, &[b"MULTI"], b"+OK\r\n");
+        send(&mut watcher, &[b"PING"], b"+QUEUED\r\n");
+        send(&mut watcher, &[b"EXEC"], b"*1\r\n+PONG\r\n");
+        // Empty APPEND, unlike empty SETRANGE, retains its existing write semantics.
+        send(&mut watcher, &[b"WATCH", b"k"], b"+OK\r\n");
+        send(&mut stream, &[b"APPEND", b"k", b""], b":9\r\n");
+        send(&mut watcher, &[b"MULTI"], b"+OK\r\n");
+        send(&mut watcher, &[b"PING"], b"+QUEUED\r\n");
+        send(&mut watcher, &[b"EXEC"], b"*-1\r\n");
+        let ttl = call(&mut stream, &[b"PTTL", b"k"]);
+        assert!(
+            std::str::from_utf8(&ttl[1..ttl.len() - 2])
+                .unwrap()
+                .parse::<i64>()
+                .unwrap()
+                > 0
+        );
+        server.shutdown().unwrap();
+    }
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(&mut stream, &[b"GET", b"k"], expected);
+        send(
+            &mut stream,
+            &[b"BGREWRITEAOF"],
+            b"+Background append only file rewriting started\r\n",
+        );
+        send(&mut stream, &[b"APPEND", b"k", b"x"], b":10\r\n");
+        wait_for_rewrite(&server);
+        server.shutdown().unwrap();
+    }
+    {
+        let server = start(&dir, true, FsyncPolicy::Always);
+        let mut stream = connect(&server);
+        send(
+            &mut stream,
+            &[b"GET", b"k"],
+            b"$10\r\nab\0\xff\0\0\0\0zx\r\n",
+        );
+        let ttl = call(&mut stream, &[b"PTTL", b"k"]);
+        assert!(
+            std::str::from_utf8(&ttl[1..ttl.len() - 2])
+                .unwrap()
+                .parse::<i64>()
+                .unwrap()
+                > 0
+        );
+        server.shutdown().unwrap();
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn bgrewriteaof_compacts_a_live_log_and_restart_keeps_the_state() {
     let dir = temp_dir("rewrite");
     {
