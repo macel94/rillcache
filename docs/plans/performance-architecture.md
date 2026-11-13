@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.43).**
+gated (4.15, 4.20–4.27, 4.29–4.44).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -145,7 +145,10 @@ every element reference; 4.41 adds in-place chunk seeking. Streams repeat the wr
 folds the payload twice; 4.42 makes the append in place. Geospatial search
 repeats the materialization: a 1 km `GEOSEARCH` over 50k is **4.34 vs 0.16–0.17
 ms** and `GEOPOS` 100 is **24.9 vs 0.47–0.61 ms**, because every query scans all
-members; 4.43 adds neighbor-cell search and direct lookups. Under
+members; 4.43 adds neighbor-cell search and direct lookups. Multi-member lookups
+are the largest ratio yet: `ZMSCORE` with 100 members is **273 ms versus 0.19–0.63**
+and `SMISMEMBER` 100 is 11.8 versus 0.21–0.39, because each requested member
+rescans the materialized collection; 4.44 probes directly. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1061,7 +1064,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty things are still true even though every row now leads:
+Twenty-one things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1197,6 +1200,11 @@ Twenty things are still true even though every row now leads:
     (25–28×) and a 2×2 km box 4.49 versus 0.19–0.21; `GEOPOS` is 2.0 ms for one
     member and 24.9 ms for 100 (41–53×), and `GEODIST` ~19×, while a search that
     returns all 50k is reply-bound at parity (section 3.27, candidate 4.43).
+21. **Multi-member point lookups.** `SMISMEMBER` clones and sorts the set and then
+    scans it per member (**7.9–11.8 ms** versus 0.08–0.39), and `ZMSCORE` scans
+    all members once per requested member (**8.0/33.4/273 ms** for 1/10/100
+    members versus 0.10–0.63), while `HMGET` and the 10-member controls are at
+    the floor (section 3.28, candidate 4.44).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1368,6 +1376,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
+| Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1794,6 +1803,7 @@ for a production claim.
 | List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
+| Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -2864,6 +2874,49 @@ candidate scores, then apply the exact haversine/box test, sort and `COUNT`.
 `GEOPOS`/`GEODIST`/`GEOHASH` and `FROMMEMBER` use the member dict/ordered index
 directly. Keep the WGS-84 formulas, units and reply shapes.
 
+### 3.28 Multi-member point lookups (SMISMEMBER/ZMSCORE)
+
+- **Redis 8.10.2 and Valkey 9.1.2** probe the set or sorted-set index once per
+  requested member: `SMISMEMBER` calls the set membership path per member and
+  `ZMSCORE` calls `zsetScore` (a dict lookup) per member
+  ([`redis t_set.c#L800`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L800),
+  [`t_zset.c#L4112`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4112);
+  [`valkey t_set.c#L714`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L714),
+  [`t_zset.c#L3776`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3776)).
+- **Rillcache** materializes once and then linearly scans per member:
+  `set_mismember` calls `set_items()` (clone **and sort** every member) and scans
+  that `Vec` for each requested member; the `zmscore` arm of `zset_read` collects
+  every member reference and runs `members.iter().find(...)` per requested
+  member, O(n·m). `HMGET` already uses `hash_get` per field and is fast, which
+  isolates the two materializing paths
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L3043),
+  [`collections.rs`](../../src/engine/collections.rs#L490)).
+- **Measured (2026-11-12).** A 100,000-member set/hash/zset, 50 repetitions,
+  three rotations; a 10-member collection is the control:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SMISMEMBER` 1 member | **7.90 ms** | 0.094 ms | 0.075 ms |
+  | `SMISMEMBER` 10 members | **8.25** | 0.227 | 0.077 |
+  | `SMISMEMBER` 100 members | **11.75** | 0.394 | 0.211 |
+  | `ZMSCORE` 1 member | **8.02** | 0.102 | 0.112 |
+  | `ZMSCORE` 10 members | **33.37** | 0.422 | 0.328 |
+  | `ZMSCORE` 100 members | **273.2** | 0.630 | 0.187 |
+  | `HMGET` 1/10/100 fields | 0.23/0.36/0.32 | 0.47/0.30/0.52 | 0.11/0.07/0.17 |
+  | 10-member controls | 0.33/0.26/0.26 | 0.10/0.18/0.08 | 0.53/0.10/0.09 |
+
+  `SMISMEMBER` is **30–107×** slower, `ZMSCORE` **72–1461×** (100 members costs
+  273 ms), while `HMGET` and the 10-member controls are at the command floor. The
+  ratio grows with the number of requested members because the scan is repeated
+  per member. Candidate 4.44.
+
+**Verdict: adapt per-member direct probes (4.44).** Reuse 4.40's
+`Collection::contains_member` for `SMISMEMBER` and a direct
+`Collection::zset_score(member)` over the score map for `ZMSCORE`, once per
+requested member; no `set_items()` clone/sort and no all-member `Vec`. Keep
+`SISMEMBER`/`ZSCORE` (4.40/4.30), missing/invalid members, duplicates and reply
+order unchanged.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -2907,7 +2960,9 @@ section 3.23. 4.40 is the O(1) cardinality/membership candidate for the measured
 candidate for the measured 9–22× `LINDEX`/`LPOS` loss in section 3.25. 4.42 is
 the in-place stream-append candidate for the measured 13–18× `XADD` loss in
 section 3.26. 4.43 is the geospatial neighbor-cell candidate for the measured
-10–53× search and point-lookup loss in section 3.27.
+10–53× search and point-lookup loss in section 3.27. 4.44 is the per-member
+direct-probe candidate for the measured 30–1461× multi-member lookup loss in
+section 3.28.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3461,6 +3516,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    100 members, `GEODIST`, and 10-member controls at 50k members. Confirms 4.43
    on a clean runner; the 2026-11-12 local cohort in section 3.27 already measures
    4.34 ms versus 0.16–0.17 and 24.9 ms versus 0.47–0.61.
+20. **Multi-member lookups:** `SMISMEMBER` and `ZMSCORE` with 1/10/100 members at
+   100k, `HMGET` as a control, and 10-member controls. Confirms 4.44 on a clean
+   runner; the 2026-11-12 local cohort in section 3.28 already measures
+   7.9–11.8 ms and 8.0–273 ms versus 0.07–0.63 ms.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3468,7 +3527,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all nineteen rows are complete for all three servers;
+runners, not a shared k3s host; all twenty rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -3933,29 +3992,31 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.41 list seek | `list_index` (`collection_commands.rs#L2668`), `list_position` (`#L2321`), `Collection::list_items`/`ListQuick` (`data.rs`) | negative index; chunk boundaries; RANK/COUNT/MAXLEN; missing/empty/wrong type; no reply change | 200k `LINDEX`/`LPOS`, 10-element controls, LRANGE/LLEN | small |
 | 4.42 stream append | `xadd` (`streams.rs#L310`), `Stream`/`payload_bytes` (`data.rs#L182`), `put_stream` (`#L877`), trim/groups | append + delta accounting; IDs/counters; groups/PEL; trim; TTL/WATCH/journal/rewrite | 1k/5k `XADD`, reads, 10-entry control | small |
 | 4.43 geosearch | `run_search` (`geo.rs#L350`), `geopos` (`#L203`), geohash cell helpers, ordered zset index | cell ranges/neighbours; dateline/pole; dedupe; ASC/DESC/COUNT; WGS-84; STORE | 50k 1 km/box `GEOSEARCH`, `GEOPOS` 1/100, `GEODIST`, boundary fixture | medium |
+| 4.44 multi-member probes | `set_mismember` (`collection_commands.rs#L3043`), `zmscore` (`collections.rs#L490`), `contains_member`/`zset_score` | SetInt/SetPack; duplicates/order; missing/empty/wrong type; no reply change | 100k `SMISMEMBER`/`ZMSCORE` at 1/10/100, `HMGET` control | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, and 4.33 —
 small and contract-visible — for the measured synchronous `UNLINK`/`ASYNC` drop.
-4.40 and 4.41 are the smallest, highest-certainty fixes (O(1) counts/membership
-and in-place list seek) and can land immediately. 4.42 is the stream sibling of
-4.35's in-place write and shares the delta-accounting shape. 4.35 is next: every
-collection write currently clones the collection, the gaps are 3.5–262×, and it
-reuses 4.34's admit-then-mutate shape. 4.37 is small and shares 4.34's in-place
-string path: it removes the two copies in `SETBIT` and the byte loop in
-`BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir slice and then the
-dense index; its 100k gaps are 35–298×. 4.30, 4.38 and 4.43 are the largest
-measured read-side ratios (378–927× and 10–53×) and should share one ordered
-structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select, and 4.43
-the geohash cell ranges. 4.39 is a contract/reliability fix on the pub/sub path
-already admitted as 4.24 and should land with them. 4.34 itself removes two
-full-value copies per `APPEND`/`SETRANGE`. 4.32 follows as the structural memory
-and CPU fix (142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list
-direction. 4.22/4.24 come last because they touch every asynchronous client path
-and carry the highest ordering risk (4.39 rides with them). 4.31 is the largest
-per-call ratio in the record but touches the keyspace, every collection type and
-the router cursor, so it follows the journal slices and the ordered-structure
+4.40, 4.41 and 4.44 are the smallest, highest-certainty fixes (O(1)
+counts/membership, in-place list seek, per-member probes) and can land
+immediately. 4.42 is the stream sibling of 4.35's in-place write and shares the
+delta-accounting shape. 4.35 is next: every collection write currently clones the
+collection, the gaps are 3.5–262×, and it reuses 4.34's admit-then-mutate shape.
+4.37 is small and shares 4.34's in-place string path: it removes the two copies
+in `SETBIT` and the byte loop in `BITCOUNT` (5–17×). 4.36 follows, first as a
+no-copy reservoir slice and then the dense index; its 100k gaps are 35–298×.
+4.30, 4.38 and 4.43 are the largest measured read-side ratios (378–927× and
+10–53×) and should share one ordered structure: 4.30 covers point/score/start-0
+reads, 4.38 the rank-select, and 4.43 the geohash cell ranges. 4.39 is a
+contract/reliability fix on the pub/sub path already admitted as 4.24 and should
+land with them. 4.34 itself removes two full-value copies per
+`APPEND`/`SETRANGE`. 4.32 follows as the structural memory and CPU fix
+(142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list direction.
+4.22/4.24 come last because they touch every asynchronous client path and carry
+the highest ordering risk (4.39 rides with them). 4.31 is the largest per-call
+ratio in the record but touches the keyspace, every collection type and the
+router cursor, so it follows the journal slices and the ordered-structure
 decision. 4.23 follows the existing bounded slices. 4.20 stays conditional on
 4.19; 4.18 stays deferred.
 
@@ -4687,6 +4748,49 @@ implementation exactly on a boundary/dateline fixture; `ASC`/`DESC`/`COUNT`,
 `FROMMEMBER`, `BYRADIUS`/`BYBOX`, `WITH*` and `STORE` tests shall pass; no
 dependency shall be added; and both protected gates shall pass on the exact head.
 
+### 4.44 Per-member probes for multi-member lookups (candidate; admission measured)
+
+**Mechanism.** For `SMISMEMBER`, call `Collection::contains_member` (4.40) once
+per requested member; for `ZMSCORE`, call a direct
+`Collection::zset_score(member)` over the existing score map (4.30) once per
+requested member. Do not call `set_items()`/`zset_items()` or build an
+all-member vector. Missing members return 0/nil, duplicate members answer
+independently, and the `SetInt`/`SetPack`/`HashPack` semantics stay as today.
+
+**Prediction.** 100k `ZMSCORE` with 100 members falls from **273 ms to ≤0.5 ms**,
+10 members from 33.4 to ≤0.2 and 1 from 8.0 to ≤0.15; `SMISMEMBER` with
+1/10/100 members from **7.9/8.25/11.75 ms to ≤0.2/≤0.2/≤0.5**; `HMGET` and the
+10-member controls are unchanged.
+
+**Admission evidence (2026-11-12, section 3.28).** A 100,000-member set/hash/zset,
+50 repetitions, three rotations: `SMISMEMBER` 1/10/100 p50
+7.90/8.49/12.73, 8.66/8.25/11.75, 7.90/7.42/10.90 versus Redis
+0.094/0.227/0.394 and Valkey 0.075/0.077/0.211; `ZMSCORE`
+11.77/23.42/273.23, 5.35/43.97/336.85, 8.02/33.37/221.99 versus
+0.102/0.422/0.630 and 0.112/0.328/0.187; `HMGET` 1/10/100 0.23/0.36/0.32
+versus 0.47/0.30/0.52 and 0.11/0.07/0.17; controls 0.33/0.26/0.26.
+
+**Risks and obligations.** `SetInt` must answer integer and non-integer probes
+exactly as today; duplicates, order, missing/empty keys and wrong types must not
+change; `ZSetPack` stays linear but small; no accounting, reply shape or read
+path changes.
+
+**Rejected options.** Keeping `set_items`/`zset_items` with a per-member scan
+(the measured O(n·m)), and caching the materialized vector across members (still
+O(n) time and memory per command).
+
+**Rejection condition.** Any membership/score/order/type test differs, the
+controls or `HMGET` regress, or no gain above the spread.
+
+**Acceptance (AC46).** At 100,000 members, `ZMSCORE` with 100 members shall have
+p50 ≤0.5 ms and p99 ≤2 ms (≥500× faster than the measured 273 ms and within ~3×
+the faster C server); 10 members ≤0.2 ms and 1 member ≤0.15 ms; `SMISMEMBER` with
+100 members ≤0.5 ms (≥23× faster than 11.75 ms), 10 members ≤0.2 ms and 1 member
+≤0.2 ms; `HMGET` and the 10-member controls shall be unchanged; missing,
+non-integer and duplicate members and the `SetInt`/`SetPack` semantics shall pass;
+no dependency shall be added; and both protected gates shall pass on the exact
+head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -4696,7 +4800,7 @@ in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
 `u64::count_ones`, 4.38 uses a `Vec` of sorted blocks plus counts, 4.39 uses
 the existing channels and `sync_channel`, 4.40 uses the existing containers'
 lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the existing stream map, and
-4.43 uses geohash score ranges. The rest use the
+4.43 uses geohash score ranges, and 4.44 uses the existing set/zset members. The rest use the
 existing `std` I/O, parser and in-repo journal/crypto code. Each candidate lands
 as its own PR with AC5 plus the protected gates; no combined integration branch.
 
@@ -4751,7 +4855,7 @@ existing collection containers in place; 4.36 uses `Vec` plus
 `u64::count_ones`; 4.38 uses a `Vec` of sorted blocks plus counts; 4.39 uses the
 existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
 and probes; 4.41 walks the existing list chunks; 4.42 mutates the existing stream map;
-4.43 uses geohash score ranges. None adds a crate, build script,
+4.43 uses geohash score ranges; 4.44 uses the existing set/zset members. None adds a crate, build script,
 allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
@@ -4944,6 +5048,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   versus radius, and `ASC`/`DESC`/`COUNT` ordering must reproduce the linear
   result exactly; the WGS-84 formulas, units, `WITH*` and `STORE` stay; the
   search must remain bounded by the result and payload limits (AC45).
+- **Multi-member risk (4.44):** `SetInt` must answer integer and non-integer
+  probes exactly as today; duplicates, order, missing/empty keys, wrong types and
+  `ZSetPack`/`SetPack` remain; no reply shape, accounting or read path changes
+  (AC46).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -5017,6 +5125,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Maintaining a node/rank index just for `LINDEX` | The chunk walk is already O(nodes) without new state; materializing all references is the measured cost (4.41). |
 | Keeping the stream clone and only removing the second payload fold | Still deep-copies every entry and folds the payload once per `XADD`, so the measured O(n) cost remains (4.42). |
 | Keeping the linear geohash scan or caching distances per query | The scan is the measured 25–53× cost; a per-query cache is stale on updates and O(n) memory, while cell ranges reuse the ordered zset (4.43). |
+| Keeping `set_items`/`zset_items` with a per-member scan | Every requested member rescans the materialized collection, so the measured 30–1461× cost grows with the member count (4.44). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -5334,6 +5443,14 @@ samples retained.
   boundary/dateline fixture; `ASC`/`DESC`/`COUNT`, `FROMMEMBER`,
   `BYRADIUS`/`BYBOX`, `WITH*` and `STORE` tests shall pass; no dependency shall be
   added; and both protected gates shall pass on the exact head.
+- **AC46 (multi-member direct probes, only if 4.44 is implemented).** At 100,000
+  members, `ZMSCORE` with 100 members shall have p50 ≤0.5 ms and p99 ≤2 ms (≥500×
+  faster than the measured 273 ms and within ~3× the faster C server); 10 members
+  ≤0.2 ms and 1 member ≤0.15 ms; `SMISMEMBER` with 100 members ≤0.5 ms (≥23×
+  faster than 11.75 ms), 10 members ≤0.2 ms and 1 member ≤0.2 ms; `HMGET` and the
+  10-member controls shall be unchanged; missing, non-integer and duplicate
+  members and the `SetInt`/`SetPack` semantics shall pass; no dependency shall be
+  added; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -5579,6 +5696,14 @@ separate roadmap.
   26.86/24.86/22.33 versus 0.47/0.61; `GEODIST` 0.86/3.77/3.12 versus
   0.168/0.167; 10-member controls 0.149/0.139 versus 0.24/0.165 and 0.18/0.264.
   Raw JSON retained (untracked).
+- Multi-member cohort (section 3.28, candidate 4.44): a 100k set/hash/zset, 50
+  repetitions, three rotations. `SMISMEMBER` 1/10/100 p50
+  7.90/8.49/12.73, 8.66/8.25/11.75, 7.90/7.42/10.90 versus Redis
+  0.094/0.227/0.394 and Valkey 0.075/0.077/0.211; `ZMSCORE`
+  11.77/23.42/273.23, 5.35/43.97/336.85, 8.02/33.37/221.99 versus
+  0.102/0.422/0.630 and 0.112/0.328/0.187; `HMGET` 1/10/100
+  0.23/0.36/0.32 versus 0.47/0.30/0.52 and 0.11/0.07/0.17; controls
+  0.33/0.26/0.26. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -6010,3 +6135,8 @@ separate roadmap.
   `WITHCOORD`/`WITHDIST`, `STORE`, or the neighbour-cell edge cases, which are
   correctness fixtures for the implementation PR under AC45. `GEODIST` showed
   host spread (0.86–3.77 ms).
+- The multi-member cohort (section 3.28) measures one set/hash/zset at 100k with
+  up to 100 requested members; it does not measure duplicate or non-integer
+  members, `SetInt` encodings, `ZSetPack`, or larger member counts. Those are
+  implementation-PR evidence under AC46; the ratio is expected to grow linearly
+  with the member count because the scan is repeated.
