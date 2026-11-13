@@ -183,9 +183,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   implemented and tested.
 
 - [ ] **C13. Configuration compatibility is missing.** [P1]
-  There is no `redis.conf` parser, general configuration file, `CONFIG REWRITE`
-  or complete runtime configuration surface. Startup uses a small CLI subset;
-  only selected `CONFIG GET/SET` options exist.
+  There is no full `redis.conf` parser, `CONFIG REWRITE` or complete runtime
+  configuration surface. Startup historically used only a CLI subset; selected
+  `CONFIG GET/SET` options exist at runtime.
+  **Partial (2026-11-14): bounded startup file.** `--config PATH` (or `-c`)
+  reads a UTF-8 file of one directive/value pair per line, with comments,
+  quoting, `maxmemory`/`maxclients` aliases and the same validation as CLI
+  flags. It is not a general `redis.conf`: includes, multi-value directives,
+  `save`, replication, modules and other unsupported language fail closed before
+  bind; later CLI options override earlier file values. See
+  [startup configuration](configuration.md).
+  **Remaining:** the full supported schema is not versioned, `CONFIG REWRITE`,
+  live reload/rollback and the complete runtime-mutable surface are absent, and
+  the upstream configuration language is not accepted.
   **Closes when:** the supported configuration schema is versioned, validated
   before bind, documented with defaults/precedence, and runtime-mutable settings
   are atomic and complete for the profile.
