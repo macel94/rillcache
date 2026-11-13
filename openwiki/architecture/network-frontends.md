@@ -5,7 +5,7 @@ description: How Rillcache accepts sockets, schedules client I/O, moves data con
 tags: [networking, mio, tokio, tls, reactors, backpressure]
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-11T08:27:05.780Z
+    at: 2026-11-13T08:58:25.918Z
 sources:
   - id: openwiki-source-dfa02c19f5d8e4215d36f9c0
     resource: repo://src/server.rs
