@@ -84,6 +84,17 @@ and numeric-score representation overhead and is not an RSS bound. Collection
 size is additionally bounded to one million elements per key to prevent
 unbounded zero-byte-element growth. Empty collections are not retained.
 
+Cardinality and point reads inspect the stored representation directly. `SCARD`,
+`HLEN`, `ZCARD` and `LLEN` return the container or node-sum length without
+building an item vector; `SISMEMBER`, `SMISMEMBER` and `ZMSCORE` probe the stored
+set, hash or sorted set instead of materializing it. Large sets, hashes and
+sorted sets use their map/index lookups, `SetInt` accepts only the exact canonical
+integer spelling (so a probe such as `01` misses), `SetPack`/`HashPack`/`ZSetPack`
+scan their small vectors, and `LLEN` walks list nodes without flattening
+elements. Missing keys and WRONGTYPE replies are unchanged, and `SMEMBERS`,
+`HGETALL`, `HKEYS`, `HVALS` and range replies keep their existing ordering and
+reply shape.
+
 SMEMBERS, HGETALL, HKEYS, HVALS and set algebra replies use deterministic byte
 ordering for stable output; Redis leaves iteration order unspecified. ZRANGE,
 ZREVRANGE, score and lex ranges sort by score then binary member. `BYLEX` is

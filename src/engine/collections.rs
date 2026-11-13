@@ -419,10 +419,7 @@ impl ShardExecutor {
         };
         match name {
             "hget" => encode_bulk(collection.hash_get(args[2]), out),
-            "hlen" => integer(
-                collection.hash_items().expect("hash type checked").len() as i64,
-                out,
-            ),
+            "hlen" => integer(collection.len() as i64, out),
             _ => {
                 let mut fields = collection.hash_items().expect("hash type checked");
                 fields.sort_unstable_by(|a, b| a.0.cmp(b.0));
@@ -730,12 +727,7 @@ impl ShardExecutor {
         match data.entries.get(key) {
             None => integer(0, out),
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_list) => integer(
-                entry
-                    .collection
-                    .as_ref()
-                    .and_then(Collection::list_items)
-                    .expect("list type checked")
-                    .len() as i64,
+                entry.collection.as_ref().expect("list type checked").len() as i64,
                 out,
             ),
             Some(_) => wrong_type(out),
