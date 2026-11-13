@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); every other runtime item
-here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.48).**
+here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.49).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -165,7 +165,10 @@ place and caches the count. Bitmaps also hide a scan: a not-found `BITPOS 0` on
 16 MB is **201.6 vs 5.1 ms** because `find_bit` visits every byte and bit; 4.37
 is extended with a `u64` bit scan. Streams have one more clone on a control path:
 `XGROUP CREATE` on a 5k stream is **8.26 vs 0.08–0.09 ms** (88–99×) because it
-deep-clones every entry; 4.48 inserts the group in place. Under
+deep-clones every entry; 4.48 inserts the group in place. Sorted-set pops are the
+largest ratio in the record: `ZPOPMIN`/`ZPOPMAX`/`ZMPOP` at 100k are **146–160 vs
+0.16–0.42 ms** (373–974×) because every pop clones, sorts and replaces the whole
+set; 4.49 pops from the ordered index. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1081,7 +1084,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-seven observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Twenty-eight observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1250,6 +1253,10 @@ rest are still true even though every row now leads:
     scales with length (~165 ms at 100k by extrapolation); the other XGROUP
     subcommands already mutate in place and are at parity (section 3.34,
     candidate 4.48).
+28. **Sorted-set pops.** Every `ZPOPMIN`/`ZPOPMAX`/`ZMPOP` clones and sorts the
+    whole set before removing one member: at 100k they cost **146–160 ms** versus
+    0.16–0.42 ms (373–974×), the largest measured ratio, while the 100-member
+    control is at the floor (section 3.35, candidate 4.49).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1426,9 +1433,11 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` 7.96 ms (p99 17.2) vs 0.12/0.16; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, admitted | AC48 | none |
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
+| MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
+| Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 ms vs 0.42/0.34, `ZPOPMAX` 159.9 vs 0.21/0.29, `ZPOPMIN 10` 146.6 vs 0.35/0.16, `ZMPOP` 155.8 vs 0.16/0.20 (373–974×); 100-member control at the floor | 4.49, admitted | AC51 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1863,6 +1872,7 @@ for a production claim.
 | HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
 | Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
 | Stream `XGROUP CREATE` | insert one group in the stream dict; O(1) | same | deep-clone the whole stream, fold payload, replace via `put_stream` | **Adapt:** 4.48 in-place group insert; measured 5k 8.26 vs 0.083/0.094 ms (88–99×), other XGROUP ops at parity (3.34, AC50) |
+| Sorted-set pops | skiplist head/tail pop, O(log n) | same | clone, sort and replace the whole set per pop | **Adapt:** 4.49 ordered `(score, member)` index pop; measured 100k `ZPOPMIN` 156.7 vs 0.42/0.34 ms, `ZMPOP` 155.8, `ZPOPMIN 10` 146.6 (373–974×), 100-member control at the floor (3.35, AC51) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | pre-fix: rebuild full-length `Vec` and copy twice; now mutates the entry in place (#258) | **Done:** 4.34 in-place mutation; measured 32 MB post-fix `APPEND` 0.131 vs 0.142/0.219 ms and `SETRANGE` 0.185 vs 0.222/0.289 (3.18, AC36) |
@@ -1876,6 +1886,7 @@ for a production claim.
 | Journal rewrite | fork + COW child, parent serves; fork page-table pause | same | key-list materialisation (9–20 ms at 20k keys) then 512-key/1 MiB slices on the owner | **Keep:** no fork in safe Rust; reduce the start pause with 4.23 only if a rewrite-latency cohort shows it matters (3.13) |
 | AOF replay | single AOF load; no separate per-command CRC pass | single load | checksum parse + reparse + normal execute (200k: ~1.16 s) | **Adopt:** 4.27 single-pass loader; measured 20–45× slower to ready (3.15) |
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
+| Transactions (MULTI/EXEC) | queue command refs, ACL at queue time, one reply array | same | copy args at queue, re-check ACL at EXEC, execute through the dispatcher | **Keep:** measured 1,000-command tx 3.02 vs 2.48–2.76 ms and the plain batch leads (3.36) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
 | Expiry | lazy + sampled active cycle, 25% CPU budget, fast 1 ms, effort levels | same | lazy + ordered `BTreeSet` reap, 128 due keys per 100 ms | **Keep:** ordered removals are exact and capped at ~0.1–0.3% CPU; adaptive bursts only with the 4.16 TTL row (3.10) |
 | Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Adopt:** 4.26 pooled/batched eviction; measured 85.8% P16 loss under pressure, policy-independent; read-aware LRU still unmeasured (3.10) |
@@ -3248,6 +3259,82 @@ mutably, insert the group (or create an empty stream for `MKSTREAM`), call
 entries. Keep `BUSYGROUP`, explicit-ID/`$` semantics, PEL/consumer state,
 TTL/WATCH/journal/rewrite and the other subcommands as they are.
 
+### 3.35 Sorted-set pops (ZPOPMIN/ZPOPMAX/ZMPOP)
+
+- **Redis 8.10.2 and Valkey 9.1.2** pop from the skiplist head or tail in
+  O(log n): the min/max node is the first/last element, removed by score/member
+  and the dict entry deleted; `ZPOPMIN k COUNT n` repeats n times
+  ([`redis t_zset.c#L4227`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4227),
+  [`#L4393`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4393);
+  [`valkey t_zset.c#L3894`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3894),
+  [`#L4037`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L4037)).
+- **Rillcache** materializes, sorts and replaces the whole sorted set for every
+  pop: `zset_pop` calls `owned_zset` (clone every member), `ordered_zset`
+  (copy every member and sort all), removes `count` members, re-encodes and
+  `put_collection`s the rest. `ZPOPMIN` therefore costs O(n log n) even for one
+  element, and so do `ZPOPMAX`, `ZMPOP` and the blocking variants
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L4817)).
+- **Measured (2026-11-12).** A 100,000-member sorted set (7-byte members,
+  scores 100–899), 20 pops, three rotations; a 100-member set is the control:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `ZPOPMIN` | **156.7 ms** | 0.42 ms | 0.34 ms |
+  | `ZPOPMAX` | **159.9** | 0.21 | 0.29 |
+  | `ZPOPMIN COUNT 10` | **146.6** | 0.35 | 0.16 |
+  | `ZMPOP 1 z MIN` | **155.8** | 0.16 | 0.20 |
+  | 100-member `ZPOPMIN` | 0.11 | 0.16 | 0.24 |
+
+  `ZPOPMIN`/`ZPOPMAX` are **373–761×** slower, the count-10 and `ZMPOP` forms
+  419–974×, while the 100-member control is at the floor. The largest measured
+  ratio in the record. Candidate 4.49.
+
+**Verdict: adapt ordered pops (4.49).** Reuse 4.30/4.38's ordered
+`(score, member)` index: min/max is its first/last element, so remove that member
+from the map and the index in place, update `payload_len` by the delta, and
+repeat for `COUNT`. No clone, sort, re-encode or replace. `ZMPOP`/`BZPOP*` reuse
+the same primitive; keep score formatting, tie order, empty-key deletion and
+journal/rewrite/accounting semantics.
+
+### 3.36 Multi-command transactions (MULTI/EXEC)
+
+- **Redis 8.10.2 and Valkey 9.1.2** queue the parsed command objects (argument
+  references, not copies), check ACL at queue time, and execute the queue in one
+  guard at `EXEC`, writing one reply array
+  ([`redis multi.c#L91`](https://github.com/redis/redis/blob/8.10.2/src/multi.c#L91),
+  [`#L127`](https://github.com/redis/redis/blob/8.10.2/src/multi.c#L127),
+  [`#L35`](https://github.com/redis/redis/blob/8.10.2/src/multi.c#L35);
+  [`valkey multi.c#L162`](https://github.com/valkey-io/valkey/blob/9.1.2/src/multi.c#L162),
+  [`#L195`](https://github.com/valkey-io/valkey/blob/9.1.2/src/multi.c#L195)).
+- **Rillcache** copies every queued command's arguments into
+  `Vec<Vec<u8>>` (capped at 10,000), re-checks ACL for each queued command at
+  `EXEC`, then executes them through the normal dispatcher and writes one array.
+  The default local `Store` path executes the queue directly; only the shared/
+  multi-owner handle copies the queue again in the bridge
+  ([`transaction.rs`](../../src/session/transaction.rs#L11),
+  [`dispatch`](../../src/session/transaction.rs#L35)).
+- **Measured (2026-11-12).** One pipelined `MULTI ... EXEC` per sample, 20
+  repetitions, three rotations; a 1,000-command plain batch is the control:
+
+  | Batch | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `MULTI` + 100 `SET` + `EXEC` | 0.764 ms | 0.448 ms | 0.742 ms |
+  | `MULTI` + 1,000 `SET` + `EXEC` | 3.02 | 2.76 | 2.48 |
+  | `MULTI` + 100 `SET` 1 KB + `EXEC` | 0.873 | 1.042 | 1.077 |
+  | `MULTI` + 1,000 `SET` + `DISCARD` | 1.37 | 1.30 | 1.77 |
+  | 1,000 plain `SET` (control) | 1.42 | 2.20 | 2.59 |
+  | second 1,000-command transaction | 2.85 | 2.75 | 2.59 |
+
+  The 1,000-command transaction is within **1.1–1.2×** and the queue-only and
+  plain-batch rows lead; the 100-command row is within the host spread (Rill
+  0.57–1.16 ms, Redis 0.44–1.04). No candidate.
+
+**Verdict: keep the transaction path.** The measured cost of copying arguments
+and re-checking ACL is not a material gap at 1,000 commands, and the plain batch
+is faster than both C servers. Re-measure only if the execution path changes
+(e.g., an ordered-index or in-place collection change lands) or a 10,000-command
+cohort shows a different shape.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3301,7 +3388,8 @@ for the measured 50–66× loss in section 3.30. Section 3.31 extends 4.29 to
 in-place-register and cached-count candidate for the measured 4× add and 74–80×
 count throughput losses in section 3.32. Section 3.33 extends 4.37 with a
 word-wise `BITPOS` scan. 4.48 is the in-place `XGROUP CREATE` candidate for the
-measured 88–99× group-creation loss in section 3.34.
+measured 88–99× group-creation loss in section 3.34. 4.49 is the ordered-pop
+candidate for the measured 373–974× sorted-set pop loss in section 3.35.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3884,6 +3972,13 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    control, plus `CREATECONSUMER`/`SETID`/`DESTROY` controls. Confirms 4.48 on a
    clean runner; the 2026-11-12 local cohort in section 3.34 already measures
    8.26 ms versus 0.08–0.09 ms.
+27. **Sorted-set pops:** `ZPOPMIN`/`ZPOPMAX`, `ZPOPMIN COUNT 10`, `ZMPOP 1 MIN`,
+   and a 100-member control on a 100k set. Confirms 4.49 on a clean runner; the
+   2026-11-12 local cohort in section 3.35 already measures 146–160 ms versus
+   0.16–0.42 ms.
+28. **Transactions:** `MULTI` + 100/1,000 `SET` + `EXEC`, a 100×1 KB
+   transaction, queue-only `DISCARD`, and a plain 1,000-SET control. Confirms the
+   measured null in section 3.36 on a clean runner.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3891,7 +3986,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty-six rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-eight rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4361,34 +4456,37 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.46 nosort slice | `sort`/`source_values` (`sort.rs#L120`, `#L228`), `ITEMS`/limit/STORE | source order for set/zset; offset/count; STORE; missing key; no reply change | 100k `BY nosort LIMIT`, controls, other SORT rows | small |
 | 4.47 HLL in place | `pfadd`/`pfcount`/`pfmerge` (`hll.rs#L240`, `#L285`, `#L313`), `Hll`/`inspect`/`serialize`, `Data::put` | cache invalidation; exact↔dense; count accuracy; serialization/rewrite/replay | 100k pipelined `PFADD`, 10k `PFCOUNT`, controls | small |
 | 4.48 xgroup create | `xgroup` (`streams.rs#L1454`, `#L1492`), `Stream.groups`, `put_stream` | BUSYGROUP/MKSTREAM/ID; payload unchanged; PEL/consumers; TTL/WATCH/journal/rewrite | 5k `XGROUP CREATE`, 10-entry control, other XGROUP ops | small |
+| 4.49 zset pops | `zset_pop` (`collection_commands.rs#L4817`), `owned_zset`/`ordered_zset`, ordered index | ties/scores; empty/negative count; key deletion; ZSetPack; blocking; accounting/rewrite | 100k `ZPOPMIN`/`ZPOPMAX`/`ZPOPMIN 10`/`ZMPOP`, 100-member control | medium |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
-for the measured synchronous `UNLINK`/`ASYNC` drop. 4.40, 4.41, 4.44, 4.46, 4.47
-and 4.48 are the smallest, highest-certainty fixes (O(1) counts/membership,
-in-place list seek, per-member probes, direct nosort slice, in-place HLL with a
-cached count, in-place group creation) and can land immediately. 4.42 is the
-stream sibling of 4.35's in-place write and shares the delta-accounting shape.
-4.35 is next: every collection write currently clones the collection, the gaps
-are 3.5–262×, and it reuses 4.34's admit-then-mutate shape. 4.37 is small and
-shares 4.34's in-place string path: it removes the two copies in `SETBIT` and
-the byte loop in `BITCOUNT`/`BITPOS` (5–44×). 4.36 follows, first as a no-copy
-reservoir slice and then the dense index; its 100k gaps are 35–298×. 4.30, 4.38
-and 4.43 are the largest measured read-side ratios (378–927× and 10–53×) and
-should share one ordered structure: 4.30 covers point/score/start-0 reads, 4.38
-the rank-select, and 4.43 the geohash cell ranges. 4.39 is a
-contract/reliability fix on the pub/sub path already admitted as 4.24 and should
-land with them. 4.34 (landed in #258) removed two full-value copies per
-`APPEND`/`SETRANGE` and post-fix measures 0.13–0.19 ms at 32 MB. 4.32 follows as
-the structural memory and CPU fix (142–143 → target ≤24 B/element) and may reuse
-4.31's ordered-list direction. 4.22/4.24 come last because they touch every
-asynchronous client path and carry the highest ordering risk (4.39 rides with
-them). 4.31 is the largest per-call ratio in the record but touches the keyspace,
-every collection type and the router cursor, so it follows the journal slices and
-the ordered-structure decision. 4.23 follows the existing bounded slices. 4.20
-stays conditional on 4.19; 4.18 stays deferred.
+for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
+ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
+with that structure. 4.40, 4.41, 4.44, 4.46, 4.47 and 4.48 are the smallest,
+highest-certainty fixes (O(1) counts/membership, in-place list seek, per-member
+probes, direct nosort slice, in-place HLL with a cached count, in-place group
+creation) and can land immediately. 4.42 is the stream sibling of 4.35's in-place
+write and shares the delta-accounting shape. 4.35 is next: every collection write
+currently clones the collection, the gaps are 3.5–262×, and it reuses 4.34's
+admit-then-mutate shape. 4.37 is small and shares 4.34's in-place string path: it
+removes the two copies in `SETBIT` and the byte loop in `BITCOUNT`/`BITPOS`
+(5–44×). 4.36 follows, first as a no-copy reservoir slice and then the dense
+index; its 100k gaps are 35–298×. 4.30, 4.38, 4.43 and 4.49 are the largest
+measured read/pop ratios (378–974× and 10–53×) and should share one ordered
+structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select, 4.43 the
+geohash cell ranges, and 4.49 the min/max pops. 4.39 is a contract/reliability
+fix on the pub/sub path already admitted as 4.24 and should land with them. 4.34
+(landed in #258) removed two full-value copies per `APPEND`/`SETRANGE` and
+post-fix measures 0.13–0.19 ms at 32 MB. 4.32 follows as the structural memory
+and CPU fix (142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list
+direction. 4.22/4.24 come last because they touch every asynchronous client path
+and carry the highest ordering risk (4.39 rides with them). 4.31 is the largest
+per-call ratio in the record but touches the keyspace, every collection type and
+the router cursor, so it follows the journal slices and the ordered-structure
+decision. 4.23 follows the existing bounded slices. 4.20 stays conditional on
+4.19; 4.18 stays deferred.
 
 ### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
 
@@ -5364,6 +5462,44 @@ the faster C server); the 10-entry control shall be unchanged;
 and TTL shall pass; no dependency shall be added; and both protected gates shall
 pass on the exact head.
 
+### 4.49 Ordered sorted-set pops (candidate; admission measured)
+
+**Mechanism.** Reuse 4.30/4.38's ordered `(score, member)` index: `ZPOPMIN`/
+`ZPOPMAX` take its first/last element (tie order `(score, member)`), remove the
+member from the score map and index in place, update `payload_len` by the delta,
+and repeat `COUNT` times; delete the key when empty. `ZMPOP`/`BZPOP*` reuse the
+same primitive. No `owned_zset`, `ordered_zset`, re-encode or `put_collection`.
+
+**Prediction.** 100k `ZPOPMIN`/`ZPOPMAX` fall from **156.7/159.9 ms to ≤0.3 ms**
+(p99 ≤2), `ZPOPMIN COUNT 10` from 146.6 to ≤0.5 and `ZMPOP` from 155.8 to ≤0.3;
+the 100-member control is unchanged and scores/tie order are preserved.
+
+**Admission evidence (2026-11-12, section 3.35).** A 100,000-member sorted set,
+20 pops, three rotations: `ZPOPMIN` 156.7 (169.3/156.7/156.4) versus Redis 0.42
+(0.4/0.7/0.2) and Valkey 0.34 (0.3/0.3/0.3); `ZPOPMAX` 159.9 versus 0.21/0.29;
+`ZPOPMIN COUNT 10` 146.6 versus 0.35/0.16; `ZMPOP 1 z MIN` 155.8 versus
+0.16/0.20; 100-member control 0.11 versus 0.16/0.24.
+
+**Risks and obligations.** Tie order, score formatting, empty/negative `COUNT`,
+key deletion, blocking variants, journal/rewrite/accounting and the small
+`ZSetPack` path must stay exact; a pop must not clone or sort the set, and a
+missing key returns the empty reply.
+
+**Rejected options.** A linear min/max scan without the sort (O(n) per pop, still
+far from O(log n)), a separately cached min/max (stale on updates), and keeping
+the full sort.
+
+**Rejection condition.** Any pop order, score, empty/blocking or accounting
+result differs, the controls regress, or no gain above the spread.
+
+**Acceptance (AC51).** At 100,000 members, `ZPOPMIN` and `ZPOPMAX` shall have p50
+≤0.3 ms and p99 ≤2 ms (≥500× faster than the measured 156.7/159.9 ms and within
+~2× the faster C server); `ZPOPMIN COUNT 10` ≤0.5 ms (≥290×) and `ZMPOP` ≤0.3 ms
+(≥500×); the 100-member control shall be unchanged; empty/negative count, tie
+order, score formatting, key deletion, blocking variants, journal/rewrite/replay
+and accounting tests shall pass; no dependency shall be added; and both protected
+gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -5375,10 +5511,11 @@ the existing channels and `sync_channel`, 4.40 uses the existing containers'
 lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the
 existing stream map, 4.43 uses geohash score ranges, 4.44 uses the existing
 set/zset members, 4.45 uses the existing lazy expire path, 4.46 slices the
-existing source order, 4.47 mutates the existing HLL registers, and 4.48 mutates
-the existing stream groups. The rest use the existing `std` I/O, parser and
-in-repo journal/crypto code. Each candidate lands as its own PR with AC5 plus the
-protected gates; no combined integration branch.
+existing source order, 4.47 mutates the existing HLL registers, 4.48 mutates the
+existing stream groups, and 4.49 pops from the ordered zset index. The rest use
+the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
+lands as its own PR with AC5 plus the protected gates; no combined integration
+branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -5432,7 +5569,7 @@ existing collection containers in place; 4.36 uses `Vec` plus
 existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
 and probes; 4.41 walks the existing list chunks; 4.42 mutates the existing stream map;
 4.43 uses geohash score ranges; 4.44 uses the existing set/zset members; 4.45 uses the existing lazy expire path;
-4.46 slices the existing source order; 4.47 mutates the existing HLL registers; 4.48 mutates the existing stream groups.
+4.46 slices the existing source order; 4.47 mutates the existing HLL registers; 4.48 mutates the existing stream groups; 4.49 pops from the ordered zset index.
 None adds a crate, build script,
 allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
@@ -5653,6 +5790,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   `MKSTREAM`, explicit-ID/`$`, PEL/consumer state and notification/journal order,
   with unchanged payload accounting; the 10-entry control must stay unchanged
   (AC50).
+- **Zset-pop risk (4.49):** tie order `(score, member)`, score formatting,
+  empty/negative `COUNT`, key deletion, blocking variants and accounting must
+  stay exact; the pop must not clone or sort the set, and small `ZSetPack` sets
+  keep a correct min/max path (AC51).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -5732,6 +5873,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Keeping per-call sorts for `HKEYS`/`HVALS`/`KEYS` | At 100k the hash listings are 3.5–6.2× and `KEYS` 2.1–4.3× behind; 4.29's ordered hash and 4.31's key index remove the sort without changing reply contents (3.31). |
 | A count cache outside the HLL payload | A separate counter diverges from rewrite/replay/restore and accounting; the cache belongs in the serialized header (4.47). |
 | Keeping the `XGROUP CREATE` stream clone | It deep-copies every entry and folds the payload for a one-struct insert; the other XGROUP subcommands already mutate in place (4.48). |
+| Keeping the full clone/sort for `ZPOPMIN`/`ZPOPMAX` | The measured 100k pop is 373–974× behind; the ordered index already gives the min/max element, so no sort is needed (4.49). |
 | Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
 
 ## 8. Acceptance criteria (EARS)
@@ -6098,6 +6240,14 @@ samples retained.
   10-entry control shall be unchanged; `BUSYGROUP`, `MKSTREAM`, explicit-ID/`$`,
   PEL/consumer, journal/rewrite/replay and TTL tests shall pass; no dependency
   shall be added; and both protected gates shall pass on the exact head.
+- **AC51 (ordered sorted-set pops, only if 4.49 is implemented).** At 100,000
+  members, `ZPOPMIN` and `ZPOPMAX` shall have p50 ≤0.3 ms and p99 ≤2 ms (≥500×
+  faster than the measured 156.7/159.9 ms and within ~2× the faster C server);
+  `ZPOPMIN COUNT 10` ≤0.5 ms (≥290×) and `ZMPOP` ≤0.3 ms (≥500×); the 100-member
+  control shall be unchanged; empty/negative count, tie order, score formatting,
+  key deletion, blocking variants, journal/rewrite/replay and accounting tests
+  shall pass; no dependency shall be added; and both protected gates shall pass on
+  the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -6393,6 +6543,19 @@ separate roadmap.
   `CREATECONSUMER` 0.123 versus 0.227/0.127; `SETID` 0.099 versus 0.283/0.099;
   `DESTROY` 0.109 versus 0.097/0.109; 10-entry `CREATECONSUMER` 0.169 versus
   0.086/0.069. Raw JSON retained (untracked).
+- Sorted-set pop cohort (section 3.35, candidate 4.49): a 100,000-member sorted
+  set, 20 pops, three rotations, 100-member control. `ZPOPMIN` 156.7 ms
+  (169.3/156.7/156.4) versus Redis 0.42 (0.4/0.7/0.2) and Valkey 0.34
+  (0.3/0.3/0.3); `ZPOPMAX` 159.9 versus 0.21/0.29; `ZPOPMIN COUNT 10` 146.6
+  versus 0.35/0.16; `ZMPOP 1 z MIN` 155.8 versus 0.16/0.20; 100-member control
+  0.11 versus 0.16/0.24. Raw JSON retained (untracked).
+- Transaction cohort (section 3.36, measured null): one pipelined `MULTI ... EXEC`
+  per sample, 20 repetitions, three rotations. `MULTI`+100 `SET`+`EXEC` 0.764 ms
+  (0.57/1.16/0.76) versus Redis 0.448 (1.04/0.44/0.45) and Valkey 0.742
+  (1.56/0.45/0.74); 1,000 commands 3.02 versus 2.76/2.48; 100×1 KB 0.873 versus
+  1.042/1.077; queue-only `DISCARD` 1.37 versus 1.30/1.77; plain 1,000 `SET`
+  control 1.42 versus 2.20/2.59; second 1,000-command tx 2.85 versus 2.75/2.59.
+  Raw JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -6862,3 +7025,11 @@ separate roadmap.
   `BUSYGROUP`, PEL/consumer interactions or `XREADGROUP` after group creation.
   Those are implementation-PR evidence under AC50; the 100k extrapolation is
   linear from the 5k row.
+- The zset-pop cohort (section 3.35) measures 20 pops on one 100k set; it does
+  not measure `BZPOPMIN`/`BZPOPMAX`/`BZMPOP`, `COUNT` larger than 10, or the
+  pop-min under WATCH/transactions. Those are implementation-PR evidence under
+  AC51.
+- The transaction cohort (section 3.36) measures pipelined transactions up to
+  1,000 commands with one value size; it does not measure `WATCH` aborts, 10,000
+  commands, or multi-owner transaction routing. It is a null result at the
+  measured shape, not universal parity.
