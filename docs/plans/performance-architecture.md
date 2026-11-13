@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.39).**
+gated (4.15, 4.20–4.27, 4.29–4.40).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -135,7 +135,10 @@ and score reads are the largest ratio in the record at 100k: **57–72 ms** for
 rank-select paths. Pub/sub loses a 2,000-message burst at **1,024 delivered and
 drops the subscription** (C servers: 2,000 and keep it), and a `PUBLISH` among
 10,000 channels is 3–6× slower; 4.39 covers the burst contract and channel
-lookup. Under
+lookup. Cardinality is equally materialized: at 100k, `SISMEMBER`/`SCARD` are
+**8.0–8.7 vs 0.15–0.22 ms** because they clone and sort the whole set,
+`HLEN`/`ZCARD` are 1.6–2.2 ms and `LLEN` 1.55 ms because they collect every
+reference; 4.40 makes them O(1). Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1051,7 +1054,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Sixteen things are still true even though every row now leads:
+Seventeen things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1167,6 +1170,11 @@ Sixteen things are still true even though every row now leads:
     subscription** (the C servers deliver 2,000 and keep it), and a `PUBLISH` to
     one of 10,000 subscribed channels is 3–6× slower because the publisher scans
     every channel (section 3.23, candidate 4.39).
+17. **Cardinality and membership.** At 100k members `SISMEMBER`/`SCARD` cost
+    **8.0–8.7 ms** versus 0.15–0.22 ms (36–55×) because they clone and sort the
+    whole set; `HLEN`/`ZCARD` cost 1.6–2.2 ms and `LLEN` 1.55 ms because they
+    collect every reference, while `HEXISTS`/`STRLEN` are direct and fast
+    (section 3.24, candidate 4.40).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1334,6 +1342,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, admitted | AC32 on the implemented change | none at 64 B |
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 (map/score/start-0) + 4.38 (rank-select), admitted | AC32/AC40 | none |
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
+| Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 vs 0.14–0.20; `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1756,6 +1765,7 @@ for a production claim.
 | Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, and 378–927× on 100k rank/range reads (3.2, 3.22, AC32/AC40) |
 | Sorted-set rank-select | skiplist span counts: O(log n) `ZRANK`, deep `ZRANGE` seek | same | rank requires a full materialize+sort+linear position scan | **Adapt:** 4.38 order-statistic index; measured 100k `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12 (3.22, AC40) |
 | Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms (3.23, AC41) |
+| Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -2641,6 +2651,59 @@ key, encode one frame per (RESP version, pattern) and share it, and keep pattern
 and shard semantics. This extends 4.24's event-driven wake with a burst-safety
 contract.
 
+### 3.24 Cardinality and membership commands (SCARD/SISMEMBER/HLEN/ZCARD/LLEN)
+
+- **Redis 8.10.2 and Valkey 9.1.2** answer cardinality and membership from the
+  encoding: list length is cached on the quicklist, `SCARD` is `dictSize` or the
+  intset/listpack length, `SISMEMBER` is a dict/intset/listpack probe, `HLEN` is
+  `hashTypeLength`, and `ZCARD` is the dict size
+  ([`redis t_set.c#L821`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L821),
+  [`#L783`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L783),
+  [`t_hash.c#L5294`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5294),
+  [`t_zset.c#L4082`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4082),
+  [`t_list.c#L614`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L614),
+  [`quicklist.c`](https://github.com/redis/redis/blob/8.10.2/src/quicklist.c);
+  [`valkey t_set.c#L733`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L733),
+  [`#L703`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L703),
+  [`t_hash.c#L1220`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L1220),
+  [`t_zset.c#L3753`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3753),
+  [`t_list.c#L564`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L564)).
+- **Rillcache** routes every one of these through a full materialization:
+  `SCARD` and `SISMEMBER` call `set_items()`, which **clones and sorts every
+  member** and then takes `.len()` or scans it; `HLEN` and `ZCARD` collect every
+  reference through `hash_items()`/`zset_items()` just to take `.len()`; `LLEN`
+  collects every list element reference through `list_items()` just to take
+  `.len()`. `HEXISTS` and `STRLEN` use the direct paths and are fast
+  ([`collections.rs`](../../src/engine/collections.rs#L240),
+  [`#L355`](../../src/engine/collections.rs#L355),
+  [`#L478`](../../src/engine/collections.rs#L478),
+  [`#L658`](../../src/engine/collections.rs#L658)).
+- **Measured (2026-11-12).** A 100,000-member set/hash/zset and a 200,000-element
+  list, 100 repetitions, three rotations; controls are 10-element collections:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SISMEMBER` hit | **8.04 ms** | 0.189 ms | 0.221 ms |
+  | `SISMEMBER` miss | **8.67** | 0.167 | 0.214 |
+  | `SCARD` | **8.08** | 0.195 | 0.148 |
+  | `HLEN` | **2.24** | 0.147 | 0.191 |
+  | `ZCARD` | **1.57** | 0.117 | 0.157 |
+  | `LLEN` 200k | **1.55** | 0.199 | 0.135 |
+  | `HEXISTS` (control) | 0.184 | 0.290 | 0.142 |
+  | `STRLEN` (control) | 0.128 | 0.158 | 0.162 |
+  | 10-element controls | 0.12–0.18 | 0.07–0.18 | 0.06–0.17 |
+
+  `SISMEMBER` and `SCARD` are **36–55×** slower, `HLEN`/`ZCARD` 10–15×, and
+  `LLEN` 8–11×, while the direct `HEXISTS`/`STRLEN` controls and every small
+  collection are at the command floor. Candidate 4.40.
+
+**Verdict: adapt O(1) cardinality and membership (4.40).** Add `Collection::len`
+(list = sum of node lengths, others = container length) and
+`Collection::contains_member`/`contains_field` (BTreeSet/`HashMap`/intset-aware
+probe) and route `SCARD`/`SISMEMBER`/`HLEN`/`ZCARD`/`LLEN` through them. Keep
+`SMEMBERS`/`HKEYS`/`HGETALL` sorting and full-reply paths unchanged, and preserve
+the `SetInt`/`SetPack`/`HashPack` semantics including non-integer probes.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -2679,7 +2742,8 @@ bitmap candidate for the measured 5–17× `SETBIT`/`BITCOUNT` loss in section 3
 4.38 is the rank-select candidate for the measured 378–927× sorted-set rank and
 range loss in section 3.22. 4.39 is the contract-correct pub/sub fan-out
 candidate for the measured 2,000-message burst loss and 10k-channel scan in
-section 3.23.
+section 3.23. 4.40 is the O(1) cardinality/membership candidate for the measured
+36–55× `SISMEMBER`/`SCARD` loss in section 3.24.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3217,6 +3281,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    1, 1,000 and 10,000 subscribed channels. Confirms 4.39 on a clean runner; the
    2026-11-12 local cohort in section 3.23 already measures 1,024/2,000 delivered
    with the subscription gone, versus 2,000/2,000 alive.
+16. **Cardinality and membership:** `SISMEMBER` (hit/miss), `SCARD`, `HLEN`,
+   `ZCARD`, `LLEN`, with `HEXISTS`/`STRLEN` and 10-element controls, at 100k/200k.
+   Confirms 4.40 on a clean runner; the 2026-11-12 local cohort in section 3.24
+   already measures 8.0–8.7 ms for `SISMEMBER`/`SCARD` versus 0.15–0.22 ms.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3224,7 +3292,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all fifteen rows are complete for all three servers;
+runners, not a shared k3s host; all sixteen rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -3685,28 +3753,31 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`), `Data::reserve`/`put`, range normalization | in-place write after admission; `u64` chunk popcount with masked head/tail; BYTE/BIT ranges; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`, 64 B controls, range cases | small |
 | 4.38 zset rank index | `zset_rank` (`collection_commands.rs#L3744`), `zset_range_by_score` (`#L3896`), `zset_read` (`collections.rs#L433`), `ZAdd`/`ZRem` paths, block index | rank-select over `(score, member)`; score moves; block split/merge; negative/reverse ranges; `ZSetPack`; accounting; replay/rewrite | 100k `ZRANK`/`ZREVRANK`/deep `ZRANGE`/`ZRANGEBYSCORE`, ZADD regression | medium |
 | 4.39 pub/sub fan-out | `PubSub::publish` (`pubsub.rs#L121`), `queue_capacity`, subscriber drain (`pool.rs#L159`), reactor async tick | channel lookup by key; byte-bounded queue; no silent unsubscribe; counted drop or documented disconnect; shared frame; ordering/pattern/shard; shutdown | 2,000-message burst, 10k-channel PUBLISH, 100 subscribers, NUMSUB | medium |
+| 4.40 O(1) counts | `set_read`/`hash_read`/`zset_read`/`list_len` (`collections.rs#L240`, `#L355`, `#L478`, `#L658`), `Collection` length/probe methods | SetInt/SetPack semantics; missing/empty/wrong type; no reply or ordering change; LLEN node walk | 100k `SISMEMBER`/`SCARD`/`HLEN`/`ZCARD`, 200k `LLEN`, 10-element controls | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, and 4.33 —
 small and contract-visible — for the measured synchronous `UNLINK`/`ASYNC` drop.
-4.35 is next: every collection write currently clones the collection, the gaps
-are 3.5–262×, and it reuses 4.34's admit-then-mutate shape. 4.37 is small and
-shares 4.34's in-place string path: it removes the two copies in `SETBIT` and the
-byte loop in `BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir slice
-and then the dense index; its 100k gaps are 35–298×. 4.30 and 4.38 are the
-largest measured read-side ratios (378–927× at 100k) and should share one
-ordered structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select
-that a `BTreeSet` cannot answer. 4.39 is a contract/reliability fix on the
-pub/sub path already admitted as 4.24 and should land with it. 4.34 itself
-removes two full-value copies per `APPEND`/`SETRANGE`. 4.32 follows as the
-structural memory and CPU fix (142–143 → target ≤24 B/element) and may reuse
-4.31's ordered-list direction. 4.22/4.24 come last because they touch every
-asynchronous client path and carry the highest ordering risk (4.39 rides with
-them). 4.31 is the largest per-call ratio in the record but touches the keyspace,
-every collection type and the router cursor, so it follows the journal slices and
-the ordered-structure decision. 4.23 follows the existing bounded slices. 4.20
-stays conditional on 4.19; 4.18 stays deferred.
+4.40 is the smallest, highest-certainty fix (five O(1) commands currently
+materialize a collection) and can land immediately. 4.35 is next: every
+collection write currently clones the collection, the gaps are 3.5–262×, and it
+reuses 4.34's admit-then-mutate shape. 4.37 is small and shares 4.34's in-place
+string path: it removes the two copies in `SETBIT` and the byte loop in
+`BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir slice and then the
+dense index; its 100k gaps are 35–298×. 4.30 and 4.38 are the largest measured
+read-side ratios (378–927× at 100k) and should share one ordered structure: 4.30
+covers point/score/start-0 reads, 4.38 the rank-select that a `BTreeSet` cannot
+answer. 4.39 is a contract/reliability fix on the pub/sub path already admitted
+as 4.24 and should land with it. 4.34 itself removes two full-value copies per
+`APPEND`/`SETRANGE`. 4.32 follows as the structural memory and CPU fix
+(142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list direction.
+4.22/4.24 come last because they touch every asynchronous client path and carry
+the highest ordering risk (4.39 rides with them). 4.31 is the largest per-call
+ratio in the record but touches the keyspace, every collection type and the
+router cursor, so it follows the journal slices and the ordered-structure
+decision. 4.23 follows the existing bounded slices. 4.20 stays conditional on
+4.19; 4.18 stays deferred.
 
 ### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
 
@@ -4265,15 +4336,60 @@ shall receive every message with publisher p50 within ~3× the C servers;
 ordering, pattern/shard, unsubscribe and shutdown tests shall pass; no dependency
 shall be added; and both protected gates shall pass on the exact head.
 
+### 4.40 O(1) cardinality and membership (candidate; admission measured)
+
+**Mechanism.** Add `Collection::len()` (list = sum of the inner deque lengths,
+O(nodes); set/hash/zset = the container length) and direct probes:
+`BTreeSet::contains` for `Set`, `parse_integer` + `BTreeSet<i64>::contains` for
+`SetInt` (a non-integer probe returns 0), a linear scan only for the small
+`SetPack`/`HashPack`, and `HashMap::contains_key`/`hash_get` for `Hash`. Route
+`SCARD`/`SISMEMBER`/`HLEN`/`ZCARD`/`LLEN` through them; leave
+`SMEMBERS`/`HKEYS`/`HGETALL` sorting and reply construction unchanged.
+
+**Prediction.** 100k `SISMEMBER`/`SCARD` fall from **8.0–8.7 ms to ≤0.2 ms**,
+`HLEN`/`ZCARD` from 1.6–2.2 to ≤0.1, and 200k `LLEN` from 1.55 to ≤0.05; controls
+and the direct `HEXISTS`/`STRLEN` paths are unchanged, with no reply or ordering
+change.
+
+**Admission evidence (2026-11-12, section 3.24).** 100k set/hash/zset and a
+200k list, 100 repetitions, three rotations: `SISMEMBER` hit p50 8.45/7.70/8.04
+ms versus Redis 0.19/0.07/0.40 and Valkey 0.22/0.13/0.27; miss 8.67 versus
+0.17/0.21; `SCARD` 8.18/7.02/8.08 versus 0.14/0.20/0.37 and 0.18/0.15/0.08;
+`HLEN` 2.24 versus 0.15/0.19; `ZCARD` 1.57 versus 0.12/0.16; `LLEN` 1.55 versus
+0.20/0.14; `HEXISTS` 0.18 versus 0.29/0.14 and `STRLEN` 0.13 versus
+0.16/0.16. Ten-element controls 0.12–0.18.
+
+**Risks and obligations.** The `SetInt` probe must reproduce the current string
+semantics for integer and non-integer members; `SetPack`/`HashPack` stay linear
+but are small; `LLEN` becomes an O(nodes) walk (cached counts can follow if a
+later cohort shows it); missing/empty keys and wrong-type errors are unchanged;
+no accounting or reply changes.
+
+**Rejected options.** A separately cached length that can drift from the
+container, making `SMEMBERS` unsorted to speed `SCARD` (it does not fix
+`SISMEMBER` and changes ordering), and leaving the materialization.
+
+**Rejection condition.** Any membership or length semantics test differs, the
+controls or direct paths regress, or no gain above the spread.
+
+**Acceptance (AC42).** At 100,000 members, `SISMEMBER` (hit and miss) and
+`SCARD` shall have p50 ≤0.2 ms (≥40× faster than the measured 8.0–8.7 ms and
+within ~2× the faster C server); `HLEN` and `ZCARD` p50 ≤0.1 ms; `LLEN` on a
+200,000-element list p50 ≤0.05 ms; the 10-element controls, `HEXISTS` and
+`STRLEN` shall be unchanged; `SetInt`/`SetPack`/`HashPack` semantics (including
+non-integer probes), missing keys and type errors shall pass; no dependency shall
+be added; and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
 bounded queue plus the existing maintenance tick, 4.34 uses the existing `Vec`
 in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes, 4.37 uses in-place `Vec` writes plus
-`u64::count_ones`, 4.38 uses a `Vec` of sorted blocks plus counts, and 4.39 uses
-the existing channels and `sync_channel`. The rest use the existing `std` I/O,
-parser and in-repo journal/crypto code. Each candidate lands as its own PR with
+`u64::count_ones`, 4.38 uses a `Vec` of sorted blocks plus counts, 4.39 uses
+the existing channels and `sync_channel`, and 4.40 uses the existing containers'
+lengths and probes. The rest use the existing `std` I/O, parser and in-repo
+journal/crypto code. Each candidate lands as its own PR with
 AC5 plus the protected gates; no combined integration branch.
 
 ## 5. Required libraries, dependencies and policy impact
@@ -4325,8 +4441,8 @@ maintenance tick; 4.34 mutates the existing `Vec` in place; 4.35 mutates the
 existing collection containers in place; 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes; 4.37 uses in-place `Vec` writes plus
 `u64::count_ones`; 4.38 uses a `Vec` of sorted blocks plus counts; 4.39 uses the
-existing channels and `sync_channel`. None adds a crate, build script, allocator
-or FFI.
+existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
+and probes. None adds a crate, build script, allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
 it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
@@ -4500,6 +4616,11 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   unsubscribe and shutdown must stay exact. A shared frame must respect each
   subscriber's RESP version and pattern form; the drain bound must not starve
   other clients (AC41).
+- **Cardinality/membership risk (4.40):** the `SetInt` probe must match the
+  current string-based semantics for integer and non-integer members, and
+  `SetPack`/`HashPack` stay linear but small. Missing/empty keys, wrong-type
+  errors, reply order and accounting must not change; `LLEN` is O(nodes) and may
+  need cached counts only if a later cohort shows it (AC42).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -4568,6 +4689,8 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Sorting the sorted set on every rank/score read | The measured materialize+sort is exactly the 57–72 ms cost; it must be replaced, not cached per call (3.22, 4.30, 4.38). |
 | Keeping the fixed 1,024-message subscriber queue and removing the subscriber on overflow | The measured 2,000-message burst loses 48.8% and silently drops the subscription; buffering must be byte-bounded with a counted drop or a documented disconnect (4.39). |
 | An unbounded pub/sub queue per subscriber | A slow or dead subscriber would grow memory without limit; Redis bounds it and disconnects at the limit (4.39, 3.23). |
+| A separately cached collection length maintained beside the container | Two sources of truth can drift; the container's own `len()` is O(1) (or O(nodes) for lists) and cannot disagree (4.40). |
+| Making `SMEMBERS` unsorted so `SCARD` can reuse it | Fixes neither `SISMEMBER` nor the clone/sort cost and changes a deterministic reply order (4.40). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -4852,6 +4975,14 @@ samples retained.
   every message with publisher p50 within ~3× the C servers; ordering,
   pattern/shard, unsubscribe and shutdown tests shall pass; no dependency shall be
   added; and both protected gates shall pass on the exact head.
+- **AC42 (O(1) cardinality and membership, only if 4.40 is implemented).** At
+  100,000 members, `SISMEMBER` (hit and miss) and `SCARD` shall have p50 ≤0.2 ms
+  (≥40× faster than the measured 8.0–8.7 ms and within ~2× the faster C server);
+  `HLEN` and `ZCARD` p50 ≤0.1 ms; `LLEN` on a 200,000-element list p50 ≤0.05 ms;
+  the 10-element controls, `HEXISTS` and `STRLEN` shall be unchanged; `SetInt`,
+  `SetPack` and `HashPack` membership semantics (including non-integer probes),
+  missing keys and type errors shall pass; no dependency shall be added; and both
+  protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -5068,6 +5199,13 @@ separate roadmap.
   delivered 2,000/2,000 with NUMSUB 1. `PUBLISH` p50 1 channel: 0.12–0.22 versus
   0.13–0.30/0.20–0.30; 1,000 channels: 0.13 versus 0.16–0.23/0.21–0.30; 10,000
   channels: 0.38–0.89 versus 0.14–0.21/0.12–0.31. Raw JSON retained (untracked).
+- Cardinality/membership cohort (section 3.24, candidate 4.40): a 100k
+  set/hash/zset and a 200k list, 100 repetitions, three rotations. `SISMEMBER`
+  hit 8.45/7.70/8.04 ms versus Redis 0.19/0.07/0.40 and Valkey 0.22/0.13/0.27;
+  miss 8.67 versus 0.17/0.21; `SCARD` 8.18/7.02/8.08 versus 0.14/0.20/0.37 and
+  0.18/0.15/0.08; `HLEN` 2.24 versus 0.15/0.19; `ZCARD` 1.57 versus 0.12/0.16;
+  `LLEN` 1.55 versus 0.20/0.14; `HEXISTS` 0.18 versus 0.29/0.14; `STRLEN` 0.13
+  versus 0.16/0.16; 10-element controls 0.12–0.18. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -5481,3 +5619,8 @@ separate roadmap.
   pattern subscriptions, RESP3 frames, or memory under sustained fan-out; those
   are implementation-PR evidence under AC41. The burst depends on the 1 ms tick
   and the 1,024-entry queue, both source-confirmed.
+- The cardinality/membership cohort (section 3.24) measures single-connection
+  commands on 100k/200k collections with 10-element controls. It does not measure
+  `SMISMEMBER`, `SINTERCARD`, `HSTRLEN`, missing-key paths at scale, or `LLEN`
+  after heavy list mutation; those are implementation-PR evidence under AC42.
+  The `SetInt`/`SetPack` probe semantics are source-only here.
