@@ -88,9 +88,12 @@ owned value/tree after checking NX rejection and final payload admission.
 
 ## Limits
 
-This is not Redis Streams feature completeness. Multi-stream history reads,
-replication and durable pending/consumer restoration are unsupported. `XSETID` metadata is
-journaled, but pending owners/delivery counters remain volatile. XTRIM's
+This is not Redis Streams feature completeness. Multi-stream history reads and
+replication are unsupported. `XSETID` metadata, consumer objects, PEL
+owners/delivery counts/timestamps and consumer last-activity are journaled.
+Activity is tracked only when the keyspace has an expiry or field TTL; otherwise
+the clock shortcut records zero for both the live and replayed value, and deleted
+or renamed consumer history is not retained. XTRIM's
 `~` mode removes an exact number of entries up to the LIMIT/default bound rather
 than Redis's listpack-node granularity, so it never leaves more entries than the
 bound but may remove fewer than a native approximate trim. `XREAD` declares no static key positions, so ACL key
@@ -104,15 +107,11 @@ node statistics or every newer Redis-specific extended field. `entries-read` is
 reported as unknown (null); this subset does not track Redis's historical read
 counter or deletion-aware lag estimator. `lag` counts currently retained entries
 after the group's cursor. `nacked-count` is zero because no unowned NACK operation
-is supported; owned pending records are counted by `pel-count`. Pending is process
-memory: `XACK`, `XCLAIM` and `XAUTOCLAIM` mutate it for WATCH/journal capture, but
-the append-only journal rebuilds only stream entries and group cursors, not
-pending owners, delivery counts or consumer activity; treat pending as volatile
-across restart. `XINFO CONSUMERS` reports `inactive` as the same process-clock
-idle time as `idle` because this subset does not track Redis's separate active
-time. TCP regression coverage asserts explicit cursor, pending IDs/owners/counts,
-ACK, claim/autoclaim, range/read and NOACK behavior, not just equality between
-source and copy.
+is supported; owned pending records are counted by `pel-count`. `XINFO CONSUMERS`
+reports `inactive` from the same `seen_at` activity value as `idle`, not Redis's
+separate active-time field. TCP regression coverage asserts explicit cursor,
+pending IDs/owners/counts, ACK, claim/autoclaim, range/read and NOACK behavior,
+not just equality between source and copy.
 
 The payload budget counts key bytes and retained stream field/value bytes.
 It intentionally does not claim an RSS bound and does not count Rust container

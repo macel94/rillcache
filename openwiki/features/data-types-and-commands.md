@@ -30,12 +30,14 @@ sources:
     resource: repo://src/engine/geo.rs
   - id: openwiki-source-6246a3d3b9ed3dc52fcc5584
     resource: repo://src/engine/hll.rs
+  - id: openwiki-source-2d83b8f3eb99936a26e47924
+    resource: repo://src/engine/streams.rs
   - id: openwiki-source-8202f4c5abca167cf478c403
     resource: repo://src/engine/string_algorithms.rs
-generated: { by: "opencode", at: "2026-11-11T20:57:56.397Z" }
+generated: { by: "opencode", at: "2026-11-13T08:58:25.918Z" }
 verified:
   - by: openwiki/0.9.0
-    at: 2026-11-11T20:57:56.397Z
+    at: 2026-11-13T08:58:25.918Z
 ---
 
 # Data types and command families
@@ -136,7 +138,9 @@ through downtime. Without tracked time the clock shortcut stores zero, and histo
 for deleted or renamed consumers is not retained. `XCLAIM` of a tombstone removes
 it from the PEL as for any missing entry. `entries-read` is reported as null and
 `nacked-count` as zero. Treat this subset as a bounded queue with those documented
-restart limits, not as a fully durable work queue.
+restart limits, not as a fully durable work queue. Repeated
+`XGROUP CREATECONSUMER` for an existing consumer returns 0 without replacing its
+PEL or resetting activity, WATCH version or journal state; a new name returns 1.
 
 ## Geospatial values
 
