@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b0bcd9da119aa5af072d7d3ed3d04f0631afaba65f4fafc5f98ca4c7dfde6682",
+  "pageVersion": "sha256:0afa05778ce3b20e664c63388954df27ea761f90fb77f819675e55f952d25525",
   "claims": [
     {
       "id": "claim_9e947814835841fabe312fb961485738",
@@ -91,8 +91,12 @@
       "statement": "Admission is atomic: a write either fits, reaps expired keys and evicts eligible victims, or returns OOM before deleting anything; multi-key writes validate the entire final payload first.",
       "evidence": [
         {
-          "resource": "repo://src/engine/data.rs#L709-L825",
-          "version": "repo-lines-v1:sha256:34e280592cf4d8f648ed84f4392fb0997a3805965ab0438e77c5a1249b4c0ee1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYzk0NmVjY2YyMDNkYzM2OGFkZTAzNmM4OWM4NjJmNTRkOGQyZjAxNjk4NTI5ODRkM2M4ZGQxODNlYWRlNDMzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxZTdlOWFlMGFmYmQ2MWY5Nzk3N2VkMjFkNjkwODdkZjU1ZjdhMjQwMDkyYzE4MWQwMWFhYjc5MGVkZDNiOGIxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5MmExY2I3Mjc4YWExZTg0OGE3OTgyYWM5ZTUwYTQ0Y2NjNTBlN2NkMTU4ZDA5N2Y0NDkzZDMzYTI0MTZhMzE0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0YjkxMGE0MGMxYmM0OTg4MTZjZjVkYjZiNjIwZGIwNmY0ZDgyMjM0NDdlMTY1NDk2ZjYzMGY4NjkxMzU4YjVmIn0"
+          "resource": "repo://src/engine/data.rs#L646-L705",
+          "version": "repo-lines-v1:sha256:db19a63d0e8f0b26dcdad7f64c41d1f9c64a73d1e532a59efb6da1999b91f3f2:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwZWZjZTY2NGNkNjhlNDcwZWVhOGE3MDA0YzRhYzE1NTZjNzA5NGM0OWRjNTg1MjhhNjU4N2M1ODUzZjI2NTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiNjExYTE5MmQzMGY3NjBlZDhmNDNjMGFiOGNlMWE0NWU1ODE3NWI4Yzc2YWY0NGU5NjgwY2MyZmQ2MzcwZjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkyYTFjYjcyNzhhYTFlODQ4YTc5ODJhYzllNTBhNDRjY2M1MGU3Y2QxNThkMDk3ZjQ0OTNkMzNhMjQxNmEzMTQifQ"
+        },
+        {
+          "resource": "repo://src/engine/data.rs#L720-L772",
+          "version": "repo-lines-v1:sha256:1a3a4ebd295b4e064443ec3d77eed9b5cd24c6857209bc600172db3dfb027859:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjMTY4YTk3YTUwZDc0NWEyYjhhZDkxODMyMDM3YjczMDYxNzgzNmU0MzRmYTI3YWM4Mjk0ZmFiZGZmMzU4M2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkYmM3MDczNzk2ZmQwNDNhOWM5ZWEyNzZkNDgzY2RlMWY4ZDEyNzg3MGU2NWJjN2NmMzdlMDAxZWZmNjM0MzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFjMDEyYTIyZjg3YmI1NjU4NDUzZWVlYmFmZjNhOTU3MGRmZTYyY2M4YmRlOTU2MzM1YjUyYmM1ZGFmYTVmOWMifQ"
         }
       ]
     },
@@ -127,6 +131,6 @@
   ],
   "verification": {
     "by": "openwiki/0.9.0",
-    "at": "2026-11-11T08:27:05.780Z"
+    "at": "2026-11-13T10:58:19.472Z"
   }
 }
