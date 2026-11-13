@@ -122,9 +122,11 @@ and 4.33 (deferred drop) cover those. `APPEND`/`SETRANGE` on a 32 MB value cost
 **7.2–7.35 ms versus 0.13–0.18 ms** because the whole value is rebuilt twice per
 call, admitting 4.34 (in-place mutation). Collection writes are the widest gap:
 one `HSET` into a 10k hash is **6.45 ms versus 0.11/0.09**, one `RPUSH` onto a
-200k list **18.3 vs 0.08/0.07 ms**, and 10k `ZADD`/`SADD` are 4.2/1.2 ms,
-because every write clones and replaces the whole collection (4.35). Random
-sampling is the widest cardinality-scaling loss: at 100k members `SRANDMEMBER` is
+200k list **18.3 vs 0.08/0.07 ms**, and at 100k members `HSET`/`HDEL` are
+**92.7–99.4 ms versus 0.08–0.32 ms** and `ZADD`/`ZREM` 61.4–63.9 versus
+0.10–0.23, because every write clones and replaces the whole collection (4.35).
+Random sampling is the widest cardinality-scaling loss: at 100k members
+`SRANDMEMBER` is
 **11.5 vs 0.2–0.3 ms**, `HRANDFIELD` **33.7 vs 0.11–0.34 ms** and
 `ZRANDMEMBER` **21.3 vs 0.16–0.25 ms**, because each call clones the collection
 (4.36). Bitmaps show both write-copy and scan gaps: on 16 MB, `SETBIT` is **5.3
@@ -1450,7 +1452,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
-| In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
+| In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; at 100k `HSET`/`HDEL` 92.7–99.4 vs 0.08–0.32, `ZADD`/`ZREM` 61.4–63.9 vs 0.10–0.23, `SADD`/`SREM` 10.7–11.2 vs 0.08–0.60 (18–1160×); 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor | 4.37, admitted | AC39 on the implemented change | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured; no candidate**: 100k SINTER 52.5 vs 38.9/23.2 ms, SINTERCARD 52.0 vs 35.7/15.3, SDIFF 49.9 vs 66.9/40.1, SUNION 76.8 vs 105.4/78.8 (Rill leads Redis); 10k 5.4–7.8 ms | keep; 1.2–3.4× is inside the reply/algorithm mix | n/a | none |
@@ -1884,7 +1886,7 @@ for a production claim.
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | pre-fix: rebuild full-length `Vec` and copy twice; now mutates the entry in place (#258) | **Done:** 4.34 in-place mutation; measured 32 MB post-fix `APPEND` 0.131 vs 0.142/0.219 ms and `SETRANGE` 0.185 vs 0.222/0.289 (3.18, AC36) |
-| Collection writes | in-place dict/skiplist/listpack/quicklist update | same | clone the whole collection, re-encode and replace it per write | **Adapt:** 4.35 in-place mutation; measured 10k `HSET` 6.45 vs 0.111/0.093 ms, 200k `RPUSH` 18.3 vs 0.08/0.07, `LPOP` 17.8 vs 0.07–0.34; controls at the floor (3.19, AC37) |
+| Collection writes | in-place dict/skiplist/listpack/quicklist update | same | clone the whole collection, re-encode and replace it per write | **Adapt:** 4.35 in-place mutation; measured 10k `HSET` 6.45 vs 0.111/0.093 ms, 200k `RPUSH` 18.3 vs 0.08/0.07, `LPOP` 17.8 vs 0.07–0.34; 100k `HSET`/`HDEL` 92.7–99.4 vs 0.08–0.32 and `ZADD`/`ZREM` 61.4–63.9 vs 0.10–0.23 (18–1160×); controls at the floor (3.19, AC37) |
 | Random-member selection | `dictGetRandomKey`/`dictGetSomeKeys`, intset/listpack fast paths | same | clone and sort/copy the whole collection per call | **Adapt:** 4.36 dense member index after a no-copy reservoir slice; measured 100k `SRANDMEMBER` 11.54 vs 0.199/0.326 ms, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164; 10k 1–2.6 ms, controls at the floor (3.20, AC38) |
 | Bitmaps | in-place sds bit write; word/AVX2 popcount | same (scalar/AVX2/NEON popcount) | rebuild the value for `SETBIT` (two copies); byte-at-a-time `BITCOUNT` | **Adapt:** 4.37 in-place `SETBIT` (4.34 shape) + `u64` chunk popcount; measured 16 MB 5.32 vs 0.349/0.312 ms and 23.01 vs 3.37/4.56; controls at the floor (3.21, AC39) |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
@@ -2569,12 +2571,31 @@ the regression evidence.**
   **52–262×** (`RPUSH`/`LPOP`), while every 10-element control is at the
   command floor. The 200k-list write is ~18 ms, about 90 ns per element — a
   clone-plus-free per element, or roughly 55 writes/s. Candidate 4.35.
+- **100k extension (2026-11-12).** A 100,000-member hash, zset and set, 20
+  repetitions, three rotations; 10-member controls:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `HSET` new field | **92.7 ms** | 0.12 ms | 0.32 ms |
+  | `HSET` existing field | **92.8** | 0.21 | 0.08 |
+  | `HDEL` | **99.4** | 0.15 | 0.15 |
+  | `ZADD` new member | **61.4** | 0.14 | 0.23 |
+  | `ZINCRBY` | **57.3** | 0.21 | 0.26 |
+  | `ZREM` | **63.9** | 0.10 | 0.13 |
+  | `SADD` new member | **11.2** | 0.60 | 0.25 |
+  | `SREM` | **10.7** | 0.20 | 0.08 |
+  | 10-member controls | 0.23/0.15/0.19 | 0.11/0.20/0.19 | 0.13/0.12/0.20 |
+
+  The write gaps grow with cardinality: **18–1160×** at 100k versus 3.5–69× at
+  10k, while the controls stay at the floor. Updates and removals pay the same
+  full clone/sort/replace as adds. This extends 4.35's admission evidence and
+  tightens its targets to 100k.
 
 **Verdict: adapt in-place mutation (4.35).** Reserve/admit first, then mutate the
-existing collection under `entries.get_mut`: `HashMap::insert` (hash, zset),
-`BTreeSet::insert` (set), the list's head/tail chunk (push/pop), and update
-payload accounting by the delta instead of re-summing the collection. Convert
-between pack and large encodings only when a threshold is crossed; empty
+existing collection under `entries.get_mut`: `HashMap::insert`/`remove` (hash,
+zset), `BTreeSet::insert`/`remove` (set), the list's head/tail chunk (push/pop),
+and update payload accounting by the delta instead of re-summing the collection.
+Convert between pack and large encodings only when a threshold is crossed; empty
 collections are removed as today. Keep field TTL bookkeeping, blocking wake,
 WATCH/version, journal and rewrite semantics.
 
@@ -3948,10 +3969,11 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    with 64 B controls and a `GETRANGE`. 4.34 landed in #258; the 2026-11-13
    post-fix cohort in section 3.18 measures 0.131/0.185 ms at 32 MB versus
    0.142–0.289 for the C servers. Keep the row as the regression check.
-11. **Collection writes:** a single `HSET`/`ZADD`/`SADD` into 10k-member
-   collections, `RPUSH`/`LPOP` on a 200k list, and 10-element controls.
-   Confirms 4.35 on a clean runner; the 2026-11-12 local cohort in section 3.19
-   already measures 1.2–18.3 ms versus 0.07–0.35 ms.
+11. **Collection writes:** a single `HSET`/`ZADD`/`SADD` into 10k- and
+   100k-member collections, `HDEL`/`ZINCRBY`/`ZREM`/`SREM`, `RPUSH`/`LPOP` on a
+   200k list, and 10-element controls. Confirms 4.35 on a clean runner; the
+   2026-11-12 local cohort in section 3.19 already measures 1.2–18.3 ms at 10k
+   and 10.7–99.4 ms at 100k versus 0.07–0.60 ms.
 12. **Random members:** `SRANDMEMBER`, `HRANDFIELD`, `ZRANDMEMBER` and `SPOP`
    on 10k and 100k collections, single and `COUNT 10`, with a distribution check
    and 10-element controls. Confirms 4.36 on a clean runner; the 2026-11-12
@@ -4490,7 +4512,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.32 packed list nodes | `Collection::ListPack`/`ListQuick` (`data.rs`), list commands (`collections.rs`), `payload_len`, rewrite encoding | node index arithmetic; split/merge; binary safety; max element size; accounting; iteration order; blocking pop | 200k-list RSS and `DEL` A/B, RPUSH/LRANGE/LINSERT/blocking | large |
 | 4.33 deferred drop | `DEL`/`UNLINK` (`dispatch/keyspace.rs`), `FLUSH*` (`administration.rs`), `Data::flush`/`remove`, maintenance tick (`reactor.rs`), accounting | queue bound; pending bytes counted; key recreation; notification/journal order; shutdown drain; SYNC unchanged | `UNLINK`/`FLUSH ASYNC` A/B, DBSIZE/EXISTS/SCAN, drain-on-shutdown | small |
 | 4.34 in-place strings (implemented, #258) | `append`/`setrange` (`string_ranges.rs`), `Data::mutate_string`/`reserve`/`put` (`data.rs`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small, landed |
-| 4.35 in-place collection writes | `hash_set`/`zset_add`/`set_add`/`push_list`/`pop_list` (`collections.rs`), `Data::entries.get_mut`, `payload_len`, field TTL, blocking wake | admit before mutate; pack↔large conversion only at thresholds; delta accounting; empty-collection removal; field TTL; WATCH/journal | 10k `HSET`/`ZADD`/`SADD`, 200k `RPUSH`/`LPOP`, 10-element controls | medium |
+| 4.35 in-place collection writes | `hash_set`/`zset_add`/`set_add`/`push_list`/`pop_list` (`collections.rs`), `Data::entries.get_mut`, `payload_len`, field TTL, blocking wake | admit before mutate; pack↔large conversion only at thresholds; delta accounting; empty-collection removal; field TTL; WATCH/journal | 10k/100k `HSET`/`ZADD`/`SADD` plus updates/deletes, 200k `RPUSH`/`LPOP`, 10-element controls | medium |
 | 4.36 random members | `set_random_member`/`set_pop`/`hash_random_field`/`zset_random_member` (`collection_commands.rs`), `owned_set`, `set_items`, `hash_items`, `zset_items`, collection representation | sample without materializing; uniform distribution; count/negative-count semantics; `SPOP` removal and empty deletion; ordering decision; small pack paths | 10k/100k `SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`/`SPOP`, distribution test | medium |
 | 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`, `#L524`), `find_bit` (`#L432`), `Data::reserve`/`put`, range normalization | in-place write after admission; `u64` chunk popcount and bit scan with masked head/tail; BYTE/BIT ranges; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`/`BITPOS`, 64 B controls, range cases | small |
 | 4.38 zset rank index | `zset_rank` (`collection_commands.rs#L3744`), `zset_range_by_score` (`#L3896`), `zset_read` (`collections.rs#L433`), `ZAdd`/`ZRem` paths, block index | rank-select over `(score, member)`; score moves; block split/merge; negative/reverse ranges; `ZSetPack`; accounting; replay/rewrite | 100k `ZRANK`/`ZREVRANK`/deep `ZRANGE`/`ZRANGEBYSCORE`, ZADD regression | medium |
@@ -4517,7 +4539,8 @@ highest-certainty fixes (O(1) counts/membership, in-place list seek, per-member
 probes, direct nosort slice, in-place HLL with a cached count, in-place group
 creation) and can land immediately. 4.42 is the stream sibling of 4.35's in-place
 write and shares the delta-accounting shape. 4.35 is next: every collection write
-currently clones the collection, the gaps are 3.5–262×, and it reuses 4.34's
+currently clones the collection, the gaps are **3.5–1160×** (3.5–69× at 10k,
+18–1160× at 100k), and it reuses 4.34's
 admit-then-mutate shape. 4.37 is small and shares 4.34's in-place string path: it
 removes the two copies in `SETBIT` and the byte loop in `BITCOUNT`/`BITPOS`
 (5–44×). 4.36 follows, first as a no-copy reservoir slice and then the dense
@@ -4886,8 +4909,10 @@ controls stay on the pack path unchanged.
 
 **Prediction.** `HSET` into a 10k hash falls from **6.45 ms to ≤0.3 ms**, `ZADD`
 from 4.21 and `SADD` from 1.23; `RPUSH`/`LPOP` on a 200k list fall from
-**18.3/17.8 ms to ≤0.3 ms**, because a write stops cloning and freeing every
-element. Reads, small controls and the gate's string rows are unchanged.
+**18.3/17.8 ms to ≤0.3 ms**; at 100k members every hash/zset/set write falls
+from **10.7–99.4 ms to ≤0.6 ms** and joins the C servers, because a write stops
+cloning and freeing every element. Reads, small controls and the gate's string
+rows are unchanged.
 
 **Admission evidence (2026-11-12, section 3.19).** One connection, 100
 repetitions, three rotations: 10k `HSET` p50 7.00/6.45/6.21 ms versus Redis
@@ -4895,6 +4920,15 @@ repetitions, three rotations: 10k `HSET` p50 7.00/6.45/6.21 ms versus Redis
 0.08/0.09/0.07 and 0.06/0.11/0.07; 200k `LPOP` 18.08/17.21/17.82 versus
 0.34/0.19/0.53 and 0.07/0.21/0.07; `ZADD` and `SADD` medians 4.21/1.23 versus
 0.08–0.22/0.08–0.35. Every 10-element control is at the command floor.
+
+The 100k extension (2026-11-12, section 3.19) tightens this: 20 repetitions,
+three rotations, on 100,000-member collections — `HSET` new field **92.7 ms**
+versus 0.12/0.32, `HSET` existing 92.8 versus 0.21/0.08, `HDEL` 99.4 versus
+0.15/0.15, `ZADD` 61.4 versus 0.14/0.23, `ZINCRBY` 57.3 versus 0.21/0.26,
+`ZREM` 63.9 versus 0.10/0.13, `SADD` 11.2 versus 0.60/0.25, `SREM` 10.7 versus
+0.20/0.08; the 10-member controls stay at 0.15–0.23 ms. Both adds and
+updates/removals pay the same full rebuild, and the gap grows from 3.5–69× at 10k
+to **18–1160×** at 100k.
 
 **Risks and obligations.** `reserve` can evict the key being mutated, so re-look
 it up and treat absence as a fresh collection; pack↔large conversion at a
@@ -4914,12 +4948,15 @@ regresses, or no gain above the spread.
 
 **Acceptance (AC37).** `HSET` into a 10k hash, `ZADD` into a 10k zset and `SADD`
 into a 10k set shall each have p50 ≤0.3 ms (within ~3× the faster C server and
-≥4× faster than the measured 1.23–6.45 ms baselines); `RPUSH` and `LPOP` on a
-200k list shall have p50 ≤0.3 ms and p99 ≤2 ms (≥59× faster than the measured
-17.8–18.3 ms); the 10-element controls shall be unchanged; every collection
-command, pack threshold, field TTL, blocking, persistence/rewrite/replay and
-accounting test shall pass; no dependency shall be added; and both protected
-gates shall pass on the exact head.
+≥4× faster than the measured 1.23–6.45 ms baselines); at 100,000 members
+`HSET` (new/existing), `HDEL`, `ZADD`, `ZINCRBY`, `ZREM`, `SADD` and `SREM` shall
+each have p50 ≤0.6 ms and p99 ≤2 ms (≥17× faster than the measured 10.7–99.4 ms
+and within ~3× the faster C server); `RPUSH` and `LPOP` on a
+200,000-element list shall have p50 ≤0.3 ms and p99 ≤2 ms (≥59× faster than
+the measured 17.8–18.3 ms); the 10-element controls shall be unchanged; every
+collection command, pack threshold, field TTL, blocking, persistence/rewrite/
+replay and accounting test shall pass; no dependency shall be added; and both
+protected gates shall pass on the exact head.
 
 ### 4.36 Constant-time random-member selection (candidate; admission measured)
 
@@ -6487,6 +6524,12 @@ separate roadmap.
   0.06/0.11/0.07; `LPOP` 18.08/17.21/17.82 versus 0.34/0.19/0.53 and
   0.07/0.21/0.07; `ZADD`/`SADD` medians 4.21/1.23 versus 0.08–0.22/0.08–0.35;
   controls 0.11–0.23. Raw JSON retained (untracked).
+  The 100k extension (20 repetitions) uses 100,000-member hash/zset/set plus
+  10-member controls and adds update/remove rows: `HSET` new/existing
+  92.7/92.8 ms versus 0.12–0.32/0.08–0.21, `HDEL` 99.4 versus 0.15/0.15,
+  `ZADD`/`ZINCRBY`/`ZREM` 61.4/57.3/63.9 versus 0.10–0.23/0.21–0.26/0.10–0.13,
+  `SADD`/`SREM` 11.2/10.7 versus 0.25–0.60/0.08–0.20; controls 0.15–0.23. Raw
+  JSON retained (untracked).
 - Random-member cohort (section 3.20, candidate 4.36): 10k and 100k sets/hashes/
   zsets plus 10-element controls; 100 repetitions at 10k and 50 at 100k, three
   rotations. 100k `SRANDMEMBER` p50 11.68/11.54/11.24 ms versus Redis
@@ -7012,8 +7055,10 @@ separate roadmap.
   for one write into preloaded collections, with 10-element controls. It does
   not measure pipelined/batched writes (e.g. `HSET` with 500 pairs), concurrent
   readers, pack↔large threshold crossings, field-TTL paths, or memory; those are
-  implementation-PR evidence under AC37. The Valkey `SADD`/`ZADD` control values
-  show the shared host's spread.
+  implementation-PR evidence under AC37. The 100k extension covers hash/zset/set
+  only, not the list rows, and removes one field or member per sample, so it does
+  not measure repeated shrink/grow cycles or empty-collection deletion. The Valkey
+  `SADD`/`ZADD` control values show the shared host's spread.
 - The random-member cohort (section 3.20) measures single-connection command
   latency at 10k and 100k for one collection type per command, with 10-element
   controls. It does not measure the sampling distribution statistically, very
