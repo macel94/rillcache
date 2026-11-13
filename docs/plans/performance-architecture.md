@@ -154,7 +154,11 @@ expire costs **36–46 vs 0.6–1.0 ms** because each calls `reap(now, usize::MA
 while a lazy `GET` is at parity; 4.45 bounds the command-path expiry. `SORT ...
 BY nosort LIMIT 0 10` is the other side of materialization: **7.96 vs 0.12–0.16
 ms** on 100k because the whole list is copied before the slice, while the sorted
-rows are competitive; 4.46 slices the source directly. Under
+rows are competitive; 4.46 slices the source directly. Large listings repeat
+the pattern at 100k: `HGETALL` is **132.3 vs 25.7–37.8 ms**, `HKEYS`/`HVALS`
+98–102 vs 15.8–19.7, `KEYS` 91 vs 21–43 and `RANDOMKEY` 0.52 vs 0.21–0.29
+because each sorts a fresh snapshot; 4.29 and 4.31 are extended to cover them.
+Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1070,7 +1074,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-three things are still true even though every row now leads:
+Twenty-four things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1220,6 +1224,11 @@ Twenty-three things are still true even though every row now leads:
     **7.96 ms** versus 0.12–0.16 ms (50–66×) because the whole source is copied
     before the slice, while sorted/ALPHA/weighted SORT rows are 0.9–1.5× and the
     100-element controls are at the floor (section 3.30, candidate 4.46).
+24. **Large-hash listing and keyspace enumeration.** At 100k, `HGETALL` is
+    **132 ms** versus 25.7–37.8, `HKEYS`/`HVALS` 98–102 versus 15.8–19.7,
+    `KEYS key:*` 91 versus 21–43, and `RANDOMKEY` 0.52 versus 0.21–0.29, because
+    each listing sorts a fresh snapshot; `HMGET` and the 10-member controls are at
+    the floor (section 3.31, extending 4.29 and 4.31).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1394,6 +1403,8 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 ms vs 0.69/0.98, `KEYS` 43.6 vs 0.63/0.80, `RANDOMKEY` 45.5 vs 0.65/0.60, `DBSIZE` 41.2 vs 0.58/0.83; lazy `GET` at parity | 4.45, admitted | AC47 | none |
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` 7.96 ms (p99 17.2) vs 0.12/0.16; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, admitted | AC48 | none |
+| Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
+| Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1823,6 +1834,8 @@ for a production claim.
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
 | Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Adapt:** 4.45 bounded lazy expiry; measured after 30k expire `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` 36–46 vs 0.6–1.0 ms, lazy `GET` at parity (3.29, AC47) |
 | SORT `BY nosort` | source-order slice without sorting or copying | same | clone every element and build an `Item` before applying `LIMIT` | **Adapt:** 4.46 direct nosort slice; measured 100k 7.96 vs 0.12/0.16 ms; sorted/ALPHA/weighted rows 0.9–1.5× (3.30, AC48) |
+| Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
+| Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -3027,6 +3040,56 @@ or cloning the collection: index the list range, or iterate the first
 `STORE` materializes the selected values. Leave the sorted/alpha/weighted paths
 unchanged because they are already competitive.
 
+### 3.31 Large-hash field listing and keyspace enumeration
+
+- **Redis 8.10.2 and Valkey 9.1.2** iterate the hash table directly: `HGETALL`,
+  `HKEYS` and `HVALS` emit fields in dict/listpack order with no per-call
+  ordering work, and `KEYS` scans the keyspace and filters, returning the
+  unspecified dict order without sorting. `RANDOMKEY` samples the dict
+  ([`redis t_hash.c#L5336`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5336),
+  [`#L5453`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5453),
+  [`#L5457`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5457),
+  [`db.c#L1605`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1605),
+  [`#L1593`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1593);
+  [`valkey t_hash.c#L1813`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L1813),
+  [`#L1821`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L1821),
+  [`db.c`](https://github.com/valkey-io/valkey/blob/9.1.2/src/db.c)).
+- **Rillcache** collects every field/value reference, **sorts it by field** and
+  then encodes `HGETALL`/`HKEYS`/`HVALS`; `KEYS` collects every matched key,
+  sorts it and encodes; `RANDOMKEY` picks one by iterating `HashMap` keys to a
+  random index. The sort is a deliberate deterministic-order choice, not a Redis
+  requirement
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L2215),
+  [`keyspace.rs`](../../src/engine/keyspace.rs#L183),
+  [`#L199`](../../src/engine/keyspace.rs#L199)).
+- **Measured (2026-11-12).** A 100,000-field hash (7-byte fields, 16-byte values)
+  and a 100,000-key keyspace, 30 repetitions, three rotations; 10-member
+  controls:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `HGETALL` 100k | **132.3 ms** | 25.7 ms | 37.8 ms |
+  | `HKEYS` 100k | **98.5** | 16.5 | 15.8 |
+  | `HVALS` 100k | **101.6** | 19.7 | 17.9 |
+  | `KEYS key:*` (100k) | **91.1** | 42.8 | 21.1 |
+  | `KEYS key:0000*` (100) | 32.7 | 35.1 | 7.0 |
+  | `KEYS nope*` (0) | 23.7 | 26.7 | 5.5 |
+  | `RANDOMKEY` | 0.52 | 0.21 | 0.29 |
+  | `HMGET` 100 fields | 0.49 | 0.47 | 0.22 |
+  | 10-member controls | 0.40/0.25 | 0.49/0.09 | 0.24/0.22 |
+
+  At 100k, `HGETALL`/`HKEYS`/`HVALS` are **3.5–6.2×** behind (the 10k gap was
+  43%), `KEYS key:*` is 2.1–4.3×, and `RANDOMKEY` 1.8–2.5×, while `HMGET` and
+  the small controls are at the command floor. Candidate 4.29 is extended to
+  `HKEYS`/`HVALS` at 100k; the keyspace rows extend 4.31's index scope.
+
+**Verdict: extend the existing candidates.** 4.29's ordered hash (or an
+unordered reply decision) must cover `HGETALL`/`HKEYS`/`HVALS` at 100k, not just
+the 10k `HGETALL` row; 4.31's ordered key index must serve `KEYS` and
+`RANDOMKEY` as well as `SCAN`, so `KEYS` no longer sorts a fresh snapshot and
+`RANDOMKEY` samples without an O(n) walk. Ordering for both is unspecified in
+Redis, so the deterministic-order change is an explicit test decision.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3074,7 +3137,8 @@ section 3.26. 4.43 is the geospatial neighbor-cell candidate for the measured
 direct-probe candidate for the measured 30–1461× multi-member lookup loss in
 section 3.28. 4.45 is the bounded-lazy-expiry candidate for the measured 37–76×
 mass-expiry stall in section 3.29. 4.46 is the direct `BY nosort` slice candidate
-for the measured 50–66× loss in section 3.30.
+for the measured 50–66× loss in section 3.30. Section 3.31 extends 4.29 to
+`HKEYS`/`HVALS` and 4.31 to `KEYS`/`RANDOMKEY` at 100k.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3640,6 +3704,11 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    DESC, `BY nosort LIMIT`, `BY w*`, `GET #`, and 100-element controls. Confirms
    4.46 on a clean runner; the 2026-11-12 local cohort in section 3.30 already
    measures 7.96 ms for `BY nosort LIMIT` versus 0.12–0.16 ms.
+23. **Large-hash listing and keyspace enumeration:** 100k `HGETALL`/`HKEYS`/
+   `HVALS`, `KEYS key:*`/prefix/none, `RANDOMKEY`, `HMGET` control, and 10-member
+   controls. Extends 4.29/4.31 on a clean runner; the 2026-11-12 local cohort in
+   section 3.31 already measures 132/98/102 ms for the hash listings and 91 ms
+   for `KEYS` versus 15.8–43 ms.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3647,7 +3716,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty-two rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-three rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4099,7 +4168,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.22/4.24 async wake | reactor `asynchronous` (`reactor.rs#L91`, `#L467`), `poll_blocked_on` (`blocking.rs#L436`), pub/sub and monitor flags | FIFO; timeout gaps; `CLIENT UNBLOCK`; ordering; shutdown; multi-owner | wake latency, idle CPU, fanout | large |
 | 4.23 rewrite start | `begin_rewrite` (`journal.rs#L1131`), maintenance tick (`reactor.rs#L443`) | atomic rename; replay; reconciliation | 20k/200k pause, kill/replay | medium |
 | 4.30 zset index | `zset_read` (`collections.rs`), `zset_add`, `zset_items`/`ZSet` (`data.rs`), accounting | total score order with member tie-break; ±0/NaN; rank/score/lex ranges; `ZSetPack` ≤128 unchanged; memory accounting; rewrite/replay | 10k `ZRANGE 0 9` / full-range A/B, ZADD regression, zset semantics | large |
-| 4.31 cursor scan | `scan_keys`/`scan_collection` (`scan.rs`), router `locked_scan`, `Data` keyspace index, `ZSet`/`Hash`/`Set` order, expiry reap | opaque cursor resume; full coverage on a stable keyspace; MATCH/COUNT/TYPE/NOVALUES; pack one-call behavior; bounded work; memory accounting | 100k `SCAN COUNT 10`, full scan, 10k `HSCAN`, SET/GET regression | large |
+| 4.31 cursor scan | `scan_keys`/`scan_collection` (`scan.rs`), `KEYS`/`RANDOMKEY` (`keyspace.rs`), router `locked_scan`, `Data` keyspace index, `ZSet`/`Hash`/`Set` order, expiry reap | opaque cursor resume; full coverage on a stable keyspace; MATCH/COUNT/TYPE/NOVALUES; pack one-call behavior; bounded work; KEYS/RANDOMKEY order; memory accounting | 100k `SCAN COUNT 10`, full scan, 10k `HSCAN`, 100k `KEYS`/`RANDOMKEY`, SET/GET regression | large |
 | 4.32 packed list nodes | `Collection::ListPack`/`ListQuick` (`data.rs`), list commands (`collections.rs`), `payload_len`, rewrite encoding | node index arithmetic; split/merge; binary safety; max element size; accounting; iteration order; blocking pop | 200k-list RSS and `DEL` A/B, RPUSH/LRANGE/LINSERT/blocking | large |
 | 4.33 deferred drop | `DEL`/`UNLINK` (`dispatch/keyspace.rs`), `FLUSH*` (`administration.rs`), `Data::flush`/`remove`, maintenance tick (`reactor.rs`), accounting | queue bound; pending bytes counted; key recreation; notification/journal order; shutdown drain; SYNC unchanged | `UNLINK`/`FLUSH ASYNC` A/B, DBSIZE/EXISTS/SCAN, drain-on-shutdown | small |
 | 4.34 in-place strings | `append`/`setrange` (`string_ranges.rs`), `Data::reserve`/`put`/`remove` (`data.rs#L646`, `#L774`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small |
@@ -4172,14 +4241,24 @@ repository's persistence test compares exact bytes; changing order is an explici
 compatibility/test decision, not an incidental optimization. A `BTreeMap` change
 must preserve `HSET`/`HDEL`/`HGET` semantics and measure the write cost.
 
+**100k extension (2026-11-12, section 3.31).** The gap grows with cardinality:
+100k `HGETALL` is 132.3 ms versus 25.7/37.8, `HKEYS` 98.5 versus 16.5/15.8 and
+`HVALS` 101.6 versus 19.7/17.9 (3.5–6.2×), while `HMGET` and the 10-member
+controls stay at the floor. The same collect+sort+encode path covers all three
+commands, so the candidate and AC31 must include `HKEYS`/`HVALS` at 100k, not
+only the original 10k `HGETALL`.
+
 **Rejection condition.** No gain above the spread; any order change without an
 explicit documented decision and updated tests; any gate row loss.
 
 **Acceptance (AC31).** A 10k-field `HGETALL` shall be within 10% of Redis or at
-least 30% faster than the measured baseline; ordering semantics shall be
-explicitly documented and all order-sensitive tests updated to match; small
-hashes and the list path shall be unchanged; the matched A/B shall show the gain;
-and both protected gates shall pass on the exact head.
+least 30% faster than the measured baseline; at 100,000 fields, `HGETALL`,
+`HKEYS` and `HVALS` shall have p50 ≤1.5× the faster C server (≤39 ms for
+`HGETALL`, ≤24 ms for `HKEYS`/`HVALS`) and be ≥3× faster than the measured
+132/98/102 ms; ordering semantics shall be explicitly documented and all
+order-sensitive tests updated to match; small hashes and the list path shall be
+unchanged; the matched A/B shall show the gain; and both protected gates shall
+pass on the exact head.
 
 ### 4.30 Sorted-set ordered index (candidate; admission measured)
 
@@ -4259,7 +4338,10 @@ large hashes become `BTreeMap` (option (b) of 4.29, which also removes the
 large sorted sets use 4.30's ordered index with `ZSCAN` defined as score order
 (Redis leaves the order unspecified). Pack-encoded collections return all
 elements with cursor 0, matching the C servers' listpack path. Per-call expiry
-work becomes the normal bounded reap, not `reap(now, usize::MAX)`.
+work becomes the normal bounded reap, not `reap(now, usize::MAX)`. The same
+ordered key index serves `KEYS` (emit the range directly, no sort) and
+`RANDOMKEY` (pick a random rank or sample the map), eliminating the per-call
+sort and O(n) walk measured in section 3.31.
 
 **Fallback.** A lazily rebuilt sorted key snapshot with the current numeric
 cursor removes repeated sorts on a stable keyspace but still pays O(n log n) on
@@ -4269,8 +4351,9 @@ mutation cohort.
 
 **Prediction.** 100k-key `SCAN COUNT 10` p50 falls from **42.6 ms** toward the C
 servers' sub-millisecond range; full traversal falls from 4.81 s to ~0.25 s; the
-10k `HSCAN` falls from 5.05 s to ~0.25 s; `SET`/`GET` stay within noise while
-`SET`/`HSET` pay one O(log n) index update.
+10k `HSCAN` falls from 5.05 s to ~0.25 s; 100k `KEYS key:*` falls from 91.1 ms
+toward 21–43 ms and `RANDOMKEY` from 0.52 toward ≤0.2 ms; `SET`/`GET` stay
+within noise while `SET`/`HSET` pay one O(log n) index update.
 
 **Admission evidence (2026-11-12, section 3.16).** 100,000 keys plus a
 10,000-field hash, one connection, 300 spread-cursor `SCAN COUNT 10` calls and
@@ -4278,7 +4361,9 @@ full traversals, three rotations: per-call p50 42.64/46.76/42.58 ms versus Redis
 0.26/0.32/0.24 and Valkey 0.10/0.16/0.22; full `SCAN COUNT 1000` 4.81 s over 101
 calls versus 0.239 s and 0.167 s; full `HSCAN COUNT 10` 5.05 s over 1,000 calls
 versus 0.257 s (~944) and 0.247 s (~800). PING floor 0.21/0.16/0.10 ms. The
-measured cost is the per-call snapshot, not the reply.
+measured cost is the per-call snapshot, not the reply. Section 3.31 adds the
+keyspace rows: 100k `KEYS key:*` 91.1 ms versus 42.8/21.1 and `RANDOMKEY` 0.52
+versus 0.21/0.29, both fixed by the same ordered index.
 
 **Risks and obligations.** The cursor format changes from a decimal index to an
 opaque token; `tests/scan.rs` asserts exact numeric cursors and sorted pages, and
@@ -4307,6 +4392,9 @@ within ~2× Redis's 0.239 s) and a full 10k-field `HSCAN COUNT 10` in ≤0.5 s
 (≥10× faster); each call's work shall be bounded by `COUNT` plus a fixed
 lookahead, with no keyspace-sized allocation/sort and no unbounded expiry sweep;
 a stable keyspace shall return every key exactly once across the traversal;
+100k `KEYS key:*` shall be p50 ≤2× the faster C server (≤42 ms) and `RANDOMKEY`
+≤0.2 ms with the ordering decision documented; the `KEYS`/`RANDOMKEY` ordering
+and `DBSIZE`/expiry interactions shall be explicit tests;
 MATCH/TYPE/NOVALUES, cursor errors and multi-owner traversal tests shall be updated
 to the chosen semantics and pass; `SET`/`GET` shall stay within noise; no
 dependency shall be added; and both protected gates shall pass on the exact head.
@@ -5270,6 +5358,12 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 - **SORT-nosort risk (4.46):** the direct slice must preserve the current set/zset
   source order, offset/count edge cases and `STORE`, and must not change any other
   SORT row (AC48).
+- **Listing-order risk (4.29/4.31):** `HGETALL`/`HKEYS`/`HVALS`/`KEYS` order is
+  unspecified in Redis, but this repository's deterministic sort is an existing
+  test contract; removing it needs an explicit decision and updated
+  persistence/listing tests. `KEYS`/`RANDOMKEY` must still exclude expired keys
+  (4.45), and the keyspace index must be memory-counted and rebuilt on
+  replay/rewrite (AC31/AC33).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -5346,6 +5440,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Keeping `set_items`/`zset_items` with a per-member scan | Every requested member rescans the materialized collection, so the measured 30–1461× cost grows with the member count (4.44). |
 | Purging every due key on the first command after a mass expiry | The measured stall is 36–46 ms for 30k expired keys and scales with the backlog; reads should expire only what they touch (4.45). |
 | Materializing the whole source for `SORT ... BY nosort LIMIT` | The measured 7.96 vs 0.12–0.16 ms is a full copy of 100k values for a 10-element slice; the other SORT rows are already 0.9–1.5× (4.46). |
+| Keeping per-call sorts for `HKEYS`/`HVALS`/`KEYS` | At 100k the hash listings are 3.5–6.2× and `KEYS` 2.1–4.3× behind; 4.29's ordered hash and 4.31's key index remove the sort without changing reply contents (3.31). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -5529,12 +5624,15 @@ samples retained.
   served; SIGKILL/replay, HMAC on/off and stream consumer/PEL tests shall pass;
   no dependency shall be added; and both protected gates shall pass on the exact
   head.
-- **AC31 (large-hash HGETALL, only if 4.29 is implemented).** A 10,000-field
+- **AC31 (large-hash listing, only if 4.29 is implemented).** A 10,000-field
   `HGETALL` shall be within 10% of Redis or at least 30% faster than the measured
-  baseline (313 req/s, 11.6/32.1 ms p50/p99; Redis 552, 7.0/16.3); ordering
-  semantics shall be explicitly documented and every order-sensitive test updated
-  to match; small hashes and `LRANGE` shall be unchanged; the matched A/B shall
-  show the gain; and both protected gates shall pass on the exact head.
+  baseline (313 req/s, 11.6/32.1 ms p50/p99; Redis 552, 7.0/16.3); at 100,000
+  fields, `HGETALL`, `HKEYS` and `HVALS` shall have p50 ≤1.5× the faster C server
+  (≤39 ms for `HGETALL`, ≤24 ms for `HKEYS`/`HVALS`) and be ≥3× faster than the
+  measured 132/98/102 ms; ordering semantics shall be explicitly documented and
+  every order-sensitive test updated to match; small hashes and `LRANGE` shall be
+  unchanged; the matched A/B shall show the gain; and both protected gates shall
+  pass on the exact head.
 - **AC32 (sorted-set ordered index, only if 4.30 is implemented).** A
   10,000-member `ZRANGE 0 9` shall reach ≥8,000 req/s (≥15× the measured 528
   baseline and within ~25% of Redis) and `ZRANGE 0 9999` ≥1,500 req/s (≥4.4× the
@@ -5550,10 +5648,12 @@ samples retained.
   `HSCAN COUNT 10` in ≤0.5 s (≥9–10× faster than the measured 4.81/5.05 s); each
   call shall do work bounded by `COUNT` plus a fixed lookahead, with no
   keyspace-sized allocation/sort and no unbounded expiry sweep; a stable keyspace
-  shall yield every key exactly once across the traversal; MATCH/TYPE/NOVALUES,
-  cursor and multi-owner tests shall be updated to the chosen cursor semantics
-  and pass; `SET`/`GET` shall stay within noise; no dependency shall be added;
-  and both protected gates shall pass on the exact head.
+  shall yield every key exactly once across the traversal; 100k `KEYS key:*`
+  shall be p50 ≤2× the faster C server (≤42 ms) and `RANDOMKEY` ≤0.2 ms with the
+  ordering decision documented; MATCH/TYPE/NOVALUES, cursor and multi-owner tests
+  shall be updated to the chosen cursor semantics and pass; `SET`/`GET` shall
+  stay within noise; no dependency shall be added; and both protected gates shall
+  pass on the exact head.
 - **AC34 (packed list nodes, only if 4.32 is implemented).** A 200,000-element
   8-byte list shall use ≤24 B/element RSS (≤3× the measured 7.5 B and ≥6× below
   the measured 142–143 B) and `DEL`/`UNLINK` of it shall be ≤1 ms p50 (≥7× faster
@@ -5953,6 +6053,15 @@ separate roadmap.
   ALPHA 90.2 versus 108.1/106.8; DESC 33.5 versus 28.2/28.1; `BY w*` 117.5
   versus 92.1/80.4; `GET #` 30.0 versus 27.3/26.9; 100-element controls
   0.21/0.27 versus 0.15/0.26 and 0.26/0.23. Raw JSON retained (untracked).
+- Large-hash/keyspace listing cohort (section 3.31, extending 4.29/4.31): a
+  100,000-field hash (7-byte fields, 16-byte values) and a 100,000-key keyspace,
+  30 repetitions, three rotations. `HGETALL` 132.3/112.4/132.6 ms versus Redis
+  25.6/26.2/24.0 and Valkey 40.9/37.8/35.5; `HKEYS` 116.3/98.2/98.5 versus
+  17.0/16.4/15.6 and 15.3/15.8/19.2; `HVALS` 101.6 median versus 19.7/17.9;
+  `KEYS key:*` 96.5/91.1/80.1 versus 49.4/42.8/42.5 and 21.1/23.0/20.7;
+  `KEYS key:0000*` 32.7 versus 35.1/7.0; `KEYS nope*` 23.7 versus 26.7/5.5;
+  `RANDOMKEY` 0.52 versus 0.21/0.29; `HMGET` 100 0.49 versus 0.47/0.22;
+  10-member controls 0.40/0.25. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -6398,3 +6507,8 @@ separate roadmap.
   it does not measure `STORE`, set/zset sources, `BY hash*->field` patterns, or
   large `LIMIT` windows. Those are implementation-PR evidence under AC48. The
   sorted rows show the host's spread (ALPHA 90–108 ms across servers).
+- The listing cohort (section 3.31) measures a 100k hash and 100k keyspace with
+  fixed-size reply accounting; it does not measure `HSCAN`-order interactions,
+  hash field TTLs, `KEYS` with expensive glob patterns, or the ordered-index
+  memory. Those are implementation-PR evidence under AC31/AC33. The C-server
+  `KEYS` prefix/none rows show a wide Redis–Valkey spread (5.5–35 ms).
