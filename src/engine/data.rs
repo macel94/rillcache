@@ -56,6 +56,24 @@ impl Collection {
         matches!(self, Self::ZSet(_) | Self::ZSetPack(_))
     }
 
+    /// Element count without materializing or sorting the collection. A list
+    /// sums its node lengths, so this is O(nodes); the other forms are O(1).
+    /// Used by `HLEN` and `LLEN`; the dedicated set/zset lengths are the
+    /// `set_len` and `zset_len` probes below.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::ListPack(values) => values.len(),
+            Self::ListQuick(nodes) => nodes.iter().map(VecDeque::len).sum(),
+            Self::Set(values) => values.len(),
+            Self::SetPack(values) => values.len(),
+            Self::SetInt(values) => values.len(),
+            Self::Hash(values) => values.len(),
+            Self::HashPack(values) => values.len(),
+            Self::ZSet(values) => values.len(),
+            Self::ZSetPack(values) => values.len(),
+        }
+    }
+
     pub fn list_items(&self) -> Option<Vec<&[u8]>> {
         match self {
             Self::ListPack(values) => Some(values.iter().map(Vec::as_slice).collect()),
@@ -1154,6 +1172,50 @@ mod tests {
         data.flush();
         assert_eq!(data.payload_bytes, 0);
         assert_eq!(data.peak_payload_bytes(), peak);
+    }
+
+    #[test]
+    fn collection_direct_probes_match_materialized_views() {
+        let list = Collection::ListPack(VecDeque::from([b"a".to_vec(), b"b".to_vec()]));
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.list_items().expect("list").len(), 2);
+        let quick = Collection::ListQuick(VecDeque::from([
+            VecDeque::from([b"a".to_vec()]),
+            VecDeque::from([b"b".to_vec(), b"c".to_vec()]),
+        ]));
+        assert_eq!(quick.len(), 3);
+
+        let set = Collection::Set(BTreeSet::from([b"a".to_vec(), b"10".to_vec()]));
+        assert_eq!(set.len(), 2);
+        assert!(set.contains_member(b"a"));
+        assert!(!set.contains_member(b"b"));
+        let pack = Collection::SetPack(vec![b"01".to_vec(), b"x".to_vec()]);
+        assert_eq!(pack.len(), 2);
+        assert!(pack.contains_member(b"01"));
+        assert!(!pack.contains_member(b"1"));
+        let integers = Collection::SetInt(BTreeSet::from([1, 2, 30]));
+        assert_eq!(integers.len(), 3);
+        assert!(integers.contains_member(b"1"));
+        assert!(integers.contains_member(b"30"));
+        assert!(!integers.contains_member(b"03"));
+        assert!(!integers.contains_member(b"x"));
+
+        let hash = Collection::Hash(HashMap::from([(b"f".to_vec(), b"v".to_vec())]));
+        assert_eq!(hash.len(), 1);
+        let hash_pack = Collection::HashPack(vec![
+            (b"a".to_vec(), b"1".to_vec()),
+            (b"b".to_vec(), b"2".to_vec()),
+        ]);
+        assert_eq!(hash_pack.len(), 2);
+
+        let zset = Collection::ZSet(HashMap::from([(b"a".to_vec(), 1.5)]));
+        assert_eq!(zset.len(), 1);
+        assert_eq!(zset.zset_score(b"a"), Some(1.5));
+        assert_eq!(zset.zset_score(b"missing"), None);
+        let zset_pack = Collection::ZSetPack(vec![(b"a".to_vec(), -0.0), (b"b".to_vec(), 2.0)]);
+        assert_eq!(zset_pack.len(), 2);
+        assert_eq!(zset_pack.zset_score(b"b"), Some(2.0));
+        assert_eq!(zset_pack.zset_score(b"c"), None);
     }
 
     #[test]
