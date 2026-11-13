@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.38).**
+gated (4.15, 4.20–4.27, 4.29–4.39).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -132,7 +132,10 @@ vs 0.31–0.35 ms** and `BITCOUNT` **23.0 vs 3.4–4.6 ms** (4.37). Sorted-set r
 and score reads are the largest ratio in the record at 100k: **57–72 ms** for
 `ZRANK`/`ZRANGEBYSCORE`/`ZRANGE` versus 0.07–0.17 ms (378–927×), and `ZSCORE`
 3.3 ms because it scans; 4.30 covers point/score/start-0 ranges and 4.38 the
-rank-select paths. Under
+rank-select paths. Pub/sub loses a 2,000-message burst at **1,024 delivered and
+drops the subscription** (C servers: 2,000 and keep it), and a `PUBLISH` among
+10,000 channels is 3–6× slower; 4.39 covers the burst contract and channel
+lookup. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1048,7 +1051,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Fifteen things are still true even though every row now leads:
+Sixteen things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1159,6 +1162,11 @@ Fifteen things are still true even though every row now leads:
     0.07–0.17 ms for the C servers' skiplist (378–927×), and `ZSCORE` costs
     3.3 ms versus 0.07–0.10 ms because it linearly scans the collection; at 10k
     the same commands are 2.4–3.1 ms (section 3.22, candidates 4.30/4.38).
+16. **Pub/sub burst delivery and channel scale.** A 2,000-message pipelined burst
+    to an active subscriber delivers **1,024 and silently removes the
+    subscription** (the C servers deliver 2,000 and keep it), and a `PUBLISH` to
+    one of 10,000 subscribed channels is 3–6× slower because the publisher scans
+    every channel (section 3.23, candidate 4.39).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1325,6 +1333,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, admitted | AC31 on the implemented change | none at 64 B |
 | Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, admitted | AC32 on the implemented change | none at 64 B |
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 (map/score/start-0) + 4.38 (rank-select), admitted | AC32/AC40 | none |
+| Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1746,6 +1755,7 @@ for a production claim.
 | Large multi-bulk replies (list/hash) | reply list/`writev`; hash iterated in internal order | same | list iterated directly; hash collects, sorts and encodes | **Adopt (list leads, hash lags):** 4.29 for 10k `HGETALL`; measured 43% behind Redis (3.2) |
 | Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, and 378–927× on 100k rank/range reads (3.2, 3.22, AC32/AC40) |
 | Sorted-set rank-select | skiplist span counts: O(log n) `ZRANK`, deep `ZRANGE` seek | same | rank requires a full materialize+sort+linear position scan | **Adapt:** 4.38 order-statistic index; measured 100k `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12 (3.22, AC40) |
+| Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms (3.23, AC41) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -2580,6 +2590,57 @@ counts, or an in-repo weight-balanced tree) and must keep the 4.30 score order.
 Both must preserve `(score, member)` ordering, WITHSCORES formatting, LIMIT and
 inclusive/exclusive bounds, and the small `ZSetPack` path.
 
+### 3.23 Pub/sub fan-out: burst delivery and channel scale
+
+- **Redis 8.10.2 and Valkey 9.1.2** keep subscribed channels in a dict and append
+  the message to each subscriber's client output buffer. A slow subscriber is
+  bounded by `client-output-buffer-limit pubsub` (32 MB soft / 8 MB hard / 60 s
+  by default): when it exceeds the limit the **client is disconnected**, not
+  silently unsubscribed, and the publisher's write loop drains up to 64 KiB per
+  event
+  ([`redis pubsub.c#L469`](https://github.com/redis/redis/blob/8.10.2/src/pubsub.c#L469),
+  [`#L93`](https://github.com/redis/redis/blob/8.10.2/src/pubsub.c#L93),
+  [`config.c#L3586`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3586),
+  [`networking.c#L2887`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L2887);
+  [`valkey pubsub.c#L508`](https://github.com/valkey-io/valkey/blob/9.1.2/src/pubsub.c#L508),
+  [`config.c#L3518`](https://github.com/valkey-io/valkey/blob/9.1.2/src/config.c#L3518)).
+- **Rillcache** gives every subscriber a bounded `sync_channel(1024)`, builds a
+  fresh RESP frame per subscriber, and `try_send`s it; on a full queue the
+  subscriber is **removed from the channel table** (`retain` returns false), so
+  the publisher's subsequent messages report zero receivers and the subscription
+  silently disappears. The publisher finds a channel by scanning every entry and
+  then runs a full `retain` over the map on every `PUBLISH`. Subscribers drain at
+  most 64 frames per 1 ms tick
+  ([`pubsub.rs`](../../src/engine/pubsub.rs#L121),
+  [`pool.rs`](../../src/server/pool.rs#L159)).
+- **Measured (2026-11-12).** One subscriber on `burst` with a reader thread, then
+  a single pipeline of 2,000 `PUBLISH` commands (32-byte payload), three
+  rotations; plus one subscriber subscribed to 1 or 10,000 channels and 500/200
+  timed `PUBLISH` calls:
+
+  | Observation | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | Burst delivered (of 2,000) | **1,024** (all 3 rounds) | 2,000 | 2,000 |
+  | Sum of `PUBLISH` receiver counts | **1,024** | 2,000 | 2,000 |
+  | Subscription present after burst (`PUBSUB NUMSUB`) | **0** | 1 | 1 |
+  | `PUBLISH` p50, 1 channel | 0.12–0.22 ms | 0.13–0.27 | 0.20–0.30 |
+  | `PUBLISH` p50, 1,000 channels | 0.13 ms | 0.16–0.23 | 0.21–0.30 |
+  | `PUBLISH` p50, 10,000 channels | **0.38–0.89 ms** | 0.14–0.21 | 0.12–0.31 |
+
+  A 2,000-message burst loses **976 messages (48.8%)** and removes the
+  subscription, while the C servers deliver every message and keep it. At 10,000
+  channels Rill is 3–6× slower because of the linear channel scan; at 1,000
+  channels the scan is still below the floor. Candidates 4.39 (contract and
+  drain) and the channel lookup are the same fix area as 4.24.
+
+**Verdict: adapt contract-correct fan-out (4.39).** Never silently unsubscribe:
+bound the queue in **bytes** (Redis's pub/sub default is 32 MB), either drop with
+a documented counter while keeping the subscription or disconnect the client with
+an error, and drain by output bytes rather than 64 frames. Look the channel up by
+key, encode one frame per (RESP version, pattern) and share it, and keep pattern
+and shard semantics. This extends 4.24's event-driven wake with a burst-safety
+contract.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -2616,7 +2677,9 @@ section 3.18. 4.35 is the in-place collection mutation candidate for the measure
 candidate for the measured 35–298× sampling loss in section 3.20. 4.37 is the
 bitmap candidate for the measured 5–17× `SETBIT`/`BITCOUNT` loss in section 3.21.
 4.38 is the rank-select candidate for the measured 378–927× sorted-set rank and
-range loss in section 3.22.
+range loss in section 3.22. 4.39 is the contract-correct pub/sub fan-out
+candidate for the measured 2,000-message burst loss and 10k-channel scan in
+section 3.23.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3149,6 +3212,11 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    10-element controls at 10k and 100k. Confirms 4.30/4.38 on a clean runner; the
    2026-11-12 local cohort in section 3.22 already measures 57–72 ms at 100k
    versus 0.07–0.17 ms.
+15. **Pub/sub bursts and channel scale:** a 2,000-message pipeline to one active
+   subscriber (delivered count, `PUBSUB NUMSUB`), and `PUBLISH` latency with
+   1, 1,000 and 10,000 subscribed channels. Confirms 4.39 on a clean runner; the
+   2026-11-12 local cohort in section 3.23 already measures 1,024/2,000 delivered
+   with the subscription gone, versus 2,000/2,000 alive.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3156,7 +3224,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all fourteen rows are complete for all three servers;
+runners, not a shared k3s host; all fifteen rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -3439,6 +3507,8 @@ client count's bookkeeping; publish and monitor
 delivery latency drops from the measured 1.05/3.60 ms (pub/sub p50/p99) and
 0.37/6.15 ms (MONITOR) to same-pass service, near the C servers' 0.05–0.08 ms
 p50. The protected gate has no pub/sub or MONITOR client and is unchanged.
+4.39 adds the burst-safety contract to the same path: a 2,000-message burst must
+not silently remove a subscriber (section 3.23).
 
 **Method.** The idle-CPU windows above, then a matched delivery cohort: N
 subscribers receiving a PUBLISH fanout and N monitors observing a P1 command
@@ -3614,6 +3684,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.36 random members | `set_random_member`/`set_pop`/`hash_random_field`/`zset_random_member` (`collection_commands.rs`), `owned_set`, `set_items`, `hash_items`, `zset_items`, collection representation | sample without materializing; uniform distribution; count/negative-count semantics; `SPOP` removal and empty deletion; ordering decision; small pack paths | 10k/100k `SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`/`SPOP`, distribution test | medium |
 | 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`), `Data::reserve`/`put`, range normalization | in-place write after admission; `u64` chunk popcount with masked head/tail; BYTE/BIT ranges; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`, 64 B controls, range cases | small |
 | 4.38 zset rank index | `zset_rank` (`collection_commands.rs#L3744`), `zset_range_by_score` (`#L3896`), `zset_read` (`collections.rs#L433`), `ZAdd`/`ZRem` paths, block index | rank-select over `(score, member)`; score moves; block split/merge; negative/reverse ranges; `ZSetPack`; accounting; replay/rewrite | 100k `ZRANK`/`ZREVRANK`/deep `ZRANGE`/`ZRANGEBYSCORE`, ZADD regression | medium |
+| 4.39 pub/sub fan-out | `PubSub::publish` (`pubsub.rs#L121`), `queue_capacity`, subscriber drain (`pool.rs#L159`), reactor async tick | channel lookup by key; byte-bounded queue; no silent unsubscribe; counted drop or documented disconnect; shared frame; ordering/pattern/shard; shutdown | 2,000-message burst, 10k-channel PUBLISH, 100 subscribers, NUMSUB | medium |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
@@ -3626,14 +3697,16 @@ byte loop in `BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir s
 and then the dense index; its 100k gaps are 35–298×. 4.30 and 4.38 are the
 largest measured read-side ratios (378–927× at 100k) and should share one
 ordered structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select
-that a `BTreeSet` cannot answer. 4.34 itself removes two full-value copies per
-`APPEND`/`SETRANGE`. 4.32 follows as the structural memory and CPU fix
-(142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list direction.
-4.22/4.24 come last because they touch every asynchronous client path and carry
-the highest ordering risk. 4.31 is the largest per-call ratio in the record but
-touches the keyspace, every collection type and the router cursor, so it follows
-the journal slices and the ordered-structure decision. 4.23 follows the existing
-bounded slices. 4.20 stays conditional on 4.19; 4.18 stays deferred.
+that a `BTreeSet` cannot answer. 4.39 is a contract/reliability fix on the
+pub/sub path already admitted as 4.24 and should land with it. 4.34 itself
+removes two full-value copies per `APPEND`/`SETRANGE`. 4.32 follows as the
+structural memory and CPU fix (142–143 → target ≤24 B/element) and may reuse
+4.31's ordered-list direction. 4.22/4.24 come last because they touch every
+asynchronous client path and carry the highest ordering risk (4.39 rides with
+them). 4.31 is the largest per-call ratio in the record but touches the keyspace,
+every collection type and the router cursor, so it follows the journal slices and
+the ordered-structure decision. 4.23 follows the existing bounded slices. 4.20
+stays conditional on 4.19; 4.18 stays deferred.
 
 ### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
 
@@ -4141,16 +4214,67 @@ negative indices, reverse ranges, `LIMIT`, `ZSetPack`, rewrite/replay, TTL and
 accounting tests shall pass; 4.30's AC32 rows shall also pass; no dependency
 shall be added; and both protected gates shall pass on the exact head.
 
+### 4.39 Contract-correct pub/sub fan-out (candidate; admission measured)
+
+**Mechanism.** Keep the per-subscriber boundary but make it contract-correct and
+bounded in bytes. Look the channel up with `HashMap::get_mut` and skip the
+full-map `retain` scan on every publish; encode one frame per (RESP version,
+pattern) and share it across subscribers; queue by **bytes** with a documented
+limit and one of two explicit overflow behaviors: drop the message, keep the
+subscription and increment a counted metric (at-most-once is already the pub/sub
+contract), or disconnect the client with a documented error, mirroring Redis's
+`client-output-buffer-limit pubsub`. Drain by output bytes per wake (the existing
+64 KiB output chunk) instead of a hard 64 frames, so an active reader can clear a
+burst; keep the 1 ms tick as the fallback from 4.24.
+
+**Prediction.** A 2,000-message burst (64 KB) to an active subscriber is fully
+delivered and the subscription survives; `PUBLISH` among 10,000 channels falls
+from **0.38–0.89 ms to ≤0.3 ms**; 100 subscribers receive every message with the
+publisher within ~3× the C servers; nothing is silently lost.
+
+**Admission evidence (2026-11-12, section 3.23).** One subscriber plus a
+2,000-message pipeline, three rotations: Rill delivered 1,024/2,000 and
+`PUBSUB NUMSUB` returned 0 after the burst; Redis/Valkey delivered 2,000/2,000
+and returned 1. `PUBLISH` p50 at 1 channel 0.12–0.22 versus 0.13–0.30, at
+1,000 channels 0.13 versus 0.16–0.30, and at 10,000 channels 0.38–0.89 versus
+0.12–0.31.
+
+**Risks and obligations.** Bounding by bytes must account the encoded frame and
+the queue, and an overflow must never remove the subscription silently; ordering
+per publisher, at-most-once, pattern and shard channels, `UNSUBSCRIBE`/`NUMSUB`
+and shutdown must stay exact; the shared frame must be immutable and the
+per-subscriber RESP version/pattern variant respected; memory accounting and the
+1 ms fallback stay; a metric must make drops visible.
+
+**Rejected options.** Keeping the 1,024-message queue and silently removing the
+subscriber (measured loss), an unbounded queue (memory growth), and switching to
+a per-message thread or a new async runtime (outside the dependency boundary).
+
+**Rejection condition.** Any message is lost without a counted/documented
+behavior, a subscription disappears while the client stays connected, ordering or
+pattern/shard semantics change, memory grows without a bound, or a gate row
+loses.
+
+**Acceptance (AC41).** A 2,000-message pipelined burst to an active subscriber
+shall deliver 2,000/2,000 and keep `PUBSUB NUMSUB` at 1; if the documented byte
+bound is exceeded, the behavior shall be a counted drop with the subscription
+intact or a documented disconnect, never a silent removal; `PUBLISH` among
+10,000 subscribed channels shall have p50 ≤0.3 ms (≥2.7× faster than 0.80 ms and
+within ~2× the C server) and stay flat from 1 to 10,000 channels; 100 subscribers
+shall receive every message with publisher p50 within ~3× the C servers;
+ordering, pattern/shard, unsubscribe and shutdown tests shall pass; no dependency
+shall be added; and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
 bounded queue plus the existing maintenance tick, 4.34 uses the existing `Vec`
 in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes, 4.37 uses in-place `Vec` writes plus
-`u64::count_ones`, and 4.38 uses a `Vec` of sorted blocks plus counts. The rest
-use the existing `std` I/O, parser and in-repo journal/crypto code. Each
-candidate lands as its own PR with AC5 plus the protected gates; no combined
-integration branch.
+`u64::count_ones`, 4.38 uses a `Vec` of sorted blocks plus counts, and 4.39 uses
+the existing channels and `sync_channel`. The rest use the existing `std` I/O,
+parser and in-repo journal/crypto code. Each candidate lands as its own PR with
+AC5 plus the protected gates; no combined integration branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -4200,8 +4324,9 @@ byte arenas plus `VecDeque`, and 4.33 is a bounded queue on the existing
 maintenance tick; 4.34 mutates the existing `Vec` in place; 4.35 mutates the
 existing collection containers in place; 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes; 4.37 uses in-place `Vec` writes plus
-`u64::count_ones`; 4.38 uses a `Vec` of sorted blocks plus counts. None adds a
-crate, build script, allocator or FFI.
+`u64::count_ones`; 4.38 uses a `Vec` of sorted blocks plus counts; 4.39 uses the
+existing channels and `sync_channel`. None adds a crate, build script, allocator
+or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
 it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
@@ -4369,6 +4494,12 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   and `ZSetPack` conversion must be exact, and the block index must share one
   mutation with 4.30's order. `ZADD` loss above 10% or a non-flat 10k→100k ratio
   rejects it (AC40).
+- **Pub/sub fan-out risk (4.39):** a byte-bound overflow must never remove the
+  subscription silently; drop-with-counter and documented-disconnect are the only
+  acceptable behaviors, and ordering, at-most-once, pattern/shard semantics,
+  unsubscribe and shutdown must stay exact. A shared frame must respect each
+  subscriber's RESP version and pattern form; the drain bound must not starve
+  other clients (AC41).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -4435,6 +4566,8 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Accepting O(n) `ZRANK` because a `BTreeSet` has no rank API | The measured 100k gap is 378–927×; a bucketed rank index or order-statistic tree is required (4.38). |
 | A full in-repo weight-balanced tree with subtree sizes | More hand-written balancing code than bucketed sorted blocks for the same O(log n + block) rank (4.38). |
 | Sorting the sorted set on every rank/score read | The measured materialize+sort is exactly the 57–72 ms cost; it must be replaced, not cached per call (3.22, 4.30, 4.38). |
+| Keeping the fixed 1,024-message subscriber queue and removing the subscriber on overflow | The measured 2,000-message burst loses 48.8% and silently drops the subscription; buffering must be byte-bounded with a counted drop or a documented disconnect (4.39). |
+| An unbounded pub/sub queue per subscriber | A slow or dead subscriber would grow memory without limit; Redis bounds it and disconnects at the limit (4.39, 3.23). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -4709,6 +4842,16 @@ samples retained.
   rewrite/replay, TTL and accounting tests shall pass; 4.30's AC32 rows shall
   also pass; no dependency shall be added; and both protected gates shall pass on
   the exact head.
+- **AC41 (pub/sub burst fan-out, only if 4.39 is implemented).** A 2,000-message
+  pipelined burst to an active subscriber shall deliver 2,000/2,000 and keep
+  `PUBSUB NUMSUB` at 1; if the documented byte bound is exceeded, the behavior
+  shall be a counted drop with the subscription intact or a documented disconnect,
+  never a silent removal; `PUBLISH` among 10,000 subscribed channels shall have
+  p50 ≤0.3 ms (≥2.7× faster than the measured 0.80 ms and within ~2× the C
+  server) and stay flat from 1 to 10,000 channels; 100 subscribers shall receive
+  every message with publisher p50 within ~3× the C servers; ordering,
+  pattern/shard, unsubscribe and shutdown tests shall pass; no dependency shall be
+  added; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -4917,6 +5060,14 @@ separate roadmap.
   `ZRANGE 0 9` 57.4, `ZSCORE` 3.27, versus 0.07–0.17 for both pins; 10k rows
   2.4–3.1 ms; 10-element controls 0.28/0.11 versus 0.10–0.14. Raw JSON retained
   (untracked).
+- Pub/sub fan-out cohort (section 3.23, candidate 4.39): one subscriber with a
+  reader thread plus a single pipeline of 2,000 `PUBLISH` (32-byte payload), and
+  a subscriber on 1 / 1,000 / 10,000 channels with 500 / 500 / 200 timed
+  publishes, three rotations. Burst: Rill delivered 1,024/2,000 in all three
+  rounds, receiver-count sum 1,024, `PUBSUB NUMSUB` 0 after; Redis and Valkey
+  delivered 2,000/2,000 with NUMSUB 1. `PUBLISH` p50 1 channel: 0.12–0.22 versus
+  0.13–0.30/0.20–0.30; 1,000 channels: 0.13 versus 0.16–0.23/0.21–0.30; 10,000
+  channels: 0.38–0.89 versus 0.14–0.21/0.12–0.31. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -5324,3 +5475,9 @@ separate roadmap.
   `ZRANGESTORE`, `ZREMRANGEBYRANK`, negative/reverse deep ranges, concurrent
   writes, or the rank index's memory and `ZADD` cost. Those are
   implementation-PR evidence under AC32/AC40.
+- The pub/sub cohort (section 3.23) measures one connection with a reader thread,
+  a 2,000-message pipeline, and a single subscriber subscribed to up to 10,000
+  channels. It does not measure 100-subscriber fan-out, slow/dead subscribers,
+  pattern subscriptions, RESP3 frames, or memory under sustained fan-out; those
+  are implementation-PR evidence under AC41. The burst depends on the 1 ms tick
+  and the 1,024-entry queue, both source-confirmed.
