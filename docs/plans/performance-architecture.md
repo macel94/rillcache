@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); every other runtime item
-here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.53).**
+here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.54).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -154,7 +154,10 @@ while `INFO stats`, `DBSIZE` and `PING` stay at the floor; 4.52 maintains the
 counters. Moving one element between keys is the same cloning shape: `SMOVE` on
 a 100k set is **25.5 vs 0.40/0.28 ms** and `LMOVE`/`RPOPLPUSH` on a 200k list
 **39.2/41.2 vs 0.08–0.34 ms** (64–489×) because both keys are cloned and
-re-encoded; 4.53 moves in place. Stream consumer-group reads are
+re-encoded; 4.53 moves in place. List element edits repeat it: on a 200k list a
+head `LINSERT` costs **19.1 vs 0.09/0.24 ms** (79–212×) and `LSET` at index 100k
+**16.5 vs 0.14/0.28 ms** (59–118×), because the command flattens the whole list
+first; 4.54 edits chunks in place. Stream consumer-group reads are
 the counter-example: at a 10k-entry PEL, `XREADGROUP` history, `XPENDING` and
 `XCLAIM` are at parity and the largest batch forms are only **1.3–2.1×** behind
 (new read 1000 8.99 vs 5.19/6.43 ms, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50)
@@ -1119,7 +1122,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Thirty-six observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty-seven observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1337,6 +1340,11 @@ rest are still true even though every row now leads:
     the limit is applied after the full intersection (205–1,377×), while
     `LIMIT 0` costs the same as no limit and 10-member controls are at the floor;
     section 3.44, extending 4.51.
+37. **List element edits.** `LINSERT` at the head of a 200k list costs **19.1 ms
+    versus 0.09/0.24** (79–212×), `LSET` at index 100k 16.5 versus 0.14/0.28
+    (59–118×), while the scan-bound middle insert and tail removal are 4.9–6.0×
+    and 2.9–3.0×; every form flattens the whole list first; 10-element controls
+    are at the floor (section 3.45, candidate 4.54).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1533,6 +1541,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, plain `INFO` the same, while `INFO stats`/`DBSIZE`/`PING` stay at the floor because the section walks every entry | 4.52, admitted | AC54 | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k 25.5 ms vs 0.40/0.28 (64–91×); `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×); same-key rotate 20.5 vs 0.26/0.21; 10-element controls at the floor | 4.53, admitted (extends 4.35/4.41) | AC55 | none |
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
+| List element edits | latency, storage | **measured**: 200k `LINSERT` head 19.1 ms vs 0.09/0.24 (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), `LINSERT` middle 21.0 vs 3.51/4.33, `LREM` tail 21.1 vs 6.97/7.28, `LPOS RANK -1` 1.59 vs 0.16/0.27; 10-element controls at the floor | 4.54, admitted (extends 4.35/4.41) | AC56 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1953,6 +1962,7 @@ for a production claim.
 | Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
 | List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
 | Two-key moves | `setTypeRemove`/`setTypeAdd`; list pop/push on two borrowed containers | same | `owned_set` clones both sets; `list_values` flattens and clones both lists; both re-encode | **Adapt:** 4.53 in-place remove/insert and chunk pop/push, same-key rotate in place; measured `SMOVE` 100k 25.5 vs 0.40/0.28 ms (64–91×), `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×), rotate 20.5 vs 0.26/0.21 (3.43, AC55) |
+| List element edits | quicklist node insert/replace/unlink; split/merge at listpack bounds | same | flatten and clone the whole list, edit the `VecDeque`, re-encode | **Adapt:** 4.54 chunk walk and in-place edit, reusing 4.41/4.35; measured 200k `LINSERT` head 19.1 vs 0.09/0.24 ms (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), middle insert/tail removal 4.9–6.0×/2.9–3.0× (3.45, AC56) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
@@ -3824,6 +3834,48 @@ rotates within one container. This reuses 4.35's in-place set mutation and
 the smallest borrowed source, count matches, and stop at `LIMIT`; materialising
 the intersection is only needed for the store/reply forms.
 
+### 3.45 List element edits (LINSERT/LSET/LREM)
+
+- **Redis 8.10.2 and Valkey 9.1.2** edit a quicklist in place: `linsertCommand`
+  finds the pivot node and inserts a new node, `lsetCommand` finds the indexed
+  node and replaces its value, and `lremCommand` unlinks matching nodes, splitting
+  or merging listpack nodes only at their bounds
+  ([`redis t_list.c`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c);
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c) is the
+  same). A head insert, an indexed replace and a tail removal are O(1) to O(nodes),
+  not O(elements).
+- **Rillcache** flattens the list first: `list_insert`, `list_set` and `list_remove`
+  all call `Collection::list_values` (which clones every element into a
+  `VecDeque`, [`data.rs#L41`](../../src/engine/data.rs#L41)) and then re-encode the
+  whole list ([`collection_commands.rs#L2698`](../../src/engine/collection_commands.rs#L2698),
+  [`#L2750`](../../src/engine/collection_commands.rs#L2750),
+  [`#L2820`](../../src/engine/collection_commands.rs#L2820)). Every edit pays the
+  full 200k-element copy and rebuild, even a head insert or an indexed replace.
+  `LPOS ... RANK -1` repeats the flatten ([`#L2321`](../../src/engine/collection_commands.rs#L2321)).
+- **Measured (2026-11-13).** One 200,000-element list of distinct 8-byte values, a
+  10-element control, 20 repetitions, three rotations:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `LINSERT ... BEFORE` at the head | **19.06 ms** | 0.09 ms | 0.24 ms |
+  | `LSET` at index 100,000 | **16.46** | 0.14 | 0.28 |
+  | `LINSERT ... BEFORE` at the middle | 21.04 | 3.51 | 4.33 |
+  | `LREM` 1 near the tail | 21.09 | 6.97 | 7.28 |
+  | `LPOS ... RANK -1` | 1.59 | 0.16 | 0.27 |
+  | 10-element `LINSERT`/`LSET` controls | 0.30/0.32 | 0.33/0.21 | 0.24/0.16 |
+  | `LPUSH` control | 0.22 | 0.08 | 0.32 |
+
+  The O(1)-to-O(nodes) forms are **79–212×** behind (head insert) and **59–118×**
+  (indexed replace); the scan-bound forms are 4.9–6.0× (middle insert) and
+  2.9–3.0× (tail removal) because the C servers also walk 100k–200k entries, so
+  the rebuild is only part of their cost. `LPOS` with a reverse rank is 5.9–9.9×.
+  The 10-element controls are at the floor. Preloading the list took 3.9 s versus
+  0.3–0.5 s, the 4.35 write path. Candidate 4.54.
+
+**Verdict: adapt in-place list edits (4.54).** Walk the chunk deque to the pivot or
+index, edit one element or node, and split/merge only at chunk bounds; reuse
+4.41's chunk traversal and 4.35's delta accounting instead of flattening.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3888,7 +3940,8 @@ section 3.44 extends it to the set path and the `LIMIT` early exit
 4.52 is the maintained-keyspace-counter candidate for the measured 16–40×
 `INFO` walk in section 3.42. 4.53 is the in-place two-key-move candidate for the
 measured 64–489× `SMOVE`/`LMOVE`/`RPOPLPUSH` loss in section 3.43; it reuses
-4.35's in-place mutation and 4.41's chunk access.
+4.35's in-place mutation and 4.41's chunk access. 4.54 is the in-place list-edit
+candidate for the measured 59–212× `LINSERT`/`LSET` loss in section 3.45.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -4520,6 +4573,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    and `LIMIT 0` on identical 100k-member containers, plus 10-member controls.
    Extends 4.51 on a clean runner; the 2026-11-13 local cohort in section 3.44
    already measures 50.7/267.2 ms with `LIMIT 10` versus 0.20–0.25.
+37. **List element edits:** `LINSERT` (head/middle), `LSET` (middle), `LREM`
+   (tail), `LPOS RANK -1` and 10-element controls on a 200k list. Confirms 4.54
+   on a clean runner; the 2026-11-13 local cohort in section 3.45 already
+   measures 19.1/16.5/21.0/21.1/1.59 ms versus 0.09–7.28.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4527,7 +4584,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all thirty-six rows are complete for all three servers;
+runners, not a shared k3s host; all thirty-seven rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -5002,6 +5059,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.51 zset algebra | `zset_algebra` (`collection_commands.rs#L4330`), `zset_intercard` (`#L4492`), `set_intercard` (`#L3200`), `set_store` (`#L3257`), `owned_zset`/`owned_set`, `ordered_zset`, `encode_zset` | source order; destination-as-source; weights/aggregate/NaN; `LIMIT` early exit and `LIMIT 0`; empty/missing/wrong type; store TTL/accounting; SetInt/SetPack/`ZSetPack`; WATCH/journal/rewrite | 100k `SINTERCARD`/`ZINTERCARD` with/without `LIMIT`, store forms, 10-member controls | medium |
 | 4.52 INFO keyspace counters | `info` keyspace section (`discovery/mod.rs#L1016`), `Data` (`data.rs#L247`), insert/remove/expire/reap/evict/flush/rename/copy/replay paths, `field_ttls` | every counter delta; avg_ttl empty case; no reap on INFO; section selection; replay/rewrite/eviction/flush | 10k/100k/500k `INFO keyspace`/`INFO`/`INFO stats`/`DBSIZE`, TTL churn correctness | small |
 | 4.53 two-key moves | `set_move` (`collection_commands.rs#L3073`), `list_move_in_data` (`#L2541`), `owned_set`, `Collection::list_values` (`data.rs#L41`), blocking wake | admit destination first; OOM leaves both keys unchanged; same-key rotate; empty-source deletion; TTLs per key; chunk split/merge; blocking/timeout; WATCH/journal/notification/rewrite; accounting | 100k `SMOVE`, 200k `LMOVE`/`RPOPLPUSH`/rotate, 10-element controls, blocking variants | medium |
+| 4.54 list element edits | `list_insert` (`collection_commands.rs#L2698`), `list_remove` (`#L2750`), `list_set` (`#L2820`), `list_position` (`#L2321`), `Collection::list_values` (`data.rs#L41`) | pivot/index/count semantics; missing/empty; chunk split/merge; emptied-key deletion; TTL/WATCH/journal/rewrite; accounting | 200k `LINSERT` head/middle, `LSET` mid, `LREM` tail, `LPOS RANK -1`, 10-element controls | medium |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
@@ -5031,7 +5089,9 @@ the result re-sort from `ZINTERCARD`/`ZINTERSTORE`/`ZDIFFSTORE` (5.5–12.9× an
 and turns `LIMIT` into an early exit (205–1,377×). 4.52 is a small, contained observability
 fix: it replaces the O(keyspace) `INFO` walk with maintained counters (16–40×)
 and can land with 4.40's length work. 4.53 is the two-key-move counterpart of
-4.35/4.41: it removes a full copy of both keys per element moved (64–489×).
+4.35/4.41: it removes a full copy of both keys per element moved (64–489×). 4.54
+completes the list edits: `LINSERT`/`LSET`/`LREM` stop flattening the list
+(59–212× on the O(1)-to-O(nodes) forms).
 4.39 is a contract/reliability
 fix on the pub/sub and MONITOR path already admitted as 4.24 (section 3.37) and
 should land with them. 4.34
@@ -6351,6 +6411,60 @@ non-member, empty-source deletion, TTLs, blocking `BLMOVE`/`BRPOPLPUSH`,
 WATCH/journal/notification/rewrite and accounting tests shall pass; no dependency
 shall be added; and both protected gates shall pass on the exact head.
 
+### 4.54 In-place list element edits (candidate; admission measured)
+
+**Mechanism.** Edit a list's chunk deque directly instead of flattening it. For
+`LINSERT`, walk chunks to the pivot (front or back half, whichever is nearer),
+insert the new element in that chunk, and split only when it exceeds the bound.
+For `LSET`, walk to the indexed chunk, replace the element, and keep the length.
+For `LREM`, walk and unlink matching elements in place, merging or dropping empty
+chunks, with the positive/negative/zero count semantics. `LPOS` with a negative
+rank walks from the tail and needs no flatten. Reuse 4.41's chunk traversal and
+4.35's delta accounting; no new container, no dependency.
+
+**Prediction.** At 200k elements, `LINSERT` at the head falls from **19.1 ms to
+≤0.3 ms** (≥60×), `LSET` at index 100k from 16.5 to ≤0.5 ms (≥30×), `LINSERT` at
+the middle from 21.0 to ≤4.5 ms (≥4.6×, within ~1.3× the faster C server),
+`LREM` near the tail from 21.1 to ≤8 ms (≥2.6×, within ~1.1×), and
+`LPOS ... RANK -1` from 1.59 to ≤0.6 ms (≥2.6×); the 10-element controls are
+unchanged.
+
+**Admission evidence (2026-11-13, section 3.45).** One 200,000-element list of
+distinct 8-byte values, 20 repetitions, three rotations: `LINSERT` head
+19.86/16.79/19.06 ms versus Redis 0.09/0.21/0.07 and Valkey 0.65/0.18/0.24;
+`LSET` index 100k 21.98/16.46/15.22 versus 0.09/0.34/0.14 and 0.17/0.28/0.96;
+`LINSERT` middle 21.70/16.35/21.04 versus 3.51/3.69/3.13 and 4.48/4.33/4.10;
+`LREM` tail 22.88/19.90/21.09 versus 6.97/7.12/6.29 and 6.57/8.15/7.28;
+`LPOS RANK -1` 1.87/1.59/1.31 versus 0.09/0.30/0.16 and 0.27/0.08/0.36;
+10-element controls 0.30–0.32; preload 3.9 s versus 0.3–0.5 s (the 4.35 write
+path).
+
+**Risks and obligations.** BEFORE/AFTER pivot missing returns -1 and touched
+state unchanged; LSET negative/out-of-range index errors; LREM count semantics
+(positive from head, negative from tail, zero all) and deletion of an emptied
+key; chunk split/merge bounds and iteration order; TTL/WATCH/journal/rewrite and
+accounting by delta; `LPOS` rank/count/maxlen and missing-key behavior; blocking
+commands unaffected; `ListPack` threshold conversion stays exact.
+
+**Rejected options.** Keeping the flatten but skipping the re-encode (still an
+O(n) element copy and allocation); converting the list to a different structure
+for edits (touches every read path); locating the pivot by index only (does not
+cover value-based LINSERT/LREM).
+
+**Rejection condition.** Any BEFORE/AFTER, index, count, order, missing-key,
+empty-key or accounting result differs; the 10-element controls regress; or no
+gain above the spread.
+
+**Acceptance (AC56).** At 200,000 elements, `LINSERT` at the head shall have p50
+≤0.3 ms and p99 ≤2 ms (≥60× faster than the measured 19.1 ms); `LSET` at index
+100,000 p50 ≤0.5 ms and p99 ≤2 ms (≥30× faster than 16.5 ms); `LINSERT` at the
+middle p50 ≤4.5 ms and `LREM` 1 near the tail p50 ≤8 ms (≥4.6×/≥2.6× and within
+~1.3×/1.1× the faster C server); `LPOS ... RANK -1` p50 ≤0.6 ms; the 10-element
+controls shall be unchanged; BEFORE/AFTER/missing pivot, index edges, LREM
+count semantics, emptied-key deletion, chunk split/merge, TTL/WATCH/journal/
+rewrite and accounting tests shall pass; no dependency shall be added; and both
+protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -6366,7 +6480,8 @@ existing source order, 4.47 mutates the existing HLL registers, 4.48 mutates the
 existing stream groups, 4.49 pops from the ordered zset index, 4.50 seeks the
 same index and adds no storage, 4.51 borrows the existing zset containers and
 builds the destination once, 4.52 adds integer counters to the existing
-`Data`, and 4.53 reuses the existing set/list containers for a two-key move. The
+`Data`, 4.53 reuses the existing set/list containers for a two-key move, and
+4.54 walks the existing list chunks for an element edit. The
 rest use
 the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
 lands as its own PR with AC5 plus the protected gates; no combined integration
@@ -6674,6 +6789,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   from the source; LEFT/RIGHT order, missing/non-member/empty-source results,
   chunk split/merge, blocking timeout/disconnect, WATCH/journal/notification/
   rewrite and accounting must stay exact (AC55).
+- **List-edit risk (4.54):** BEFORE/AFTER with a missing pivot, negative/overflow
+  indexes, `LREM` positive/negative/zero count semantics and emptied-key
+  deletion must match; chunk split/merge and element order; `LPOS` rank/count/
+  maxlen; TTL/WATCH/journal/rewrite and delta accounting must stay exact (AC56).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -6757,6 +6876,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Sorting the whole zset to answer a bounded `BYLEX`/`ZCOUNT` query | A seek plus rank subtraction is O(log n); the measured 10-element lex range pays 56–70 ms for an O(n log n) sort and a narrow count scans all 100k members (4.50). Caching the sorted snapshot or adding a second lex index would duplicate storage and invalidation work for the same query. |
 | Copying every source before a zset algebra or cardinality query | The measured 100k `ZINTERCARD` pays 220 ms for two owned maps plus a `BTreeSet`, while probing the smallest borrowed source and counting matches is O(smallest × keys) with no destination; the store forms already build one destination and re-sort a materialised map a second time (4.51). A borrowed `HashSet` of the smaller source only trades one allocation for another and was rejected. |
 | Applying `SINTERCARD`/`ZINTERCARD` `LIMIT` after the full intersection | The measured `LIMIT 10` still pays 50.7/267.2 ms, exactly the no-limit cost; a positive limit is a work bound and must stop the probe loop after `limit` matches, while `LIMIT 0` keeps the unlimited cost (4.51). |
+| Flattening a list to insert, replace or remove one element | The measured 200k head insert and indexed replace pay 19.1/16.5 ms for a full element copy and re-encode, while the chunk deque already supports a local edit; skipping only the re-encode still leaves the O(n) flatten (4.54). |
 | Caching the formatted `INFO` reply instead of maintaining counters | The measured 10 ms walk happens on every `INFO`/`INFO keyspace`; a cache would still pay O(keyspace) to rebuild after the first mutation and would need a full invalidation contract. Sampling the keyspace or counting only the expiration index reports a wrong `keys` value (4.52). |
 | Rebuilding both keys for a one-element two-key move | The measured 100k `SMOVE` and 200k `LMOVE`/`RPOPLPUSH` pay 20–41 ms for a full clone of both sides; a set remove/insert and a list pop/push are O(1)/O(log n) in the existing containers, and reusing the old clone for one side still leaves the other O(n) (4.53). |
 | Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
@@ -7179,6 +7299,16 @@ samples retained.
   deletion, TTLs, blocking `BLMOVE`/`BRPOPLPUSH`, WATCH/journal/notification/
   rewrite and accounting tests shall pass; no dependency shall be added; and
   both protected gates shall pass on the exact head.
+- **AC56 (in-place list element edits, only if 4.54 is implemented).** At
+  200,000 elements, `LINSERT` at the head shall have p50 ≤0.3 ms and p99 ≤2 ms
+  (≥60× faster than the measured 19.1 ms); `LSET` at index 100,000 p50 ≤0.5 ms
+  and p99 ≤2 ms (≥30× faster than 16.5 ms); `LINSERT` at the middle p50 ≤4.5 ms
+  and `LREM` 1 near the tail p50 ≤8 ms (≥4.6×/≥2.6× and within ~1.3×/1.1× the
+  faster C server); `LPOS ... RANK -1` p50 ≤0.6 ms; the 10-element controls
+  shall be unchanged; BEFORE/AFTER/missing pivot, index edges, LREM count
+  semantics, emptied-key deletion, chunk split/merge, TTL/WATCH/journal/rewrite
+  and accounting tests shall pass; no dependency shall be added; and both
+  protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -7575,6 +7705,15 @@ separate roadmap.
   299.88/291.02/275.14; 10-member `LIMIT 10` controls 0.12–0.27; `EXISTS`/`PING`
   0.11–0.25. Preload 16.0 s versus 1.5–1.7 s, the 4.35 write path. Raw JSON
   retained (untracked).
+- List-edit cohort (section 3.45, candidate 4.54): one 200,000-element list of
+  distinct 8-byte values, 20 repetitions, three rotations. `LINSERT` head
+  19.86/16.79/19.06 ms versus Redis 0.09/0.21/0.07 and Valkey 0.65/0.18/0.24;
+  `LSET` index 100k 21.98/16.46/15.22 versus 0.09/0.34/0.14 and
+  0.17/0.28/0.96; `LINSERT` middle 21.70/16.35/21.04 versus 3.51/3.69/3.13 and
+  4.48/4.33/4.10; `LREM` tail 22.88/19.90/21.09 versus 6.97/7.12/6.29 and
+  6.57/8.15/7.28; `LPOS RANK -1` 1.87/1.59/1.31 versus 0.09/0.30/0.16 and
+  0.27/0.08/0.36; 10-element controls 0.20–0.61. Preload 3.9 s versus 0.3–0.5 s,
+  the 4.35 write path. Raw JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -8103,3 +8242,9 @@ separate roadmap.
   many non-matches, more than two inputs, `SetInt`/`SetPack`/`ZSetPack` mixes, or
   approximate cardinality (not implemented). The `LIMIT 0` rows confirm the
   unlimited contract, not the early-exit path.
+- The list-edit cohort (section 3.45) uses distinct 8-byte values on one 200k
+  list, with one edit per command and 20 repetitions; it does not measure
+  duplicate-value `LREM` counts, `LREM` negative counts, index near the chunk
+  boundary, `ListPack`/`ListQuick` threshold transitions, or blocking reads
+  concurrent with edits. The middle-insert and tail-removal rows are scan-bound
+  on all three servers, so their ratios understate the rebuild share.
