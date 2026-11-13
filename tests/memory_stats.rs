@@ -193,9 +193,21 @@ fn memory_stats_doctor_and_help_are_truthful_in_all_modes() {
             empty["rillcache.payload.scope"],
             "key_and_value_bytes_not_RSS"
         );
+        let rss = empty["used_memory_rss"].parse::<u64>().unwrap();
+        if cfg!(target_os = "linux") {
+            assert!(rss > 0, "{rss}");
+            assert_eq!(
+                empty["rillcache.rss.scope"],
+                "process_resident_set_includes_shared_and_allocator_pages_not_payload"
+            );
+        } else {
+            assert_eq!(rss, 0);
+            assert_eq!(empty["rillcache.rss.scope"], "unavailable_on_this_platform");
+        }
+        assert!(!empty["used_memory_rss_human"].is_empty());
         let doctor = bulk_text(&mut stream, &[b"MEMORY", b"DOCTOR"]);
         assert!(contains(&doctor, "payload is empty"), "{doctor}");
-        assert!(contains(&doctor, "not RSS"), "{doctor}");
+        assert!(contains(&doctor, "Process RSS is"), "{doctor}");
         let help = array_text(&mut stream, &[b"MEMORY", b"HELP"]);
         for item in ["DOCTOR", "STATS", "USAGE <key>", "HELP"] {
             assert!(help.iter().any(|line| line == item), "{help:?}");
@@ -232,7 +244,7 @@ fn memory_stats_doctor_and_help_are_truthful_in_all_modes() {
         command(&mut stream, &[b"SET", b"big", &value], b"+OK\r\n");
         let doctor = bulk_text(&mut stream, &[b"MEMORY", b"DOCTOR"]);
         assert!(contains(&doctor, "Payload pressure is high"), "{doctor}");
-        assert!(contains(&doctor, "not RSS"), "{doctor}");
+        assert!(contains(&doctor, "Process RSS is"), "{doctor}");
 
         command(
             &mut stream,

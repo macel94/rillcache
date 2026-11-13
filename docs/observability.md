@@ -40,7 +40,14 @@ milliseconds across live keys with a deadline, `0` when none) and `subexpiry`
 through `CONFIG SET maxclients`). `CLIENT LIST` exposes per-connection address/name/user/
 RESP/subscription metadata.
 
-`INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`. `evicted_keys` resets with
+`INFO memory` also reports the live `maxmemory_policy` and `notify_keyspace_events`,
+plus `used_memory_rss`/`used_memory_rss_human` from Linux `/proc/self/status`
+and an explicit `used_memory_rss_scope`. RSS is an observation: it includes
+allocator, index, thread, socket and shared pages, and is not used for payload
+admission or `maxmemory` enforcement. On platforms without a readable resident
+set the value is `0` and the scope says `unavailable_on_this_platform`.
+`MEMORY STATS` reports the same pair under `used_memory_rss` /
+`used_memory_rss_human` with `rillcache.rss.scope`. `evicted_keys` resets with
 `CONFIG RESETSTAT`; the policy itself does not.
 
 ## INFO commandstats
@@ -83,11 +90,13 @@ is targeted dispatch work reduction, not an all-command performance claim.
 - Counters are relaxed atomics and may be observed slightly asynchronously
   across worker threads. They are diagnostic, not a billing ledger.
 
-`INFO server`, `memory` and `keyspace` remain available. Memory fields are the
-logical key/value payload and expiry counts, not allocator or RSS measurements;
-`used_memory` is not fabricated. Counters deliberately include no keyspace hit/
-miss, net-byte, CPU, latency, fork or replication fields because those values are
-not measured. Missing fields are honest gaps, not zero claims.
+`INFO server`, `memory` and `keyspace` remain available. Payload fields
+(`rillcache_payload_*`, `total.allocated`, `dataset.bytes`) are logical key/value
+accounting; process RSS is reported separately and is not allocator `used_memory`.
+`used_memory` itself is not fabricated. Counters deliberately include no keyspace
+hit/miss, net-byte, CPU, latency, fork or replication fields because those values
+are not measured. Missing fields are honest gaps, not zero claims. This RSS field
+does not enforce a memory bound; `maxmemory` remains a payload budget.
 
 ## SLOWLOG
 
@@ -205,10 +214,10 @@ not implemented or measured.
 - No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.
 - No per-client fd/idle/command/buffer/memory/network fields, blocked-client count
   or cross-process client view. `INFO clients` intentionally omits those fields.
-- No `INFO latencystats`, latency histograms/percentiles, CPU/RSS accounting,
+- No `INFO latencystats`, latency histograms/percentiles, CPU accounting,
   network-byte counters or per-database stats. `LATENCY` exposes only the two
   measured event series listed above, and command timing is aggregate only with
-  no histogram or tail-latency distribution.
+  no histogram or tail-latency distribution. RSS is reported but not enforced.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.
 - Error statistics are a bounded per-code count, not a full error log or message

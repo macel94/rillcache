@@ -380,7 +380,13 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
         assert!(text.contains("rillcache_payload_scope:key_and_value_bytes_not_RSS"));
         assert!(text.contains("db0:keys=0,expires=0"));
         assert!(!text.contains("redis_version:"));
-        assert!(!text.contains("used_memory_rss:"));
+        let rss = text
+            .lines()
+            .find_map(|line| line.strip_prefix("used_memory_rss:"))
+            .expect("INFO memory reports process RSS");
+        assert!(rss.parse::<u64>().is_ok(), "{rss:?}");
+        assert!(text.contains("used_memory_rss_human:"));
+        assert!(text.contains("used_memory_rss_scope:"));
         server.shutdown().unwrap();
     }
 }

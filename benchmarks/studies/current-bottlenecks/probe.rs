@@ -111,7 +111,9 @@ fn validate(workload: &str, size: usize, reply: &[u8], value: &[u8]) {
             assert!(!text.windows(10).any(|p| p == b"# Keyspace"));
         }
         "memory-stats" => {
-            assert!(reply.starts_with(b"*14\r\n"));
+            // Current MEMORY STATS has eleven key/value pairs; the historical
+            // component manifest pins the earlier fourteen-element shape.
+            assert!(reply.starts_with(b"*20\r\n"));
             let expected = format!("$10\r\nkeys.count\r\n:{size}\r\n");
             assert!(
                 reply
