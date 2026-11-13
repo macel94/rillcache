@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.40).**
+gated (4.15, 4.20–4.27, 4.29–4.41).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -138,7 +138,9 @@ drops the subscription** (C servers: 2,000 and keep it), and a `PUBLISH` among
 lookup. Cardinality is equally materialized: at 100k, `SISMEMBER`/`SCARD` are
 **8.0–8.7 vs 0.15–0.22 ms** because they clone and sort the whole set,
 `HLEN`/`ZCARD` are 1.6–2.2 ms and `LLEN` 1.55 ms because they collect every
-reference; 4.40 makes them O(1). Under
+reference; 4.40 makes them O(1). List random access repeats the pattern:
+`LINDEX`/`LPOS` on 200k cost **1.26–1.47 vs 0.07–0.14 ms** because both flatten
+every element reference; 4.41 adds in-place chunk seeking. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1054,7 +1056,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Seventeen things are still true even though every row now leads:
+Eighteen things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1175,6 +1177,11 @@ Seventeen things are still true even though every row now leads:
     whole set; `HLEN`/`ZCARD` cost 1.6–2.2 ms and `LLEN` 1.55 ms because they
     collect every reference, while `HEXISTS`/`STRLEN` are direct and fast
     (section 3.24, candidate 4.40).
+18. **List random access.** `LINDEX` (0/middle/last) and a hit-first `LPOS` on a
+    200k list cost **1.26–1.47 ms** versus 0.07–0.14 ms (9–22×) because both
+    flatten every element reference; a missing `LPOS` leads because the C
+    servers walk every node, and the 10-element controls are at the floor
+    (section 3.25, candidate 4.41).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1343,6 +1350,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 (map/score/start-0) + 4.38 (rank-select), admitted | AC32/AC40 | none |
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 vs 0.14–0.20; `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
+| List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1766,6 +1774,7 @@ for a production claim.
 | Sorted-set rank-select | skiplist span counts: O(log n) `ZRANK`, deep `ZRANGE` seek | same | rank requires a full materialize+sort+linear position scan | **Adapt:** 4.38 order-statistic index; measured 100k `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12 (3.22, AC40) |
 | Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms (3.23, AC41) |
 | Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
+| List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -2704,6 +2713,46 @@ probe) and route `SCARD`/`SISMEMBER`/`HLEN`/`ZCARD`/`LLEN` through them. Keep
 `SMEMBERS`/`HKEYS`/`HGETALL` sorting and full-reply paths unchanged, and preserve
 the `SetInt`/`SetPack`/`HashPack` semantics including non-integer probes.
 
+### 3.25 List random access (LINDEX/LPOS)
+
+- **Redis 8.10.2 and Valkey 9.1.2** seek the quicklist by node: `LINDEX` walks
+  nodes using cached per-node counts and touches one listpack, and `LPOS` scans
+  forward from the requested rank and stops at the first match (or at `MAXLEN`),
+  without materializing the list
+  ([`redis t_list.c#L621`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L621),
+  [`#L1015`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L1015),
+  [`quicklist.c`](https://github.com/redis/redis/blob/8.10.2/src/quicklist.c);
+  [`valkey t_list.c#L571`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L571),
+  [`#L937`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L937)).
+- **Rillcache** calls `list_items()` for both: it flattens every element
+  reference of the `ListPack`/`ListQuick` into a `Vec`, O(n) time and O(n)
+  allocation, before indexing for `LINDEX` or scanning for `LPOS`
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L2668),
+  [`#L2321`](../../src/engine/collection_commands.rs#L2321)).
+- **Measured (2026-11-12).** A 200,000-element list of 8-byte values, 100
+  repetitions, three rotations; controls are a 10-element list:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `LINDEX 0` | **1.47 ms** | 0.107 ms | 0.068 ms |
+  | `LINDEX 100000` | **1.40** | 0.104 | 0.081 |
+  | `LINDEX -1` | **1.29** | 0.102 | 0.142 |
+  | `LPOS` first element | **1.26** | 0.095 | 0.127 |
+  | `LPOS` missing | 1.81 | 5.02 | 5.85 |
+  | `LLEN` (admitted as 4.40) | 1.36 | 0.138 | 0.117 |
+  | 10-element `LINDEX`/`LPOS` | 0.10/0.10 | 0.09/0.11 | 0.12/0.12 |
+
+  `LINDEX` is **9–22×** slower and a hit-first `LPOS` 10–13×, while a missing
+  `LPOS` **leads** (1.81 vs 5.02/5.85) because Redis walks every node. The
+  control is at the floor. `LLEN` is the same `list_items()` pattern and is
+  covered by 4.40; `LINDEX`/`LPOS` need in-place seeking. Candidate 4.41.
+
+**Verdict: adapt in-place list seeking (4.41).** Add `Collection::list_get`
+(normalize the index, walk `ListQuick` chunks by their lengths without
+allocating) and `Collection::list_position` (scan chunks in order with
+`RANK`/`COUNT`/`MAXLEN` and an early stop). Keep `LRANGE`, `LLEN` (4.40) and all
+reply formats unchanged.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -2743,7 +2792,8 @@ bitmap candidate for the measured 5–17× `SETBIT`/`BITCOUNT` loss in section 3
 range loss in section 3.22. 4.39 is the contract-correct pub/sub fan-out
 candidate for the measured 2,000-message burst loss and 10k-channel scan in
 section 3.23. 4.40 is the O(1) cardinality/membership candidate for the measured
-36–55× `SISMEMBER`/`SCARD` loss in section 3.24.
+36–55× `SISMEMBER`/`SCARD` loss in section 3.24. 4.41 is the in-place list-seek
+candidate for the measured 9–22× `LINDEX`/`LPOS` loss in section 3.25.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3285,6 +3335,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    `ZCARD`, `LLEN`, with `HEXISTS`/`STRLEN` and 10-element controls, at 100k/200k.
    Confirms 4.40 on a clean runner; the 2026-11-12 local cohort in section 3.24
    already measures 8.0–8.7 ms for `SISMEMBER`/`SCARD` versus 0.15–0.22 ms.
+17. **List random access:** `LINDEX` (0/middle/-1) and `LPOS` (hit-first and
+   missing) on a 200k list, with 10-element controls. Confirms 4.41 on a clean
+   runner; the 2026-11-12 local cohort in section 3.25 already measures
+   1.26–1.47 ms versus 0.07–0.14 ms.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3292,7 +3346,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all sixteen rows are complete for all three servers;
+runners, not a shared k3s host; all seventeen rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -3754,18 +3808,19 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.38 zset rank index | `zset_rank` (`collection_commands.rs#L3744`), `zset_range_by_score` (`#L3896`), `zset_read` (`collections.rs#L433`), `ZAdd`/`ZRem` paths, block index | rank-select over `(score, member)`; score moves; block split/merge; negative/reverse ranges; `ZSetPack`; accounting; replay/rewrite | 100k `ZRANK`/`ZREVRANK`/deep `ZRANGE`/`ZRANGEBYSCORE`, ZADD regression | medium |
 | 4.39 pub/sub fan-out | `PubSub::publish` (`pubsub.rs#L121`), `queue_capacity`, subscriber drain (`pool.rs#L159`), reactor async tick | channel lookup by key; byte-bounded queue; no silent unsubscribe; counted drop or documented disconnect; shared frame; ordering/pattern/shard; shutdown | 2,000-message burst, 10k-channel PUBLISH, 100 subscribers, NUMSUB | medium |
 | 4.40 O(1) counts | `set_read`/`hash_read`/`zset_read`/`list_len` (`collections.rs#L240`, `#L355`, `#L478`, `#L658`), `Collection` length/probe methods | SetInt/SetPack semantics; missing/empty/wrong type; no reply or ordering change; LLEN node walk | 100k `SISMEMBER`/`SCARD`/`HLEN`/`ZCARD`, 200k `LLEN`, 10-element controls | small |
+| 4.41 list seek | `list_index` (`collection_commands.rs#L2668`), `list_position` (`#L2321`), `Collection::list_items`/`ListQuick` (`data.rs`) | negative index; chunk boundaries; RANK/COUNT/MAXLEN; missing/empty/wrong type; no reply change | 200k `LINDEX`/`LPOS`, 10-element controls, LRANGE/LLEN | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, and 4.33 —
 small and contract-visible — for the measured synchronous `UNLINK`/`ASYNC` drop.
-4.40 is the smallest, highest-certainty fix (five O(1) commands currently
-materialize a collection) and can land immediately. 4.35 is next: every
-collection write currently clones the collection, the gaps are 3.5–262×, and it
-reuses 4.34's admit-then-mutate shape. 4.37 is small and shares 4.34's in-place
-string path: it removes the two copies in `SETBIT` and the byte loop in
-`BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir slice and then the
-dense index; its 100k gaps are 35–298×. 4.30 and 4.38 are the largest measured
+4.40 and 4.41 are the smallest, highest-certainty fixes (O(1) counts/membership
+and in-place list seek) and can land immediately. 4.35 is next: every collection
+write currently clones the collection, the gaps are 3.5–262×, and it reuses
+4.34's admit-then-mutate shape. 4.37 is small and shares 4.34's in-place string
+path: it removes the two copies in `SETBIT` and the byte loop in `BITCOUNT`
+(5–17×). 4.36 follows, first as a no-copy reservoir slice and then the dense
+index; its 100k gaps are 35–298×. 4.30 and 4.38 are the largest measured
 read-side ratios (378–927× at 100k) and should share one ordered structure: 4.30
 covers point/score/start-0 reads, 4.38 the rank-select that a `BTreeSet` cannot
 answer. 4.39 is a contract/reliability fix on the pub/sub path already admitted
@@ -4380,6 +4435,45 @@ within ~2× the faster C server); `HLEN` and `ZCARD` p50 ≤0.1 ms; `LLEN` on a
 non-integer probes), missing keys and type errors shall pass; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
+### 4.41 In-place list seek (candidate; admission measured)
+
+**Mechanism.** Add `Collection::list_get(index)` (normalize the negative index;
+`ListPack` indexes directly, `ListQuick` walks chunk lengths without allocating,
+O(nodes) ≈ 1.5k for 200k) and `Collection::list_position(value, rank, count,
+maxlen)` that scans chunks in order with an early stop and rank handling. Route
+`LINDEX`/`LPOS` through them; `LRANGE`, `LLEN` (4.40) and the write paths are
+unchanged.
+
+**Prediction.** 200k `LINDEX` (0/middle/last) fall from **1.29–1.47 ms to
+≤0.2 ms**, a hit-first `LPOS` from 1.26 to ≤0.2, a missing `LPOS` stays ≤2 ms
+(it already leads the C servers), and the 10-element controls are unchanged.
+
+**Admission evidence (2026-11-12, section 3.25).** A 200,000-element 8-byte list,
+100 repetitions, three rotations: `LINDEX 0` p50 1.473 versus Redis 0.107 and
+Valkey 0.068; middle 1.404 versus 0.104/0.081; last 1.289 versus 0.102/0.142;
+`LPOS` hit-first 1.256 versus 0.095/0.127; `LPOS` missing 1.806 versus
+5.019/5.854; controls 0.097/0.097 versus 0.09–0.12.
+
+**Risks and obligations.** Negative-index normalization and out-of-range nil,
+chunk boundaries, `RANK` (including negative), `COUNT 0`-means-all and `MAXLEN`
+semantics, missing/empty keys and wrong-type errors must not change; no reply or
+accounting change.
+
+**Rejected options.** A maintained node index just for `LINDEX` (the chunk walk
+is already O(nodes)), keeping the full materialization (the measured path), and a
+list representation change (4.32 covers memory independently).
+
+**Rejection condition.** Any index or `LPOS` semantics test differs, the controls
+or `LRANGE`/`LLEN` regress, or no gain above the spread.
+
+**Acceptance (AC43).** On a 200,000-element list, `LINDEX` for 0, middle and −1
+and a hit-first `LPOS` shall have p50 ≤0.2 ms and p99 ≤2 ms (≥6× faster than the
+measured 1.26–1.47 ms and within ~3× the faster C server); a missing `LPOS` shall
+stay ≤2 ms; the 10-element controls, `LRANGE` and `LLEN` shall be unchanged;
+negative indices, `RANK`/`COUNT`/`MAXLEN`, missing keys and wrong-type errors shall
+pass; no dependency shall be added; and both protected gates shall pass on the
+exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -4387,10 +4481,10 @@ bounded queue plus the existing maintenance tick, 4.34 uses the existing `Vec`
 in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes, 4.37 uses in-place `Vec` writes plus
 `u64::count_ones`, 4.38 uses a `Vec` of sorted blocks plus counts, 4.39 uses
-the existing channels and `sync_channel`, and 4.40 uses the existing containers'
-lengths and probes. The rest use the existing `std` I/O, parser and in-repo
-journal/crypto code. Each candidate lands as its own PR with
-AC5 plus the protected gates; no combined integration branch.
+the existing channels and `sync_channel`, 4.40 uses the existing containers'
+lengths and probes, and 4.41 walks the existing list chunks. The rest use the
+existing `std` I/O, parser and in-repo journal/crypto code. Each candidate lands
+as its own PR with AC5 plus the protected gates; no combined integration branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -4442,7 +4536,8 @@ existing collection containers in place; 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes; 4.37 uses in-place `Vec` writes plus
 `u64::count_ones`; 4.38 uses a `Vec` of sorted blocks plus counts; 4.39 uses the
 existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
-and probes. None adds a crate, build script, allocator or FFI.
+and probes; 4.41 walks the existing list chunks. None adds a crate, build script,
+allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
 it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
@@ -4621,6 +4716,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   `SetPack`/`HashPack` stay linear but small. Missing/empty keys, wrong-type
   errors, reply order and accounting must not change; `LLEN` is O(nodes) and may
   need cached counts only if a later cohort shows it (AC42).
+- **List-seek risk (4.41):** negative-index normalization, chunk boundaries and
+  the `RANK`/`COUNT 0`/`MAXLEN` rules are the semantic core; a missing key,
+  empty list or wrong type must return today's reply, and `LRANGE`/`LLEN` must
+  not change. The seek must not allocate per call (AC43).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -4691,6 +4790,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | An unbounded pub/sub queue per subscriber | A slow or dead subscriber would grow memory without limit; Redis bounds it and disconnects at the limit (4.39, 3.23). |
 | A separately cached collection length maintained beside the container | Two sources of truth can drift; the container's own `len()` is O(1) (or O(nodes) for lists) and cannot disagree (4.40). |
 | Making `SMEMBERS` unsorted so `SCARD` can reuse it | Fixes neither `SISMEMBER` nor the clone/sort cost and changes a deterministic reply order (4.40). |
+| Maintaining a node/rank index just for `LINDEX` | The chunk walk is already O(nodes) without new state; materializing all references is the measured cost (4.41). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -4983,6 +5083,14 @@ samples retained.
   `SetPack` and `HashPack` membership semantics (including non-integer probes),
   missing keys and type errors shall pass; no dependency shall be added; and both
   protected gates shall pass on the exact head.
+- **AC43 (in-place list seek, only if 4.41 is implemented).** On a 200,000-element
+  list, `LINDEX` for 0, middle and −1 and a hit-first `LPOS` shall have p50
+  ≤0.2 ms and p99 ≤2 ms (≥6× faster than the measured 1.26–1.47 ms and within
+  ~3× the faster C server); a missing `LPOS` shall stay ≤2 ms; the 10-element
+  controls, `LRANGE` and `LLEN` shall be unchanged; negative indices,
+  `RANK`/`COUNT`/`MAXLEN`, missing keys and wrong-type errors shall pass; no
+  dependency shall be added; and both protected gates shall pass on the exact
+  head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -5206,6 +5314,12 @@ separate roadmap.
   0.18/0.15/0.08; `HLEN` 2.24 versus 0.15/0.19; `ZCARD` 1.57 versus 0.12/0.16;
   `LLEN` 1.55 versus 0.20/0.14; `HEXISTS` 0.18 versus 0.29/0.14; `STRLEN` 0.13
   versus 0.16/0.16; 10-element controls 0.12–0.18. Raw JSON retained (untracked).
+- List random-access cohort (section 3.25, candidate 4.41): a 200,000-element
+  8-byte list, 100 repetitions, three rotations. `LINDEX 0` p50 1.473 versus
+  Redis 0.107 and Valkey 0.068; middle 1.404 versus 0.104/0.081; last 1.289
+  versus 0.102/0.142; `LPOS` hit-first 1.256 versus 0.095/0.127; `LPOS` missing
+  1.806 versus 5.019/5.854; `LLEN` 1.364 versus 0.138/0.117; 10-element controls
+  0.097/0.097 versus 0.09–0.12. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -5624,3 +5738,7 @@ separate roadmap.
   `SMISMEMBER`, `SINTERCARD`, `HSTRLEN`, missing-key paths at scale, or `LLEN`
   after heavy list mutation; those are implementation-PR evidence under AC42.
   The `SetInt`/`SetPack` probe semantics are source-only here.
+- The list random-access cohort (section 3.25) measures a 200k list of 8-byte
+  values with 10-element controls. It does not measure deep `RANK`/`MAXLEN`
+  combinations, `LPOS` with `COUNT`, lists built from `LINSERT`/`LREM` or very
+  large elements; those are implementation-PR evidence under AC43.
