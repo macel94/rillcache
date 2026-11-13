@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.41).**
+gated (4.15, 4.20–4.27, 4.29–4.42).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -140,7 +140,9 @@ lookup. Cardinality is equally materialized: at 100k, `SISMEMBER`/`SCARD` are
 `HLEN`/`ZCARD` are 1.6–2.2 ms and `LLEN` 1.55 ms because they collect every
 reference; 4.40 makes them O(1). List random access repeats the pattern:
 `LINDEX`/`LPOS` on 200k cost **1.26–1.47 vs 0.07–0.14 ms** because both flatten
-every element reference; 4.41 adds in-place chunk seeking. Under
+every element reference; 4.41 adds in-place chunk seeking. Streams repeat the write pattern:
+`XADD` at 5k is **1.36 vs 0.08–0.10 ms** because it clones the whole stream and
+folds the payload twice; 4.42 makes the append in place. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1056,7 +1058,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Eighteen things are still true even though every row now leads:
+Nineteen things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1182,6 +1184,11 @@ Eighteen things are still true even though every row now leads:
     flatten every element reference; a missing `LPOS` leads because the C
     servers walk every node, and the 10-element controls are at the floor
     (section 3.25, candidate 4.41).
+19. **Stream append.** Every `XADD` clones the whole `Stream` and folds its
+    payload twice, so at 5,000 entries it costs **1.36 ms** versus
+    0.08–0.10 ms (13–18×) and grows with stream length, while `XLEN`/`XRANGE`/
+    `XREVRANGE` and the 10-entry control are at the floor (section 3.26,
+    candidate 4.42).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1351,6 +1358,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 vs 0.14–0.20; `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
+| Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1775,6 +1783,7 @@ for a production claim.
 | Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms (3.23, AC41) |
 | Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
 | List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
+| Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -2753,6 +2762,49 @@ allocating) and `Collection::list_position` (scan chunks in order with
 `RANK`/`COUNT`/`MAXLEN` and an early stop). Keep `LRANGE`, `LLEN` (4.40) and all
 reply formats unchanged.
 
+### 3.26 Stream append (XADD)
+
+- **Redis 8.10.2 and Valkey 9.1.2** append one entry to the stream's
+  rax/listpack representation and update the length and memory accounting
+  incrementally; trimming removes entries from the same structure
+  ([`redis t_stream.c#L505`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L505),
+  [`#L2621`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L2621);
+  [`valkey t_stream.c#L425`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L425),
+  [`#L2041`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L2041)).
+- **Rillcache** clones the **entire `Stream`** on every `XADD`
+  (`e.stream.clone()`, deep-cloning every entry, field and value), inserts the
+  new entry, folds `payload_bytes()` over every entry, then `put_stream` folds
+  `payload_bytes()` **again** before replacing the entry and dropping the old
+  stream. Reads are efficient: `XLEN` is the map length and `XRANGE`/
+  `XREVRANGE` use a `BTreeMap` range with `limit`
+  ([`streams.rs`](../../src/engine/streams.rs#L310),
+  [`#L818`](../../src/engine/streams.rs#L818),
+  [`data.rs`](../../src/engine/data.rs#L182),
+  [`#L877`](../../src/engine/data.rs#L877)).
+- **Measured (2026-11-12).** A 1,000- and a 5,000-entry stream of one 8-byte
+  field pair, 30/50 repetitions, three rotations; a 10-entry stream is the
+  control:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `XADD` at 1k entries | 0.263 ms | 0.148 ms | 0.077 ms |
+  | `XADD` at 5k entries | **1.36 ms** (p99 11.6) | 0.104 (p99 1.87) | 0.077 (p99 1.58) |
+  | `XLEN` | 0.072 | 0.156 | 0.103 |
+  | `XRANGE - + COUNT 10` | 0.121 | 0.099 | 0.187 |
+  | `XRANGE mid + COUNT 10` | 0.120 | 0.307 | 0.288 |
+  | `XREVRANGE + - COUNT 10` | 0.118 | 0.117 | 0.136 |
+  | `XADD`/`XRANGE` on 10 entries | 0.077/0.118 | 0.078/0.103 | 0.231/0.143 |
+
+  `XADD` is **13–18×** slower at 5k and grows 5.2× for 5× the entries
+  (0.263 → 1.36 ms) while the C servers stay flat; every read and the 10-entry
+  control are at the command floor. Candidate 4.42.
+
+**Verdict: adapt in-place append (4.42).** Admit the entry, then borrow
+`Entry.stream` mutably and insert one `StreamEntry`, updating `payload_len` and
+the stream's length by the delta instead of cloning the whole stream and folding
+it twice. Keep IDs/groups/PEL, trimming, TTL/WATCH/journal/rewrite and the
+read paths unchanged.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -2793,7 +2845,9 @@ range loss in section 3.22. 4.39 is the contract-correct pub/sub fan-out
 candidate for the measured 2,000-message burst loss and 10k-channel scan in
 section 3.23. 4.40 is the O(1) cardinality/membership candidate for the measured
 36–55× `SISMEMBER`/`SCARD` loss in section 3.24. 4.41 is the in-place list-seek
-candidate for the measured 9–22× `LINDEX`/`LPOS` loss in section 3.25.
+candidate for the measured 9–22× `LINDEX`/`LPOS` loss in section 3.25. 4.42 is
+the in-place stream-append candidate for the measured 13–18× `XADD` loss in
+section 3.26.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3339,6 +3393,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    missing) on a 200k list, with 10-element controls. Confirms 4.41 on a clean
    runner; the 2026-11-12 local cohort in section 3.25 already measures
    1.26–1.47 ms versus 0.07–0.14 ms.
+18. **Stream append and reads:** `XADD` at 1k and 5k entries, `XLEN`,
+   `XRANGE`/`XREVRANGE` at the start and middle, and a 10-entry control.
+   Confirms 4.42 on a clean runner; the 2026-11-12 local cohort in section 3.26
+   already measures 1.36 ms at 5k versus 0.08–0.10 ms, with reads at the floor.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3346,7 +3404,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all seventeen rows are complete for all three servers;
+runners, not a shared k3s host; all eighteen rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -3809,18 +3867,20 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.39 pub/sub fan-out | `PubSub::publish` (`pubsub.rs#L121`), `queue_capacity`, subscriber drain (`pool.rs#L159`), reactor async tick | channel lookup by key; byte-bounded queue; no silent unsubscribe; counted drop or documented disconnect; shared frame; ordering/pattern/shard; shutdown | 2,000-message burst, 10k-channel PUBLISH, 100 subscribers, NUMSUB | medium |
 | 4.40 O(1) counts | `set_read`/`hash_read`/`zset_read`/`list_len` (`collections.rs#L240`, `#L355`, `#L478`, `#L658`), `Collection` length/probe methods | SetInt/SetPack semantics; missing/empty/wrong type; no reply or ordering change; LLEN node walk | 100k `SISMEMBER`/`SCARD`/`HLEN`/`ZCARD`, 200k `LLEN`, 10-element controls | small |
 | 4.41 list seek | `list_index` (`collection_commands.rs#L2668`), `list_position` (`#L2321`), `Collection::list_items`/`ListQuick` (`data.rs`) | negative index; chunk boundaries; RANK/COUNT/MAXLEN; missing/empty/wrong type; no reply change | 200k `LINDEX`/`LPOS`, 10-element controls, LRANGE/LLEN | small |
+| 4.42 stream append | `xadd` (`streams.rs#L310`), `Stream`/`payload_bytes` (`data.rs#L182`), `put_stream` (`#L877`), trim/groups | append + delta accounting; IDs/counters; groups/PEL; trim; TTL/WATCH/journal/rewrite | 1k/5k `XADD`, reads, 10-entry control | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, and 4.33 —
 small and contract-visible — for the measured synchronous `UNLINK`/`ASYNC` drop.
 4.40 and 4.41 are the smallest, highest-certainty fixes (O(1) counts/membership
-and in-place list seek) and can land immediately. 4.35 is next: every collection
-write currently clones the collection, the gaps are 3.5–262×, and it reuses
-4.34's admit-then-mutate shape. 4.37 is small and shares 4.34's in-place string
-path: it removes the two copies in `SETBIT` and the byte loop in `BITCOUNT`
-(5–17×). 4.36 follows, first as a no-copy reservoir slice and then the dense
-index; its 100k gaps are 35–298×. 4.30 and 4.38 are the largest measured
+and in-place list seek) and can land immediately. 4.42 is the stream sibling of
+4.35's in-place write and shares the delta-accounting shape. 4.35 is next: every
+collection write currently clones the collection, the gaps are 3.5–262×, and it
+reuses 4.34's admit-then-mutate shape. 4.37 is small and shares 4.34's in-place
+string path: it removes the two copies in `SETBIT` and the byte loop in
+`BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir slice and then the
+dense index; its 100k gaps are 35–298×. 4.30 and 4.38 are the largest measured
 read-side ratios (378–927× at 100k) and should share one ordered structure: 4.30
 covers point/score/start-0 reads, 4.38 the rank-select that a `BTreeSet` cannot
 answer. 4.39 is a contract/reliability fix on the pub/sub path already admitted
@@ -4474,6 +4534,45 @@ negative indices, `RANK`/`COUNT`/`MAXLEN`, missing keys and wrong-type errors sh
 pass; no dependency shall be added; and both protected gates shall pass on the
 exact head.
 
+### 4.42 In-place stream append (candidate; admission measured)
+
+**Mechanism.** Admit the new entry's bytes, then borrow `Entry.stream` mutably
+and insert one `StreamEntry` into the existing `BTreeMap`, updating `payload_len`
+and the stream counters (`entries_added`, `last_generated`, `max_deleted` on
+trim) by the delta. No `stream.clone()`, no `payload_bytes()` fold and no
+`put_stream` replace; groups/PEL and trimming mutate the same stream.
+
+**Prediction.** 5k `XADD` falls from **1.36 ms to ≤0.2 ms** (p99 11.6 → ≤2) and
+1k from 0.263 to ≤0.15, so the 1k→5k ratio becomes ≤2× (flat); `XLEN`,
+`XRANGE`, `XREVRANGE` and the 10-entry control are unchanged.
+
+**Admission evidence (2026-11-12, section 3.26).** A 1,000- and a 5,000-entry
+stream, 30/50 repetitions, three rotations: 5k `XADD` p50 1.36/1.53/1.22 versus
+Redis 0.30/0.10/0.07 and Valkey 0.06/0.08/0.14; 1k 0.25/0.43/0.26 versus
+0.10/0.71/0.15 and 0.08/0.10/0.08; `XLEN` 0.072 versus 0.156/0.103; `XRANGE`
+first/mid 0.121/0.120 versus 0.099–0.307/0.187–0.288; `XREVRANGE` 0.118 versus
+0.117/0.136; 10-entry control 0.077/0.118 versus 0.078/0.103 and 0.231/0.143.
+
+**Risks and obligations.** `reserve` can evict the key being appended, so
+re-look it up; an OOM must not leave a partial entry; trimming, `entries_added`,
+`last_generated`, `max_deleted`, groups/PEL, TTL/WATCH/journal/rewrite and the
+reply ID must stay exact; the append must not change read or trim semantics.
+
+**Rejected options.** Keeping the clone and only removing the second payload
+fold, a separately cached length that can drift from the map, and an
+append-only log outside the stream (breaks the existing range/read paths).
+
+**Rejection condition.** Any stream, group/PEL, trim, rewrite or accounting test
+differs, an OOM leaves a partial entry, the controls or reads regress, or the
+1k→5k ratio is not flat.
+
+**Acceptance (AC44).** At 5,000 entries, `XADD` shall have p50 ≤0.2 ms and p99
+≤2 ms (≥6.8× faster than the measured 1.36/11.6 ms and within ~2× Redis's
+0.104/1.87 ms); at 1,000 entries p50 ≤0.15 ms; the 1k→5k p50 ratio ≤2×; `XLEN`,
+`XRANGE`, `XREVRANGE`, groups/PEL, trimming, rewrite/replay, TTL and accounting
+shall be unchanged; the 10-entry control shall be unchanged; no dependency shall
+be added; and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -4482,7 +4581,8 @@ in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes, 4.37 uses in-place `Vec` writes plus
 `u64::count_ones`, 4.38 uses a `Vec` of sorted blocks plus counts, 4.39 uses
 the existing channels and `sync_channel`, 4.40 uses the existing containers'
-lengths and probes, and 4.41 walks the existing list chunks. The rest use the
+lengths and probes, 4.41 walks the existing list chunks, and 4.42 mutates the
+existing stream map. The rest use the
 existing `std` I/O, parser and in-repo journal/crypto code. Each candidate lands
 as its own PR with AC5 plus the protected gates; no combined integration branch.
 
@@ -4536,7 +4636,8 @@ existing collection containers in place; 4.36 uses `Vec` plus
 `HashMap`/`BTreeSet` indexes; 4.37 uses in-place `Vec` writes plus
 `u64::count_ones`; 4.38 uses a `Vec` of sorted blocks plus counts; 4.39 uses the
 existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
-and probes; 4.41 walks the existing list chunks. None adds a crate, build script,
+and probes; 4.41 walks the existing list chunks; 4.42 mutates the existing stream
+map. None adds a crate, build script,
 allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
@@ -4720,6 +4821,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   the `RANK`/`COUNT 0`/`MAXLEN` rules are the semantic core; a missing key,
   empty list or wrong type must return today's reply, and `LRANGE`/`LLEN` must
   not change. The seek must not allocate per call (AC43).
+- **Stream-append risk (4.42):** `reserve` can evict the key being appended; an
+  OOM must leave no partial entry; trimming, `entries_added`, `last_generated`,
+  `max_deleted`, groups/PEL, TTL/WATCH/journal/rewrite and the reply ID must stay
+  exact, and the 1k→5k ratio must be flat (AC44).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -4791,6 +4896,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | A separately cached collection length maintained beside the container | Two sources of truth can drift; the container's own `len()` is O(1) (or O(nodes) for lists) and cannot disagree (4.40). |
 | Making `SMEMBERS` unsorted so `SCARD` can reuse it | Fixes neither `SISMEMBER` nor the clone/sort cost and changes a deterministic reply order (4.40). |
 | Maintaining a node/rank index just for `LINDEX` | The chunk walk is already O(nodes) without new state; materializing all references is the measured cost (4.41). |
+| Keeping the stream clone and only removing the second payload fold | Still deep-copies every entry and folds the payload once per `XADD`, so the measured O(n) cost remains (4.42). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -5091,6 +5197,13 @@ samples retained.
   `RANK`/`COUNT`/`MAXLEN`, missing keys and wrong-type errors shall pass; no
   dependency shall be added; and both protected gates shall pass on the exact
   head.
+- **AC44 (in-place stream append, only if 4.42 is implemented).** At 5,000
+  entries, `XADD` shall have p50 ≤0.2 ms and p99 ≤2 ms (≥6.8× faster than the
+  measured 1.36/11.6 ms and within ~2× Redis's 0.104/1.87 ms); at 1,000 entries
+  p50 ≤0.15 ms; the 1k→5k p50 ratio ≤2×; `XLEN`, `XRANGE`, `XREVRANGE`,
+  groups/PEL, trimming, rewrite/replay, TTL and accounting shall be unchanged;
+  the 10-entry control shall be unchanged; no dependency shall be added; and both
+  protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -5320,6 +5433,14 @@ separate roadmap.
   versus 0.102/0.142; `LPOS` hit-first 1.256 versus 0.095/0.127; `LPOS` missing
   1.806 versus 5.019/5.854; `LLEN` 1.364 versus 0.138/0.117; 10-element controls
   0.097/0.097 versus 0.09–0.12. Raw JSON retained (untracked).
+- Stream cohort (section 3.26, candidate 4.42): a 1,000- and a 5,000-entry stream
+  of one 8-byte field pair, 30/50 repetitions, three rotations. 5k `XADD` p50
+  1.36/1.53/1.22 ms (p99 11.6) versus Redis 0.30/0.10/0.07 and Valkey
+  0.06/0.08/0.14 (p99 1.87/1.58); 1k 0.25/0.43/0.26 versus 0.10/0.71/0.15 and
+  0.08/0.10/0.08; `XLEN` 0.072 versus 0.156/0.103; `XRANGE` first/mid
+  0.121/0.120 versus 0.099–0.307/0.187–0.288; `XREVRANGE` 0.118 versus
+  0.117/0.136; 10-entry control 0.077/0.118 versus 0.078/0.103 and 0.231/0.143.
+  Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -5742,3 +5863,7 @@ separate roadmap.
   values with 10-element controls. It does not measure deep `RANK`/`MAXLEN`
   combinations, `LPOS` with `COUNT`, lists built from `LINSERT`/`LREM` or very
   large elements; those are implementation-PR evidence under AC43.
+- The stream cohort (section 3.26) measures a single-field entry on one stream at
+  1k/5k; it does not measure multi-field entries, trimming cost, groups/PEL,
+  `XREAD` blocking, or 50k+ streams (the preload itself is O(n²) in the current
+  implementation). Those are implementation-PR evidence under AC44.
