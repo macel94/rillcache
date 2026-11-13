@@ -168,7 +168,9 @@ is extended with a `u64` bit scan. Streams have one more clone on a control path
 deep-clones every entry; 4.48 inserts the group in place. Sorted-set pops are the
 largest ratio in the record: `ZPOPMIN`/`ZPOPMAX`/`ZMPOP` at 100k are **146–160 vs
 0.16–0.42 ms** (373–974×) because every pop clones, sorts and replaces the whole
-set; 4.49 pops from the ordered index. Under
+set; 4.49 pops from the ordered index. Monitors share the pub/sub queue, so a
+2,000-command burst delivers **1,024 of 2,000 lines** per monitor (all samples)
+while Redis/Valkey deliver all; 4.39 is extended to monitors. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1084,7 +1086,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-eight observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Twenty-nine observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1257,6 +1259,11 @@ rest are still true even though every row now leads:
     whole set before removing one member: at 100k they cost **146–160 ms** versus
     0.16–0.42 ms (373–974×), the largest measured ratio, while the 100-member
     control is at the floor (section 3.35, candidate 4.49).
+29. **MONITOR feed under bursts.** The monitor queue is the pub/sub 1,024 queue
+    with a 64-line tick drain, so a 2,000-command burst delivers exactly **1,024
+    lines** to every monitor in every sample while Redis/Valkey deliver 2,000;
+    publisher fan-out is at parity or cheaper when it does not overflow (section
+    3.37, extending 4.39).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1434,6 +1441,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
+| MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
@@ -1859,7 +1867,7 @@ for a production claim.
 | Large multi-bulk replies (list/hash) | reply list/`writev`; hash iterated in internal order | same | list iterated directly; hash collects, sorts and encodes | **Adopt (list leads, hash lags):** 4.29 for 10k `HGETALL`; measured 43% behind Redis (3.2) |
 | Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, and 378–927× on 100k rank/range reads (3.2, 3.22, AC32/AC40) |
 | Sorted-set rank-select | skiplist span counts: O(log n) `ZRANK`, deep `ZRANGE` seek | same | rank requires a full materialize+sort+linear position scan | **Adapt:** 4.38 order-statistic index; measured 100k `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12 (3.22, AC40) |
-| Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms (3.23, AC41) |
+| Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain; monitors share the queue and silently drop lines | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms, and 1,024/2,000 monitor lines vs 2,000 (3.23, 3.37, AC41) |
 | Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
 | List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
@@ -3335,6 +3343,42 @@ is faster than both C servers. Re-measure only if the execution path changes
 (e.g., an ordered-index or in-place collection change lands) or a 10,000-command
 cohort shows a different shape.
 
+### 3.37 MONITOR feed under a burst
+
+- **Redis 8.10.2 and Valkey 9.1.2** append each monitored command to every
+  monitor's client output buffer; a 2,000-command burst (~40 KB of MONITOR lines)
+  is far below the output limit and nothing is dropped
+  ([`redis replication.c#L806`](https://github.com/redis/redis/blob/8.10.2/src/replication.c#L806),
+  [`server.c`](https://github.com/redis/redis/blob/8.10.2/src/server.c);
+  [`valkey replication.c#L694`](https://github.com/valkey-io/valkey/blob/9.1.2/src/replication.c#L694)).
+- **Rillcache** formats one MONITOR line per command, clones it per monitor and
+  `try_send`s it into the same 1,024-message queue as pub/sub; a full queue
+  **drops that line** and keeps the monitor attached. The reactor drains at most
+  64 lines per 1 ms tick, so a burst larger than 1,024 overflows before the drain
+  catches up. The source documents the drop
+  ([`engine.rs`](../../src/engine.rs#L883),
+  [`pool.rs`](../../src/server/pool.rs#L158)).
+- **Measured (2026-11-12).** One 2,000-`PING` pipeline with 0/1/10 attached
+  monitors, two bursts per configuration, three rotations:
+
+  | Configuration | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | Lines delivered per monitor (2,000 sent) | **1,024** (all six samples) | 2,000 | 2,000 |
+  | Publisher p50, 0 monitors | 5.18 ms | 1.88 | 2.37 |
+  | Publisher p50, 1 monitor | 3.75 | 5.66 | 16.74 |
+  | Publisher p50, 10 monitors | 5.99 | 19.78 | 27.22 |
+
+  The line count is deterministic: Rill delivers **1,024 of 2,000** to every
+  monitor in every sample, while both C servers deliver all 2,000. The publisher
+  timings at 0–1 monitors are within the shared host's spread and the 10-monitor
+  fan-out is cheaper in Rill because it stops at the queue bound, so the cost is
+  not the finding; the silent truncation is. This extends 4.39 to MONITOR.
+
+**Verdict: extend 4.39's contract to MONITOR.** Use the same byte-bounded queue
+and drain, but never truncate silently: either drop with a counted metric and
+keep the monitor, or disconnect with a documented error. Monitors are diagnostic,
+so an under-counted feed is worse than a visible disconnect.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3979,6 +4023,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
 28. **Transactions:** `MULTI` + 100/1,000 `SET` + `EXEC`, a 100×1 KB
    transaction, queue-only `DISCARD`, and a plain 1,000-SET control. Confirms the
    measured null in section 3.36 on a clean runner.
+29. **MONITOR bursts:** a 2,000-`PING` pipeline with 0/1/10 attached monitors,
+   counting delivered lines per monitor and publisher time. Extends 4.39 on a
+   clean runner; the 2026-11-12 local cohort in section 3.37 already measures
+   1,024/2,000 lines versus 2,000/2,000.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3986,7 +4034,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty-eight rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-nine rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4477,7 +4525,8 @@ index; its 100k gaps are 35–298×. 4.30, 4.38, 4.43 and 4.49 are the largest
 measured read/pop ratios (378–974× and 10–53×) and should share one ordered
 structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select, 4.43 the
 geohash cell ranges, and 4.49 the min/max pops. 4.39 is a contract/reliability
-fix on the pub/sub path already admitted as 4.24 and should land with them. 4.34
+fix on the pub/sub and MONITOR path already admitted as 4.24 (section 3.37) and
+should land with them. 4.34
 (landed in #258) removed two full-value copies per `APPEND`/`SETRANGE` and
 post-fix measures 0.13–0.19 ms at 32 MB. 4.32 follows as the structural memory
 and CPU fix (142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list
@@ -5040,22 +5089,29 @@ subscription and increment a counted metric (at-most-once is already the pub/sub
 contract), or disconnect the client with a documented error, mirroring Redis's
 `client-output-buffer-limit pubsub`. Drain by output bytes per wake (the existing
 64 KiB output chunk) instead of a hard 64 frames, so an active reader can clear a
-burst; keep the 1 ms tick as the fallback from 4.24.
+burst; keep the 1 ms tick as the fallback from 4.24. The same queue and contract
+apply to **MONITOR**: a monitor line may be dropped with a counted metric or the
+monitor disconnected, but never silently truncated.
 
 **Prediction.** A 2,000-message burst (64 KB) to an active subscriber is fully
 delivered and the subscription survives; `PUBLISH` among 10,000 channels falls
 from **0.38–0.89 ms to ≤0.3 ms**; 100 subscribers receive every message with the
-publisher within ~3× the C servers; nothing is silently lost.
+publisher within ~3× the C servers; a 2,000-command burst with a monitor attached
+delivers all 2,000 lines; nothing is silently lost.
 
-**Admission evidence (2026-11-12, section 3.23).** One subscriber plus a
-2,000-message pipeline, three rotations: Rill delivered 1,024/2,000 and
+**Admission evidence (2026-11-12, sections 3.23 and 3.37).** One subscriber plus
+a 2,000-message pipeline, three rotations: Rill delivered 1,024/2,000 and
 `PUBSUB NUMSUB` returned 0 after the burst; Redis/Valkey delivered 2,000/2,000
 and returned 1. `PUBLISH` p50 at 1 channel 0.12–0.22 versus 0.13–0.30, at
 1,000 channels 0.13 versus 0.16–0.30, and at 10,000 channels 0.38–0.89 versus
-0.12–0.31.
+0.12–0.31. A 2,000-command burst with 1/10 monitors delivered exactly
+1,024/2,000 lines per monitor in all six samples versus 2,000/2,000 for both C
+servers; publisher fan-out timings at 0–1 monitors were within the host spread
+and cheaper at 10 monitors because the queue stops it.
 
 **Risks and obligations.** Bounding by bytes must account the encoded frame and
-the queue, and an overflow must never remove the subscription silently; ordering
+the queue, and an overflow must never remove the subscription silently or
+truncate a monitor feed without a counted/documented behavior; ordering
 per publisher, at-most-once, pattern and shard channels, `UNSUBSCRIBE`/`NUMSUB`
 and shutdown must stay exact; the shared frame must be immutable and the
 per-subscriber RESP version/pattern variant respected; memory accounting and the
@@ -5076,9 +5132,11 @@ bound is exceeded, the behavior shall be a counted drop with the subscription
 intact or a documented disconnect, never a silent removal; `PUBLISH` among
 10,000 subscribed channels shall have p50 ≤0.3 ms (≥2.7× faster than 0.80 ms and
 within ~2× the C server) and stay flat from 1 to 10,000 channels; 100 subscribers
-shall receive every message with publisher p50 within ~3× the C servers;
-ordering, pattern/shard, unsubscribe and shutdown tests shall pass; no dependency
-shall be added; and both protected gates shall pass on the exact head.
+shall receive every message with publisher p50 within ~3× the C servers; a
+2,000-command burst with a monitor attached shall deliver all 2,000 lines (or a
+counted drop/document disconnect, never a silent truncation); ordering,
+pattern/shard, unsubscribe and shutdown tests shall pass; no dependency shall be
+added; and both protected gates shall pass on the exact head.
 
 ### 4.40 O(1) cardinality and membership (candidate; admission measured)
 
@@ -6164,9 +6222,11 @@ samples retained.
   never a silent removal; `PUBLISH` among 10,000 subscribed channels shall have
   p50 ≤0.3 ms (≥2.7× faster than the measured 0.80 ms and within ~2× the C
   server) and stay flat from 1 to 10,000 channels; 100 subscribers shall receive
-  every message with publisher p50 within ~3× the C servers; ordering,
-  pattern/shard, unsubscribe and shutdown tests shall pass; no dependency shall be
-  added; and both protected gates shall pass on the exact head.
+  every message with publisher p50 within ~3× the C servers; a 2,000-command
+  burst with a monitor attached shall deliver all 2,000 lines (or a counted
+  drop/document disconnect, never a silent truncation); ordering, pattern/shard,
+  unsubscribe and shutdown tests shall pass; no dependency shall be added; and
+  both protected gates shall pass on the exact head.
 - **AC42 (O(1) cardinality and membership, only if 4.40 is implemented).** At
   100,000 members, `SISMEMBER` (hit and miss) and `SCARD` shall have p50 ≤0.2 ms
   (≥40× faster than the measured 8.0–8.7 ms and within ~2× the faster C server);
@@ -6556,6 +6616,12 @@ separate roadmap.
   1.042/1.077; queue-only `DISCARD` 1.37 versus 1.30/1.77; plain 1,000 `SET`
   control 1.42 versus 2.20/2.59; second 1,000-command tx 2.85 versus 2.75/2.59.
   Raw JSON retained (untracked).
+- MONITOR cohort (section 3.37, extending 4.39): one 2,000-`PING` pipeline with
+  0/1/10 attached monitors, two bursts per configuration, three rotations. Lines
+  per monitor: Rill 1,024 in all six samples; Redis/Valkey 2,000 in all six.
+  Publisher p50 0 monitors 5.18 versus 1.88/2.37 ms; 1 monitor 3.75 versus
+  5.66/16.74; 10 monitors 5.99 versus 19.78/27.22. Raw JSON retained
+  (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -7033,3 +7099,9 @@ separate roadmap.
   1,000 commands with one value size; it does not measure `WATCH` aborts, 10,000
   commands, or multi-owner transaction routing. It is a null result at the
   measured shape, not universal parity.
+- The MONITOR cohort (section 3.37) measures a 2,000-command burst with up to 10
+  monitors on one connection; it does not measure sustained monitor load, slow
+  readers, MONITOR with large replies, or the proposed byte-bounded drain. The
+  delivered-line truncation is deterministic across the six samples; publisher
+  timings are host-noisy (0-monitor Rill 5.18 ms versus 3.75 at 1 monitor) and
+  are not used as a rate claim.
