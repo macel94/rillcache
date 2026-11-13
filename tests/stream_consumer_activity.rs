@@ -253,6 +253,80 @@ fn assert_aged_and_restored(dir: &Path, before_worker: i64, before_idle: i64) {
 }
 
 #[test]
+fn duplicate_createconsumer_keeps_pending_history_and_does_not_append_to_the_aof() {
+    let dir = temp_dir("duplicate-create");
+    let history = b"*1\r\n*2\r\n$1\r\ns\r\n*1\r\n*2\r\n$3\r\n1-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n";
+    {
+        let server = start(&dir);
+        let mut stream = connect(&server);
+        seed_consumers(&mut stream);
+        let before = std::fs::read(dir.join("test.aof")).unwrap();
+        for consumer in [b"worker".as_slice(), b"idle"] {
+            send(
+                &mut stream,
+                &[b"XGROUP", b"CREATECONSUMER", b"s", b"g", consumer],
+                b":0\r\n",
+            );
+        }
+        assert_eq!(std::fs::read(dir.join("test.aof")).unwrap(), before);
+        send(
+            &mut stream,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                b"g",
+                b"worker",
+                b"STREAMS",
+                b"s",
+                b"0",
+            ],
+            history,
+        );
+        let consumers = call(&mut stream, &[b"XINFO", b"CONSUMERS", b"s", b"g"]);
+        let pending = b"$6\r\nworker\r\n$7\r\npending\r\n:1\r\n";
+        assert!(
+            consumers
+                .windows(pending.len())
+                .any(|bytes| bytes == pending)
+        );
+        server.shutdown().unwrap();
+    }
+    {
+        let server = start(&dir);
+        let mut stream = connect(&server);
+        send(
+            &mut stream,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                b"g",
+                b"worker",
+                b"STREAMS",
+                b"s",
+                b"0",
+            ],
+            history,
+        );
+        send(&mut stream, &[b"XACK", b"s", b"g", b"1-0"], b":1\r\n");
+        send(
+            &mut stream,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                b"g",
+                b"worker",
+                b"STREAMS",
+                b"s",
+                b"0",
+            ],
+            b"*1\r\n*2\r\n$1\r\ns\r\n*0\r\n",
+        );
+        server.shutdown().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn consumer_activity_survives_live_journal_restart() {
     let dir = temp_dir("live");
     let (before_worker, before_idle) = {

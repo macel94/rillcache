@@ -20,9 +20,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   resolved at command time and `*-1` when no stream has new entries. Blocking
   XREAD shall return an explicit unsupported error.
 - **R172 (event-driven):** `XGROUP DESTROY`, `CREATECONSUMER` and `DELCONSUMER`
-  shall update group/consumer metadata atomically, report created/removed counts,
-  delete a consumer's pending references, preserve TTL/accounting and touch the
-  stream for WATCH/journal capture. All-mode tests shall cover ack/pending/range/
+  shall update group/consumer metadata atomically and report created/removed
+  counts. `CREATECONSUMER` for an existing name shall return 0 without replacing
+  the consumer, changing activity/delivery state, clearing either PEL, touching
+  WATCH versions or appending journal records. Only `DELCONSUMER` shall delete
+  that consumer's pending references. Mutating operations shall preserve
+  TTL/accounting and touch the stream for WATCH/journal capture. All-mode tests shall cover ack/pending/range/
   read/group lifecycle, errors and multi-stream reads; docs shall retain missing
   blocking/claim/trim/XINFO subcommands, volatile pending across restart and
   dynamic-key ACL limitations.
