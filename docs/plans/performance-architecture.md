@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.45).**
+gated (4.15, 4.20–4.27, 4.29–4.46).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -151,7 +151,10 @@ and `SMISMEMBER` 100 is 11.8 versus 0.21–0.39, because each requested member
 rescans the materialized collection; 4.44 probes directly. Expiry is the last
 systemic stall: the first `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` after 30k keys
 expire costs **36–46 vs 0.6–1.0 ms** because each calls `reap(now, usize::MAX)`,
-while a lazy `GET` is at parity; 4.45 bounds the command-path expiry. Under
+while a lazy `GET` is at parity; 4.45 bounds the command-path expiry. `SORT ...
+BY nosort LIMIT 0 10` is the other side of materialization: **7.96 vs 0.12–0.16
+ms** on 100k because the whole list is copied before the slice, while the sorted
+rows are competitive; 4.46 slices the source directly. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1067,7 +1070,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-two things are still true even though every row now leads:
+Twenty-three things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1213,6 +1216,10 @@ Twenty-two things are still true even though every row now leads:
     **36–46 ms** versus 0.6–1.0 ms (37–76×) while a per-key lazy `GET` is at
     parity; the purge costs ~1.2–1.5 µs per expired key (section 3.29, candidate
     4.45).
+23. **SORT `BY nosort`.** A 100k `SORT ... BY nosort LIMIT 0 10` costs
+    **7.96 ms** versus 0.12–0.16 ms (50–66×) because the whole source is copied
+    before the slice, while sorted/ALPHA/weighted SORT rows are 0.9–1.5× and the
+    100-element controls are at the floor (section 3.30, candidate 4.46).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1386,6 +1393,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 ms vs 0.69/0.98, `KEYS` 43.6 vs 0.63/0.80, `RANDOMKEY` 45.5 vs 0.65/0.60, `DBSIZE` 41.2 vs 0.58/0.83; lazy `GET` at parity | 4.45, admitted | AC47 | none |
+| SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` 7.96 ms (p99 17.2) vs 0.12/0.16; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, admitted | AC48 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1814,6 +1822,7 @@ for a production claim.
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
 | Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Adapt:** 4.45 bounded lazy expiry; measured after 30k expire `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` 36–46 vs 0.6–1.0 ms, lazy `GET` at parity (3.29, AC47) |
+| SORT `BY nosort` | source-order slice without sorting or copying | same | clone every element and build an `Item` before applying `LIMIT` | **Adapt:** 4.46 direct nosort slice; measured 100k 7.96 vs 0.12/0.16 ms; sorted/ALPHA/weighted rows 0.9–1.5× (3.30, AC48) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -2974,6 +2983,50 @@ counted) or count live keys without a purge. Keep the bounded periodic purge
 an expiry wave can never stall one command. Document the DBSIZE semantics change
 and keep expired values unreadable.
 
+### 3.30 SORT and `BY nosort`
+
+- **Redis 8.10.2 and Valkey 9.1.2** special-case `BY nosort`: with a `LIMIT` they
+  return the requested slice of the source order without sorting or copying the
+  collection; sorted `SORT` still builds a vector of object references and sorts
+  it, and `BY pattern` builds one weight lookup per element
+  ([`redis sort.c#L178`](https://github.com/redis/redis/blob/8.10.2/src/sort.c#L178),
+  [`#L226`](https://github.com/redis/redis/blob/8.10.2/src/sort.c#L226),
+  [`#L331`](https://github.com/redis/redis/blob/8.10.2/src/sort.c#L331);
+  [`valkey sort.c#L197`](https://github.com/valkey-io/valkey/blob/9.1.2/src/sort.c#L197),
+  [`#L243`](https://github.com/valkey-io/valkey/blob/9.1.2/src/sort.c#L243)).
+- **Rillcache** always materializes the source first: `source_values` clones every
+  element into `Vec<Vec<u8>>`, and the SORT loop builds an `Item` (owned value,
+  number, compare key) for every element even when `BY nosort` is set. With
+  `BY nosort LIMIT 0 10` on a 100k list it therefore clones 100k values and then
+  returns 10
+  ([`sort.rs`](../../src/engine/sort.rs#L120),
+  [`#L228`](../../src/engine/sort.rs#L228)).
+- **Measured (2026-11-12).** A 100,000-element list of integer strings plus
+  `w<i>` weight keys, 50 repetitions, three rotations; a 100-element list is the
+  control:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SORT lst` (full reply) | 92.5 ms | 84.8 ms | 105.6 ms |
+  | `SORT lst LIMIT 0 10` | 32.4 | 26.0 | 29.0 |
+  | `SORT lst ALPHA LIMIT 0 10` | 90.2 | 108.1 | 106.8 |
+  | `SORT lst DESC LIMIT 0 10` | 33.5 | 28.2 | 28.1 |
+  | `SORT lst BY nosort LIMIT 0 10` | **7.96** (p99 17.2) | 0.12 (1.17) | 0.16 (0.77) |
+  | `SORT lst BY w* LIMIT 0 10` | 117.5 | 92.1 | 80.4 |
+  | `SORT lst LIMIT 0 10 GET #` | 30.0 | 27.3 | 26.9 |
+  | 100-element controls | 0.21/0.27 | 0.15/0.26 | 0.26/0.23 |
+
+  Sorted and `BY pattern` rows are within **0.9–1.5×** (the ALPHA row leads), but
+  `BY nosort LIMIT 10` is **50–66×** slower because it still copies the whole
+  list; the 100-element controls are at the floor. Candidate 4.46.
+
+**Verdict: adapt a direct `BY nosort` slice (4.46).** When `BY` has no `*`
+(`nosort`), apply `offset`/`count` to the source order without building `Item`s
+or cloning the collection: index the list range, or iterate the first
+`offset + count` members of a set/zset in its current deterministic order; only
+`STORE` materializes the selected values. Leave the sorted/alpha/weighted paths
+unchanged because they are already competitive.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3020,7 +3073,8 @@ section 3.26. 4.43 is the geospatial neighbor-cell candidate for the measured
 10–53× search and point-lookup loss in section 3.27. 4.44 is the per-member
 direct-probe candidate for the measured 30–1461× multi-member lookup loss in
 section 3.28. 4.45 is the bounded-lazy-expiry candidate for the measured 37–76×
-mass-expiry stall in section 3.29.
+mass-expiry stall in section 3.29. 4.46 is the direct `BY nosort` slice candidate
+for the measured 50–66× loss in section 3.30.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3582,6 +3636,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`GET` per fresh wave. Confirms 4.45 on a
    clean runner; the 2026-11-12 local cohort in section 3.29 already measures
    36–46 ms versus 0.6–1.0 ms and lazy `GET` at parity.
+22. **SORT:** a 100k integer list with weight keys; full, `LIMIT 0 10`, ALPHA,
+   DESC, `BY nosort LIMIT`, `BY w*`, `GET #`, and 100-element controls. Confirms
+   4.46 on a clean runner; the 2026-11-12 local cohort in section 3.30 already
+   measures 7.96 ms for `BY nosort LIMIT` versus 0.12–0.16 ms.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3589,7 +3647,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty-one rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-two rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4056,32 +4114,33 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.43 geosearch | `run_search` (`geo.rs#L350`), `geopos` (`#L203`), geohash cell helpers, ordered zset index | cell ranges/neighbours; dateline/pole; dedupe; ASC/DESC/COUNT; WGS-84; STORE | 50k 1 km/box `GEOSEARCH`, `GEOPOS` 1/100, `GEODIST`, boundary fixture | medium |
 | 4.44 multi-member probes | `set_mismember` (`collection_commands.rs#L3043`), `zmscore` (`collections.rs#L490`), `contains_member`/`zset_score` | SetInt/SetPack; duplicates/order; missing/empty/wrong type; no reply change | 100k `SMISMEMBER`/`ZMSCORE` at 1/10/100, `HMGET` control | small |
 | 4.45 bounded expiry | `KEYS`/`RANDOMKEY`/`DBSIZE` (`keyspace.rs#L183`), `MGET`/`MSET`/`MSETEX` (`multikey.rs#L160`), `SCAN` (`scan.rs#L122`), `Data::reap`/`reserve` (`data.rs#L599`, `#L646`) | expired values unreadable; DBSIZE semantics; admission bound; TTL/WATCH/notifications | 30k-expiry wave: `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`, lazy `GET` | small |
+| 4.46 nosort slice | `sort`/`source_values` (`sort.rs#L120`, `#L228`), `ITEMS`/limit/STORE | source order for set/zset; offset/count; STORE; missing key; no reply change | 100k `BY nosort LIMIT`, controls, other SORT rows | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
-for the measured synchronous `UNLINK`/`ASYNC` drop. 4.40, 4.41 and 4.44 are the
-smallest, highest-certainty fixes (O(1) counts/membership, in-place list seek,
-per-member probes) and can land immediately. 4.42 is the stream sibling of
-4.35's in-place write and shares the delta-accounting shape. 4.35 is next: every
-collection write currently clones the collection, the gaps are 3.5–262×, and it
-reuses 4.34's admit-then-mutate shape. 4.37 is small and shares 4.34's in-place
-string path: it removes the two copies in `SETBIT` and the byte loop in
-`BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir slice and then the
-dense index; its 100k gaps are 35–298×. 4.30, 4.38 and 4.43 are the largest
-measured read-side ratios (378–927× and 10–53×) and should share one ordered
-structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select, and 4.43
-the geohash cell ranges. 4.39 is a contract/reliability fix on the pub/sub path
-already admitted as 4.24 and should land with them. 4.34 itself removes two
-full-value copies per `APPEND`/`SETRANGE`. 4.32 follows as the structural memory
-and CPU fix (142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list
-direction. 4.22/4.24 come last because they touch every asynchronous client path
-and carry the highest ordering risk (4.39 rides with them). 4.31 is the largest
-per-call ratio in the record but touches the keyspace, every collection type and
-the router cursor, so it follows the journal slices and the ordered-structure
-decision. 4.23 follows the existing bounded slices. 4.20 stays conditional on
-4.19; 4.18 stays deferred.
+for the measured synchronous `UNLINK`/`ASYNC` drop. 4.40, 4.41, 4.44 and 4.46 are
+the smallest, highest-certainty fixes (O(1) counts/membership, in-place list
+seek, per-member probes, direct nosort slice) and can land immediately. 4.42 is
+the stream sibling of 4.35's in-place write and shares the delta-accounting
+shape. 4.35 is next: every collection write currently clones the collection, the
+gaps are 3.5–262×, and it reuses 4.34's admit-then-mutate shape. 4.37 is small
+and shares 4.34's in-place string path: it removes the two copies in `SETBIT` and
+the byte loop in `BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir
+slice and then the dense index; its 100k gaps are 35–298×. 4.30, 4.38 and 4.43
+are the largest measured read-side ratios (378–927× and 10–53×) and should share
+one ordered structure: 4.30 covers point/score/start-0 reads, 4.38 the
+rank-select, and 4.43 the geohash cell ranges. 4.39 is a contract/reliability fix
+on the pub/sub path already admitted as 4.24 and should land with them. 4.34
+itself removes two full-value copies per `APPEND`/`SETRANGE`. 4.32 follows as the
+structural memory and CPU fix (142–143 → target ≤24 B/element) and may reuse
+4.31's ordered-list direction. 4.22/4.24 come last because they touch every
+asynchronous client path and carry the highest ordering risk (4.39 rides with
+them). 4.31 is the largest per-call ratio in the record but touches the keyspace,
+every collection type and the router cursor, so it follows the journal slices and
+the ordered-structure decision. 4.23 follows the existing bounded slices. 4.20
+stays conditional on 4.19; 4.18 stays deferred.
 
 ### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
 
@@ -4899,6 +4958,47 @@ value; the `DBSIZE` semantics shall be documented with tests updated; admission
 shall stay bounded and atomic; TTL expiry/notification/WATCH tests shall pass; no
 dependency shall be added; and both protected gates shall pass on the exact head.
 
+### 4.46 Direct `BY nosort` slice (candidate; admission measured)
+
+**Mechanism.** When `BY` has no `*` (`nosort`), do not call `source_values` or
+build `Item`s for the whole source: apply `offset`/`count` directly to the
+sequence — index the list range without cloning, or iterate the first
+`offset + count` members of a set/zset in its current deterministic order (sets
+sorted by member, zsets by score/member as today). Materialize only when `STORE`
+needs the selected values or no `LIMIT` is present. The sorted, ALPHA, weighted
+and `GET` paths are untouched.
+
+**Prediction.** 100k `SORT ... BY nosort LIMIT 0 10` falls from **7.96 ms to
+≤0.3 ms** (p99 17.2 → ≤2), while full-nosort remains reply-bound and every other
+SORT row is unchanged.
+
+**Admission evidence (2026-11-12, section 3.30).** A 100k integer list plus
+`w<i>` weight keys, 50 repetitions, three rotations: `BY nosort LIMIT 0 10`
+p50 7.8/8.0/8.7 versus Redis 0.12 and Valkey 0.16 (p99 17.2/1.17/0.77); sorted
+`SORT` 92.5 versus 84.8/105.6, `LIMIT` 32.4 versus 26.0/29.0, ALPHA 90.2 versus
+108.1/106.8, DESC 33.5 versus 28.2/28.1, `BY w*` 117.5 versus 92.1/80.4,
+`GET #` 30.0 versus 27.3/26.9; 100-element controls 0.21/0.27.
+
+**Risks and obligations.** The set/zset source order must stay exactly as today
+(sets sorted by member, zsets by score/member); negative or oversized
+`offset`/`count`, `STORE`, missing keys and list chunk boundaries must not change;
+no reply or accounting change.
+
+**Rejected options.** Rewriting all SORT to sort borrowed indices (not justified:
+the other rows are 0.9–1.5×), and keeping the full materialization (the measured
+50–66×).
+
+**Rejection condition.** Any source order, limit or `STORE` result differs, the
+controls or another SORT row regresses, or no gain above the spread.
+
+**Acceptance (AC48).** On a 100,000-element list, `SORT ... BY nosort LIMIT 0 10`
+shall have p50 ≤0.5 ms and p99 ≤2 ms (≥16× faster than the measured 7.96/17.2 ms
+and within ~4× Redis's 0.12/1.17 ms); the full, limited, ALPHA, DESC, `BY w*` and
+`GET #` rows shall stay within 1.5× of baseline; the 100-element controls shall
+be unchanged; offset/count edges, `STORE`, missing keys and set/zset sources
+shall pass; no dependency shall be added; and both protected gates shall pass on
+the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -4909,9 +5009,10 @@ in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
 the existing channels and `sync_channel`, 4.40 uses the existing containers'
 lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the
 existing stream map, 4.43 uses geohash score ranges, 4.44 uses the existing
-set/zset members, and 4.45 uses the existing lazy expire path. The rest use the
-existing `std` I/O, parser and in-repo journal/crypto code. Each candidate lands
-as its own PR with AC5 plus the protected gates; no combined integration branch.
+set/zset members, 4.45 uses the existing lazy expire path, and 4.46 slices the
+existing source order. The rest use the existing `std` I/O, parser and in-repo
+journal/crypto code. Each candidate lands as its own PR with AC5 plus the
+protected gates; no combined integration branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -4964,8 +5065,8 @@ existing collection containers in place; 4.36 uses `Vec` plus
 `u64::count_ones`; 4.38 uses a `Vec` of sorted blocks plus counts; 4.39 uses the
 existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
 and probes; 4.41 walks the existing list chunks; 4.42 mutates the existing stream map;
-4.43 uses geohash score ranges; 4.44 uses the existing set/zset members; 4.45 uses the existing lazy expire path.
-None adds a crate, build script,
+4.43 uses geohash score ranges; 4.44 uses the existing set/zset members; 4.45 uses the existing lazy expire path;
+4.46 slices the existing source order. None adds a crate, build script,
 allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
@@ -5166,6 +5267,9 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   return an expired value, `DBSIZE` becomes approximate (documented/tests), and
   write admission must stay bounded without a false permanent OOM; the periodic
   purge drains the backlog (AC47).
+- **SORT-nosort risk (4.46):** the direct slice must preserve the current set/zset
+  source order, offset/count edge cases and `STORE`, and must not change any other
+  SORT row (AC48).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -5241,6 +5345,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Keeping the linear geohash scan or caching distances per query | The scan is the measured 25–53× cost; a per-query cache is stale on updates and O(n) memory, while cell ranges reuse the ordered zset (4.43). |
 | Keeping `set_items`/`zset_items` with a per-member scan | Every requested member rescans the materialized collection, so the measured 30–1461× cost grows with the member count (4.44). |
 | Purging every due key on the first command after a mass expiry | The measured stall is 36–46 ms for 30k expired keys and scales with the backlog; reads should expire only what they touch (4.45). |
+| Materializing the whole source for `SORT ... BY nosort LIMIT` | The measured 7.96 vs 0.12–0.16 ms is a full copy of 100k values for a 10-element slice; the other SORT rows are already 0.9–1.5× (4.46). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -5574,6 +5679,14 @@ samples retained.
   shall be documented with tests updated; admission shall stay bounded and
   atomic; TTL expiry/notification/WATCH tests shall pass; no dependency shall be
   added; and both protected gates shall pass on the exact head.
+- **AC48 (direct `BY nosort` slice, only if 4.46 is implemented).** On a
+  100,000-element list, `SORT ... BY nosort LIMIT 0 10` shall have p50 ≤0.5 ms
+  and p99 ≤2 ms (≥16× faster than the measured 7.96/17.2 ms and within ~4×
+  Redis's 0.12/1.17 ms); the full, limited, ALPHA, DESC, `BY w*` and `GET #` rows
+  shall stay within 1.5× of baseline; the 100-element controls shall be
+  unchanged; offset/count edges, `STORE`, missing keys and set/zset sources shall
+  pass; no dependency shall be added; and both protected gates shall pass on the
+  exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -5833,6 +5946,13 @@ separate roadmap.
   26.94/51.35) versus Redis 0.69 and Valkey 0.98; `KEYS` 43.58 versus 0.63/0.80;
   `RANDOMKEY` 45.45 versus 0.65/0.60; `DBSIZE` 41.21 versus 0.58/0.83; lazy
   `GET` 0.92 versus 0.75/0.72. Raw JSON retained (untracked).
+- SORT cohort (section 3.30, candidate 4.46): a 100,000-element integer list plus
+  `w<i>` weight keys, 50 repetitions, three rotations. `BY nosort LIMIT 0 10`
+  p50 7.8/8.0/8.7 ms (p99 17.2) versus Redis 0.12 (1.17) and Valkey 0.16 (0.77);
+  sorted `SORT` 92.5 versus 84.8/105.6; `LIMIT 0 10` 32.4 versus 26.0/29.0;
+  ALPHA 90.2 versus 108.1/106.8; DESC 33.5 versus 28.2/28.1; `BY w*` 117.5
+  versus 92.1/80.4; `GET #` 30.0 versus 27.3/26.9; 100-element controls
+  0.21/0.27 versus 0.15/0.26 and 0.26/0.23. Raw JSON retained (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -6274,3 +6394,7 @@ separate roadmap.
   `maxmemory`, the periodic purge rate, or commands that touch few expired keys.
   Those are implementation-PR evidence under AC47. The C-server MGET samples
   include one 14.7 ms outlier; the median is used.
+- The SORT cohort (section 3.30) measures one 100k integer list with weight keys;
+  it does not measure `STORE`, set/zset sources, `BY hash*->field` patterns, or
+  large `LIMIT` windows. Those are implementation-PR evidence under AC48. The
+  sorted rows show the host's spread (ALPHA 90–108 ms across servers).
