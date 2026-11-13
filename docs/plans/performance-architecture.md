@@ -161,7 +161,9 @@ because each sorts a fresh snapshot; 4.29 and 4.31 are extended to cover them.
 HyperLogLog is the remaining CPU gap: 100k pipelined adds cost **1.70 vs 0.39–0.41 s**
 and 10k repeated counts **2.66 vs 0.033–0.036 s** because every command
 decodes/encodes 16 KB of registers and nothing is cached; 4.47 keeps them in
-place and caches the count. Under
+place and caches the count. Bitmaps also hide a scan: a not-found `BITPOS 0` on
+16 MB is **201.6 vs 5.1 ms** because `find_bit` visits every byte and bit; 4.37
+is extended with a `u64` bit scan. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1077,7 +1079,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-five things are still true even though every row now leads:
+Twenty-six things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1237,6 +1239,10 @@ Twenty-five things are still true even though every row now leads:
     versus 3.3–3.6 µs, because every command decodes/encodes the 16 KB register
     set and there is no cached cardinality; single-call p50 and the 10-element
     controls are at the floor (section 3.32, candidate 4.47).
+26. **BITPOS on a large bitmap.** A not-found `BITPOS 0` on 16 MB costs **201.6
+    ms** versus 5.1 ms (39–44×) because it scans byte by byte and bit by bit,
+    while a first-bit hit is at the floor; `BITCOUNT` is the previously admitted
+    4.37 row (section 3.33, extending 4.37).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1414,6 +1420,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
+| BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1846,6 +1853,7 @@ for a production claim.
 | Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
 | Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
 | HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
+| Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
@@ -3144,6 +3152,39 @@ cached cardinality in the header that `PFADD`/`PFMERGE` invalidate, so
 representations, serialization/rewrite/replay, the error bound and merge
 semantics.
 
+### 3.33 BITPOS on large bitmaps
+
+- **Redis 8.10.2 and Valkey 9.1.2** scan for a bit a word at a time:
+  `redisBitpos` aligns to 64-bit words and uses `trailing_zeros` on the word or
+  its complement, masking only the first and last partial words
+  ([`redis bitops.c#L392`](https://github.com/redis/redis/blob/8.10.2/src/bitops.c#L392),
+  [`#L1721`](https://github.com/redis/redis/blob/8.10.2/src/bitops.c#L1721);
+  [`valkey bitops.c#L1041`](https://github.com/valkey-io/valkey/blob/9.1.2/src/bitops.c#L1041)).
+- **Rillcache** scans byte by byte and then bit by bit: `find_bit` loops over
+  every byte in the range and over all eight bit positions inside it, so a
+  not-found `BITPOS key 0` visits 8 × 16M positions
+  ([`string_algorithms.rs`](../../src/engine/string_algorithms.rs#L432)).
+- **Measured (2026-11-12).** One 16 MB `0xff` bitmap (built by 512 KiB
+  `APPEND`s), 10 repetitions, three rotations; a 64-byte bitmap is the control:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `BITPOS bits 0` (not found) | **201.6 ms** | 5.08 ms | 5.14 ms |
+  | `BITPOS bits 0 0 -1` | **209.4** | 4.79 | 5.96 |
+  | `BITPOS bits 1` (first bit) | 0.12 | 0.60 | 0.09 |
+  | `BITCOUNT bits` (control) | 23.46 | 4.04 | 4.78 |
+  | 64 B `BITPOS 0` | 0.32 | 0.55 | 0.10 |
+
+  A not-found `BITPOS 0` is **39–44×** slower, while a first-bit hit is at the
+  floor; `BITCOUNT` is the previously admitted 4.37 row (5–6×). The same
+  word-wise machinery fixes both. Candidate 4.37 is extended.
+
+**Verdict: extend 4.37 with a word-wise bit scan.** Use `u64` chunks for
+`find_bit`: for bit 1 take `trailing_zeros` of the word, for bit 0 of its
+complement, with big-endian byte order and masked head/tail words; keep the
+BYTE/BIT range rules and the not-found return values. This is the same safe
+`u64` loop as the `BITCOUNT` change.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3194,7 +3235,8 @@ mass-expiry stall in section 3.29. 4.46 is the direct `BY nosort` slice candidat
 for the measured 50–66× loss in section 3.30. Section 3.31 extends 4.29 to
 `HKEYS`/`HVALS` and 4.31 to `KEYS`/`RANDOMKEY` at 100k. 4.47 is the HyperLogLog
 in-place-register and cached-count candidate for the measured 4× add and 74–80×
-count throughput losses in section 3.32.
+count throughput losses in section 3.32. Section 3.33 extends 4.37 with a
+word-wise `BITPOS` scan.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3769,6 +3811,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    p50s, and a 10-element control. Confirms 4.47 on a clean runner; the
    2026-11-12 local cohort in section 3.32 already measures 1.70 s versus 0.39–0.41
    for adds and 2.66 s versus 0.033–0.036 for counts.
+25. **BITPOS:** `BITPOS 0` (not found), `BITPOS 0 0 -1`, `BITPOS 1` (first bit),
+   `BITCOUNT`, and a 64 B control on a 16 MB bitmap. Extends 4.37 on a clean
+   runner; the 2026-11-12 local cohort in section 3.33 already measures 201.6 ms
+   versus 5.1 ms.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3776,7 +3822,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty-four rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-five rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4234,7 +4280,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.34 in-place strings | `append`/`setrange` (`string_ranges.rs`), `Data::reserve`/`put`/`remove` (`data.rs#L646`, `#L774`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small |
 | 4.35 in-place collection writes | `hash_set`/`zset_add`/`set_add`/`push_list`/`pop_list` (`collections.rs`), `Data::entries.get_mut`, `payload_len`, field TTL, blocking wake | admit before mutate; pack↔large conversion only at thresholds; delta accounting; empty-collection removal; field TTL; WATCH/journal | 10k `HSET`/`ZADD`/`SADD`, 200k `RPUSH`/`LPOP`, 10-element controls | medium |
 | 4.36 random members | `set_random_member`/`set_pop`/`hash_random_field`/`zset_random_member` (`collection_commands.rs`), `owned_set`, `set_items`, `hash_items`, `zset_items`, collection representation | sample without materializing; uniform distribution; count/negative-count semantics; `SPOP` removal and empty deletion; ordering decision; small pack paths | 10k/100k `SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`/`SPOP`, distribution test | medium |
-| 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`), `Data::reserve`/`put`, range normalization | in-place write after admission; `u64` chunk popcount with masked head/tail; BYTE/BIT ranges; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`, 64 B controls, range cases | small |
+| 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`, `#L524`), `find_bit` (`#L432`), `Data::reserve`/`put`, range normalization | in-place write after admission; `u64` chunk popcount and bit scan with masked head/tail; BYTE/BIT ranges; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`/`BITPOS`, 64 B controls, range cases | small |
 | 4.38 zset rank index | `zset_rank` (`collection_commands.rs#L3744`), `zset_range_by_score` (`#L3896`), `zset_read` (`collections.rs#L433`), `ZAdd`/`ZRem` paths, block index | rank-select over `(score, member)`; score moves; block split/merge; negative/reverse ranges; `ZSetPack`; accounting; replay/rewrite | 100k `ZRANK`/`ZREVRANK`/deep `ZRANGE`/`ZRANGEBYSCORE`, ZADD regression | medium |
 | 4.39 pub/sub fan-out | `PubSub::publish` (`pubsub.rs#L121`), `queue_capacity`, subscriber drain (`pool.rs#L159`), reactor async tick | channel lookup by key; byte-bounded queue; no silent unsubscribe; counted drop or documented disconnect; shared frame; ordering/pattern/shard; shutdown | 2,000-message burst, 10k-channel PUBLISH, 100 subscribers, NUMSUB | medium |
 | 4.40 O(1) counts | `set_read`/`hash_read`/`zset_read`/`list_len` (`collections.rs#L240`, `#L355`, `#L478`, `#L658`), `Collection` length/probe methods | SetInt/SetPack semantics; missing/empty/wrong type; no reply or ordering change; LLEN node walk | 100k `SISMEMBER`/`SCARD`/`HLEN`/`ZCARD`, 200k `LLEN`, 10-element controls | small |
@@ -4709,30 +4755,36 @@ the exact head.
 the entry's own `Vec` in place (zero-filling only when the offset passes the end)
 instead of building a new value and copying it twice. `BITCOUNT` sums
 `chunks_exact(8)` as little-endian `u64::count_ones()` and handles the head and
-tail with per-byte popcount; BYTE and BIT ranges normalize to a byte span with
-edge masks. `GETBIT`/`BITPOS` reads are unchanged.
+tail with per-byte popcount; `BITPOS` finds the first matching bit the same way
+(`trailing_zeros` of the word, or of its complement for bit 0) with masked
+head/tail words. BYTE and BIT ranges normalize to a byte span with edge masks.
+`GETBIT` stays a direct read.
 
-**Prediction.** 16 MB `SETBIT` falls from **5.32 ms to ≤0.5 ms** and `BITCOUNT`
-from 23.0 to ≤6 ms (within ~2× Redis); the 1 MB rows move to the command floor;
-the 64 B controls are unchanged.
+**Prediction.** 16 MB `SETBIT` falls from **5.32 ms to ≤0.5 ms**, `BITCOUNT`
+from 23.0 to ≤6 ms, and a not-found `BITPOS 0` from **201.6 ms to ≤8 ms** (within
+~1.6× Redis); the 1 MB rows move to the command floor; the 64 B controls and a
+first-bit hit are unchanged.
 
-**Admission evidence (2026-11-12, section 3.21).** One 1 MB and one 16 MB
-`0xff` bitmap (the 16 MB one built by 512 KiB `APPEND`s), 100/30 repetitions,
-three rotations: 16 MB `SETBIT` 5.32/5.58/4.85 ms versus Redis 0.09/0.71/0.35 and
-Valkey 0.31/0.53/0.22; `BITCOUNT` 22.48/23.24/23.01 versus 3.52/3.13/3.37 and
-3.77/4.56/5.70; 1 MB 0.331/1.85 versus 0.09–0.26/0.17–0.31. `GETBIT`, `STRLEN`
-and the 64 B controls are at the command floor.
+**Admission evidence (2026-11-12, sections 3.21 and 3.33).** One 1 MB and one
+16 MB `0xff` bitmap (the 16 MB one built by 512 KiB `APPEND`s), 100/30
+repetitions, three rotations: 16 MB `SETBIT` 5.32/5.58/4.85 ms versus Redis
+0.09/0.71/0.35 and Valkey 0.31/0.53/0.22; `BITCOUNT` 22.48/23.24/23.01 versus
+3.52/3.13/3.37 and 3.77/4.56/5.70; `BITPOS 0` 200.1/201.6/206.7 versus
+5.3/5.1/4.9 and 5.7/4.6/5.1; `BITPOS 0 0 -1` 209.4 versus 4.79/5.96;
+`BITPOS 1` 0.12 versus 0.60/0.09; 1 MB 0.331/1.85 versus 0.09–0.26/0.17–0.31;
+64 B controls at the floor.
 
 **Risks and obligations.** `reserve` can evict the key being written, so re-look
 it up; an OOM after a partial extend corrupts the value; zero-fill growth, the
 offset cap and the 512 MiB limit must not change; BYTE/BIT range normalization
 (negative indices, inverted ranges) and MSB-first bit numbering must be exact;
-TTL, WATCH, journal and rewrite must see the same value; the popcount must stay
-safe Rust (no target-feature intrinsics).
+the not-found return values (`len*8` for bit 0 without an explicit end, `-1`
+otherwise) must stay; TTL, WATCH, journal and rewrite must see the same value;
+the popcount and bit scan must stay safe Rust (no target-feature intrinsics).
 
 **Rejected options.** SIMD intrinsics or a CPU-feature dependency (unsafe or a
-new crate for a path that a `u64` loop nearly closes), the current byte-at-a-time
-loop, and the rebuild-and-copy write.
+new crate for a path that a `u64` loop nearly closes), the current byte-and-bit
+scan, and the rebuild-and-copy write.
 
 **Rejection condition.** Any bit or range semantics test differs, an OOM leaves a
 partial value, the controls or reads regress, or no gain above the spread.
@@ -4740,11 +4792,14 @@ partial value, the controls or reads regress, or no gain above the spread.
 **Acceptance (AC39).** `SETBIT` at offset 0 of a 16 MB bitmap shall have p50
 ≤0.5 ms and p99 ≤2 ms (≥10× faster than the measured 5.32 ms and within ~2×
 Redis's 0.349 ms); `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms and p99
-≤10 ms (≥3.8× faster than 23.0 ms and within ~2× Redis's 3.37 ms); the 1 MB rows
-shall be at the command floor; the 64 B controls, `GETBIT` and `STRLEN` shall be
-unchanged; BYTE and BIT ranges including negative indices, the offset and 512 MiB
-limits, zero-fill, TTL/WATCH/journal/replay and accounting shall pass; no
-dependency shall be added; and both protected gates shall pass on the exact head.
+≤10 ms (≥3.8× faster than 23.0 ms and within ~2× Redis's 3.37 ms); a not-found
+`BITPOS 0` shall have p50 ≤8 ms and p99 ≤15 ms (≥25× faster than 201.6 ms and
+within ~1.6× Redis's 5.08 ms) while a first-bit hit stays at the floor; the 1 MB
+rows shall be at the command floor; the 64 B controls, `GETBIT` and `STRLEN`
+shall be unchanged; BYTE and BIT ranges including negative indices, the offset
+and 512 MiB limits, zero-fill, TTL/WATCH/journal/replay and accounting shall
+pass; no dependency shall be added; and both protected gates shall pass on the
+exact head.
 
 ### 4.38 Order-statistic sorted-set rank (candidate; admission measured)
 
@@ -5476,6 +5531,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   add/merge and exact↔dense conversion must invalidate it; the serialized header
   must stay compatible with rewrite/replay/restore, and counts must stay within
   the error bound and identical before/after serialization (AC49).
+- **BITPOS risk (4.37 extension):** the word-wise scan must keep MSB-first bit
+  numbering, masked head/tail words, BYTE/BIT ranges and the not-found return
+  values (`len*8` for bit 0 without an explicit end, `-1` otherwise); a
+  first-bit hit must stay fast (AC39).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -5554,6 +5613,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Materializing the whole source for `SORT ... BY nosort LIMIT` | The measured 7.96 vs 0.12–0.16 ms is a full copy of 100k values for a 10-element slice; the other SORT rows are already 0.9–1.5× (4.46). |
 | Keeping per-call sorts for `HKEYS`/`HVALS`/`KEYS` | At 100k the hash listings are 3.5–6.2× and `KEYS` 2.1–4.3× behind; 4.29's ordered hash and 4.31's key index remove the sort without changing reply contents (3.31). |
 | A count cache outside the HLL payload | A separate counter diverges from rewrite/replay/restore and accounting; the cache belongs in the serialized header (4.47). |
+| Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -5814,15 +5874,18 @@ samples retained.
   with tests updated; `SPOP` empty-deletion, TTL, blocking,
   persistence/rewrite/replay and accounting tests shall pass; no dependency shall
   be added; and both protected gates shall pass on the exact head.
-- **AC39 (bitmap mutation and popcount, only if 4.37 is implemented).** `SETBIT`
-  at offset 0 of a 16 MB bitmap shall have p50 ≤0.5 ms and p99 ≤2 ms (≥10× faster
-  than the measured 5.32 ms and within ~2× Redis's 0.349 ms); `BITCOUNT` of the
-  16 MB bitmap shall have p50 ≤6 ms and p99 ≤10 ms (≥3.8× faster than 23.0 ms and
-  within ~2× Redis's 3.37 ms); the 1 MB rows shall be at the command floor; the
-  64 B controls, `GETBIT` and `STRLEN` shall be unchanged; BYTE and BIT ranges
-  including negative indices, the offset and 512 MiB limits, zero-fill,
-  TTL/WATCH/journal/replay and accounting shall pass; no dependency shall be
-  added; and both protected gates shall pass on the exact head.
+- **AC39 (bitmap mutation, popcount and bit scan, only if 4.37 is implemented).**
+  `SETBIT` at offset 0 of a 16 MB bitmap shall have p50 ≤0.5 ms and p99 ≤2 ms
+  (≥10× faster than the measured 5.32 ms and within ~2× Redis's 0.349 ms);
+  `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms and p99 ≤10 ms (≥3.8×
+  faster than 23.0 ms and within ~2× Redis's 3.37 ms); a not-found `BITPOS 0`
+  shall have p50 ≤8 ms and p99 ≤15 ms (≥25× faster than 201.6 ms and within
+  ~1.6× Redis's 5.08 ms) while a first-bit hit stays at the floor; the 1 MB rows
+  shall be at the command floor; the 64 B controls, `GETBIT` and `STRLEN` shall be
+  unchanged; BYTE and BIT ranges including negative indices, the offset and
+  512 MiB limits, zero-fill, TTL/WATCH/journal/replay and accounting shall pass;
+  no dependency shall be added; and both protected gates shall pass on the exact
+  head.
 - **AC40 (order-statistic rank, only if 4.38 is implemented).** At 100,000
   members, `ZRANK`/`ZREVRANK` for the first, middle and last member and
   `ZRANGE 50000 50009`/`ZREVRANGE` shall have p50 ≤0.5 ms and p99 ≤2 ms (≥100×
@@ -6192,6 +6255,12 @@ separate roadmap.
   versus 35.7 (3.57) and 33.1 (3.31); single `PFADD`/`PFCOUNT` p50
   0.187/0.484 versus 0.151/0.169 and 0.302/0.059; 10-element controls
   0.164/0.185 versus 0.195/0.228 and 0.073/0.123. Raw JSON retained (untracked).
+- BITPOS cohort (section 3.33, extending 4.37): one 16 MB `0xff` bitmap (built by
+  512 KiB `APPEND`s), 10 repetitions, three rotations. `BITPOS 0` 200.1/201.6/
+  206.7 ms versus Redis 5.3/5.1/4.9 and Valkey 5.7/4.6/5.1; `BITPOS 0 0 -1`
+  209.4 versus 4.79/5.96; `BITPOS 1` 0.12 versus 0.60/0.09; `BITCOUNT` 23.46
+  versus 4.04/4.78; 64 B `BITPOS 0` 0.32 versus 0.55/0.10. Raw JSON retained
+  (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -6647,3 +6716,6 @@ separate roadmap.
   encodings, `PFMERGE`, `PFCOUNT` over multiple keys, serialization/rewrite
   compatibility or the exact↔dense threshold. Those are implementation-PR
   evidence under AC49.
+- The BITPOS cohort (section 3.33) measures a dense 16 MB bitmap of `0xff`; it
+  does not measure sparse bitmaps (early hits), BYTE/BIT sub-ranges with
+  offsets, or `BITFIELD`. Those are implementation-PR evidence under AC39.
