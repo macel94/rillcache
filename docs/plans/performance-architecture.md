@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20, 4.21).**
+gated (4.15, 4.20–4.27, 4.29–4.46).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -54,8 +54,8 @@ against Redis/Valkey but reverses **all five** P1 p99 rows; the tail direction i
 therefore explicitly host-dependent (sections 2.15, 2.19 and 2.22). Every
 inspected gate manifest shares client/server CPUs `[0,1,2,3]` because the runner
 has four logical CPUs, so placement is not a controllable variable there
-(section 2.9). Second, source comparison locates the one
-structural reply-path difference left — Redis 8.10.2 and Valkey 9.1.2 avoid the
+(section 2.9). Second, source comparison locates a
+structural reply-path difference — Redis 8.10.2 and Valkey 9.1.2 avoid the
 value copy for bulk replies of at least 16 KiB — and an attempted local
 large-value screen is retained as failed evidence because the shared host could
 not resolve it (sections 2.20–2.21 and 4.15). Third, the counter-padding
@@ -76,7 +76,9 @@ and fewer context switches than Valkey, while the edge-triggered drain probe is
 the remaining +12%/+37% total-syscall difference. Finally, the persistence-on
 write-path source comparison (section 3.9) adds candidate 4.21: the C servers
 buffer AOF bytes and write once per event loop, while we write one framed
-transaction per command. The latest cohort (#217, section 2.18) resolves P1 ping
+transaction per command. A 2026-11-12 paired AOF-on cohort measures a **−66.5%
+P1 / −90.2% P16** SET loss (P16 p99 15.1 vs 3.1 ms) against 8.5–33.5% for the C
+servers, so 4.21 is admitted and AC23 sets the targets. The latest cohort (#217, section 2.18) resolves P1 ping
 at +15.4% with an interval excluding 1.0, while the same runtime lost that row in
 #216; the pair is kept as the measurement-risk evidence. The expiry and eviction
 comparison (section 3.10) finds our ordered 1,280-reaps/s purge bounded and
@@ -90,13 +92,92 @@ source-based: after the LPUSH reply, Rillcache takes **1.16 ms p50 / 1.92 ms p99
 to wake a BLPOP against **0.03/0.22 ms** for Redis and Valkey on the same host
 (900 wakeups each), and an idle blocked client costs **5.6% of a core (22.2% at
 1000)** against <1% for the C servers — the largest measured latency and
-idle-CPU gap; candidate 4.22 is admission-ready and AC25 gates the implementation. The rewrite comparison
+idle-CPU gap; candidate 4.22 is admission-ready and AC25 gates the implementation.
+A post-#226 re-measurement (5.0/21.4% for blocked, 4.6/22.4% subscribers,
+4.2/26.6% monitors) shows the merged spin fix left the per-client scan intact.
+Idle subscribers and monitors show the same tick cost — **6.0% of a core with one
+idle subscriber, 22–27% with 1000**, against <1% for the C servers — and delivery
+waits for the tick too: **1.05/3.60 ms** pub/sub p50/p99 and **0.37/6.15 ms** for
+a MONITOR line, versus ≤0.08/1.19 ms for the C servers. Candidate 4.24 and AC27
+cover the event-driven async-client shape. The rewrite comparison
 (section 3.13) adds the measured key-list start pause against the C servers'
 fork/COW rewrite: medians of **9–14 ms at 20k keys** and **91–107 ms at 200k**,
 with full passes of 4.85 s and 43.4 s and concurrent GET p99 of 10.8/18.8 ms;
-candidate 4.23 and AC26 gate it. Section 2.24 is a one-page open-gap ledger that
-maps every remaining item to its evidence status, candidate and admission
-experiment.
+candidate 4.23 and AC26 gate it. The 2026-11-12 large-value retry (section 2.21)
+has a usable 64-byte control and measures **1 MiB GET at −42% to −45% (p99
+2.3–2.5×) and SET at −28% to −32%**, admitting 4.15 (reply copy) and 4.25 (input
+growth). A 10k-field `HGETALL` is **43% behind Redis** (313 vs 552 req/s) while a
+10k `LRANGE` leads by 39–75%, admitting 4.29 (large-hash reply path). A
+10,000-member sorted set is the largest read-side ratio measured so far:
+`ZRANGE 0 9` is 19.5× slower than Redis and 20.4× slower than Valkey (528 vs
+10,311/10,771 req/s) and the full range is 67–78% behind, admitting 4.30
+(sorted-set ordered index). Cursor iteration is the largest per-call gap found
+in this record: a `SCAN COUNT 10` on 100k keys takes **42.6 ms p50 versus
+0.256/0.164 ms** (167–260×) and a full traversal 4.81 s versus 0.239/0.167 s,
+admitting 4.31 (incremental cursor). Collection storage is **~19× the RSS** of
+the C servers for short list elements (142–143 vs 7.5 B/element) and makes
+`DEL`/`UNLINK` of a 200k list **6.2–7.3 ms versus 0.13–0.32 ms**, while
+`FLUSHALL ASYNC` takes 9.2 ms and saves nothing over `SYNC`; 4.32 (packed nodes)
+and 4.33 (deferred drop) cover those. `APPEND`/`SETRANGE` on a 32 MB value cost
+**7.2–7.35 ms versus 0.13–0.18 ms** because the whole value is rebuilt twice per
+call, admitting 4.34 (in-place mutation). Collection writes are the widest gap:
+one `HSET` into a 10k hash is **6.45 ms versus 0.11/0.09**, one `RPUSH` onto a
+200k list **18.3 vs 0.08/0.07 ms**, and 10k `ZADD`/`SADD` are 4.2/1.2 ms,
+because every write clones and replaces the whole collection (4.35). Random
+sampling is the widest cardinality-scaling loss: at 100k members `SRANDMEMBER` is
+**11.5 vs 0.2–0.3 ms**, `HRANDFIELD` **33.7 vs 0.11–0.34 ms** and
+`ZRANDMEMBER` **21.3 vs 0.16–0.25 ms**, because each call clones the collection
+(4.36). Bitmaps show both write-copy and scan gaps: on 16 MB, `SETBIT` is **5.3
+vs 0.31–0.35 ms** and `BITCOUNT` **23.0 vs 3.4–4.6 ms** (4.37). Sorted-set rank
+and score reads are the largest ratio in the record at 100k: **57–72 ms** for
+`ZRANK`/`ZRANGEBYSCORE`/`ZRANGE` versus 0.07–0.17 ms (378–927×), and `ZSCORE`
+3.3 ms because it scans; 4.30 covers point/score/start-0 ranges and 4.38 the
+rank-select paths. Pub/sub loses a 2,000-message burst at **1,024 delivered and
+drops the subscription** (C servers: 2,000 and keep it), and a `PUBLISH` among
+10,000 channels is 3–6× slower; 4.39 covers the burst contract and channel
+lookup. Cardinality is equally materialized: at 100k, `SISMEMBER`/`SCARD` are
+**8.0–8.7 vs 0.15–0.22 ms** because they clone and sort the whole set,
+`HLEN`/`ZCARD` are 1.6–2.2 ms and `LLEN` 1.55 ms because they collect every
+reference; 4.40 makes them O(1). List random access repeats the pattern:
+`LINDEX`/`LPOS` on 200k cost **1.26–1.47 vs 0.07–0.14 ms** because both flatten
+every element reference; 4.41 adds in-place chunk seeking. Streams repeat the write pattern:
+`XADD` at 5k is **1.36 vs 0.08–0.10 ms** because it clones the whole stream and
+folds the payload twice; 4.42 makes the append in place. Geospatial search
+repeats the materialization: a 1 km `GEOSEARCH` over 50k is **4.34 vs 0.16–0.17
+ms** and `GEOPOS` 100 is **24.9 vs 0.47–0.61 ms**, because every query scans all
+members; 4.43 adds neighbor-cell search and direct lookups. Multi-member lookups
+are the largest ratio yet: `ZMSCORE` with 100 members is **273 ms versus 0.19–0.63**
+and `SMISMEMBER` 100 is 11.8 versus 0.21–0.39, because each requested member
+rescans the materialized collection; 4.44 probes directly. Expiry is the last
+systemic stall: the first `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` after 30k keys
+expire costs **36–46 vs 0.6–1.0 ms** because each calls `reap(now, usize::MAX)`,
+while a lazy `GET` is at parity; 4.45 bounds the command-path expiry. `SORT ...
+BY nosort LIMIT 0 10` is the other side of materialization: **7.96 vs 0.12–0.16
+ms** on 100k because the whole list is copied before the slice, while the sorted
+rows are competitive; 4.46 slices the source directly. Large listings repeat
+the pattern at 100k: `HGETALL` is **132.3 vs 25.7–37.8 ms**, `HKEYS`/`HVALS`
+98–102 vs 15.8–19.7, `KEYS` 91 vs 21–43 and `RANDOMKEY` 0.52 vs 0.21–0.29
+because each sorts a fresh snapshot; 4.29 and 4.31 are extended to cover them.
+Under
+continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
+SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
+servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
+ready** (0.258 s at 50k and 1.10–1.24 s at 200k keys versus 0.011–0.061 s for the
+C servers), admitting 4.27 (single-pass replay). AOF HMAC costs **−10.2% P1 /
+−23.6% P16** on append and makes a 50k replay **0.21 → 0.75 s**; the append cost
+is accepted as the security price and verification folds into 4.27.
+`appendfsync always` stays source-only after two failed local cohorts (the
+host's fsync cost is not stable enough to resolve it), and a Python connect-storm
+attempt was client-bound and inconclusive. A limited TTL-heavy diagnostic
+(section 3.7) finds no consistent TTL-vs-plain penalty, keeping 4.9 closed, and a
+262k-key growth attempt was host-dominated and inconclusive, leaving 4.18
+deferred. A
+64-client/P64–P256 scaling check (section 2.25) leads Redis/Valkey by 29–122% in
+every deep row, with only P1 SET near parity. Section
+2.24 is a one-page open-gap
+ledger that maps every remaining item to its evidence status, candidate and
+admission experiment. Section 4.28 fixes the call sites, invariants and
+priority for implementing the admitted candidates.
 
 ## 1. Scope, constraints and evidence discipline
 
@@ -993,7 +1074,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Seven things are still true even though every row now leads:
+Twenty-four things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1016,8 +1097,9 @@ Seven things are still true even though every row now leads:
    [`config.c#L3387`](https://github.com/valkey-io/valkey/blob/9.1.2/src/config.c#L3387)
    and `isCopyAvoidPreferred`
    [`networking.c#L287`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L287)).
-   This is the one place where their source does something structurally cheaper
-   that ours does not, and it is invisible to the 64-byte gate (section 2.21).
+   This is one reply-side place where their source does something structurally
+   cheaper that ours does not, and it is invisible to the 64-byte gate (section
+   2.21); the sorted-set index (item 8) is the other.
 3. **Large-value parse/store copies.** Both C servers also allocate one
    `robj`/sds copy of an incoming bulk argument and store that object; our path
    copies the frame slice into a new key/value pair. That is the same one-copy
@@ -1052,35 +1134,145 @@ Seven things are still true even though every row now leads:
    key on first write even when nothing watches (candidate 4.20). The throughput
    bound is one hash lookup plus an occasional allocation, below gate noise; it
    is a candidate only if 4.19 attributes part of the mutation tail to it.
+8. **Sorted-set ordering.** Our large sorted set is `HashMap<Vec<u8>, f64>`, so
+   every `ZRANGE` collects all members and fully sorts them before slicing, and
+   `ZSCORE` linearly scans the collection. Redis 8.10.2 and Valkey 9.1.2 keep a
+   dict from member to skiplist node plus a skiplist (listpack below
+   `zset-max-listpack-entries`), giving O(1) `ZSCORE` and O(log n + k) rank
+   ranges ([`redis t_zset.c#L1539`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L1539),
+   [`#L3413`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3413);
+   [`valkey t_zset.c#L1420`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L1420),
+   [`#L3099`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3099)).
+   The 2026-11-12 cohort measures a 10k `ZRANGE 0 9` at **528 req/s versus
+   10,311/10,771** and a full range at 340 versus 1,581/1,036, with the
+   128-member control at parity (section 3.2, candidate 4.30).
+9. **Cursor iteration.** Our `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN` rebuild a sorted
+   snapshot (and deep-copy collection elements) on every call, so per-call cost
+   is O(keyspace) instead of O(`COUNT`). Redis and Valkey use a reverse-binary
+   dict cursor with a bounded visited-bucket loop and return listpack collections
+   in one call ([`redis dict.c#L1529`](https://github.com/redis/redis/blob/8.10.2/src/dict.c#L1529),
+   [`valkey dict.c#L1177`](https://github.com/valkey-io/valkey/blob/9.1.2/src/dict.c#L1177)).
+   The 2026-11-12 cohort measures a 100k-key `SCAN COUNT 10` at **42.6 ms p50
+   versus 0.256/0.164** (167–260×) and a full traversal at 4.81 s versus
+   0.239/0.167 s (section 3.16, candidate 4.31).
+10. **Collection element storage and deferred free.** Lists allocate one
+    `Vec<u8>` per element and `UNLINK`/`FLUSH* ASYNC` run the synchronous drop,
+    so a 200k-element 8-byte list costs 6.2–7.3 ms to unlink and 143 B/element
+    RSS, versus 0.13–0.32 ms and 7.5 B/element for the C servers' packed
+    quicklist/listpack plus bio lazy free (section 3.17, candidates 4.32/4.33).
+11. **In-place string mutation.** `APPEND` and `SETRANGE` rebuild and re-copy the
+    whole value (twice), so on a 32 MB string they cost **7.2–7.35 ms** versus
+    0.13–0.18 ms for the C servers' in-place sds mutation, while the 64 B
+    controls and `GETRANGE` are at the command floor (section 3.18, candidate
+    4.34).
+12. **In-place collection mutation.** Every write rebuilds the whole collection:
+    a single `HSET` into a 10k hash, `ZADD` into a 10k zset, `SADD` into a 10k
+    set and `RPUSH`/`LPOP` on a 200k list cost **1.2–18.3 ms** versus 0.07–0.35 ms
+    for the C servers' in-place updates, with 10-element controls at the command
+    floor (section 3.19, candidate 4.35).
+13. **Random-member commands.** `SRANDMEMBER`, `SPOP`, `HRANDFIELD` and
+    `ZRANDMEMBER` materialize the collection per call, so at 100k members they
+    cost **11–34 ms** versus 0.1–0.35 ms for the C servers' dict random
+    (35–298×), with the 10k numbers 1–2.6 ms and the 10-element controls at the
+    floor (section 3.20, candidate 4.36).
+14. **Bitmap mutation and popcount.** `SETBIT` rebuilds the value (two full
+    copies) and `BITCOUNT` runs a byte-at-a-time popcount, so on a 16 MB bitmap
+    they cost **5.3 ms** and **23.0 ms** versus 0.31–0.35 and 3.4–4.6 ms, while
+    `GETBIT`, `STRLEN` and the 64 B controls are at the floor (section 3.21,
+    candidate 4.37).
+15. **Sorted-set rank, score-range and point reads.** At 100k members `ZRANK`,
+    `ZREVRANK`, `ZRANGEBYSCORE LIMIT` and `ZRANGE` cost **57–72 ms** versus
+    0.07–0.17 ms for the C servers' skiplist (378–927×), and `ZSCORE` costs
+    3.3 ms versus 0.07–0.10 ms because it linearly scans the collection; at 10k
+    the same commands are 2.4–3.1 ms (section 3.22, candidates 4.30/4.38).
+16. **Pub/sub burst delivery and channel scale.** A 2,000-message pipelined burst
+    to an active subscriber delivers **1,024 and silently removes the
+    subscription** (the C servers deliver 2,000 and keep it), and a `PUBLISH` to
+    one of 10,000 subscribed channels is 3–6× slower because the publisher scans
+    every channel (section 3.23, candidate 4.39).
+17. **Cardinality and membership.** At 100k members `SISMEMBER`/`SCARD` cost
+    **8.0–8.7 ms** versus 0.15–0.22 ms (36–55×) because they clone and sort the
+    whole set; `HLEN`/`ZCARD` cost 1.6–2.2 ms and `LLEN` 1.55 ms because they
+    collect every reference, while `HEXISTS`/`STRLEN` are direct and fast
+    (section 3.24, candidate 4.40).
+18. **List random access.** `LINDEX` (0/middle/last) and a hit-first `LPOS` on a
+    200k list cost **1.26–1.47 ms** versus 0.07–0.14 ms (9–22×) because both
+    flatten every element reference; a missing `LPOS` leads because the C
+    servers walk every node, and the 10-element controls are at the floor
+    (section 3.25, candidate 4.41).
+19. **Stream append.** Every `XADD` clones the whole `Stream` and folds its
+    payload twice, so at 5,000 entries it costs **1.36 ms** versus
+    0.08–0.10 ms (13–18×) and grows with stream length, while `XLEN`/`XRANGE`/
+    `XREVRANGE` and the 10-entry control are at the floor (section 3.26,
+    candidate 4.42).
+20. **Geospatial search and point lookups.** `GEOSEARCH` scans every member, so
+    a 1 km search over 50k members costs **4.34 ms** versus 0.16–0.17 ms
+    (25–28×) and a 2×2 km box 4.49 versus 0.19–0.21; `GEOPOS` is 2.0 ms for one
+    member and 24.9 ms for 100 (41–53×), and `GEODIST` ~19×, while a search that
+    returns all 50k is reply-bound at parity (section 3.27, candidate 4.43).
+21. **Multi-member point lookups.** `SMISMEMBER` clones and sorts the set and then
+    scans it per member (**7.9–11.8 ms** versus 0.08–0.39), and `ZMSCORE` scans
+    all members once per requested member (**8.0/33.4/273 ms** for 1/10/100
+    members versus 0.10–0.63), while `HMGET` and the 10-member controls are at
+    the floor (section 3.28, candidate 4.44).
+22. **Mass expiry on command paths.** `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` call
+    `reap(now, usize::MAX)`, so the first command after 30k keys expire stalls
+    **36–46 ms** versus 0.6–1.0 ms (37–76×) while a per-key lazy `GET` is at
+    parity; the purge costs ~1.2–1.5 µs per expired key (section 3.29, candidate
+    4.45).
+23. **SORT `BY nosort`.** A 100k `SORT ... BY nosort LIMIT 0 10` costs
+    **7.96 ms** versus 0.12–0.16 ms (50–66×) because the whole source is copied
+    before the slice, while sorted/ALPHA/weighted SORT rows are 0.9–1.5× and the
+    100-element controls are at the floor (section 3.30, candidate 4.46).
+24. **Large-hash listing and keyspace enumeration.** At 100k, `HGETALL` is
+    **132 ms** versus 25.7–37.8, `HKEYS`/`HVALS` 98–102 versus 15.8–19.7,
+    `KEYS key:*` 91 versus 21–43, and `RANDOMKEY` 0.52 versus 0.21–0.29, because
+    each listing sorts a fresh snapshot; `HMGET` and the 10-member controls are at
+    the floor (section 3.31, extending 4.29 and 4.31).
 
-### 2.21 Large-value screen attempt (failed evidence, not a result)
+### 2.21 Large-value screen: first attempt failed, retry measured
 
 Mechanism under test: Rillcache copies a bulk value into the client output `Vec`,
 while both pins keep a reference to the stored object for values of at least
 16 KiB (section 2.20). The prediction was a large-GET deficit that grows with
 value size and is absent at 64 bytes.
 
-A local paired screen was attempted on 2026-11-11 with a release build of
-`7b365dc`, Redis 8.10.2 and Valkey 9.1.2 built from the repository's
-checksum-pinned archives, one server at a time (server CPUs 0–1, client CPUs
-2–3), eight clients, pipeline 1, three Latin-rotated rounds, and 64 B, 64 KiB and
-1 MiB values. **It is not usable.** The host is a shared k3s node running
-Longhorn and Flux controllers; load average was 10–19 on six logical CPUs and the
-64-byte control measured 5,414 ops/s for Rillcache and 3,437 for Redis instead of
-the ~114k/113k of the daily cohort (section 2.19), a ~20–33x host distortion.
-Only those two control rows completed (Rillcache and Redis); the remaining
-rows were stopped, so there is no large-value row at all. No direction is
-claimed. The incomplete files and logs are retained in the
-development environment as failed evidence, not tracked source.
+**First attempt (2026-11-11, failed).** A local paired screen with a release
+build of `7b365dc` and the pinned Redis/Valkey archives was unusable: load
+average was 10–19 on the shared six-CPU k3s node and the 64-byte control measured
+5,414 ops/s for Rillcache and 3,437 for Redis, a ~20–33x distortion; the run was
+stopped and no large-value row existed. Those files remain as failed evidence.
 
-The bound stands in place of a fake measurement. Removing one `N`-byte copy saves
-`N / copy_bandwidth`: about 100–200 µs of user time per 1 MiB GET at a
-conservative 5–10 GB/s, and 6–13 µs per 64 KiB GET, before the kernel copy and
-socket transfer. At 64 bytes it is zero. That upper bound is well above the
-1.5–3% gate noise, but it applies only to a large-value workload the protected
-gate does not run, so it is not admission to build. Admission for 4.15 requires a
-clean-runner large-value cohort (the hosted upstream lane or same-type four-CPU
-runners) with pinned servers and rotations; a shared k3s host cannot resolve it.
+**Retry (2026-11-12, measured).** The same host at load ~2.7 produced a usable
+cohort: server pinned to CPU 5, client to CPUs 0–3, eight clients, pipeline 1,
+three Latin-rotated rounds, 64 B/1024 keys, 64 KiB/128 keys and 1 MiB/32 keys.
+The 64-byte control is 39.6k/33.9k/32.2k req/s (Rill/Redis/Valkey), about 3.5x
+below the gate but far from the failed 20–33x distortion, so the paired ratios
+are usable as a shared-host diagnostic:
+
+| Value | Workload | Rillcache | Redis | Valkey | Rill vs Redis/Valkey | p99 R/Rd/V ms |
+| ---: | --- | ---: | ---: | ---: | ---: | --- |
+| 64 B | SET | 39,633 | 33,951 | 32,151 | +16.7% / +23.3% | 1.46/0.80/0.84 |
+| 64 B | GET | 40,728 | 27,437 | 32,196 | +48.4% / +26.5% | 1.39/1.22/0.91 |
+| 64 KiB | SET | 14,125 | 11,537 | 12,670 | +22.4% / +11.5% | 1.82/2.58/2.25 |
+| 64 KiB | GET | 10,734 | 10,970 | 14,998 | −2.2% / **−28.4%** | 3.93/1.61/1.21 |
+| 1 MiB | SET | 1,337 | 1,861 | 1,959 | **−28.2% / −31.8%** | 9.79/7.37/7.82 |
+| 1 MiB | GET | 776 | 1,340 | 1,409 | **−42.1% / −44.9%** | 24.93/9.87/10.91 |
+
+The gap crosses over between 64 B and 64 KiB and grows with value size: at
+1 MiB, GET is 42–45% slower with a 2.3–2.5x worse p99, and SET is 28–32% slower.
+One Rillcache 1 MiB GET round stalled at 135 req/s (host), but the other two were
+776 and 822 against 1,340–1,410 for the C servers, so the direction is
+consistent. Absolute rates are shared-host diagnostics, not a gate result.
+
+**What remains to be separated.** The GET loss matches the reply copy exactly
+(candidate 4.15). The SET loss is the same direction but cannot be the reply
+copy (a SET reply is small); the likely cause is the input buffer growing in
+16 KiB reads, while Redis/Valkey reserve capacity from the declared bulk length
+(`big_arg`/`sdsMakeRoomFor`, section 3.3). Candidate 4.25 covers that input
+reservation. The previous copy-bandwidth bound (100–200 µs per 1 MiB at
+5–10 GB/s, zero at 64 B) remains the mechanism estimate for 4.15 and is now
+supported by a measured slope rather than arithmetic alone.
 
 ### 2.22 Per-request P1 latency and process CPU from the retained gate samples
 
@@ -1199,18 +1391,74 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | --- | --- | --- | --- | --- | --- |
 | P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; +1.0% and +22.5% vs Redis across two daily cohorts; p99 flips with host | no runtime candidate; measurement/topology | disjoint CPUs need a different runner type; all recent cohorts share `[0,1,2,3]` | the row itself |
 | P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
-| Large bulk reply copy | replies | source only; local screen failed | 4.15 (std `Arc`/`IoSlice`) | clean large-value cohort (4.16 row 2) | none at 64 B |
+| Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, admitted | AC20 on the implemented change | none at 64 B |
+| Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, admitted | AC31 on the implemented change | none at 64 B |
+| Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, admitted | AC32 on the implemented change | none at 64 B |
+| Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 (map/score/start-0) + 4.38 (rank-select), admitted | AC32/AC40 | none |
+| Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
+| Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 vs 0.14–0.20; `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
+| List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
+| Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
+| Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
+| Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
+| Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 ms vs 0.69/0.98, `KEYS` 43.6 vs 0.63/0.80, `RANDOMKEY` 45.5 vs 0.65/0.60, `DBSIZE` 41.2 vs 0.58/0.83; lazy `GET` at parity | 4.45, admitted | AC47 | none |
+| SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` 7.96 ms (p99 17.2) vs 0.12/0.16; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, admitted | AC48 | none |
+| Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
+| Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
+| Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
+| List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
+| UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
+| In-place string mutation | latency, storage | **measured**: `APPEND` 64 B to 32 MB 7.35 ms vs 0.137/0.133; `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls and `GETRANGE` at the command floor | 4.34, admitted | AC36 on the implemented change | none |
+| In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
+| Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
+| Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor | 4.37, admitted | AC39 on the implemented change | none |
+| Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured; no candidate**: 100k SINTER 52.5 vs 38.9/23.2 ms, SINTERCARD 52.0 vs 35.7/15.3, SDIFF 49.9 vs 66.9/40.1, SUNION 76.8 vs 105.4/78.8 (Rill leads Redis); 10k 5.4–7.8 ms | keep; 1.2–3.4× is inside the reply/algorithm mix | n/a | none |
+| Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
-| One journal write per command | persistence | source | 4.21, conditional | 4.16 row 5 + A/B | none (persistence off) |
-| 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1% | 4.22, admitted; implementation next | AC25 on the implemented change | none |
+| One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
+| 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1%, post-#226 5.0/21.4 | 4.22, admitted; implementation next | AC25 on the implemented change | none |
+| Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%, post-#226 4.6/13.6/22.4 and 4.2/20.8/26.6; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
+| TTL index and clock | latency, storage | **measured null** in a limited 8-client cohort (~110–125k/s; differences inside host spread) | no candidate; 4.9 stays closed | clean TTL cohort (4.16 row 1) | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
+| Eviction steady-state cost | storage | **measured**: P16 20,498 vs 144,365 no-eviction (−85.8%), p99 64.5 vs 8.0 ms; policy-independent; C servers ~no penalty | 4.26, admitted | AC29 on the implemented change | none (no maxmemory) |
+| Startup AOF replay | persistence, availability | **measured**: 0.258 s at 50k, 1.10–1.24 s at 200k vs 0.011–0.061 s for the C servers | 4.27, admitted | AC30 on the implemented change | none (startup) |
+| AOF HMAC | persistence, security | **measured**: append −10.2% P1 / −23.6% P16; 50k replay 0.21→0.75 s | accept the append cost; fold verification into 4.27 | AC30 HMAC on/off | none (persistence off) |
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
-| Incremental keyspace rehash | storage | bound at 1024 keys | deferred 4.18 | large-keyspace cohort | none |
-| Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s) | keep; needs a socket dependency/FFI | connection-storm / idle-socket cohort | none |
+| Incremental keyspace rehash | storage | bound at 1024 keys; local 262k growth attempt inconclusive (host-bound max 371 ms) | deferred 4.18 | clean large-keyspace cohort | none |
+| Listen backlog 128, no TCP keepalive | scheduling | local strace + source (C: 511, 300 s); Python connect storm inconclusive (2,232 vs 2,189/3,796 conn/s) | keep; needs a socket dependency/FFI | kernel-level connection-storm / idle-socket cohort | none |
+| Pipeline depth and client count | scheduling | **measured**: leads every P≥16 and 64-client row by 29–122%; P1 SET +2.5–3.0% | no candidate | n/a | none |
 | Drain probe; parser cursor; cached clock; last-command cache; deferred write coalescing | syscalls, parsing, latency | +12%/+37% syscalls but removal lost P1; others under noise | closed/rejected (2.6, 4.2, 4.5, 4.9, 4.17) | named workload only | none |
 | Level-triggered epoll, `SO_BUSY_POLL`, `recvmmsg`/`sendmmsg` | syscalls | source; outside the Mio/`std` boundary | policy decision, not a candidate | explicit policy review | none |
+
+### 2.25 Pipeline depth and client-count scaling (scope check)
+
+The protected gate covers 8 clients at pipeline 1 and 16. A local paired cohort
+extended the matrix to 8 clients at P1/16/64/256 and 64 clients at P16, with 100k
+requests, 64-byte values, 1024 keys and three rotations. The host is shared and
+host-limited (P1 median ~31k vs the gate's ~140k), so only the paired ratios are
+read:
+
+| Clients | Pipeline | Workload | Rill vs Redis | Rill vs Valkey |
+| ---: | ---: | --- | ---: | ---: |
+| 8 | 1 | SET | +3.0% | +2.5% |
+| 8 | 1 | GET | +16.5% | +10.0% |
+| 8 | 16 | SET | +49.7% | +79.7% |
+| 8 | 16 | GET | +60.8% | +99.5% |
+| 8 | 64 | SET | +79.6% | +114.4% |
+| 8 | 64 | GET | +98.2% | +122.5% |
+| 8 | 256 | SET | +54.4% | +71.2% |
+| 8 | 256 | GET | +51.4% | +53.5% |
+| 64 | 16 | SET | +29.5% | +36.6% |
+| 64 | 16 | GET | +83.8% | +54.9% |
+
+Rillcache leads every deep-pipeline and 64-client row, with the largest margins at
+P64/P256. The only near-parity cell is P1 SET (+2.5–3.0%), consistent with the
+host-sensitive P1 rows in sections 2.17 and 2.19. No scaling candidate is opened;
+the P256 SET dip below P64 is shared-host noise, not a mechanism. This also
+confirms that the 8-client/P16 gate result is not an artifact of a small client
+set.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -1291,17 +1539,88 @@ change, and the measured drain-elision attempt confirms the probe is load-bearin
   ([`protocol.rs`](../../src/protocol.rs), [`session/mod.rs`](../../src/session/mod.rs)).
   There is no per-reply allocation, but also no cross-client write coalescing:
   each ready client's output is written in its own pass.
+- **Large multi-bulk replies (2026-11-12).** A local paired cohort preloaded a
+  10,000-element list (16-byte values) and a 10,000-field hash, then measured
+  `LRANGE 0 9999` (230 KB reply) and `HGETALL` (350 KB reply), 4 clients, 250
+  requests each, three rotations:
+
+  | Command | Rillcache req/s (p50/p99 ms) | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `LRANGE` 10k | **1,272** (2.09/15.5) | 913 (3.9/10.9) | 726 (4.9/18.4) |
+  | `HGETALL` 10k | 313 (11.6/32.1) | **552** (7.0/16.3) | 336 (11.4/26.4) |
+
+  Rillcache leads the list reply by 39% over Redis and 75% over Valkey, but
+  `HGETALL` is **43% behind Redis** (near Valkey), and its per-byte rate is far
+  below its own `LRANGE` rate (30 vs 110 MB/s per request at p50). Source:
+  `HGETALL` collects every field/value reference into a `Vec`, sorts it for
+  deterministic output, then encodes 20,000 bulks, while `LRANGE` iterates the
+  deque directly
+  ([`collections.rs`](../../src/engine/collections.rs)). Redis iterates its hash
+  in internal order. This is candidate 4.29; the full sort/allocation is the
+  first suspect, but the chosen order semantics and the persistence test that
+  compares exact `HGETALL` bytes must be preserved or explicitly changed.
+- **Perf attribution (2026-11-12, diagnostic).** A single-client 10k `HGETALL`
+  loop (~268 req/s) sampled with `perf record -F 999 -g`: **11.9%** of samples in
+  `core::slice::sort::unstable` (quicksort 6.9% + small-sort 5.0%), **7.8%** in
+  `hash_items` collecting the reference vector, **3.3%** in `encode_bulk`, with
+  libc self at ~59% (field comparisons and memcpy) and the kernel at ~15%.
+  `LRANGE` on the same data has **no sort** and is ~46% kernel. The per-reply
+  sort and reference collection are the measured mechanism behind the hash gap,
+  not the socket write; 4.29 may remove the sort (with an explicit order
+  decision), keep a sorted index, or change the large-hash representation, and
+  must re-measure the chosen option.
+- **Sorted-set point lookups and range replies (2026-11-12).** Same paired method
+  with a 10,000-member sorted set (6-byte members, 3-digit scores), 4 clients,
+  250 requests each (1,000 `ZSCORE` requests per client), three rotations:
+
+  | Command | Rillcache req/s (p50/p99 ms) | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `ZSCORE` | 6,913 (0.37/2.95) | 8,607 (0.32/2.17) | **10,019** (0.28/1.58) |
+  | `ZRANGE 0 9` | 528 (4.61/13.9) | **10,311** (0.24/1.49) | 10,771 (0.28/1.37) |
+  | `ZRANGE 0 9999` (120 KB) | 340 (11.3/20.3) | **1,581** (2.30/6.04) | 1,036 (3.58/7.61) |
+
+  A ten-element range on a large set is **19.5× slower than Redis and 20.4×
+  slower than Valkey** (p50 4.61 vs 0.24/0.28 ms); the full range is 78% behind
+  Redis and 67% behind Valkey; `ZSCORE` is 20–31% behind (its three rotations
+  ran 2,399–7,806 req/s, so the median is host-noisy, and the p50 gap is
+  smaller). Controls put the loss on cardinality, not on sorted sets generally:
+  a 128-member set (the listpack-size regime) is inside the host spread for all
+  three, and a 1,024-member set is 17–20% behind on `ZRANGE 0 9` (p50 0.58 vs
+  0.40/0.43 ms). Source: every `zset_read` calls `zset_items()`, which collects
+  all member/score references into a `Vec`, then copies and fully sorts it
+  before slicing, even for `0 9`; `ZSCORE` linearly scans the same `Vec`
+  ([`collections.rs`](../../src/engine/collections.rs),
+  [`data.rs`](../../src/engine/data.rs)). Redis and Valkey keep a dict from
+  member to skiplist node for O(1) `ZSCORE` and walk the skiplist (or listpack)
+  for an O(log n + k) rank range
+  ([`redis t_zset.c#L1539`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L1539),
+  [`#L3413`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3413),
+  [`#L708`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L708);
+  [`valkey t_zset.c#L1420`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L1420),
+  [`#L3099`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3099),
+  [`#L617`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L617)).
+  Candidate 4.30.
+- **Sorted-set perf attribution (2026-11-12, diagnostic).** A single-client
+  10k-member `ZRANGE 0 9` loop (~301 req/s) sampled with `perf record -F 999 -g`:
+  **21.5%** in `core::slice::sort::unstable` (quicksort 11.8% + small-sort 8.4%
+  + 1.2% comparison helper), a further **21.2%** in a libc copy routine the sort
+  uses for its 24-byte tuple moves (`memmove`/`memcpy`), and **6.4%** in
+  `zset_items`; libc self totals ~59% (including `malloc`/`free` for the
+  per-request `Vec`) and the kernel is ~10%. The cost is the per-request
+  collect + sort, not the 125-byte reply.
 
 **Verdict:** the formatting and allocation posture is already competitive for the
 gate's 64-byte values: no per-reply allocation, specialized headers, bounded
 output. Do not add shared-object tables (they need reference counting and
 unsafe-adjacent ownership machinery), and do not add cross-client deferred
 flushing: at P1 only one client is ready per pass, so it has no target row, and
-at P16 the current path already leads by 54–153% (section 2.19). The one real
-reply-side difference is large values: both Redis 8.10.2 and Valkey 9.1.2 keep a
-refcounted reference instead of copying a value of at least 16 KiB, while we
-copy it into the output `Vec`. That is candidate 4.15, gated on a clean-runner
-large-value measurement (section 2.21) and on AC20; the 64 KiB per-event cap
+at P16 the current path already leads by 54–153% (section 2.19). The remaining
+reply-side differences are large values and collection ordering: both Redis
+8.10.2 and Valkey 9.1.2 keep a refcounted reference instead of copying a value
+of at least 16 KiB, while we copy it into the output `Vec` (candidate 4.15,
+admitted by the 2026-11-12 large-value cohort, section 2.21, gated on AC20),
+and they keep an ordered index rather than re-sorting a large hash or sorted
+set per read (candidates 4.29 and 4.30, sections 3.2). The 64 KiB per-event cap
 remains a design confirmation rather than a missing mechanism.
 
 ### 3.3 Parsing
@@ -1325,6 +1644,15 @@ remains a design confirmation rather than a missing mechanism.
   re-scans the bytes already buffered. For ordinary 14–128-byte commands this is
   irrelevant; for multi-megabyte bulk arguments split over many reads it is
   quadratic in the number of reads.
+- **Large-frame input growth.** The retry in section 2.21 measures a **28–32%
+  1 MiB SET** loss that the reply copy cannot explain (the SET reply is small).
+  Redis and Valkey reserve query-buffer capacity from the declared bulk length
+  (`big_arg` plus `sdsMakeRoomFor` in
+  [`redis networking.c#L3893`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L3893),
+  [`valkey networking.c#L4300`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L4300)),
+  while our input `Vec` grows by appending each 16 KiB read, so a 1 MiB frame
+  reallocates and copies the growing buffer several times before the final
+  parse. This is not the rescan bound above; it is capacity management.
 
 **Verdict:** do not copy the C object/refcount parser and do not build a
 resumable cursor. The parser re-reads only the small length headers of an
@@ -1332,8 +1660,10 @@ incomplete frame, so for K reads the extra work is O(K·headers), not O(K·frame
 a 64-byte header scanned 16 times is about 1 KiB of extra scanning, far below
 the gate's per-command noise. Redis's last-command reuse and Valkey's
 `cmd_queue` avoid a lookup/reparse that our few byte comparisons already do
-cheaply (section 2.20). Reopen 4.2 only with a measured multi-megabyte workload
-showing a real per-read scan cost.
+cheaply (section 2.20). **Adapt the input-reservation idea** as candidate 4.25:
+after a validated bulk header declares length `L`, reserve bounded input
+capacity toward the frame end so a large SET does not repeatedly reallocate. The
+rescan candidate 4.2 stays closed; this is a different mechanism.
 
 ### 3.4 Storage, hashing and expiry
 
@@ -1359,6 +1689,15 @@ showing a real per-read scan cost.
   sequence and inserts or updates a per-key `versions` entry even when no client
   is watching ([`touch`](../../src/engine/data.rs#L369)), which is the
   storage-path difference in section 2.20 item 7.
+- Sorted sets are an unordered `HashMap<Vec<u8>, f64>` above the listpack
+  threshold, so rank order and score order exist only inside each read. Redis and
+  Valkey store a member→score dict plus a skiplist ordered by `(score, member)`,
+  which is what makes point lookup O(1) and a rank range O(log n + k)
+  ([`redis t_zset.c#L1539`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L1539),
+  [`#L3413`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3413),
+  [`valkey t_zset.c#L1420`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L1420),
+  [`#L3099`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3099)).
+  The measured 19.5–20.4× small-range loss is candidate 4.30 (section 3.2).
 - The map hasher is not exposed by `std`; replacing it would need a dependency or
   a home-grown keyed hash. Both are policy-sensitive (HashDoS resistance) and are
   not justified by the current 1024-key gate.
@@ -1368,7 +1707,9 @@ incremental-rehash benefit is real but is not a per-command cost at the gate's
 1024 keys: a single growth rehash of ~1k entries is a one-off few-thousand-entry
 move, and even a 1 MiB keyspace would rehash off the request path. Revisit only
 with a large-keyspace measurement that shows a p99 spike during growth
-(candidate 4.18).
+(candidate 4.18). The sorted-set fix in 4.30 is contained in the collection
+module and uses `std` ordered containers, so it does not reopen this storage
+verdict.
 
 ### 3.5 Per-command dispatch and observability
 
@@ -1459,6 +1800,17 @@ shows a clock share above the noise, adapt the snapshot idea behind the existing
 read it, keeping the injectable test clock and single-command time consistency.
 That is safe Rust with no new dependency.
 
+**TTL-heavy check (2026-11-12).** A limited local diagnostic used 8 Python
+pipelined clients (16 deep), 1024 keys, 64-byte values, 160k commands per run and
+three rotations, comparing plain keys with keys carrying a 10,000 s TTL. Medians
+(req/s, plain/TTL): Rillcache SET 117k/125k, GET 112k/113k; Redis SET 111k/106k,
+GET 91k/125k; Valkey SET 110k/122k, GET 120k/111k. Every within-server difference
+is inside the host spread, and Rillcache is not slower than the C servers on
+either form. The client and shared host bound the absolute rate (~110–125k/s), so
+this is not a clean TTL cohort; it does support keeping 4.9 closed and not adding
+a TTL fast path speculatively. A clean TTL cohort (4.16 row 1) is still required
+for a production claim.
+
 ### 3.8 Decision matrix: best of each project
 
 | Component | Redis 8.10.2 | Valkey 9.1.2 | Rillcache today | Decision |
@@ -1466,18 +1818,40 @@ That is safe Rust with no new dependency.
 | Readiness | level-triggered epoll, single loop | level-triggered epoll, single loop | Mio edge-triggered reactor with drain probe | **Keep/adapt:** edge-triggered through reviewed Mio; level-triggered needs unsafe FFI or a new selector policy |
 | Per-request scheduling | event loop, optional I/O threads (default 1, immutable) | event loop, optional I/O threads (default 1, modifiable) | one owner-local reactor plus an opt-in 2–16 connection-local worker override | **Adapt, bounded:** the measured four-CPU P1 gate favored one reactor plus a bounded poll; preserve CPU/tail costs and measure larger fan-out before choosing parallel workers |
 | Blocking wakeups | same-loop `signalKeyAsReady` after the command | same | blocked clients re-enqueued and polled every 1 ms; no ready-key signal | **Adopt:** 4.22 same-pass wake + deadline timer; measured 1.16 ms p50 and 5.6–22% idle CPU vs <1%; no gate effect (3.12) |
+| Async client servicing (pub/sub, MONITOR) | event-driven push per message/command; idle clients untouched | same | 1 ms tick re-enqueues every subscriber/monitor; idle CPU 6–27% | **Adopt:** 4.24 event-driven wake + deadline timer; measured gap; no gate effect (3.12) |
 | Connection setup | backlog 511, TCP keepalive 300 s, NODELAY | same | std backlog 128, NODELAY, 30 s app idle timeout | **Keep:** backlog/keepalive need a socket dependency or FFI; no measured connection-storm gap (3.14) |
 | Read path | 16 KiB `PROTO_IOBUF_LEN`, `pendingCommand` | 16 KiB buffer, `cmd_queue` | 16 KiB chunk, complete-frame parse | **Keep:** equivalent for the measured small-command regime |
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
-| Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adapt only if measured:** candidate 4.15 after a clean large-value cohort (2.21) and AC20; std `Arc`/`IoSlice` only |
+| Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adopt:** measured 28.4% (64 KiB GET) and 42–45% (1 MiB GET) loss; 4.15, std `Arc`/`IoSlice`, AC20 |
+| Large multi-bulk replies (list/hash) | reply list/`writev`; hash iterated in internal order | same | list iterated directly; hash collects, sorts and encodes | **Adopt (list leads, hash lags):** 4.29 for 10k `HGETALL`; measured 43% behind Redis (3.2) |
+| Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, and 378–927× on 100k rank/range reads (3.2, 3.22, AC32/AC40) |
+| Sorted-set rank-select | skiplist span counts: O(log n) `ZRANK`, deep `ZRANGE` seek | same | rank requires a full materialize+sort+linear position scan | **Adapt:** 4.38 order-statistic index; measured 100k `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12 (3.22, AC40) |
+| Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms (3.23, AC41) |
+| Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
+| List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
+| Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
+| Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
+| Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
+| Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Adapt:** 4.45 bounded lazy expiry; measured after 30k expire `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` 36–46 vs 0.6–1.0 ms, lazy `GET` at parity (3.29, AC47) |
+| SORT `BY nosort` | source-order slice without sorting or copying | same | clone every element and build an `Item` before applying `LIMIT` | **Adapt:** 4.46 direct nosort slice; measured 100k 7.96 vs 0.12/0.16 ms; sorted/ALPHA/weighted rows 0.9–1.5× (3.30, AC48) |
+| Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
+| Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
+| Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
+| List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
+| String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
+| Collection writes | in-place dict/skiplist/listpack/quicklist update | same | clone the whole collection, re-encode and replace it per write | **Adapt:** 4.35 in-place mutation; measured 10k `HSET` 6.45 vs 0.111/0.093 ms, 200k `RPUSH` 18.3 vs 0.08/0.07, `LPOP` 17.8 vs 0.07–0.34; controls at the floor (3.19, AC37) |
+| Random-member selection | `dictGetRandomKey`/`dictGetSomeKeys`, intset/listpack fast paths | same | clone and sort/copy the whole collection per call | **Adapt:** 4.36 dense member index after a no-copy reservoir slice; measured 100k `SRANDMEMBER` 11.54 vs 0.199/0.326 ms, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164; 10k 1–2.6 ms, controls at the floor (3.20, AC38) |
+| Bitmaps | in-place sds bit write; word/AVX2 popcount | same (scalar/AVX2/NEON popcount) | rebuild the value for `SETBIT` (two copies); byte-at-a-time `BITCOUNT` | **Adapt:** 4.37 in-place `SETBIT` (4.34 shape) + `u64` chunk popcount; measured 16 MB 5.32 vs 0.349/0.312 ms and 23.01 vs 3.37/4.56; controls at the floor (3.21, AC39) |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
+| Large-frame input | reserves query-buffer capacity from the declared bulk length (`big_arg`/`sdsMakeRoomFor`) | same | appends 16 KiB reads into a growing `Vec` | **Adopt:** 4.25 bounded reservation; measured 28–32% 1 MiB SET loss (2.21, 3.3) |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
-| Journal writes | buffered `aof_buf`, one write per event loop, 1 s background fsync | same | one framed write per journaled command, 1 s fsync | **Adapt only if the persistence-on row shows a gap:** batch per pass (4.21), keep CRC/HMAC framing and write-before-reply ordering |
+| Journal writes | buffered `aof_buf`, one write per event loop, 1 s background fsync | same | one framed write per journaled command, 1 s fsync | **Adopt:** batch per pass (4.21); measured −66.5% P1 / −90.2% P16 AOF-on loss; keep CRC/HMAC framing and write-before-reply ordering |
 | Journal rewrite | fork + COW child, parent serves; fork page-table pause | same | key-list materialisation (9–20 ms at 20k keys) then 512-key/1 MiB slices on the owner | **Keep:** no fork in safe Rust; reduce the start pause with 4.23 only if a rewrite-latency cohort shows it matters (3.13) |
+| AOF replay | single AOF load; no separate per-command CRC pass | single load | checksum parse + reparse + normal execute (200k: ~1.16 s) | **Adopt:** 4.27 single-pass loader; measured 20–45× slower to ready (3.15) |
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
 | Expiry | lazy + sampled active cycle, 25% CPU budget, fast 1 ms, effort levels | same | lazy + ordered `BTreeSet` reap, 128 due keys per 100 ms | **Keep:** ordered removals are exact and capped at ~0.1–0.3% CPU; adaptive bursts only with the 4.16 TTL row (3.10) |
-| Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Keep with a quality gap:** reads do not refresh LRU; revisit only with a measured eviction row (3.10, 4.16) |
+| Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Adopt:** 4.26 pooled/batched eviction; measured 85.8% P16 loss under pressure, policy-independent; read-aware LRU still unmeasured (3.10) |
 | Value/key encoding | embstr ≤44 B, int objects, shared key with expires, listpack/intset small collections | same | `Vec<u8>` values, key duplicated in expiry/version indexes, ordinary collection containers | **Avoid rewrite:** short strings are one allocation either way and no gate row pays it; only a TTL/eviction RSS result could justify removing the duplicate key (3.11) |
 
 ### 3.9 Persistence write path (append-only journal)
@@ -1509,14 +1883,55 @@ That is safe Rust with no new dependency.
   batch). At pipeline K>1 with persistence on, each of our K journaled commands
   pays a separate write syscall, a mutex acquisition and a framing allocation,
   while the C servers pay one buffered write for the batch. This is invisible to
-  the protected gate (persistence off) and is a production-relevant **unmeasured**
-  difference, not a measured gate loss.
+  the protected gate (persistence off).
+- **Current-head measurement (2026-11-12).** Paired local SET runs, three
+  Latin-rotated rounds, `appendonly yes`, `appendfsync everysec`, 8 clients,
+  1024 keys, 64 B, 50k requests, fresh journal per run. Absolute rates are far
+  below the gate because the host is shared; the paired AOF-on/off ratio and the
+  cross-server pattern are the signal:
 
-**Verdict:** adapt the buffering shape (candidate 4.21) only after the
-persistence-on row in 4.16 shows a gap above its spread. Do not copy the
-unauthenticated AOF format, do not move the write after the reply flush, and do
-not change the 1 s everysec policy. The candidate keeps the per-transaction
-CRC/HMAC framing and the accepted robustness boundary.
+  | Workload | Server | AOF off | AOF on | Change | p99 off/on |
+  | --- | --- | ---: | ---: | ---: | ---: |
+  | P1 SET | Rillcache | 35,387 | 11,856 | **−66.5%** | 1.53/5.53 ms |
+  | P1 SET | Redis 8.10.2 | 24,983 | 27,977 | +12.0% (noise) | 1.73/1.42 ms |
+  | P1 SET | Valkey 9.1.2 | 25,428 | 20,923 | −17.7% | 1.72/2.47 ms |
+  | P16 SET | Rillcache | 406,549 | **39,927** | **−90.2%** | 3.09/15.12 ms |
+  | P16 SET | Redis 8.10.2 | 294,371 | 195,669 | −33.5% | 1.55/1.98 ms |
+  | P16 SET | Valkey 9.1.2 | 168,126 | 153,763 | −8.5% | 5.08/3.50 ms |
+
+  The rill P16 ratio is 4.0–12.5× per round (off runs varied 169k–488k; the
+  AOF-on rate was stable at 39–42k), while the C servers lose at most ~1.9× in a
+  round. At P1 AOF-on, Rillcache (11.9k) is slower than Valkey (20.9k) even though
+  it leads with AOF off (35.4k vs 25.4k). This is a large, consistent persistence
+  penalty, not host noise; HMAC was off, so the framing cost here is CRC plus the
+  per-command write, not authentication.
+- **HMAC cost (2026-11-12).** With `--aof-hmac-key-file` on the same server,
+  AOF-on SET is 12,893 vs 14,355 req/s at P1 (−10.2%) and 31,938 vs 41,821 at P16
+  (−23.6%), p99 12.0 vs 11.5 ms. A 50k-key replay takes 0.48–0.88 s (median 0.75)
+  versus 0.20–0.23 s (median 0.21), a 3.6× startup increase with DBSIZE 50,000 in
+  both. The append cost is one SHA-256 per transaction (in-repo safe Rust); the
+  replay cost is the separate authentication pass (section 3.15). This is the
+  security feature's price: do not replace the hash, reduce the per-transaction
+  chain or skip verification without a security review. Candidate 4.27 can fold
+  the verification into the replay pass without changing the chain.
+- **`appendfsync always` (source only; local cohorts failed).** Rillcache calls
+  `sync_data` inside every `append`, while the C servers fsync the buffer once
+  per event-loop flush; at pipeline K this is K fsyncs versus about one. Two
+  local paired attempts on 2026-11-12 were **unusable**. The first, at host load
+  10+, varied from 1.6k to 107k req/s with some `always` runs faster than
+  `everysec`. The second, at load ~3 with 5k requests and three rounds, still
+  produced `always` above `everysec` for the C servers at P16 (Redis 148.8k vs
+  137.4k, Valkey 143.8k vs 120.4k) and Rillcache P16 37.5k vs 32.7k, which is
+  physically implausible if the sync is real. The host filesystem/overlay does
+  not expose a stable fsync cost, so no numbers are claimed. The mechanism still
+  makes `always` the strongest case for 4.21's batching: one durable write and
+  one fsync per batch, with every acknowledged command still covered.
+
+**Verdict:** the persistence-on gap is measured and large; 4.21 is admitted. Adapt
+the buffering shape, keep the per-transaction CRC/HMAC framing, do not move the
+write after the reply flush, and do not change the 1 s everysec policy. Do not
+copy the unauthenticated AOF format. Absolute rates in the table are shared-host
+diagnostics, not a gate result.
 
 ### 3.10 Expiry and eviction under memory pressure
 
@@ -1555,6 +1970,29 @@ only by unit/durability tests. Their shapes still differ:
   25% CPU. Our ordered reap is more aggressive than the single-DB baseline and
   never removes a live key; their sampled cycle can miss due keys but bursts
   harder under a high stale ratio.
+- **Eviction steady-state measurement (2026-11-12).** 100k SET requests over a
+  100k-key space, 64-byte values, 8 clients, pipeline 1/16, `allkeys-lru`;
+  controls are the same servers without a memory limit. Rill uses a 500 KB
+  payload budget (median 7,073 evictions), Redis/Valkey 2 MB `maxmemory`
+  (~4,000 evictions):
+
+  | Workload | Server | No eviction | Eviction | Change | p99 no/evict ms |
+  | --- | --- | ---: | ---: | ---: | ---: |
+  | P1 SET | Rillcache | 14,895 | 8,339 | **−44.0%** | 5.95/8.20 |
+  | P1 SET | Redis 8.10.2 | 12,371 | 12,150 | −1.8% | 6.20/6.40 |
+  | P1 SET | Valkey 9.1.2 | 11,888 | 13,265 | +11.6% | 6.33/5.24 |
+  | P16 SET | Rillcache | 144,365 | **20,498** | **−85.8%** | 8.01/64.51 |
+  | P16 SET | Redis 8.10.2 | 130,085 | 171,696 | +32.0% (noisy) | 7.09/4.67 |
+  | P16 SET | Valkey 9.1.2 | 117,044 | 137,789 | +17.7% (noisy) | 9.54/5.56 |
+
+  A policy A/B on the same budget shows the LRU choice is not the cause:
+  Rillcache `allkeys-lru` 27.1–31.3k and `allkeys-random` 25.3–27.6k at P16, both
+  far below the no-eviction control, while Redis shows no penalty under either
+  policy. The cost is the eviction path itself: per-write bounded candidate scans
+  under continuous pressure versus the C servers' sampled pool that evicts in a
+  pass. The budgets differ (payload vs RSS) and Rillcache evicts ~1.75× more
+  keys, but that does not explain a 5–7× throughput difference. Shared-host
+  diagnostic, not a gate result.
 - Eviction quality: mutation-time LRU is a real policy gap, not a measured
   throughput loss. A read-heavy keyspace under `allkeys-lru` can evict keys that
   Redis/Valkey just read and would keep. Read-aware LRU would need an atomic or
@@ -1562,14 +2000,11 @@ only by unit/durability tests. Their shapes still differ:
   policy is active), which adds work to the hot read path; it is not justified
   without an eviction cohort.
 
-**Verdict: keep the fixed, ordered, bounded purge and the current eviction
-approximation.** The only scenario where our expiry can lose is sustained
-high-churn TTL with memory pressure, where 1,280/s may leave stale keys longer
-than a 25%-CPU burst cycle; that is exactly the TTL row in 4.16, and the
-eviction-quality question needs a sixth row there. If either shows a gap, adapt
-in bounded slices between command batches (the journal-rewrite shape) rather than
-one large locked purge, and only then consider a read-aware access stamp. Do not
-copy the adaptive effort levels or LFU counters speculatively.
+**Verdict: keep the ordered purge; the eviction path is now admitted as 4.26.**
+The measured eviction penalty is the per-write admission scan, not the LRU
+quality; a pooled/batched eviction pass is the candidate. The TTL high-churn
+question remains for 4.16 row 1, and a read-aware access stamp remains
+unmeasured. Do not copy adaptive expiry effort or LFU counters speculatively.
 
 ### 3.11 Key and value representation (memory, not gate rate)
 
@@ -1609,12 +2044,15 @@ than the current `Vec` (both are one allocation for short strings), integer
 encoding would save one buffer per counter but the clean cohort already leads the
 `incr` rows, and listpack for every collection is a large storage rewrite that
 would touch the collection, expiry, stream and journal encodings for no gate row.
-The actionable item is the duplicate **key** buffers: 4.20 removes the version
-copy whenever nothing watches, and a shared-key/index representation is a
-possible follow-up only if the TTL row's RSS shows it matters. That design must
-not put a refcount or an index lookup on the GET/SET hot path without a matched
-measurement. Add RSS reporting to the TTL and eviction rows (4.16 rows 1 and 6)
-as the memory acceptance signal.
+The 2026-11-12 large-collection cohort (section 3.17) changes that for lists
+specifically: 142–143 B/element versus 7.5 B and 6.2–7.3 ms to drop a
+200k-element list are a measured non-gate cost, so packed list nodes are admitted
+as 4.32 with AC34. The actionable duplicate **key** buffers remain separate:
+4.20 removes the version copy whenever nothing watches, and a shared-key/index
+representation is a possible follow-up only if the TTL row's RSS shows it
+matters. That design must not put a refcount or an index lookup on the GET/SET hot
+path without a matched measurement. Add RSS reporting to the TTL and eviction rows
+(4.16 rows 1 and 7) as the memory acceptance signal.
 
 ### 3.12 Blocking-command wakeups (latency)
 
@@ -1662,7 +2100,7 @@ as the memory acceptance signal.
   the relative gap is large and consistent across rotations.
 - **Idle CPU with blocked clients (2026-11-12).** The same 1 ms tick also keeps
   the reactor busy when nothing is pushed. Server process CPU over a 5 s window
-  with N idle `BLPOP` clients, no traffic:
+  with N idle `BLPOP` clients, no traffic (measured before the #226 spin fix):
 
   | Idle blocked clients | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
   | ---: | ---: | ---: | ---: |
@@ -1681,6 +2119,61 @@ as the memory acceptance signal.
   each tick. Event-driven wake plus a deadline timer removes both, and the
   implementation should stop counting a no-progress blocked poll as productive
   work so the spin is not re-armed.
+
+- **Idle pub/sub and MONITOR clients (2026-11-12).** The same `asynchronous` set
+  also holds subscribers and monitoring clients, so an idle one costs CPU too
+  (measured before the #226 spin fix):
+
+  | Mode | Idle clients | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: | ---: |
+  | SUBSCRIBE | 0 | 0.8% | 0.2% | 0.4% |
+  | SUBSCRIBE | 1 | **6.0%** | 0.2% | 0.4% |
+  | SUBSCRIBE | 100 | 17.8% | 0.6% | 0.6% |
+  | SUBSCRIBE | 1000 | **22.2%** | 0.4% | 0.4% |
+  | MONITOR | 0 | 0.6% | 1.6% | 0.4% |
+  | MONITOR | 1 | **5.8%** | 0.4% | 0.4% |
+  | MONITOR | 100 | 20.8% | 0.4% | 0.4% |
+  | MONITOR | 1000 | **27.4%** | 0.4% | 0.8% |
+
+  One idle subscriber or monitor already costs ~6% of a core; 1000 costs 22–27%,
+  against under 1% for the C servers. The mechanism is identical: the 1 ms tick
+  re-enqueues every `is_subscribed()`/`is_monitoring()` client, and the
+  no-progress poll arms the 20 µs spin after each tick. This is a scheduling and
+  CPU-efficiency gap, not a message-path cost; candidate 4.24 covers the
+  event-driven servicing shape and shares the no-progress-spin fix with 4.22.
+  The no-progress spin component is implemented separately in PR #226, merged as
+  `b7f5694`; its own bound is about two CPU points per 1 ms tick, so it does not
+  remove the per-client scan that dominates these numbers (they are pre-fix).
+- **Async delivery latency (2026-11-12).** The same tick delays the message or
+  monitor line. 300 publishes/commands per run, three rotated runs per server,
+  randomized 0.5–2.5 ms phase; `after` is measured from the publishing or
+  monitored command's reply to the subscriber/monitor receipt:
+
+  | Path | Rillcache p50 / p99 | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | PUBLISH → subscriber | **1.05 / 3.60 ms** | 0.075 / 1.19 ms | 0.064 / 0.56 ms |
+  | PING → MONITOR line | **0.37 / 6.15 ms** | 0.050 / 0.64 ms | 0.048 / 0.49 ms |
+
+  Rillcache is ~14–16× slower at p50 for pub/sub and ~3–6× at p99, and ~7× at p50
+  for the MONITOR line, because delivery waits for the 1 ms tick; the C servers
+  deliver within the command's event-loop iteration. Total latency adds the
+  command round trip and shared-host scheduling. Candidate 4.24 covers both the
+  CPU and this delivery latency; the measured baselines are what AC27 targets.
+
+- **Post-#226 re-measurement (current head, 2026-11-12).** The no-progress spin
+  fix is merged, so the tables above were re-run on the current binary:
+  - idle `BLPOP`: 0.6 / 5.0 / 6.6 / 12.4 / 20.4 / 21.4% at 0/1/10/50/100/1000
+    clients (pre-fix 0.6 / 5.6 / 6.8 / 13.0 / 17.8 / 22.2);
+  - idle `SUBSCRIBE`: 0.8 / 4.6 / 13.6 / 22.4% at 0/1/100/1000 (pre-fix
+    0.8 / 6.0 / 17.8 / 22.2);
+  - idle `MONITOR`: 1.0 / 4.2 / 20.8 / 26.6% at 0/1/100/1000 (pre-fix
+    0.6 / 5.8 / 20.8 / 27.4).
+
+  The values are within run-to-run noise of the pre-fix tables. The spin fix
+  removed its roughly two-point component but **did not remove the per-client
+  1 ms scan**, which still costs ~4–5% of a core with one idle asynchronous
+  client and 20–27% at 1000 versus <1% for the C servers. 4.22/4.24 remain the
+  required mechanism; the measured baselines are unchanged for AC25/AC27.
 
 **Verdict: the gap is measured, not just arithmetic, and 4.22 is admission-ready.**
 Adapt the same-pass ready-key wake; keep the 1 ms tick for timeouts and
@@ -1760,11 +2253,842 @@ cohort; a missed key or a replay regression rejects it.
   servers use 511, and idle NAT/firewall state relies on the app timeout rather
   than TCP keepalive probes. The protected gate keeps eight persistent
   connections and is unaffected.
+- **Local attempt (2026-11-12), inconclusive.** Eight Python threads opened
+  1,000 short-lived connect/PING/close connections each (SO_LINGER 0), three
+  rotations: Rillcache 2,232 conn/s (p50 1.85 ms, p99 30.9), Redis 3,796
+  (1.53/7.9), Valkey 2,189 (1.82/26.8). The Python client and high variance bound
+  the rate, so no direction is claimed. A kernel-level client is needed to resolve
+  the accept path; the source difference (128/no keepalive vs 511/300 s) remains.
 
 **Verdict: keep.** Raising the backlog or enabling keepalive needs a socket
 setter outside `std` (a new dependency or FFI) or an OS-level sysctl, and is not
-justified without a connection-storm or idle-socket cohort. The 30 s app timeout
-is a different mechanism, not a keepalive substitute.
+justified without a kernel-level connection-storm or idle-socket cohort; the
+Python attempt above is inconclusive. The 30 s app timeout is a different
+mechanism, not a keepalive substitute.
+
+### 3.15 Startup replay (time to ready)
+
+Recovery is part of the persistence latency and the steady-state gate never sees
+it: a restart must replay the journal before the listener accepts clients.
+
+- **Redis 8.10.2 and Valkey 9.1.2** load their append-only files once with the AOF
+  loader (manifest plus base/incremental files), then serve; a separate
+  per-command CRC pass is not part of the normal load.
+- **Rillcache** calls `Journal::replay`, which first runs `validate_checksums` — a
+  full parse and CRC pass over every transaction — and then reparses the file and
+  executes every command through the normal `store.execute_command` path
+  ([`journal.rs#L944`](../../src/engine/journal.rs#L944),
+  [`#L592`](../../src/engine/journal.rs#L592)). A 200k-key journal is therefore
+  parsed twice, and each command pays normal dispatch and execution cost before
+  the process binds.
+
+Measured (2026-11-12, 64-byte values, `everysec`, clean SIGTERM, time from process
+start to first successful PING; DBSIZE verified for Rillcache at 200k and Redis at
+50k):
+
+| Keys | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+| ---: | ---: | ---: | ---: |
+| 50,000 | 0.258 s | 0.011 s | 0.054 s |
+| 200,000 | **1.10–1.24 s** (median ~1.16) | 0.027–0.043 s | 0.051–0.061 s |
+
+Rillcache is ~20–45x slower to become ready. Absolute times are shared-host
+diagnostics, but the ratio is large and the source explains it. With AOF HMAC on,
+the 50k replay rises from 0.21 s to 0.75 s (3.6×) because the authentication pass
+reads and hashes the journal again; 4.27 must fold HMAC verification into the
+single replay pass while preserving the chain.
+
+**Verdict: adapt a single-pass replay fast path (4.27).** Verify the CRC while
+replaying instead of in a separate pass, and apply commands through a loader that
+skips load-irrelevant side effects (WATCH version churn, notifications,
+observability counters, journal re-append) while preserving expiry absolute
+times, payload accounting, stream consumer/PEL state, HMAC verification and the
+tail/corruption policy. Do not weaken corruption detection or serve partial
+state.
+
+### 3.16 Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN)
+
+- **Valkey/Redis** iterate the hash table incrementally with a reverse-binary
+  cursor: each call scans a bounded number of buckets, `COUNT` is a hint, and a
+  `maxiterations` loop caps the empty-bucket search. No snapshot, no sort and no
+  keyspace-sized allocation; MATCH/TYPE are applied per visited element, and
+  listpack/intset-encoded collections return every element in one call with
+  cursor 0
+  ([`redis db.c#L1835`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1835),
+  [`#L1972`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1972),
+  [`dict.c#L1529`](https://github.com/redis/redis/blob/8.10.2/src/dict.c#L1529),
+  [`db.c#L1985`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1985);
+  [`valkey db.c#L1225`](https://github.com/valkey-io/valkey/blob/9.1.2/src/db.c#L1225),
+  [`dict.c#L1177`](https://github.com/valkey-io/valkey/blob/9.1.2/src/dict.c#L1177)).
+- **Rillcache** treats the cursor as an index into a **freshly collected and
+  sorted snapshot on every call**: `scan_keys` collects every key, sorts it, and
+  then slices `COUNT`; `scan_collection` deep-copies every field/value or member
+  (`field.to_vec(), value.to_vec()`) and sorts it before slicing. SCAN also calls
+  `data.reap(now, usize::MAX)` first, so one call can synchronously remove every
+  due expiry — work bounded by the keyspace, not by `COUNT`
+  ([`scan.rs`](../../src/engine/scan.rs#L112),
+  [`scan_collection`](../../src/engine/scan.rs#L144)). The module comment states
+  the design: "Cursors are decimal indexes into a freshly sorted snapshot per
+  call."
+- **Measured (2026-11-12).** A 100,000-key keyspace (`key:%06d`, 16-byte values)
+  plus a 10,000-field hash, one connection, 300 fixed SCAN calls with spread
+  cursors and `COUNT 10`, three rotations:
+
+  | Path | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SCAN` per call, `COUNT 10` | **42.6 ms p50 / 81.3 p99** | 0.256 / 2.08 ms | 0.164 / 3.72 ms |
+  | Full `SCAN`, `COUNT 1000` | **4.81 s** (101 calls) | 0.239 s (100) | 0.167 s (100) |
+  | Full `HSCAN`, `COUNT 10` (10k fields) | **5.05 s** (1,000 calls) | 0.257 s (~944) | 0.247 s (~800) |
+
+  The PING floor on the same connections is 0.21/0.16/0.10 ms. A single
+  default-COUNT call is therefore **167× Redis and 260× Valkey** at p50, and a
+  full traversal is 20–29× slower. Extrapolating the measured per-call p50 to
+  10,000 calls, a full 100k traversal at `COUNT 10` costs Rillcache ~426 s versus
+  ~2.6 s for Redis. The cost is keyspace-sized per call, not per requested
+  element. Candidate 4.31.
+
+**Verdict: adapt an incremental cursor (4.31).** Keep the cursor opaque,
+resume from the last emitted element in an ordered structure, and bound each call
+by `COUNT` plus index depth. The numeric index cursor and the router's
+`owner×2^40 + local` packing are an explicit compatibility decision, and the
+sorted-order test in `tests/scan.rs` must be updated to the chosen semantics. Do
+not keep a per-call full snapshot or an unbounded expiry sweep.
+
+### 3.17 Large-collection drop, deferred free and per-element memory
+
+- **Valkey/Redis** store lists as a quicklist of listpack nodes, so a
+  200,000-element list of 8-byte values is a few hundred packed nodes rather than
+  200,000 separate allocations (`list-max-listpack-size` default −2, an 8 KiB
+  node budget,
+  [`redis config.c#L3511`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3511)).
+  `DEL` frees synchronously unless `lazyfree-lazy-user-del` is enabled (Redis
+  default 0, Valkey default 1), `UNLINK` always calls `dbAsyncDelete` and queues
+  the value to the bio lazy-free thread, and `FLUSHALL/FLUSHDB ASYNC` swaps the
+  keyspace structures and queues the old ones to the same thread
+  ([`redis db.c#L1437`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1437),
+  [`db.c#L920`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L920),
+  [`lazyfree.c#L328`](https://github.com/redis/redis/blob/8.10.2/src/lazyfree.c#L328),
+  [`bio.c#L195`](https://github.com/redis/redis/blob/8.10.2/src/bio.c#L195),
+  [`config.c#L3413`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3413);
+  [`valkey db.c#L546`](https://github.com/valkey-io/valkey/blob/9.1.2/src/db.c#L546),
+  [`lazyfree.c#L209`](https://github.com/valkey-io/valkey/blob/9.1.2/src/lazyfree.c#L209),
+  [`config.c#L3281`](https://github.com/valkey-io/valkey/blob/9.1.2/src/config.c#L3281)).
+- **Rillcache** implements `UNLINK` in the same arm as `DEL` and performs the
+  drop synchronously, and accepts `FLUSHALL`/`FLUSHDB` `ASYNC` but calls
+  `data.flush()` on the command thread — the mode flag is parsed and ignored
+  ([`keyspace.rs`](../../src/engine/dispatch/keyspace.rs#L27),
+  [`administration.rs`](../../src/engine/administration.rs#L14),
+  [`data.rs`](../../src/engine/data.rs#L484)). Lists are
+  `VecDeque<Vec<u8>>` or a chunked `VecDeque<VecDeque<Vec<u8>>>`, one heap
+  buffer per element, so dropping a 200k-element list frees 200k allocations
+  ([`data.rs`](../../src/engine/data.rs#L6)).
+- **Measured (2026-11-12).** A 200,000-element list of 8-byte values (three
+  rotations, large-list p50 over nine samples), a 100-element control, and
+  20,000 keys for the flush rows:
+
+  | Path | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `DEL` 200k list | **7.28 ms** | 0.166 ms | 0.130 ms |
+  | `UNLINK` 200k list | **6.21 ms** (max 9.8) | 0.316 (max 3.6) | 0.235 (max 1.9) |
+  | `UNLINK` 100-element list | 0.28 ms | 0.13 ms | 0.12 ms |
+  | `FLUSHALL ASYNC` 20k keys | **9.20 ms** (max 17.4) | 0.886 (max 6.8) | 0.568 (max 5.5) |
+  | `FLUSHALL` 20k keys | **10.12 ms** | 3.44 ms | 1.52 ms |
+
+  RSS for one 200k-element list (8-byte values, `/proc/<pid>/status` before and
+  after preload): Rill **+27.8–28.0 MB (142–143 B/element)**, Redis +1.47 MB
+  (7.5 B), Valkey +1.48–1.54 MB (7.5–7.9 B) — **~19×** the C servers.
+
+  The drop gap is the per-element allocation, not only the async flag: Redis's
+  default `DEL` is synchronous and still 44× faster, while Rill's `ASYNC` is as
+  slow as `SYNC`. The 100-element control is at the command floor, so both gaps
+  scale with element count. Redis/Valkey `ASYNC` saves 2.7–3.9× on flush; Rill
+  saves nothing. Candidates 4.32 (packed nodes) and 4.33 (deferred drop).
+
+**Verdict: adapt both, in this order.** 4.33 is a small, contract-visible fix:
+move the dropped value/keyspace to a bounded pending-free queue drained by the
+maintenance tick, count it in memory accounting, and drain on shutdown. 4.32 is
+the structural fix: pack short list elements into byte-arena nodes so a drop
+frees hundreds of buffers instead of hundreds of thousands and RSS falls toward
+the C servers. Keep `DEL` and `FLUSH* SYNC` synchronous, matching the Redis
+default; do not weaken accounting, notifications, journal ordering or WATCH.
+
+### 3.18 In-place string mutation (APPEND/SETRANGE)
+
+- **Redis 8.10.2 and Valkey 9.1.2** store a string in an sds with spare capacity:
+  `APPEND` calls `sdsMakeRoomFor` (greedy doubling, amortized) and copies only the
+  appended bytes into the existing buffer, and `SETRANGE` writes the replacement
+  in place, growing the sds only when the offset is past the end
+  ([`redis t_string.c#L1369`](https://github.com/redis/redis/blob/8.10.2/src/t_string.c#L1369),
+  [`#L580`](https://github.com/redis/redis/blob/8.10.2/src/t_string.c#L580),
+  [`redis sds.c#L341`](https://github.com/redis/redis/blob/8.10.2/src/sds.c#L341);
+  [`valkey t_string.c#L791`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_string.c#L791),
+  [`#L432`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_string.c#L432)).
+  The value is unshared once, then mutated under the entry's own buffer.
+- **Rillcache** rebuilds the entire value for both commands: `append` allocates a
+  new `Vec` of `old length + suffix`, copies the old value, appends, and then
+  `data.put` copies the new buffer into the entry again; `setrange` also allocates
+  a full-length `Vec`, copies the old value, resizes, patches and copies back.
+  Two full-value copies per call, so cost is O(value length) rather than
+  O(appended/replaced bytes)
+  ([`string_ranges.rs`](../../src/engine/string_ranges.rs),
+  [`data.rs`](../../src/engine/data.rs#L774)).
+- **Measured (2026-11-12).** One connection, 200 repetitions at 1 MB and 100 at
+  32 MB (built by 512 KiB `APPEND`s), three rotations:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `APPEND` 64 B to 1 MB value | 0.344 ms | 0.122 ms | 0.198 ms |
+  | `SETRANGE` 16 B at offset 0, 1 MB value | 0.208 ms | 0.181 ms | 0.210 ms |
+  | `APPEND` 64 B to 32 MB value | **7.35 ms** (p99 14.5) | 0.137 (p99 1.05) | 0.133 (p99 0.96) |
+  | `SETRANGE` 16 B at offset 0, 32 MB value | **7.19 ms** (p99 9.5) | 0.184 (p99 1.84) | 0.096 (p99 0.44) |
+  | `APPEND` 8 B to 64 B value | 0.080 ms | 0.120 ms | 0.168 ms |
+  | `SETRANGE` 8 B, 64 B value | 0.135 ms | 0.167 ms | 0.137 ms |
+  | `GETRANGE 0 15` from 32 MB value | 0.118 ms | 0.195 ms | 0.243 ms |
+
+  The 32 MB row is **54× Redis / 55× Valkey** for `APPEND` and **39× / 75×** for
+  `SETRANGE`, while the small-value controls and the read-only `GETRANGE` are at
+  or below the C servers' command floor. The 7.2–7.35 ms matches two 32 MB copies
+  at roughly 9 GB/s, and the 1 MB row is the same mechanism masked by the
+  ~0.1–0.2 ms client floor. Candidate 4.34.
+
+**Verdict: adapt in-place mutation (4.34).** Add a mutable string-update path that
+reserves/admits first, then grows and patches the entry's own `Vec` in place
+(`extend_from_slice`, `resize`, slice copy) and updates payload accounting and
+`touch` without rebuilding or re-copying the value. Keep the exact bytes, the
+zero-fill growth rule, the 512 MiB limit, TTL, WATCH/version, journal and
+rewrite behavior.
+
+### 3.19 In-place collection mutation (HSET/ZADD/SADD/LPUSH/LPOP)
+
+- **Redis 8.10.2 and Valkey 9.1.2** mutate the existing encoding in place:
+  `hashTypeSet` updates the listpack or dict entry, `zsetAdd` updates the dict
+  entry plus its skiplist node, `setTypeAdd` inserts into the intset/listpack/dict,
+  and `pushGenericCommand`/`popGenericCommand` push or pop one quicklist element
+  ([`redis t_hash.c#L1899`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L1899),
+  [`t_zset.c#L1601`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L1601),
+  [`t_set.c#L126`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L126),
+  [`t_list.c#L484`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L484),
+  [`#L822`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L822);
+  [`valkey t_hash.c#L368`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L368),
+  [`t_zset.c#L1482`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L1482),
+  [`t_set.c#L117`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L117),
+  [`t_list.c#L464`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L464),
+  [`#L757`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L757)).
+- **Rillcache** rebuilds the whole collection per write: `hash_set` clones every
+  field and value into a new `HashMap` and replaces the entry; `zset_add` clones
+  every member into a new map; `set_add` clones and sorts every member into a new
+  `BTreeSet`; `push_list`/`pop_list` clone the entire list via `list_values`,
+  re-encode it and replace it. Each path also recomputes `bytes`/`payload_len`
+  over every element, and `put_collection` drops the old collection after the
+  replacement ([`collections.rs`](../../src/engine/collections.rs#L258),
+  [`#L371`](../../src/engine/collections.rs#L371),
+  [`#L161`](../../src/engine/collections.rs#L161),
+  [`#L540`](../../src/engine/collections.rs#L540),
+  [`#L589`](../../src/engine/collections.rs#L589),
+  [`data.rs`](../../src/engine/data.rs#L833)).
+- **Measured (2026-11-12).** One connection, 100 repetitions per row, three
+  rotations; big collections are a 10,000-field hash, a 10,000-member zset, a
+  10,000-member set and a 200,000-element list; controls are 10 elements:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `HSET` new field into 10k hash | **6.45 ms** | 0.111 ms | 0.093 ms |
+  | `HSET` control (10 fields) | 0.179 | 0.092 | 0.088 |
+  | `ZADD` new member into 10k zset | **4.21 ms** | 0.223 | 0.084 |
+  | `ZADD` control | 0.232 | 0.093 | 0.369 |
+  | `SADD` new member into 10k set | **1.23 ms** | 0.083 | 0.351 |
+  | `SADD` control | 0.113 | 0.085 | 0.095 |
+  | `RPUSH` one element onto 200k list | **18.34 ms** | 0.084 | 0.070 |
+  | `RPUSH` control | 0.175 | 0.075 | 0.276 |
+  | `LPOP` one element from 200k list | **17.82 ms** | 0.343 | 0.069 |
+  | `LPOP` control | 0.224 | 0.078 | 0.080 |
+
+  The gaps are **58–69×** (`HSET`), **19–50×** (`ZADD`), **3.5–15×** (`SADD`) and
+  **52–262×** (`RPUSH`/`LPOP`), while every 10-element control is at the
+  command floor. The 200k-list write is ~18 ms, about 90 ns per element — a
+  clone-plus-free per element, or roughly 55 writes/s. Candidate 4.35.
+
+**Verdict: adapt in-place mutation (4.35).** Reserve/admit first, then mutate the
+existing collection under `entries.get_mut`: `HashMap::insert` (hash, zset),
+`BTreeSet::insert` (set), the list's head/tail chunk (push/pop), and update
+payload accounting by the delta instead of re-summing the collection. Convert
+between pack and large encodings only when a threshold is crossed; empty
+collections are removed as today. Keep field TTL bookkeeping, blocking wake,
+WATCH/version, journal and rewrite semantics.
+
+### 3.20 Random-member selection (SRANDMEMBER/SPOP/HRANDFIELD/ZRANDMEMBER)
+
+- **Redis 8.10.2 and Valkey 9.1.2** answer `SRANDMEMBER`, `SPOP`, `HRANDFIELD`
+  and `ZRANDMEMBER` from the hash table: `dictGetRandomKey`/`dictGetSomeKeys`
+  picks a random non-empty bucket (or samples one), with intset/listpack paths
+  for small collections, and `SPOP` removes one dict entry
+  ([`redis t_set.c#L1065`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L1065),
+  [`#L838`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L838),
+  [`#L1130`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L1130),
+  [`t_hash.c#L5858`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5858),
+  [`t_zset.c#L4720`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4720),
+  [`dict.c#L1230`](https://github.com/redis/redis/blob/8.10.2/src/dict.c#L1230);
+  [`valkey t_set.c#L953`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L953),
+  [`#L749`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L749),
+  [`#L1005`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L1005),
+  [`t_hash.c#L2368`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L2368),
+  [`t_zset.c#L4345`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L4345)).
+- **Rillcache** materializes the collection first: `set_random_member` calls
+  `owned_set`, which clones and sorts every member through `set_items()`;
+  `hash_random_field` deep-copies every field and value; `zset_random_member`
+  deep-copies every member; `set_pop` clones the set, removes via
+  `iter().nth(index)`, then re-encodes and replaces it. Each command therefore
+  pays O(n) time and O(n) allocation per call
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L3398),
+  [`#L3319`](../../src/engine/collection_commands.rs#L3319),
+  [`#L1277`](../../src/engine/collection_commands.rs#L1277),
+  [`#L4635`](../../src/engine/collection_commands.rs#L4635)).
+- **Measured (2026-11-12).** One connection, 100 repetitions at 10k and 50 at
+  100k, three rotations; controls are 10-element collections:
+
+  | Command | Rillcache 10k | Redis | Valkey | Rillcache 100k | Redis | Valkey |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | `SRANDMEMBER` | 1.63 ms | 0.221 | 0.223 | **11.54 ms** | 0.199 | 0.326 |
+  | `SRANDMEMBER 10` | 1.39 | 0.324 | 0.304 | **11.36** | 0.295 | 0.393 |
+  | `SPOP` | 1.63 | 0.333 | 0.219 | **11.11** | 0.304 | 0.126 |
+  | `HRANDFIELD` | 2.56 | 0.299 | 0.176 | **33.66** | 0.343 | 0.113 |
+  | `HRANDFIELD 10` | 2.09 | 0.094 | 0.272 | **32.64** | 0.331 | 0.368 |
+  | `ZRANDMEMBER` | 1.32 | 0.094 | 0.244 | **21.32** | 0.250 | 0.164 |
+  | `ZRANDMEMBER 10` | 1.03 | 0.124 | 0.378 | **21.57** | 0.296 | 0.160 |
+  | 10-element controls | 0.13–0.31 | 0.09–0.17 | 0.19–0.34 | 0.19–0.25 | 0.17–0.29 | 0.07–0.09 |
+
+  At 100k the gaps are **35–58×** (`SRANDMEMBER`), **85–130×** (`ZRANDMEMBER`),
+  **37–88×** (`SPOP`) and **98–298×** (`HRANDFIELD`), and every 10-element
+  control is at the command floor. Rill's 10k→100k ratio is 7–16× (cost grows
+  with cardinality) while the C servers stay flat. Candidate 4.36.
+
+**Verdict: adapt constant-time random selection (4.36).** A first slice removes
+the clone/sort and samples by reservoir over iteration (O(n) time, O(count)
+memory), which removes the allocation and both copies. The full fix adds a dense
+member index (a `Vec` plus a position map with swap-remove) beside the large
+set/hash/zset, making single picks and `SPOP` O(1) like the C servers' dict
+random; `SMEMBERS`/`HKEYS`/`ZSCAN` order is unspecified in Redis and becomes an
+explicit ordering decision. Keep small pack paths and all reply semantics.
+
+### 3.21 Bitmap mutation and popcount (SETBIT/BITCOUNT)
+
+- **Redis 8.10.2 and Valkey 9.1.2** follow sds semantics: `SETBIT` writes one bit
+  into the existing sds (growing it only when the offset passes the end), and
+  `BITCOUNT` calls a word-at-a-time popcount (`redisPopcount` uses `popcnt` on
+  64-bit words; Valkey has scalar, AVX2 and NEON variants) over the byte range,
+  applying masks only at the edges
+  ([`redis bitops.c#L849`](https://github.com/redis/redis/blob/8.10.2/src/bitops.c#L849),
+  [`#L1623`](https://github.com/redis/redis/blob/8.10.2/src/bitops.c#L1623),
+  [`#L67`](https://github.com/redis/redis/blob/8.10.2/src/bitops.c#L67);
+  [`valkey bitops.c#L689`](https://github.com/valkey-io/valkey/blob/9.1.2/src/bitops.c#L689),
+  [`#L944`](https://github.com/valkey-io/valkey/blob/9.1.2/src/bitops.c#L944),
+  [`#L58`](https://github.com/valkey-io/valkey/blob/9.1.2/src/bitops.c#L58),
+  [`#L141`](https://github.com/valkey-io/valkey/blob/9.1.2/src/bitops.c#L141)).
+- **Rillcache** rebuilds the whole value for `SETBIT`: a new `Vec` of the new
+  length, copy of the old value, resize, one-byte patch and a second copy through
+  `data.put`. `BITCOUNT` sums `count_ones()` one byte at a time, with no word or
+  slice specialization
+  ([`string_algorithms.rs`](../../src/engine/string_algorithms.rs#L89),
+  [`#L457`](../../src/engine/string_algorithms.rs#L457)).
+- **Measured (2026-11-12).** One 1 MB bitmap and one 16 MB bitmap of `0xff`
+  bytes (the 16 MB one built by 512 KiB `APPEND`s); 100 repetitions at 1 MB and
+  30 at 16 MB, three rotations:
+
+  | Command | Rill 1 MB | Redis | Valkey | Rill 16 MB | Redis | Valkey |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | `SETBIT` offset 0 | 0.331 ms | 0.092 | 0.172 | **5.32 ms** | 0.349 | 0.312 |
+  | `GETBIT` offset 0 | 0.138 | 0.103 | 0.145 | 0.260 | 0.101 | 0.215 |
+  | `BITCOUNT` whole value | 1.85 | 0.259 | 0.305 | **23.01 ms** | 3.37 | 4.56 |
+  | `STRLEN` | 0.181 | 0.213 | 0.173 | 0.298 | 0.217 | 0.310 |
+  | 64 B `SETBIT` | 0.163 | 0.154 | 0.099 | 0.244 | 0.334 | 0.140 |
+  | 64 B `BITCOUNT` | 0.112 | 0.163 | 0.197 | 0.165 | 0.410 | 0.153 |
+
+  At 16 MB, `SETBIT` is **15–17×** slower and `BITCOUNT` **5–7×** slower, while
+  `GETBIT`, `STRLEN` and both 64 B controls are at the command floor. Rill's
+  `BITCOUNT` runs at ~0.7 GB/s (23 ms for 16 MB) against the C servers' ~5 GB/s.
+  Candidate 4.37.
+
+**Verdict: adapt both, with the string fix from 4.34.** `SETBIT` should reserve
+and then patch the entry's own `Vec` in place (extend and zero-fill only when the
+offset passes the end), exactly the 4.34 shape; `BITCOUNT` should consume
+`chunks_exact(8)` as little-endian `u64` with `count_ones()` plus masked
+head/tail bytes, which stays safe Rust and needs no SIMD dependency. Keep the
+BYTE/BIT range rules, offset limits, zero-fill, TTL, WATCH/journal and exact
+bit numbering.
+
+### 3.22 Sorted-set rank, score-range and point reads
+
+- **Redis 8.10.2 and Valkey 9.1.2** answer rank and score queries from the
+  skiplist and member dict: `ZSCORE` is a dict lookup, `ZRANK` uses the
+  skiplist's span counts (`zslGetRank`, O(log n)), `ZRANGEBYSCORE` seeks the
+  first node in range and walks `LIMIT` elements, and `ZRANGE start stop` seeks
+  the start node by rank
+  ([`redis t_zset.c#L645`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L645),
+  [`#L1539`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L1539),
+  [`#L3413`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3413),
+  [`#L4056`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4056);
+  [`valkey t_zset.c#L585`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L585),
+  [`#L1420`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L1420),
+  [`#L3099`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3099)).
+- **Rillcache** materializes and sorts for every one of these reads:
+  `zset_rank` calls `zset_items()` then `ordered_zset`, which copies every member
+  into a `Vec<(Vec<u8>, f64)>` and sorts it before a linear `position` scan;
+  `zset_range_by_score` does the same, retains the score range and then skips
+  `offset` elements; the `ZRANGE` path in `zset_read` sorts all members before
+  slicing; and `ZSCORE` builds the same reference vector and linearly scans it.
+  At 100k that is 100,000 member copies and an O(n log n) sort per read
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L3744),
+  [`#L3896`](../../src/engine/collection_commands.rs#L3896),
+  [`#L1228`](../../src/engine/collection_commands.rs#L1228),
+  [`collections.rs`](../../src/engine/collections.rs#L433)).
+- **Measured (2026-11-12).** A 10,000- and a 100,000-member sorted set
+  (7-byte members, scores 100–899), one connection, 50/20 repetitions, three
+  rotations; controls are 10 members:
+
+  | Command | Rill 10k | Redis | Valkey | Rill 100k | Redis | Valkey |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | `ZRANK` middle | 2.43 ms | 0.627 | 0.264 | **58.6 ms** | 0.155 | 0.073 |
+  | `ZRANK` last | 2.44 | 0.270 | 0.267 | **72.5** | 0.126 | 0.080 |
+  | `ZREVRANK` middle | 2.71 | 0.073 | 0.196 | **71.4** | 0.098 | 0.077 |
+  | `ZSCORE` | 0.293 | 0.396 | 0.283 | **3.27** | 0.102 | 0.066 |
+  | `ZRANGEBYSCORE -inf +inf LIMIT 0 10` | 2.93 | 0.200 | 0.224 | **62.4** | 0.080 | 0.116 |
+  | `ZRANGE 50000 50009` | 2.97 | 0.155 | 0.222 | **63.7** | 0.090 | 0.167 |
+  | `ZRANGE 0 9` | 3.08 | 0.159 | 0.206 | **57.4** | 0.103 | 0.073 |
+  | 10-element controls | 0.24/0.14 | 0.18/0.07 | 0.13/0.14 | 0.28/0.11 | 0.10/0.07 | 0.14/0.13 |
+
+  At 100k the rank and range reads are **378–927×** slower than Redis/Valkey and
+  `ZSCORE` is 32–50×; at 10k the same commands are 2.4–3.1 ms. Rill grows
+  19–24× for 10× the cardinality while the C servers stay flat, and the
+  10-element controls are at the command floor. This extends 4.30 and admits
+  4.38 for the rank paths that a plain ordered set cannot answer.
+
+**Verdict: split the fix.** A `BTreeSet<(ScoreKey, member)>` plus a direct map
+lookup fixes `ZSCORE`, `ZRANGE` from 0 and `ZRANGEBYSCORE` (`range()` is
+O(log n + k)), which is 4.30. It does **not** give rank-select: `ZRANK`,
+`ZREVRANK` and a deep `ZRANGE start` would still iterate from the first element,
+so 4.38 adds an order-statistic rank index (bucketed sorted blocks with cached
+counts, or an in-repo weight-balanced tree) and must keep the 4.30 score order.
+Both must preserve `(score, member)` ordering, WITHSCORES formatting, LIMIT and
+inclusive/exclusive bounds, and the small `ZSetPack` path.
+
+### 3.23 Pub/sub fan-out: burst delivery and channel scale
+
+- **Redis 8.10.2 and Valkey 9.1.2** keep subscribed channels in a dict and append
+  the message to each subscriber's client output buffer. A slow subscriber is
+  bounded by `client-output-buffer-limit pubsub` (32 MB soft / 8 MB hard / 60 s
+  by default): when it exceeds the limit the **client is disconnected**, not
+  silently unsubscribed, and the publisher's write loop drains up to 64 KiB per
+  event
+  ([`redis pubsub.c#L469`](https://github.com/redis/redis/blob/8.10.2/src/pubsub.c#L469),
+  [`#L93`](https://github.com/redis/redis/blob/8.10.2/src/pubsub.c#L93),
+  [`config.c#L3586`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3586),
+  [`networking.c#L2887`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L2887);
+  [`valkey pubsub.c#L508`](https://github.com/valkey-io/valkey/blob/9.1.2/src/pubsub.c#L508),
+  [`config.c#L3518`](https://github.com/valkey-io/valkey/blob/9.1.2/src/config.c#L3518)).
+- **Rillcache** gives every subscriber a bounded `sync_channel(1024)`, builds a
+  fresh RESP frame per subscriber, and `try_send`s it; on a full queue the
+  subscriber is **removed from the channel table** (`retain` returns false), so
+  the publisher's subsequent messages report zero receivers and the subscription
+  silently disappears. The publisher finds a channel by scanning every entry and
+  then runs a full `retain` over the map on every `PUBLISH`. Subscribers drain at
+  most 64 frames per 1 ms tick
+  ([`pubsub.rs`](../../src/engine/pubsub.rs#L121),
+  [`pool.rs`](../../src/server/pool.rs#L159)).
+- **Measured (2026-11-12).** One subscriber on `burst` with a reader thread, then
+  a single pipeline of 2,000 `PUBLISH` commands (32-byte payload), three
+  rotations; plus one subscriber subscribed to 1 or 10,000 channels and 500/200
+  timed `PUBLISH` calls:
+
+  | Observation | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | Burst delivered (of 2,000) | **1,024** (all 3 rounds) | 2,000 | 2,000 |
+  | Sum of `PUBLISH` receiver counts | **1,024** | 2,000 | 2,000 |
+  | Subscription present after burst (`PUBSUB NUMSUB`) | **0** | 1 | 1 |
+  | `PUBLISH` p50, 1 channel | 0.12–0.22 ms | 0.13–0.27 | 0.20–0.30 |
+  | `PUBLISH` p50, 1,000 channels | 0.13 ms | 0.16–0.23 | 0.21–0.30 |
+  | `PUBLISH` p50, 10,000 channels | **0.38–0.89 ms** | 0.14–0.21 | 0.12–0.31 |
+
+  A 2,000-message burst loses **976 messages (48.8%)** and removes the
+  subscription, while the C servers deliver every message and keep it. At 10,000
+  channels Rill is 3–6× slower because of the linear channel scan; at 1,000
+  channels the scan is still below the floor. Candidates 4.39 (contract and
+  drain) and the channel lookup are the same fix area as 4.24.
+
+**Verdict: adapt contract-correct fan-out (4.39).** Never silently unsubscribe:
+bound the queue in **bytes** (Redis's pub/sub default is 32 MB), either drop with
+a documented counter while keeping the subscription or disconnect the client with
+an error, and drain by output bytes rather than 64 frames. Look the channel up by
+key, encode one frame per (RESP version, pattern) and share it, and keep pattern
+and shard semantics. This extends 4.24's event-driven wake with a burst-safety
+contract.
+
+### 3.24 Cardinality and membership commands (SCARD/SISMEMBER/HLEN/ZCARD/LLEN)
+
+- **Redis 8.10.2 and Valkey 9.1.2** answer cardinality and membership from the
+  encoding: list length is cached on the quicklist, `SCARD` is `dictSize` or the
+  intset/listpack length, `SISMEMBER` is a dict/intset/listpack probe, `HLEN` is
+  `hashTypeLength`, and `ZCARD` is the dict size
+  ([`redis t_set.c#L821`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L821),
+  [`#L783`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L783),
+  [`t_hash.c#L5294`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5294),
+  [`t_zset.c#L4082`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4082),
+  [`t_list.c#L614`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L614),
+  [`quicklist.c`](https://github.com/redis/redis/blob/8.10.2/src/quicklist.c);
+  [`valkey t_set.c#L733`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L733),
+  [`#L703`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L703),
+  [`t_hash.c#L1220`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L1220),
+  [`t_zset.c#L3753`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3753),
+  [`t_list.c#L564`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L564)).
+- **Rillcache** routes every one of these through a full materialization:
+  `SCARD` and `SISMEMBER` call `set_items()`, which **clones and sorts every
+  member** and then takes `.len()` or scans it; `HLEN` and `ZCARD` collect every
+  reference through `hash_items()`/`zset_items()` just to take `.len()`; `LLEN`
+  collects every list element reference through `list_items()` just to take
+  `.len()`. `HEXISTS` and `STRLEN` use the direct paths and are fast
+  ([`collections.rs`](../../src/engine/collections.rs#L240),
+  [`#L355`](../../src/engine/collections.rs#L355),
+  [`#L478`](../../src/engine/collections.rs#L478),
+  [`#L658`](../../src/engine/collections.rs#L658)).
+- **Measured (2026-11-12).** A 100,000-member set/hash/zset and a 200,000-element
+  list, 100 repetitions, three rotations; controls are 10-element collections:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SISMEMBER` hit | **8.04 ms** | 0.189 ms | 0.221 ms |
+  | `SISMEMBER` miss | **8.67** | 0.167 | 0.214 |
+  | `SCARD` | **8.08** | 0.195 | 0.148 |
+  | `HLEN` | **2.24** | 0.147 | 0.191 |
+  | `ZCARD` | **1.57** | 0.117 | 0.157 |
+  | `LLEN` 200k | **1.55** | 0.199 | 0.135 |
+  | `HEXISTS` (control) | 0.184 | 0.290 | 0.142 |
+  | `STRLEN` (control) | 0.128 | 0.158 | 0.162 |
+  | 10-element controls | 0.12–0.18 | 0.07–0.18 | 0.06–0.17 |
+
+  `SISMEMBER` and `SCARD` are **36–55×** slower, `HLEN`/`ZCARD` 10–15×, and
+  `LLEN` 8–11×, while the direct `HEXISTS`/`STRLEN` controls and every small
+  collection are at the command floor. Candidate 4.40.
+
+**Verdict: adapt O(1) cardinality and membership (4.40).** Add `Collection::len`
+(list = sum of node lengths, others = container length) and
+`Collection::contains_member`/`contains_field` (BTreeSet/`HashMap`/intset-aware
+probe) and route `SCARD`/`SISMEMBER`/`HLEN`/`ZCARD`/`LLEN` through them. Keep
+`SMEMBERS`/`HKEYS`/`HGETALL` sorting and full-reply paths unchanged, and preserve
+the `SetInt`/`SetPack`/`HashPack` semantics including non-integer probes.
+
+### 3.25 List random access (LINDEX/LPOS)
+
+- **Redis 8.10.2 and Valkey 9.1.2** seek the quicklist by node: `LINDEX` walks
+  nodes using cached per-node counts and touches one listpack, and `LPOS` scans
+  forward from the requested rank and stops at the first match (or at `MAXLEN`),
+  without materializing the list
+  ([`redis t_list.c#L621`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L621),
+  [`#L1015`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L1015),
+  [`quicklist.c`](https://github.com/redis/redis/blob/8.10.2/src/quicklist.c);
+  [`valkey t_list.c#L571`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L571),
+  [`#L937`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L937)).
+- **Rillcache** calls `list_items()` for both: it flattens every element
+  reference of the `ListPack`/`ListQuick` into a `Vec`, O(n) time and O(n)
+  allocation, before indexing for `LINDEX` or scanning for `LPOS`
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L2668),
+  [`#L2321`](../../src/engine/collection_commands.rs#L2321)).
+- **Measured (2026-11-12).** A 200,000-element list of 8-byte values, 100
+  repetitions, three rotations; controls are a 10-element list:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `LINDEX 0` | **1.47 ms** | 0.107 ms | 0.068 ms |
+  | `LINDEX 100000` | **1.40** | 0.104 | 0.081 |
+  | `LINDEX -1` | **1.29** | 0.102 | 0.142 |
+  | `LPOS` first element | **1.26** | 0.095 | 0.127 |
+  | `LPOS` missing | 1.81 | 5.02 | 5.85 |
+  | `LLEN` (admitted as 4.40) | 1.36 | 0.138 | 0.117 |
+  | 10-element `LINDEX`/`LPOS` | 0.10/0.10 | 0.09/0.11 | 0.12/0.12 |
+
+  `LINDEX` is **9–22×** slower and a hit-first `LPOS` 10–13×, while a missing
+  `LPOS` **leads** (1.81 vs 5.02/5.85) because Redis walks every node. The
+  control is at the floor. `LLEN` is the same `list_items()` pattern and is
+  covered by 4.40; `LINDEX`/`LPOS` need in-place seeking. Candidate 4.41.
+
+**Verdict: adapt in-place list seeking (4.41).** Add `Collection::list_get`
+(normalize the index, walk `ListQuick` chunks by their lengths without
+allocating) and `Collection::list_position` (scan chunks in order with
+`RANK`/`COUNT`/`MAXLEN` and an early stop). Keep `LRANGE`, `LLEN` (4.40) and all
+reply formats unchanged.
+
+### 3.26 Stream append (XADD)
+
+- **Redis 8.10.2 and Valkey 9.1.2** append one entry to the stream's
+  rax/listpack representation and update the length and memory accounting
+  incrementally; trimming removes entries from the same structure
+  ([`redis t_stream.c#L505`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L505),
+  [`#L2621`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L2621);
+  [`valkey t_stream.c#L425`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L425),
+  [`#L2041`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L2041)).
+- **Rillcache** clones the **entire `Stream`** on every `XADD`
+  (`e.stream.clone()`, deep-cloning every entry, field and value), inserts the
+  new entry, folds `payload_bytes()` over every entry, then `put_stream` folds
+  `payload_bytes()` **again** before replacing the entry and dropping the old
+  stream. Reads are efficient: `XLEN` is the map length and `XRANGE`/
+  `XREVRANGE` use a `BTreeMap` range with `limit`
+  ([`streams.rs`](../../src/engine/streams.rs#L310),
+  [`#L818`](../../src/engine/streams.rs#L818),
+  [`data.rs`](../../src/engine/data.rs#L182),
+  [`#L877`](../../src/engine/data.rs#L877)).
+- **Measured (2026-11-12).** A 1,000- and a 5,000-entry stream of one 8-byte
+  field pair, 30/50 repetitions, three rotations; a 10-entry stream is the
+  control:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `XADD` at 1k entries | 0.263 ms | 0.148 ms | 0.077 ms |
+  | `XADD` at 5k entries | **1.36 ms** (p99 11.6) | 0.104 (p99 1.87) | 0.077 (p99 1.58) |
+  | `XLEN` | 0.072 | 0.156 | 0.103 |
+  | `XRANGE - + COUNT 10` | 0.121 | 0.099 | 0.187 |
+  | `XRANGE mid + COUNT 10` | 0.120 | 0.307 | 0.288 |
+  | `XREVRANGE + - COUNT 10` | 0.118 | 0.117 | 0.136 |
+  | `XADD`/`XRANGE` on 10 entries | 0.077/0.118 | 0.078/0.103 | 0.231/0.143 |
+
+  `XADD` is **13–18×** slower at 5k and grows 5.2× for 5× the entries
+  (0.263 → 1.36 ms) while the C servers stay flat; every read and the 10-entry
+  control are at the command floor. Candidate 4.42.
+
+**Verdict: adapt in-place append (4.42).** Admit the entry, then borrow
+`Entry.stream` mutably and insert one `StreamEntry`, updating `payload_len` and
+the stream's length by the delta instead of cloning the whole stream and folding
+it twice. Keep IDs/groups/PEL, trimming, TTL/WATCH/journal/rewrite and the
+read paths unchanged.
+
+### 3.27 Geospatial search and point lookups (GEOSEARCH/GEOPOS/GEODIST)
+
+- **Redis 8.10.2 and Valkey 9.1.2** keep the geo index as a sorted set of 52-bit
+  geohash scores. A search computes the bounding geohash cells (nine neighbours
+  for a radius/box), reads only those score ranges through the zset index and
+  tests the candidates; `GEOPOS`/`GEODIST` look the member up in the zset dict
+  ([`redis geo.c#L524`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L524),
+  [`#L358`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L358),
+  [`#L418`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L418),
+  [`#L941`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L941),
+  [`#L974`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L974);
+  [`valkey geo.c#L533`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L533),
+  [`#L367`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L367),
+  [`#L424`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L424),
+  [`#L960`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L960),
+  [`#L993`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L993)).
+- **Rillcache** scans the whole index for every search: `run_search` calls
+  `zset_items()` and decodes/haversines every member, and `GEOPOS`/`GEODIST`
+  build the same all-member vector and linearly search it once per requested
+  member. The module comment states the trade: "Searches scan the bounded
+  sorted-set payload linearly instead of walking nine neighbouring geohash
+  cells" ([`geo.rs`](../../src/engine/geo.rs#L1),
+  [`#L350`](../../src/engine/geo.rs#L350),
+  [`#L203`](../../src/engine/geo.rs#L203)).
+- **Measured (2026-11-12).** A 50,000-member geo grid over ~0.5°, 50
+  repetitions, three rotations; a 10-member geo key is the control:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `GEOSEARCH` 1 km radius | **4.34 ms** | 0.157 ms | 0.170 ms |
+  | `GEOSEARCH` 5 km radius (all 50k) | 10.38 | 10.09 | 10.91 |
+  | `GEOSEARCH` 2×2 km box | **4.49** | 0.211 | 0.186 |
+  | `GEOPOS` 1 member | **1.99** | 0.136 | 0.190 |
+  | `GEOPOS` 100 members | **24.86** | 0.469 | 0.606 |
+  | `GEODIST` | **3.12** | 0.168 | 0.167 |
+  | 10-member controls | 0.149/0.139 | 0.240/0.165 | 0.180/0.264 |
+
+  A small-radius search is **25–28×** slower and a box 21–24×;
+  `GEOPOS` is 10–15× for one member and **41–53×** for 100, and `GEODIST` ~19×,
+  while the all-members 5 km search is reply-bound at parity and the 10-member
+  controls are at the floor. Candidate 4.43.
+
+**Verdict: adapt neighbor-cell search and direct point lookup (4.43).** Reuse
+the 4.30/4.38 ordered `(score, member)` index: compute the geohash cell ranges
+(including the nine neighbours and the dateline/pole edges), range-read only the
+candidate scores, then apply the exact haversine/box test, sort and `COUNT`.
+`GEOPOS`/`GEODIST`/`GEOHASH` and `FROMMEMBER` use the member dict/ordered index
+directly. Keep the WGS-84 formulas, units and reply shapes.
+
+### 3.28 Multi-member point lookups (SMISMEMBER/ZMSCORE)
+
+- **Redis 8.10.2 and Valkey 9.1.2** probe the set or sorted-set index once per
+  requested member: `SMISMEMBER` calls the set membership path per member and
+  `ZMSCORE` calls `zsetScore` (a dict lookup) per member
+  ([`redis t_set.c#L800`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L800),
+  [`t_zset.c#L4112`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4112);
+  [`valkey t_set.c#L714`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L714),
+  [`t_zset.c#L3776`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3776)).
+- **Rillcache** materializes once and then linearly scans per member:
+  `set_mismember` calls `set_items()` (clone **and sort** every member) and scans
+  that `Vec` for each requested member; the `zmscore` arm of `zset_read` collects
+  every member reference and runs `members.iter().find(...)` per requested
+  member, O(n·m). `HMGET` already uses `hash_get` per field and is fast, which
+  isolates the two materializing paths
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L3043),
+  [`collections.rs`](../../src/engine/collections.rs#L490)).
+- **Measured (2026-11-12).** A 100,000-member set/hash/zset, 50 repetitions,
+  three rotations; a 10-member collection is the control:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SMISMEMBER` 1 member | **7.90 ms** | 0.094 ms | 0.075 ms |
+  | `SMISMEMBER` 10 members | **8.25** | 0.227 | 0.077 |
+  | `SMISMEMBER` 100 members | **11.75** | 0.394 | 0.211 |
+  | `ZMSCORE` 1 member | **8.02** | 0.102 | 0.112 |
+  | `ZMSCORE` 10 members | **33.37** | 0.422 | 0.328 |
+  | `ZMSCORE` 100 members | **273.2** | 0.630 | 0.187 |
+  | `HMGET` 1/10/100 fields | 0.23/0.36/0.32 | 0.47/0.30/0.52 | 0.11/0.07/0.17 |
+  | 10-member controls | 0.33/0.26/0.26 | 0.10/0.18/0.08 | 0.53/0.10/0.09 |
+
+  `SMISMEMBER` is **30–107×** slower, `ZMSCORE` **72–1461×** (100 members costs
+  273 ms), while `HMGET` and the 10-member controls are at the command floor. The
+  ratio grows with the number of requested members because the scan is repeated
+  per member. Candidate 4.44.
+
+**Verdict: adapt per-member direct probes (4.44).** Reuse 4.40's
+`Collection::contains_member` for `SMISMEMBER` and a direct
+`Collection::zset_score(member)` over the score map for `ZMSCORE`, once per
+requested member; no `set_items()` clone/sort and no all-member `Vec`. Keep
+`SISMEMBER`/`ZSCORE` (4.40/4.30), missing/invalid members, duplicates and reply
+order unchanged.
+
+### 3.29 Mass expiry and command latency
+
+- **Redis 8.10.2 and Valkey 9.1.2** do not purge the whole keyspace on a normal
+  command: reads expire only the keys they touch, the active cycle removes a
+  bounded sample on its own schedule, `KEYS` filters expired entries while it
+  scans, `RANDOMKEY` loops for a live key, and `DBSIZE` returns the dict size
+  without forcing a purge
+  ([`redis expire.c#L287`](https://github.com/redis/redis/blob/8.10.2/src/expire.c#L287),
+  [`db.c#L2179`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L2179),
+  [`#L1605`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1605),
+  [`#L1593`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1593);
+  [`valkey expire.c#L459`](https://github.com/valkey-io/valkey/blob/9.1.2/src/expire.c#L459)).
+- **Rillcache** calls `data.reap(now, usize::MAX)` in `KEYS`, `RANDOMKEY`,
+  `DBSIZE`, `MGET`, `MSET`/`MSETEX`, `SCAN`, and in the `Data::reserve`
+  admission fallback: the first command after a mass expiry synchronously removes
+  **every due key** on the command thread, so its latency is proportional to the
+  expired backlog, not to the command
+  ([`keyspace.rs`](../../src/engine/keyspace.rs#L183),
+  [`multikey.rs`](../../src/engine/multikey.rs#L160),
+  [`scan.rs`](../../src/engine/scan.rs#L122),
+  [`data.rs`](../../src/engine/data.rs#L646)).
+- **Measured (2026-11-12).** 30,000 keys set with `PX 400`, then a 0.7 s wait so
+  every key is due; one command per fresh wave, two waves per command, three
+  rotations; `GET` on one expired key is the control:
+
+  | First command after 30k expire | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `MGET` 100 keys | **36.3 ms** | 0.69 ms | 0.98 ms |
+  | `KEYS k0000*` | **43.6** | 0.63 | 0.80 |
+  | `RANDOMKEY` | **45.5** | 0.65 | 0.60 |
+  | `DBSIZE` | **41.2** | 0.58 | 0.83 |
+  | `GET` one expired key | 0.92 | 0.75 | 0.72 |
+
+  The purge costs **~1.2–1.5 µs per expired key** (~36–45 ms for 30k), so
+  `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` are **37–76×** slower than the C servers,
+  while the per-key lazy `GET` is at parity. A larger backlog scales the stall
+  linearly. Candidate 4.45.
+
+**Verdict: adapt bounded lazy expiry (4.45).** Remove `usize::MAX` from the
+command paths: expire only the keys a read touches, filter `KEYS`/`SCAN` results
+by liveness, retry `RANDOMKEY` a bounded number of times, and let `DBSIZE`
+return the Redis-compatible dict size (expired-but-unreaped keys may still be
+counted) or count live keys without a purge. Keep the bounded periodic purge
+(128/100 ms) and use a bounded reap plus eviction/admission policy on writes so
+an expiry wave can never stall one command. Document the DBSIZE semantics change
+and keep expired values unreadable.
+
+### 3.30 SORT and `BY nosort`
+
+- **Redis 8.10.2 and Valkey 9.1.2** special-case `BY nosort`: with a `LIMIT` they
+  return the requested slice of the source order without sorting or copying the
+  collection; sorted `SORT` still builds a vector of object references and sorts
+  it, and `BY pattern` builds one weight lookup per element
+  ([`redis sort.c#L178`](https://github.com/redis/redis/blob/8.10.2/src/sort.c#L178),
+  [`#L226`](https://github.com/redis/redis/blob/8.10.2/src/sort.c#L226),
+  [`#L331`](https://github.com/redis/redis/blob/8.10.2/src/sort.c#L331);
+  [`valkey sort.c#L197`](https://github.com/valkey-io/valkey/blob/9.1.2/src/sort.c#L197),
+  [`#L243`](https://github.com/valkey-io/valkey/blob/9.1.2/src/sort.c#L243)).
+- **Rillcache** always materializes the source first: `source_values` clones every
+  element into `Vec<Vec<u8>>`, and the SORT loop builds an `Item` (owned value,
+  number, compare key) for every element even when `BY nosort` is set. With
+  `BY nosort LIMIT 0 10` on a 100k list it therefore clones 100k values and then
+  returns 10
+  ([`sort.rs`](../../src/engine/sort.rs#L120),
+  [`#L228`](../../src/engine/sort.rs#L228)).
+- **Measured (2026-11-12).** A 100,000-element list of integer strings plus
+  `w<i>` weight keys, 50 repetitions, three rotations; a 100-element list is the
+  control:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SORT lst` (full reply) | 92.5 ms | 84.8 ms | 105.6 ms |
+  | `SORT lst LIMIT 0 10` | 32.4 | 26.0 | 29.0 |
+  | `SORT lst ALPHA LIMIT 0 10` | 90.2 | 108.1 | 106.8 |
+  | `SORT lst DESC LIMIT 0 10` | 33.5 | 28.2 | 28.1 |
+  | `SORT lst BY nosort LIMIT 0 10` | **7.96** (p99 17.2) | 0.12 (1.17) | 0.16 (0.77) |
+  | `SORT lst BY w* LIMIT 0 10` | 117.5 | 92.1 | 80.4 |
+  | `SORT lst LIMIT 0 10 GET #` | 30.0 | 27.3 | 26.9 |
+  | 100-element controls | 0.21/0.27 | 0.15/0.26 | 0.26/0.23 |
+
+  Sorted and `BY pattern` rows are within **0.9–1.5×** (the ALPHA row leads), but
+  `BY nosort LIMIT 10` is **50–66×** slower because it still copies the whole
+  list; the 100-element controls are at the floor. Candidate 4.46.
+
+**Verdict: adapt a direct `BY nosort` slice (4.46).** When `BY` has no `*`
+(`nosort`), apply `offset`/`count` to the source order without building `Item`s
+or cloning the collection: index the list range, or iterate the first
+`offset + count` members of a set/zset in its current deterministic order; only
+`STORE` materializes the selected values. Leave the sorted/alpha/weighted paths
+unchanged because they are already competitive.
+
+### 3.31 Large-hash field listing and keyspace enumeration
+
+- **Redis 8.10.2 and Valkey 9.1.2** iterate the hash table directly: `HGETALL`,
+  `HKEYS` and `HVALS` emit fields in dict/listpack order with no per-call
+  ordering work, and `KEYS` scans the keyspace and filters, returning the
+  unspecified dict order without sorting. `RANDOMKEY` samples the dict
+  ([`redis t_hash.c#L5336`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5336),
+  [`#L5453`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5453),
+  [`#L5457`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5457),
+  [`db.c#L1605`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1605),
+  [`#L1593`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1593);
+  [`valkey t_hash.c#L1813`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L1813),
+  [`#L1821`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L1821),
+  [`db.c`](https://github.com/valkey-io/valkey/blob/9.1.2/src/db.c)).
+- **Rillcache** collects every field/value reference, **sorts it by field** and
+  then encodes `HGETALL`/`HKEYS`/`HVALS`; `KEYS` collects every matched key,
+  sorts it and encodes; `RANDOMKEY` picks one by iterating `HashMap` keys to a
+  random index. The sort is a deliberate deterministic-order choice, not a Redis
+  requirement
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L2215),
+  [`keyspace.rs`](../../src/engine/keyspace.rs#L183),
+  [`#L199`](../../src/engine/keyspace.rs#L199)).
+- **Measured (2026-11-12).** A 100,000-field hash (7-byte fields, 16-byte values)
+  and a 100,000-key keyspace, 30 repetitions, three rotations; 10-member
+  controls:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `HGETALL` 100k | **132.3 ms** | 25.7 ms | 37.8 ms |
+  | `HKEYS` 100k | **98.5** | 16.5 | 15.8 |
+  | `HVALS` 100k | **101.6** | 19.7 | 17.9 |
+  | `KEYS key:*` (100k) | **91.1** | 42.8 | 21.1 |
+  | `KEYS key:0000*` (100) | 32.7 | 35.1 | 7.0 |
+  | `KEYS nope*` (0) | 23.7 | 26.7 | 5.5 |
+  | `RANDOMKEY` | 0.52 | 0.21 | 0.29 |
+  | `HMGET` 100 fields | 0.49 | 0.47 | 0.22 |
+  | 10-member controls | 0.40/0.25 | 0.49/0.09 | 0.24/0.22 |
+
+  At 100k, `HGETALL`/`HKEYS`/`HVALS` are **3.5–6.2×** behind (the 10k gap was
+  43%), `KEYS key:*` is 2.1–4.3×, and `RANDOMKEY` 1.8–2.5×, while `HMGET` and
+  the small controls are at the command floor. Candidate 4.29 is extended to
+  `HKEYS`/`HVALS` at 100k; the keyspace rows extend 4.31's index scope.
+
+**Verdict: extend the existing candidates.** 4.29's ordered hash (or an
+unordered reply decision) must cover `HGETALL`/`HKEYS`/`HVALS` at 100k, not just
+the 10k `HGETALL` row; 4.31's ordered key index must serve `KEYS` and
+`RANDOMKEY` as well as `SCAN`, so `KEYS` no longer sorts a fresh snapshot and
+`RANDOMKEY` samples without an O(n) walk. Ordering for both is unspecified in
+Redis, so the deterministic-order change is an explicit test decision.
 
 ## 4. Candidate architectures
 
@@ -1782,11 +3106,39 @@ reply copy avoidance), 4.16 (the out-of-gate measurement program that must run
 before 4.15), 4.17–4.18 (two ideas rejected by bound: command-lookup caching and
 incremental rehash), and 4.19 (a latency-attribution diagnostic for the remaining
 P1 write-tail question) plus 4.20 (a conditional storage candidate that only
-follows if 4.19 isolates that tail). 4.21 is the conditional persistence-on
+follows if 4.19 isolates that tail). 4.21 is the admitted persistence-on
 candidate for the journal write shape in section 3.9, and 4.22 is the conditional
 same-pass wakeup candidate for blocking commands in section 3.12. 4.23 is the
 conditional rewrite-start candidate for the fork-versus-slices trade in section
-3.13.
+3.13, and 4.24 is the event-driven async-client candidate for pub/sub and
+MONITOR in section 3.12. 4.25 is the large-frame input-reservation candidate in
+section 3.3, 4.26 is the pooled/batched eviction candidate in section 3.10, and
+4.27 is the startup-replay fast path in section 3.15. 4.28 maps the admitted
+candidates to call sites, invariants and implementation priority, and 4.29 is
+the large-hash `HGETALL` reply candidate in section 3.2. 4.30 is the sorted-set
+ordered-index candidate for the measured 19.5–20.4× small-range loss in the same
+section. 4.31 is the incremental cursor for the measured 167–260× per-call
+`SCAN` loss in section 3.16. 4.32 and 4.33 cover the measured large-collection
+RSS and deferred-drop gaps in section 3.17. 4.34 is the in-place string mutation
+candidate for the measured 39–75× `APPEND`/`SETRANGE` loss on a 32 MB value in
+section 3.18. 4.35 is the in-place collection mutation candidate for the measured
+3.5–262× write loss in section 3.19. 4.36 is the constant-time random-member
+candidate for the measured 35–298× sampling loss in section 3.20. 4.37 is the
+bitmap candidate for the measured 5–17× `SETBIT`/`BITCOUNT` loss in section 3.21.
+4.38 is the rank-select candidate for the measured 378–927× sorted-set rank and
+range loss in section 3.22. 4.39 is the contract-correct pub/sub fan-out
+candidate for the measured 2,000-message burst loss and 10k-channel scan in
+section 3.23. 4.40 is the O(1) cardinality/membership candidate for the measured
+36–55× `SISMEMBER`/`SCARD` loss in section 3.24. 4.41 is the in-place list-seek
+candidate for the measured 9–22× `LINDEX`/`LPOS` loss in section 3.25. 4.42 is
+the in-place stream-append candidate for the measured 13–18× `XADD` loss in
+section 3.26. 4.43 is the geospatial neighbor-cell candidate for the measured
+10–53× search and point-lookup loss in section 3.27. 4.44 is the per-member
+direct-probe candidate for the measured 30–1461× multi-member lookup loss in
+section 3.28. 4.45 is the bounded-lazy-expiry candidate for the measured 37–76×
+mass-expiry stall in section 3.29. 4.46 is the direct `BY nosort` slice candidate
+for the measured 50–66× loss in section 3.30. Section 3.31 extends 4.29 to
+`HKEYS`/`HVALS` and 4.31 to `KEYS`/`RANDOMKEY` at 100k.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2203,7 +3555,7 @@ paired ratio is 0.9989 with a 95% interval of [0.9802-1.0128]. Closing it needs 
 mechanism that changes the syscall or TCP work itself, not the reactor's
 bookkeeping.
 
-### 4.15 Large-bulk reply copy avoidance (candidate, gated on measurement)
+### 4.15 Large-bulk reply copy avoidance (candidate; admission measured)
 
 **Mechanism.** Keep values below a 16 KiB threshold in the existing
 capacity-reusing `Vec<u8>` (so the gate path does not change), and store values at
@@ -2225,12 +3577,18 @@ the protected 64-byte gate rows are unchanged and must remain so. Large
 overwrites trade the current capacity reuse for a new immutable `Arc`, so the
 screen includes SET as well as GET; a write-side regression rejects the candidate.
 
-**Admission and baseline.** Do not implement before 4.16 produces a clean-runner
-large-value cohort showing a gap above its spread (the failed local attempt in
-section 2.21 is not admission). Then freeze the current and candidate binaries,
-alternate them on one host with the same pinned generator, and run 64 B (control),
-64 KiB and 1 MiB GET/SET at P1 and P16 with at least three rotated repetitions,
-raw JSON, p99 and CPU.
+**Admission evidence (2026-11-12, section 2.21).** On a quieter pass of the same
+host, 64 KiB GET is 28.4% behind Valkey (p99 3.93 vs 1.21 ms) and 1 MiB GET is
+**42.1% behind Redis and 44.9% behind Valkey** (p99 24.9 vs 9.9/10.9 ms), while
+the 64-byte control leads. The gap crosses between 64 B and 64 KiB and grows with
+value size, matching the copy mechanism; the SET loss is handled separately by
+4.25 because a SET reply is small. Admission is met; implementation still needs
+the ordering/backpressure obligations and AC20.
+
+**Admission and baseline.** Freeze the current and candidate binaries, alternate
+them on one host with the same pinned generator, and run 64 B (control), 64 KiB
+and 1 MiB GET/SET at P1 and P16 with at least three rotated repetitions, raw
+JSON, p99 and CPU.
 
 **Rejection condition.** No large-GET gain above the cohort spread; any original
 or four-CPU gate row loss; any ordering, partial-write, slow-reader or shutdown
@@ -2238,9 +3596,11 @@ failure; any reprocessing of a reply; or a memory increase beyond the existing
 payload accounting. Revert rather than adding a size knob or a benchmark mode.
 
 **Acceptance (AC20).** Values below the threshold keep the current single-copy
-path; large values are written without a user-space copy; every reply is delivered
-exactly once and in order under fragmentation, pipelining, slow readers and
-half-close; payload/expiry/backpressure accounting is unchanged; the matched
+path; large values are written without a user-space copy; **at 1 MiB GET,
+throughput shall be within 5% of the best reference and p99 no worse than 1.25×
+it** (measured baseline −42% to −45% and 24.9 vs 9.9/10.9 ms); every reply is
+delivered exactly once and in order under fragmentation, pipelining, slow readers
+and half-close; payload/expiry/backpressure accounting is unchanged; the matched
 large-value A/B shows the predicted gain; and both protected gates pass on the
 exact head.
 
@@ -2258,21 +3618,97 @@ the same generator, host, CPU placement and at least three rotated repetitions:
 1. **TTL-heavy P1:** every key has a deadline; SET with EX and GET on hit/miss.
    Tests the clock path that the no-TTL gate never executes (candidate 4.9) and
    reports RSS as the signal for the duplicated expiry key (section 3.11).
-2. **Large values:** 64 KiB and 1 MiB SET and GET at P1 and P16. Tests 4.15 and
-   the parse/store copy.
+2. **Large values:** 64 KiB and 1 MiB SET and GET at P1 and P16. Confirms 4.15
+   (reply copy) and 4.25 (input growth) on a clean runner; the 2026-11-12 local
+   retry in section 2.21 already measures the gap.
 3. **Large multi-bulk replies:** a 1,000-element list/hash/set read, and a 1 MiB
-   single bulk, at P1. Tests the reply-list shape our output `Vec` replaces.
+   single bulk, at P1. The 2026-11-12 local cohort in section 3.2 already measures
+   a 10k `LRANGE`/`HGETALL`; this row confirms on a clean runner and covers the
+   hash path admitted as 4.29 and the sorted-set rank ranges admitted as 4.30.
 4. **Mixed pipeline:** alternating PING/SET/GET/INCR in one 16-command batch.
    Tests dispatch and per-command overhead without a single-command cache.
-5. **Persistence-on writes:** append-only `everysec` SET at P1, to locate journal
+5. **Sorted-set ranks:** a 10k-member zset with `ZRANGE 0 9`, `ZRANGE 0 9999`,
+   `ZSCORE` and a write-heavy `ZADD` control at P1. Confirms 4.30 and the
+   write-cost trade on a clean runner; the 2026-11-12 local cohort in section 3.2
+   already measures the read gap (19.5–20.4×) and the 128/1,024 controls.
+6. **Persistence-on writes:** append-only `everysec` SET at P1, to locate journal
    stalls that the gate's persistence-off rows cannot show (the AOF/streams
    increments since #194 have their own tests; this row is the performance
    counterpart).
-6. **Eviction pressure:** `maxmemory` set just below the working set,
-   `allkeys-lru`, and a read-heavy mixed GET/SET stream. Tests the mutation-time
-   LRU approximation and bounded eviction scans against the C servers' sampled
-   pool (section 3.10); report RSS and the read-hit retention as the quality
-   signals.
+7. **Eviction pressure:** `maxmemory` set just below the working set,
+   `allkeys-lru`, and a read-heavy mixed GET/SET stream. Confirms 4.26 on a
+   clean runner; the 2026-11-12 local cohort in section 3.10 already measures the
+   steady-state penalty (−85.8% P16). Report RSS and read-hit retention as the
+   quality signals.
+8. **Cursor iteration:** a 100k-key `SCAN` with spread cursors at `COUNT 10` and
+   `COUNT 1000`, a full traversal, and a 10k-field `HSCAN`, at P1. Confirms 4.31
+   and its bounded-work claim on a clean runner; the 2026-11-12 local cohort in
+   section 3.16 already measures 167–260× per call and 20–29× per traversal.
+9. **Large-collection drop and RSS:** a 200k-element short-value list, `DEL`,
+   `UNLINK`, `FLUSHALL ASYNC`/`SYNC` on 20k keys, and `/proc` RSS per element.
+   Confirms 4.32 and 4.33 on a clean runner; the 2026-11-12 local cohort in
+   section 3.17 already measures 142–143 vs 7.5 B/element, 6.2–7.3 vs
+   0.13–0.32 ms unlink, and 9.2 ms ASYNC flush.
+10. **String mutation:** `APPEND` and `SETRANGE` on a 1 MB and a 32 MB value,
+   with 64 B controls and a `GETRANGE`. Confirms 4.34 on a clean runner; the
+   2026-11-12 local cohort in section 3.18 already measures 7.2–7.35 ms for the
+   32 MB mutations versus 0.13–0.18 ms for the C servers.
+11. **Collection writes:** a single `HSET`/`ZADD`/`SADD` into 10k-member
+   collections, `RPUSH`/`LPOP` on a 200k list, and 10-element controls.
+   Confirms 4.35 on a clean runner; the 2026-11-12 local cohort in section 3.19
+   already measures 1.2–18.3 ms versus 0.07–0.35 ms.
+12. **Random members:** `SRANDMEMBER`, `HRANDFIELD`, `ZRANDMEMBER` and `SPOP`
+   on 10k and 100k collections, single and `COUNT 10`, with a distribution check
+   and 10-element controls. Confirms 4.36 on a clean runner; the 2026-11-12
+   local cohort in section 3.20 already measures 11–34 ms at 100k versus
+   0.1–0.35 ms.
+13. **Bitmaps:** `SETBIT` and `BITCOUNT` on 1 MB and 16 MB bitmaps, plus
+   `GETBIT`/`STRLEN` and 64 B controls. Confirms 4.37 on a clean runner; the
+   2026-11-12 local cohort in section 3.21 already measures 5.3/23.0 ms at
+   16 MB versus 0.31–0.35/3.4–4.6 ms.
+14. **Sorted-set rank and score reads:** `ZRANK`/`ZREVRANK` (first/middle/last),
+   `ZRANGEBYSCORE ... LIMIT 0 10`, `ZRANGE 0 9`, deep `ZRANGE`, `ZSCORE`, and
+   10-element controls at 10k and 100k. Confirms 4.30/4.38 on a clean runner; the
+   2026-11-12 local cohort in section 3.22 already measures 57–72 ms at 100k
+   versus 0.07–0.17 ms.
+15. **Pub/sub bursts and channel scale:** a 2,000-message pipeline to one active
+   subscriber (delivered count, `PUBSUB NUMSUB`), and `PUBLISH` latency with
+   1, 1,000 and 10,000 subscribed channels. Confirms 4.39 on a clean runner; the
+   2026-11-12 local cohort in section 3.23 already measures 1,024/2,000 delivered
+   with the subscription gone, versus 2,000/2,000 alive.
+16. **Cardinality and membership:** `SISMEMBER` (hit/miss), `SCARD`, `HLEN`,
+   `ZCARD`, `LLEN`, with `HEXISTS`/`STRLEN` and 10-element controls, at 100k/200k.
+   Confirms 4.40 on a clean runner; the 2026-11-12 local cohort in section 3.24
+   already measures 8.0–8.7 ms for `SISMEMBER`/`SCARD` versus 0.15–0.22 ms.
+17. **List random access:** `LINDEX` (0/middle/-1) and `LPOS` (hit-first and
+   missing) on a 200k list, with 10-element controls. Confirms 4.41 on a clean
+   runner; the 2026-11-12 local cohort in section 3.25 already measures
+   1.26–1.47 ms versus 0.07–0.14 ms.
+18. **Stream append and reads:** `XADD` at 1k and 5k entries, `XLEN`,
+   `XRANGE`/`XREVRANGE` at the start and middle, and a 10-entry control.
+   Confirms 4.42 on a clean runner; the 2026-11-12 local cohort in section 3.26
+   already measures 1.36 ms at 5k versus 0.08–0.10 ms, with reads at the floor.
+19. **Geospatial commands:** `GEOSEARCH` 1 km/5 km/2×2 km box, `GEOPOS` 1 and
+   100 members, `GEODIST`, and 10-member controls at 50k members. Confirms 4.43
+   on a clean runner; the 2026-11-12 local cohort in section 3.27 already measures
+   4.34 ms versus 0.16–0.17 and 24.9 ms versus 0.47–0.61.
+20. **Multi-member lookups:** `SMISMEMBER` and `ZMSCORE` with 1/10/100 members at
+   100k, `HMGET` as a control, and 10-member controls. Confirms 4.44 on a clean
+   runner; the 2026-11-12 local cohort in section 3.28 already measures
+   7.9–11.8 ms and 8.0–273 ms versus 0.07–0.63 ms.
+21. **Mass expiry:** 30k keys set with a 400 ms TTL, a 0.7 s wait, then one
+   `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`GET` per fresh wave. Confirms 4.45 on a
+   clean runner; the 2026-11-12 local cohort in section 3.29 already measures
+   36–46 ms versus 0.6–1.0 ms and lazy `GET` at parity.
+22. **SORT:** a 100k integer list with weight keys; full, `LIMIT 0 10`, ALPHA,
+   DESC, `BY nosort LIMIT`, `BY w*`, `GET #`, and 100-element controls. Confirms
+   4.46 on a clean runner; the 2026-11-12 local cohort in section 3.30 already
+   measures 7.96 ms for `BY nosort LIMIT` versus 0.12–0.16 ms.
+23. **Large-hash listing and keyspace enumeration:** 100k `HGETALL`/`HKEYS`/
+   `HVALS`, `KEYS key:*`/prefix/none, `RANDOMKEY`, `HMGET` control, and 10-member
+   controls. Extends 4.29/4.31 on a clean runner; the 2026-11-12 local cohort in
+   section 3.31 already measures 132/98/102 ms for the hash listings and 91 ms
+   for `KEYS` versus 15.8–43 ms.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -2280,7 +3716,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all six rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-three rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -2307,6 +3743,16 @@ weaken the multi-key/expiry invariants. **Defer:** reopen only with a
 large-keyspace cohort (for example 1M keys) that shows a p99 spike during growth
 above the noise; then the mechanism would be a bounded-slice rehash inside the
 existing `RwLock<Data>` with unchanged atomicity, not a new dependency.
+
+**Local growth attempt (2026-11-12), inconclusive.** 262,144 keys × 64 B, P16,
+8 clients: a fresh-server growth run (500k SET, warmup 2k) followed by a
+post-growth run (200k SET) on the same server. Medians: Rillcache 192k/124k req/s,
+p99 5.0/10.1 ms, max 64/81 ms; Redis 150k/172k, 6.3/4.6, 80/28; Valkey
+144k/116k, 5.8/10.2, 50/125. Post-growth runs were **not** faster than growth for
+Rillcache or Valkey, and maxima reached 371 ms on the shared host. The cohort is
+dominated by host scheduling and cannot resolve a rehash stall, so 4.18 stays
+deferred and a clean large-keyspace cohort is still required. No numbers are
+claimed as evidence of a growth tail.
 
 ### 4.19 P1 write-tail attribution (diagnostic; no runtime change unless isolated)
 
@@ -2376,7 +3822,7 @@ on a subsequent mutation; scratch multi-owner write sets are unchanged; the
 transaction/WATCH/multi-owner matrix passes; the matched A/B shows the claimed
 tail or CPU effect; and both protected gates pass on the exact head.
 
-### 4.21 Per-batch journal write coalescing (conditional on persistence-on evidence)
+### 4.21 Per-batch journal write coalescing (candidate; admission measured)
 
 **Mechanism.** During one reactor service batch, encode each journaled command
 into a reusable per-batch buffer (the existing CRC32/HMAC transaction frames,
@@ -2388,11 +3834,20 @@ once, so every acknowledged command in it is durable, matching the C servers'
 per-loop flush shape.
 
 **Prediction.** At pipeline K, the journal path replaces K writes, K mutex
-acquisitions and K transaction-buffer allocations with one of each. At K=16 and
-0.5–1.5 µs per write, that is roughly 8–22 µs saved per batch; with the
-persistence-on P16 server cost in the low microseconds per command, the upper
-bound is material. At pipeline 1 it is zero, and on the protected gate
-(persistence off) it is exactly zero. This is why it is not a gate candidate.
+acquisitions and K transaction-buffer allocations with one of each. The measured
+baseline is a **−66.5% P1 and −90.2% P16** SET loss with AOF on (section 3.9) and
+P16 p99 15.1 ms versus 3.1 ms off; the C servers lose 8–34%. Coalescing should
+move the P16 loss toward the C servers' single-digit-to-mid range and the P1 loss
+toward Valkey's ~18%, with P16 p99 back near the AOF-off value. On the protected
+gate (persistence off) the effect is exactly zero, which is why this is not a
+gate candidate.
+
+**Admission evidence (2026-11-12, section 3.9).** Three Latin-rotated local
+rounds with fresh journals: AOF-on/off SET throughput is −66.5% (P1) and −90.2%
+(P16) for Rillcache, against +12%/−33.5% (Redis) and −17.7%/−8.5% (Valkey); the
+rill P16 ratio is 4.0–12.5× per round while the AOF-on rate is stable. The gap is
+large and consistent enough to admit the candidate; the shared-host absolute
+rates are not a gate claim.
 
 **Failure contract (required design).** Commands execute in memory before the
 batch is durable, so a batch-write failure must be handled explicitly: mark the
@@ -2404,11 +3859,11 @@ restart, which is the same contract the current per-command error path has, only
 Wider. A `SIGKILL`/replay test must prove that every reply the client received is
 present in the replayed journal.
 
-**Admission and baseline.** Implement only after 4.16 row 5 measures
-persistence-on SET at P1 and P16 against the C servers and shows a gap above the
-cohort spread. Freeze the current and candidate binaries, alternate them on one
-host with the same generator, `appendfsync everysec` and `always`, and retain raw
-JSON, p99, CPU, journal-size and replay checks.
+**Admission and baseline.** Admission is met by the 2026-11-12 persistence-on
+cohort (section 3.9). For the implementation, freeze the current and candidate
+binaries, alternate them on one host with the same generator, `appendfsync
+everysec` and `always`, and retain raw JSON, p99, CPU, journal-size and replay
+checks.
 
 **Rejection condition.** Any durability/replay failure, any reply-before-write
 ordering, any HMAC-chain or CRC boundary error, any gate row loss, no gain above
@@ -2417,10 +3872,14 @@ per-command append.
 
 **Acceptance (AC23).** With persistence on, a batch of K commands performs at
 most one journal write and one journal lock acquisition; every acknowledged
-command is present in the replayed journal; `always` still syncs before the reply;
-`everysec` still syncs within its 1 s bound; kill/replay, HMAC, CRC, rewrite and
-multi-owner tests pass; the matched persistence-on A/B shows the gain; and both
-protected gates pass on the exact head.
+command is present in the replayed journal; `always` still syncs before the reply
+and performs at most one fsync per batch;
+`everysec` still syncs within its 1 s bound; **P16 AOF-on SET throughput is
+within 25% of AOF-off and P1 within 10%, and P16 p99 is no worse than 2× the
+AOF-off p99** (measured baseline −90.2%/−66.5% and 15.1 vs 3.1 ms; C servers
+−8.5% to −33.5%); kill/replay, HMAC, CRC, rewrite and multi-owner tests pass; the
+matched persistence-on A/B shows the gain; and both protected gates pass on the
+exact head.
 
 ### 4.22 Same-pass blocked-client wakeup (candidate; admission evidence collected)
 
@@ -2438,7 +3897,9 @@ behavior rather than a lost wake.
 to the reactor's service latency (tens of µs), and idle CPU with blocked clients
 falls from 5.6% (1 client) / 22% (1000) toward the C servers' <1%, because the
 tick no longer re-enqueues and re-polls every blocked client and a no-progress
-poll no longer arms the 20 µs `FAST_POLL` spin. The protected gate, which has no
+poll no longer arms the 20 µs `FAST_POLL` spin. The post-#226 re-measurement is
+5.0% (1) / 21.4% (1000), showing the spin fix alone left the per-client scan
+intact. The protected gate, which has no
 blocking command, is unchanged; throughput is unchanged because the ready set is
 empty when nothing blocks.
 
@@ -2462,7 +3923,9 @@ inside the mutating command; bound the ready set and the number of waiters
 serviced per pass; preserve FIFO order among waiters; keep the wake-versus-timeout
 race single-winner; keep `CLIENT UNBLOCK` and shutdown correct; keep multi-owner
 transfers working (the owner must retain or transfer the waiter set). The 1 ms
-fallback stays.
+fallback stays. The no-progress spin component is handled separately in PR #226
+(merged as `b7f5694`); this candidate still needs to remove the 1 ms re-enqueue
+and re-poll of every blocked client.
 
 **Rejection condition.** Any lost, duplicated or out-of-order wake; any timeout or
 `CLIENT UNBLOCK` regression; no measured latency improvement; no idle-CPU
@@ -2518,6 +3981,1127 @@ total completion shall stay within 25% of the measured 4.85 s (20k) and 43.4 s
 (200k) baselines; both protected gates shall pass; and no dependency shall be
 added.
 
+### 4.24 Event-driven async-client servicing for pub/sub and MONITOR (candidate, admission measured)
+
+**Mechanism.** Register subscribers and monitoring clients for event-driven wake
+instead of the 1 ms `asynchronous` set: a `PUBLISH` (or a command while a monitor
+is attached) schedules the target client or clients in a bounded queue, and the
+reactor services them after the current command batch. Timeouts and pause
+deadlines use a timer. A no-progress async poll must stop counting as `serviced`
+so it does not arm the 20 µs `FAST_POLL` window; keep the 1 ms fallback for a
+lost signal. The same shape covers blocked clients (4.22); implementing them
+together avoids two separate tick paths.
+
+**Prediction.** Idle CPU falls from the measured 6.0%/17.8%/22.2% (1/100/1000
+idle subscribers) and 5.8%/20.8%/27.4% (monitors) — post-#226 4.6%/13.6%/22.4%
+and 4.2%/20.8%/26.6% — to the C servers' under 1%, with no scaling beyond the
+client count's bookkeeping; publish and monitor
+delivery latency drops from the measured 1.05/3.60 ms (pub/sub p50/p99) and
+0.37/6.15 ms (MONITOR) to same-pass service, near the C servers' 0.05–0.08 ms
+p50. The protected gate has no pub/sub or MONITOR client and is unchanged.
+4.39 adds the burst-safety contract to the same path: a 2,000-message burst must
+not silently remove a subscriber (section 3.23).
+
+**Method.** The idle-CPU windows above, then a matched delivery cohort: N
+subscribers receiving a PUBLISH fanout and N monitors observing a P1 command
+stream, p50/p99 for Rillcache, Redis 8.10.2 and Valkey 9.1.2 on one host with at
+least three rotations.
+
+**Admission evidence (2026-11-12, section 3.12).** Idle CPU is 6.0/17.8/22.2%
+(1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) versus under 1% for the C
+servers. Delivery after the publishing/monitored command's reply: pub/sub
+1.05/3.60 ms p50/p99 against Redis 0.075/1.19 and Valkey 0.064/0.56; MONITOR
+0.37/6.15 ms against 0.050/0.64 and 0.048/0.49. Both the CPU and delivery gaps
+admit the candidate; implementation still needs the obligations below and AC27.
+
+**Risks and obligations.** A missed wake would strand a subscriber or monitor;
+duplicate or out-of-order delivery, fanout memory, unsubscribe while a message is
+queued, monitor command ordering and shutdown with queued pushes are the failure
+modes. Keep the 1 ms fallback, bound the queue, and preserve the existing
+message ordering.
+
+**Rejection condition.** Any missed, duplicated or out-of-order delivery; any
+unsubscribe or shutdown regression; no idle-CPU improvement; or any protected
+gate row loss.
+
+**Acceptance (AC27).** With 1 and 1000 idle subscribers and monitors, server CPU
+shall stay at or below 1% and shall not scale materially with the count (baseline
+6.0/22.2% and 5.8/27.4% versus <1% for the C servers); PUBLISH and MONITOR
+delivery p99 shall be within 200 µs of Valkey and at least 2× better than the
+1 ms tick baseline; fanout, ordering, unsubscribe, timeout and shutdown tests
+shall pass; no dependency shall be added; and both protected gates shall pass on
+the exact head.
+
+### 4.25 Large-frame input reservation (candidate; admission measured)
+
+**Mechanism.** After parsing and validating a bulk header of length `L`, ensure
+the input buffer has capacity for the remaining frame (capped by the configured
+frame/bulk limits) instead of appending 16 KiB reads into a repeatedly growing
+`Vec`. Reserve in bounded steps (for example 64 KiB at a time up to the declared
+frame end) so a client cannot force a huge allocation by lying about the length.
+The read loop, parser, limits and fragmented/truncated behavior stay unchanged.
+
+**Prediction.** Removes the O(log n) reallocation-and-copy sequence for a large
+frame. The measured baseline is a **28.2% (Redis) / 31.8% (Valkey)** 1 MiB SET
+loss with p99 9.79 vs 7.37/7.82 ms (section 2.21); a reservation should move the
+SET row toward the C servers. The 64-byte rows do not reserve and must not change.
+
+**Admission evidence (2026-11-12, section 2.21).** The SET loss cannot be the
+reply copy (the reply is small), and it appears only at large sizes; the C
+servers reserve from the declared bulk length (`big_arg`/`sdsMakeRoomFor`,
+section 3.3), while our buffer grows in 16 KiB reads. A matched A/B of the
+reservation against the current parser must isolate the parse copy from the store
+and socket copies before a throughput claim.
+
+**Risks and obligations.** A declared-length reservation is a memory-DoS surface:
+bound the total by `max_frame`/`max_bulk`, reserve in bounded steps, and keep
+admission and per-client limits unchanged. Fragmented, truncated, malformed and
+over-limit frames must behave exactly as today; no hot-path branch for small
+frames beyond the existing header parse.
+
+**Rejection condition.** No 1 MiB SET gain above the spread; any unbounded or
+over-limit reservation from a lying length; any parser/limit/close regression; or
+any protected gate row loss.
+
+**Acceptance (AC28).** At 1 MiB SET, throughput shall be within 10% of the best
+reference and p99 no worse than 1.25× it (measured baseline −28% to −32% and 9.79
+vs 7.37/7.82 ms); a declared length that exceeds the limits shall reserve no more
+than the configured bound; fragmented, truncated and malformed frames keep their
+current behavior; the matched A/B shows the gain; and both protected gates pass
+on the exact head.
+
+### 4.26 Pooled/batched eviction pass (candidate; admission measured)
+
+**Mechanism.** When a write needs memory, run one bounded eviction pass that
+samples candidates into a small pool and evicts until the budget is satisfied or
+a bounded key/time count is reached, instead of rescanning candidates on every
+admitted write. Keep the policy semantics (`allkeys`/`volatile`,
+`lru`/`random`/`ttl`), the mutation-time approximation, accounting and expiry;
+if the budget cannot be met, return the existing OOM reply. Bound the pass so one
+write cannot hold the data lock for an unbounded time.
+
+**Prediction.** Under continuous eviction, P16 moves from the measured **20,498
+vs 144,365 req/s (−85.8%, p99 64.5 vs 8.0 ms)** toward the no-eviction control,
+and P1 from 8,339 vs 14,895; the C servers show no penalty. Target: P16 within
+25% of the no-eviction control and p99 within 2× it, with no change when the
+budget is not under pressure.
+
+**Admission evidence (2026-11-12, section 3.10).** The penalty is policy-
+independent on this host (Rill `allkeys-lru` 27.1–31.3k and `allkeys-random`
+25.3–27.6k at P16, both far below the control; Redis shows no penalty for
+either), so it is the admission scan, not the LRU quality. Rill evicts ~1.75×
+more keys than the 2 MB C servers, which does not explain a 5–7× throughput
+difference. Shared-host diagnostic; a matched frozen-binary A/B is still needed.
+
+**Risks and obligations.** Evicting more than necessary, holding the data lock,
+and changing policy semantics are the failure modes. Preserve exact accounting,
+expiry/TTL ordering, WATCH/journal order and `noeviction`; bound keys/time per
+pass; keep the existing reply when the budget cannot be met.
+
+**Rejection condition.** No gain above the spread; over-eviction or accounting
+error; any policy-semantics change; any protected gate row loss.
+
+**Acceptance (AC29).** Under continuous eviction, P16 SET throughput shall be
+within 25% of the no-eviction control and p99 within 2× it (measured baseline
+−85.8%, 64.5 vs 8.0 ms); evicted-key counts and payload accounting shall be
+exact; every policy (`allkeys`/`volatile` × `lru`/`random`/`ttl`) and
+`noeviction` shall behave as specified; there shall be no change when the budget
+is not under pressure; the matched A/B shall show the gain; and both protected
+gates shall pass on the exact head.
+
+### 4.27 Single-pass replay fast path (candidate; admission measured)
+
+**Mechanism.** Merge checksum validation into the replay parse so each
+transaction is checked once and applied once, and run the command loader in a
+load mode that skips WATCH-version churn, keyspace notifications, observability
+counters and journal re-append, while preserving absolute expiry times, payload
+accounting, stream consumer/PEL state, HMAC chaining and the existing tail
+policy. A bad frame aborts before the listener binds; no partial state is served.
+
+**Prediction.** Time-to-ready at 200k keys falls from the measured **1.10–1.24 s
+(median ~1.16)** to **≤0.3 s** and at 50k from 0.258 s to ≤0.08 s, while
+DBSIZE, payload bytes and TTLs match the pre-replay state. Redis/Valkey remain at
+~0.03–0.06 s; the target is a ≥4× improvement, not a claim to match C.
+
+**Admission evidence (2026-11-12, section 3.15).** 50k keys: Rill 0.258 s vs
+Redis 0.011 and Valkey 0.054; 200k: Rill 1.10–1.24 s vs 0.027–0.043 and
+0.051–0.061, with DBSIZE 200,000 verified for Rill and 50,000 for Redis. The
+source shows two full parses (checksum pass + replay) plus normal command
+execution, which explains the ratio. With AOF HMAC on, the 50k replay is 0.75 s
+versus 0.21 s, so the separate authentication pass is part of the target
+(section 3.9). Shared-host diagnostic.
+
+**Method.** 50k and 200k fixtures, three clean restarts and three SIGKILL
+restarts each, raw time-to-PING, DBSIZE, `INFO` bytes/TTLs, corruption/tail
+tests, HMAC on/off and stream consumer/PEL state.
+
+**Risks and obligations.** Corruption and tail policy must be decided before
+serving; HMAC verification must stay intact; expiry must remain absolute (not
+re-relative); accounting, WATCH versions after load, streams state and
+`noeviction` semantics must match. Do not skip a check that changes externally
+visible state.
+
+**Rejection condition.** Any missing or extra key, accounting/TTL mismatch,
+corruption accepted, HMAC failure, or any protected gate row loss.
+
+**Acceptance (AC30).** At 200,000 keys, time-to-PING shall be ≤0.3 s and at
+50,000 ≤0.08 s (measured baseline 1.10–1.24 and 0.258 s); the post-replay
+DBSIZE, payload bytes and TTLs shall match exactly; corrupt or truncated tails
+shall be handled by the documented policy and never served; SIGKILL/replay,
+HMAC on/off and stream consumer/PEL tests shall pass; both protected gates shall
+pass; and no dependency shall be added.
+
+### 4.28 Implementation map and priority for admitted candidates
+
+The research is now measurement-limited on the shared host: the remaining
+admitted items need code and their own protected gates, not more local screens.
+This map fixes call sites, invariants and test surface so the next increment
+starts from source. Approximate diff sizes are relative scope, not estimates.
+
+| Candidate | Primary call sites | Invariants | Test / evidence | Scope |
+| --- | --- | --- | --- | --- |
+| 4.21 AOF batching | `Journal::append` (`journal.rs#L1028`), `Store::execute_command` (`engine.rs#L1228`), reactor run loop | write before reply; per-transaction CRC/HMAC; 1 s everysec; one fsync per batch; batch failure unacknowledges every reply | kill/replay, HMAC/CRC, everysec/always, multi-owner | medium |
+| 4.27 replay | `Journal::replay` (`#L944`), `validate_checksums` (`#L592`), `execute_command` | corruption/tail policy; HMAC chain; absolute TTL; accounting; streams/PEL | 50k/200k time-to-PING, DBSIZE/bytes/TTL, SIGKILL | medium |
+| 4.25 input reservation | `Client::receive` (`pool.rs#L109`), `parse_request` (`protocol.rs#L64`) | frame/bulk limits; fragmentation; truncated/malformed frames | 1 MiB SET, lying length, limits | small |
+| 4.15 large reply | `Entry.value` (`data.rs#L205`), `encode_bulk` (`protocol.rs#L398`), `Client::flush` (`pool.rs#L73`) | reply order; partial writes; backpressure; payload accounting | 1 MiB GET, slow reader, pipelined GETs | medium |
+| 4.26 eviction | `Data::reserve` (`data.rs#L646`), `eviction.rs` | policy semantics; accounting; expiry/WATCH order; `noeviction` | pressure cohort, every policy | medium |
+| 4.22/4.24 async wake | reactor `asynchronous` (`reactor.rs#L91`, `#L467`), `poll_blocked_on` (`blocking.rs#L436`), pub/sub and monitor flags | FIFO; timeout gaps; `CLIENT UNBLOCK`; ordering; shutdown; multi-owner | wake latency, idle CPU, fanout | large |
+| 4.23 rewrite start | `begin_rewrite` (`journal.rs#L1131`), maintenance tick (`reactor.rs#L443`) | atomic rename; replay; reconciliation | 20k/200k pause, kill/replay | medium |
+| 4.30 zset index | `zset_read` (`collections.rs`), `zset_add`, `zset_items`/`ZSet` (`data.rs`), accounting | total score order with member tie-break; ±0/NaN; rank/score/lex ranges; `ZSetPack` ≤128 unchanged; memory accounting; rewrite/replay | 10k `ZRANGE 0 9` / full-range A/B, ZADD regression, zset semantics | large |
+| 4.31 cursor scan | `scan_keys`/`scan_collection` (`scan.rs`), `KEYS`/`RANDOMKEY` (`keyspace.rs`), router `locked_scan`, `Data` keyspace index, `ZSet`/`Hash`/`Set` order, expiry reap | opaque cursor resume; full coverage on a stable keyspace; MATCH/COUNT/TYPE/NOVALUES; pack one-call behavior; bounded work; KEYS/RANDOMKEY order; memory accounting | 100k `SCAN COUNT 10`, full scan, 10k `HSCAN`, 100k `KEYS`/`RANDOMKEY`, SET/GET regression | large |
+| 4.32 packed list nodes | `Collection::ListPack`/`ListQuick` (`data.rs`), list commands (`collections.rs`), `payload_len`, rewrite encoding | node index arithmetic; split/merge; binary safety; max element size; accounting; iteration order; blocking pop | 200k-list RSS and `DEL` A/B, RPUSH/LRANGE/LINSERT/blocking | large |
+| 4.33 deferred drop | `DEL`/`UNLINK` (`dispatch/keyspace.rs`), `FLUSH*` (`administration.rs`), `Data::flush`/`remove`, maintenance tick (`reactor.rs`), accounting | queue bound; pending bytes counted; key recreation; notification/journal order; shutdown drain; SYNC unchanged | `UNLINK`/`FLUSH ASYNC` A/B, DBSIZE/EXISTS/SCAN, drain-on-shutdown | small |
+| 4.34 in-place strings | `append`/`setrange` (`string_ranges.rs`), `Data::reserve`/`put`/`remove` (`data.rs#L646`, `#L774`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small |
+| 4.35 in-place collection writes | `hash_set`/`zset_add`/`set_add`/`push_list`/`pop_list` (`collections.rs`), `Data::entries.get_mut`, `payload_len`, field TTL, blocking wake | admit before mutate; pack↔large conversion only at thresholds; delta accounting; empty-collection removal; field TTL; WATCH/journal | 10k `HSET`/`ZADD`/`SADD`, 200k `RPUSH`/`LPOP`, 10-element controls | medium |
+| 4.36 random members | `set_random_member`/`set_pop`/`hash_random_field`/`zset_random_member` (`collection_commands.rs`), `owned_set`, `set_items`, `hash_items`, `zset_items`, collection representation | sample without materializing; uniform distribution; count/negative-count semantics; `SPOP` removal and empty deletion; ordering decision; small pack paths | 10k/100k `SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`/`SPOP`, distribution test | medium |
+| 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`), `Data::reserve`/`put`, range normalization | in-place write after admission; `u64` chunk popcount with masked head/tail; BYTE/BIT ranges; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`, 64 B controls, range cases | small |
+| 4.38 zset rank index | `zset_rank` (`collection_commands.rs#L3744`), `zset_range_by_score` (`#L3896`), `zset_read` (`collections.rs#L433`), `ZAdd`/`ZRem` paths, block index | rank-select over `(score, member)`; score moves; block split/merge; negative/reverse ranges; `ZSetPack`; accounting; replay/rewrite | 100k `ZRANK`/`ZREVRANK`/deep `ZRANGE`/`ZRANGEBYSCORE`, ZADD regression | medium |
+| 4.39 pub/sub fan-out | `PubSub::publish` (`pubsub.rs#L121`), `queue_capacity`, subscriber drain (`pool.rs#L159`), reactor async tick | channel lookup by key; byte-bounded queue; no silent unsubscribe; counted drop or documented disconnect; shared frame; ordering/pattern/shard; shutdown | 2,000-message burst, 10k-channel PUBLISH, 100 subscribers, NUMSUB | medium |
+| 4.40 O(1) counts | `set_read`/`hash_read`/`zset_read`/`list_len` (`collections.rs#L240`, `#L355`, `#L478`, `#L658`), `Collection` length/probe methods | SetInt/SetPack semantics; missing/empty/wrong type; no reply or ordering change; LLEN node walk | 100k `SISMEMBER`/`SCARD`/`HLEN`/`ZCARD`, 200k `LLEN`, 10-element controls | small |
+| 4.41 list seek | `list_index` (`collection_commands.rs#L2668`), `list_position` (`#L2321`), `Collection::list_items`/`ListQuick` (`data.rs`) | negative index; chunk boundaries; RANK/COUNT/MAXLEN; missing/empty/wrong type; no reply change | 200k `LINDEX`/`LPOS`, 10-element controls, LRANGE/LLEN | small |
+| 4.42 stream append | `xadd` (`streams.rs#L310`), `Stream`/`payload_bytes` (`data.rs#L182`), `put_stream` (`#L877`), trim/groups | append + delta accounting; IDs/counters; groups/PEL; trim; TTL/WATCH/journal/rewrite | 1k/5k `XADD`, reads, 10-entry control | small |
+| 4.43 geosearch | `run_search` (`geo.rs#L350`), `geopos` (`#L203`), geohash cell helpers, ordered zset index | cell ranges/neighbours; dateline/pole; dedupe; ASC/DESC/COUNT; WGS-84; STORE | 50k 1 km/box `GEOSEARCH`, `GEOPOS` 1/100, `GEODIST`, boundary fixture | medium |
+| 4.44 multi-member probes | `set_mismember` (`collection_commands.rs#L3043`), `zmscore` (`collections.rs#L490`), `contains_member`/`zset_score` | SetInt/SetPack; duplicates/order; missing/empty/wrong type; no reply change | 100k `SMISMEMBER`/`ZMSCORE` at 1/10/100, `HMGET` control | small |
+| 4.45 bounded expiry | `KEYS`/`RANDOMKEY`/`DBSIZE` (`keyspace.rs#L183`), `MGET`/`MSET`/`MSETEX` (`multikey.rs#L160`), `SCAN` (`scan.rs#L122`), `Data::reap`/`reserve` (`data.rs#L599`, `#L646`) | expired values unreadable; DBSIZE semantics; admission bound; TTL/WATCH/notifications | 30k-expiry wave: `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`, lazy `GET` | small |
+| 4.46 nosort slice | `sort`/`source_values` (`sort.rs#L120`, `#L228`), `ITEMS`/limit/STORE | source order for set/zset; offset/count; STORE; missing key; no reply change | 100k `BY nosort LIMIT`, controls, other SORT rows | small |
+
+**Priority.** 4.21 and 4.27 first: they address the largest measured
+steady-state (AOF-on) and availability (replay) gaps and are contained in the
+journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
+the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
+for the measured synchronous `UNLINK`/`ASYNC` drop. 4.40, 4.41, 4.44 and 4.46 are
+the smallest, highest-certainty fixes (O(1) counts/membership, in-place list
+seek, per-member probes, direct nosort slice) and can land immediately. 4.42 is
+the stream sibling of 4.35's in-place write and shares the delta-accounting
+shape. 4.35 is next: every collection write currently clones the collection, the
+gaps are 3.5–262×, and it reuses 4.34's admit-then-mutate shape. 4.37 is small
+and shares 4.34's in-place string path: it removes the two copies in `SETBIT` and
+the byte loop in `BITCOUNT` (5–17×). 4.36 follows, first as a no-copy reservoir
+slice and then the dense index; its 100k gaps are 35–298×. 4.30, 4.38 and 4.43
+are the largest measured read-side ratios (378–927× and 10–53×) and should share
+one ordered structure: 4.30 covers point/score/start-0 reads, 4.38 the
+rank-select, and 4.43 the geohash cell ranges. 4.39 is a contract/reliability fix
+on the pub/sub path already admitted as 4.24 and should land with them. 4.34
+itself removes two full-value copies per `APPEND`/`SETRANGE`. 4.32 follows as the
+structural memory and CPU fix (142–143 → target ≤24 B/element) and may reuse
+4.31's ordered-list direction. 4.22/4.24 come last because they touch every
+asynchronous client path and carry the highest ordering risk (4.39 rides with
+them). 4.31 is the largest per-call ratio in the record but touches the keyspace,
+every collection type and the router cursor, so it follows the journal slices and
+the ordered-structure decision. 4.23 follows the existing bounded slices. 4.20
+stays conditional on 4.19; 4.18 stays deferred.
+
+### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
+
+**Mechanism.** Remove the full field/value reference `Vec` and O(n log n) sort
+from `HGETALL` on large hashes. Options: (a) iterate the `HashMap` directly and
+emit internal order, matching Redis's unspecified `HGETALL` order (the exact-byte
+persistence test and any order-sensitive tests would need to compare unordered);
+(b) keep deterministic order with a `BTreeMap`-backed large hash, so iteration is
+sorted without an extra allocation and sort (measure the write cost); or (c)
+maintain a sorted index on mutation. Pick the option with the best measured
+tradeoff, not the first.
+
+**Prediction.** A 10k-field `HGETALL` moves from the measured **313 req/s
+(11.6/32.1 ms p50/p99)** toward Redis's 552 (7.0/16.3), while `LRANGE`, small
+hashes and the protected gate are unchanged. The 43% gap and the per-byte
+difference versus our own `LRANGE` (30 vs 110 MB/s per request) point at the
+sort/allocation, not the socket write.
+
+**Admission evidence (2026-11-12, section 3.2).** Preloaded 10k-field hash,
+4 clients, 250 requests each, three rotations: Rill 313/312/339 req/s, Redis
+552/486/582, Valkey 345/329/336; p50 11.6 vs 7.0/11.4 ms. The source path is
+`collections.rs`'s `hash_items()` + sort + 20k `encode_bulk` calls. A perf
+profile attributes ~11.9% of samples to `sort::unstable`, 7.8% to `hash_items`,
+3.3% to `encode_bulk`, ~59% libc self and ~15% kernel; `LRANGE` has no sort and
+is kernel-dominated.
+
+**Risks and obligations.** `HGETALL` order is unspecified in Redis but this
+repository's persistence test compares exact bytes; changing order is an explicit
+compatibility/test decision, not an incidental optimization. A `BTreeMap` change
+must preserve `HSET`/`HDEL`/`HGET` semantics and measure the write cost.
+
+**100k extension (2026-11-12, section 3.31).** The gap grows with cardinality:
+100k `HGETALL` is 132.3 ms versus 25.7/37.8, `HKEYS` 98.5 versus 16.5/15.8 and
+`HVALS` 101.6 versus 19.7/17.9 (3.5–6.2×), while `HMGET` and the 10-member
+controls stay at the floor. The same collect+sort+encode path covers all three
+commands, so the candidate and AC31 must include `HKEYS`/`HVALS` at 100k, not
+only the original 10k `HGETALL`.
+
+**Rejection condition.** No gain above the spread; any order change without an
+explicit documented decision and updated tests; any gate row loss.
+
+**Acceptance (AC31).** A 10k-field `HGETALL` shall be within 10% of Redis or at
+least 30% faster than the measured baseline; at 100,000 fields, `HGETALL`,
+`HKEYS` and `HVALS` shall have p50 ≤1.5× the faster C server (≤39 ms for
+`HGETALL`, ≤24 ms for `HKEYS`/`HVALS`) and be ≥3× faster than the measured
+132/98/102 ms; ordering semantics shall be explicitly documented and all
+order-sensitive tests updated to match; small hashes and the list path shall be
+unchanged; the matched A/B shall show the gain; and both protected gates shall
+pass on the exact head.
+
+### 4.30 Sorted-set ordered index (candidate; admission measured)
+
+**Mechanism.** Stop collecting and sorting all members per range read. Keep the
+existing `HashMap<Vec<u8>, f64>` for point lookups and add an ordered index
+maintained on `ZADD`/`ZINCRBY`/`ZREM`: a `BTreeSet<(ScoreKey, Vec<u8>)>` where
+`ScoreKey` wraps `f64` with an `Ord` built on `f64::total_cmp` after normalizing
+`-0.0` to `0.0` and rejecting NaN at parse, so iteration is `(score, member)`
+order and ties match Redis. `ZSCORE` becomes the map lookup; `ZRANGE` walks the
+index from 0 and `ZRANGEBYSCORE` uses `BTreeSet::range` for O(log n + k). A `std`
+`BTreeSet` has no rank-select, so `ZRANK` and a deep-start `ZRANGE` are O(start +
+k) and are split out to 4.38 rather than claimed here. The second option, a
+lazily rebuilt sorted `Vec` snapshot invalidated on mutation, removes per-read
+sorting entirely but pays O(n log n) on the first read after a write and
+duplicates members; it is the fallback only if a write-heavy `ZADD` cohort
+rejects the index.
+
+**Prediction.** 10k `ZRANGE 0 9` moves from **528 req/s (4.61 ms p50)** toward
+the C servers' ~10k (0.24–0.28 ms) and the 100k row from **57.4 ms to ≤0.5 ms**;
+100k `ZRANGEBYSCORE ... LIMIT 0 10` from **62.4 ms to ≤0.5 ms**; 100k `ZSCORE`
+from **3.27 ms to ≤0.2 ms** via the map lookup. The full range stays reply-bound;
+`ZADD` pays one extra O(log n) insert/remove and the memory of a second member
+copy (or a shared `Arc<[u8]>` key).
+
+**Admission evidence (2026-11-12, sections 3.2 and 3.22).** 10,000-member zset,
+4 clients, 250 requests each, three rotations: Rill `ZRANGE 0 9` 528/483/605
+req/s versus Redis 10,311/8,361/13,229 and Valkey 10,771/12,789/9,239; full range
+340/332/379 versus 1,424/1,581/1,824 and 1,036/759/1,091. Single-client 100k
+cohort: `ZRANGE 0 9` p50 57.4 ms, `ZRANGEBYSCORE -inf +inf LIMIT 0 10` 62.4,
+`ZSCORE` 3.27, versus 0.07–0.17 ms for the C servers; the 10k rows are 2.9–3.1
+and the 10-element controls are at the floor. Perf at 10k: ~21.5% sort code,
+~21.2% libc tuple moves in the sort, 6.4% `zset_items`.
+
+**Risks and obligations.** Two structures must stay consistent under `ZADD`,
+`ZINCRBY`, `ZREM`, `ZREMRANGEBY*`, expiry and replay; score equality and ±0.0;
+member ties must be lexicographic; `ZSetPack` (≤128) must keep its current
+behavior and convert atomically; `WITHSCORES` formatting and the
+`ZRANGEBYSCORE`/`ZRANGEBYLEX` semantics must be unchanged (rank-select is
+4.38); memory accounting and `maxmemory` eviction must count the index;
+WATCH/version and transaction ordering stay as they are.
+
+**Rejected options.** A Rust skiplist of our own adds a large hand-written
+ordered structure to every mutation for the same asymptotic result as the `std`
+`BTreeSet`; the `ordered-float`/`float-ord` crates add a dependency for ~20 lines
+of total-order code; sorting only the requested slice is impossible because the
+slice's start rank requires the global order.
+
+**Rejection condition.** `ZADD` loses more than 10% in a matched cohort, memory
+grows without an accounted bound, any zset semantic test differs, or a gate row
+loses; no gain above the spread.
+
+**Acceptance (AC32).** 10k `ZRANGE 0 9` ≥ 8,000 req/s (≥15× the 528 baseline,
+within ~25% of Redis) and `ZRANGE 0 9999` ≥ 1,500 req/s (≥4.4× baseline) or
+within 10% of Redis; at 100k, `ZRANGE 0 9` and
+`ZRANGEBYSCORE -inf +inf LIMIT 0 10` shall have p50 ≤0.6 ms and p99 ≤2 ms
+(≥90× faster than 57.4/62.4 ms, within ~8× Redis's 0.08–0.10 ms) and `ZSCORE`
+p50 ≤0.2 ms (≥16× faster than 3.27 ms); the 10k→100k ratio for those rows ≤2×;
+`ZADD` within 10% of its baseline in a matched cohort; every zset command,
+tie-break, rewrite/replay and expiry test passes; the 128-member control and all
+gate commands unchanged; `ZRANK`/`ZREVRANK`/deep-start `ZRANGE` are explicitly
+out of scope here (4.38/AC40); no new dependency; both protected gates green on
+the exact head.
+
+### 4.31 Incremental cursor iteration (candidate; admission measured)
+
+**Mechanism.** Make each `SCAN`-family call bounded by `COUNT` and index depth.
+For the keyspace, maintain a per-owner ordered key index beside `entries`
+(`BTreeSet<Arc<[u8]>>`, sharing the key allocation with the map, or
+`BTreeSet<Vec<u8>>` if the sharing change is deferred) and resume from the last
+emitted key. The cursor becomes an opaque `(owner, hex(last key))` token: the
+router stops packing `owner × 2^40 + local` and carries the owner prefix plus the
+token instead. A call does a range from the last key, applies MATCH/TYPE while
+visiting, and caps visited elements per call so a selective `MATCH` cannot
+degenerate into a keyspace walk; it returns a resume cursor. For collections,
+large hashes become `BTreeMap` (option (b) of 4.29, which also removes the
+`HGETALL` sort), large sets already use `BTreeSet` and can range directly, and
+large sorted sets use 4.30's ordered index with `ZSCAN` defined as score order
+(Redis leaves the order unspecified). Pack-encoded collections return all
+elements with cursor 0, matching the C servers' listpack path. Per-call expiry
+work becomes the normal bounded reap, not `reap(now, usize::MAX)`. The same
+ordered key index serves `KEYS` (emit the range directly, no sort) and
+`RANDOMKEY` (pick a random rank or sample the map), eliminating the per-call
+sort and O(n) walk measured in section 3.31.
+
+**Fallback.** A lazily rebuilt sorted key snapshot with the current numeric
+cursor removes repeated sorts on a stable keyspace but still pays O(n log n) on
+the first call after a write; it does not meet a bounded-per-call criterion and is
+documented only as the fallback if the ordered index is rejected by its memory or
+mutation cohort.
+
+**Prediction.** 100k-key `SCAN COUNT 10` p50 falls from **42.6 ms** toward the C
+servers' sub-millisecond range; full traversal falls from 4.81 s to ~0.25 s; the
+10k `HSCAN` falls from 5.05 s to ~0.25 s; 100k `KEYS key:*` falls from 91.1 ms
+toward 21–43 ms and `RANDOMKEY` from 0.52 toward ≤0.2 ms; `SET`/`GET` stay
+within noise while `SET`/`HSET` pay one O(log n) index update.
+
+**Admission evidence (2026-11-12, section 3.16).** 100,000 keys plus a
+10,000-field hash, one connection, 300 spread-cursor `SCAN COUNT 10` calls and
+full traversals, three rotations: per-call p50 42.64/46.76/42.58 ms versus Redis
+0.26/0.32/0.24 and Valkey 0.10/0.16/0.22; full `SCAN COUNT 1000` 4.81 s over 101
+calls versus 0.239 s and 0.167 s; full `HSCAN COUNT 10` 5.05 s over 1,000 calls
+versus 0.257 s (~944) and 0.247 s (~800). PING floor 0.21/0.16/0.10 ms. The
+measured cost is the per-call snapshot, not the reply. Section 3.31 adds the
+keyspace rows: 100k `KEYS key:*` 91.1 ms versus 42.8/21.1 and `RANDOMKEY` 0.52
+versus 0.21/0.29, both fixed by the same ordered index.
+
+**Risks and obligations.** The cursor format changes from a decimal index to an
+opaque token; `tests/scan.rs` asserts exact numeric cursors and sorted pages, and
+the router's `owner × 2^40 + local` packing must change deliberately with tests
+and a documented old-cursor behavior. Coverage on a stable keyspace must remain
+exact; `MATCH`/`TYPE` selectivity must not turn one call into a whole-keyspace
+walk; pack thresholds and conversions must keep their semantics; the index and
+shared keys must be counted by memory accounting and rebuilt by replay/rewrite;
+expiry must stay bounded; hex encoding must be binary-safe and dependency-free;
+multi-owner traversal must not repeat or skip an owner.
+
+**Rejected options.** A reverse-binary cursor over `std::collections::HashMap`
+(no stable bucket API; `RawTable` is unstable and unsafe), a 40-bit hash-prefix
+numeric cursor (collisions can skip keys and break coverage), the measured
+per-call full snapshot, and an unbounded expiry reap.
+
+**Rejection condition.** `SET`/`GET` or `HSET` loses more than 10% in a matched
+cohort, any gate row loses, a coverage test can miss a stable key or fail to
+terminate, pack semantics change, memory grows without an accounted bound, or no
+gain above the spread.
+
+**Acceptance (AC33).** On 100,000 keys, `SCAN COUNT 10` shall have p50 ≤ 1 ms and
+p99 ≤ 5 ms (≥40× and ≥16× faster than the 42.6/81.3 ms baseline, within ~4×
+Redis's 0.256 ms); a full `SCAN COUNT 1000` shall finish in ≤0.5 s (≥9× faster,
+within ~2× Redis's 0.239 s) and a full 10k-field `HSCAN COUNT 10` in ≤0.5 s
+(≥10× faster); each call's work shall be bounded by `COUNT` plus a fixed
+lookahead, with no keyspace-sized allocation/sort and no unbounded expiry sweep;
+a stable keyspace shall return every key exactly once across the traversal;
+100k `KEYS key:*` shall be p50 ≤2× the faster C server (≤42 ms) and `RANDOMKEY`
+≤0.2 ms with the ordering decision documented; the `KEYS`/`RANDOMKEY` ordering
+and `DBSIZE`/expiry interactions shall be explicit tests;
+MATCH/TYPE/NOVALUES, cursor errors and multi-owner traversal tests shall be updated
+to the chosen semantics and pass; `SET`/`GET` shall stay within noise; no
+dependency shall be added; and both protected gates shall pass on the exact head.
+
+### 4.32 Packed short-element list nodes (candidate; admission measured)
+
+**Mechanism.** Replace the one-`Vec<u8>`-per-element list with a quicklist-shaped
+container: a `VecDeque<Node>` where `Node` is a byte arena holding short elements
+inline and an out-of-line `Vec<u8>` only above a threshold, split at a byte budget
+(mirroring `list-max-listpack-size -2`). A node index of cumulative element counts
+keeps head/tail push/pop, index and `LSET` amortized O(1) and confines
+`LINSERT`/`LREM` split/merge to one node. Iteration reads the arena sequentially,
+so `LRANGE` keeps its measured lead; `payload_len` and journaling count arena plus
+out-of-line bytes and the rewrite path encodes the same logical elements.
+
+**Prediction.** A 200k-element 8-byte list falls from **142–143 B/element** toward
+the C servers' 7.5 B (target ≤24) and `DEL`/`UNLINK` from **6.2–7.3 ms to ≤1 ms**
+because a drop frees a few hundred nodes instead of 200,000 buffers. `RPUSH` and
+`LRANGE` stay within 10% in a matched cohort; blocking pop and list index
+semantics are unchanged.
+
+**Admission evidence (2026-11-12, section 3.17).** One 200k-element list of
+8-byte values, three rotations: RSS delta 27.8–28.0 MB (142–143 B/element) versus
+Redis 1.47 MB (7.5 B) and Valkey 1.48–1.54 MB (7.5–7.9 B); `DEL` 7.28 ms versus
+0.166/0.130 and `UNLINK` 6.21 ms versus 0.316/0.235; the 100-element control is
+at the command floor. The source stores one buffer per element.
+
+**Risks and obligations.** Node index arithmetic and split/merge are the
+correctness core; binary-safe elements, a maximum element size that stays out of
+line, and a bounded node budget must not change `LRANGE` order or `LINSERT`/
+`LREM`/`LSET`/`LPOS`/blocking semantics; memory accounting and `maxmemory` must
+count arena and out-of-line bytes; journal/rewrite must preserve exact logical
+payloads; every list, persistence and blocking test must pass without unsafe code.
+
+**Rejection condition.** `RPUSH`/`LRANGE` loses more than 10%, any list semantic
+or persistence test changes, RSS is not materially lower, or a gate row loses.
+
+**Acceptance (AC34).** A 200k-element 8-byte list shall use ≤24 B/element RSS
+(≤3× the measured 7.5 and ≥6× below 143), and `DEL`/`UNLINK` of it shall be
+≤1 ms p50 (≥7× faster than 7.28/6.21, within ~6× Redis's 0.166); `RPUSH`,
+`LRANGE`, `LSET`, `LINSERT`, `LREM`, `LPOS` and blocking-pop semantics and tests
+shall be unchanged with matched throughput within 10%; accounting/`maxmemory`,
+rewrite/replay exactness and both protected gates shall pass on the exact head;
+no dependency shall be added.
+
+### 4.33 Deferred drop for UNLINK and FLUSH* ASYNC (candidate; admission measured)
+
+**Mechanism.** Honor the `ASYNC` contract without a new thread: move the dropped
+`Entry`/collection (or the whole `Data` maps on flush) into a bounded
+`pending_free` queue and free a bounded number of elements/bytes per maintenance
+tick; if the queue or per-command bound is exceeded, fall back to the current
+synchronous drop and record the fallback. Accounting counts pending bytes until
+freed, `DBSIZE`/`EXISTS`/`SCAN`/`TTL` reflect the deletion immediately, the
+deletion is journaled and notified before the handoff, a recreated key is
+independent, and shutdown drains the queue. `DEL` and `FLUSH* SYNC` stay
+synchronous.
+
+**Prediction.** `UNLINK` of a 200k list falls from **6.21 ms to ≤0.5 ms**
+independent of element count, and `FLUSHALL ASYNC` on 20k keys from **9.20 ms to
+≤1 ms**; total CPU is unchanged (the work moves to the tick), but the command
+tail disappears. `DEL`/`SYNC` are unchanged.
+
+**Admission evidence (2026-11-12, section 3.17).** `UNLINK` 200k list 6.21 ms
+(max 9.8) versus Redis 0.316 and Valkey 0.235; the 100-element control is
+0.28 ms; `FLUSHALL ASYNC` 20k keys 9.20 ms (max 17.4) versus 0.886/0.568, while
+Rill's `SYNC` is 10.12 ms — ASYNC saves nothing. Redis/Valkey ASYNC saves
+2.7–3.9× over their SYNC.
+
+**Risks and obligations.** The queue and per-command work must be bounded with a
+documented synchronous fallback; pending memory must stay in accounting and under
+`maxmemory`/eviction; a flush must swap every index atomically; shutdown must
+drain; notification, journal and WATCH/version order must not change; a key
+recreated while its old value is pending must be correct; `DEL`/`SYNC` semantics
+must not drift toward async.
+
+**Rejected options.** An unbounded background free per command (queue/RSS growth
+and no backpressure), unsafe allocator tricks or `madvise` (outside the reviewed
+boundary), making `DEL` async by default (changes the Redis default contract and
+notification timing without a target), and a detached free thread with no
+shutdown join (racy exit and unaccounted memory).
+
+**Rejection condition.** Any semantics or accounting test differs, pending memory
+grows without a bound, shutdown does not drain, `DEL`/`SYNC` regresses more than
+10%, or no gain above the spread.
+
+**Acceptance (AC35).** `UNLINK` of a 200k-element list shall have p50 ≤0.5 ms and
+p99 ≤2 ms (versus 6.21/9.8) independent of element count; `FLUSHALL ASYNC` on
+20k keys shall be p50 ≤1 ms (versus 9.20) and ≤2× Redis's 0.886; `DBSIZE`,
+`EXISTS`, `SCAN` and `TTL` shall reflect the deletion immediately; pending bytes
+shall be accounted and bounded with a documented synchronous fallback; shutdown
+shall drain; `DEL` and `FLUSHALL SYNC` shall stay within 10% of baseline;
+notification/journal/WATCH ordering and persistence tests shall pass; no
+dependency shall be added; and both protected gates shall pass on the exact head.
+
+### 4.34 In-place string mutation (candidate; admission measured)
+
+**Mechanism.** Add a mutable update path: after admission/eviction through
+`Data::reserve`, borrow the entry's value mutably and either `extend_from_slice`
+the suffix (`APPEND`) or `resize(end, 0)` only when the offset passes the end and
+copy the replacement slice (`SETRANGE`), then update `payload_len`, payload
+accounting, `last_access` and `touch`. No temporary full-length `Vec`, no `put`
+clone. `Vec` growth is amortized (doubling) and capacity stays on the entry, so
+repeated appends stop copying the value; `try_reserve` runs first so an allocation
+failure leaves the old value untouched. `SET`/`GET` and every other command keep
+their existing paths.
+
+**Prediction.** `APPEND` 64 B to 32 MB falls from **7.35 ms to ≤0.5 ms** and
+`SETRANGE` 16 B from **7.19 ms to ≤0.5 ms**; 1 MB values move to the command
+floor; bytes copied per call become O(delta) after the first growth step; small
+values and `GETRANGE` are unchanged.
+
+**Admission evidence (2026-11-12, section 3.18).** 1 MB and 32 MB values, one
+connection, 200/100 repetitions, three rotations: 32 MB `APPEND` p50
+6.81/8.86/7.35 ms versus Redis 0.14/0.18/0.12 and Valkey 0.13/0.12/0.24;
+`SETRANGE` 6.98/8.86/7.19 versus 0.12/0.18/0.21 and 0.10/0.06/0.18; 64 B
+controls 0.080/0.135 versus 0.12–0.17; `GETRANGE` 0.118 versus 0.195/0.243. The
+7.2–7.35 ms matches two 32 MB copies at roughly 9 GB/s.
+
+**Risks and obligations.** `reserve` can evict the key being mutated, so re-look
+it up after admission and treat absence as a fresh value; the accounting delta
+must be exact and an OOM must not partially mutate; `SETRANGE` growth must
+zero-fill exactly and respect the 512 MiB limit; TTL, WATCH version, journal
+ordering and rewrite snapshots must stay correct; `Vec` capacity growth must stay
+within the existing payload limit; the `put` shrink behavior is not needed on this
+path but `SET` overwrites must not regress.
+
+**Rejected options.** Keeping the temporary-vector rebuild and only skipping the
+`put` clone (still one full copy per call), a custom arena or unsafe buffer, and
+changing `Data::put` to take ownership globally (touches every command for no
+extra gain).
+
+**Rejection condition.** Any bytes, semantics, TTL or journal test differs, an
+OOM leaves a partial value, the small-value controls or `GETRANGE` regress, or no
+gain above the spread.
+
+**Acceptance (AC36).** `APPEND` of 64 B to a 32 MB value shall have p50 ≤0.5 ms
+and p99 ≤2 ms (≥14× faster than 7.35/14.5, within ~4× Redis's 0.137/1.05);
+`SETRANGE` of 16 B at offset 0 of a 32 MB value shall have p50 ≤0.5 ms (≥14×
+faster than 7.19, within ~3× Redis's 0.184); a 1 MB value shall move to the
+command floor; the 64 B controls and `GETRANGE` shall be unchanged; bytes
+allocated/copied per operation shall be bounded by the delta plus amortized
+growth; exact bytes, zero-fill growth, the 512 MiB limit,
+TTL/WATCH/journal/replay/rewrite and accounting shall pass; no dependency shall
+be added; and both protected gates shall pass on the exact head.
+
+### 4.35 In-place collection mutation (candidate; admission measured)
+
+**Mechanism.** After admission/eviction through `Data::reserve`, borrow the
+entry's collection mutably and update only the affected element:
+`HashMap::insert` for hash and zset, `BTreeSet::insert`/`remove` for set, and
+push/pop on the list's head/tail chunk, with field-TTL removal and `payload_len`
+adjusted by the delta instead of re-summed. Convert between pack and large
+encodings exactly when a threshold is crossed; empty collections are removed as
+today; `touch`/journal/notification run after the mutation. The 10-element
+controls stay on the pack path unchanged.
+
+**Prediction.** `HSET` into a 10k hash falls from **6.45 ms to ≤0.3 ms**, `ZADD`
+from 4.21 and `SADD` from 1.23; `RPUSH`/`LPOP` on a 200k list fall from
+**18.3/17.8 ms to ≤0.3 ms**, because a write stops cloning and freeing every
+element. Reads, small controls and the gate's string rows are unchanged.
+
+**Admission evidence (2026-11-12, section 3.19).** One connection, 100
+repetitions, three rotations: 10k `HSET` p50 7.00/6.45/6.21 ms versus Redis
+0.09/0.58/0.11 and Valkey 0.14/0.09/0.08; 200k `RPUSH` 19.86/18.34/17.36 versus
+0.08/0.09/0.07 and 0.06/0.11/0.07; 200k `LPOP` 18.08/17.21/17.82 versus
+0.34/0.19/0.53 and 0.07/0.21/0.07; `ZADD` and `SADD` medians 4.21/1.23 versus
+0.08–0.22/0.08–0.35. Every 10-element control is at the command floor.
+
+**Risks and obligations.** `reserve` can evict the key being mutated, so re-look
+it up and treat absence as a fresh collection; pack↔large conversion at a
+threshold must preserve order and the compact representation; delta accounting
+must be exact and an OOM must leave the old collection intact; field TTLs on
+`HSET`/`HDEL`; empty-collection deletion; blocking-pop wake and `LPUSH` FIFO;
+list chunk split/merge; WATCH version, journal and rewrite snapshots.
+
+**Rejected options.** Keeping the rebuild but skipping the re-encode (still
+O(n) copies), `Rc`/copy-on-write or a persistent-collection dependency, and
+changing `Data::put_collection` to take ownership globally (touches every path
+for no extra gain).
+
+**Rejection condition.** Any collection semantic, persistence or accounting test
+differs, an OOM leaves a partial collection, the small controls or a read path
+regresses, or no gain above the spread.
+
+**Acceptance (AC37).** `HSET` into a 10k hash, `ZADD` into a 10k zset and `SADD`
+into a 10k set shall each have p50 ≤0.3 ms (within ~3× the faster C server and
+≥4× faster than the measured 1.23–6.45 ms baselines); `RPUSH` and `LPOP` on a
+200k list shall have p50 ≤0.3 ms and p99 ≤2 ms (≥59× faster than the measured
+17.8–18.3 ms); the 10-element controls shall be unchanged; every collection
+command, pack threshold, field TTL, blocking, persistence/rewrite/replay and
+accounting test shall pass; no dependency shall be added; and both protected
+gates shall pass on the exact head.
+
+### 4.36 Constant-time random-member selection (candidate; admission measured)
+
+**Mechanism.** Two slices. First, stop materializing: single-member commands use
+reservoir sampling over the existing iteration, and count commands use a bounded
+reservoir or partial Fisher–Yates over iteration, so memory is O(count) and no
+sort or full copy happens. Second, add a dense member index where O(n) iteration
+is still visible: for large sets a `Vec<member>` plus `HashMap<member, usize>`
+with swap-remove, for hashes a `Vec<field>` beside the value map, and for zsets a
+`Vec<member>` beside the score map (4.30's ordered index stays for ranges).
+Single picks, count picks and `SPOP` then become O(1)/O(count) like dict random;
+small pack paths keep their behavior. `SMEMBERS`/`HKEYS`/`ZSCAN` order is
+unspecified in Redis, so the chosen order is an explicit test/ordering decision.
+
+**Prediction.** At 100k, `SRANDMEMBER` falls from **11.54 ms to ≤0.6 ms**,
+`HRANDFIELD` from 33.66, `ZRANDMEMBER` from 21.32 and `SPOP` from 11.11; the 10k
+numbers fall to the command floor; the 10k→100k ratio becomes ≤2× (flat) instead
+of 7–16×. Memory grows by ~8–16 B/member for the index, counted in accounting.
+
+**Admission evidence (2026-11-12, section 3.20).** One connection, 100
+repetitions at 10k and 50 at 100k, three rotations: 100k `SRANDMEMBER` p50
+11.68/11.54/11.24 ms versus Redis 0.20/0.24/0.18 and Valkey 0.12/0.33/0.41;
+`HRANDFIELD` 33.66/34.29/30.77 versus 0.34/0.14/0.40 and 0.11/0.26/0.10;
+`ZRANDMEMBER` 21.32/22.76/20.61 versus 0.25/0.34/0.20 and 0.16/0.20/0.10;
+`SPOP` 11.11 median versus 0.304/0.126. The 10k rows are 1.0–2.6 ms and every
+10-element control is at the command floor.
+
+**Risks and obligations.** Uniformity is the core: reservoir/swap correctness,
+COUNT semantics including negative counts with repetition, and `SPOP` removal by
+index plus empty deletion must be tested statistically. Pack↔large conversion
+must rebuild the index atomically; index memory and tombstones must be counted
+under `maxmemory`; the ordering decision for full-collection replies must be
+documented and tests updated; journal, rewrite, TTL and WATCH paths must see the
+same logical collection.
+
+**Rejected options.** Sorting and picking from a clone (the measured path), a
+hash-derived index without a position map (cannot remove in O(1)), and any foreign
+RNG or persistent-collection dependency.
+
+**Rejection condition.** A distribution test fails, any reply or semantic test
+differs, index memory grows without an accounted bound, the 10k→100k ratio is not
+flat, or a gate row loses.
+
+**Acceptance (AC38).** At 100,000 members, `SRANDMEMBER`, `HRANDFIELD` and
+`ZRANDMEMBER` (single and `COUNT 10`) and `SPOP` shall have p50 ≤0.6 ms and p99
+≤2 ms (≥18× faster than the measured 11.1–33.7 ms and within ~3–5× the faster C
+server); the 10k p50 shall be ≤0.3 ms and the 10k→100k p50 ratio ≤2×; a
+distribution test over repeated draws shall be uniform within a stated tolerance;
+10-element controls shall be unchanged; the ordering decision for
+`SMEMBERS`/`HKEYS`/`ZSCAN` shall be documented with tests updated; `SPOP`
+empty-deletion, TTL, blocking, persistence/rewrite/replay and accounting tests
+shall pass; no dependency shall be added; and both protected gates shall pass on
+the exact head.
+
+### 4.37 Bitmap mutation and popcount (candidate; admission measured)
+
+**Mechanism.** `SETBIT` reserves/admits the new length, then extends and patches
+the entry's own `Vec` in place (zero-filling only when the offset passes the end)
+instead of building a new value and copying it twice. `BITCOUNT` sums
+`chunks_exact(8)` as little-endian `u64::count_ones()` and handles the head and
+tail with per-byte popcount; BYTE and BIT ranges normalize to a byte span with
+edge masks. `GETBIT`/`BITPOS` reads are unchanged.
+
+**Prediction.** 16 MB `SETBIT` falls from **5.32 ms to ≤0.5 ms** and `BITCOUNT`
+from 23.0 to ≤6 ms (within ~2× Redis); the 1 MB rows move to the command floor;
+the 64 B controls are unchanged.
+
+**Admission evidence (2026-11-12, section 3.21).** One 1 MB and one 16 MB
+`0xff` bitmap (the 16 MB one built by 512 KiB `APPEND`s), 100/30 repetitions,
+three rotations: 16 MB `SETBIT` 5.32/5.58/4.85 ms versus Redis 0.09/0.71/0.35 and
+Valkey 0.31/0.53/0.22; `BITCOUNT` 22.48/23.24/23.01 versus 3.52/3.13/3.37 and
+3.77/4.56/5.70; 1 MB 0.331/1.85 versus 0.09–0.26/0.17–0.31. `GETBIT`, `STRLEN`
+and the 64 B controls are at the command floor.
+
+**Risks and obligations.** `reserve` can evict the key being written, so re-look
+it up; an OOM after a partial extend corrupts the value; zero-fill growth, the
+offset cap and the 512 MiB limit must not change; BYTE/BIT range normalization
+(negative indices, inverted ranges) and MSB-first bit numbering must be exact;
+TTL, WATCH, journal and rewrite must see the same value; the popcount must stay
+safe Rust (no target-feature intrinsics).
+
+**Rejected options.** SIMD intrinsics or a CPU-feature dependency (unsafe or a
+new crate for a path that a `u64` loop nearly closes), the current byte-at-a-time
+loop, and the rebuild-and-copy write.
+
+**Rejection condition.** Any bit or range semantics test differs, an OOM leaves a
+partial value, the controls or reads regress, or no gain above the spread.
+
+**Acceptance (AC39).** `SETBIT` at offset 0 of a 16 MB bitmap shall have p50
+≤0.5 ms and p99 ≤2 ms (≥10× faster than the measured 5.32 ms and within ~2×
+Redis's 0.349 ms); `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms and p99
+≤10 ms (≥3.8× faster than 23.0 ms and within ~2× Redis's 3.37 ms); the 1 MB rows
+shall be at the command floor; the 64 B controls, `GETBIT` and `STRLEN` shall be
+unchanged; BYTE and BIT ranges including negative indices, the offset and 512 MiB
+limits, zero-fill, TTL/WATCH/journal/replay and accounting shall pass; no
+dependency shall be added; and both protected gates shall pass on the exact head.
+
+### 4.38 Order-statistic sorted-set rank (candidate; admission measured)
+
+**Mechanism.** 4.30's ordered set gives score order and score ranges but no
+rank-select, so `ZRANK`/`ZREVRANK` and deep-start `ZRANGE` would still walk from
+the first element. Add an order-statistic index over the same `(score, member)`
+order: bucketed sorted blocks (e.g. 256 members each, with cached first/last
+score and a count) plus cumulative counts, maintained on
+`ZADD`/`ZINCRBY`/`ZREM` with split/merge. A rank is a binary search to the block,
+the position within it and the sum of preceding block counts, O(log blocks +
+block); reverse rank mirrors it, and `ZRANGE start stop` seeks the `start`-th
+element the same way. `ZSCORE` and `ZRANGEBYSCORE` stay on 4.30's map/ordered
+set. If 4.38 lands first, its block index can also serve 4.30's start-0 and
+score ranges, making 4.30's separate `BTreeSet` redundant; the two candidates
+should share one structure in that case.
+
+**Prediction.** 100k `ZRANK`/`ZREVRANK` fall from **58.6–72.5 ms to ≤0.5 ms**,
+`ZRANGE 50000 50009` from 63.7 to ≤0.5, the 10k rows to the command floor, and
+the 10k→100k ratio from 19–24× to ≤2.5×. `ZADD` pays one block-index update in
+addition to 4.30's ordered insert.
+
+**Admission evidence (2026-11-12, section 3.22).** 100,000-member zset, one
+connection, 20 repetitions, three rotations: `ZRANK` middle p50 58.56/100.91/
+57.21 ms versus Redis 0.36/0.06/0.16 and Valkey 0.07/0.07/0.23; `ZRANK` last
+72.5, `ZREVRANK` 71.4, `ZRANGE 50000 50009` 63.7, `ZRANGEBYSCORE ... LIMIT 0 10`
+62.4, `ZRANGE 0 9` 57.4, versus 0.07–0.17 for both pins; 10k rows 2.4–3.1 ms;
+10-element controls 0.28/0.11 versus 0.10–0.14.
+
+**Risks and obligations.** A score update moves a member between blocks, so the
+block index and 4.30's order must change under one admitted mutation; split and
+merge boundaries, duplicate scores and member tie-break, `ZREM` count
+maintenance, negative indices, reverse ranges, `LIMIT`, `ZSetPack` conversion,
+memory accounting, replay/rewrite and WATCH must all stay exact. The block size
+is the search-versus-update trade and needs a matched ZADD cohort.
+
+**Rejected options.** A full in-repo AVL/weight-balanced tree with subtree sizes
+(more code than bucketed counts for the same asymptotics), accepting O(n) rank
+(the measured 378–927× gap), a Fenwick tree rebuilt on every mutation (O(n)
+writes), and the current materialize+sort.
+
+**Rejection condition.** Any rank/reverse/deep-range semantic test differs,
+`ZADD` loses more than 10% in a matched cohort, index memory grows without a
+bound, the 10k→100k ratio is not flat, or a gate row loses.
+
+**Acceptance (AC40).** At 100k, `ZRANK`/`ZREVRANK` for the first, middle and last
+member and `ZRANGE 50000 50009`/`ZREVRANGE` shall have p50 ≤0.5 ms and p99 ≤2 ms
+(≥100× faster than the measured 58.6–72.5 ms and within ~8× the faster C
+server); the 10k p50 shall be ≤0.2 ms and the 10k→100k ratio ≤2.5×;
+`ZADD`/`ZINCRBY`/`ZREM` shall stay within 10% in a matched cohort; tie ordering,
+negative indices, reverse ranges, `LIMIT`, `ZSetPack`, rewrite/replay, TTL and
+accounting tests shall pass; 4.30's AC32 rows shall also pass; no dependency
+shall be added; and both protected gates shall pass on the exact head.
+
+### 4.39 Contract-correct pub/sub fan-out (candidate; admission measured)
+
+**Mechanism.** Keep the per-subscriber boundary but make it contract-correct and
+bounded in bytes. Look the channel up with `HashMap::get_mut` and skip the
+full-map `retain` scan on every publish; encode one frame per (RESP version,
+pattern) and share it across subscribers; queue by **bytes** with a documented
+limit and one of two explicit overflow behaviors: drop the message, keep the
+subscription and increment a counted metric (at-most-once is already the pub/sub
+contract), or disconnect the client with a documented error, mirroring Redis's
+`client-output-buffer-limit pubsub`. Drain by output bytes per wake (the existing
+64 KiB output chunk) instead of a hard 64 frames, so an active reader can clear a
+burst; keep the 1 ms tick as the fallback from 4.24.
+
+**Prediction.** A 2,000-message burst (64 KB) to an active subscriber is fully
+delivered and the subscription survives; `PUBLISH` among 10,000 channels falls
+from **0.38–0.89 ms to ≤0.3 ms**; 100 subscribers receive every message with the
+publisher within ~3× the C servers; nothing is silently lost.
+
+**Admission evidence (2026-11-12, section 3.23).** One subscriber plus a
+2,000-message pipeline, three rotations: Rill delivered 1,024/2,000 and
+`PUBSUB NUMSUB` returned 0 after the burst; Redis/Valkey delivered 2,000/2,000
+and returned 1. `PUBLISH` p50 at 1 channel 0.12–0.22 versus 0.13–0.30, at
+1,000 channels 0.13 versus 0.16–0.30, and at 10,000 channels 0.38–0.89 versus
+0.12–0.31.
+
+**Risks and obligations.** Bounding by bytes must account the encoded frame and
+the queue, and an overflow must never remove the subscription silently; ordering
+per publisher, at-most-once, pattern and shard channels, `UNSUBSCRIBE`/`NUMSUB`
+and shutdown must stay exact; the shared frame must be immutable and the
+per-subscriber RESP version/pattern variant respected; memory accounting and the
+1 ms fallback stay; a metric must make drops visible.
+
+**Rejected options.** Keeping the 1,024-message queue and silently removing the
+subscriber (measured loss), an unbounded queue (memory growth), and switching to
+a per-message thread or a new async runtime (outside the dependency boundary).
+
+**Rejection condition.** Any message is lost without a counted/documented
+behavior, a subscription disappears while the client stays connected, ordering or
+pattern/shard semantics change, memory grows without a bound, or a gate row
+loses.
+
+**Acceptance (AC41).** A 2,000-message pipelined burst to an active subscriber
+shall deliver 2,000/2,000 and keep `PUBSUB NUMSUB` at 1; if the documented byte
+bound is exceeded, the behavior shall be a counted drop with the subscription
+intact or a documented disconnect, never a silent removal; `PUBLISH` among
+10,000 subscribed channels shall have p50 ≤0.3 ms (≥2.7× faster than 0.80 ms and
+within ~2× the C server) and stay flat from 1 to 10,000 channels; 100 subscribers
+shall receive every message with publisher p50 within ~3× the C servers;
+ordering, pattern/shard, unsubscribe and shutdown tests shall pass; no dependency
+shall be added; and both protected gates shall pass on the exact head.
+
+### 4.40 O(1) cardinality and membership (candidate; admission measured)
+
+**Mechanism.** Add `Collection::len()` (list = sum of the inner deque lengths,
+O(nodes); set/hash/zset = the container length) and direct probes:
+`BTreeSet::contains` for `Set`, `parse_integer` + `BTreeSet<i64>::contains` for
+`SetInt` (a non-integer probe returns 0), a linear scan only for the small
+`SetPack`/`HashPack`, and `HashMap::contains_key`/`hash_get` for `Hash`. Route
+`SCARD`/`SISMEMBER`/`HLEN`/`ZCARD`/`LLEN` through them; leave
+`SMEMBERS`/`HKEYS`/`HGETALL` sorting and reply construction unchanged.
+
+**Prediction.** 100k `SISMEMBER`/`SCARD` fall from **8.0–8.7 ms to ≤0.2 ms**,
+`HLEN`/`ZCARD` from 1.6–2.2 to ≤0.1, and 200k `LLEN` from 1.55 to ≤0.05; controls
+and the direct `HEXISTS`/`STRLEN` paths are unchanged, with no reply or ordering
+change.
+
+**Admission evidence (2026-11-12, section 3.24).** 100k set/hash/zset and a
+200k list, 100 repetitions, three rotations: `SISMEMBER` hit p50 8.45/7.70/8.04
+ms versus Redis 0.19/0.07/0.40 and Valkey 0.22/0.13/0.27; miss 8.67 versus
+0.17/0.21; `SCARD` 8.18/7.02/8.08 versus 0.14/0.20/0.37 and 0.18/0.15/0.08;
+`HLEN` 2.24 versus 0.15/0.19; `ZCARD` 1.57 versus 0.12/0.16; `LLEN` 1.55 versus
+0.20/0.14; `HEXISTS` 0.18 versus 0.29/0.14 and `STRLEN` 0.13 versus
+0.16/0.16. Ten-element controls 0.12–0.18.
+
+**Risks and obligations.** The `SetInt` probe must reproduce the current string
+semantics for integer and non-integer members; `SetPack`/`HashPack` stay linear
+but are small; `LLEN` becomes an O(nodes) walk (cached counts can follow if a
+later cohort shows it); missing/empty keys and wrong-type errors are unchanged;
+no accounting or reply changes.
+
+**Rejected options.** A separately cached length that can drift from the
+container, making `SMEMBERS` unsorted to speed `SCARD` (it does not fix
+`SISMEMBER` and changes ordering), and leaving the materialization.
+
+**Rejection condition.** Any membership or length semantics test differs, the
+controls or direct paths regress, or no gain above the spread.
+
+**Acceptance (AC42).** At 100,000 members, `SISMEMBER` (hit and miss) and
+`SCARD` shall have p50 ≤0.2 ms (≥40× faster than the measured 8.0–8.7 ms and
+within ~2× the faster C server); `HLEN` and `ZCARD` p50 ≤0.1 ms; `LLEN` on a
+200,000-element list p50 ≤0.05 ms; the 10-element controls, `HEXISTS` and
+`STRLEN` shall be unchanged; `SetInt`/`SetPack`/`HashPack` semantics (including
+non-integer probes), missing keys and type errors shall pass; no dependency shall
+be added; and both protected gates shall pass on the exact head.
+
+### 4.41 In-place list seek (candidate; admission measured)
+
+**Mechanism.** Add `Collection::list_get(index)` (normalize the negative index;
+`ListPack` indexes directly, `ListQuick` walks chunk lengths without allocating,
+O(nodes) ≈ 1.5k for 200k) and `Collection::list_position(value, rank, count,
+maxlen)` that scans chunks in order with an early stop and rank handling. Route
+`LINDEX`/`LPOS` through them; `LRANGE`, `LLEN` (4.40) and the write paths are
+unchanged.
+
+**Prediction.** 200k `LINDEX` (0/middle/last) fall from **1.29–1.47 ms to
+≤0.2 ms**, a hit-first `LPOS` from 1.26 to ≤0.2, a missing `LPOS` stays ≤2 ms
+(it already leads the C servers), and the 10-element controls are unchanged.
+
+**Admission evidence (2026-11-12, section 3.25).** A 200,000-element 8-byte list,
+100 repetitions, three rotations: `LINDEX 0` p50 1.473 versus Redis 0.107 and
+Valkey 0.068; middle 1.404 versus 0.104/0.081; last 1.289 versus 0.102/0.142;
+`LPOS` hit-first 1.256 versus 0.095/0.127; `LPOS` missing 1.806 versus
+5.019/5.854; controls 0.097/0.097 versus 0.09–0.12.
+
+**Risks and obligations.** Negative-index normalization and out-of-range nil,
+chunk boundaries, `RANK` (including negative), `COUNT 0`-means-all and `MAXLEN`
+semantics, missing/empty keys and wrong-type errors must not change; no reply or
+accounting change.
+
+**Rejected options.** A maintained node index just for `LINDEX` (the chunk walk
+is already O(nodes)), keeping the full materialization (the measured path), and a
+list representation change (4.32 covers memory independently).
+
+**Rejection condition.** Any index or `LPOS` semantics test differs, the controls
+or `LRANGE`/`LLEN` regress, or no gain above the spread.
+
+**Acceptance (AC43).** On a 200,000-element list, `LINDEX` for 0, middle and −1
+and a hit-first `LPOS` shall have p50 ≤0.2 ms and p99 ≤2 ms (≥6× faster than the
+measured 1.26–1.47 ms and within ~3× the faster C server); a missing `LPOS` shall
+stay ≤2 ms; the 10-element controls, `LRANGE` and `LLEN` shall be unchanged;
+negative indices, `RANK`/`COUNT`/`MAXLEN`, missing keys and wrong-type errors shall
+pass; no dependency shall be added; and both protected gates shall pass on the
+exact head.
+
+### 4.42 In-place stream append (candidate; admission measured)
+
+**Mechanism.** Admit the new entry's bytes, then borrow `Entry.stream` mutably
+and insert one `StreamEntry` into the existing `BTreeMap`, updating `payload_len`
+and the stream counters (`entries_added`, `last_generated`, `max_deleted` on
+trim) by the delta. No `stream.clone()`, no `payload_bytes()` fold and no
+`put_stream` replace; groups/PEL and trimming mutate the same stream.
+
+**Prediction.** 5k `XADD` falls from **1.36 ms to ≤0.2 ms** (p99 11.6 → ≤2) and
+1k from 0.263 to ≤0.15, so the 1k→5k ratio becomes ≤2× (flat); `XLEN`,
+`XRANGE`, `XREVRANGE` and the 10-entry control are unchanged.
+
+**Admission evidence (2026-11-12, section 3.26).** A 1,000- and a 5,000-entry
+stream, 30/50 repetitions, three rotations: 5k `XADD` p50 1.36/1.53/1.22 versus
+Redis 0.30/0.10/0.07 and Valkey 0.06/0.08/0.14; 1k 0.25/0.43/0.26 versus
+0.10/0.71/0.15 and 0.08/0.10/0.08; `XLEN` 0.072 versus 0.156/0.103; `XRANGE`
+first/mid 0.121/0.120 versus 0.099–0.307/0.187–0.288; `XREVRANGE` 0.118 versus
+0.117/0.136; 10-entry control 0.077/0.118 versus 0.078/0.103 and 0.231/0.143.
+
+**Risks and obligations.** `reserve` can evict the key being appended, so
+re-look it up; an OOM must not leave a partial entry; trimming, `entries_added`,
+`last_generated`, `max_deleted`, groups/PEL, TTL/WATCH/journal/rewrite and the
+reply ID must stay exact; the append must not change read or trim semantics.
+
+**Rejected options.** Keeping the clone and only removing the second payload
+fold, a separately cached length that can drift from the map, and an
+append-only log outside the stream (breaks the existing range/read paths).
+
+**Rejection condition.** Any stream, group/PEL, trim, rewrite or accounting test
+differs, an OOM leaves a partial entry, the controls or reads regress, or the
+1k→5k ratio is not flat.
+
+**Acceptance (AC44).** At 5,000 entries, `XADD` shall have p50 ≤0.2 ms and p99
+≤2 ms (≥6.8× faster than the measured 1.36/11.6 ms and within ~2× Redis's
+0.104/1.87 ms); at 1,000 entries p50 ≤0.15 ms; the 1k→5k p50 ratio ≤2×; `XLEN`,
+`XRANGE`, `XREVRANGE`, groups/PEL, trimming, rewrite/replay, TTL and accounting
+shall be unchanged; the 10-entry control shall be unchanged; no dependency shall
+be added; and both protected gates shall pass on the exact head.
+
+### 4.43 Geospatial neighbor-cell search (candidate; admission measured)
+
+**Mechanism.** Reuse 4.30/4.38's ordered `(score, member)` index. For
+`GEOSEARCH`/`BYRADIUS`/`BYBOX`, compute the geohash cell size for the shape,
+enumerate the nine neighbour cells (with dateline/pole handling), map each cell
+to an inclusive score range, range-read only those scores, decode and apply the
+exact haversine/box test, then sort (`ASC`/`DESC`) and apply `COUNT`. `FROMMEMBER`
+and `GEOPOS`/`GEODIST`/`GEOHASH` use the member dict/ordered index directly.
+Keep the WGS-84 formulas, units, `WITHCOORD`/`WITHDIST`/`WITHHASH` and `STORE`.
+
+**Prediction.** 50k 1 km `GEOSEARCH` falls from **4.34 ms to ≤0.3 ms**, the
+2×2 km box from 4.49 to ≤0.3, `GEOPOS` 1 from 1.99 to ≤0.2 and 100 from 24.9 to
+≤0.5, and `GEODIST` from 3.12 to ≤0.2; the all-50k 5 km search stays reply-bound
+and the controls are unchanged.
+
+**Admission evidence (2026-11-12, section 3.27).** A 50,000-member geo grid over
+~0.5°, 50 repetitions, three rotations: 1 km search p50 4.34/4.40/3.85 versus
+Redis 0.12/0.16/0.16 and Valkey 0.14/0.17/0.23; 2×2 km box 4.49 versus
+0.21/0.19; 5 km (all members) 10.38 versus 10.09/10.91; `GEOPOS` 1
+3.03/1.32/1.99 versus 0.14/0.19 and 100 26.86/24.86/22.33 versus 0.47/0.61;
+`GEODIST` 0.86/3.77/3.12 versus 0.168/0.167; 10-member controls 0.149/0.139
+versus 0.24/0.165 and 0.18/0.264.
+
+**Risks and obligations.** The cell computation is the correctness core:
+neighbour enumeration, dateline and pole edges, inclusive score bounds, duplicate
+members when cells overlap, `BYBOX` width/height versus `BYRADIUS`, `FROMMEMBER`
+near an edge, and `ASC`/`DESC`/`COUNT` ordering must match today's linear result
+exactly. WGS-84 formulas, units, `WITH*`, `STORE` and the zset representation stay
+unchanged; the search must remain bounded by the result and payload limits.
+
+**Rejected options.** Keeping the linear scan (measured 25–53×), caching
+per-member distances (stale on zset updates and O(n) memory per query), and an
+R-tree/S2 dependency (outside the policy and unnecessary for 52-bit geohash
+ranges).
+
+**Rejection condition.** Any result member, order, distance, hash or coordinate
+differs from the linear reference on the boundary fixture, the controls or the
+all-member search regress, or no gain above the spread.
+
+**Acceptance (AC45).** At 50,000 members, a 1 km `GEOSEARCH` and a 2×2 km
+`BYBOX` shall have p50 ≤0.3 ms and p99 ≤2 ms (≥14× faster than the measured
+4.34/4.49 ms and within ~2× the faster C server); `GEOPOS` for 1 and 100 members
+shall be ≤0.2 ms and ≤0.5 ms (≥45× for 100), and `GEODIST` ≤0.2 ms (≥15×); an
+all-member search and the 10-member controls shall be unchanged; results
+(members, order, distances, hashes, coordinates) shall match the current linear
+implementation exactly on a boundary/dateline fixture; `ASC`/`DESC`/`COUNT`,
+`FROMMEMBER`, `BYRADIUS`/`BYBOX`, `WITH*` and `STORE` tests shall pass; no
+dependency shall be added; and both protected gates shall pass on the exact head.
+
+### 4.44 Per-member probes for multi-member lookups (candidate; admission measured)
+
+**Mechanism.** For `SMISMEMBER`, call `Collection::contains_member` (4.40) once
+per requested member; for `ZMSCORE`, call a direct
+`Collection::zset_score(member)` over the existing score map (4.30) once per
+requested member. Do not call `set_items()`/`zset_items()` or build an
+all-member vector. Missing members return 0/nil, duplicate members answer
+independently, and the `SetInt`/`SetPack`/`HashPack` semantics stay as today.
+
+**Prediction.** 100k `ZMSCORE` with 100 members falls from **273 ms to ≤0.5 ms**,
+10 members from 33.4 to ≤0.2 and 1 from 8.0 to ≤0.15; `SMISMEMBER` with
+1/10/100 members from **7.9/8.25/11.75 ms to ≤0.2/≤0.2/≤0.5**; `HMGET` and the
+10-member controls are unchanged.
+
+**Admission evidence (2026-11-12, section 3.28).** A 100,000-member set/hash/zset,
+50 repetitions, three rotations: `SMISMEMBER` 1/10/100 p50
+7.90/8.49/12.73, 8.66/8.25/11.75, 7.90/7.42/10.90 versus Redis
+0.094/0.227/0.394 and Valkey 0.075/0.077/0.211; `ZMSCORE`
+11.77/23.42/273.23, 5.35/43.97/336.85, 8.02/33.37/221.99 versus
+0.102/0.422/0.630 and 0.112/0.328/0.187; `HMGET` 1/10/100 0.23/0.36/0.32
+versus 0.47/0.30/0.52 and 0.11/0.07/0.17; controls 0.33/0.26/0.26.
+
+**Risks and obligations.** `SetInt` must answer integer and non-integer probes
+exactly as today; duplicates, order, missing/empty keys and wrong types must not
+change; `ZSetPack` stays linear but small; no accounting, reply shape or read
+path changes.
+
+**Rejected options.** Keeping `set_items`/`zset_items` with a per-member scan
+(the measured O(n·m)), and caching the materialized vector across members (still
+O(n) time and memory per command).
+
+**Rejection condition.** Any membership/score/order/type test differs, the
+controls or `HMGET` regress, or no gain above the spread.
+
+**Acceptance (AC46).** At 100,000 members, `ZMSCORE` with 100 members shall have
+p50 ≤0.5 ms and p99 ≤2 ms (≥500× faster than the measured 273 ms and within ~3×
+the faster C server); 10 members ≤0.2 ms and 1 member ≤0.15 ms; `SMISMEMBER` with
+100 members ≤0.5 ms (≥23× faster than 11.75 ms), 10 members ≤0.2 ms and 1 member
+≤0.2 ms; `HMGET` and the 10-member controls shall be unchanged; missing,
+non-integer and duplicate members and the `SetInt`/`SetPack` semantics shall pass;
+no dependency shall be added; and both protected gates shall pass on the exact
+head.
+
+### 4.45 Bounded lazy expiry on command paths (candidate; admission measured)
+
+**Mechanism.** Replace every `reap(now, usize::MAX)` on a command path: reads
+expire only the keys they touch (`expire_key`, already present); `KEYS` filters
+`entry.alive(now)` while it already scans all keys; `SCAN` filters per visited
+element (4.31); `RANDOMKEY` picks a random live key with a bounded retry and a
+fallback scan; `DBSIZE` returns the Redis-compatible dict size (expired but
+unreaped keys may still be counted) as an explicit semantic decision; `MSET`/
+`MSETEX` expire only their destination keys; admission uses a bounded reap (e.g.
+128) and then eviction/policy. A mass expiry can no longer force O(backlog) work
+inside one command.
+
+**Prediction.** After 30k keys expire, `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` fall
+from **36–46 ms to ≤2 ms**, the lazy `GET` stays ~0.9 ms, the periodic purge
+drains the backlog over later ticks, and no expired value is ever returned.
+
+**Admission evidence (2026-11-12, section 3.29).** 30,000 keys with `PX 400`, a
+0.7 s wait, one command per fresh wave, two waves per command, three rotations:
+`MGET` 36.29 ms (samples 29.31/51.17, 27.95/43.26, 26.94/51.35) versus Redis
+0.69 and Valkey 0.98; `KEYS` 43.58 versus 0.63/0.80; `RANDOMKEY` 45.45 versus
+0.65/0.60; `DBSIZE` 41.21 versus 0.58/0.83; lazy `GET` 0.92 versus 0.75/0.72.
+The purge costs ~1.2–1.5 µs per expired key.
+
+**Risks and obligations.** `DBSIZE` becomes approximate like Redis, so its tests
+and documentation must say so; `KEYS`/`SCAN`/`RANDOMKEY`/`MGET` must never return
+an expired value; admission after a mass expiry may temporarily refuse or evict
+until the bounded purge catches up — a documented, bounded behavior instead of an
+unbounded stall; TTL notifications, WATCH and accounting order stay exact.
+
+**Rejected options.** Keeping the unbounded purge (the measured stall), raising
+the periodic purge rate without bound (CPU cost), and reaping on a detached
+thread (ordering/accounting complexity for no extra gain).
+
+**Rejection condition.** Any expired key is returned, a TTL/accounting/WATCH test
+differs, the admission path can stall proportionally to the backlog, or the
+measured command stall remains.
+
+**Acceptance (AC47).** After 30,000 keys expire with no intervening command,
+`MGET` (100 keys), `KEYS prefix*`, `RANDOMKEY` and `DBSIZE` shall have p50 ≤2 ms
+and p99 ≤5 ms (≥18× faster than the measured 36–46 ms and within ~5× the faster
+C server); a lazy `GET` shall stay ≤1 ms; reads shall never return an expired
+value; the `DBSIZE` semantics shall be documented with tests updated; admission
+shall stay bounded and atomic; TTL expiry/notification/WATCH tests shall pass; no
+dependency shall be added; and both protected gates shall pass on the exact head.
+
+### 4.46 Direct `BY nosort` slice (candidate; admission measured)
+
+**Mechanism.** When `BY` has no `*` (`nosort`), do not call `source_values` or
+build `Item`s for the whole source: apply `offset`/`count` directly to the
+sequence — index the list range without cloning, or iterate the first
+`offset + count` members of a set/zset in its current deterministic order (sets
+sorted by member, zsets by score/member as today). Materialize only when `STORE`
+needs the selected values or no `LIMIT` is present. The sorted, ALPHA, weighted
+and `GET` paths are untouched.
+
+**Prediction.** 100k `SORT ... BY nosort LIMIT 0 10` falls from **7.96 ms to
+≤0.3 ms** (p99 17.2 → ≤2), while full-nosort remains reply-bound and every other
+SORT row is unchanged.
+
+**Admission evidence (2026-11-12, section 3.30).** A 100k integer list plus
+`w<i>` weight keys, 50 repetitions, three rotations: `BY nosort LIMIT 0 10`
+p50 7.8/8.0/8.7 versus Redis 0.12 and Valkey 0.16 (p99 17.2/1.17/0.77); sorted
+`SORT` 92.5 versus 84.8/105.6, `LIMIT` 32.4 versus 26.0/29.0, ALPHA 90.2 versus
+108.1/106.8, DESC 33.5 versus 28.2/28.1, `BY w*` 117.5 versus 92.1/80.4,
+`GET #` 30.0 versus 27.3/26.9; 100-element controls 0.21/0.27.
+
+**Risks and obligations.** The set/zset source order must stay exactly as today
+(sets sorted by member, zsets by score/member); negative or oversized
+`offset`/`count`, `STORE`, missing keys and list chunk boundaries must not change;
+no reply or accounting change.
+
+**Rejected options.** Rewriting all SORT to sort borrowed indices (not justified:
+the other rows are 0.9–1.5×), and keeping the full materialization (the measured
+50–66×).
+
+**Rejection condition.** Any source order, limit or `STORE` result differs, the
+controls or another SORT row regresses, or no gain above the spread.
+
+**Acceptance (AC48).** On a 100,000-element list, `SORT ... BY nosort LIMIT 0 10`
+shall have p50 ≤0.5 ms and p99 ≤2 ms (≥16× faster than the measured 7.96/17.2 ms
+and within ~4× Redis's 0.12/1.17 ms); the full, limited, ALPHA, DESC, `BY w*` and
+`GET #` rows shall stay within 1.5× of baseline; the 100-element controls shall
+be unchanged; offset/count edges, `STORE`, missing keys and set/zset sources
+shall pass; no dependency shall be added; and both protected gates shall pass on
+the exact head.
+
+None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
+`BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
+with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
+bounded queue plus the existing maintenance tick, 4.34 uses the existing `Vec`
+in place, 4.35 mutates the existing collection containers, 4.36 uses `Vec` plus
+`HashMap`/`BTreeSet` indexes, 4.37 uses in-place `Vec` writes plus
+`u64::count_ones`, 4.38 uses a `Vec` of sorted blocks plus counts, 4.39 uses
+the existing channels and `sync_channel`, 4.40 uses the existing containers'
+lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the
+existing stream map, 4.43 uses geohash score ranges, 4.44 uses the existing
+set/zset members, 4.45 uses the existing lazy expire path, and 4.46 slices the
+existing source order. The rest use the existing `std` I/O, parser and in-repo
+journal/crypto code. Each candidate lands as its own PR with AC5 plus the
+protected gates; no combined integration branch.
+
 ## 5. Required libraries, dependencies and policy impact
 
 | Package | Version | Why | Vendored | License | Targets |
@@ -2557,8 +5141,21 @@ same native evidence and protected gates as any other runtime change. The
 rejected eight-reactor experiment and the closed candidates add no package: 4.9
 stays inside `std::time`/the existing `Clock` trait, 4.15 needs only
 `std::sync::Arc`, `std::io::IoSlice` and `Write::write_vectored`, 4.16 is
-measurement tooling, 4.17–4.18 are rejected, 4.20 needs no crate, and 4.21 is
-`std::fs`/`Write::write_all` plus the existing in-repo SHA-256/HMAC and CRC code.
+measurement tooling, 4.17–4.18 are rejected, 4.20 needs no crate, 4.21 is
+`std::fs`/`Write::write_all` plus the existing in-repo SHA-256/HMAC and CRC code,
+and 4.30 is a `std::collections::BTreeSet` plus a local `f64` total-order helper
+(`ordered-float`/`float-ord` are rejected as an unnecessary dependency for ~20
+lines), 4.31 is `std` `BTreeSet`/`BTreeMap` plus the in-repo hex helper, 4.32 is
+byte arenas plus `VecDeque`, and 4.33 is a bounded queue on the existing
+maintenance tick; 4.34 mutates the existing `Vec` in place; 4.35 mutates the
+existing collection containers in place; 4.36 uses `Vec` plus
+`HashMap`/`BTreeSet` indexes; 4.37 uses in-place `Vec` writes plus
+`u64::count_ones`; 4.38 uses a `Vec` of sorted blocks plus counts; 4.39 uses the
+existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
+and probes; 4.41 walks the existing list chunks; 4.42 mutates the existing stream map;
+4.43 uses geohash score ranges; 4.44 uses the existing set/zset members; 4.45 uses the existing lazy expire path;
+4.46 slices the existing source order. None adds a crate, build script,
+allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
 it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
@@ -2603,6 +5200,15 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   replies, and a partial non-blocking write must retain the `Arc` and offset.
   Getting this wrong reorders or duplicates replies; tests must cover partial
   writes, slow readers, pipelined GETs and shutdown before any gate claim.
+- **Large-frame reservation risk (4.25):** a bulk length is attacker-controlled.
+  Reserve only within the configured `max_frame`/`max_bulk` and in bounded steps,
+  or one client can force a large allocation. Fragment, truncation and limit
+  behavior must not change (AC28).
+- **HGETALL order and reply-path risk (4.29):** Redis leaves `HGETALL` order
+  unspecified, but this repository's deterministic sort is deliberate and the
+  persistence test compares exact bytes. Changing order needs an explicit
+  documented decision and updated tests; a `BTreeMap` or sorted index must not
+  regress `HSET`/`HDEL` or the gate (AC31).
 - **Threshold risk (4.15):** the 16 KiB split is copied from the upstream
   reference, not measured for this allocator; if a future allocation change makes
   large `Arc` creation costly, the threshold must be re-validated rather than
@@ -2624,6 +5230,19 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   the daily host shows the reverse (section 2.22); neither proves a server-side
   mechanism. Report both client and server percentiles before changing the
   runtime (AC21, 4.19).
+- **Eviction-batching risk (4.26):** an eviction pass must not over-evict, hold
+  the data lock unboundedly, or change policy/accounting/expiry semantics. Bound
+  keys/time per pass, keep `noeviction` and WATCH/journal order, and verify exact
+  evicted-key and payload counts (AC29).
+- **Replay fast-path risk (4.27):** merging checksum validation into replay and
+  skipping load-irrelevant side effects must not accept corruption, change the
+  tail policy, re-relativize TTLs, break HMAC chaining, or alter stream/PEL
+  state. A bad frame must abort before the listener binds (AC30).
+- **HMAC cost and crypto risk:** the measured −10% P1 / −24% P16 append cost and
+  the 3.6× HMAC replay are the price of per-transaction authentication. Do not
+  replace the in-repo SHA-256, shorten the chain, or skip verification without a
+  security review; only fold the existing verification into the replay pass
+  (3.9, 3.15).
 - **WATCH-version risk (4.20):** skipping per-key versions while nothing watches
   is only safe if `WATCH` registration and the tracking flag change under the
   same data borrow and if scratch multi-owner executors keep tracking. A race or
@@ -2634,6 +5253,11 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   timeout/wake races and `CLIENT UNBLOCK` are the failure modes. Service after
   the batch, bound the ready set, preserve FIFO, and keep the 1 ms fallback so a
   missed signal degrades to today's latency rather than a hang (AC25).
+- **Async-wake risk (4.24):** a missed wake strands a subscriber or MONITOR
+  client; duplicate or out-of-order delivery, fanout memory, unsubscribe while a
+  message is queued, monitor command ordering and shutdown with queued pushes are
+  the failure modes. Keep the 1 ms fallback, bound the queue and preserve message
+  ordering (AC27).
 - **Rewrite-start risk (4.23):** the current 9–20 ms pause is a real latency cost
   for small datasets; spreading key materialisation makes the list
   non-point-in-time, so reconciliation must cover additions and deletions or a
@@ -2643,6 +5267,103 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   any reply in the batch leaves; a failure must unacknowledge the whole batch and
   stop writes. A SIGKILL/replay test must prove every acknowledged reply is in
   the journal. Do not trade this for throughput (AC23).
+- **Sorted-set index risk (4.30):** a second ordered structure must stay exactly
+  consistent under `ZADD`/`ZINCRBY`/`ZREM`/`ZREMRANGEBY*`, expiry, replay and
+  rewrite; a stale index would return the wrong rank order or a member that no
+  longer exists. Score total order must handle ±0.0 and reject NaN at parse,
+  ties must break by member like Redis, `ZSetPack` must convert atomically, and
+  the index's memory must be counted against `maxmemory`; a deep-start range is
+  O(start + k) and must be documented rather than hidden. `ZADD` loss above 10%
+  or any semantic test difference rejects the change (AC32).
+- **Cursor-scan risk (4.31):** replacing the decimal index cursor with an opaque
+  token changes the wire contract and the router's `owner × 2^40 + local`
+  packing; `tests/scan.rs` asserts exact cursors and sorted pages, so the change
+  must update them deliberately and keep a documented old-cursor behavior. A
+  buggy resume can skip or repeat keys on a stable keyspace, a selective MATCH
+  can degenerate into a keyspace walk, and a new key index adds memory and an
+  O(log n) mutation that must be accounted and rebuilt on replay/rewrite. Expiry
+  must stay bounded, and the index must keep `SET`/`GET` within noise (AC33).
+- **Packed-list risk (4.32):** a node index plus split/merge is the correctness
+  core; an off-by-one in rank or a missed split changes `LRANGE`/`LSET`/`LINSERT`
+  output, a large element stored inline can blow the node budget, and accounting
+  or rewrite that counts logical bytes but not arena overhead reopens
+  `maxmemory` and RSS questions. Every list, blocking and persistence test stays
+  mandatory, and `RPUSH`/`LRANGE` must stay within 10% (AC34).
+- **Deferred-drop risk (4.33):** an unbounded or unaccounted pending queue turns
+  a latency fix into memory growth; pending bytes must remain in accounting and
+  under eviction, shutdown must drain, and a recreated key must not observe the
+  old pending value. Journal/notification ordering must be unchanged, and the
+  synchronous fallback must be explicit rather than silent (AC35).
+- **In-place string risk (4.34):** `reserve` can evict the key being mutated, so
+  the code must re-look it up and treat absence as a fresh value; an OOM after a
+  partial `resize`/copy would corrupt the value, so growth must be reserved
+  first; zero-fill growth, the 512 MiB limit, TTL, WATCH versions, journal
+  ordering and rewrite snapshots must not change. Small-value controls and
+  `GETRANGE` must not regress (AC36).
+- **In-place collection risk (4.35):** `reserve` can evict the key being mutated,
+  pack↔large conversion must preserve order and compact semantics, and an OOM
+  after a partial insert/pop corrupts the collection. Delta accounting, field
+  TTL removal, empty-collection deletion, blocking-pop wake, chunk split/merge,
+  WATCH versions, journal and rewrite must all stay exact (AC37).
+- **Random-member risk (4.36):** the index must stay consistent under
+  insert/remove/`SPOP`/expiry/replay; swap-remove tombstones must not bias the
+  distribution or leak memory; `COUNT` (positive, negative, repeated) semantics
+  and `SPOP` empty-key deletion must be exact; the full-collection ordering
+  decision changes tests; index memory must be counted under `maxmemory`; a
+  wrong index yields a reproducible sampling bias, so a statistical test is
+  mandatory (AC38).
+- **Bitmap risk (4.37):** an OOM after a partial extend, a wrong zero-fill length,
+  a mis-normalized negative BYTE/BIT range or an MSB/LSB mask error silently
+  returns wrong bits. The popcount must count all bits in a word regardless of
+  byte order but mask partial head/tail bytes in Redis's bit order; offset and
+  512 MiB limits, TTL/WATCH/journal/rewrite and accounting stay unchanged (AC39).
+- **Rank-index risk (4.38):** a score update moves a member between blocks; a
+  stale cumulative count returns a wrong rank silently. Block split/merge,
+  duplicate-score tie-break, `ZREM` count maintenance, negative/reverse ranges
+  and `ZSetPack` conversion must be exact, and the block index must share one
+  mutation with 4.30's order. `ZADD` loss above 10% or a non-flat 10k→100k ratio
+  rejects it (AC40).
+- **Pub/sub fan-out risk (4.39):** a byte-bound overflow must never remove the
+  subscription silently; drop-with-counter and documented-disconnect are the only
+  acceptable behaviors, and ordering, at-most-once, pattern/shard semantics,
+  unsubscribe and shutdown must stay exact. A shared frame must respect each
+  subscriber's RESP version and pattern form; the drain bound must not starve
+  other clients (AC41).
+- **Cardinality/membership risk (4.40):** the `SetInt` probe must match the
+  current string-based semantics for integer and non-integer members, and
+  `SetPack`/`HashPack` stay linear but small. Missing/empty keys, wrong-type
+  errors, reply order and accounting must not change; `LLEN` is O(nodes) and may
+  need cached counts only if a later cohort shows it (AC42).
+- **List-seek risk (4.41):** negative-index normalization, chunk boundaries and
+  the `RANK`/`COUNT 0`/`MAXLEN` rules are the semantic core; a missing key,
+  empty list or wrong type must return today's reply, and `LRANGE`/`LLEN` must
+  not change. The seek must not allocate per call (AC43).
+- **Stream-append risk (4.42):** `reserve` can evict the key being appended; an
+  OOM must leave no partial entry; trimming, `entries_added`, `last_generated`,
+  `max_deleted`, groups/PEL, TTL/WATCH/journal/rewrite and the reply ID must stay
+  exact, and the 1k→5k ratio must be flat (AC44).
+- **Geosearch risk (4.43):** the neighbour-cell math is the correctness core —
+  dateline/pole edges, inclusive score bounds, overlapping cells (dedupe), box
+  versus radius, and `ASC`/`DESC`/`COUNT` ordering must reproduce the linear
+  result exactly; the WGS-84 formulas, units, `WITH*` and `STORE` stay; the
+  search must remain bounded by the result and payload limits (AC45).
+- **Multi-member risk (4.44):** `SetInt` must answer integer and non-integer
+  probes exactly as today; duplicates, order, missing/empty keys, wrong types and
+  `ZSetPack`/`SetPack` remain; no reply shape, accounting or read path changes
+  (AC46).
+- **Expiry-stall risk (4.45):** removing the full purge must not let any read
+  return an expired value, `DBSIZE` becomes approximate (documented/tests), and
+  write admission must stay bounded without a false permanent OOM; the periodic
+  purge drains the backlog (AC47).
+- **SORT-nosort risk (4.46):** the direct slice must preserve the current set/zset
+  source order, offset/count edge cases and `STORE`, and must not change any other
+  SORT row (AC48).
+- **Listing-order risk (4.29/4.31):** `HGETALL`/`HKEYS`/`HVALS`/`KEYS` order is
+  unspecified in Redis, but this repository's deterministic sort is an existing
+  test contract; removing it needs an explicit decision and updated
+  persistence/listing tests. `KEYS`/`RANDOMKEY` must still exclude expired keys
+  (4.45), and the keyspace index must be memory-counted and rebuilt on
+  replay/rewrite (AC31/AC33).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -2681,6 +5402,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Treating the #212 SET/XX P1 p99 gap as a server regression | The daily cohort shows the opposite direction and both are client-observed; no server histogram exists yet, so the correct action is 4.19, not a code change (2.22, AC21). |
 | Writing the journal after the reply flush, or acknowledging before the write | Would acknowledge data that a crash can lose; the write must precede the reply (3.9, 4.21). |
 | Busy-polling blocked clients, or shortening the 1 ms async tick for every connection | Spends CPU on all clients instead of targeting the ready-key event; the same-pass signal is the correct shape (3.12, 4.22). |
+| Polling every subscriber and monitor at 1 ms as the default | Measured 22–27% of a core at 1000 idle clients versus <1% for the C servers; event-driven wake is the correct shape (3.12, 4.24). |
 | Removing the 1 ms fallback and trusting the ready signal never misses | One missed signal would strand a blocked client indefinitely; the fallback is required by AC25. |
 | Forking a copy-on-write rewrite child via unsafe/FFI | Outside the safe-Rust/no-FFI boundary; the cooperative slices are the reviewed adaptation (3.13). |
 | Keeping the synchronous full rewrite | Measured at 130 ms of blocked service on the 20k-key fixture; already replaced by cooperative slices (docs/persistence.md). |
@@ -2688,6 +5410,37 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Copying Redis/Valkey's unauthenticated AOF byte stream | Drops the CRC32 transaction boundary and optional HMAC record that this project's durability/security increments added (3.9). |
 | Per-command fsync under `everysec` | Multiplies fsync cost without changing the stated 1 s durability bound; the policy stays 1 s (3.9). |
 | Retrying the four-CPU gate until it passes, or lowering/omitting cases | Forbidden by the quality gate; destroys the meaning of the evidence. |
+| A hand-written skiplist for sorted sets | Repeats the C servers' structure in safe Rust with substantial mutation code for the same asymptotics a `std` `BTreeSet` gives (4.30). |
+| Adding `ordered-float`/`float-ord` for sorted-set scores | A new dependency to express ~20 lines of `f64` total-order normalization; policy impact is not justified (4.30, section 5). |
+| Sorting only the requested `ZRANGE` slice | The slice's start rank is defined by the global `(score, member)` order, so this does not reduce the work and can change results (4.30). |
+| A reverse-binary cursor over `std::collections::HashMap` | `std` exposes no stable bucket cursor; `RawTable` is unstable and would put unsafe code in the project (4.31). |
+| A 40-bit hash-prefix numeric cursor for `SCAN` | Collisions can skip keys, breaking the "every key exactly once" coverage guarantee; an ordered index or an opaque key token is required (4.31). |
+| Keeping the per-call sorted key snapshot and only caching it | A cache still pays O(n log n) on the first call after every write and holds a duplicate key list; it does not bound per-call work (4.31). |
+| Treating `UNLINK`/`FLUSH* ASYNC` as synchronous aliases | Violates the documented async contract and leaves a 6–17 ms command tail; the mode flag must either defer the free or be rejected (4.33). |
+| An unbounded background free for every dropped value | A burst of large drops can grow memory and outrun the reaper; a bounded queue with a synchronous fallback is required (4.33). |
+| Making `DEL` asynchronous by default | Redis's default is synchronous; changing it would alter notification/timing semantics without a measured target while the real gap is the per-element representation (4.32). |
+| Keeping the temporary-vector rebuild and only removing the `put` copy | Still copies the whole value once per `APPEND`/`SETRANGE`; the measured cost is O(value), not O(delta) (4.34). |
+| A custom string arena or unsafe buffer for `APPEND`/`SETRANGE` | A `Vec` with amortized growth already gives in-place mutation and bounded capacity without unsafe code (4.34, section 5). |
+| Keeping the collection rebuild but skipping the re-encode | Still clones every field/element per write, so the measured O(collection) cost remains (4.35). |
+| Copy-on-write or a persistent-collection crate for collection writes | Adds a dependency and indirection to every read for a write-path fix that plain `&mut` containers already solve (4.35). |
+| Sorting/cloning the collection to answer a random pick | O(n log n) time and O(n) allocation per command; the measured 100k gap is 35–298× and the C servers sample the hash table directly (4.36). |
+| A hash-derived random cursor without a position map | Cannot remove a sampled member in O(1) without tombstones or a scan, and collisions complicate distribution (4.36). |
+| SIMD intrinsics or a CPU-feature crate for `BITCOUNT` | Needs unsafe intrinsics or a dependency; a safe `u64` chunk loop is within ~2× Redis and the measured gap is the byte loop (4.37). |
+| Rebuilding a bitmap for `SETBIT` | Two full-value copies per bit write; the in-place string path already gives the correct shape (4.34, 4.37). |
+| Accepting O(n) `ZRANK` because a `BTreeSet` has no rank API | The measured 100k gap is 378–927×; a bucketed rank index or order-statistic tree is required (4.38). |
+| A full in-repo weight-balanced tree with subtree sizes | More hand-written balancing code than bucketed sorted blocks for the same O(log n + block) rank (4.38). |
+| Sorting the sorted set on every rank/score read | The measured materialize+sort is exactly the 57–72 ms cost; it must be replaced, not cached per call (3.22, 4.30, 4.38). |
+| Keeping the fixed 1,024-message subscriber queue and removing the subscriber on overflow | The measured 2,000-message burst loses 48.8% and silently drops the subscription; buffering must be byte-bounded with a counted drop or a documented disconnect (4.39). |
+| An unbounded pub/sub queue per subscriber | A slow or dead subscriber would grow memory without limit; Redis bounds it and disconnects at the limit (4.39, 3.23). |
+| A separately cached collection length maintained beside the container | Two sources of truth can drift; the container's own `len()` is O(1) (or O(nodes) for lists) and cannot disagree (4.40). |
+| Making `SMEMBERS` unsorted so `SCARD` can reuse it | Fixes neither `SISMEMBER` nor the clone/sort cost and changes a deterministic reply order (4.40). |
+| Maintaining a node/rank index just for `LINDEX` | The chunk walk is already O(nodes) without new state; materializing all references is the measured cost (4.41). |
+| Keeping the stream clone and only removing the second payload fold | Still deep-copies every entry and folds the payload once per `XADD`, so the measured O(n) cost remains (4.42). |
+| Keeping the linear geohash scan or caching distances per query | The scan is the measured 25–53× cost; a per-query cache is stale on updates and O(n) memory, while cell ranges reuse the ordered zset (4.43). |
+| Keeping `set_items`/`zset_items` with a per-member scan | Every requested member rescans the materialized collection, so the measured 30–1461× cost grows with the member count (4.44). |
+| Purging every due key on the first command after a mass expiry | The measured stall is 36–46 ms for 30k expired keys and scales with the backlog; reads should expire only what they touch (4.45). |
+| Materializing the whole source for `SORT ... BY nosort LIMIT` | The measured 7.96 vs 0.12–0.16 ms is a full copy of 100k values for a 10-element slice; the other SORT rows are already 0.9–1.5× (4.46). |
+| Keeping per-call sorts for `HKEYS`/`HVALS`/`KEYS` | At 100k the hash listings are 3.5–6.2× and `KEYS` 2.1–4.3× behind; 4.29's ordered hash and 4.31's key index remove the sort without changing reply contents (3.31). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -2791,7 +5544,9 @@ samples retained.
 - **AC20 (large-reply copy avoidance, only if 4.15 is implemented).** When a bulk
   value of at least the measured threshold is returned, the server shall write it
   without copying the value into the session output buffer, while values below the
-  threshold keep the current path; every reply shall be delivered exactly once
+  threshold keep the current path; at 1 MiB GET, throughput shall be within 5% of
+  the best reference and p99 no worse than 1.25× it (measured baseline −42% to
+  −45% and 24.9 vs 9.9/10.9 ms); every reply shall be delivered exactly once
   and in order under fragmentation, pipelining, partial non-blocking writes, slow
   readers and half-close; payload/expiry/backpressure accounting shall be
   unchanged; the matched large-value A/B shall show the predicted gain; and both
@@ -2810,10 +5565,14 @@ samples retained.
 - **AC23 (journal write coalescing, only if 4.21 is implemented).** With
   persistence on, a batch of K commands shall perform at most one journal write
   and one journal lock acquisition; every acknowledged command shall be present
-  in the replayed journal; `always` shall sync before the reply; `everysec` shall
-  sync within its 1 s bound; kill/replay, HMAC, CRC, rewrite and multi-owner
-  tests shall pass; the matched persistence-on A/B shall show the gain; and both
-  protected gates shall pass on the exact head.
+  in the replayed journal; `always` shall sync before the reply and perform at
+  most one fsync per batch; `everysec` shall
+  sync within its 1 s bound; P16 AOF-on SET throughput shall be within 25% of
+  AOF-off and P1 within 10%, and P16 p99 no worse than 2× AOF-off (baseline
+  −90.2%/−66.5% and 15.1 vs 3.1 ms; C servers −8.5% to −33.5%); kill/replay,
+  HMAC, CRC, rewrite and multi-owner tests shall pass; the matched
+  persistence-on A/B shall show the gain; and both protected gates shall pass on
+  the exact head.
 - **AC24 (memory representation, only if 3.11 is implemented).** When duplicate
   key or value representation is changed, a cohort of at least one million TTL
   and counter keys shall show the RSS reduction with identical expiry, WATCH,
@@ -2836,6 +5595,198 @@ samples retained.
   once in the replayed snapshot; kill/replay shall recover; total completion
   shall stay within 25% of the measured 4.85 s (20k) and 43.4 s (200k)
   baselines; both protected gates shall pass; and no dependency shall be added.
+- **AC27 (async-client idle CPU and delivery, only if 4.24 is implemented).**
+  With 1 and 1000 idle subscribers and monitors, server CPU shall stay at or
+  below 1% and shall not scale materially with the count (baseline 6.0/22.2% and
+  5.8/27.4% versus <1% for the C servers); PUBLISH and MONITOR delivery p99 shall
+  be within 200 µs of Valkey and at least 2× better than the 1 ms tick baseline;
+  fanout, ordering, unsubscribe, timeout and shutdown tests shall pass; no
+  dependency shall be added; and both protected gates shall pass on the exact
+  head.
+- **AC28 (large-frame input reservation, only if 4.25 is implemented).** At 1 MiB
+  SET, throughput shall be within 10% of the best reference and p99 no worse than
+  1.25× it (measured baseline −28% to −32% and 9.79 vs 7.37/7.82 ms); a declared
+  length beyond the configured limits shall reserve no more than that bound;
+  fragmented, truncated and malformed frames shall keep their current behavior;
+  the matched A/B shall show the gain; and both protected gates shall pass on the
+  exact head.
+- **AC29 (pooled eviction, only if 4.26 is implemented).** Under continuous
+  eviction, P16 SET throughput shall be within 25% of the no-eviction control and
+  p99 within 2× it (measured baseline −85.8%, 64.5 vs 8.0 ms); evicted-key counts
+  and payload accounting shall be exact; every `allkeys`/`volatile` ×
+  `lru`/`random`/`ttl` policy and `noeviction` shall behave as specified; there
+  shall be no change when the budget is not under pressure; the matched A/B shall
+  show the gain; and both protected gates shall pass on the exact head.
+- **AC30 (replay time to ready, only if 4.27 is implemented).** At 200,000 keys
+  time-to-PING shall be ≤0.3 s and at 50,000 ≤0.08 s (measured baseline 1.10–1.24
+  and 0.258 s); post-replay DBSIZE, payload bytes and TTLs shall match exactly;
+  corrupt or truncated tails shall be handled by the documented policy and never
+  served; SIGKILL/replay, HMAC on/off and stream consumer/PEL tests shall pass;
+  no dependency shall be added; and both protected gates shall pass on the exact
+  head.
+- **AC31 (large-hash listing, only if 4.29 is implemented).** A 10,000-field
+  `HGETALL` shall be within 10% of Redis or at least 30% faster than the measured
+  baseline (313 req/s, 11.6/32.1 ms p50/p99; Redis 552, 7.0/16.3); at 100,000
+  fields, `HGETALL`, `HKEYS` and `HVALS` shall have p50 ≤1.5× the faster C server
+  (≤39 ms for `HGETALL`, ≤24 ms for `HKEYS`/`HVALS`) and be ≥3× faster than the
+  measured 132/98/102 ms; ordering semantics shall be explicitly documented and
+  every order-sensitive test updated to match; small hashes and `LRANGE` shall be
+  unchanged; the matched A/B shall show the gain; and both protected gates shall
+  pass on the exact head.
+- **AC32 (sorted-set ordered index, only if 4.30 is implemented).** A
+  10,000-member `ZRANGE 0 9` shall reach ≥8,000 req/s (≥15× the measured 528
+  baseline and within ~25% of Redis) and `ZRANGE 0 9999` ≥1,500 req/s (≥4.4× the
+  340 baseline and within 10% of Redis); `ZSCORE` shall not regress; `ZADD` shall
+  stay within 10% of its matched baseline; every zset command, member tie-break,
+  rewrite/replay and expiry test shall pass; the 128-member control and all gate
+  commands shall be unchanged; no dependency shall be added; and both protected
+  gates shall pass on the exact head.
+- **AC33 (incremental cursor, only if 4.31 is implemented).** On 100,000 keys,
+  `SCAN COUNT 10` shall have p50 ≤1 ms and p99 ≤5 ms (≥40× and ≥16× faster than
+  the measured 42.6/81.3 ms, within ~4× Redis's 0.256 ms); a full
+  `SCAN COUNT 1000` shall finish in ≤0.5 s and a full 10,000-field
+  `HSCAN COUNT 10` in ≤0.5 s (≥9–10× faster than the measured 4.81/5.05 s); each
+  call shall do work bounded by `COUNT` plus a fixed lookahead, with no
+  keyspace-sized allocation/sort and no unbounded expiry sweep; a stable keyspace
+  shall yield every key exactly once across the traversal; 100k `KEYS key:*`
+  shall be p50 ≤2× the faster C server (≤42 ms) and `RANDOMKEY` ≤0.2 ms with the
+  ordering decision documented; MATCH/TYPE/NOVALUES, cursor and multi-owner tests
+  shall be updated to the chosen cursor semantics and pass; `SET`/`GET` shall
+  stay within noise; no dependency shall be added; and both protected gates shall
+  pass on the exact head.
+- **AC34 (packed list nodes, only if 4.32 is implemented).** A 200,000-element
+  8-byte list shall use ≤24 B/element RSS (≤3× the measured 7.5 B and ≥6× below
+  the measured 142–143 B) and `DEL`/`UNLINK` of it shall be ≤1 ms p50 (≥7× faster
+  than the measured 7.28/6.21 ms, within ~6× Redis's 0.166 ms); `RPUSH`, `LRANGE`,
+  `LSET`, `LINSERT`, `LREM`, `LPOS` and blocking-pop semantics and tests shall be
+  unchanged with matched throughput within 10%; accounting/`maxmemory`,
+  rewrite/replay exactness and both protected gates shall pass on the exact head;
+  no dependency shall be added.
+- **AC35 (deferred drop, only if 4.33 is implemented).** `UNLINK` of a
+  200,000-element list shall have p50 ≤0.5 ms and p99 ≤2 ms (versus the measured
+  6.21/9.8 ms) independent of element count; `FLUSHALL ASYNC` on 20,000 keys shall
+  be p50 ≤1 ms (versus 9.20 ms) and ≤2× Redis's 0.886 ms; `DBSIZE`, `EXISTS`,
+  `SCAN` and `TTL` shall reflect the deletion immediately; pending bytes shall be
+  accounted and bounded with a documented synchronous fallback; shutdown shall
+  drain; `DEL` and `FLUSHALL SYNC` shall stay within 10% of baseline;
+  notification/journal/WATCH ordering and persistence tests shall pass; no
+  dependency shall be added; and both protected gates shall pass on the exact
+  head.
+- **AC36 (in-place string mutation, only if 4.34 is implemented).** `APPEND` of
+  64 B to a 32 MB value shall have p50 ≤0.5 ms and p99 ≤2 ms (≥14× faster than
+  the measured 7.35/14.5 ms and within ~4× Redis's 0.137/1.05 ms); `SETRANGE` of
+  16 B at offset 0 of a 32 MB value shall have p50 ≤0.5 ms (≥14× faster than the
+  measured 7.19 ms and within ~3× Redis's 0.184 ms); a 1 MB value shall move to
+  the command floor; the 64 B controls and `GETRANGE` shall be unchanged; bytes
+  copied per operation shall be bounded by the delta plus amortized growth; exact
+  bytes, zero-fill growth, the 512 MiB limit, TTL/WATCH/journal/replay/rewrite
+  and accounting shall pass; no dependency shall be added; and both protected
+  gates shall pass on the exact head.
+- **AC37 (in-place collection writes, only if 4.35 is implemented).** `HSET` into
+  a 10,000-field hash, `ZADD` into a 10,000-member sorted set and `SADD` into a
+  10,000-member set shall each have p50 ≤0.3 ms (within ~3× the faster C server
+  and ≥4× faster than the measured 1.23–6.45 ms baselines); `RPUSH` and `LPOP` on
+  a 200,000-element list shall have p50 ≤0.3 ms and p99 ≤2 ms (≥59× faster than
+  the measured 17.8–18.3 ms); the 10-element controls shall be unchanged; every
+  collection command, pack threshold, field TTL, blocking, persistence/rewrite/
+  replay and accounting test shall pass; no dependency shall be added; and both
+  protected gates shall pass on the exact head.
+- **AC38 (constant-time random members, only if 4.36 is implemented).** At
+  100,000 members, `SRANDMEMBER`, `HRANDFIELD`, `ZRANDMEMBER` (single and
+  `COUNT 10`) and `SPOP` shall have p50 ≤0.6 ms and p99 ≤2 ms (≥18× faster than
+  the measured 11.1–33.7 ms and within ~3–5× the faster C server); the 10k p50
+  shall be ≤0.3 ms and the 10k→100k ratio ≤2×; a distribution test over repeated
+  draws shall be uniform within a stated tolerance; 10-element controls shall be
+  unchanged; the `SMEMBERS`/`HKEYS`/`ZSCAN` ordering decision shall be documented
+  with tests updated; `SPOP` empty-deletion, TTL, blocking,
+  persistence/rewrite/replay and accounting tests shall pass; no dependency shall
+  be added; and both protected gates shall pass on the exact head.
+- **AC39 (bitmap mutation and popcount, only if 4.37 is implemented).** `SETBIT`
+  at offset 0 of a 16 MB bitmap shall have p50 ≤0.5 ms and p99 ≤2 ms (≥10× faster
+  than the measured 5.32 ms and within ~2× Redis's 0.349 ms); `BITCOUNT` of the
+  16 MB bitmap shall have p50 ≤6 ms and p99 ≤10 ms (≥3.8× faster than 23.0 ms and
+  within ~2× Redis's 3.37 ms); the 1 MB rows shall be at the command floor; the
+  64 B controls, `GETBIT` and `STRLEN` shall be unchanged; BYTE and BIT ranges
+  including negative indices, the offset and 512 MiB limits, zero-fill,
+  TTL/WATCH/journal/replay and accounting shall pass; no dependency shall be
+  added; and both protected gates shall pass on the exact head.
+- **AC40 (order-statistic rank, only if 4.38 is implemented).** At 100,000
+  members, `ZRANK`/`ZREVRANK` for the first, middle and last member and
+  `ZRANGE 50000 50009`/`ZREVRANGE` shall have p50 ≤0.5 ms and p99 ≤2 ms (≥100×
+  faster than the measured 58.6–72.5 ms and within ~8× the faster C server); the
+  10k p50 shall be ≤0.2 ms and the 10k→100k ratio ≤2.5×;
+  `ZADD`/`ZINCRBY`/`ZREM` shall stay within 10% in a matched cohort; tie
+  ordering, negative indices, reverse ranges, `LIMIT`, `ZSetPack`,
+  rewrite/replay, TTL and accounting tests shall pass; 4.30's AC32 rows shall
+  also pass; no dependency shall be added; and both protected gates shall pass on
+  the exact head.
+- **AC41 (pub/sub burst fan-out, only if 4.39 is implemented).** A 2,000-message
+  pipelined burst to an active subscriber shall deliver 2,000/2,000 and keep
+  `PUBSUB NUMSUB` at 1; if the documented byte bound is exceeded, the behavior
+  shall be a counted drop with the subscription intact or a documented disconnect,
+  never a silent removal; `PUBLISH` among 10,000 subscribed channels shall have
+  p50 ≤0.3 ms (≥2.7× faster than the measured 0.80 ms and within ~2× the C
+  server) and stay flat from 1 to 10,000 channels; 100 subscribers shall receive
+  every message with publisher p50 within ~3× the C servers; ordering,
+  pattern/shard, unsubscribe and shutdown tests shall pass; no dependency shall be
+  added; and both protected gates shall pass on the exact head.
+- **AC42 (O(1) cardinality and membership, only if 4.40 is implemented).** At
+  100,000 members, `SISMEMBER` (hit and miss) and `SCARD` shall have p50 ≤0.2 ms
+  (≥40× faster than the measured 8.0–8.7 ms and within ~2× the faster C server);
+  `HLEN` and `ZCARD` p50 ≤0.1 ms; `LLEN` on a 200,000-element list p50 ≤0.05 ms;
+  the 10-element controls, `HEXISTS` and `STRLEN` shall be unchanged; `SetInt`,
+  `SetPack` and `HashPack` membership semantics (including non-integer probes),
+  missing keys and type errors shall pass; no dependency shall be added; and both
+  protected gates shall pass on the exact head.
+- **AC43 (in-place list seek, only if 4.41 is implemented).** On a 200,000-element
+  list, `LINDEX` for 0, middle and −1 and a hit-first `LPOS` shall have p50
+  ≤0.2 ms and p99 ≤2 ms (≥6× faster than the measured 1.26–1.47 ms and within
+  ~3× the faster C server); a missing `LPOS` shall stay ≤2 ms; the 10-element
+  controls, `LRANGE` and `LLEN` shall be unchanged; negative indices,
+  `RANK`/`COUNT`/`MAXLEN`, missing keys and wrong-type errors shall pass; no
+  dependency shall be added; and both protected gates shall pass on the exact
+  head.
+- **AC44 (in-place stream append, only if 4.42 is implemented).** At 5,000
+  entries, `XADD` shall have p50 ≤0.2 ms and p99 ≤2 ms (≥6.8× faster than the
+  measured 1.36/11.6 ms and within ~2× Redis's 0.104/1.87 ms); at 1,000 entries
+  p50 ≤0.15 ms; the 1k→5k p50 ratio ≤2×; `XLEN`, `XRANGE`, `XREVRANGE`,
+  groups/PEL, trimming, rewrite/replay, TTL and accounting shall be unchanged;
+  the 10-entry control shall be unchanged; no dependency shall be added; and both
+  protected gates shall pass on the exact head.
+- **AC45 (geospatial neighbor-cell search, only if 4.43 is implemented).** At
+  50,000 members, a 1 km `GEOSEARCH` and a 2×2 km `BYBOX` shall have p50 ≤0.3 ms
+  and p99 ≤2 ms (≥14× faster than the measured 4.34/4.49 ms and within ~2× the
+  faster C server); `GEOPOS` for 1 and 100 members shall be ≤0.2 ms and ≤0.5 ms
+  (≥45× for 100), and `GEODIST` ≤0.2 ms (≥15×); an all-member search and the
+  10-member controls shall be unchanged; results (members, order, distances,
+  hashes, coordinates) shall match the current linear implementation exactly on a
+  boundary/dateline fixture; `ASC`/`DESC`/`COUNT`, `FROMMEMBER`,
+  `BYRADIUS`/`BYBOX`, `WITH*` and `STORE` tests shall pass; no dependency shall be
+  added; and both protected gates shall pass on the exact head.
+- **AC46 (multi-member direct probes, only if 4.44 is implemented).** At 100,000
+  members, `ZMSCORE` with 100 members shall have p50 ≤0.5 ms and p99 ≤2 ms (≥500×
+  faster than the measured 273 ms and within ~3× the faster C server); 10 members
+  ≤0.2 ms and 1 member ≤0.15 ms; `SMISMEMBER` with 100 members ≤0.5 ms (≥23×
+  faster than 11.75 ms), 10 members ≤0.2 ms and 1 member ≤0.2 ms; `HMGET` and the
+  10-member controls shall be unchanged; missing, non-integer and duplicate
+  members and the `SetInt`/`SetPack` semantics shall pass; no dependency shall be
+  added; and both protected gates shall pass on the exact head.
+- **AC47 (bounded lazy expiry, only if 4.45 is implemented).** After 30,000 keys
+  expire with no intervening command, `MGET` (100 keys), `KEYS prefix*`,
+  `RANDOMKEY` and `DBSIZE` shall have p50 ≤2 ms and p99 ≤5 ms (≥18× faster than
+  the measured 36–46 ms and within ~5× the faster C server); a lazy `GET` shall
+  stay ≤1 ms; reads shall never return an expired value; the `DBSIZE` semantics
+  shall be documented with tests updated; admission shall stay bounded and
+  atomic; TTL expiry/notification/WATCH tests shall pass; no dependency shall be
+  added; and both protected gates shall pass on the exact head.
+- **AC48 (direct `BY nosort` slice, only if 4.46 is implemented).** On a
+  100,000-element list, `SORT ... BY nosort LIMIT 0 10` shall have p50 ≤0.5 ms
+  and p99 ≤2 ms (≥16× faster than the measured 7.96/17.2 ms and within ~4×
+  Redis's 0.12/1.17 ms); the full, limited, ALPHA, DESC, `BY w*` and `GET #` rows
+  shall stay within 1.5× of baseline; the 100-element controls shall be
+  unchanged; offset/count edges, `STORE`, missing keys and set/zset sources shall
+  pass; no dependency shall be added; and both protected gates shall pass on the
+  exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -2910,7 +5861,11 @@ separate roadmap.
   k3s development host with pinned Redis 8.10.2/Valkey 9.1.2; only two 64-byte
   control rows completed (5,414 and 3,437 ops/s, ~20–33x below the daily cohort),
   no large-value row, remaining runs stopped. Files retained in the development
-  environment. It admits nothing and is not tracked source.
+  environment. It admits nothing and is not tracked source. **Retry 2026-11-12**
+  (same host, load ~2.7) produced a usable cohort: 64 B control 39.6k/33.9k/32.2k
+  (Rill/Redis/Valkey); 64 KiB GET 10,734/10,970/14,998; 1 MiB GET
+  776/1,340/1,409 with p99 24.9/9.9/10.9 ms; 1 MiB SET 1,337/1,861/1,959.
+  Shared-host diagnostic; raw JSON retained (untracked).
 - Source comparison refresh: Redis 8.10.2 `server.h` `COPY_AVOID_MIN_STRING_SIZE`
   16384 and `isCopyAvoidPreferred`; Valkey 9.1.2
   `min-string-size-avoid-copy-reply` 16384; both `kvstoreIncrementallyRehash`
@@ -2930,13 +5885,208 @@ separate roadmap.
   ([`redis aof.c#L1399`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L1399),
   [`valkey aof.c#L1178`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L1178));
   our `Journal::append` writes one framed transaction per journaled command
-  (`src/engine/journal.rs`, around line 1028). Source evidence only; the
-  persistence-on row is not measured and the gate runs with persistence off.
+  (`src/engine/journal.rs`, around line 1028).
+- Persistence-on measurement (section 3.9, candidate 4.21): paired local SET
+  runs, three Latin-rotated rounds, `appendonly yes`, `appendfsync everysec`,
+  8 clients, 64 B, 50k requests, fresh journal per run. AOF-on/off medians:
+  P1 11,856/35,387 (−66.5%) p99 5.53/1.53 ms; P16 39,927/406,549 (−90.2%) p99
+  15.12/3.09 ms. Redis P1 +12.0%, P16 −33.5%; Valkey P1 −17.7%, P16 −8.5%.
+  Absolute rates are shared-host diagnostics; the paired ratios and cross-server
+  pattern are the evidence. HMAC was off; the framing cost is CRC plus the
+  per-command write.
+- AOF HMAC measurement (section 3.9, Rill only): key on/off, three rounds, AOF
+  `everysec`. Append P1 14,355 vs 12,893 (−10.2%), P16 41,821 vs 31,938
+  (−23.6%), p99 12.0 vs 11.5 ms; 50k replay 0.206 vs 0.749 s (3.6×), DBSIZE
+  50,000 both. Shared-host diagnostic; raw JSON retained (untracked).
+- `appendfsync always` attempts (section 3.9): two local 2026-11-12 cohorts
+  (2 rounds/2k requests at load 10+; 3 rounds/5k requests at load ~3, P1/P16,
+  Rill/Redis/Valkey). Both were unusable: the first varied 1.6k–107k req/s, the
+  second still had `always` above `everysec` for the C servers at P16. Retained
+  as failed evidence; no numbers claimed. The per-append-sync versus
+  per-loop-fsync source difference and the 4.21 one-fsync-per-batch requirement
+  remain.
+- Startup replay measurement (section 3.15, candidate 4.27): 50k/200k SETs of
+  64 B with `appendonly yes`, clean SIGTERM, three restarts per size, time from
+  process start to first PING. Rill 0.258 s (50k) and 1.10–1.24 s (200k, DBSIZE
+  200,000); Redis 0.011/0.027–0.043 (50k DBSIZE verified 50,000); Valkey
+  0.054/0.051–0.061. Shared-host diagnostic; raw JSON retained (untracked).
+- Pipeline/client scaling (section 2.25): 8 clients at P1/P16/P64/P256 and 64
+  clients at P16, 100k requests, 64 B, 1024 keys, three rotations. Rill leads
+  Redis/Valkey by 29–122% in every P≥16 and 64-client row; P1 SET +3.0/+2.5% and
+  P1 GET +16.5/+10.0%. Shared-host diagnostic; raw JSON retained (untracked).
+- Large multi-bulk replies (section 3.2, candidate 4.29): 10,000-element list and
+  10,000-field hash, 4 clients, 250 requests each, three rotations. `LRANGE 0 9999`
+  (230 KB): Rill 1,272 req/s (p50/p99 2.09/15.5), Redis 913 (3.9/10.9), Valkey 726
+  (4.9/18.4). `HGETALL` (350 KB): Rill 313 (11.6/32.1), Redis 552 (7.0/16.3),
+  Valkey 336 (11.4/26.4). Shared-host diagnostic; raw JSON retained (untracked).
+- HGETALL perf attribution (section 3.2): single-client 10k `HGETALL` loop at
+  ~268 req/s, `perf record -F 999 -g`; 11.9% `sort::unstable`, 7.8% `hash_items`,
+  3.3% `encode_bulk`, ~59% libc self, ~15% kernel. `LRANGE` on the same data is
+  ~46% kernel with no sort. Diagnostic only; raw perf data retained in the
+  development environment (untracked).
+- Sorted-set cohort (section 3.2, candidate 4.30): 10,000-member zset (6-byte
+  members, 3-digit scores), 4 clients, 250 requests each (1,000 `ZSCORE` per
+  client), three rotations. `ZSCORE` 6,913 (p50/p99 0.37/2.95), Redis 8,607
+  (0.32/2.17), Valkey 10,019 (0.28/1.58). `ZRANGE 0 9` 528 (4.61/13.9), Redis
+  10,311 (0.24/1.49), Valkey 10,771 (0.28/1.37). `ZRANGE 0 9999` 340 (11.3/20.3),
+  Redis 1,581 (2.30/6.04), Valkey 1,036 (3.58/7.61). Controls at 128 members
+  (inside the host spread) and 1,024 members (17–20% behind on the small range).
+  Raw JSON retained (untracked).
+- Sorted-set perf attribution (section 3.2): single-client 10k `ZRANGE 0 9` loop
+  at ~301 req/s, `perf record -F 999 -g`; 21.5% sort code, 21.2% libc tuple
+  moves in the sort, 6.4% `zset_items`, ~59% libc self and ~10% kernel.
+  Diagnostic only; raw perf data retained (untracked).
+- Cursor-iteration cohort (section 3.16, candidate 4.31): 100,000 keys
+  (`key:%06d`, 16-byte values) plus a 10,000-field hash, one connection, 300
+  spread-cursor `SCAN COUNT 10` calls, a full `SCAN COUNT 1000` traversal and a
+  full `HSCAN COUNT 10` traversal, three rotations. Per-call p50 42.64/46.76/42.58
+  ms versus Redis 0.26/0.32/0.24 and Valkey 0.10/0.16/0.22; full scan 4.81 s
+  (101 calls) versus 0.239/0.167 s; full HSCAN 5.05 s (1,000 calls) versus
+  0.257/0.247 s. PING floor 0.21/0.16/0.10 ms. Raw JSON retained (untracked).
+- Large-collection drop cohort (section 3.17, candidates 4.32/4.33): three
+  200,000-element lists of 8-byte values plus five 100-element controls, and ten
+  20,000-key flush rounds, three rotations. `DEL` large 7.28 ms versus
+  0.166/0.130; `UNLINK` large 6.21 (max 9.8) versus 0.316/0.235; small control
+  0.28 versus 0.13/0.12; `FLUSHALL ASYNC` 9.20 (max 17.4) versus 0.886/0.568;
+  `FLUSHALL` 10.12 versus 3.44/1.52. RSS delta for one 200k list 27.8–28.0 MB
+  (142–143 B/element) versus 1.47–1.54 MB (7.5–7.9 B). Raw JSON and `/proc`
+  samples retained (untracked).
+- String-mutation cohort (section 3.18, candidate 4.34): one 1 MB value set
+  directly and one 32 MB value built from 512 KiB `APPEND`s; 200 repetitions at
+  1 MB and 100 at 32 MB, three rotations. 32 MB `APPEND` p50 6.81/8.86/7.35 ms
+  versus Redis 0.14/0.18/0.12 and Valkey 0.13/0.12/0.24; `SETRANGE` p50
+  6.98/8.86/7.19 versus 0.12/0.18/0.21 and 0.10/0.06/0.18; 64 B controls
+  0.080/0.135 versus 0.12–0.17; `GETRANGE 0 15` 0.118 versus 0.195/0.243. Raw
+  JSON retained (untracked).
+- Collection-write cohort (section 3.19, candidate 4.35): a 10,000-field hash, a
+  10,000-member zset, a 10,000-member set and a 200,000-element list of 8-byte
+  values, plus 10-element controls; 100 repetitions per row, three rotations.
+  `HSET` p50 7.00/6.45/6.21 ms versus Redis 0.09/0.58/0.11 and Valkey
+  0.14/0.09/0.08; `RPUSH` 19.86/18.34/17.36 versus 0.08/0.09/0.07 and
+  0.06/0.11/0.07; `LPOP` 18.08/17.21/17.82 versus 0.34/0.19/0.53 and
+  0.07/0.21/0.07; `ZADD`/`SADD` medians 4.21/1.23 versus 0.08–0.22/0.08–0.35;
+  controls 0.11–0.23. Raw JSON retained (untracked).
+- Random-member cohort (section 3.20, candidate 4.36): 10k and 100k sets/hashes/
+  zsets plus 10-element controls; 100 repetitions at 10k and 50 at 100k, three
+  rotations. 100k `SRANDMEMBER` p50 11.68/11.54/11.24 ms versus Redis
+  0.20/0.24/0.18 and Valkey 0.12/0.33/0.41; `HRANDFIELD` 33.66/34.29/30.77
+  versus 0.34/0.14/0.40 and 0.11/0.26/0.10; `ZRANDMEMBER` 21.32/22.76/20.61
+  versus 0.25/0.34/0.20 and 0.16/0.20/0.10; `SPOP` 11.11 versus 0.304/0.126.
+  The 10k rows are 1.0–2.6 ms and controls 0.13–0.31. Raw JSON retained
+  (untracked).
+- Bitmap cohort (section 3.21, candidate 4.37): one 1 MB and one 16 MB `0xff`
+  bitmap (the 16 MB built by 512 KiB `APPEND`s), 100/30 repetitions, three
+  rotations. 16 MB `SETBIT` p50 5.32/5.58/4.85 ms versus Redis 0.09/0.71/0.35
+  and Valkey 0.31/0.53/0.22; `BITCOUNT` 22.48/23.24/23.01 versus 3.52/3.13/3.37
+  and 3.77/4.56/5.70; 1 MB `SETBIT`/`BITCOUNT` 0.331/1.849 versus
+  0.092/0.259 and 0.172/0.305; `GETBIT`, `STRLEN` and 64 B controls at the
+  floor. Raw JSON retained (untracked).
+- Set-algebra probe (section 2.24, no candidate): two overlapping sets of 10k
+  and 100k members, 50/20 repetitions, three rotations. At 100k, `SINTER`
+  52.5 versus 38.9/23.2 ms, `SINTERCARD` 52.0 versus 35.7/15.3, `SDIFF` 49.9
+  versus 66.9/40.1, `SUNION` 76.8 versus 105.4/78.8 (Rill leads Redis); at 10k
+  the same commands are 5.4–7.8 versus 1.4–9.8 ms. Raw JSON retained
+  (untracked).
+- Sorted-set rank cohort (section 3.22, candidates 4.30/4.38): a 10,000- and a
+  100,000-member sorted set (7-byte members, scores 100–899), one connection,
+  50/20 repetitions, three rotations. 100k `ZRANK` middle p50 58.56/100.91/57.21
+  ms versus Redis 0.36/0.06/0.16 and Valkey 0.07/0.07/0.23; `ZRANK` last 72.5,
+  `ZREVRANK` 71.4, `ZRANGEBYSCORE ... LIMIT 0 10` 62.4, deep `ZRANGE` 63.7,
+  `ZRANGE 0 9` 57.4, `ZSCORE` 3.27, versus 0.07–0.17 for both pins; 10k rows
+  2.4–3.1 ms; 10-element controls 0.28/0.11 versus 0.10–0.14. Raw JSON retained
+  (untracked).
+- Pub/sub fan-out cohort (section 3.23, candidate 4.39): one subscriber with a
+  reader thread plus a single pipeline of 2,000 `PUBLISH` (32-byte payload), and
+  a subscriber on 1 / 1,000 / 10,000 channels with 500 / 500 / 200 timed
+  publishes, three rotations. Burst: Rill delivered 1,024/2,000 in all three
+  rounds, receiver-count sum 1,024, `PUBSUB NUMSUB` 0 after; Redis and Valkey
+  delivered 2,000/2,000 with NUMSUB 1. `PUBLISH` p50 1 channel: 0.12–0.22 versus
+  0.13–0.30/0.20–0.30; 1,000 channels: 0.13 versus 0.16–0.23/0.21–0.30; 10,000
+  channels: 0.38–0.89 versus 0.14–0.21/0.12–0.31. Raw JSON retained (untracked).
+- Cardinality/membership cohort (section 3.24, candidate 4.40): a 100k
+  set/hash/zset and a 200k list, 100 repetitions, three rotations. `SISMEMBER`
+  hit 8.45/7.70/8.04 ms versus Redis 0.19/0.07/0.40 and Valkey 0.22/0.13/0.27;
+  miss 8.67 versus 0.17/0.21; `SCARD` 8.18/7.02/8.08 versus 0.14/0.20/0.37 and
+  0.18/0.15/0.08; `HLEN` 2.24 versus 0.15/0.19; `ZCARD` 1.57 versus 0.12/0.16;
+  `LLEN` 1.55 versus 0.20/0.14; `HEXISTS` 0.18 versus 0.29/0.14; `STRLEN` 0.13
+  versus 0.16/0.16; 10-element controls 0.12–0.18. Raw JSON retained (untracked).
+- List random-access cohort (section 3.25, candidate 4.41): a 200,000-element
+  8-byte list, 100 repetitions, three rotations. `LINDEX 0` p50 1.473 versus
+  Redis 0.107 and Valkey 0.068; middle 1.404 versus 0.104/0.081; last 1.289
+  versus 0.102/0.142; `LPOS` hit-first 1.256 versus 0.095/0.127; `LPOS` missing
+  1.806 versus 5.019/5.854; `LLEN` 1.364 versus 0.138/0.117; 10-element controls
+  0.097/0.097 versus 0.09–0.12. Raw JSON retained (untracked).
+- Stream cohort (section 3.26, candidate 4.42): a 1,000- and a 5,000-entry stream
+  of one 8-byte field pair, 30/50 repetitions, three rotations. 5k `XADD` p50
+  1.36/1.53/1.22 ms (p99 11.6) versus Redis 0.30/0.10/0.07 and Valkey
+  0.06/0.08/0.14 (p99 1.87/1.58); 1k 0.25/0.43/0.26 versus 0.10/0.71/0.15 and
+  0.08/0.10/0.08; `XLEN` 0.072 versus 0.156/0.103; `XRANGE` first/mid
+  0.121/0.120 versus 0.099–0.307/0.187–0.288; `XREVRANGE` 0.118 versus
+  0.117/0.136; 10-entry control 0.077/0.118 versus 0.078/0.103 and 0.231/0.143.
+  Raw JSON retained (untracked).
+- Geospatial cohort (section 3.27, candidate 4.43): a 50,000-member geo grid
+  over ~0.5°, 50 repetitions, three rotations. 1 km `GEOSEARCH` p50
+  4.34/4.40/3.85 ms versus Redis 0.12/0.16/0.16 and Valkey 0.14/0.17/0.23;
+  2×2 km box 4.49 versus 0.21/0.19; 5 km (all members) 10.38 versus
+  10.09/10.91; `GEOPOS` 1 3.03/1.32/1.99 versus 0.14/0.19 and 100
+  26.86/24.86/22.33 versus 0.47/0.61; `GEODIST` 0.86/3.77/3.12 versus
+  0.168/0.167; 10-member controls 0.149/0.139 versus 0.24/0.165 and 0.18/0.264.
+  Raw JSON retained (untracked).
+- Multi-member cohort (section 3.28, candidate 4.44): a 100k set/hash/zset, 50
+  repetitions, three rotations. `SMISMEMBER` 1/10/100 p50
+  7.90/8.49/12.73, 8.66/8.25/11.75, 7.90/7.42/10.90 versus Redis
+  0.094/0.227/0.394 and Valkey 0.075/0.077/0.211; `ZMSCORE`
+  11.77/23.42/273.23, 5.35/43.97/336.85, 8.02/33.37/221.99 versus
+  0.102/0.422/0.630 and 0.112/0.328/0.187; `HMGET` 1/10/100
+  0.23/0.36/0.32 versus 0.47/0.30/0.52 and 0.11/0.07/0.17; controls
+  0.33/0.26/0.26. Raw JSON retained (untracked).
+- Mass-expiry cohort (section 3.29, candidate 4.45): 30,000 keys with `PX 400`,
+  a 0.7 s wait, one command per fresh wave, two waves per command, three
+  rotations. `MGET` p50 36.29 ms (per-wave 29.31/51.17, 27.95/43.26,
+  26.94/51.35) versus Redis 0.69 and Valkey 0.98; `KEYS` 43.58 versus 0.63/0.80;
+  `RANDOMKEY` 45.45 versus 0.65/0.60; `DBSIZE` 41.21 versus 0.58/0.83; lazy
+  `GET` 0.92 versus 0.75/0.72. Raw JSON retained (untracked).
+- SORT cohort (section 3.30, candidate 4.46): a 100,000-element integer list plus
+  `w<i>` weight keys, 50 repetitions, three rotations. `BY nosort LIMIT 0 10`
+  p50 7.8/8.0/8.7 ms (p99 17.2) versus Redis 0.12 (1.17) and Valkey 0.16 (0.77);
+  sorted `SORT` 92.5 versus 84.8/105.6; `LIMIT 0 10` 32.4 versus 26.0/29.0;
+  ALPHA 90.2 versus 108.1/106.8; DESC 33.5 versus 28.2/28.1; `BY w*` 117.5
+  versus 92.1/80.4; `GET #` 30.0 versus 27.3/26.9; 100-element controls
+  0.21/0.27 versus 0.15/0.26 and 0.26/0.23. Raw JSON retained (untracked).
+- Large-hash/keyspace listing cohort (section 3.31, extending 4.29/4.31): a
+  100,000-field hash (7-byte fields, 16-byte values) and a 100,000-key keyspace,
+  30 repetitions, three rotations. `HGETALL` 132.3/112.4/132.6 ms versus Redis
+  25.6/26.2/24.0 and Valkey 40.9/37.8/35.5; `HKEYS` 116.3/98.2/98.5 versus
+  17.0/16.4/15.6 and 15.3/15.8/19.2; `HVALS` 101.6 median versus 19.7/17.9;
+  `KEYS key:*` 96.5/91.1/80.1 versus 49.4/42.8/42.5 and 21.1/23.0/20.7;
+  `KEYS key:0000*` 32.7 versus 35.1/7.0; `KEYS nope*` 23.7 versus 26.7/5.5;
+  `RANDOMKEY` 0.52 versus 0.21/0.29; `HMGET` 100 0.49 versus 0.47/0.22;
+  10-member controls 0.40/0.25. Raw JSON retained (untracked).
+- Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
+  growth run (500k SET) then a post-growth run (200k SET) on the same server,
+  three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
+  150k/172k, 6.3/4.6, 80/28; Valkey 144k/116k, 5.8/10.2, 50/125. Post was not
+  faster and maxima reached 371 ms; host-dominated and inconclusive, so 4.18
+  stays deferred. Raw JSON retained (untracked).
+- TTL-heavy diagnostic (section 3.7): 8 Python pipelined clients (16 deep), 1024
+  keys, 64 B, 160k commands per run, three rotations, plain vs 10,000 s TTL.
+  Medians: Rill SET 117k/125k, GET 112k/113k; Redis SET 111k/106k, GET 91k/125k;
+  Valkey SET 110k/122k, GET 120k/111k. Differences are inside the host spread and
+  the client bounds the rate; it supports keeping 4.9 closed, not a production
+  claim. Raw JSON retained (untracked).
 - Expiry and eviction comparison (section 3.10): Redis `expire.c` constants and
   `activeExpireCycle`, Valkey `active-expire-effort`, and the 16-entry eviction
   pool (`redis evict.c#L36`, `valkey evict.c#L54`) against our
-  `purge_expired(128)` per 100 ms tick and bounded candidate scans. Code
-  citations; no TTL or eviction cohort exists yet (4.16 rows 1 and 6).
+  `purge_expired(128)` per 100 ms tick and bounded candidate scans.
+- Eviction measurement (section 3.10, candidate 4.26): 100k SET requests over a
+  100k-key space, 64 B, 8 clients, P1/P16, `allkeys-lru`, controls without a
+  memory limit; three rotated rounds. Rill 500 KB payload (7,073 evictions),
+  Redis/Valkey 2 MB (~4,000). P16 SET 144,365 no-eviction vs 20,498 evicted
+  (−85.8%, p99 8.01/64.51 ms); P1 14,895 vs 8,339 (−44.0%). Redis P16 130,085 vs
+  171,696 and Valkey 117,044 vs 137,789 (noisy, no penalty). A policy A/B shows
+  Rill LRU 27.1–31.3k vs random 25.3–27.6k at P16, both far below control, while
+  Redis shows no policy penalty. Shared-host diagnostic; raw JSON retained
+  (untracked).
 - Encoding comparison (section 3.11): Redis embstr limit 44 B and
   `tryObjectEncoding`, listpack/intset thresholds (`redis config.c#L3511`,
   `#L3593`, `#L3603`), against our `Entry` `Vec` value and the duplicated key in
@@ -2955,6 +6105,20 @@ separate roadmap.
   0/1/10/50/100/1000 idle BLPOP clients; Rillcache 0.6/5.6/6.8/13.0/17.8/22.2%,
   Redis 0.4/—/—/—/0.2/0.6%, Valkey 0.4/—/—/—/0.4/0.6%. Raw JSON retained; not a
   gate.
+- Async-client idle CPU (section 3.12, candidate 4.24): 5 s process-CPU windows
+  with 0/1/100/1000 idle SUBSCRIBE clients: Rillcache 0.8/6.0/17.8/22.2%,
+  Redis 0.2/0.2/0.6/0.4%, Valkey 0.4/0.4/0.6/0.4%; MONITOR: Rillcache
+  0.6/5.8/20.8/27.4%, Redis 1.6/0.4/0.4/0.4%, Valkey 0.4/0.4/0.4/0.8%.
+  Shared-host diagnostic; raw JSON retained (untracked), not a gate.
+- Post-#226 idle re-measurement (section 3.12): current binary, 5 s CPU windows.
+  Blocked: 0.6/5.0/6.6/12.4/20.4/21.4% at 0/1/10/50/100/1000; SUBSCRIBE:
+  0.8/4.6/13.6/22.4% at 0/1/100/1000; MONITOR: 1.0/4.2/20.8/26.6%. Values are
+  within pre-fix noise; the per-client scan remains. Raw JSON retained.
+- Async delivery latency (section 3.12, candidate 4.24): 300 publishes/PINGs per
+  run, three rotated runs, randomized phase; after-PUBLISH p50/p99 1.05/3.60 ms
+  (Rillcache), 0.075/1.19 (Redis 8.10.2), 0.064/0.56 (Valkey 9.1.2); after-PING
+  MONITOR line 0.37/6.15, 0.050/0.64 and 0.048/0.49. Shared-host diagnostic; raw
+  JSON retained (untracked).
 - Rewrite scheduling comparison (section 3.13): Redis/Valkey
   `rewriteAppendOnlyFileBackground` forks a COW child
   (`redis aof.c#L3239`, `valkey aof.c#L2595`); our cooperative slices and the
@@ -2975,7 +6139,10 @@ separate roadmap.
   ([`redis config.c#L3526`](https://github.com/redis/redis/blob/8.10.2/src/config.c#L3526),
   [`anet.c#L115`](https://github.com/redis/redis/blob/8.10.2/src/anet.c#L115));
   a local `strace` of this build shows `SO_REUSEADDR` and `listen(..., 128)` with
-  no keepalive option. Source/trace evidence; no connection-storm cohort.
+  no keepalive option. Source/trace evidence. A local connect/PING storm attempt
+  (section 3.14) was client-bound and inconclusive: 2,232 conn/s for Rill,
+  3,796 for Redis, 2,189 for Valkey (p99 30.9/7.9/26.8 ms), so no direction is
+  claimed; a kernel-level client is still needed.
 - Gate artifacts retain raw medians, spreads, p99, CPU and hashes; read the
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
@@ -3098,15 +6265,21 @@ separate roadmap.
   cohort on identical code leads every row by 21.7–32.6% P1 against Redis/Valkey
   while all five P1 p99 are worse (section 2.19). The remaining measured gaps
   against Redis/Valkey are a small P1 per-command CPU difference whose sign is
-  host-dependent, host-dependent P1 tail variance, and the large-value reply copy
-  that the 64-byte gate cannot see (sections 2.20–2.22). The persistence-on
-  journal write shape (section 3.9) is a further unmeasured difference; the gate
-  runs with persistence off.
+  host-dependent, host-dependent P1 tail variance, the large-value reply copy
+  and input-growth copies that the 64-byte gate cannot see — **1 MiB GET −42% to
+  −45%, SET −28% to −32%** (sections 2.20–2.22) — the large multi-bulk hash
+  reply (10k `HGETALL` **−43% vs Redis**, section 3.2) and the persistence-on
+  journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
+  for the C servers (section 3.9). The gate runs with persistence off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
   within-row alternating comparison, but cross-row absolute rates are not
   comparable, and a per-row host shift can move a margin. Earlier cohorts that
   used one shared runner are labeled as such in their sections.
+- The gate scope is 8 clients at P1/P16. A local 8-client P64/P256 and 64-client
+  P16 check (section 2.25) leads the C servers by 29–122% in every deep row, with
+  P1 SET at +2.5–3.0%; no scaling loss is measured. The absolute rates are
+  shared-host diagnostics and do not substitute for a gate row.
 - The P1 ping row is host-sensitive. The refreshed runtime passed both four-CPU
   comparisons twice (section 2.10), but earlier identical binaries also lost that
   row by up to 4.32% on the same shared runner (section 2.9). Readiness was
@@ -3123,11 +6296,15 @@ separate roadmap.
   on shared four-CPU runners. That −1.35% to +15.4% swing for identical code is
   the clearest measurement-risk evidence in the record; judge a change on its
   own fresh cohort, never by picking the favorable one.
-- Expiry and eviction are outside the gate. Our fixed 1,280 due reaps/s is
-  bounded and ordered, but sustained high-churn TTL under memory pressure could
-  leave stale keys longer than a 25%-CPU burst cycle, and mutation-time LRU
-  ignores reads. Both are unmeasured (4.16 rows 1 and 6); no production claim
-  either way (section 3.10).
+- Expiry is outside the gate: our fixed 1,280 due reaps/s is bounded and ordered,
+  but sustained high-churn TTL under memory pressure could leave stale keys longer
+  than a 25%-CPU burst cycle; that remains unmeasured (4.16 row 1). A limited TTL
+  diagnostic (section 3.7) found no consistent TTL-vs-plain penalty, but it is
+  client- and host-bound and does not replace a clean TTL cohort. Eviction is
+  now measured (section 3.10): under continuous pressure P16 SET loses **85.8%**
+  and p99 rises to 64.5 vs 8.0 ms, policy-independent, while the C servers show
+  little penalty; 4.26/AC29 cover it. Budgets differ (payload vs RSS) and the host
+  is shared, so the absolute rates are diagnostic.
 - Value and key representation is a memory axis, not a gate row (section 3.11).
   A TTL key that has been written can own four buffers (main key, value, expiry
   key, version key) where the C servers share one key object; integer values
@@ -3137,9 +6314,15 @@ separate roadmap.
 - Blocking commands are the largest **measured** latency and idle-CPU gap in this
   review (section 3.12): after the push reply, blocked clients wake in 1.16 ms p50
   / 1.92 ms p99 versus 0.03/0.22 ms for Redis/Valkey on the same host, and one
-  idle blocked client costs 5.6% of a core (22.2% at 1000) versus <1%. The
-  protected gate has no blocking command, so no gate row sees it; 4.22 is admitted
-  and AC25 gates the implementation.
+  idle blocked client costs 5.6% of a core (22.2% at 1000) versus <1%; the
+  post-#226 re-measurement is 5.0/21.4%, so the spin fix left the per-client scan
+  intact. Idle
+  subscribers and monitors show the same tick cost (6.0% at one, 22–27% at 1000;
+  post-#226 4.6/22.4% and 4.2/26.6%)
+  and delivery waits for the tick too: pub/sub 1.05/3.60 ms p50/p99 and MONITOR
+  0.37/6.15 ms versus ≤0.08/1.19 ms for the C servers; both are covered by 4.24.
+  The protected gate has no such client, so no gate row sees either gap;
+  4.22/4.24 are admitted and AC25/AC27 gate the implementation.
 - Rewrite scheduling has measured start-pause medians of **9–14 ms at 20k keys**
   and **91–107 ms at 200k** (section 3.13), with 4.85 s / 43.4 s full passes,
   where the C servers fork a copy-on-write child; the gate runs with persistence
@@ -3150,8 +6333,9 @@ separate roadmap.
 - Connection setup differs from the C servers: local `strace` shows a listen
   backlog of 128 and no TCP keepalive, where Redis/Valkey default to 511 and
   300 s (section 3.14). The gate's eight persistent connections do not exercise
-  this; no connection-storm or idle-socket cohort exists, so no production claim
-  is made.
+  this; a Python connect-storm attempt was client-bound and inconclusive
+  (2,232 vs 2,189/3,796 conn/s), so a kernel-level cohort is still needed and no
+  production claim is made.
 - P1 p99 is not consistently better under the merged bounded-poll default
   (section 2.15). The throughput gate passes on medians, but AC5 remains a design
   criterion: a future wakeup/poll change must measure p99 and reject a regression
@@ -3178,21 +6362,38 @@ separate roadmap.
   length headers, and a multi-megabyte workload would be needed to reopen it.
   The cached clock (4.9) and incremental rehash (4.18) are closed/deferred for
   the gate's keyspace and workload; only a matched TTL-heavy or large-keyspace
-  cohort can reopen them.
+  cohort can reopen them. A local 262k-key growth attempt (4.18) was
+  host-dominated and inconclusive (post-growth not faster; maxima to 371 ms), so
+  the rehash question remains open for a clean cohort.
 - The 128-byte command-counter padding is inert on the current one-reactor
   default and must not be cited as a cause of its P1 margins; a multi-reactor
   layout claim needs the A/B in section 4.10. The one structural difference this
-  refresh did find is large-bulk reply copy avoidance, and it is a candidate
-  gated on a clean large-value cohort (4.15), not an implemented change.
+  refresh did find is large-bulk reply copy avoidance and large-frame input
+  growth, both measured on 2026-11-12 and now admitted as 4.15/4.25, not
+  implemented changes.
 - Watch-free mutation bookkeeping (4.20) is a real source difference with a
   below-noise throughput bound (~40–100 ns per mutation). It stays conditional on
   4.19 isolating a server-side mutation tail; do not remove `WATCH` tracking
   without the AC22 correctness proof and tests.
-- Persistence-on behavior remains outside the protected gate. The journal writes
-  one framed transaction per command while the C servers write a buffered batch
-  per loop (section 3.9); the upper bound is material only with persistence on,
-  so 4.21 waits for the 4.16 row-5 cohort. No cross-server persistence result is
-  claimed from gate or daily numbers.
+- Persistence-on behavior remains outside the protected gate but is now measured
+  (section 3.9): AOF-on SET loses **66.5% at P1 and 90.2% at P16** (P16 p99 15.1
+  vs 3.1 ms), against 8.5–33.5% for the C servers. The journal writes one framed
+  transaction per command while the C servers write a buffered batch per loop;
+  4.21 is admitted and AC23 sets the implementation targets. Absolute rates are
+  shared-host diagnostics, not a gate result. The `always` policy is source-only:
+  our per-append `sync_data` versus the C servers' per-loop fsync, with a local
+  attempt that failed under host load (section 3.9); 4.21 requires one fsync per
+  batch.
+- Startup replay is also outside the gate but measured (section 3.15):
+  time-to-PING is 0.258 s at 50k keys and 1.10–1.24 s at 200k, versus
+  0.011–0.061 s for the C servers. The source shows a separate checksum parse
+  pass plus a reparse and normal execute; 4.27/AC30 cover it. Shared-host
+  diagnostic; DBSIZE was verified at 200k for Rill and 50k for Redis.
+- AOF HMAC adds a measured **−10.2% P1 / −23.6% P16** append cost and a 3.6×
+  50k replay (0.21 → 0.75 s). That is the price of per-transaction
+  authentication; the append cost is accepted, and only the existing
+  verification is folded into the 4.27 replay pass. The C servers have no
+  equivalent, so this is an internal A/B, not a cross-server gap claim.
 - The hosted profile (section 2.23) is instrumented evidence: tracepoints and
   CPU-clock sampling perturb the workload, its rates are quarantined, and the
   per-reply syscall counts are neither latency nor throughput. It corrects the
@@ -3215,3 +6416,99 @@ separate roadmap.
   different readiness mechanism and fresh evidence.
 - Redis 8.10.2 and Valkey 9.1.2 are pins, not an evergreen "latest" claim; source
   links are immutable tags.
+- The sorted-set cohort (section 3.2) measures only rank ranges starting at 0,
+  plain `ZRANGE`, and `ZSCORE`, on one 10,000-member set with duplicate scores.
+  It does not measure deep-start ranks, `ZRANGEBYSCORE`/`BYLEX`, `WITHSCORES`,
+  `ZADD` write cost, memory/RSS of an ordered index, or the 1,024–10,000 knee
+  precisely. The 128- and 1,024-member controls bound the size regime; the
+  mechanism attribution is a single-client perf sample on a shared host, so it
+  identifies cost, not a gate-rate win or loss.
+- The cursor cohort (section 3.16) measures single-connection per-call cost at
+  `COUNT 10`/`COUNT 1000` and full traversals on a stable 100k-key keyspace. It
+  does not measure concurrent SCAN with writes, `MATCH`/`TYPE` selectivity,
+  `SSCAN`/`ZSCAN` directly, TTL keys (the unbounded `reap(now, usize::MAX)` is
+  source-only), the cursor's compatibility cost, or the memory/RSS and mutation
+  cost of a key index; those are implementation-PR evidence under AC33.
+- The large-collection cohort (section 3.17) measures single-connection command
+  latency for 8-byte list values, one flush size and `/proc` RSS deltas on one
+  shared host. It does not measure large elements, other collection types, TTL
+  keys, concurrent load, the total CPU of deferred freeing, queue-drain behavior,
+  or allocator/fragmentation effects; the ASYNC flush sample spread is wide
+  (Redis 0.17–6.8 ms). Those are implementation-PR evidence under AC34/AC35, and
+  the RSS figure includes allocator arenas rather than exact object bytes.
+- The string-mutation cohort (section 3.18) measures single-connection command
+  latency for 1 MB and 32 MB values built by `APPEND`, with 64 B controls and a
+  small `GETRANGE`. It does not measure concurrent mutation, persistence-on
+  appends, the full 512 MiB ceiling, capacity retained after shrink, or the exact
+  bytes copied (the mechanism is inferred from the ~9 GB/s copy time and the
+  source). Small- and large-value `SET` copies remain 4.15/4.25 territory.
+- The collection-write cohort (section 3.19) measures single-connection latency
+  for one write into preloaded collections, with 10-element controls. It does
+  not measure pipelined/batched writes (e.g. `HSET` with 500 pairs), concurrent
+  readers, pack↔large threshold crossings, field-TTL paths, or memory; those are
+  implementation-PR evidence under AC37. The Valkey `SADD`/`ZADD` control values
+  show the shared host's spread.
+- The random-member cohort (section 3.20) measures single-connection command
+  latency at 10k and 100k for one collection type per command, with 10-element
+  controls. It does not measure the sampling distribution statistically, very
+  large (1M) collections, negative `COUNT` with repetition, `SPOP` with count, or
+  the index's memory; those are implementation-PR evidence under AC38. The C
+  server medians include the ~0.1–0.2 ms client floor.
+- The bitmap cohort (section 3.21) measures one 1 MB and one 16 MB bitmap of
+  `0xff` bytes, so the popcount is a best case and the write is at offset 0; it
+  does not measure sparse bitmaps, BYTE/BIT sub-ranges, negative indices,
+  `BITPOS`/`BITFIELD`, offsets near the 512 MiB cap, or concurrency. Those are
+  implementation-PR evidence under AC39.
+- The set-algebra probe (section 2.24) is a null result: at 100k, `SINTER`,
+  `SINTERCARD` and `SDIFF` are 1.2–3.4× behind the faster C server, `SUNION`
+  leads Redis, and the replies are large enough that encoding is a material part
+  of every row. It does not justify a candidate; a smaller result or a
+  store-variant cohort would be needed.
+- The sorted-set rank cohort (section 3.22) measures single-connection reads on
+  one 10k/100k set with duplicate scores; it does not measure `ZRANGEBYLEX`,
+  `ZRANGESTORE`, `ZREMRANGEBYRANK`, negative/reverse deep ranges, concurrent
+  writes, or the rank index's memory and `ZADD` cost. Those are
+  implementation-PR evidence under AC32/AC40.
+- The pub/sub cohort (section 3.23) measures one connection with a reader thread,
+  a 2,000-message pipeline, and a single subscriber subscribed to up to 10,000
+  channels. It does not measure 100-subscriber fan-out, slow/dead subscribers,
+  pattern subscriptions, RESP3 frames, or memory under sustained fan-out; those
+  are implementation-PR evidence under AC41. The burst depends on the 1 ms tick
+  and the 1,024-entry queue, both source-confirmed.
+- The cardinality/membership cohort (section 3.24) measures single-connection
+  commands on 100k/200k collections with 10-element controls. It does not measure
+  `SMISMEMBER`, `SINTERCARD`, `HSTRLEN`, missing-key paths at scale, or `LLEN`
+  after heavy list mutation; those are implementation-PR evidence under AC42.
+  The `SetInt`/`SetPack` probe semantics are source-only here.
+- The list random-access cohort (section 3.25) measures a 200k list of 8-byte
+  values with 10-element controls. It does not measure deep `RANK`/`MAXLEN`
+  combinations, `LPOS` with `COUNT`, lists built from `LINSERT`/`LREM` or very
+  large elements; those are implementation-PR evidence under AC43.
+- The stream cohort (section 3.26) measures a single-field entry on one stream at
+  1k/5k; it does not measure multi-field entries, trimming cost, groups/PEL,
+  `XREAD` blocking, or 50k+ streams (the preload itself is O(n²) in the current
+  implementation). Those are implementation-PR evidence under AC44.
+- The geospatial cohort (section 3.27) measures a grid over ~0.5° with no
+  boundary/dateline members; it does not measure `GEORADIUS` legacy variants,
+  `WITHCOORD`/`WITHDIST`, `STORE`, or the neighbour-cell edge cases, which are
+  correctness fixtures for the implementation PR under AC45. `GEODIST` showed
+  host spread (0.86–3.77 ms).
+- The multi-member cohort (section 3.28) measures one set/hash/zset at 100k with
+  up to 100 requested members; it does not measure duplicate or non-integer
+  members, `SetInt` encodings, `ZSetPack`, or larger member counts. Those are
+  implementation-PR evidence under AC46; the ratio is expected to grow linearly
+  with the member count because the scan is repeated.
+- The mass-expiry cohort (section 3.29) measures one command after a single
+  uniform expiry wave; it does not measure staggered expiry, admission under
+  `maxmemory`, the periodic purge rate, or commands that touch few expired keys.
+  Those are implementation-PR evidence under AC47. The C-server MGET samples
+  include one 14.7 ms outlier; the median is used.
+- The SORT cohort (section 3.30) measures one 100k integer list with weight keys;
+  it does not measure `STORE`, set/zset sources, `BY hash*->field` patterns, or
+  large `LIMIT` windows. Those are implementation-PR evidence under AC48. The
+  sorted rows show the host's spread (ALPHA 90–108 ms across servers).
+- The listing cohort (section 3.31) measures a 100k hash and 100k keyspace with
+  fixed-size reply accounting; it does not measure `HSCAN`-order interactions,
+  hash field TTLs, `KEYS` with expensive glob patterns, or the ordered-index
+  memory. Those are implementation-PR evidence under AC31/AC33. The C-server
+  `KEYS` prefix/none rows show a wide Redis–Valkey spread (5.5–35 ms).
