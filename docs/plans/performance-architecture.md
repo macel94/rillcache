@@ -143,8 +143,12 @@ every member; 4.50 adds seek and span counts. Zset algebra repeats the copy/sort
 shape: `ZINTERCARD` is **220.6 vs 40.4/17.1 ms** (5.5–12.9×) and
 `ZINTERSTORE`/`ZDIFFSTORE` are 306.6/331.3 vs 102–111/61–62, because every source
 is copied into an owned map and the result is re-sorted; the set-store variants
-already lead, so 4.51 borrows the zset sources and builds one destination.
-Observability has one keyspace-sized walk: `INFO keyspace` (and plain `INFO`)
+already lead, so 4.51 borrows the zset sources and builds one destination. The
+`LIMIT` contract is ignored on both paths: `SINTERCARD`/`ZINTERCARD` with
+`LIMIT 10` on 100k containers still cost **50.7/267.2 vs 0.20–0.25 ms**
+(205–1,377×) because the limit is applied after the full intersection; 4.51
+extends to the set path and an early exit. Observability has one keyspace-sized
+walk: `INFO keyspace` (and plain `INFO`)
 costs **2.79 ms at 100k keys and 10.0 ms at 500k versus 0.13–0.30 ms** (16–40×)
 while `INFO stats`, `DBSIZE` and `PING` stay at the floor; 4.52 maintains the
 counters. Moving one element between keys is the same cloning shape: `SMOVE` on
@@ -1115,7 +1119,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Thirty-five observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty-six observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1328,6 +1332,11 @@ rest are still true even though every row now leads:
     0.08–0.34** (79–489×), while a same-key rotate still costs 20.5 ms, because
     both keys are cloned and re-encoded for a one-element move; 10-element
     controls are at the floor (section 3.43, candidate 4.53).
+36. **Cardinality `LIMIT`.** `SINTERCARD`/`ZINTERCARD` with `LIMIT 10` on
+    100k-member containers still cost **50.7/267.2 ms versus 0.20–0.25** because
+    the limit is applied after the full intersection (205–1,377×), while
+    `LIMIT 0` costs the same as no limit and 10-member controls are at the floor;
+    section 3.44, extending 4.51.
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1519,10 +1528,11 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; at 100k `HSET`/`HDEL` 92.7–99.4 vs 0.08–0.32, `ZADD`/`ZREM` 61.4–63.9 vs 0.10–0.23, `SADD`/`SREM` 10.7–11.2 vs 0.08–0.60 (18–1160×); 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor; 16 MB `BITFIELD` write 4.39–4.68 vs 0.087–0.12 (37–52×) while `BITFIELD_RO` reads are at the floor | 4.37 (extended to `BITFIELD` writes) | AC39 on the implemented change | none |
-| Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured; no candidate**: 100k SINTER 52.5 vs 38.9/23.2 ms, SINTERCARD 52.0 vs 35.7/15.3, SDIFF 49.9 vs 66.9/40.1, SUNION 76.8 vs 105.4/78.8 (Rill leads Redis); 10k 5.4–7.8 ms | keep; 1.2–3.4× is inside the reply/algorithm mix | n/a | none |
+| Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
 | Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
 | INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, plain `INFO` the same, while `INFO stats`/`DBSIZE`/`PING` stay at the floor because the section walks every entry | 4.52, admitted | AC54 | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k 25.5 ms vs 0.40/0.28 (64–91×); `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×); same-key rotate 20.5 vs 0.26/0.21; 10-element controls at the floor | 4.53, admitted (extends 4.35/4.41) | AC55 | none |
+| Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -3772,6 +3782,48 @@ place, delete an emptied source, and adjust payload by the delta; a same-key mov
 rotates within one container. This reuses 4.35's in-place set mutation and
 4.41's chunk-level list access.
 
+### 3.44 Cardinality `LIMIT` early exit (SINTERCARD/ZINTERCARD)
+
+- **Redis 8.10.2 and Valkey 9.1.2** treat `LIMIT n` as a work bound: the
+  cardinality path iterates the smallest source, counts matches, and breaks as
+  soon as the count reaches `n`, before materialising anything
+  ([`redis t_set.c#L1497`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L1497),
+  [`t_zset.c#L3027`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3027);
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L1425) is
+  the same). With `LIMIT 10`, the command stops after ten common members.
+- **Rillcache** applies `LIMIT` after computing the whole intersection:
+  `set_intercard` clones both sets, retains the full intersection and returns
+  `result.len().min(limit)`
+  ([`collection_commands.rs#L3200`](../../src/engine/collection_commands.rs#L3200));
+  `zset_intercard` builds the full `BTreeSet` intersection and returns
+  `members.len().min(limit)`
+  ([`#L4492`](../../src/engine/collection_commands.rs#L4492)). A `LIMIT 10`
+  therefore does exactly as much work as no limit.
+- **Measured (2026-11-13).** Two 100,000-member sets and two 100,000-member zsets
+  with identical membership (every member common), 20 repetitions, three
+  rotations, 10-member controls:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SINTERCARD 2` (no limit) | 53.26 ms | 40.10 ms | 30.00 ms |
+  | `SINTERCARD 2 ... LIMIT 10` | **50.72** | 0.198 | 0.247 |
+  | `SINTERCARD 2 ... LIMIT 0` | 55.24 | 42.29 | 27.54 |
+  | `ZINTERCARD 2` (no limit) | 267.35 | 43.35 | 24.45 |
+  | `ZINTERCARD 2 ... LIMIT 10` | **267.22** | 0.217 | 0.194 |
+  | `ZINTERCARD 2 ... LIMIT 0` | 291.02 | 39.77 | 27.79 |
+  | 10-member `LIMIT 10` controls | 0.20–0.21 | 0.17–0.23 | 0.17–0.27 |
+  | `EXISTS`/`PING` controls | 0.13/0.18 | 0.20/0.22 | 0.25/0.17 |
+
+  `LIMIT 10` is **205–256×** behind for sets and **1,231–1,377×** for zsets,
+  because the limit does not reduce the work at all; `LIMIT 0` (unlimited) has
+  the same cost as no limit, as the contract requires. The 10-member controls are
+  at the floor. Preloading the four 100k keys took 16.0 s versus 1.5–1.6 s, the
+  4.35 write path. Candidate 4.51, extended.
+
+**Verdict: extend 4.51 to set cardinality and make `LIMIT` an early exit.** Probe
+the smallest borrowed source, count matches, and stop at `LIMIT`; materialising
+the intersection is only needed for the store/reply forms.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3830,7 +3882,9 @@ candidate for the measured 373–974× sorted-set pop loss in section 3.35. 4.50
 the seek-based lex-range and span-count candidate for the measured 163–371×
 `ZRANGEBYLEX` and 5–71× `ZLEXCOUNT`/`ZCOUNT` losses in section 3.38; it reuses
 4.30/4.38's ordered index. 4.51 is the borrowed-source zset-algebra candidate for
-the measured 5.5–12.9× `ZINTERCARD` and 2.8–5.4× store losses in section 3.41.
+the measured 5.5–12.9× `ZINTERCARD` and 2.8–5.4× store losses in section 3.41;
+section 3.44 extends it to the set path and the `LIMIT` early exit
+(205–1,377×).
 4.52 is the maintained-keyspace-counter candidate for the measured 16–40×
 `INFO` walk in section 3.42. 4.53 is the in-place two-key-move candidate for the
 measured 64–489× `SMOVE`/`LMOVE`/`RPOPLPUSH` loss in section 3.43; it reuses
@@ -4462,6 +4516,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    variants on 200k lists, with 10-element controls. Confirms 4.53 on a clean
    runner; the 2026-11-13 local cohort in section 3.43 already measures
    25.5/39.2/41.2 ms versus 0.08–0.40.
+36. **Cardinality `LIMIT`:** `SINTERCARD`/`ZINTERCARD` with no limit, `LIMIT 10`
+   and `LIMIT 0` on identical 100k-member containers, plus 10-member controls.
+   Extends 4.51 on a clean runner; the 2026-11-13 local cohort in section 3.44
+   already measures 50.7/267.2 ms with `LIMIT 10` versus 0.20–0.25.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4469,7 +4527,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all thirty-five rows are complete for all three servers;
+runners, not a shared k3s host; all thirty-six rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4941,7 +4999,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.48 xgroup create | `xgroup` (`streams.rs#L1454`, `#L1492`), `Stream.groups`, `put_stream` | BUSYGROUP/MKSTREAM/ID; payload unchanged; PEL/consumers; TTL/WATCH/journal/rewrite | 5k `XGROUP CREATE`, 10-entry control, other XGROUP ops | small |
 | 4.49 zset pops | `zset_pop` (`collection_commands.rs#L4817`), `owned_zset`/`ordered_zset`, ordered index | ties/scores; empty/negative count; key deletion; ZSetPack; blocking; accounting/rewrite | 100k `ZPOPMIN`/`ZPOPMAX`/`ZPOPMIN 10`/`ZMPOP`, 100-member control | medium |
 | 4.50 lex seek and span counts | `select_zset`/`ordered_zset` (`collection_commands.rs#L798`), `zset_range` (`#L4185`), `zset_count` (`#L3866`), `zset_lex_count` (`#L4556`), `zset_items` (`data.rs#L111`), ordered/rank index | bound parsing; exclusive/infinite bounds; reverse + LIMIT arithmetic; mixed-score order; pack conversion; store/accounting; TTL/WATCH/journal | 100k `ZRANGEBYLEX`/`ZREVRANGEBYLEX` LIMIT forms, full reply, `ZLEXCOUNT`/`ZCOUNT` (full/matching/empty), 10-member control | medium |
-| 4.51 zset algebra | `zset_algebra` (`collection_commands.rs#L4330`), `zset_intercard` (`#L4492`), `owned_zset`/`ordered_zset`, `encode_zset` | source order; destination-as-source; weights/aggregate/NaN; LIMIT early exit; empty/missing/wrong type; store TTL/accounting; SetPack/`ZSetPack`; WATCH/journal/rewrite | 100k `ZINTERCARD`/`ZINTERSTORE`/`ZDIFFSTORE`/`ZUNIONSTORE`, 10-member controls, set-store regression | medium |
+| 4.51 zset algebra | `zset_algebra` (`collection_commands.rs#L4330`), `zset_intercard` (`#L4492`), `set_intercard` (`#L3200`), `set_store` (`#L3257`), `owned_zset`/`owned_set`, `ordered_zset`, `encode_zset` | source order; destination-as-source; weights/aggregate/NaN; `LIMIT` early exit and `LIMIT 0`; empty/missing/wrong type; store TTL/accounting; SetInt/SetPack/`ZSetPack`; WATCH/journal/rewrite | 100k `SINTERCARD`/`ZINTERCARD` with/without `LIMIT`, store forms, 10-member controls | medium |
 | 4.52 INFO keyspace counters | `info` keyspace section (`discovery/mod.rs#L1016`), `Data` (`data.rs#L247`), insert/remove/expire/reap/evict/flush/rename/copy/replay paths, `field_ttls` | every counter delta; avg_ttl empty case; no reap on INFO; section selection; replay/rewrite/eviction/flush | 10k/100k/500k `INFO keyspace`/`INFO`/`INFO stats`/`DBSIZE`, TTL churn correctness | small |
 | 4.53 two-key moves | `set_move` (`collection_commands.rs#L3073`), `list_move_in_data` (`#L2541`), `owned_set`, `Collection::list_values` (`data.rs#L41`), blocking wake | admit destination first; OOM leaves both keys unchanged; same-key rotate; empty-source deletion; TTLs per key; chunk split/merge; blocking/timeout; WATCH/journal/notification/rewrite; accounting | 100k `SMOVE`, 200k `LMOVE`/`RPOPLPUSH`/rotate, 10-element controls, blocking variants | medium |
 
@@ -4969,7 +5027,8 @@ geohash cell ranges, and 4.49 the min/max pops; 4.50 adds the lex seek and
 span-count queries to the same index (163–371× for a 10-element lex range).
 4.51 is independent of that structure: it removes the per-source owned copy and
 the result re-sort from `ZINTERCARD`/`ZINTERSTORE`/`ZDIFFSTORE` (5.5–12.9× and
-2.8–5.4×) by probing borrowed sources. 4.52 is a small, contained observability
+2.8–5.4×) by probing borrowed sources, extends the same probe to `SINTERCARD`,
+and turns `LIMIT` into an early exit (205–1,377×). 4.52 is a small, contained observability
 fix: it replaces the O(keyspace) `INFO` walk with maintained counters (16–40×)
 and can land with 4.40's length work. 4.53 is the two-key-move counterpart of
 4.35/4.41: it removes a full copy of both keys per element moved (64–489×).
@@ -6106,14 +6165,15 @@ and infinite bounds, LIMIT edge cases, store forms, pack thresholds, TTL/WATCH/
 journal/rewrite and accounting tests shall pass; no dependency shall be added;
 and both protected gates shall pass on the exact head.
 
-### 4.51 Borrowed-source sorted-set algebra and cardinality (candidate; admission measured)
+### 4.51 Borrowed-source set/zset algebra and cardinality (candidate; admission measured)
 
 **Mechanism.** Stop materialising owned copies of every source. Borrow each
-source collection (`Collection::ZSet`'s map or `ZSetPack`'s sorted vector), order
-the sources by length, iterate the smallest, and probe the rest with `get`
-(and weight/aggregate into `f64`, normalising NaN to 0). For `ZINTERCARD`,
-count matches and stop as soon as the `LIMIT` is reached, with no destination
-object. For the store and reply forms,
+source collection (the set container, `Collection::ZSet`'s map or `ZSetPack`'s
+sorted vector), order the sources by length, iterate the smallest, and probe the
+rest with `contains`/`get` (and weight/aggregate into `f64`, normalising NaN to
+0). For `SINTERCARD`/`ZINTERCARD`, count matches and stop as soon as the `LIMIT`
+is reached, with no destination object; `LIMIT 0` stays unlimited. For the store
+and reply forms,
 build the destination once from the surviving members — a `(score, member)` map
 inserted in order, or the existing encoder on a result vector — instead of a
 `HashMap` result followed by a full `ordered_zset` sort. If the destination is
@@ -6123,13 +6183,15 @@ NaN handling, `ZDIFF` (first minus rest) and destination TTL-clearing exact. No
 new structure, no dependency, no `unsafe`.
 
 **Prediction.** At 100k members, `ZINTERCARD` falls from **220.6 ms to ≤30 ms**
-(≥7×, within ~2× the faster C server) with a flat `LIMIT` exit; `ZINTERSTORE` from 306.6 and
+(≥7×, within ~2× the faster C server) and `SINTERCARD` from 53.3 to ≤45 ms with a
+flat `LIMIT` exit; a `LIMIT 10` on either form falls to the command floor
+(≤0.5 ms) because the scan stops after ten matches; `ZINTERSTORE` from 306.6 and
 `ZDIFFSTORE` from 331.3 to ≤130 ms (≥2.3×, within ~2.1× the faster C server);
 `ZUNIONSTORE` from 477.6 to ≤360 ms (≥1.3×, within ~1.3× the faster C server)
 because its 150k-member result write remains dominant; the 10-member controls and
 the set-store paths are unchanged.
 
-**Admission evidence (2026-11-13, section 3.41).** Two 100,000-member collections
+**Admission evidence (2026-11-13, sections 3.41 and 3.44).** Two 100,000-member collections
 (`a`=`m000000`–`m099999` score 1, `b`=`m050000`–`m149999` score 2), 10
 repetitions, three rotations: `ZINTERCARD` 222.1/215.6/220.6 ms versus Redis
 41.3/34.7/40.4 and Valkey 17.1/15.1/23.4; `ZINTERSTORE` 305.1/306.6/373.1 versus
@@ -6137,14 +6199,20 @@ repetitions, three rotations: `ZINTERCARD` 222.1/215.6/220.6 ms versus Redis
 99.8/102.0/103.3 and 61.4/59.6/66.0; `ZUNIONSTORE` 458.0/477.6/491.4 versus
 356.0/373.3/366.6 and 280.3/286.2/268.3; `SINTERSTORE` 44.3/42.0/50.5 versus
 66.9/57.2/67.3 and 36.5/29.4/39.4; 10-member controls 0.16/0.25 versus
-0.32–0.45; preload 16.0 s versus 1.5–1.7 s (the 4.35 write path).
+0.32–0.45; preload 16.0 s versus 1.5–1.7 s (the 4.35 write path). The
+`LIMIT` cohort (identical 100k membership): `SINTERCARD LIMIT 10`
+50.72/59.09/49.50 ms versus Redis 0.26/0.15/0.20 and Valkey 0.21/0.25/0.28;
+`ZINTERCARD LIMIT 10` 313.8/259.5/267.2 versus 0.22/0.18/0.33 and
+0.19/0.49/0.08; `LIMIT 0` 49.6–59.1 and 275.1–299.9; 10-member controls
+0.20–0.21.
 
 **Risks and obligations.** Source ordering must not change results; duplicate
 keys and the destination-as-source case; weights and `AGGREGATE SUM/MIN/MAX`
-with NaN/±infinity; `LIMIT 0` meaning unlimited and early exit; empty/missing
-keys, wrong type before mutation; store clears TTL and rewrites accounting;
-`ZSetPack` iteration order and threshold conversion; WATCH version, journal and
-rewrite snapshots; the count path must not allocate a destination.
+with NaN/±infinity; `LIMIT 0` meaning unlimited and a true early exit for any
+positive limit; the set `SetInt`/`SetPack` and zset `ZSetPack` iteration order must
+not change the count; empty/missing keys, wrong type before mutation; store
+clears TTL and rewrites accounting; WATCH version, journal and rewrite snapshots;
+the count path must not allocate a destination.
 
 **Rejected options.** Keeping `owned_zset` and only sorting the result once
 (still copies both sources); a borrowed `HashSet` of the smaller source (extra
@@ -6157,7 +6225,12 @@ set-store paths regress; a store form changes TTL or accounting; or no gain abov
 the spread.
 
 **Acceptance (AC53).** At 100,000 members, `ZINTERCARD` shall have p50 ≤30 ms and
-p99 ≤60 ms (≥7× faster than the measured 220.6 ms and within ~2× the faster C server);
+p99 ≤60 ms (≥7× faster than the measured 220.6 ms and within ~2× the faster C
+server); `SINTERCARD` without a limit shall have p50 ≤45 ms (≥1.2× and within
+~1.5× the faster C server), and `SINTERCARD`/`ZINTERCARD` with `LIMIT 10` shall
+have p50 ≤0.5 ms and p99 ≤2 ms (≥100× faster than 50.7/267.2 ms and within ~2.5×
+the faster C server), independent of container size; `LIMIT 0` shall match the
+unlimited cost and result;
 `ZINTERSTORE` and `ZDIFFSTORE` shall have p50 ≤130 ms and p99 ≤200 ms (≥2.3×
 faster than 306.6/331.3 ms and within ~2.1× the faster C server); `ZUNIONSTORE`
 p50 ≤360 ms (≥1.3× and within ~1.3× the faster C server); `LIMIT` shall exit
@@ -6683,6 +6756,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Keeping the full clone/sort for `ZPOPMIN`/`ZPOPMAX` | The measured 100k pop is 373–974× behind; the ordered index already gives the min/max element, so no sort is needed (4.49). |
 | Sorting the whole zset to answer a bounded `BYLEX`/`ZCOUNT` query | A seek plus rank subtraction is O(log n); the measured 10-element lex range pays 56–70 ms for an O(n log n) sort and a narrow count scans all 100k members (4.50). Caching the sorted snapshot or adding a second lex index would duplicate storage and invalidation work for the same query. |
 | Copying every source before a zset algebra or cardinality query | The measured 100k `ZINTERCARD` pays 220 ms for two owned maps plus a `BTreeSet`, while probing the smallest borrowed source and counting matches is O(smallest × keys) with no destination; the store forms already build one destination and re-sort a materialised map a second time (4.51). A borrowed `HashSet` of the smaller source only trades one allocation for another and was rejected. |
+| Applying `SINTERCARD`/`ZINTERCARD` `LIMIT` after the full intersection | The measured `LIMIT 10` still pays 50.7/267.2 ms, exactly the no-limit cost; a positive limit is a work bound and must stop the probe loop after `limit` matches, while `LIMIT 0` keeps the unlimited cost (4.51). |
 | Caching the formatted `INFO` reply instead of maintaining counters | The measured 10 ms walk happens on every `INFO`/`INFO keyspace`; a cache would still pay O(keyspace) to rebuild after the first mutation and would need a full invalidation contract. Sampling the keyspace or counting only the expiration index reports a wrong `keys` value (4.52). |
 | Rebuilding both keys for a one-element two-key move | The measured 100k `SMOVE` and 200k `LMOVE`/`RPOPLPUSH` pay 20–41 ms for a full clone of both sides; a set remove/insert and a list pop/push are O(1)/O(log n) in the existing containers, and reusing the old clone for one side still leaves the other O(n) (4.53). |
 | Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
@@ -7072,13 +7146,17 @@ samples retained.
   edges, store forms, pack thresholds, TTL/WATCH/journal/rewrite and accounting
   tests shall pass; no dependency shall be added; and both protected gates shall
   pass on the exact head.
-- **AC53 (borrowed-source zset algebra and cardinality, only if 4.51 is
+- **AC53 (borrowed-source set/zset algebra and cardinality, only if 4.51 is
   implemented).** At 100,000 members, `ZINTERCARD` shall have p50 ≤30 ms and p99
-  ≤60 ms (≥7× faster than the measured 220.6 ms and within ~2× the faster C server);
+  ≤60 ms (≥7× faster than the measured 220.6 ms and within ~2× the faster C
+  server); `SINTERCARD` without a limit shall have p50 ≤45 ms; `SINTERCARD` and
+  `ZINTERCARD` with `LIMIT 10` shall have p50 ≤0.5 ms and p99 ≤2 ms (≥100× faster
+  than 50.7/267.2 ms and within ~2.5× the faster C server), independent of
+  container size, with `LIMIT 0` matching the unlimited result and cost;
   `ZINTERSTORE` and `ZDIFFSTORE` shall have p50 ≤130 ms and p99 ≤200 ms (≥2.3×
   faster than 306.6/331.3 ms and within ~2.1× the faster C server);
-  `ZUNIONSTORE` p50 ≤360 ms; `LIMIT` shall exit early without materialising the
-  result; the 10-member controls and set-store variants shall be unchanged;
+  `ZUNIONSTORE` p50 ≤360 ms; the 10-member controls and set-store variants shall
+  be unchanged;
   weights, `AGGREGATE MIN/MAX/SUM`, NaN/infinite scores, missing/empty keys,
   destination-as-source, TTL/WATCH/journal/rewrite and accounting tests shall
   pass; no dependency shall be added; and both protected gates shall pass on the
@@ -7486,6 +7564,17 @@ separate roadmap.
   `LPUSH`/`SADD` controls 0.18/0.22; `SISMEMBER` control 8.69/9.39/10.55 (the
   known 4.40 path). Preload 13.4 s versus 1.4–1.6 s, the 4.35 write path. Raw
   JSON retained (untracked).
+- Cardinality-LIMIT cohort (section 3.44, extending 4.51): two 100k sets and two
+  100k zsets with identical membership, 20 repetitions, three rotations.
+  `SINTERCARD` 56.75/49.31/53.26 ms versus Redis 38.39/40.10/46.63 and Valkey
+  25.44/30.00/31.03; `SINTERCARD LIMIT 10` 50.72/59.09/49.50 versus
+  0.26/0.15/0.20 and 0.21/0.25/0.28; `SINTERCARD LIMIT 0` 55.24/49.57/56.67;
+  `ZINTERCARD` 267.27/267.35/270.79 versus 41.26/43.35/47.73 and
+  24.45/24.91/22.94; `ZINTERCARD LIMIT 10` 313.76/259.46/267.22 versus
+  0.22/0.18/0.33 and 0.19/0.49/0.08; `ZINTERCARD LIMIT 0`
+  299.88/291.02/275.14; 10-member `LIMIT 10` controls 0.12–0.27; `EXISTS`/`PING`
+  0.11–0.25. Preload 16.0 s versus 1.5–1.7 s, the 4.35 write path. Raw JSON
+  retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -8008,3 +8097,9 @@ separate roadmap.
   (none exist), blocking `BLMOVE` latency, chunk-boundary split/merge behaviour,
   field-TTL collections, or moves between a pack and a large container. The
   `SISMEMBER` row is the admitted 4.40 cardinality path, not a move control.
+- The cardinality-LIMIT cohort (section 3.44) uses identical membership (every
+  member common) so the first ten matches are found immediately by an early-exit
+  implementation; it does not measure a sparse overlap where the probe must skip
+  many non-matches, more than two inputs, `SetInt`/`SetPack`/`ZSetPack` mixes, or
+  approximate cardinality (not implemented). The `LIMIT 0` rows confirm the
+  unlimited contract, not the early-exit path.
