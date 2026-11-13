@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); every other runtime item
-here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.50).**
+here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.51).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -130,14 +130,26 @@ Random sampling is the widest cardinality-scaling loss: at 100k members
 **11.5 vs 0.2–0.3 ms**, `HRANDFIELD` **33.7 vs 0.11–0.34 ms** and
 `ZRANDMEMBER` **21.3 vs 0.16–0.25 ms**, because each call clones the collection
 (4.36). Bitmaps show both write-copy and scan gaps: on 16 MB, `SETBIT` is **5.3
-vs 0.31–0.35 ms** and `BITCOUNT` **23.0 vs 3.4–4.6 ms** (4.37). Sorted-set rank
+vs 0.31–0.35 ms**, `BITCOUNT` **23.0 vs 3.4–4.6 ms**, and a one-byte `BITFIELD`
+write **4.39–4.68 vs 0.087–0.12 ms** while its read-only form is at the floor
+(4.37, extended). Sorted-set rank
 and score reads are the largest ratio in the record at 100k: **57–72 ms** for
 `ZRANK`/`ZRANGEBYSCORE`/`ZRANGE` versus 0.07–0.17 ms (378–927×), and `ZSCORE`
 3.3 ms because it scans; 4.30 covers point/score/start-0 ranges and 4.38 the
 rank-select paths. Lex ranges repeat it: a 10-element `ZRANGEBYLEX ... LIMIT 10`
 costs **56.0–69.8 vs 0.18–0.43 ms** (163–371×) because it sorts the whole set
 first, and a narrow `ZLEXCOUNT` is **15.0 vs 0.21–0.22 ms** because it scans
-every member; 4.50 adds seek and span counts. Pub/sub loses a 2,000-message
+every member; 4.50 adds seek and span counts. Zset algebra repeats the copy/sort
+shape: `ZINTERCARD` is **220.6 vs 40.4/17.1 ms** (5.5–12.9×) and
+`ZINTERSTORE`/`ZDIFFSTORE` are 306.6/331.3 vs 102–111/61–62, because every source
+is copied into an owned map and the result is re-sorted; the set-store variants
+already lead, so 4.51 borrows the zset sources and builds one destination.
+Stream consumer-group reads are
+the counter-example: at a 10k-entry PEL, `XREADGROUP` history, `XPENDING` and
+`XCLAIM` are at parity and the largest batch forms are only **1.3–2.1×** behind
+(new read 1000 8.99 vs 5.19/6.43 ms, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50)
+because only reply entries and PEL records are cloned, not the stream; section
+3.39 records a measured null. Pub/sub loses a 2,000-message
 burst at **1,024 delivered and
 drops the subscription** (C servers: 2,000 and keep it), and a `PUBLISH` among
 10,000 channels is 3–6× slower; 4.39 covers the burst contract and channel
@@ -1097,7 +1109,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Thirty observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty-three observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1201,8 +1213,10 @@ rest are still true even though every row now leads:
 14. **Bitmap mutation and popcount.** `SETBIT` rebuilds the value (two full
     copies) and `BITCOUNT` runs a byte-at-a-time popcount, so on a 16 MB bitmap
     they cost **5.3 ms** and **23.0 ms** versus 0.31–0.35 and 3.4–4.6 ms, while
-    `GETBIT`, `STRLEN` and the 64 B controls are at the floor (section 3.21,
-    candidate 4.37).
+    `GETBIT`, `STRLEN` and the 64 B controls are at the floor; the same two-copy
+    write makes a one-byte `BITFIELD SET` **4.39–4.68 ms** versus 0.087–0.12,
+    while read-only `BITFIELD` is already copy-free (sections 3.21 and 3.40,
+    candidate 4.37 extended).
 15. **Sorted-set rank, score-range and point reads.** At 100k members `ZRANK`,
     `ZREVRANK`, `ZRANGEBYSCORE LIMIT` and `ZRANGE` cost **57–72 ms** versus
     0.07–0.17 ms for the C servers' skiplist (378–927×), and `ZSCORE` costs
@@ -1281,6 +1295,22 @@ rest are still true even though every row now leads:
     set before filtering, and `ZLEXCOUNT`/`ZCOUNT` scan every member
     (**1.25–15.0 ms versus 0.13–0.39**, including an empty `ZCOUNT`); section
     3.38, candidate 4.50 on 4.30/4.38's ordered index.
+31. **Stream consumer-group reads.** `XREADGROUP` history/new, `XPENDING`,
+    `XCLAIM` and `XAUTOCLAIM` on a 10k-entry stream with a 10k-entry PEL stay
+    within **1.3–2.1×** of Redis/Valkey (largest forms: new-read 1000 8.99 vs
+    5.19/6.43 ms, autoclaim 1000 9.84 vs 4.67/7.50), while 100-entry history,
+    `XPENDING` and `XCLAIM` are at parity; per-entry `StreamEntry`/`Pending` clones
+    and the consumer-name copy are the residual, below the candidate threshold
+    (section 3.39, measured null).
+32. **BITFIELD writes on large values.** A one-byte `BITFIELD SET`/`INCRBY` on a
+    16 MB value costs **4.39–4.68 ms versus 0.087–0.12** (37–52×) while
+    `BITFIELD_RO`/all-`GET` reads are at the floor, because the write path clones
+    the value and `put` copies it again; section 3.40, extending 4.37.
+33. **Sorted-set algebra and cardinality.** At 100k members, `ZINTERCARD` costs
+    **220.6 ms versus 40.4/17.1** (5.5–12.9×) and `ZINTERSTORE`/`ZDIFFSTORE`
+    306.6/331.3 versus 102–111/61–62 (2.8–5.4×), because every source is copied
+    into an owned map and the result is re-sorted; `ZUNIONSTORE` is 1.3–1.7×
+    behind and set-store variants already lead (section 3.41, candidate 4.51).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1462,6 +1492,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
+| Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 ms vs 0.42/0.34, `ZPOPMAX` 159.9 vs 0.21/0.29, `ZPOPMIN 10` 146.6 vs 0.35/0.16, `ZMPOP` 155.8 vs 0.16/0.20 (373–974×); 100-member control at the floor | 4.49, admitted | AC51 | none |
 | Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
@@ -1470,8 +1501,9 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; at 100k `HSET`/`HDEL` 92.7–99.4 vs 0.08–0.32, `ZADD`/`ZREM` 61.4–63.9 vs 0.10–0.23, `SADD`/`SREM` 10.7–11.2 vs 0.08–0.60 (18–1160×); 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
-| Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor | 4.37, admitted | AC39 on the implemented change | none |
+| Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor; 16 MB `BITFIELD` write 4.39–4.68 vs 0.087–0.12 (37–52×) while `BITFIELD_RO` reads are at the floor | 4.37 (extended to `BITFIELD` writes) | AC39 on the implemented change | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured; no candidate**: 100k SINTER 52.5 vs 38.9/23.2 ms, SINTERCARD 52.0 vs 35.7/15.3, SDIFF 49.9 vs 66.9/40.1, SUNION 76.8 vs 105.4/78.8 (Rill leads Redis); 10k 5.4–7.8 ms | keep; 1.2–3.4× is inside the reply/algorithm mix | n/a | none |
+| Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1886,6 +1918,7 @@ for a production claim.
 | Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, and 378–927× on 100k rank/range reads (3.2, 3.22, AC32/AC40) |
 | Sorted-set rank-select | skiplist span counts: O(log n) `ZRANK`, deep `ZRANGE` seek | same | rank requires a full materialize+sort+linear position scan | **Adapt:** 4.38 order-statistic index; measured 100k `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12 (3.22, AC40) |
 | Sorted-set lex ranges and counts | skiplist lex seek (`zslNthInLexRange`) and first/last rank subtraction for `ZLEXCOUNT`/`ZCOUNT` | same | `BYLEX` sorts the whole set before slicing; counts materialize and filter every member | **Adapt:** 4.50 seek + span counts on 4.30/4.38's index; measured 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 vs 0.18–0.74 ms (163–371×), `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 even when empty (3.38, AC52) |
+| Sorted-set algebra and cardinality | one generic pass: sort sources by cardinality, iterate the smallest, `zuiFind` probe, count with early LIMIT or insert directly into the destination | same | `owned_zset` copy per source, result `HashMap` with cloned keys, full `ordered_zset` sort; `ZINTERCARD` clones into a `BTreeSet` | **Adapt:** 4.51 borrowed-source probe and single destination build; measured 100k `ZINTERCARD` 220.6 vs 40.4/17.1 ms (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4 (3.41, AC53) |
 | Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain; monitors share the queue and silently drop lines | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms, and 1,024/2,000 monitor lines vs 2,000 (3.23, 3.37, AC41) |
 | Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
 | List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
@@ -1899,13 +1932,14 @@ for a production claim.
 | HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
 | Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
 | Stream `XGROUP CREATE` | insert one group in the stream dict; O(1) | same | deep-clone the whole stream, fold payload, replace via `put_stream` | **Adapt:** 4.48 in-place group insert; measured 5k 8.26 vs 0.083/0.094 ms (88–99×), other XGROUP ops at parity (3.34, AC50) |
+| Stream consumer-group reads | radix PEL with a consumer pointer; reply writes stored fields directly | same | per-entry `StreamEntry` clone, two PEL inserts and a consumer-name copy per pending entry | **Keep:** measured near-parity at 10k; the 1,000-entry forms are 1.7× (new read) and 2.1× (`XAUTOCLAIM`), while 100-entry history/`XPENDING`/`XCLAIM` are at parity; re-measure after 4.42 (3.39, no candidate) |
 | Sorted-set pops | skiplist head/tail pop, O(log n) | same | clone, sort and replace the whole set per pop | **Adapt:** 4.49 ordered `(score, member)` index pop; measured 100k `ZPOPMIN` 156.7 vs 0.42/0.34 ms, `ZMPOP` 155.8, `ZPOPMIN 10` 146.6 (373–974×), 100-member control at the floor (3.35, AC51) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | pre-fix: rebuild full-length `Vec` and copy twice; now mutates the entry in place (#258) | **Done:** 4.34 in-place mutation; measured 32 MB post-fix `APPEND` 0.131 vs 0.142/0.219 ms and `SETRANGE` 0.185 vs 0.222/0.289 (3.18, AC36) |
 | Collection writes | in-place dict/skiplist/listpack/quicklist update | same | clone the whole collection, re-encode and replace it per write | **Adapt:** 4.35 in-place mutation; measured 10k `HSET` 6.45 vs 0.111/0.093 ms, 200k `RPUSH` 18.3 vs 0.08/0.07, `LPOP` 17.8 vs 0.07–0.34; 100k `HSET`/`HDEL` 92.7–99.4 vs 0.08–0.32 and `ZADD`/`ZREM` 61.4–63.9 vs 0.10–0.23 (18–1160×); controls at the floor (3.19, AC37) |
 | Random-member selection | `dictGetRandomKey`/`dictGetSomeKeys`, intset/listpack fast paths | same | clone and sort/copy the whole collection per call | **Adapt:** 4.36 dense member index after a no-copy reservoir slice; measured 100k `SRANDMEMBER` 11.54 vs 0.199/0.326 ms, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164; 10k 1–2.6 ms, controls at the floor (3.20, AC38) |
-| Bitmaps | in-place sds bit write; word/AVX2 popcount | same (scalar/AVX2/NEON popcount) | rebuild the value for `SETBIT` (two copies); byte-at-a-time `BITCOUNT` | **Adapt:** 4.37 in-place `SETBIT` (4.34 shape) + `u64` chunk popcount; measured 16 MB 5.32 vs 0.349/0.312 ms and 23.01 vs 3.37/4.56; controls at the floor (3.21, AC39) |
+| Bitmaps | in-place sds bit write; word/AVX2 popcount | same (scalar/AVX2/NEON popcount) | rebuild the value for `SETBIT` and `BITFIELD` writes (two copies); byte-at-a-time `BITCOUNT` | **Adapt:** 4.37 in-place `SETBIT`/`BITFIELD` (4.34 shape) + `u64` chunk popcount; measured 16 MB 5.32 vs 0.349/0.312 ms, `BITFIELD` write 4.39–4.68 vs 0.087–0.12, and 23.01 vs 3.37/4.56; controls at the floor (3.21, 3.40, AC39) |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
 | Large-frame input | reserves query-buffer capacity from the declared bulk length (`big_arg`/`sdsMakeRoomFor`) | same | appends 16 KiB reads into a growing `Vec` | **Adopt:** 4.25 bounded reservation; measured 28–32% 1 MiB SET loss (2.21, 3.3) |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
@@ -3475,6 +3509,162 @@ span counts.** Seek the first and last in-range position by `(score, member)`
 and derive counts from rank subtraction; a full-range count is just the
 cardinality. Do not sort to answer a bounded range and do not scan to count.
 
+### 3.39 Stream consumer-group reads, claims and pending queries
+
+- **Redis 8.10.2 and Valkey 9.1.2** keep stream entries in a radix tree and the
+  group/consumer PEL in radix trees keyed by ID. A `streamNACK` stores a
+  **consumer pointer**, delivery time and count — not a copy of the consumer name
+  ([`redis t_stream.c#L3339`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L3339)).
+  `streamReplyWithRange` writes the stored field objects into the reply directly,
+  and `xautoclaimCommand` walks the PEL from a cursor, examining at most
+  `COUNT × 10` entries ([`#L4778`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L4778));
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L3331)
+  is the same. There is no per-entry value copy on a read.
+- **Rillcache** stores `StreamEntry { fields: Vec<(Vec<u8>, Vec<u8>)> }` and, per
+  pending entry, `Pending { consumer: Vec<u8>, deliveries, delivered_at }` in
+  **both** the group and consumer `BTreeMap`s
+  ([`data.rs`](../../src/engine/data.rs#L157)). `xreadgroup_multi` clones every
+  delivered entry into the reply and inserts two PEL entries, cloning the
+  consumer-name `Vec` per pending entry
+  ([`streams.rs#L1668`](../../src/engine/streams.rs#L1668)); `xclaim` and
+  `xautoclaim` clone each `Pending` and each `StreamEntry` into their reply
+  ([`#L985`](../../src/engine/streams.rs#L985),
+  [`#L1154`](../../src/engine/streams.rs#L1154)). The clone share grows with the
+  batch, not with the stream.
+- **Measured (2026-11-13).** One 10,000-entry stream with a single 16-byte field,
+  one group whose consumer owns all 10,000 entries, 20 repetitions per row (40
+  fresh groups for the `NEW` rows), three rotations:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `XREADGROUP ... 0 COUNT 100` (history) | 0.91 ms | 1.14 ms | 0.62 ms |
+  | `XREADGROUP ... 0 COUNT 1000` (history) | 7.00 | 7.40 | 5.80 |
+  | `XREADGROUP ... > COUNT 100` (new) | 0.92 | 0.57 | 0.69 |
+  | `XREADGROUP ... > COUNT 1000` (new) | **8.99** | 5.19 | 6.43 |
+  | `XPENDING` summary | 0.22 | 0.16 | 0.23 |
+  | `XPENDING - + 100` | 0.71 | 0.47 | 0.50 |
+  | `XPENDING - + 1000` | 3.57 | 2.93 | 3.72 |
+  | `XAUTOCLAIM COUNT 100` | **1.17** | 0.58 | 1.03 |
+  | `XAUTOCLAIM COUNT 1000` | **9.84** | 4.67 | 7.50 |
+  | `XCLAIM` 100 ids | 1.17 | 1.35 | 1.01 |
+  | `XCLAIM` 100 ids `JUSTID` | 0.66 | 0.63 | 0.65 |
+  | `XLEN` / `XADD` controls | 0.25 / 0.19 | 0.14 / 0.21 | 0.09 / 0.14 |
+
+  Every command is within **1.3–2.1×** of Redis and usually inside Valkey's
+  spread. The residual is concentrated in the two largest batch forms:
+  `XREADGROUP > COUNT 1000` (1.7×) and `XAUTOCLAIM COUNT 1000` (2.1×), where Rill
+  clones 1,000 entries or up to 10,000 `Pending` values (each with a heap
+  consumer name) while the C servers link or reference them. Preloading the
+  10,000 entries took **16.2 s** in Rill versus 0.1–0.2 s in both C servers — the
+  already-admitted `XADD` clone-per-append path (4.42), not a new read cost.
+
+**Verdict: measured near-parity; no candidate.** The read/claim path does not
+clone the stream and stays within ~2× on the largest batches, below the
+record's candidate threshold and inside the host spread. Record it as a boundary,
+not an optimization target. If 4.42 changes the stream representation, or a
+cohort with multi-field entries and a 100k-entry PEL shows more than ~3× with the
+clone share above ~30%, the bounded fix is to iterate entries by reference and
+store a consumer ID instead of a name per pending entry; that changes storage,
+so it needs its own measured admission rather than being folded into 4.42.
+
+### 3.40 BITFIELD writes on large strings
+
+- **Redis 8.10.2 and Valkey 9.1.2** execute `BITFIELD` subcommands against the
+  value's `sds` in place: `bitfieldGeneric` looks the string up with room for the
+  highest write offset (`lookupStringForBitCommand`) and then each `SET`/`INCRBY`
+  reads and writes the buffer with no copy
+  ([`redis bitops.c#L1886`](https://github.com/redis/redis/blob/8.10.2/src/bitops.c#L1886),
+  [`#L2125`](https://github.com/redis/redis/blob/8.10.2/src/bitops.c#L2125);
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/bitops.c#L1425) is
+  the same). A one-byte write is O(1) regardless of value size.
+- **Rillcache** already borrows the value on the read path: `BITFIELD` with only
+  `GET` subcommands and `BITFIELD_RO` read `entry.value.as_slice()` with no copy
+  ([`bitfield.rs#L302`](../../src/engine/bitfield.rs#L302)). The **write path**
+  clones the whole value (`entry.value.clone()`, [`#L316`](../../src/engine/bitfield.rs#L316))
+  before applying the subcommands, then calls `data.put(key, &bytes, …)` with the
+  full slice ([`#L382`](../../src/engine/bitfield.rs#L382)) — two full-value
+  copies per call for a one-byte `SET`, the same shape 4.34 removed from
+  `APPEND`/`SETRANGE` and 4.37 targets for `SETBIT`.
+- **Measured (2026-11-13).** One 16 MB `0x01` value, one 1 MB value and a 64 B
+  control, 20 repetitions, three rotations:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | 16 MB `SETBIT 0 1` (known 4.37 path) | 4.37 ms | 0.260 ms | 0.150 ms |
+  | 16 MB `BITFIELD SET u8 0 1` | **4.56** | 0.087 | 0.089 |
+  | 16 MB `BITFIELD INCRBY u8 0 1` | **4.68** | 0.118 | 0.111 |
+  | 16 MB `BITFIELD SET u63 0 1` | **4.39** | 0.113 | 0.120 |
+  | 16 MB `BITFIELD` × 100 `INCRBY u8` | **4.58** | 0.305 | 0.307 |
+  | 16 MB `BITFIELD_RO GET u8 0` | 0.34 | 0.25 | 0.14 |
+  | 16 MB `BITFIELD GET u8 0` | 0.25 | 0.42 | 0.21 |
+  | 1 MB `BITFIELD SET u8` | 0.51 | 0.34 | 0.17 |
+  | 64 B `BITFIELD SET u8` | 0.19 | 0.21 | 0.09 |
+  | 16 MB `GETRANGE 0 9` control | 0.12 | 0.23 | 0.12 |
+
+  A one-byte `BITFIELD` write is **37–52×** slower at 16 MB and scales with value
+  size (1 MB: 1.5–3×; 64 B: at the floor). The 100-subcommand form costs the same
+  as one write because the copy, not the subcommands, dominates. The read-only
+  forms are already at the floor, so only the mutation path needs the in-place
+  treatment. Candidate 4.37, extended.
+
+**Verdict: extend 4.37 to `BITFIELD` writes.** Apply the same admit-then-mutate
+shape: reserve for the highest write offset, borrow the entry's `Vec`, zero-fill
+only when the offset passes the end, and apply the subcommands in place; keep the
+read path borrowed and unmodified.
+
+### 3.41 Sorted-set algebra and cardinality (ZINTERSTORE/ZUNIONSTORE/ZDIFFSTORE/ZINTERCARD)
+
+- **Redis 8.10.2 and Valkey 9.1.2** implement all four through one generic path:
+  it orders the sources by cardinality, iterates the **smallest** source with a
+  borrowed iterator, probes each other source with `zuiFind`, and either counts
+  matches (with an early `LIMIT` exit, no destination object) or inserts each
+  survivor directly into the destination zset's dict and skiplist
+  ([`redis t_zset.c#L2885`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L2885),
+  [`zinterCardCommand #L3217`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3217),
+  [`qsort by cardinality #L3012`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3012);
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L2914) is
+  the same). No source is copied and the result is never assembled as a map and
+  re-sorted.
+- **Rillcache** first materialises every source into an owned
+  `HashMap<Vec<u8>, f64>` through `owned_zset`
+  ([`collection_commands.rs#L4330`](../../src/engine/collection_commands.rs#L4330)),
+  builds the result in a second `HashMap` with cloned member keys, and then
+  full-sorts it with `ordered_zset` before encoding. `zset_intercard` is worse: it
+  clones the first set's members into a `BTreeSet<Vec<u8>>` and retains by probing
+  the others, so a count pays a full copy plus an O(n log n) tree build and only
+  applies `LIMIT` after all members are materialised
+  ([`#L4492`](../../src/engine/collection_commands.rs#L4492)).
+- **Measured (2026-11-13).** Two 100,000-member collections (`a`=`m000000`–
+  `m099999` score 1, `b`=`m050000`–`m149999` score 2; intersection 50k, union
+  150k, difference 50k), 10 repetitions, three rotations, 10-member controls:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `ZINTERCARD 2` | **220.56 ms** | 40.41 ms | 17.14 ms |
+  | `ZINTERSTORE` | **306.58** | 110.53 | 61.56 |
+  | `ZDIFFSTORE` | **331.30** | 101.98 | 61.43 |
+  | `ZUNIONSTORE` | 477.60 | 366.56 | 280.35 |
+  | `SINTERCARD 2` | 41.47 | 29.58 | 13.60 |
+  | `SINTERSTORE` | 44.26 | 66.90 | 36.54 |
+  | `SUNIONSTORE` | 65.83 | 87.72 | 52.71 |
+  | `SDIFFSTORE` | 39.58 | 61.98 | 33.42 |
+  | 10-member zset controls | 0.16 | 0.45 | 0.43 |
+  | 10-member set controls | 0.25 | 0.32 | 0.24 |
+  | `SCARD` control (known 4.40 path) | 43.52 | 0.31 | 0.18 |
+
+  `ZINTERCARD` is **5.5×** behind Redis and **12.9×** behind Valkey; `ZINTERSTORE`
+  is 2.8–5.0× and `ZDIFFSTORE` 3.2–5.4× behind. `ZUNIONSTORE` is only 1.3–1.7×
+  behind because the 150k-member result write dominates all three servers. The
+  set-store variants already lead because the destination set is encoded once
+  without a map-then-sort pass. Preloading the four 100k collections took 16.0 s
+  in Rill versus 1.5–1.7 s, the admitted 4.35 clone-per-write path, not this
+  read. Candidate 4.51.
+
+**Verdict: adapt borrowed-source algebra (4.51).** Iterate the smallest borrowed
+source, probe the others in place, count with an early `LIMIT` exit, and for the
+store forms build the destination once (no intermediate map, no re-sort of a
+materialised result). Keep the set-store paths as they are.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3532,7 +3722,8 @@ measured 88–99× group-creation loss in section 3.34. 4.49 is the ordered-pop
 candidate for the measured 373–974× sorted-set pop loss in section 3.35. 4.50 is
 the seek-based lex-range and span-count candidate for the measured 163–371×
 `ZRANGEBYLEX` and 5–71× `ZLEXCOUNT`/`ZCOUNT` losses in section 3.38; it reuses
-4.30/4.38's ordered index.
+4.30/4.38's ordered index. 4.51 is the borrowed-source zset-algebra candidate for
+the measured 5.5–12.9× `ZINTERCARD` and 2.8–5.4× store losses in section 3.41.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -4134,6 +4325,22 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    runner; the 2026-11-13 local cohort in section 3.38 already measures
    56.0–69.8 ms versus 0.18–0.74 and a narrow lex count of 15.0 ms versus
    0.21–0.22.
+31. **Stream consumer-group reads:** `XREADGROUP` history and new (100 and 1000),
+   `XPENDING` summary and extended (100/1000), `XCLAIM` (with and without
+   `JUSTID`) and `XAUTOCLAIM` (100/1000) on a 10k-entry stream with a 10k-entry
+   PEL, plus `XLEN`/`XADD` controls. Confirms the measured near-parity in
+   section 3.39 on a clean runner; the 2026-11-13 local cohort already measures
+   1.3–2.1× at the largest batches and parity at 100.
+32. **BITFIELD writes:** one-byte `SET`/`INCRBY` (u8, u63) and a 100-subcommand
+   `INCRBY` write on a 16 MB value, plus 1 MB and 64 B forms and the
+   `BITFIELD_RO`/all-`GET` read controls. Extends 4.37 on a clean runner; the
+   2026-11-13 local cohort in section 3.40 already measures 4.39–4.68 ms versus
+   0.087–0.12 ms with reads at the floor.
+33. **Zset algebra:** `ZINTERCARD`, `ZINTERSTORE`, `ZUNIONSTORE` and
+   `ZDIFFSTORE` on two 100k zsets, plus the set-store variants and 10-member
+   controls. Confirms 4.51 on a clean runner; the 2026-11-13 local cohort in
+   section 3.41 already measures `ZINTERCARD` 220.6 ms versus 40.4/17.1 and the
+   store forms 306.6–477.6 versus 61.4–366.6.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4141,7 +4348,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all thirty rows are complete for all three servers;
+runners, not a shared k3s host; all thirty-three rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4599,7 +4806,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.34 in-place strings (implemented, #258) | `append`/`setrange` (`string_ranges.rs`), `Data::mutate_string`/`reserve`/`put` (`data.rs`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small, landed |
 | 4.35 in-place collection writes | `hash_set`/`zset_add`/`set_add`/`push_list`/`pop_list` (`collections.rs`), `Data::entries.get_mut`, `payload_len`, field TTL, blocking wake | admit before mutate; pack↔large conversion only at thresholds; delta accounting; empty-collection removal; field TTL; WATCH/journal | 10k/100k `HSET`/`ZADD`/`SADD` plus updates/deletes, 200k `RPUSH`/`LPOP`, 10-element controls | medium |
 | 4.36 random members | `set_random_member`/`set_pop`/`hash_random_field`/`zset_random_member` (`collection_commands.rs`), `owned_set`, `set_items`, `hash_items`, `zset_items`, collection representation | sample without materializing; uniform distribution; count/negative-count semantics; `SPOP` removal and empty deletion; ordering decision; small pack paths | 10k/100k `SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`/`SPOP`, distribution test | medium |
-| 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`, `#L524`), `find_bit` (`#L432`), `Data::reserve`/`put`, range normalization | in-place write after admission; `u64` chunk popcount and bit scan with masked head/tail; BYTE/BIT ranges; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`/`BITPOS`, 64 B controls, range cases | small |
+| 4.37 bitmaps | `setbit`/`bitcount`/`bitpos` (`string_algorithms.rs#L89`, `#L457`, `#L524`), `bitfield` (`bitfield.rs#L258`, write clone at `#L316`, put at `#L382`), `find_bit` (`#L432`), `Data::reserve`/`put`, range normalization | in-place write after admission (`SETBIT` and `BITFIELD` write forms); read-only `BITFIELD` stays borrowed; `u64` chunk popcount and bit scan with masked head/tail; BYTE/BIT ranges; `OVERFLOW` policies; offset/512 MiB limits; zero-fill; TTL/WATCH/journal | 1 MB/16 MB `SETBIT`/`BITCOUNT`/`BITPOS`/`BITFIELD` writes, `BITFIELD_RO`, 64 B controls, range cases | small |
 | 4.38 zset rank index | `zset_rank` (`collection_commands.rs#L3744`), `zset_range_by_score` (`#L3896`), `zset_read` (`collections.rs#L433`), `ZAdd`/`ZRem` paths, block index | rank-select over `(score, member)`; score moves; block split/merge; negative/reverse ranges; `ZSetPack`; accounting; replay/rewrite | 100k `ZRANK`/`ZREVRANK`/deep `ZRANGE`/`ZRANGEBYSCORE`, ZADD regression | medium |
 | 4.39 pub/sub fan-out | `PubSub::publish` (`pubsub.rs#L121`), `queue_capacity`, subscriber drain (`pool.rs#L159`), reactor async tick | channel lookup by key; byte-bounded queue; no silent unsubscribe; counted drop or documented disconnect; shared frame; ordering/pattern/shard; shutdown | 2,000-message burst, 10k-channel PUBLISH, 100 subscribers, NUMSUB | medium |
 | 4.40 O(1) counts | `set_read`/`hash_read`/`zset_read`/`list_len` (`collections.rs#L240`, `#L355`, `#L478`, `#L658`), `Collection` length/probe methods | SetInt/SetPack semantics; missing/empty/wrong type; no reply or ordering change; LLEN node walk | 100k `SISMEMBER`/`SCARD`/`HLEN`/`ZCARD`, 200k `LLEN`, 10-element controls | small |
@@ -4613,6 +4820,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.48 xgroup create | `xgroup` (`streams.rs#L1454`, `#L1492`), `Stream.groups`, `put_stream` | BUSYGROUP/MKSTREAM/ID; payload unchanged; PEL/consumers; TTL/WATCH/journal/rewrite | 5k `XGROUP CREATE`, 10-entry control, other XGROUP ops | small |
 | 4.49 zset pops | `zset_pop` (`collection_commands.rs#L4817`), `owned_zset`/`ordered_zset`, ordered index | ties/scores; empty/negative count; key deletion; ZSetPack; blocking; accounting/rewrite | 100k `ZPOPMIN`/`ZPOPMAX`/`ZPOPMIN 10`/`ZMPOP`, 100-member control | medium |
 | 4.50 lex seek and span counts | `select_zset`/`ordered_zset` (`collection_commands.rs#L798`), `zset_range` (`#L4185`), `zset_count` (`#L3866`), `zset_lex_count` (`#L4556`), `zset_items` (`data.rs#L111`), ordered/rank index | bound parsing; exclusive/infinite bounds; reverse + LIMIT arithmetic; mixed-score order; pack conversion; store/accounting; TTL/WATCH/journal | 100k `ZRANGEBYLEX`/`ZREVRANGEBYLEX` LIMIT forms, full reply, `ZLEXCOUNT`/`ZCOUNT` (full/matching/empty), 10-member control | medium |
+| 4.51 zset algebra | `zset_algebra` (`collection_commands.rs#L4330`), `zset_intercard` (`#L4492`), `owned_zset`/`ordered_zset`, `encode_zset` | source order; destination-as-source; weights/aggregate/NaN; LIMIT early exit; empty/missing/wrong type; store TTL/accounting; SetPack/`ZSetPack`; WATCH/journal/rewrite | 100k `ZINTERCARD`/`ZINTERSTORE`/`ZDIFFSTORE`/`ZUNIONSTORE`, 10-member controls, set-store regression | medium |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
@@ -4628,13 +4836,17 @@ write and shares the delta-accounting shape. 4.35 is next: every collection writ
 currently clones the collection, the gaps are **3.5–1160×** (3.5–69× at 10k,
 18–1160× at 100k), and it reuses 4.34's
 admit-then-mutate shape. 4.37 is small and shares 4.34's in-place string path: it
-removes the two copies in `SETBIT` and the byte loop in `BITCOUNT`/`BITPOS`
-(5–44×). 4.36 follows, first as a no-copy reservoir slice and then the dense
+removes the two copies in `SETBIT` and the `BITFIELD` write forms and the byte
+loop in `BITCOUNT`/`BITPOS` (5–44×, and 37–52× for a 16 MB `BITFIELD` write).
+4.36 follows, first as a no-copy reservoir slice and then the dense
 index; its 100k gaps are 35–298×. 4.30, 4.38, 4.43 and 4.49 are the largest
 measured read/pop ratios (378–974× and 10–53×) and should share one ordered
 structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select, 4.43 the
 geohash cell ranges, and 4.49 the min/max pops; 4.50 adds the lex seek and
 span-count queries to the same index (163–371× for a 10-element lex range).
+4.51 is independent of that structure: it removes the per-source owned copy and
+the result re-sort from `ZINTERCARD`/`ZINTERSTORE`/`ZDIFFSTORE` (5.5–12.9× and
+2.8–5.4×) by probing borrowed sources.
 4.39 is a contract/reliability
 fix on the pub/sub and MONITOR path already admitted as 4.24 (section 3.37) and
 should land with them. 4.34
@@ -5103,7 +5315,11 @@ the exact head.
 
 **Mechanism.** `SETBIT` reserves/admits the new length, then extends and patches
 the entry's own `Vec` in place (zero-filling only when the offset passes the end)
-instead of building a new value and copying it twice. `BITCOUNT` sums
+instead of building a new value and copying it twice. The same in-place mutation
+applies to the `BITFIELD`/`BITFIELD_RO` write forms: reserve for the highest
+write offset, borrow the value, and apply `SET`/`INCRBY` subcommands directly;
+the read-only `BITFIELD` path already borrows and stays unchanged. `BITCOUNT`
+sums
 `chunks_exact(8)` as little-endian `u64::count_ones()` and handles the head and
 tail with per-byte popcount; `BITPOS` finds the first matching bit the same way
 (`trailing_zeros` of the word, or of its complement for bit 0) with masked
@@ -5111,45 +5327,61 @@ head/tail words. BYTE and BIT ranges normalize to a byte span with edge masks.
 `GETBIT` stays a direct read.
 
 **Prediction.** 16 MB `SETBIT` falls from **5.32 ms to ≤0.5 ms**, `BITCOUNT`
-from 23.0 to ≤6 ms, and a not-found `BITPOS 0` from **201.6 ms to ≤8 ms** (within
-~1.6× Redis); the 1 MB rows move to the command floor; the 64 B controls and a
+from 23.0 to ≤6 ms, a not-found `BITPOS 0` from **201.6 ms to ≤8 ms** (within
+~1.6× Redis), and a one-byte 16 MB `BITFIELD SET`/`INCRBY` from **4.39–4.68 ms
+to ≤0.5 ms**; the 1 MB rows move to the command floor; the 64 B controls and a
 first-bit hit are unchanged.
 
-**Admission evidence (2026-11-12, sections 3.21 and 3.33).** One 1 MB and one
+**Admission evidence (2026-11-12, sections 3.21 and 3.33; 2026-11-13, section
+3.40).** One 1 MB and one
 16 MB `0xff` bitmap (the 16 MB one built by 512 KiB `APPEND`s), 100/30
 repetitions, three rotations: 16 MB `SETBIT` 5.32/5.58/4.85 ms versus Redis
 0.09/0.71/0.35 and Valkey 0.31/0.53/0.22; `BITCOUNT` 22.48/23.24/23.01 versus
 3.52/3.13/3.37 and 3.77/4.56/5.70; `BITPOS 0` 200.1/201.6/206.7 versus
 5.3/5.1/4.9 and 5.7/4.6/5.1; `BITPOS 0 0 -1` 209.4 versus 4.79/5.96;
 `BITPOS 1` 0.12 versus 0.60/0.09; 1 MB 0.331/1.85 versus 0.09–0.26/0.17–0.31;
-64 B controls at the floor.
+64 B controls at the floor. The `BITFIELD` cohort (16 MB, 20 repetitions, three
+rotations): `SET u8` 4.38/6.09/4.56 versus 0.24/0.06/0.09 and 0.42/0.09/0.07;
+`INCRBY u8` 4.69/3.83/4.68 versus 0.24/0.08/0.12 and 0.55/0.11/0.07;
+`SET u63` 4.38/4.71/4.39 versus 0.11/0.11/0.30 and 0.12/0.19/0.10; 100×
+`INCRBY u8` 3.83/4.89/4.58 versus 0.31/0.24/0.41 and 0.31/0.54/0.25;
+`BITFIELD_RO GET` 0.21/0.47/0.33 versus 0.28/0.25/0.14 and 0.20/0.09/0.14;
+1 MB `SET u8` 0.14/0.59/0.51 versus 0.34/0.40/0.13 and 0.17/0.63/0.08; 64 B
+controls at the floor.
 
 **Risks and obligations.** `reserve` can evict the key being written, so re-look
 it up; an OOM after a partial extend corrupts the value; zero-fill growth, the
 offset cap and the 512 MiB limit must not change; BYTE/BIT range normalization
 (negative indices, inverted ranges) and MSB-first bit numbering must be exact;
 the not-found return values (`len*8` for bit 0 without an explicit end, `-1`
-otherwise) must stay; TTL, WATCH, journal and rewrite must see the same value;
+otherwise) must stay; `BITFIELD` integer widths/signs, `OVERFLOW` policies
+(`WRAP`/`SAT`/`FAIL`), old-value replies and the highest-write-offset reservation
+must stay exact, and the read-only path must not start copying; TTL, WATCH,
+journal and rewrite must see the same value;
 the popcount and bit scan must stay safe Rust (no target-feature intrinsics).
 
 **Rejected options.** SIMD intrinsics or a CPU-feature dependency (unsafe or a
 new crate for a path that a `u64` loop nearly closes), the current byte-and-bit
-scan, and the rebuild-and-copy write.
+scan, and the rebuild-and-copy write (for `BITFIELD` as well as `SETBIT`).
 
 **Rejection condition.** Any bit or range semantics test differs, an OOM leaves a
 partial value, the controls or reads regress, or no gain above the spread.
 
 **Acceptance (AC39).** `SETBIT` at offset 0 of a 16 MB bitmap shall have p50
 ≤0.5 ms and p99 ≤2 ms (≥10× faster than the measured 5.32 ms and within ~2×
-Redis's 0.349 ms); `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms and p99
+Redis's 0.349 ms); a one-byte `BITFIELD SET`/`INCRBY` (u8 and u63) and a
+100-subcommand write on the 16 MB value shall each have p50 ≤0.5 ms and p99
+≤2 ms (≥8× faster than the measured 4.39–4.68 ms and within ~2× the faster C
+server); `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms and p99
 ≤10 ms (≥3.8× faster than 23.0 ms and within ~2× Redis's 3.37 ms); a not-found
 `BITPOS 0` shall have p50 ≤8 ms and p99 ≤15 ms (≥25× faster than 201.6 ms and
 within ~1.6× Redis's 5.08 ms) while a first-bit hit stays at the floor; the 1 MB
 rows shall be at the command floor; the 64 B controls, `GETBIT` and `STRLEN`
-shall be unchanged; BYTE and BIT ranges including negative indices, the offset
-and 512 MiB limits, zero-fill, TTL/WATCH/journal/replay and accounting shall
-pass; no dependency shall be added; and both protected gates shall pass on the
-exact head.
+shall be unchanged; `BITFIELD_RO` and all-`GET` `BITFIELD` shall stay copy-free;
+BYTE and BIT ranges including negative indices, the offset and 512 MiB limits,
+zero-fill, `BITFIELD` widths/`OVERFLOW` policies, TTL/WATCH/journal/replay and
+accounting shall pass; no dependency shall be added; and both protected gates
+shall pass on the exact head.
 
 ### 4.38 Order-statistic sorted-set rank (candidate; admission measured)
 
@@ -5356,7 +5588,8 @@ trim) by the delta. No `stream.clone()`, no `payload_bytes()` fold and no
 
 **Prediction.** 5k `XADD` falls from **1.36 ms to ≤0.2 ms** (p99 11.6 → ≤2) and
 1k from 0.263 to ≤0.15, so the 1k→5k ratio becomes ≤2× (flat); `XLEN`,
-`XRANGE`, `XREVRANGE` and the 10-entry control are unchanged.
+`XRANGE`, `XREVRANGE` and the 10-entry control are unchanged. The consumer-group
+read path is independent of this clone and measured near-parity in section 3.39.
 
 **Admission evidence (2026-11-12, section 3.26).** A 1,000- and a 5,000-entry
 stream, 30/50 repetitions, three rotations: 5k `XADD` p50 1.36/1.53/1.22 versus
@@ -5747,6 +5980,67 @@ and infinite bounds, LIMIT edge cases, store forms, pack thresholds, TTL/WATCH/
 journal/rewrite and accounting tests shall pass; no dependency shall be added;
 and both protected gates shall pass on the exact head.
 
+### 4.51 Borrowed-source sorted-set algebra and cardinality (candidate; admission measured)
+
+**Mechanism.** Stop materialising owned copies of every source. Borrow each
+source collection (`Collection::ZSet`'s map or `ZSetPack`'s sorted vector), order
+the sources by length, iterate the smallest, and probe the rest with `get`
+(and weight/aggregate into `f64`, normalising NaN to 0). For `ZINTERCARD`,
+count matches and stop as soon as the `LIMIT` is reached, with no destination
+object. For the store and reply forms,
+build the destination once from the surviving members — a `(score, member)` map
+inserted in order, or the existing encoder on a result vector — instead of a
+`HashMap` result followed by a full `ordered_zset` sort. If the destination is
+also a source, read it before taking the write borrow; a missing source is empty;
+a wrong type aborts before any mutation. Keep weights, `AGGREGATE SUM/MIN/MAX`,
+NaN handling, `ZDIFF` (first minus rest) and destination TTL-clearing exact. No
+new structure, no dependency, no `unsafe`.
+
+**Prediction.** At 100k members, `ZINTERCARD` falls from **220.6 ms to ≤30 ms**
+(≥7×, within ~2× the faster C server) with a flat `LIMIT` exit; `ZINTERSTORE` from 306.6 and
+`ZDIFFSTORE` from 331.3 to ≤130 ms (≥2.3×, within ~2.1× the faster C server);
+`ZUNIONSTORE` from 477.6 to ≤360 ms (≥1.3×, within ~1.3× the faster C server)
+because its 150k-member result write remains dominant; the 10-member controls and
+the set-store paths are unchanged.
+
+**Admission evidence (2026-11-13, section 3.41).** Two 100,000-member collections
+(`a`=`m000000`–`m099999` score 1, `b`=`m050000`–`m149999` score 2), 10
+repetitions, three rotations: `ZINTERCARD` 222.1/215.6/220.6 ms versus Redis
+41.3/34.7/40.4 and Valkey 17.1/15.1/23.4; `ZINTERSTORE` 305.1/306.6/373.1 versus
+125.5/92.5/110.5 and 65.3/57.3/61.6; `ZDIFFSTORE` 331.3/306.1/345.7 versus
+99.8/102.0/103.3 and 61.4/59.6/66.0; `ZUNIONSTORE` 458.0/477.6/491.4 versus
+356.0/373.3/366.6 and 280.3/286.2/268.3; `SINTERSTORE` 44.3/42.0/50.5 versus
+66.9/57.2/67.3 and 36.5/29.4/39.4; 10-member controls 0.16/0.25 versus
+0.32–0.45; preload 16.0 s versus 1.5–1.7 s (the 4.35 write path).
+
+**Risks and obligations.** Source ordering must not change results; duplicate
+keys and the destination-as-source case; weights and `AGGREGATE SUM/MIN/MAX`
+with NaN/±infinity; `LIMIT 0` meaning unlimited and early exit; empty/missing
+keys, wrong type before mutation; store clears TTL and rewrites accounting;
+`ZSetPack` iteration order and threshold conversion; WATCH version, journal and
+rewrite snapshots; the count path must not allocate a destination.
+
+**Rejected options.** Keeping `owned_zset` and only sorting the result once
+(still copies both sources); a borrowed `HashSet` of the smaller source (extra
+allocation and hash pass); parallelising the intersection (thread coordination
+for a sub-500 ms operation, outside the one-owner model).
+
+**Rejection condition.** Any score, weight, aggregate, order, `LIMIT`, empty,
+store or destination-as-source result differs; the 10-member controls or
+set-store paths regress; a store form changes TTL or accounting; or no gain above
+the spread.
+
+**Acceptance (AC53).** At 100,000 members, `ZINTERCARD` shall have p50 ≤30 ms and
+p99 ≤60 ms (≥7× faster than the measured 220.6 ms and within ~2× the faster C server);
+`ZINTERSTORE` and `ZDIFFSTORE` shall have p50 ≤130 ms and p99 ≤200 ms (≥2.3×
+faster than 306.6/331.3 ms and within ~2.1× the faster C server); `ZUNIONSTORE`
+p50 ≤360 ms (≥1.3× and within ~1.3× the faster C server); `LIMIT` shall exit
+early without materialising the result; the 10-member controls shall be
+unchanged; set-store variants shall not regress; weights, `AGGREGATE MIN/MAX/
+SUM`, NaN/infinite scores, missing/empty keys, destination-as-source, TTL/
+WATCH/journal/rewrite and accounting tests shall pass; no dependency shall be
+added; and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -5759,8 +6053,9 @@ lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the
 existing stream map, 4.43 uses geohash score ranges, 4.44 uses the existing
 set/zset members, 4.45 uses the existing lazy expire path, 4.46 slices the
 existing source order, 4.47 mutates the existing HLL registers, 4.48 mutates the
-existing stream groups, 4.49 pops from the ordered zset index, and 4.50 seeks the
-same index and adds no storage. The rest use
+existing stream groups, 4.49 pops from the ordered zset index, 4.50 seeks the
+same index and adds no storage, and 4.51 borrows the existing zset containers and
+builds the destination once. The rest use
 the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
 lands as its own PR with AC5 plus the protected gates; no combined integration
 branch.
@@ -5978,7 +6273,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   a mis-normalized negative BYTE/BIT range or an MSB/LSB mask error silently
   returns wrong bits. The popcount must count all bits in a word regardless of
   byte order but mask partial head/tail bytes in Redis's bit order; offset and
-  512 MiB limits, TTL/WATCH/journal/rewrite and accounting stay unchanged (AC39).
+  512 MiB limits, TTL/WATCH/journal/rewrite and accounting stay unchanged. The
+  `BITFIELD` write form additionally must reserve the highest write offset,
+  honor `OVERFLOW WRAP`/`SAT`/`FAIL`, return the same old/new values, and leave
+  the read-only path copy-free (AC39).
 - **Rank-index risk (4.38):** a score update moves a member between blocks; a
   stale cumulative count returns a wrong rank silently. Block split/merge,
   duplicate-score tie-break, `ZREM` count maintenance, negative/reverse ranges
@@ -6047,6 +6345,12 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   today's results; the span count must equal a full scan for every bound form;
   store forms must keep expiry, accounting and destination removal; `ZSetPack`
   must not be reordered (AC52).
+- **Zset-algebra risk (4.51):** source order, weights and `AGGREGATE MIN/MAX/SUM`
+  with NaN/±infinity must produce today's scores; a destination that is also a
+  source must be read before the write borrow; `LIMIT` must not change the
+  returned count; empty/missing keys, wrong type, store TTL clearing, accounting,
+  `ZSetPack` conversion and WATCH/journal/rewrite must stay exact, and the count
+  path must not allocate a destination (AC53).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -6128,6 +6432,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Keeping the `XGROUP CREATE` stream clone | It deep-copies every entry and folds the payload for a one-struct insert; the other XGROUP subcommands already mutate in place (4.48). |
 | Keeping the full clone/sort for `ZPOPMIN`/`ZPOPMAX` | The measured 100k pop is 373–974× behind; the ordered index already gives the min/max element, so no sort is needed (4.49). |
 | Sorting the whole zset to answer a bounded `BYLEX`/`ZCOUNT` query | A seek plus rank subtraction is O(log n); the measured 10-element lex range pays 56–70 ms for an O(n log n) sort and a narrow count scans all 100k members (4.50). Caching the sorted snapshot or adding a second lex index would duplicate storage and invalidation work for the same query. |
+| Copying every source before a zset algebra or cardinality query | The measured 100k `ZINTERCARD` pays 220 ms for two owned maps plus a `BTreeSet`, while probing the smallest borrowed source and counting matches is O(smallest × keys) with no destination; the store forms already build one destination and re-sort a materialised map a second time (4.51). A borrowed `HashSet` of the smaller source only trades one allocation for another and was rejected. |
 | Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
 
 ## 8. Acceptance criteria (EARS)
@@ -6515,6 +6820,17 @@ samples retained.
   edges, store forms, pack thresholds, TTL/WATCH/journal/rewrite and accounting
   tests shall pass; no dependency shall be added; and both protected gates shall
   pass on the exact head.
+- **AC53 (borrowed-source zset algebra and cardinality, only if 4.51 is
+  implemented).** At 100,000 members, `ZINTERCARD` shall have p50 ≤30 ms and p99
+  ≤60 ms (≥7× faster than the measured 220.6 ms and within ~2× the faster C server);
+  `ZINTERSTORE` and `ZDIFFSTORE` shall have p50 ≤130 ms and p99 ≤200 ms (≥2.3×
+  faster than 306.6/331.3 ms and within ~2.1× the faster C server);
+  `ZUNIONSTORE` p50 ≤360 ms; `LIMIT` shall exit early without materialising the
+  result; the 10-member controls and set-store variants shall be unchanged;
+  weights, `AGGREGATE MIN/MAX/SUM`, NaN/infinite scores, missing/empty keys,
+  destination-as-source, TTL/WATCH/journal/rewrite and accounting tests shall
+  pass; no dependency shall be added; and both protected gates shall pass on the
+  exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -6845,6 +7161,42 @@ separate roadmap.
   0.21–0.42/0.07–0.34; `ZCOUNT` 1.07–2.45 versus 0.14–0.78/0.18–1.20; full
   100k lex reply 137.9/159.3/144.8 versus 85.1–91.0 and 99.2–110.5; 10-member
   controls 0.25–0.47 versus 0.09–0.33/0.17–0.22. Raw JSON retained (untracked).
+- Stream consumer-group cohort (section 3.39, measured null): one 10,000-entry
+  stream with one 16-byte field, one group owning all 10,000 entries, 20
+  repetitions per row (40 fresh groups for the `NEW` rows), three rotations.
+  History 100 0.61/1.26/0.91 ms versus Redis 1.14/0.88/1.50 and Valkey
+  0.50/0.72/0.62; history 1000 5.90/7.68/7.00 versus 7.21/7.40/11.10 and
+  4.76/5.80/6.64; new 100 0.84/1.14/0.92 versus 0.55/0.57/1.32 and
+  0.69/0.75/0.62; new 1000 7.96/8.99/9.36 versus 4.73/5.19/7.51 and
+  6.55/5.84/6.43; `XPENDING` extended 1000 3.57/4.36/3.25 versus 2.55/2.93/3.93
+  and 2.96/3.72/4.49; `XAUTOCLAIM` 1000 9.84/10.54/9.05 versus 4.67/4.44/5.66
+  and 6.13/8.16/7.50; `XCLAIM` 100 at parity; `XLEN`/`XADD` controls 0.18–0.43/
+  0.19–0.39. Preload (10,000 `XADD`) took 16.2 s versus 0.1–0.2 s, the 4.42
+  clone path. Raw JSON retained (untracked).
+- BITFIELD cohort (section 3.40, extending 4.37): one 16 MB `0x01` value, one
+  1 MB value and a 64 B control, 20 repetitions, three rotations. 16 MB
+  `BITFIELD SET u8` 4.38/6.09/4.56 ms versus Redis 0.24/0.06/0.09 and Valkey
+  0.42/0.09/0.07; `INCRBY u8` 4.69/3.83/4.68 versus 0.24/0.08/0.12 and
+  0.55/0.11/0.07; `SET u63` 4.38/4.71/4.39 versus 0.11/0.11/0.30 and
+  0.12/0.19/0.10; 100× `INCRBY u8` 3.83/4.89/4.58 versus 0.31/0.24/0.41 and
+  0.31/0.54/0.25; `BITFIELD_RO GET` 0.21/0.47/0.33 versus 0.28/0.25/0.14 and
+  0.20/0.09/0.14; 1 MB `SET u8` 0.14/0.59/0.51 versus 0.34/0.40/0.13 and
+  0.17/0.63/0.08; 64 B control 0.06/0.30/0.19. The same pass re-measured
+  `SETBIT` 4.08/4.37/4.96 versus 0.07/0.38/0.26 and 0.15/0.27/0.06, `GETBIT`,
+  `GETRANGE` and `BITFIELD` all-`GET` at the floor. Raw JSON retained
+  (untracked).
+- Zset-algebra cohort (section 3.41, candidate 4.51): two 100,000-member
+  collections (`a`=`m000000`–`m099999` score 1, `b`=`m050000`–`m149999` score 2),
+  10 repetitions, three rotations, 10-member controls. `ZINTERCARD`
+  222.1/215.6/220.6 ms versus Redis 41.3/34.7/40.4 and Valkey 17.1/15.1/23.4;
+  `ZINTERSTORE` 305.1/306.6/373.1 versus 125.5/92.5/110.5 and 65.3/57.3/61.6;
+  `ZDIFFSTORE` 331.3/306.1/345.7 versus 99.8/102.0/103.3 and 61.4/59.6/66.0;
+  `ZUNIONSTORE` 458.0/477.6/491.4 versus 356.0/373.3/366.6 and
+  280.3/286.2/268.3; `SINTERSTORE` 44.3/42.0/50.5 versus 66.9/57.2/67.3 and
+  36.5/29.4/39.4; `SUNIONSTORE` 65.8/60.3/77.5; `SDIFFSTORE` 38.1/39.6/52.1;
+  `SINTERCARD` 52.6/40.8/41.5 versus 39.0/29.6/29.2 and 11.4/15.0/13.6;
+  10-member controls 0.16–0.25. Preload (four 100k collections) took 16.0 s
+  versus 1.5–1.7 s, the 4.35 write path. Raw JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -7337,3 +7689,22 @@ separate roadmap.
   covers a 100k set only, one connection, and no `ZRANGESTORE`/`ZREMRANGEBY*`
   rows, slow readers or fragmentation; the full 100k reply is reply-bound and
   its 1.4–1.7× is reported as that, not as a seek cost.
+- The stream consumer-group cohort (section 3.39) uses one 16-byte field per
+  entry, one group and one owning consumer, and a 10k-entry PEL on one
+  connection. It does not measure multi-field or large-field entries (where the
+  per-entry clone share could grow), 100k-entry PELs, many consumers/groups,
+  blocking `XREADGROUP`, or `XREAD`/`XRANGE` reply construction. The 1.3–2.1×
+  residuals are single-cohort observations on a shared host, not a candidate.
+- The BITFIELD cohort (section 3.40) covers one 16 MB and one 1 MB value on one
+  connection, with u8/u63 widths, `WRAP` overflow and no `FAIL`/`SAT` or signed
+  widths; it does not measure multi-key `BITFIELD`, values near the 512 MiB cap,
+  or a value that grows past its current end under concurrent readers. The write
+  timing is dominated by two full-value copies and scales with value size, which
+  the 1 MB and 64 B rows confirm; it is not a per-subcommand claim.
+- The zset-algebra cohort (section 3.41) uses two 100k zsets with disjoint-by-half
+  membership, integer scores and default weights/`SUM`; it does not measure
+  `WEIGHTS`, `AGGREGATE MIN/MAX`, NaN/±infinity scores, more than two sources,
+  destination-as-source, `ZSetPack` sources or `SET` inputs, which are
+  implementation obligations for 4.51 rather than measured claims. It also
+  re-confirms that the set-store variants lead; the `SCARD` control's 43.5 ms is
+  the admitted 4.40 cardinality path, not a floor.
