@@ -2,8 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); every other runtime item
-here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33,
-4.35–4.47).**
+here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.48).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -164,7 +163,9 @@ and 10k repeated counts **2.66 vs 0.033–0.036 s** because every command
 decodes/encodes 16 KB of registers and nothing is cached; 4.47 keeps them in
 place and caches the count. Bitmaps also hide a scan: a not-found `BITPOS 0` on
 16 MB is **201.6 vs 5.1 ms** because `find_bit` visits every byte and bit; 4.37
-is extended with a `u64` bit scan. Under
+is extended with a `u64` bit scan. Streams have one more clone on a control path:
+`XGROUP CREATE` on a 5k stream is **8.26 vs 0.08–0.09 ms** (88–99×) because it
+deep-clones every entry; 4.48 inserts the group in place. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1080,7 +1081,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-six observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Twenty-seven observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1244,6 +1245,11 @@ rest are still true even though every row now leads:
     ms** versus 5.1 ms (39–44×) because it scans byte by byte and bit by bit,
     while a first-bit hit is at the floor; `BITCOUNT` is the previously admitted
     4.37 row (section 3.33, extending 4.37).
+27. **Stream group creation.** `XGROUP CREATE` deep-clones the whole stream, so
+    on a 5k-entry stream it costs **8.26 ms** versus 0.08–0.09 ms (88–99×) and
+    scales with length (~165 ms at 100k by extrapolation); the other XGROUP
+    subcommands already mutate in place and are at parity (section 3.34,
+    candidate 4.48).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1422,6 +1428,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
+| Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1855,6 +1862,7 @@ for a production claim.
 | Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
 | HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
 | Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
+| Stream `XGROUP CREATE` | insert one group in the stream dict; O(1) | same | deep-clone the whole stream, fold payload, replace via `put_stream` | **Adapt:** 4.48 in-place group insert; measured 5k 8.26 vs 0.083/0.094 ms (88–99×), other XGROUP ops at parity (3.34, AC50) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | pre-fix: rebuild full-length `Vec` and copy twice; now mutates the entry in place (#258) | **Done:** 4.34 in-place mutation; measured 32 MB post-fix `APPEND` 0.131 vs 0.142/0.219 ms and `SETRANGE` 0.185 vs 0.222/0.289 (3.18, AC36) |
@@ -3203,6 +3211,43 @@ complement, with big-endian byte order and masked head/tail words; keep the
 BYTE/BIT range rules and the not-found return values. This is the same safe
 `u64` loop as the `BITCOUNT` change.
 
+### 3.34 Stream group creation (XGROUP CREATE)
+
+- **Redis 8.10.2 and Valkey 9.1.2** add a consumer group by inserting one entry
+  in the stream's group dictionary; the stream's entries are untouched and the
+  cost is O(1) independent of stream length
+  ([`redis t_stream.c#L3553`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L3553),
+  [`#L3667`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L3667);
+  [`valkey t_stream.c#L2582`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L2582)).
+- **Rillcache** deep-clones the **entire `Stream`** for `XGROUP CREATE`
+  (`e.stream.clone()`), inserts the group into the clone, folds
+  `payload_bytes()` over every entry and replaces the key through `put_stream`.
+  The other XGROUP subcommands (`SETID`, `DESTROY`, `DELCONSUMER`,
+  `CREATECONSUMER`) already mutate the group maps in place
+  ([`streams.rs`](../../src/engine/streams.rs#L1454),
+  [`#L1492`](../../src/engine/streams.rs#L1492)).
+- **Measured (2026-11-12).** A 5,000-entry stream plus a 10-entry control, 20
+  unique groups per stream, three rotations:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `XGROUP CREATE` 5k stream | **8.26 ms** | 0.083 ms | 0.094 ms |
+  | `XGROUP CREATE` 10-entry stream | 0.338 | 0.120 | 0.097 |
+  | `XGROUP CREATECONSUMER` 5k | 0.123 | 0.227 | 0.127 |
+  | `XGROUP SETID` 5k | 0.099 | 0.283 | 0.099 |
+  | `XGROUP DESTROY` 5k | 0.109 | 0.097 | 0.109 |
+  | 10-entry `CREATECONSUMER` | 0.169 | 0.086 | 0.069 |
+
+  `XGROUP CREATE` is **88–99×** slower and grows linearly with stream length
+  (~165 ms at 100k by extrapolation), while every other XGROUP subcommand is at
+  parity because it already mutates in place. Candidate 4.48.
+
+**Verdict: adapt an in-place group insert (4.48).** Borrow `Entry.stream`
+mutably, insert the group (or create an empty stream for `MKSTREAM`), call
+`touch`, and leave `payload_len` unchanged because `payload_bytes` counts only
+entries. Keep `BUSYGROUP`, explicit-ID/`$` semantics, PEL/consumer state,
+TTL/WATCH/journal/rewrite and the other subcommands as they are.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3255,7 +3300,8 @@ for the measured 50–66× loss in section 3.30. Section 3.31 extends 4.29 to
 `HKEYS`/`HVALS` and 4.31 to `KEYS`/`RANDOMKEY` at 100k. 4.47 is the HyperLogLog
 in-place-register and cached-count candidate for the measured 4× add and 74–80×
 count throughput losses in section 3.32. Section 3.33 extends 4.37 with a
-word-wise `BITPOS` scan.
+word-wise `BITPOS` scan. 4.48 is the in-place `XGROUP CREATE` candidate for the
+measured 88–99× group-creation loss in section 3.34.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -3834,6 +3880,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    `BITCOUNT`, and a 64 B control on a 16 MB bitmap. Extends 4.37 on a clean
    runner; the 2026-11-12 local cohort in section 3.33 already measures 201.6 ms
    versus 5.1 ms.
+26. **Stream groups:** `XGROUP CREATE` on a 5k-entry stream and a 10-entry
+   control, plus `CREATECONSUMER`/`SETID`/`DESTROY` controls. Confirms 4.48 on a
+   clean runner; the 2026-11-12 local cohort in section 3.34 already measures
+   8.26 ms versus 0.08–0.09 ms.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3841,7 +3891,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty-five rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-six rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4310,33 +4360,35 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.45 bounded expiry | `KEYS`/`RANDOMKEY`/`DBSIZE` (`keyspace.rs#L183`), `MGET`/`MSET`/`MSETEX` (`multikey.rs#L160`), `SCAN` (`scan.rs#L122`), `Data::reap`/`reserve` (`data.rs#L599`, `#L646`) | expired values unreadable; DBSIZE semantics; admission bound; TTL/WATCH/notifications | 30k-expiry wave: `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`, lazy `GET` | small |
 | 4.46 nosort slice | `sort`/`source_values` (`sort.rs#L120`, `#L228`), `ITEMS`/limit/STORE | source order for set/zset; offset/count; STORE; missing key; no reply change | 100k `BY nosort LIMIT`, controls, other SORT rows | small |
 | 4.47 HLL in place | `pfadd`/`pfcount`/`pfmerge` (`hll.rs#L240`, `#L285`, `#L313`), `Hll`/`inspect`/`serialize`, `Data::put` | cache invalidation; exact↔dense; count accuracy; serialization/rewrite/replay | 100k pipelined `PFADD`, 10k `PFCOUNT`, controls | small |
+| 4.48 xgroup create | `xgroup` (`streams.rs#L1454`, `#L1492`), `Stream.groups`, `put_stream` | BUSYGROUP/MKSTREAM/ID; payload unchanged; PEL/consumers; TTL/WATCH/journal/rewrite | 5k `XGROUP CREATE`, 10-entry control, other XGROUP ops | small |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
-for the measured synchronous `UNLINK`/`ASYNC` drop. 4.40, 4.41, 4.44, 4.46 and
-4.47 are the smallest, highest-certainty fixes (O(1) counts/membership, in-place
-list seek, per-member probes, direct nosort slice, in-place HLL + cached count)
-and can land immediately. 4.42 is the stream sibling of 4.35's in-place write and
-shares the delta-accounting shape. 4.35 is next: every collection write currently
-clones the collection, the gaps are 3.5–262×, and it reuses 4.34's
-admit-then-mutate shape. 4.37 is small and shares 4.34's in-place string path: it
-removes the two copies in `SETBIT` and the byte loop in `BITCOUNT` (5–17×). 4.36
-follows, first as a no-copy reservoir slice and then the dense index; its 100k
-gaps are 35–298×. 4.30, 4.38 and 4.43 are the largest measured read-side ratios
-(378–927× and 10–53×) and should share one ordered structure: 4.30 covers
-point/score/start-0 reads, 4.38 the rank-select, and 4.43 the geohash cell
-ranges. 4.39 is a contract/reliability fix on the pub/sub path already admitted
-as 4.24 and should land with them. 4.34 (landed in #258) removed two full-value copies per
-`APPEND`/`SETRANGE` and post-fix measures 0.13–0.19 ms at 32 MB. 4.32 follows as the structural memory and CPU fix
-(142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list direction.
-4.22/4.24 come last because they touch every asynchronous client path and carry
-the highest ordering risk (4.39 rides with them). 4.31 is the largest per-call
-ratio in the record but touches the keyspace, every collection type and the
-router cursor, so it follows the journal slices and the ordered-structure
-decision. 4.23 follows the existing bounded slices. 4.20 stays conditional on
-4.19; 4.18 stays deferred.
+for the measured synchronous `UNLINK`/`ASYNC` drop. 4.40, 4.41, 4.44, 4.46, 4.47
+and 4.48 are the smallest, highest-certainty fixes (O(1) counts/membership,
+in-place list seek, per-member probes, direct nosort slice, in-place HLL with a
+cached count, in-place group creation) and can land immediately. 4.42 is the
+stream sibling of 4.35's in-place write and shares the delta-accounting shape.
+4.35 is next: every collection write currently clones the collection, the gaps
+are 3.5–262×, and it reuses 4.34's admit-then-mutate shape. 4.37 is small and
+shares 4.34's in-place string path: it removes the two copies in `SETBIT` and
+the byte loop in `BITCOUNT`/`BITPOS` (5–44×). 4.36 follows, first as a no-copy
+reservoir slice and then the dense index; its 100k gaps are 35–298×. 4.30, 4.38
+and 4.43 are the largest measured read-side ratios (378–927× and 10–53×) and
+should share one ordered structure: 4.30 covers point/score/start-0 reads, 4.38
+the rank-select, and 4.43 the geohash cell ranges. 4.39 is a
+contract/reliability fix on the pub/sub path already admitted as 4.24 and should
+land with them. 4.34 (landed in #258) removed two full-value copies per
+`APPEND`/`SETRANGE` and post-fix measures 0.13–0.19 ms at 32 MB. 4.32 follows as
+the structural memory and CPU fix (142–143 → target ≤24 B/element) and may reuse
+4.31's ordered-list direction. 4.22/4.24 come last because they touch every
+asynchronous client path and carry the highest ordering risk (4.39 rides with
+them). 4.31 is the largest per-call ratio in the record but touches the keyspace,
+every collection type and the router cursor, so it follows the journal slices and
+the ordered-structure decision. 4.23 follows the existing bounded slices. 4.20
+stays conditional on 4.19; 4.18 stays deferred.
 
 ### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
 
@@ -5274,6 +5326,44 @@ invalidated by add/merge and exact↔dense conversion; rewrite/replay/restore an
 TTL tests shall pass; no dependency shall be added; and both protected gates
 shall pass on the exact head.
 
+### 4.48 In-place stream group creation (candidate; admission measured)
+
+**Mechanism.** For `XGROUP CREATE`, borrow `Entry.stream` mutably, insert the
+`ConsumerGroup` (or create an empty stream for `MKSTREAM`), and call `touch`;
+do not clone the stream, fold `payload_bytes`, or replace through `put_stream`.
+`payload_len` stays unchanged because it counts only entries, and the other
+XGROUP subcommands already mutate in place.
+
+**Prediction.** 5k `XGROUP CREATE` falls from **8.26 ms to ≤0.2 ms**, the
+10-entry control is unchanged, and no read, PEL or other XGROUP path changes.
+
+**Admission evidence (2026-11-12, section 3.34).** A 5,000-entry stream plus a
+10-entry control, 20 unique groups each, three rotations: `XGROUP CREATE`
+8.26 ms (7.47/13.1/8.26) versus Redis 0.083 (0.07/0.10/0.08) and Valkey 0.094
+(0.09/0.13/0.09); 10-entry control 0.338 versus 0.120/0.097; `CREATECONSUMER`
+0.123 versus 0.227/0.127; `SETID` 0.099 versus 0.283/0.099; `DESTROY` 0.109
+versus 0.097/0.109; 10-entry `CREATECONSUMER` 0.169 versus 0.086/0.069.
+
+**Risks and obligations.** `BUSYGROUP`, explicit-ID/`$` `last_delivered`,
+`MKSTREAM` creating an empty stream, PEL/consumer state, unchanged payload
+accounting, TTL/WATCH/journal/rewrite and notification order must all stay
+exact; the in-place insert must not leave a partially created group on OOM (the
+group maps are small and the borrow is already admitted).
+
+**Rejected options.** Keeping the clone and only skipping the payload fold
+(still O(n) copies), and a separate group registry outside the stream (breaks
+range/read/rewrite consistency).
+
+**Rejection condition.** Any group, PEL, `MKSTREAM` or `BUSYGROUP` semantics
+differ, the controls regress, or no gain above the spread.
+
+**Acceptance (AC50).** On a 5,000-entry stream, `XGROUP CREATE` shall have p50
+≤0.2 ms and p99 ≤2 ms (≥40× faster than the measured 8.26 ms and within ~2.5×
+the faster C server); the 10-entry control shall be unchanged;
+`BUSYGROUP`/`MKSTREAM`/explicit-ID/`$`/PEL/consumer tests, journal/rewrite/replay
+and TTL shall pass; no dependency shall be added; and both protected gates shall
+pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -5285,10 +5375,10 @@ the existing channels and `sync_channel`, 4.40 uses the existing containers'
 lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the
 existing stream map, 4.43 uses geohash score ranges, 4.44 uses the existing
 set/zset members, 4.45 uses the existing lazy expire path, 4.46 slices the
-existing source order, and 4.47 mutates the existing HLL registers. The rest use
-the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
-lands as its own PR with AC5 plus the protected gates; no combined integration
-branch.
+existing source order, 4.47 mutates the existing HLL registers, and 4.48 mutates
+the existing stream groups. The rest use the existing `std` I/O, parser and
+in-repo journal/crypto code. Each candidate lands as its own PR with AC5 plus the
+protected gates; no combined integration branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -5342,7 +5432,7 @@ existing collection containers in place; 4.36 uses `Vec` plus
 existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
 and probes; 4.41 walks the existing list chunks; 4.42 mutates the existing stream map;
 4.43 uses geohash score ranges; 4.44 uses the existing set/zset members; 4.45 uses the existing lazy expire path;
-4.46 slices the existing source order; 4.47 mutates the existing HLL registers.
+4.46 slices the existing source order; 4.47 mutates the existing HLL registers; 4.48 mutates the existing stream groups.
 None adds a crate, build script,
 allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
@@ -5559,6 +5649,10 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   numbering, masked head/tail words, BYTE/BIT ranges and the not-found return
   values (`len*8` for bit 0 without an explicit end, `-1` otherwise); a
   first-bit hit must stay fast (AC39).
+- **XGROUP CREATE risk (4.48):** the in-place insert must preserve `BUSYGROUP`,
+  `MKSTREAM`, explicit-ID/`$`, PEL/consumer state and notification/journal order,
+  with unchanged payload accounting; the 10-entry control must stay unchanged
+  (AC50).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -5637,6 +5731,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Materializing the whole source for `SORT ... BY nosort LIMIT` | The measured 7.96 vs 0.12–0.16 ms is a full copy of 100k values for a 10-element slice; the other SORT rows are already 0.9–1.5× (4.46). |
 | Keeping per-call sorts for `HKEYS`/`HVALS`/`KEYS` | At 100k the hash listings are 3.5–6.2× and `KEYS` 2.1–4.3× behind; 4.29's ordered hash and 4.31's key index remove the sort without changing reply contents (3.31). |
 | A count cache outside the HLL payload | A separate counter diverges from rewrite/replay/restore and accounting; the cache belongs in the serialized header (4.47). |
+| Keeping the `XGROUP CREATE` stream clone | It deep-copies every entry and folds the payload for a one-struct insert; the other XGROUP subcommands already mutate in place (4.48). |
 | Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
 
 ## 8. Acceptance criteria (EARS)
@@ -5997,6 +6092,12 @@ samples retained.
   add/merge and exact↔dense conversion; rewrite/replay/restore and TTL tests shall
   pass; no dependency shall be added; and both protected gates shall pass on the
   exact head.
+- **AC50 (in-place stream group creation, only if 4.48 is implemented).** On a
+  5,000-entry stream, `XGROUP CREATE` shall have p50 ≤0.2 ms and p99 ≤2 ms (≥40×
+  faster than the measured 8.26 ms and within ~2.5× the faster C server); the
+  10-entry control shall be unchanged; `BUSYGROUP`, `MKSTREAM`, explicit-ID/`$`,
+  PEL/consumer, journal/rewrite/replay and TTL tests shall pass; no dependency
+  shall be added; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -6285,6 +6386,13 @@ separate roadmap.
   209.4 versus 4.79/5.96; `BITPOS 1` 0.12 versus 0.60/0.09; `BITCOUNT` 23.46
   versus 4.04/4.78; 64 B `BITPOS 0` 0.32 versus 0.55/0.10. Raw JSON retained
   (untracked).
+- Stream-group cohort (section 3.34, candidate 4.48): a 5,000-entry stream plus
+  a 10-entry control, 20 unique groups each, three rotations. `XGROUP CREATE`
+  8.26 ms (7.47/13.1/8.26) versus Redis 0.083 (0.07/0.10/0.08) and Valkey 0.094
+  (0.09/0.13/0.09); 10-entry control 0.338 versus 0.120/0.097;
+  `CREATECONSUMER` 0.123 versus 0.227/0.127; `SETID` 0.099 versus 0.283/0.099;
+  `DESTROY` 0.109 versus 0.097/0.109; 10-entry `CREATECONSUMER` 0.169 versus
+  0.086/0.069. Raw JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -6749,3 +6857,8 @@ separate roadmap.
 - The BITPOS cohort (section 3.33) measures a dense 16 MB bitmap of `0xff`; it
   does not measure sparse bitmaps (early hits), BYTE/BIT sub-ranges with
   offsets, or `BITFIELD`. Those are implementation-PR evidence under AC39.
+- The stream-group cohort (section 3.34) measures one 5k-entry stream and a
+  10-entry control; it does not measure 100k-entry streams, `MKSTREAM`,
+  `BUSYGROUP`, PEL/consumer interactions or `XREADGROUP` after group creation.
+  Those are implementation-PR evidence under AC50; the 100k extrapolation is
+  linear from the 5k row.
