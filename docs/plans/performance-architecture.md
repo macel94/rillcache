@@ -189,6 +189,9 @@ rows are competitive; 4.46 slices the source directly. Large listings repeat
 the pattern at 100k: `HGETALL` is **132.3 vs 25.7–37.8 ms**, `HKEYS`/`HVALS`
 98–102 vs 15.8–19.7, `KEYS` 91 vs 21–43 and `RANDOMKEY` 0.52 vs 0.21–0.29
 because each sorts a fresh snapshot; 4.29 and 4.31 are extended to cover them.
+The set sibling is the counter-example: `SMEMBERS` at 100k costs **84.8 vs
+88.7/86.4 ms** (lead) and is at parity at 10k because the 1.5 MB reply hides the
+collect+sort, so 4.29 stays scoped to hashes.
 HyperLogLog is the remaining CPU gap: 100k pipelined adds cost **1.70 vs 0.39–0.41 s**
 and 10k repeated counts **2.66 vs 0.033–0.036 s** because every command
 decodes/encodes 16 KB of registers and nothing is cached; 4.47 keeps them in
@@ -1122,7 +1125,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Thirty-seven observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty-eight observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1345,6 +1348,11 @@ rest are still true even though every row now leads:
     (59–118×), while the scan-bound middle insert and tail removal are 4.9–6.0×
     and 2.9–3.0×; every form flattens the whole list first; 10-element controls
     are at the floor (section 3.45, candidate 4.54).
+38. **Set membership reply.** `SMEMBERS` on sets of 1k/10k/100k 8-byte members
+    is at parity or **leads** (100k 84.75 ms versus 88.71/86.37; 10k 9.95 versus
+    9.33/9.58), despite the same collect+sort+encode shape as the hash listings,
+    because the 1.5 MB reply dominates; this bounds 4.29 and keeps it scoped to
+    hashes (section 3.46, measured lead/null).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1542,6 +1550,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k 25.5 ms vs 0.40/0.28 (64–91×); `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×); same-key rotate 20.5 vs 0.26/0.21; 10-element controls at the floor | 4.53, admitted (extends 4.35/4.41) | AC55 | none |
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
 | List element edits | latency, storage | **measured**: 200k `LINSERT` head 19.1 ms vs 0.09/0.24 (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), `LINSERT` middle 21.0 vs 3.51/4.33, `LREM` tail 21.1 vs 6.97/7.28, `LPOS RANK -1` 1.59 vs 0.16/0.27; 10-element controls at the floor | 4.54, admitted (extends 4.35/4.41) | AC56 | none |
+| Set membership reply | replies | **measured lead/null**: `SMEMBERS` 100k 84.75 ms vs 88.71/86.37, 10k 9.95 vs 9.33/9.58, 1k 0.97 vs 1.11/1.24, 10-member control at the floor; the 1.5 MB reply hides the collect+sort | no candidate; keep 4.29 scoped to hashes | n/a | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1963,6 +1972,7 @@ for a production claim.
 | List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
 | Two-key moves | `setTypeRemove`/`setTypeAdd`; list pop/push on two borrowed containers | same | `owned_set` clones both sets; `list_values` flattens and clones both lists; both re-encode | **Adapt:** 4.53 in-place remove/insert and chunk pop/push, same-key rotate in place; measured `SMOVE` 100k 25.5 vs 0.40/0.28 ms (64–91×), `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×), rotate 20.5 vs 0.26/0.21 (3.43, AC55) |
 | List element edits | quicklist node insert/replace/unlink; split/merge at listpack bounds | same | flatten and clone the whole list, edit the `VecDeque`, re-encode | **Adapt:** 4.54 chunk walk and in-place edit, reusing 4.41/4.35; measured 200k `LINSERT` head 19.1 vs 0.09/0.24 ms (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), middle insert/tail removal 4.9–6.0×/2.9–3.0× (3.45, AC56) |
+| Set membership reply | dict/intset/listpack iteration, unspecified order | same | collect every member into a `Vec`, sort, encode | **Keep:** measured `SMEMBERS` 100k 84.75 vs 88.71/86.37 ms (lead), 10k 9.95 vs 9.33/9.58, 1k within spread; the reply hides the collect+sort, so do not extend 4.29 to sets (3.46) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
@@ -3876,6 +3886,39 @@ the intersection is only needed for the store/reply forms.
 index, edit one element or node, and split/merge only at chunk bounds; reuse
 4.41's chunk traversal and 4.35's delta accounting instead of flattening.
 
+### 3.46 Set membership reply (SMEMBERS)
+
+- **Redis 8.10.2 and Valkey 9.1.2** iterate the set's dict/intset/listpack and
+  append each member to the reply; the order is unspecified. Rillcache's
+  `set_read` also collects every member through `Collection::set_items`, sorts the
+  `Vec`, and encodes each one
+  ([`collections.rs`](../../src/engine/collections.rs#L25),
+  [`data.rs#L49`](../../src/engine/data.rs#L49)), i.e. the same collect+sort+encode
+  shape as the hash listings in section 3.31.
+- **Measured (2026-11-13).** Sets of 1,000, 10,000 and 100,000 8-byte members, 20
+  repetitions, three rotations:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SMEMBERS` 100k | 84.75 ms | 88.71 ms | 86.37 ms |
+  | `SMEMBERS` 10k | 9.95 | 9.33 | 9.58 |
+  | `SMEMBERS` 1k | 0.97 | 1.11 | 1.24 |
+  | `SMEMBERS` 10-member control | 0.10 | 0.33 | 0.33 |
+  | `EXISTS`/`PING` controls | 0.08 | 0.33/0.49 | 0.09/0.20 |
+
+  At 100k the reply (~1.5 MB) dominates all three servers and Rill leads by 2–4%;
+  at 10k the collect+sort is within 4–7% of parity and at 1k it is inside the
+  host spread. The 10-member control is at the floor.
+- **Why this matters for 4.29.** The hash candidate's 100k `HGETALL` costs
+  132 ms for a roughly twice-larger reply, while the same collect+sort shape on
+  sets costs 85 ms. That bounds what a sort-and-encode-only path can achieve on
+  this host; the hash gap is not explained by sorting alone, and 4.29 must not be
+  generalized to `SMEMBERS`.
+
+**Verdict: measured lead/parity; no candidate.** Keep the deterministic set
+order and do not extend 4.29 to `SMEMBERS`; the hash path stays the scoped
+target.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -4577,6 +4620,10 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    (tail), `LPOS RANK -1` and 10-element controls on a 200k list. Confirms 4.54
    on a clean runner; the 2026-11-13 local cohort in section 3.45 already
    measures 19.1/16.5/21.0/21.1/1.59 ms versus 0.09–7.28.
+38. **Set membership reply:** `SMEMBERS` on 1k/10k/100k sets plus a 10-member
+   control. Confirms the measured lead/null in section 3.46 on a clean runner;
+   the 2026-11-13 local cohort already measures 84.75 ms at 100k versus
+   88.71/86.37 and parity at 10k.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4584,7 +4631,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all thirty-seven rows are complete for all three servers;
+runners, not a shared k3s host; all thirty-eight rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -5140,7 +5187,9 @@ must preserve `HSET`/`HDEL`/`HGET` semantics and measure the write cost.
 `HVALS` 101.6 versus 19.7/17.9 (3.5–6.2×), while `HMGET` and the 10-member
 controls stay at the floor. The same collect+sort+encode path covers all three
 commands, so the candidate and AC31 must include `HKEYS`/`HVALS` at 100k, not
-only the original 10k `HGETALL`.
+only the original 10k `HGETALL`. Do not extend it to `SMEMBERS`: the same shape
+measured a lead/parity at 100k in section 3.46, so the hash answer must come from
+a measured hash-specific change, not from removing the collect+sort everywhere.
 
 **Rejection condition.** No gain above the spread; any order change without an
 explicit documented decision and updated tests; any gate row loss.
@@ -7714,6 +7763,13 @@ separate roadmap.
   6.57/8.15/7.28; `LPOS RANK -1` 1.87/1.59/1.31 versus 0.09/0.30/0.16 and
   0.27/0.08/0.36; 10-element controls 0.20–0.61. Preload 3.9 s versus 0.3–0.5 s,
   the 4.35 write path. Raw JSON retained (untracked).
+- SMEMBERS cohort (section 3.46, measured lead/null): sets of 1,000, 10,000 and
+  100,000 8-byte members, 20 repetitions, three rotations. `SMEMBERS` 100k
+  84.75/82.70/103.65 ms versus Redis 83.36/88.71/96.22 and Valkey
+  83.05/88.66/86.37; 10k 9.95/9.28/12.86 versus 9.60/9.33/8.52 and
+  8.79/9.60/9.58; 1k 1.47/0.97/0.91 versus 1.56/1.11/0.79 and
+  1.24/1.40/0.89; 10-member control 0.08–0.34. Preload 1.9 s versus 0.3–0.4 s,
+  the 4.35 write path. Raw JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -8248,3 +8304,10 @@ separate roadmap.
   boundary, `ListPack`/`ListQuick` threshold transitions, or blocking reads
   concurrent with edits. The middle-insert and tail-removal rows are scan-bound
   on all three servers, so their ratios understate the rebuild share.
+- The SMEMBERS cohort (section 3.46) uses one connection, 8-byte members and no
+  pipelining; the 100k row is reply-bound on a loopback socket, so it measures
+  the full collect+sort+encode+write path, not the sort alone. It does not
+  measure a slow reader with `CLIENT PAUSE`/backpressure, a set that changes
+  during the reply, `SetInt`/`SetPack` mixed encodings, or a 1M-member set; the
+  conclusion is scoped to "do not extend 4.29 to sets", not a per-byte claim
+  across sizes.
