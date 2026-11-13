@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; every other runtime item here is historical or explicitly
-gated (4.15, 4.20–4.27, 4.29–4.35).**
+gated (4.15, 4.20–4.27, 4.29–4.36).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -123,7 +123,11 @@ and 4.33 (deferred drop) cover those. `APPEND`/`SETRANGE` on a 32 MB value cost
 call, admitting 4.34 (in-place mutation). Collection writes are the widest gap:
 one `HSET` into a 10k hash is **6.45 ms versus 0.11/0.09**, one `RPUSH` onto a
 200k list **18.3 vs 0.08/0.07 ms**, and 10k `ZADD`/`SADD` are 4.2/1.2 ms,
-because every write clones and replaces the whole collection (4.35). Under
+because every write clones and replaces the whole collection (4.35). Random
+sampling is the widest cardinality-scaling loss: at 100k members `SRANDMEMBER` is
+**11.5 vs 0.2–0.3 ms**, `HRANDFIELD` **33.7 vs 0.11–0.34 ms** and
+`ZRANDMEMBER` **21.3 vs 0.16–0.25 ms**, because each call clones the collection
+(4.36). Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
 SET loss (p99 64.5 vs 8.0 ms)** that is policy-independent and absent in the C
 servers, admitting 4.26 (pooled eviction). Startup replay is **20–45× slower to
@@ -1039,7 +1043,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twelve things are still true even though every row now leads:
+Thirteen things are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
    (`recvfrom`) + 1.000 (`sendto`) + 0.200 (`epoll_wait`) syscalls per reply for
@@ -1135,6 +1139,11 @@ Twelve things are still true even though every row now leads:
     set and `RPUSH`/`LPOP` on a 200k list cost **1.2–18.3 ms** versus 0.07–0.35 ms
     for the C servers' in-place updates, with 10-element controls at the command
     floor (section 3.19, candidate 4.35).
+13. **Random-member commands.** `SRANDMEMBER`, `SPOP`, `HRANDFIELD` and
+    `ZRANDMEMBER` materialize the collection per call, so at 100k members they
+    cost **11–34 ms** versus 0.1–0.35 ms for the C servers' dict random
+    (35–298×), with the 10k numbers 1–2.6 ms and the 10-element controls at the
+    floor (section 3.20, candidate 4.36).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1305,6 +1314,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: `APPEND` 64 B to 32 MB 7.35 ms vs 0.137/0.133; `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls and `GETRANGE` at the command floor | 4.34, admitted | AC36 on the implemented change | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
+| Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1721,6 +1731,7 @@ for a production claim.
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | rebuild full-length `Vec` and copy into the entry again (two full copies) | **Adapt:** 4.34 in-place mutation; measured 32 MB `APPEND` 7.35 vs 0.137/0.133 ms, `SETRANGE` 7.19 vs 0.184/0.096; 64 B controls at the floor (3.18, AC36) |
 | Collection writes | in-place dict/skiplist/listpack/quicklist update | same | clone the whole collection, re-encode and replace it per write | **Adapt:** 4.35 in-place mutation; measured 10k `HSET` 6.45 vs 0.111/0.093 ms, 200k `RPUSH` 18.3 vs 0.08/0.07, `LPOP` 17.8 vs 0.07–0.34; controls at the floor (3.19, AC37) |
+| Random-member selection | `dictGetRandomKey`/`dictGetSomeKeys`, intset/listpack fast paths | same | clone and sort/copy the whole collection per call | **Adapt:** 4.36 dense member index after a no-copy reservoir slice; measured 100k `SRANDMEMBER` 11.54 vs 0.199/0.326 ms, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164; 10k 1–2.6 ms, controls at the floor (3.20, AC38) |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
 | Large-frame input | reserves query-buffer capacity from the declared bulk length (`big_arg`/`sdsMakeRoomFor`) | same | appends 16 KiB reads into a growing `Vec` | **Adopt:** 4.25 bounded reservation; measured 28–32% 1 MiB SET loss (2.21, 3.3) |
 | Storage | `kvstore`, SipHash, 1 ms cron rehash + step-on-access | `kvstore`, SipHash, 1 ms cron rehash | `std` HashMap + `RwLock<Data>`, BTreeSet expiry, always-on WATCH versions | **Avoid:** no safe incremental-rehash std API; gate keyspace does not pay it (4.18). **Adapt conditionally:** copy the no-watcher fast path only if 4.19 isolates a mutation tail (4.20) |
@@ -2394,6 +2405,60 @@ between pack and large encodings only when a threshold is crossed; empty
 collections are removed as today. Keep field TTL bookkeeping, blocking wake,
 WATCH/version, journal and rewrite semantics.
 
+### 3.20 Random-member selection (SRANDMEMBER/SPOP/HRANDFIELD/ZRANDMEMBER)
+
+- **Redis 8.10.2 and Valkey 9.1.2** answer `SRANDMEMBER`, `SPOP`, `HRANDFIELD`
+  and `ZRANDMEMBER` from the hash table: `dictGetRandomKey`/`dictGetSomeKeys`
+  picks a random non-empty bucket (or samples one), with intset/listpack paths
+  for small collections, and `SPOP` removes one dict entry
+  ([`redis t_set.c#L1065`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L1065),
+  [`#L838`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L838),
+  [`#L1130`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L1130),
+  [`t_hash.c#L5858`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5858),
+  [`t_zset.c#L4720`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4720),
+  [`dict.c#L1230`](https://github.com/redis/redis/blob/8.10.2/src/dict.c#L1230);
+  [`valkey t_set.c#L953`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L953),
+  [`#L749`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L749),
+  [`#L1005`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L1005),
+  [`t_hash.c#L2368`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L2368),
+  [`t_zset.c#L4345`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L4345)).
+- **Rillcache** materializes the collection first: `set_random_member` calls
+  `owned_set`, which clones and sorts every member through `set_items()`;
+  `hash_random_field` deep-copies every field and value; `zset_random_member`
+  deep-copies every member; `set_pop` clones the set, removes via
+  `iter().nth(index)`, then re-encodes and replaces it. Each command therefore
+  pays O(n) time and O(n) allocation per call
+  ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L3398),
+  [`#L3319`](../../src/engine/collection_commands.rs#L3319),
+  [`#L1277`](../../src/engine/collection_commands.rs#L1277),
+  [`#L4635`](../../src/engine/collection_commands.rs#L4635)).
+- **Measured (2026-11-12).** One connection, 100 repetitions at 10k and 50 at
+  100k, three rotations; controls are 10-element collections:
+
+  | Command | Rillcache 10k | Redis | Valkey | Rillcache 100k | Redis | Valkey |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | `SRANDMEMBER` | 1.63 ms | 0.221 | 0.223 | **11.54 ms** | 0.199 | 0.326 |
+  | `SRANDMEMBER 10` | 1.39 | 0.324 | 0.304 | **11.36** | 0.295 | 0.393 |
+  | `SPOP` | 1.63 | 0.333 | 0.219 | **11.11** | 0.304 | 0.126 |
+  | `HRANDFIELD` | 2.56 | 0.299 | 0.176 | **33.66** | 0.343 | 0.113 |
+  | `HRANDFIELD 10` | 2.09 | 0.094 | 0.272 | **32.64** | 0.331 | 0.368 |
+  | `ZRANDMEMBER` | 1.32 | 0.094 | 0.244 | **21.32** | 0.250 | 0.164 |
+  | `ZRANDMEMBER 10` | 1.03 | 0.124 | 0.378 | **21.57** | 0.296 | 0.160 |
+  | 10-element controls | 0.13–0.31 | 0.09–0.17 | 0.19–0.34 | 0.19–0.25 | 0.17–0.29 | 0.07–0.09 |
+
+  At 100k the gaps are **35–58×** (`SRANDMEMBER`), **85–130×** (`ZRANDMEMBER`),
+  **37–88×** (`SPOP`) and **98–298×** (`HRANDFIELD`), and every 10-element
+  control is at the command floor. Rill's 10k→100k ratio is 7–16× (cost grows
+  with cardinality) while the C servers stay flat. Candidate 4.36.
+
+**Verdict: adapt constant-time random selection (4.36).** A first slice removes
+the clone/sort and samples by reservoir over iteration (O(n) time, O(count)
+memory), which removes the allocation and both copies. The full fix adds a dense
+member index (a `Vec` plus a position map with swap-remove) beside the large
+set/hash/zset, making single picks and `SPOP` O(1) like the C servers' dict
+random; `SMEMBERS`/`HKEYS`/`ZSCAN` order is unspecified in Redis and becomes an
+explicit ordering decision. Keep small pack paths and all reply semantics.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -2426,7 +2491,8 @@ section. 4.31 is the incremental cursor for the measured 167–260× per-call
 RSS and deferred-drop gaps in section 3.17. 4.34 is the in-place string mutation
 candidate for the measured 39–75× `APPEND`/`SETRANGE` loss on a 32 MB value in
 section 3.18. 4.35 is the in-place collection mutation candidate for the measured
-3.5–262× write loss in section 3.19.
+3.5–262× write loss in section 3.19. 4.36 is the constant-time random-member
+candidate for the measured 35–298× sampling loss in section 3.20.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -2945,6 +3011,11 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    collections, `RPUSH`/`LPOP` on a 200k list, and 10-element controls.
    Confirms 4.35 on a clean runner; the 2026-11-12 local cohort in section 3.19
    already measures 1.2–18.3 ms versus 0.07–0.35 ms.
+12. **Random members:** `SRANDMEMBER`, `HRANDFIELD`, `ZRANDMEMBER` and `SPOP`
+   on 10k and 100k collections, single and `COUNT 10`, with a distribution check
+   and 10-element controls. Confirms 4.36 on a clean runner; the 2026-11-12
+   local cohort in section 3.20 already measures 11–34 ms at 100k versus
+   0.1–0.35 ms.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -2952,7 +3023,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all eleven rows are complete for all three servers;
+runners, not a shared k3s host; all twelve rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -3407,23 +3478,26 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.33 deferred drop | `DEL`/`UNLINK` (`dispatch/keyspace.rs`), `FLUSH*` (`administration.rs`), `Data::flush`/`remove`, maintenance tick (`reactor.rs`), accounting | queue bound; pending bytes counted; key recreation; notification/journal order; shutdown drain; SYNC unchanged | `UNLINK`/`FLUSH ASYNC` A/B, DBSIZE/EXISTS/SCAN, drain-on-shutdown | small |
 | 4.34 in-place strings | `append`/`setrange` (`string_ranges.rs`), `Data::reserve`/`put`/`remove` (`data.rs#L646`, `#L774`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small |
 | 4.35 in-place collection writes | `hash_set`/`zset_add`/`set_add`/`push_list`/`pop_list` (`collections.rs`), `Data::entries.get_mut`, `payload_len`, field TTL, blocking wake | admit before mutate; pack↔large conversion only at thresholds; delta accounting; empty-collection removal; field TTL; WATCH/journal | 10k `HSET`/`ZADD`/`SADD`, 200k `RPUSH`/`LPOP`, 10-element controls | medium |
+| 4.36 random members | `set_random_member`/`set_pop`/`hash_random_field`/`zset_random_member` (`collection_commands.rs`), `owned_set`, `set_items`, `hash_items`, `zset_items`, collection representation | sample without materializing; uniform distribution; count/negative-count semantics; `SPOP` removal and empty deletion; ordering decision; small pack paths | 10k/100k `SRANDMEMBER`/`HRANDFIELD`/`ZRANDMEMBER`/`SPOP`, distribution test | medium |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, and 4.33 —
 small and contract-visible — for the measured synchronous `UNLINK`/`ASYNC` drop.
 4.35 is next: every collection write currently clones the collection, the gaps
-are 3.5–262×, and it reuses 4.34's admit-then-mutate shape. 4.34 itself is small
-and removes two full-value copies per `APPEND`/`SETRANGE`. 4.32 follows as the
-structural memory and CPU fix (142–143 → target ≤24 B/element) and may reuse
-4.31's ordered-list direction. 4.22/4.24 come last because they touch every
-asynchronous client path and carry the highest ordering risk. 4.31 is the largest
-per-call ratio in the record but touches the keyspace, every collection type and
-the router cursor, so it follows the journal slices and 4.30's representation
-decision (the ordered hash/zset option can serve both). 4.30 is the largest
-measured read-side ratio (19.5×) but is a dual-structure change; 4.29 is the
-smaller sibling and shares its collect+sort mechanism. 4.23 follows the existing
-bounded slices. 4.20 stays conditional on 4.19; 4.18 stays deferred.
+are 3.5–262×, and it reuses 4.34's admit-then-mutate shape. 4.36 follows, first
+as a no-copy reservoir slice and then the dense index; its 100k gaps are
+35–298×. 4.34 itself is small and removes two full-value copies per
+`APPEND`/`SETRANGE`. 4.32 follows as the structural memory and CPU fix
+(142–143 → target ≤24 B/element) and may reuse 4.31's ordered-list direction.
+4.22/4.24 come last because they touch every asynchronous client path and carry
+the highest ordering risk. 4.31 is the largest per-call ratio in the record but
+touches the keyspace, every collection type and the router cursor, so it follows
+the journal slices and 4.30's representation decision (the ordered hash/zset
+option can serve both). 4.30 is the largest measured read-side ratio (19.5×) but
+is a dual-structure change; 4.29 is the smaller sibling and shares its
+collect+sort mechanism. 4.23 follows the existing bounded slices. 4.20 stays
+conditional on 4.19; 4.18 stays deferred.
 
 ### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
 
@@ -3775,13 +3849,67 @@ command, pack threshold, field TTL, blocking, persistence/rewrite/replay and
 accounting test shall pass; no dependency shall be added; and both protected
 gates shall pass on the exact head.
 
+### 4.36 Constant-time random-member selection (candidate; admission measured)
+
+**Mechanism.** Two slices. First, stop materializing: single-member commands use
+reservoir sampling over the existing iteration, and count commands use a bounded
+reservoir or partial Fisher–Yates over iteration, so memory is O(count) and no
+sort or full copy happens. Second, add a dense member index where O(n) iteration
+is still visible: for large sets a `Vec<member>` plus `HashMap<member, usize>`
+with swap-remove, for hashes a `Vec<field>` beside the value map, and for zsets a
+`Vec<member>` beside the score map (4.30's ordered index stays for ranges).
+Single picks, count picks and `SPOP` then become O(1)/O(count) like dict random;
+small pack paths keep their behavior. `SMEMBERS`/`HKEYS`/`ZSCAN` order is
+unspecified in Redis, so the chosen order is an explicit test/ordering decision.
+
+**Prediction.** At 100k, `SRANDMEMBER` falls from **11.54 ms to ≤0.6 ms**,
+`HRANDFIELD` from 33.66, `ZRANDMEMBER` from 21.32 and `SPOP` from 11.11; the 10k
+numbers fall to the command floor; the 10k→100k ratio becomes ≤2× (flat) instead
+of 7–16×. Memory grows by ~8–16 B/member for the index, counted in accounting.
+
+**Admission evidence (2026-11-12, section 3.20).** One connection, 100
+repetitions at 10k and 50 at 100k, three rotations: 100k `SRANDMEMBER` p50
+11.68/11.54/11.24 ms versus Redis 0.20/0.24/0.18 and Valkey 0.12/0.33/0.41;
+`HRANDFIELD` 33.66/34.29/30.77 versus 0.34/0.14/0.40 and 0.11/0.26/0.10;
+`ZRANDMEMBER` 21.32/22.76/20.61 versus 0.25/0.34/0.20 and 0.16/0.20/0.10;
+`SPOP` 11.11 median versus 0.304/0.126. The 10k rows are 1.0–2.6 ms and every
+10-element control is at the command floor.
+
+**Risks and obligations.** Uniformity is the core: reservoir/swap correctness,
+COUNT semantics including negative counts with repetition, and `SPOP` removal by
+index plus empty deletion must be tested statistically. Pack↔large conversion
+must rebuild the index atomically; index memory and tombstones must be counted
+under `maxmemory`; the ordering decision for full-collection replies must be
+documented and tests updated; journal, rewrite, TTL and WATCH paths must see the
+same logical collection.
+
+**Rejected options.** Sorting and picking from a clone (the measured path), a
+hash-derived index without a position map (cannot remove in O(1)), and any foreign
+RNG or persistent-collection dependency.
+
+**Rejection condition.** A distribution test fails, any reply or semantic test
+differs, index memory grows without an accounted bound, the 10k→100k ratio is not
+flat, or a gate row loses.
+
+**Acceptance (AC38).** At 100,000 members, `SRANDMEMBER`, `HRANDFIELD` and
+`ZRANDMEMBER` (single and `COUNT 10`) and `SPOP` shall have p50 ≤0.6 ms and p99
+≤2 ms (≥18× faster than the measured 11.1–33.7 ms and within ~3–5× the faster C
+server); the 10k p50 shall be ≤0.3 ms and the 10k→100k p50 ratio ≤2×; a
+distribution test over repeated draws shall be uniform within a stated tolerance;
+10-element controls shall be unchanged; the ordering decision for
+`SMEMBERS`/`HKEYS`/`ZSCAN` shall be documented with tests updated; `SPOP`
+empty-deletion, TTL, blocking, persistence/rewrite/replay and accounting tests
+shall pass; no dependency shall be added; and both protected gates shall pass on
+the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
 bounded queue plus the existing maintenance tick, 4.34 uses the existing `Vec`
-in place, and 4.35 mutates the existing maps and deques. The rest use the
-existing `std` I/O, parser and in-repo journal/crypto code. Each candidate lands
-as its own PR with AC5 plus the protected gates; no combined integration branch.
+in place, 4.35 mutates the existing collection containers, and 4.36 uses `Vec`
+plus `HashMap`/`BTreeSet` indexes. The rest use the existing `std` I/O, parser
+and in-repo journal/crypto code. Each candidate lands as its own PR with AC5 plus
+the protected gates; no combined integration branch.
 
 ## 5. Required libraries, dependencies and policy impact
 
@@ -3829,8 +3957,8 @@ and 4.30 is a `std::collections::BTreeSet` plus a local `f64` total-order helper
 lines), 4.31 is `std` `BTreeSet`/`BTreeMap` plus the in-repo hex helper, 4.32 is
 byte arenas plus `VecDeque`, and 4.33 is a bounded queue on the existing
 maintenance tick; 4.34 mutates the existing `Vec` in place; 4.35 mutates the
-existing collection containers in place. None adds a crate, build script,
-allocator or FFI.
+existing collection containers in place; 4.36 uses `Vec` plus
+`HashMap`/`BTreeSet` indexes. None adds a crate, build script, allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
 would need either raw `epoll` in project code or a new selector dependency, so
 it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
@@ -3980,6 +4108,13 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   after a partial insert/pop corrupts the collection. Delta accounting, field
   TTL removal, empty-collection deletion, blocking-pop wake, chunk split/merge,
   WATCH versions, journal and rewrite must all stay exact (AC37).
+- **Random-member risk (4.36):** the index must stay consistent under
+  insert/remove/`SPOP`/expiry/replay; swap-remove tombstones must not bias the
+  distribution or leak memory; `COUNT` (positive, negative, repeated) semantics
+  and `SPOP` empty-key deletion must be exact; the full-collection ordering
+  decision changes tests; index memory must be counted under `maxmemory`; a
+  wrong index yields a reproducible sampling bias, so a statistical test is
+  mandatory (AC38).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -4039,6 +4174,8 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | A custom string arena or unsafe buffer for `APPEND`/`SETRANGE` | A `Vec` with amortized growth already gives in-place mutation and bounded capacity without unsafe code (4.34, section 5). |
 | Keeping the collection rebuild but skipping the re-encode | Still clones every field/element per write, so the measured O(collection) cost remains (4.35). |
 | Copy-on-write or a persistent-collection crate for collection writes | Adds a dependency and indirection to every read for a write-path fix that plain `&mut` containers already solve (4.35). |
+| Sorting/cloning the collection to answer a random pick | O(n log n) time and O(n) allocation per command; the measured 100k gap is 35–298× and the C servers sample the hash table directly (4.36). |
+| A hash-derived random cursor without a position map | Cannot remove a sampled member in O(1) without tombstones or a scan, and collisions complicate distribution (4.36). |
 
 ## 8. Acceptance criteria (EARS)
 
@@ -4284,6 +4421,16 @@ samples retained.
   collection command, pack threshold, field TTL, blocking, persistence/rewrite/
   replay and accounting test shall pass; no dependency shall be added; and both
   protected gates shall pass on the exact head.
+- **AC38 (constant-time random members, only if 4.36 is implemented).** At
+  100,000 members, `SRANDMEMBER`, `HRANDFIELD`, `ZRANDMEMBER` (single and
+  `COUNT 10`) and `SPOP` shall have p50 ≤0.6 ms and p99 ≤2 ms (≥18× faster than
+  the measured 11.1–33.7 ms and within ~3–5× the faster C server); the 10k p50
+  shall be ≤0.3 ms and the 10k→100k ratio ≤2×; a distribution test over repeated
+  draws shall be uniform within a stated tolerance; 10-element controls shall be
+  unchanged; the `SMEMBERS`/`HKEYS`/`ZSCAN` ordering decision shall be documented
+  with tests updated; `SPOP` empty-deletion, TTL, blocking,
+  persistence/rewrite/replay and accounting tests shall pass; no dependency shall
+  be added; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -4463,6 +4610,14 @@ separate roadmap.
   0.06/0.11/0.07; `LPOP` 18.08/17.21/17.82 versus 0.34/0.19/0.53 and
   0.07/0.21/0.07; `ZADD`/`SADD` medians 4.21/1.23 versus 0.08–0.22/0.08–0.35;
   controls 0.11–0.23. Raw JSON retained (untracked).
+- Random-member cohort (section 3.20, candidate 4.36): 10k and 100k sets/hashes/
+  zsets plus 10-element controls; 100 repetitions at 10k and 50 at 100k, three
+  rotations. 100k `SRANDMEMBER` p50 11.68/11.54/11.24 ms versus Redis
+  0.20/0.24/0.18 and Valkey 0.12/0.33/0.41; `HRANDFIELD` 33.66/34.29/30.77
+  versus 0.34/0.14/0.40 and 0.11/0.26/0.10; `ZRANDMEMBER` 21.32/22.76/20.61
+  versus 0.25/0.34/0.20 and 0.16/0.20/0.10; `SPOP` 11.11 versus 0.304/0.126.
+  The 10k rows are 1.0–2.6 ms and controls 0.13–0.34. Raw JSON retained
+  (untracked).
 - Keyspace-growth attempt (section 4.18): 262,144 keys × 64 B, P16, a fresh
   growth run (500k SET) then a post-growth run (200k SET) on the same server,
   three rotations. Rill 192k/124k req/s, p99 5.0/10.1 ms, max 64/81 ms; Redis
@@ -4849,3 +5004,9 @@ separate roadmap.
   readers, pack↔large threshold crossings, field-TTL paths, or memory; those are
   implementation-PR evidence under AC37. The Valkey `SADD`/`ZADD` control values
   show the shared host's spread.
+- The random-member cohort (section 3.20) measures single-connection command
+  latency at 10k and 100k for one collection type per command, with 10-element
+  controls. It does not measure the sampling distribution statistically, very
+  large (1M) collections, negative `COUNT` with repetition, `SPOP` with count, or
+  the index's memory; those are implementation-PR evidence under AC38. The C
+  server medians include the ~0.1–0.2 ms client floor.
