@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); every other runtime item
-here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.52).**
+here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.53).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -147,7 +147,10 @@ already lead, so 4.51 borrows the zset sources and builds one destination.
 Observability has one keyspace-sized walk: `INFO keyspace` (and plain `INFO`)
 costs **2.79 ms at 100k keys and 10.0 ms at 500k versus 0.13–0.30 ms** (16–40×)
 while `INFO stats`, `DBSIZE` and `PING` stay at the floor; 4.52 maintains the
-counters. Stream consumer-group reads are
+counters. Moving one element between keys is the same cloning shape: `SMOVE` on
+a 100k set is **25.5 vs 0.40/0.28 ms** and `LMOVE`/`RPOPLPUSH` on a 200k list
+**39.2/41.2 vs 0.08–0.34 ms** (64–489×) because both keys are cloned and
+re-encoded; 4.53 moves in place. Stream consumer-group reads are
 the counter-example: at a 10k-entry PEL, `XREADGROUP` history, `XPENDING` and
 `XCLAIM` are at parity and the largest batch forms are only **1.3–2.1×** behind
 (new read 1000 8.99 vs 5.19/6.43 ms, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50)
@@ -1112,7 +1115,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Thirty-four observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty-five observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1320,6 +1323,11 @@ rest are still true even though every row now leads:
     `DBSIZE` and `PING` stay at the floor because the keyspace section counts
     every entry instead of reading maintained sizes (section 3.42, candidate
     4.52).
+35. **Two-key moves.** `SMOVE` on a 100k set costs **25.5 ms versus 0.40/0.28**
+    (64–91×) and `LMOVE`/`RPOPLPUSH` on a 200k list **39.2/41.2 versus
+    0.08–0.34** (79–489×), while a same-key rotate still costs 20.5 ms, because
+    both keys are cloned and re-encoded for a one-element move; 10-element
+    controls are at the floor (section 3.43, candidate 4.53).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1514,6 +1522,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured; no candidate**: 100k SINTER 52.5 vs 38.9/23.2 ms, SINTERCARD 52.0 vs 35.7/15.3, SDIFF 49.9 vs 66.9/40.1, SUNION 76.8 vs 105.4/78.8 (Rill leads Redis); 10k 5.4–7.8 ms | keep; 1.2–3.4× is inside the reply/algorithm mix | n/a | none |
 | Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
 | INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, plain `INFO` the same, while `INFO stats`/`DBSIZE`/`PING` stay at the floor because the section walks every entry | 4.52, admitted | AC54 | none |
+| Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k 25.5 ms vs 0.40/0.28 (64–91×); `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×); same-key rotate 20.5 vs 0.26/0.21; 10-element controls at the floor | 4.53, admitted (extends 4.35/4.41) | AC55 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
@@ -1933,6 +1942,7 @@ for a production claim.
 | Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain; monitors share the queue and silently drop lines | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms, and 1,024/2,000 monitor lines vs 2,000 (3.23, 3.37, AC41) |
 | Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
 | List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
+| Two-key moves | `setTypeRemove`/`setTypeAdd`; list pop/push on two borrowed containers | same | `owned_set` clones both sets; `list_values` flattens and clones both lists; both re-encode | **Adapt:** 4.53 in-place remove/insert and chunk pop/push, same-key rotate in place; measured `SMOVE` 100k 25.5 vs 0.40/0.28 ms (64–91×), `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×), rotate 20.5 vs 0.26/0.21 (3.43, AC55) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
@@ -3716,6 +3726,52 @@ expire, persist, remove, reap, eviction, flush, rename/copy, replay), or read th
 container sizes plus a Redis-style maintained/sampled average, and answer the
 section in O(1).
 
+### 3.43 Two-key moves (SMOVE/LMOVE/RPOPLPUSH)
+
+- **Redis 8.10.2 and Valkey 9.1.2** move one element between two borrowed
+  containers: `smoveCommand` removes from the source set and adds to the
+  destination set (`setTypeRemove`/`setTypeAdd`, dict/intset/listpack) without
+  copying either; `lmoveGenericCommand` pops one end of the source list and pushes
+  the other end of the destination, with an in-place same-key rotate path
+  ([`redis t_set.c`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c),
+  [`t_list.c`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c);
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c) is the
+  same). The move is O(1) for a list and O(1)/O(log n) for a set.
+- **Rillcache** rebuilds both keys. `set_move` calls `owned_set` on the source and
+  the destination, mutates the owned copies and re-encodes both sets
+  ([`collection_commands.rs#L3073`](../../src/engine/collection_commands.rs#L3073));
+  `list_move_in_data` calls `Collection::list_values` on both lists, which
+  flattens and **clones every element** (`data.rs#L41`), then rebuilds both
+  `VecDeque`s and re-encodes them
+  ([`#L2541`](../../src/engine/collection_commands.rs#L2541)). A one-element move
+  therefore costs a full copy of both sides and two encodes.
+- **Measured (2026-11-13).** Two 100,000-member sets and two 200,000-element
+  16-byte lists, 20 repetitions (each `SMOVE` consuming a distinct member), three
+  rotations, 10-element controls:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `SMOVE` on a 100k set | **25.49 ms** | 0.40 ms | 0.28 ms |
+  | `LMOVE` on a 200k list | **39.15** | 0.34 | 0.08 |
+  | `RPOPLPUSH` on a 200k list | **41.16** | 0.33 | 0.19 |
+  | `LMOVE` same key (rotate) | **20.51** | 0.26 | 0.21 |
+  | 10-member `SMOVE` control | 0.31 | 0.26 | 0.15 |
+  | `LPUSH`/`SADD` controls | 0.18/0.22 | 0.24/0.36 | 0.17/0.14 |
+  | `SISMEMBER` control (known 4.40 path) | 9.39 | 0.36 | 0.23 |
+
+  The move costs **64–91×** its C counterparts for sets and **79–489×** for
+  lists, because both sides are cloned and re-encoded; the same-key rotate still
+  pays a full flatten of one 200k list (20.5 ms). The 10-element controls are at
+  the floor, and the `SISMEMBER` control is the admitted 4.40 cardinality path,
+  not a move cost. Preloading the four large keys took 13.4 s in Rill versus
+  1.4–1.6 s, the 4.35 write path. Candidate 4.53.
+
+**Verdict: adapt in-place two-key moves (4.53).** Admit the destination growth
+first, then remove/pop from the source and insert/push into the destination in
+place, delete an emptied source, and adjust payload by the delta; a same-key move
+rotates within one container. This reuses 4.35's in-place set mutation and
+4.41's chunk-level list access.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3776,7 +3832,9 @@ the seek-based lex-range and span-count candidate for the measured 163–371×
 4.30/4.38's ordered index. 4.51 is the borrowed-source zset-algebra candidate for
 the measured 5.5–12.9× `ZINTERCARD` and 2.8–5.4× store losses in section 3.41.
 4.52 is the maintained-keyspace-counter candidate for the measured 16–40×
-`INFO` walk in section 3.42.
+`INFO` walk in section 3.42. 4.53 is the in-place two-key-move candidate for the
+measured 64–489× `SMOVE`/`LMOVE`/`RPOPLPUSH` loss in section 3.43; it reuses
+4.35's in-place mutation and 4.41's chunk access.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -4399,6 +4457,11 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    expiry/field-TTL churn. Confirms 4.52 on a clean runner; the 2026-11-13 local
    cohort in section 3.42 already measures 2.79 ms at 100k and 10.0 ms at 500k
    versus 0.13–0.30 with the other sections at the floor.
+35. **Two-key moves:** `SMOVE` between 100k sets, `LMOVE` all four
+   LEFT/RIGHT combinations, `RPOPLPUSH`, same-key rotate and the blocking
+   variants on 200k lists, with 10-element controls. Confirms 4.53 on a clean
+   runner; the 2026-11-13 local cohort in section 3.43 already measures
+   25.5/39.2/41.2 ms versus 0.08–0.40.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4406,7 +4469,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all thirty-four rows are complete for all three servers;
+runners, not a shared k3s host; all thirty-five rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4880,6 +4943,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.50 lex seek and span counts | `select_zset`/`ordered_zset` (`collection_commands.rs#L798`), `zset_range` (`#L4185`), `zset_count` (`#L3866`), `zset_lex_count` (`#L4556`), `zset_items` (`data.rs#L111`), ordered/rank index | bound parsing; exclusive/infinite bounds; reverse + LIMIT arithmetic; mixed-score order; pack conversion; store/accounting; TTL/WATCH/journal | 100k `ZRANGEBYLEX`/`ZREVRANGEBYLEX` LIMIT forms, full reply, `ZLEXCOUNT`/`ZCOUNT` (full/matching/empty), 10-member control | medium |
 | 4.51 zset algebra | `zset_algebra` (`collection_commands.rs#L4330`), `zset_intercard` (`#L4492`), `owned_zset`/`ordered_zset`, `encode_zset` | source order; destination-as-source; weights/aggregate/NaN; LIMIT early exit; empty/missing/wrong type; store TTL/accounting; SetPack/`ZSetPack`; WATCH/journal/rewrite | 100k `ZINTERCARD`/`ZINTERSTORE`/`ZDIFFSTORE`/`ZUNIONSTORE`, 10-member controls, set-store regression | medium |
 | 4.52 INFO keyspace counters | `info` keyspace section (`discovery/mod.rs#L1016`), `Data` (`data.rs#L247`), insert/remove/expire/reap/evict/flush/rename/copy/replay paths, `field_ttls` | every counter delta; avg_ttl empty case; no reap on INFO; section selection; replay/rewrite/eviction/flush | 10k/100k/500k `INFO keyspace`/`INFO`/`INFO stats`/`DBSIZE`, TTL churn correctness | small |
+| 4.53 two-key moves | `set_move` (`collection_commands.rs#L3073`), `list_move_in_data` (`#L2541`), `owned_set`, `Collection::list_values` (`data.rs#L41`), blocking wake | admit destination first; OOM leaves both keys unchanged; same-key rotate; empty-source deletion; TTLs per key; chunk split/merge; blocking/timeout; WATCH/journal/notification/rewrite; accounting | 100k `SMOVE`, 200k `LMOVE`/`RPOPLPUSH`/rotate, 10-element controls, blocking variants | medium |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
@@ -4907,7 +4971,8 @@ span-count queries to the same index (163–371× for a 10-element lex range).
 the result re-sort from `ZINTERCARD`/`ZINTERSTORE`/`ZDIFFSTORE` (5.5–12.9× and
 2.8–5.4×) by probing borrowed sources. 4.52 is a small, contained observability
 fix: it replaces the O(keyspace) `INFO` walk with maintained counters (16–40×)
-and can land with 4.40's length work.
+and can land with 4.40's length work. 4.53 is the two-key-move counterpart of
+4.35/4.41: it removes a full copy of both keys per element moved (64–489×).
 4.39 is a contract/reliability
 fix on the pub/sub and MONITOR path already admitted as 4.24 (section 3.37) and
 should land with them. 4.34
@@ -6155,6 +6220,64 @@ TTL/field-TTL/expiry/reap/eviction/flush/rename/copy/replay churn; `INFO stats`,
 `DBSIZE`, `PING` and all other sections shall be unchanged; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
+### 4.53 In-place two-key moves (candidate; admission measured)
+
+**Mechanism.** Move one element between two borrowed containers instead of
+rebuilding both. For `SMOVE`, admit the destination growth (payload limit and
+possible eviction) before mutating, then `remove` from the source set's
+`BTreeSet` and `insert` into the destination's, deleting an emptied source and
+updating payload by the delta. For `LMOVE`/`RPOPLPUSH`/`BLMOVE`/`BRPOPLPUSH`,
+take the element from the source list's head/tail chunk (`VecDeque` of chunks),
+push it onto the destination's head/tail chunk, split/merge only when a chunk
+crosses its bound, delete an emptied source, and handle a same-key move as an
+in-place rotation within one chunk deque. Source and destination TTLs stay on
+their own keys; the destination is created without a TTL. Reuse the blocking
+wake and journal/notification ordering from the current helper. No dependency, no
+new container.
+
+**Prediction.** `SMOVE` on a 100k set falls from **25.5 ms to ≤0.5 ms** (≥50×,
+within ~2× the faster C server); `LMOVE`/`RPOPLPUSH` on a 200k list from
+39.2/41.2 ms to **≤0.5 ms** (≥78×, within ~1.5× Redis); a same-key rotate from
+20.5 ms to ≤0.4 ms (≥50×); the 10-element controls are unchanged.
+
+**Admission evidence (2026-11-13, section 3.43).** Two 100k sets and two 200k
+16-byte lists, 20 repetitions, three rotations: `SMOVE` 25.49/23.74/26.39 ms
+versus Redis 0.40/0.68/0.38 and Valkey 0.28/0.16/0.36; `LMOVE`
+40.64/36.79/39.15 versus 0.34/0.31/0.47 and 0.08/0.42/0.07; `RPOPLPUSH`
+43.53/36.40/41.16 versus 0.23/0.33/0.85 and 0.15/0.66/0.19; same-key rotate
+20.51/22.87/19.93 versus 0.24/0.26/0.44 and 0.26/0.21/0.10; 10-member `SMOVE`
+0.31/0.38/0.23 versus 0.36/0.22/0.26 and 0.07/0.15/0.23; `LPUSH`/`SADD`
+controls 0.18/0.22; preload 13.4 s versus 1.4–1.6 s (the 4.35 write path).
+
+**Risks and obligations.** Destination growth admission can evict a key, so
+re-look both sides after it and leave both unchanged on OOM; source and
+destination can be the same key (rotate, with LEFT/LEFT and RIGHT/RIGHT identity
+semantics); empty-source deletion and missing-key creation; TTLs belong to each
+key and the destination starts without one; payload accounting by delta; chunk
+split/merge and the 4.32/4.41 invariants; `BLMOVE`/`BRPOPLPUSH` blocking wake,
+timeout and disconnection; WATCH version, journal, keyspace notifications and
+rewrite snapshots must see the same two mutations; `SMOVE` on a non-member
+returns 0 without touching either key.
+
+**Rejected options.** Keeping one of the two owned copies (still O(n) on the
+other side); moving through a temporary encoded value (extra encode/decode and
+payload accounting); special-casing small containers only (the measured loss is
+the large-container copy, and small containers are already at the floor).
+
+**Rejection condition.** Any move direction, order, membership, TTL, empty-key,
+same-key, blocking or accounting result differs; the 10-element controls regress;
+or no gain above the spread.
+
+**Acceptance (AC55).** `SMOVE` on a 100,000-member set shall have p50 ≤0.5 ms and
+p99 ≤2 ms (≥50× faster than the measured 25.5 ms and within ~2× the faster C
+server); `LMOVE` and `RPOPLPUSH` on a 200,000-element list shall have p50 ≤0.5 ms
+and p99 ≤2 ms (≥78× faster than 39.2/41.2 ms and within ~1.5× Redis); a same-key
+`LMOVE` rotate shall have p50 ≤0.4 ms; the 10-element controls shall be
+unchanged; LEFT/RIGHT combinations, same-key identity, missing source,
+non-member, empty-source deletion, TTLs, blocking `BLMOVE`/`BRPOPLPUSH`,
+WATCH/journal/notification/rewrite and accounting tests shall pass; no dependency
+shall be added; and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -6169,8 +6292,9 @@ set/zset members, 4.45 uses the existing lazy expire path, 4.46 slices the
 existing source order, 4.47 mutates the existing HLL registers, 4.48 mutates the
 existing stream groups, 4.49 pops from the ordered zset index, 4.50 seeks the
 same index and adds no storage, 4.51 borrows the existing zset containers and
-builds the destination once, and 4.52 adds integer counters to the existing
-`Data`. The rest use
+builds the destination once, 4.52 adds integer counters to the existing
+`Data`, and 4.53 reuses the existing set/list containers for a two-key move. The
+rest use
 the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
 lands as its own PR with AC5 plus the protected gates; no combined integration
 branch.
@@ -6471,6 +6595,12 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   flush/rename/copy/replay path needs a test that compares the counters with a
   full scan; `avg_ttl` must handle an empty expiration set; `INFO` must not gain
   a reaping side effect; section selection and `INFO all` must stay exact (AC54).
+- **Two-key-move risk (4.53):** admission can evict the destination or source
+  being moved, so both sides must be re-looked and left unchanged on OOM; a
+  same-key move must rotate rather than delete; the destination inherits no TTL
+  from the source; LEFT/RIGHT order, missing/non-member/empty-source results,
+  chunk split/merge, blocking timeout/disconnect, WATCH/journal/notification/
+  rewrite and accounting must stay exact (AC55).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -6554,6 +6684,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | Sorting the whole zset to answer a bounded `BYLEX`/`ZCOUNT` query | A seek plus rank subtraction is O(log n); the measured 10-element lex range pays 56–70 ms for an O(n log n) sort and a narrow count scans all 100k members (4.50). Caching the sorted snapshot or adding a second lex index would duplicate storage and invalidation work for the same query. |
 | Copying every source before a zset algebra or cardinality query | The measured 100k `ZINTERCARD` pays 220 ms for two owned maps plus a `BTreeSet`, while probing the smallest borrowed source and counting matches is O(smallest × keys) with no destination; the store forms already build one destination and re-sort a materialised map a second time (4.51). A borrowed `HashSet` of the smaller source only trades one allocation for another and was rejected. |
 | Caching the formatted `INFO` reply instead of maintaining counters | The measured 10 ms walk happens on every `INFO`/`INFO keyspace`; a cache would still pay O(keyspace) to rebuild after the first mutation and would need a full invalidation contract. Sampling the keyspace or counting only the expiration index reports a wrong `keys` value (4.52). |
+| Rebuilding both keys for a one-element two-key move | The measured 100k `SMOVE` and 200k `LMOVE`/`RPOPLPUSH` pay 20–41 ms for a full clone of both sides; a set remove/insert and a list pop/push are O(1)/O(log n) in the existing containers, and reusing the old clone for one side still leaves the other O(n) (4.53). |
 | Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
 
 ## 8. Acceptance criteria (EARS)
@@ -6960,6 +7091,16 @@ samples retained.
   eviction, flush, rename/copy and replay churn; `INFO stats`, `DBSIZE`, `PING`
   and every other section shall be unchanged; no dependency shall be added; and
   both protected gates shall pass on the exact head.
+- **AC55 (in-place two-key moves, only if 4.53 is implemented).** `SMOVE` on a
+  100,000-member set shall have p50 ≤0.5 ms and p99 ≤2 ms (≥50× faster than the
+  measured 25.5 ms and within ~2× the faster C server); `LMOVE` and `RPOPLPUSH`
+  on a 200,000-element list shall have p50 ≤0.5 ms and p99 ≤2 ms (≥78× faster
+  than 39.2/41.2 ms and within ~1.5× Redis); a same-key `LMOVE` rotate shall have
+  p50 ≤0.4 ms; the 10-element controls shall be unchanged; LEFT/RIGHT
+  combinations, same-key identity, missing source, non-member, empty-source
+  deletion, TTLs, blocking `BLMOVE`/`BRPOPLPUSH`, WATCH/journal/notification/
+  rewrite and accounting tests shall pass; no dependency shall be added; and
+  both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -7335,6 +7476,16 @@ separate roadmap.
   and 0.22/0.37/0.26; `INFO stats` 0.11–0.30 and `DBSIZE` 0.10–0.43 at 500k.
   Preload (500k pipelined `SET`) 2.7 s versus 2.1–2.7 s. Raw JSON retained
   (untracked).
+- Two-key-move cohort (section 3.43, candidate 4.53): two 100,000-member sets and
+  two 200,000-element 16-byte lists, 20 repetitions (each `SMOVE` consuming a
+  distinct member), three rotations. `SMOVE` 25.49/23.74/26.39 ms versus Redis
+  0.40/0.68/0.38 and Valkey 0.28/0.16/0.36; `LMOVE` 40.64/36.79/39.15 versus
+  0.34/0.31/0.47 and 0.08/0.42/0.07; `RPOPLPUSH` 43.53/36.40/41.16 versus
+  0.23/0.33/0.85 and 0.15/0.66/0.19; same-key rotate 20.51/22.87/19.93 versus
+  0.24/0.26/0.44 and 0.26/0.21/0.10; 10-member `SMOVE` 0.31/0.38/0.23;
+  `LPUSH`/`SADD` controls 0.18/0.22; `SISMEMBER` control 8.69/9.39/10.55 (the
+  known 4.40 path). Preload 13.4 s versus 1.4–1.6 s, the 4.35 write path. Raw
+  JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -7852,3 +8003,8 @@ separate roadmap.
   formatting cost at much larger section counts, or concurrent writers during
   `INFO`. The candidate's correctness burden — counters equal to a full scan
   under churn — is an implementation obligation, not measured here.
+- The two-key-move cohort (section 3.43) uses 16-byte list elements, one element
+  per move and a single connection; it does not measure multi-element moves
+  (none exist), blocking `BLMOVE` latency, chunk-boundary split/merge behaviour,
+  field-TTL collections, or moves between a pack and a large container. The
+  `SISMEMBER` row is the admitted 4.40 cardinality path, not a move control.
