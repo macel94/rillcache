@@ -296,4 +296,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Isolated tool-only branch: run the explicitly labelled string study through
+    # the existing read-only manual native-diagnostic job. Not proposed for merge;
+    # original reactor evidence remains readable with its original harness SHA.
+    runpy.run_path(str(ROOT / "scripts/string-mutation-study.py"), run_name="__main__")
