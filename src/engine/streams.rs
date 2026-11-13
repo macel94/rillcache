@@ -1645,16 +1645,18 @@ impl ShardExecutor {
                 out.extend_from_slice(b"-NOGROUP No such consumer group\r\n");
                 return;
             };
-            let created = g
-                .consumers
-                .insert(
-                    a[4].to_vec(),
-                    Consumer {
+            let created = match g.consumers.entry(a[4].to_vec()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(Consumer {
                         seen_at: now,
                         pending: Default::default(),
-                    },
-                )
-                .is_none();
+                    });
+                    true
+                }
+                // CREATECONSUMER is a no-op for an existing name: replacing it
+                // would erase its PEL and reset its last-activity timestamp.
+                std::collections::btree_map::Entry::Occupied(_) => false,
+            };
             if created {
                 data.touch(a[2]);
             }
@@ -2300,5 +2302,67 @@ mod tests {
             .groups[b"g".as_slice()]
         .consumers[b"c".as_slice()];
         assert_eq!(consumer.seen_at, 0);
+    }
+
+    #[test]
+    fn duplicate_createconsumer_preserves_the_entire_consumer_and_group() {
+        let store = ShardExecutor::new(1000);
+        let key = b"stream\0\xff";
+        let group = b"group\0\xff";
+        let consumer = b"worker\0\xff";
+        assert_eq!(
+            run(&store, &[b"XADD", key, b"1-0", b"f", b"v"]),
+            b"$3\r\n1-0\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", key, group, b"0"]),
+            b"+OK\r\n"
+        );
+        run(
+            &store,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                group,
+                consumer,
+                b"STREAMS",
+                key,
+                b">",
+            ],
+        );
+        assert!(store.restore_consumer_seen(key, group, consumer, 1234));
+        let (before, sequence, payload) = {
+            let data = store.data.try_borrow().unwrap();
+            let group =
+                &data.entries[key.as_slice()].stream.as_ref().unwrap().groups[group.as_slice()];
+            assert_eq!(group.pending.len(), 1);
+            assert_eq!(group.consumers[consumer.as_slice()].pending.len(), 1);
+            (group.clone(), data.journal_seq(), data.payload_bytes)
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                run(
+                    &store,
+                    &[b"XGROUP", b"CREATECONSUMER", key, group, consumer]
+                ),
+                b":0\r\n"
+            );
+            let data = store.data.try_borrow().unwrap();
+            assert_eq!(
+                data.entries[key.as_slice()].stream.as_ref().unwrap().groups[group.as_slice()],
+                before
+            );
+            assert_eq!(
+                data.journal_seq(),
+                sequence,
+                "a no-op must not invalidate WATCH/journal versions"
+            );
+            assert_eq!(data.payload_bytes, payload);
+        }
+        assert_eq!(run(&store, &[b"XACK", key, group, b"1-0"]), b":1\r\n");
+        let data = store.data.try_borrow().unwrap();
+        let group = &data.entries[key.as_slice()].stream.as_ref().unwrap().groups[group.as_slice()];
+        assert!(group.pending.is_empty());
+        assert!(group.consumers[consumer.as_slice()].pending.is_empty());
     }
 }
