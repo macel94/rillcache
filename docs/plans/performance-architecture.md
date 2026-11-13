@@ -1433,6 +1433,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` 7.96 ms (p99 17.2) vs 0.12/0.16; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, admitted | AC48 | none |
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
+| MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
@@ -1885,6 +1886,7 @@ for a production claim.
 | Journal rewrite | fork + COW child, parent serves; fork page-table pause | same | key-list materialisation (9–20 ms at 20k keys) then 512-key/1 MiB slices on the owner | **Keep:** no fork in safe Rust; reduce the start pause with 4.23 only if a rewrite-latency cohort shows it matters (3.13) |
 | AOF replay | single AOF load; no separate per-command CRC pass | single load | checksum parse + reparse + normal execute (200k: ~1.16 s) | **Adopt:** 4.27 single-pass loader; measured 20–45× slower to ready (3.15) |
 | Dispatch | dict command table + `lastcmd` reuse + `call()` | dict command table + `call()` | inlined PING/SET/GET/ECHO, checked dispatcher otherwise | **Keep:** inlining is cheaper for gate commands; last-command cache is below noise (4.17) |
+| Transactions (MULTI/EXEC) | queue command refs, ACL at queue time, one reply array | same | copy args at queue, re-check ACL at EXEC, execute through the dispatcher | **Keep:** measured 1,000-command tx 3.02 vs 2.48–2.76 ms and the plain batch leads (3.36) |
 | Time | cached `mstime` per execution unit; hardware-clock refresh every ≤25 calls | cached `mstime` per execution unit | `SystemTime::now()` only when expirations exist | **Keep/close 4.9:** a TTL clock call is ~20–30 ns, below noise; revisit only with a TTL-specific workload |
 | Expiry | lazy + sampled active cycle, 25% CPU budget, fast 1 ms, effort levels | same | lazy + ordered `BTreeSet` reap, 128 due keys per 100 ms | **Keep:** ordered removals are exact and capped at ~0.1–0.3% CPU; adaptive bursts only with the 4.16 TTL row (3.10) |
 | Eviction | 16-entry sampled pool, LRU clock on access, optional LFU | same | bounded candidate scans, LRU by mutation time, no LFU | **Adopt:** 4.26 pooled/batched eviction; measured 85.8% P16 loss under pressure, policy-independent; read-aware LRU still unmeasured (3.10) |
@@ -3294,6 +3296,45 @@ repeat for `COUNT`. No clone, sort, re-encode or replace. `ZMPOP`/`BZPOP*` reuse
 the same primitive; keep score formatting, tie order, empty-key deletion and
 journal/rewrite/accounting semantics.
 
+### 3.36 Multi-command transactions (MULTI/EXEC)
+
+- **Redis 8.10.2 and Valkey 9.1.2** queue the parsed command objects (argument
+  references, not copies), check ACL at queue time, and execute the queue in one
+  guard at `EXEC`, writing one reply array
+  ([`redis multi.c#L91`](https://github.com/redis/redis/blob/8.10.2/src/multi.c#L91),
+  [`#L127`](https://github.com/redis/redis/blob/8.10.2/src/multi.c#L127),
+  [`#L35`](https://github.com/redis/redis/blob/8.10.2/src/multi.c#L35);
+  [`valkey multi.c#L162`](https://github.com/valkey-io/valkey/blob/9.1.2/src/multi.c#L162),
+  [`#L195`](https://github.com/valkey-io/valkey/blob/9.1.2/src/multi.c#L195)).
+- **Rillcache** copies every queued command's arguments into
+  `Vec<Vec<u8>>` (capped at 10,000), re-checks ACL for each queued command at
+  `EXEC`, then executes them through the normal dispatcher and writes one array.
+  The default local `Store` path executes the queue directly; only the shared/
+  multi-owner handle copies the queue again in the bridge
+  ([`transaction.rs`](../../src/session/transaction.rs#L11),
+  [`dispatch`](../../src/session/transaction.rs#L35)).
+- **Measured (2026-11-12).** One pipelined `MULTI ... EXEC` per sample, 20
+  repetitions, three rotations; a 1,000-command plain batch is the control:
+
+  | Batch | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `MULTI` + 100 `SET` + `EXEC` | 0.764 ms | 0.448 ms | 0.742 ms |
+  | `MULTI` + 1,000 `SET` + `EXEC` | 3.02 | 2.76 | 2.48 |
+  | `MULTI` + 100 `SET` 1 KB + `EXEC` | 0.873 | 1.042 | 1.077 |
+  | `MULTI` + 1,000 `SET` + `DISCARD` | 1.37 | 1.30 | 1.77 |
+  | 1,000 plain `SET` (control) | 1.42 | 2.20 | 2.59 |
+  | second 1,000-command transaction | 2.85 | 2.75 | 2.59 |
+
+  The 1,000-command transaction is within **1.1–1.2×** and the queue-only and
+  plain-batch rows lead; the 100-command row is within the host spread (Rill
+  0.57–1.16 ms, Redis 0.44–1.04). No candidate.
+
+**Verdict: keep the transaction path.** The measured cost of copying arguments
+and re-checking ACL is not a material gap at 1,000 commands, and the plain batch
+is faster than both C servers. Re-measure only if the execution path changes
+(e.g., an ordered-index or in-place collection change lands) or a 10,000-command
+cohort shows a different shape.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3935,6 +3976,9 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    and a 100-member control on a 100k set. Confirms 4.49 on a clean runner; the
    2026-11-12 local cohort in section 3.35 already measures 146–160 ms versus
    0.16–0.42 ms.
+28. **Transactions:** `MULTI` + 100/1,000 `SET` + `EXEC`, a 100×1 KB
+   transaction, queue-only `DISCARD`, and a plain 1,000-SET control. Confirms the
+   measured null in section 3.36 on a clean runner.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -3942,7 +3986,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty-seven rows are complete for all three servers;
+runners, not a shared k3s host; all twenty-eight rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -6505,6 +6549,13 @@ separate roadmap.
   (0.3/0.3/0.3); `ZPOPMAX` 159.9 versus 0.21/0.29; `ZPOPMIN COUNT 10` 146.6
   versus 0.35/0.16; `ZMPOP 1 z MIN` 155.8 versus 0.16/0.20; 100-member control
   0.11 versus 0.16/0.24. Raw JSON retained (untracked).
+- Transaction cohort (section 3.36, measured null): one pipelined `MULTI ... EXEC`
+  per sample, 20 repetitions, three rotations. `MULTI`+100 `SET`+`EXEC` 0.764 ms
+  (0.57/1.16/0.76) versus Redis 0.448 (1.04/0.44/0.45) and Valkey 0.742
+  (1.56/0.45/0.74); 1,000 commands 3.02 versus 2.76/2.48; 100×1 KB 0.873 versus
+  1.042/1.077; queue-only `DISCARD` 1.37 versus 1.30/1.77; plain 1,000 `SET`
+  control 1.42 versus 2.20/2.59; second 1,000-command tx 2.85 versus 2.75/2.59.
+  Raw JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -6978,3 +7029,7 @@ separate roadmap.
   not measure `BZPOPMIN`/`BZPOPMAX`/`BZMPOP`, `COUNT` larger than 10, or the
   pop-min under WATCH/transactions. Those are implementation-PR evidence under
   AC51.
+- The transaction cohort (section 3.36) measures pipelined transactions up to
+  1,000 commands with one value size; it does not measure `WATCH` aborts, 10,000
+  commands, or multi-owner transaction routing. It is a null result at the
+  measured shape, not universal parity.
