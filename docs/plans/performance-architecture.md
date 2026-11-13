@@ -2,7 +2,7 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); every other runtime item
-here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.49).**
+here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.50).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -134,7 +134,11 @@ vs 0.31–0.35 ms** and `BITCOUNT` **23.0 vs 3.4–4.6 ms** (4.37). Sorted-set r
 and score reads are the largest ratio in the record at 100k: **57–72 ms** for
 `ZRANK`/`ZRANGEBYSCORE`/`ZRANGE` versus 0.07–0.17 ms (378–927×), and `ZSCORE`
 3.3 ms because it scans; 4.30 covers point/score/start-0 ranges and 4.38 the
-rank-select paths. Pub/sub loses a 2,000-message burst at **1,024 delivered and
+rank-select paths. Lex ranges repeat it: a 10-element `ZRANGEBYLEX ... LIMIT 10`
+costs **56.0–69.8 vs 0.18–0.43 ms** (163–371×) because it sorts the whole set
+first, and a narrow `ZLEXCOUNT` is **15.0 vs 0.21–0.22 ms** because it scans
+every member; 4.50 adds seek and span counts. Pub/sub loses a 2,000-message
+burst at **1,024 delivered and
 drops the subscription** (C servers: 2,000 and keep it), and a `PUBLISH` among
 10,000 channels is 3–6× slower; 4.39 covers the burst contract and channel
 lookup. Cardinality is equally materialized: at 100k, `SISMEMBER`/`SCARD` are
@@ -170,7 +174,12 @@ is extended with a `u64` bit scan. Streams have one more clone on a control path
 deep-clones every entry; 4.48 inserts the group in place. Sorted-set pops are the
 largest ratio in the record: `ZPOPMIN`/`ZPOPMAX`/`ZMPOP` at 100k are **146–160 vs
 0.16–0.42 ms** (373–974×) because every pop clones, sorts and replaces the whole
-set; 4.49 pops from the ordered index. Monitors share the pub/sub queue, so a
+set; 4.49 pops from the ordered index. Lex ranges and count-only queries repeat
+the sort/scan: a 10-element `ZRANGEBYLEX ... LIMIT 10` at 100k is **56.0–69.8 vs
+0.18–0.74 ms** (163–371×) and a narrow `ZLEXCOUNT` is **15.0 vs 0.21–0.22 ms**
+because `select_zset` sorts the whole set and the counts scan every member; 4.50
+seeks the ordered index and subtracts ranks. Monitors share the pub/sub queue,
+so a
 2,000-command burst delivers **1,024 of 2,000 lines** per monitor (all samples)
 while Redis/Valkey deliver all; 4.39 is extended to monitors. Under
 continuous eviction, the 2026-11-12 cohort measures an **85.8% P16
@@ -1088,7 +1097,7 @@ difference remains.
 
 ### 2.20 Where a mechanism difference still exists
 
-Twenty-nine observations; item 11 is now closed by PR #258 (`d334cde`), and the
+Thirty observations; item 11 is now closed by PR #258 (`d334cde`), and the
 rest are still true even though every row now leads:
 
 1. **Syscall shape.** At hosted gate rates (section 2.23) Rillcache does 1.336
@@ -1266,6 +1275,12 @@ rest are still true even though every row now leads:
     lines** to every monitor in every sample while Redis/Valkey deliver 2,000;
     publisher fan-out is at parity or cheaper when it does not overflow (section
     3.37, extending 4.39).
+30. **Lexicographic ranges and count-only queries.** A 10-element
+    `ZRANGEBYLEX`/`ZREVRANGEBYLEX` with `LIMIT 10` on a 100k equal-score zset
+    costs **56.0–69.8 ms versus 0.18–0.74** because `select_zset` sorts the whole
+    set before filtering, and `ZLEXCOUNT`/`ZCOUNT` scan every member
+    (**1.25–15.0 ms versus 0.13–0.39**, including an empty `ZCOUNT`); section
+    3.38, candidate 4.50 on 4.30/4.38's ordered index.
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1448,6 +1463,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 ms vs 0.42/0.34, `ZPOPMAX` 159.9 vs 0.21/0.29, `ZPOPMIN 10` 146.6 vs 0.35/0.16, `ZMPOP` 155.8 vs 0.16/0.20 (373–974×); 100-member control at the floor | 4.49, admitted | AC51 | none |
+| Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1869,6 +1885,7 @@ for a production claim.
 | Large multi-bulk replies (list/hash) | reply list/`writev`; hash iterated in internal order | same | list iterated directly; hash collects, sorts and encodes | **Adopt (list leads, hash lags):** 4.29 for 10k `HGETALL`; measured 43% behind Redis (3.2) |
 | Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, and 378–927× on 100k rank/range reads (3.2, 3.22, AC32/AC40) |
 | Sorted-set rank-select | skiplist span counts: O(log n) `ZRANK`, deep `ZRANGE` seek | same | rank requires a full materialize+sort+linear position scan | **Adapt:** 4.38 order-statistic index; measured 100k `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12 (3.22, AC40) |
+| Sorted-set lex ranges and counts | skiplist lex seek (`zslNthInLexRange`) and first/last rank subtraction for `ZLEXCOUNT`/`ZCOUNT` | same | `BYLEX` sorts the whole set before slicing; counts materialize and filter every member | **Adapt:** 4.50 seek + span counts on 4.30/4.38's index; measured 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 vs 0.18–0.74 ms (163–371×), `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 even when empty (3.38, AC52) |
 | Pub/sub fan-out | channel dict lookup; append to each client output; 32 MB pub/sub buffer limit disconnects | same | linear channel scan; per-subscriber 1024-message channel; overflow silently unsubscribes; 64 frames/tick drain; monitors share the queue and silently drop lines | **Adapt:** 4.39 key lookup, byte-bounded queue with a counted drop or documented disconnect, byte-bounded drain; measured 1,024/2,000 burst delivered and subscription lost vs 2,000/2,000 alive, 10k channels 0.38–0.89 vs 0.12–0.31 ms, and 1,024/2,000 monitor lines vs 2,000 (3.23, 3.37, AC41) |
 | Cardinality and membership | O(1) dict/intset/listpack probe; cached quicklist length | same | clone and sort the set (`SCARD`/`SISMEMBER`), or collect every reference (`HLEN`/`ZCARD`/`LLEN`) | **Adapt:** 4.40 `Collection::len` + direct membership; measured 100k `SISMEMBER`/`SCARD` 8.0–8.7 vs 0.15–0.22 ms, `HLEN`/`ZCARD` 1.6–2.2, `LLEN` 1.55; controls at the floor (3.24, AC42) |
 | List random access | quicklist node seek with cached counts; `LPOS` scans with early stop | same | flatten every element into a reference `Vec` per `LINDEX`/`LPOS` | **Adapt:** 4.41 in-place `list_get`/`list_position`; measured 200k `LINDEX` 1.29–1.47 vs 0.07–0.14 ms, `LPOS` hit-first 1.26 vs 0.10–0.13; missing `LPOS` already leads (3.25, AC43) |
@@ -3400,6 +3417,64 @@ and drain, but never truncate silently: either drop with a counted metric and
 keep the monitor, or disconnect with a documented error. Monitors are diagnostic,
 so an under-counted feed is worse than a visible disconnect.
 
+### 3.38 Lexicographic ranges and count-only sorted-set queries
+
+- **Redis 8.10.2 and Valkey 9.1.2** keep the sorted set in a skiplist ordered by
+  `(score, member)` and answer range/count queries by seeking, not scanning:
+  `zrangeGenericCommand` uses `zslNthInRange` for score/rank bounds and
+  `zslNthInLexRange` for lex bounds
+  ([`redis t_zset.c#L469`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L469),
+  [`#L866`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L866));
+  `zcountCommand` and `zlexcountCommand` find the first and last in-range node and
+  subtract their ranks, an **O(log n)** operation
+  ([`#L3690`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3690));
+  [Valkey](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L418) is
+  the same. `BYLEX` is defined over the member order of an equal-score set, which
+  is exactly the skiplist's local order.
+- **Rillcache** rewrites `ZRANGEBYLEX`/`ZREVRANGEBYLEX` into
+  `ZRANGE ... BYLEX` ([`collection_commands.rs`](../../src/engine/collection_commands.rs#L280)),
+  which materialises every member through `Collection::zset_items`
+  ([`data.rs`](../../src/engine/data.rs#L111)) and then calls `select_zset`;
+  `select_zset` always builds `ordered_zset` — a **full sort of the whole set** —
+  before it filters by lex and applies `LIMIT`
+  ([`collection_commands.rs#L798`](../../src/engine/collection_commands.rs#L798),
+  [`#L4185`](../../src/engine/collection_commands.rs#L4185)). `ZCOUNT` and
+  `ZLEXCOUNT` materialise all members and linearly filter them
+  ([`#L3866`](../../src/engine/collection_commands.rs#L3866),
+  [`#L4556`](../../src/engine/collection_commands.rs#L4556)), so even an empty
+  range costs a full pass. A `LIMIT 10` therefore pays for the entire set, and a
+  count pays for every member regardless of width.
+- **Measured (2026-11-13).** One 100,000-member zset with score 0 for every member
+  (`m000000`–`m099999`), a 10-member control, 20 repetitions per small reply and
+  five per full reply, three rotations:
+
+  | Command | Rillcache | Redis 8.10.2 | Valkey 9.1.2 |
+  | --- | ---: | ---: | ---: |
+  | `ZRANGEBYLEX - + LIMIT 0 10` | **55.98 ms** | 0.177 ms | 0.269 ms |
+  | `ZRANGEBYLEX [m050000 [m099999 LIMIT 0 10` | **69.79** | 0.188 | 0.428 |
+  | `ZREVRANGEBYLEX + - LIMIT 0 10` | **60.09** | 0.180 | 0.741 |
+  | `ZLEXCOUNT - +` | **1.88** | 0.346 | 0.128 |
+  | `ZLEXCOUNT [m050000 [m050100` | **15.02** | 0.224 | 0.212 |
+  | `ZCOUNT -inf +inf` | **1.75** | 0.269 | 0.212 |
+  | `ZCOUNT 0 0` (every member) | **1.25** | 0.387 | 0.222 |
+  | `ZCOUNT 1 2` (empty) | **1.43** | 0.234 | 0.339 |
+  | `ZRANGE 0 9` (known 4.30 path) | **61.62** | 0.180 | 0.150 |
+  | `ZRANGEBYLEX - +` (100k reply) | **144.75** | 87.17 | 100.21 |
+  | 10-member controls | 0.25–0.47 | 0.09–0.33 | 0.17–0.22 |
+
+  A 10-element lex range is **208–371×** slower than Redis/Valkey and grows with
+  set size, because it pays the same full sort as a rank range. Count-only forms
+  are **5.4–14.7×** slower for the full range and **67–71×** for a narrow lex
+  window; the empty `ZCOUNT 1 2` still scans all 100,000 members. The full
+  100k-member reply is only 1.4–1.7× behind because the reply encoding dominates
+  both sides. Candidate 4.50.
+
+**Verdict: extend the ordered index (4.30/4.38) with seek, and admit 4.50 for
+span counts.** Seek the first and last in-range position by `(score, member)`
+(and by member inside an equal-score range for lex), apply `LIMIT` from the seek,
+and derive counts from rank subtraction; a full-range count is just the
+cardinality. Do not sort to answer a bounded range and do not scan to count.
+
 ## 4. Candidate architectures
 
 Each candidate names its mechanism, expected effect, cost/risk and acceptance
@@ -3454,7 +3529,10 @@ in-place-register and cached-count candidate for the measured 4× add and 74–8
 count throughput losses in section 3.32. Section 3.33 extends 4.37 with a
 word-wise `BITPOS` scan. 4.48 is the in-place `XGROUP CREATE` candidate for the
 measured 88–99× group-creation loss in section 3.34. 4.49 is the ordered-pop
-candidate for the measured 373–974× sorted-set pop loss in section 3.35.
+candidate for the measured 373–974× sorted-set pop loss in section 3.35. 4.50 is
+the seek-based lex-range and span-count candidate for the measured 163–371×
+`ZRANGEBYLEX` and 5–71× `ZLEXCOUNT`/`ZCOUNT` losses in section 3.38; it reuses
+4.30/4.38's ordered index.
 
 ### 4.1 Bounded Mio readiness reactor (merged in PR #139)
 
@@ -4049,6 +4127,13 @@ the same generator, host, CPU placement and at least three rotated repetitions:
    counting delivered lines per monitor and publisher time. Extends 4.39 on a
    clean runner; the 2026-11-12 local cohort in section 3.37 already measures
    1,024/2,000 lines versus 2,000/2,000.
+30. **Lex ranges and count-only queries:** `ZRANGEBYLEX`/`ZREVRANGEBYLEX` with
+   `LIMIT 10` (unbounded, mid-range, reverse), the full 100k reply,
+   `ZLEXCOUNT` (full and narrow) and `ZCOUNT` (full, matching and empty) on a
+   100k equal-score zset, with a 10-member control. Confirms 4.50 on a clean
+   runner; the 2026-11-13 local cohort in section 3.38 already measures
+   56.0–69.8 ms versus 0.18–0.74 and a narrow lex count of 15.0 ms versus
+   0.21–0.22.
 
 Each row reports median, min/max, p99, server CPU and RSS, with raw JSON and the
 exact source/binary hashes retained. A loss outside the cohort spread becomes a
@@ -4056,7 +4141,7 @@ candidate with its own mechanism, prediction and rejection condition, or a
 documented limit if no safe mechanism exists. A win does not change the gate.
 
 **Acceptance (AC19).** The cohort runs on a clean runner or same-type four-CPU
-runners, not a shared k3s host; all twenty-nine rows are complete for all three servers;
+runners, not a shared k3s host; all thirty rows are complete for all three servers;
 no row is dropped, selected or relabeled; and any resulting candidate carries its
 own AC5-style tail/CPU check and fresh protected gates.
 
@@ -4527,6 +4612,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.47 HLL in place | `pfadd`/`pfcount`/`pfmerge` (`hll.rs#L240`, `#L285`, `#L313`), `Hll`/`inspect`/`serialize`, `Data::put` | cache invalidation; exact↔dense; count accuracy; serialization/rewrite/replay | 100k pipelined `PFADD`, 10k `PFCOUNT`, controls | small |
 | 4.48 xgroup create | `xgroup` (`streams.rs#L1454`, `#L1492`), `Stream.groups`, `put_stream` | BUSYGROUP/MKSTREAM/ID; payload unchanged; PEL/consumers; TTL/WATCH/journal/rewrite | 5k `XGROUP CREATE`, 10-entry control, other XGROUP ops | small |
 | 4.49 zset pops | `zset_pop` (`collection_commands.rs#L4817`), `owned_zset`/`ordered_zset`, ordered index | ties/scores; empty/negative count; key deletion; ZSetPack; blocking; accounting/rewrite | 100k `ZPOPMIN`/`ZPOPMAX`/`ZPOPMIN 10`/`ZMPOP`, 100-member control | medium |
+| 4.50 lex seek and span counts | `select_zset`/`ordered_zset` (`collection_commands.rs#L798`), `zset_range` (`#L4185`), `zset_count` (`#L3866`), `zset_lex_count` (`#L4556`), `zset_items` (`data.rs#L111`), ordered/rank index | bound parsing; exclusive/infinite bounds; reverse + LIMIT arithmetic; mixed-score order; pack conversion; store/accounting; TTL/WATCH/journal | 100k `ZRANGEBYLEX`/`ZREVRANGEBYLEX` LIMIT forms, full reply, `ZLEXCOUNT`/`ZCOUNT` (full/matching/empty), 10-member control | medium |
 
 **Priority.** 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
@@ -4547,7 +4633,9 @@ removes the two copies in `SETBIT` and the byte loop in `BITCOUNT`/`BITPOS`
 index; its 100k gaps are 35–298×. 4.30, 4.38, 4.43 and 4.49 are the largest
 measured read/pop ratios (378–974× and 10–53×) and should share one ordered
 structure: 4.30 covers point/score/start-0 reads, 4.38 the rank-select, 4.43 the
-geohash cell ranges, and 4.49 the min/max pops. 4.39 is a contract/reliability
+geohash cell ranges, and 4.49 the min/max pops; 4.50 adds the lex seek and
+span-count queries to the same index (163–371× for a 10-element lex range).
+4.39 is a contract/reliability
 fix on the pub/sub and MONITOR path already admitted as 4.24 (section 3.37) and
 should land with them. 4.34
 (landed in #258) removed two full-value copies per `APPEND`/`SETRANGE` and
@@ -5595,6 +5683,70 @@ order, score formatting, key deletion, blocking variants, journal/rewrite/replay
 and accounting tests shall pass; no dependency shall be added; and both protected
 gates shall pass on the exact head.
 
+### 4.50 Seek-based lex ranges and span counts (candidate; admission measured)
+
+**Mechanism.** Extend the admitted ordered `(score, member)` index (4.30/4.38) so
+a bounded range is answered by seeking, not by sorting:
+
+- locate the first and last entry of the requested score or lex bounds in the
+  ordered index (`BTreeMap`/block `range` for the seek) instead of building
+  `ordered_zset`;
+- for `BYLEX`, seek by member inside the equal-score block and preserve today's
+  behaviour for mixed scores (the command is defined over equal scores);
+- apply `LIMIT offset count` from the seek position, walking at most
+  `offset + count` entries, with the existing negative/zero/overflow rules;
+- answer `ZCOUNT`/`ZLEXCOUNT` as `rank(last) − rank(first) + 1` using the 4.38
+  order-statistic ranks, and return the zset length directly for an unbounded
+  range (Redis/Valkey subtract skiplist ranks);
+- `ZRANGESTORE`/`ZRANGE ... STORE` copy only the selected range; pack encodings
+  either answer directly (small) or convert at the existing threshold.
+
+No new structure beyond 4.30/4.38, no dependency, no `unsafe`.
+
+**Prediction.** At 100k equal-score members, `ZRANGEBYLEX - + LIMIT 0 10` falls
+from **56.0 ms to ≤0.3 ms** and the mid/reverse forms from 69.8/60.1; a narrow
+`ZLEXCOUNT` falls from **15.0 ms to ≤0.3 ms**; every `ZCOUNT` falls from
+1.25–1.75 ms to ≤0.2 ms regardless of whether the range is full, full-matching or
+empty; the full 100k-member reply stays within ~1.5× of the faster C server
+because it is reply-bound; a 10-member control is unchanged.
+
+**Admission evidence (2026-11-13, section 3.38).** One 100,000-member zset, score
+0, members `m000000`–`m099999`, 20 repetitions per small reply and five per full
+reply, three rotations: `ZRANGEBYLEX - + LIMIT 0 10` 51.0/56.0/66.0 ms versus
+Redis 0.18/0.22/0.16 and Valkey 0.15/0.80/0.27; mid-range 63.2/70.5/69.8 versus
+0.14–0.20 and 0.18–0.54; reverse 55.1/60.1/62.5 versus 0.13–0.69 and 0.32–1.02;
+`ZLEXCOUNT` all 1.88/1.13/2.28 versus 0.17–0.37/0.07–0.29 and narrow
+17.3/13.0/15.0 versus 0.21–0.42/0.07–0.34; `ZCOUNT` 1.07–2.45 versus
+0.14–0.78/0.18–1.20; full 100k lex reply 137.9/159.3/144.8 versus 85.1–91.0 and
+99.2–110.5; 10-member controls 0.25–0.47 versus 0.09–0.33/0.17–0.22.
+
+**Risks and obligations.** Bound parsing (`(`, `[`, `-`, `+`, NaN scores);
+exclusive and infinite bounds; reverse direction and offset arithmetic; mixed
+score/member order must match today's results; pack conversion must not reorder;
+empty results and destination removal for store forms; wrong type, missing key,
+TTL/expiry; WATCH version, journal and rewrite snapshots; payload accounting when
+a store form rewrites a key.
+
+**Rejected options.** Sorting and then breaking early (still O(n log n));
+caching the sorted vector per key (invalidated by every write and unbounded
+memory); a second lex-only index (duplicate storage and more invariants to keep
+consistent on every add/remove/score change).
+
+**Rejection condition.** Any range, count, order, LIMIT, store, pack or
+mixed-score result differs; the 10-member controls regress; a store form changes
+accounting or expiry; or no gain above the spread.
+
+**Acceptance (AC52).** At 100,000 equal-score members, `ZRANGEBYLEX` and
+`ZREVRANGEBYLEX` with `LIMIT 0 10` (unbounded, mid-range and reverse) shall have
+p50 ≤0.3 ms and p99 ≤2 ms (≥150× faster than the measured 56.0–69.8 ms and
+within ~3× the faster C server); `ZLEXCOUNT` and `ZCOUNT` (full, full-matching
+and empty) shall have p50 ≤0.3 ms and p99 ≤2 ms with a 10k→100k ratio ≤2×
+(size-independent); the full 100k-member lex reply shall be within 1.5× the
+faster C server; 10-member controls shall be unchanged; mixed-score, exclusive
+and infinite bounds, LIMIT edge cases, store forms, pack thresholds, TTL/WATCH/
+journal/rewrite and accounting tests shall pass; no dependency shall be added;
+and both protected gates shall pass on the exact head.
+
 None needs a new dependency: 4.15 uses `Arc`/`IoSlice`, 4.30 uses a `std`
 `BTreeSet` and a local total-order helper, 4.31 uses `std` `BTreeSet`/`BTreeMap`
 with the in-repo hex helper, 4.32 uses byte arenas and `VecDeque`, 4.33 uses a
@@ -5607,7 +5759,8 @@ lengths and probes, 4.41 walks the existing list chunks, 4.42 mutates the
 existing stream map, 4.43 uses geohash score ranges, 4.44 uses the existing
 set/zset members, 4.45 uses the existing lazy expire path, 4.46 slices the
 existing source order, 4.47 mutates the existing HLL registers, 4.48 mutates the
-existing stream groups, and 4.49 pops from the ordered zset index. The rest use
+existing stream groups, 4.49 pops from the ordered zset index, and 4.50 seeks the
+same index and adds no storage. The rest use
 the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
 lands as its own PR with AC5 plus the protected gates; no combined integration
 branch.
@@ -5664,7 +5817,7 @@ existing collection containers in place; 4.36 uses `Vec` plus
 existing channels and `sync_channel`; 4.40 uses the existing containers' lengths
 and probes; 4.41 walks the existing list chunks; 4.42 mutates the existing stream map;
 4.43 uses geohash score ranges; 4.44 uses the existing set/zset members; 4.45 uses the existing lazy expire path;
-4.46 slices the existing source order; 4.47 mutates the existing HLL registers; 4.48 mutates the existing stream groups; 4.49 pops from the ordered zset index.
+4.46 slices the existing source order; 4.47 mutates the existing HLL registers; 4.48 mutates the existing stream groups; 4.49 pops from the ordered zset index; 4.50 seeks the same index and adds no storage.
 None adds a crate, build script,
 allocator or FFI.
 No new dependency, build script, allocator or FFI is requested by this refresh. Level-triggered readiness
@@ -5889,6 +6042,11 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
   empty/negative `COUNT`, key deletion, blocking variants and accounting must
   stay exact; the pop must not clone or sort the set, and small `ZSetPack` sets
   keep a correct min/max path (AC51).
+- **Lex/span-count risk (4.50):** exclusive, infinite and reversed bounds,
+  `LIMIT` offset/count edges and mixed-score member order must produce exactly
+  today's results; the span count must equal a full scan for every bound form;
+  store forms must keep expiry, accounting and destination removal; `ZSetPack`
+  must not be reordered (AC52).
 - **Persistence blind spot:** the protected gate runs with persistence off, so
   none of its rows exercises the journal write, fsync or HMAC framing. A
   persistence-on claim needs the 4.16 row-5 cohort; gate parity does not imply
@@ -5969,6 +6127,7 @@ it remains a policy decision, not a free tuning change; `SO_BUSY_POLL` and
 | A count cache outside the HLL payload | A separate counter diverges from rewrite/replay/restore and accounting; the cache belongs in the serialized header (4.47). |
 | Keeping the `XGROUP CREATE` stream clone | It deep-copies every entry and folds the payload for a one-struct insert; the other XGROUP subcommands already mutate in place (4.48). |
 | Keeping the full clone/sort for `ZPOPMIN`/`ZPOPMAX` | The measured 100k pop is 373–974× behind; the ordered index already gives the min/max element, so no sort is needed (4.49). |
+| Sorting the whole zset to answer a bounded `BYLEX`/`ZCOUNT` query | A seek plus rank subtraction is O(log n); the measured 10-element lex range pays 56–70 ms for an O(n log n) sort and a narrow count scans all 100k members (4.50). Caching the sorted snapshot or adding a second lex index would duplicate storage and invalidation work for the same query. |
 | Scanning `BITPOS` byte by byte and bit by bit | The measured 16 MB not-found scan is 39–44× behind; a `u64` word scan with `trailing_zeros` is the same safe machinery as `BITCOUNT` (4.37). |
 
 ## 8. Acceptance criteria (EARS)
@@ -6345,6 +6504,17 @@ samples retained.
   key deletion, blocking variants, journal/rewrite/replay and accounting tests
   shall pass; no dependency shall be added; and both protected gates shall pass on
   the exact head.
+- **AC52 (seek-based lex ranges and span counts, only if 4.50 is implemented).**
+  At 100,000 equal-score members, `ZRANGEBYLEX` and `ZREVRANGEBYLEX` with
+  `LIMIT 0 10` (unbounded, mid-range and reverse) shall have p50 ≤0.3 ms and
+  p99 ≤2 ms (≥150× faster than the measured 56.0–69.8 ms and within ~3× the
+  faster C server); `ZLEXCOUNT` and `ZCOUNT` (full, full-matching and empty)
+  shall have p50 ≤0.3 ms and p99 ≤2 ms with a 10k→100k ratio ≤2×; the full
+  100k-member lex reply shall stay within 1.5× the faster C server; 10-member
+  controls shall be unchanged; mixed-score, exclusive/infinite bounds, LIMIT
+  edges, store forms, pack thresholds, TTL/WATCH/journal/rewrite and accounting
+  tests shall pass; no dependency shall be added; and both protected gates shall
+  pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -6665,6 +6835,16 @@ separate roadmap.
   Publisher p50 0 monitors 5.18 versus 1.88/2.37 ms; 1 monitor 3.75 versus
   5.66/16.74; 10 monitors 5.99 versus 19.78/27.22. Raw JSON retained
   (untracked).
+- Lex-range cohort (section 3.38, candidate 4.50): one 100,000-member zset with
+  score 0 and members `m000000`–`m099999`, a 10-member control, 20 repetitions
+  per small reply and five per full reply, three rotations. `ZRANGEBYLEX - +
+  LIMIT 0 10` 51.0/56.0/66.0 ms versus Redis 0.18/0.22/0.16 and Valkey
+  0.15/0.80/0.27; mid-range 63.2/70.5/69.8 versus 0.14–0.20/0.18–0.54; reverse
+  55.1/60.1/62.5 versus 0.13–0.69/0.32–1.02; `ZLEXCOUNT` all 1.88/1.13/2.28
+  versus 0.17–0.37/0.07–0.29 and narrow 17.3/13.0/15.0 versus
+  0.21–0.42/0.07–0.34; `ZCOUNT` 1.07–2.45 versus 0.14–0.78/0.18–1.20; full
+  100k lex reply 137.9/159.3/144.8 versus 85.1–91.0 and 99.2–110.5; 10-member
+  controls 0.25–0.47 versus 0.09–0.33/0.17–0.22. Raw JSON retained (untracked).
 - Post-fix string cohort (section 3.18, PR #258): the same 1 MB/32 MB harness on
   the merged head, three rotations. 32 MB `APPEND` p50 0.131 (p99 1.22) versus
   Redis 0.142 (1.21) and Valkey 0.219 (2.24); `SETRANGE` 0.185 (1.32) versus
@@ -7150,3 +7330,10 @@ separate roadmap.
   delivered-line truncation is deterministic across the six samples; publisher
   timings are host-noisy (0-monitor Rill 5.18 ms versus 3.75 at 1 monitor) and
   are not used as a rate claim.
+- The lex-range cohort (section 3.38) keeps every member at score 0, so it
+  measures the defined `BYLEX` domain but not mixed scores, where Rill's
+  global lex filter and the C servers' skiplist traversal can differ (that
+  behavior is an implementation obligation for 4.50, not a measured claim). It
+  covers a 100k set only, one connection, and no `ZRANGESTORE`/`ZREMRANGEBY*`
+  rows, slow readers or fragmentation; the full 100k reply is reply-bound and
+  its 1.4–1.7× is reported as that, not as a seek cost.
