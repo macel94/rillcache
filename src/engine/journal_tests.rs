@@ -46,6 +46,49 @@ fn open(path: &std::path::Path, policy: FsyncPolicy) -> Store {
     .unwrap()
 }
 
+#[test]
+fn clock_rollback_after_restart_can_resurrect_a_persisted_expiry() {
+    use crate::engine::Clock;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    struct TestClock(AtomicI64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    let path = aof_path("clock-rollback");
+    let initial_time = 1_700_000_000_000_i64;
+    let clock = Arc::new(TestClock(AtomicI64::new(initial_time)));
+    {
+        let store =
+            Store::with_clock_and_journal(&path, FsyncPolicy::Always, clock.clone()).unwrap();
+        assert_eq!(
+            run(&store, &[b"SET", b"ttl", b"value", b"PX", b"1000"]),
+            b"+OK\r\n"
+        );
+    }
+
+    // Replay after the deadline, but do not access the key: with no persisted
+    // clock high-water mark, the original absolute deadline remains in the AOF.
+    clock.0.store(initial_time + 2_000, Ordering::SeqCst);
+    {
+        let store =
+            Store::with_clock_and_journal(&path, FsyncPolicy::Always, clock.clone()).unwrap();
+        assert_eq!(run(&store, &[b"PING"]), b"+PONG\r\n");
+    }
+
+    // A backward wall-clock step before expiry is observed by a command or the
+    // background reaper lets the same persisted deadline become live on replay.
+    clock.0.store(initial_time + 500, Ordering::SeqCst);
+    let store = Store::with_clock_and_journal(&path, FsyncPolicy::Always, clock).unwrap();
+    assert_eq!(run(&store, &[b"GET", b"ttl"]), b"$5\r\nvalue\r\n");
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
 const AUTH_KEY: &[u8] = b"0123456789abcdef";
 
 fn open_with_auth(path: &std::path::Path, key: &[u8], migrate: bool) -> std::io::Result<Store> {

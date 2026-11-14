@@ -23,9 +23,13 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R120 (ubiquitous):** Persistence tests shall run offline in all execution modes
   and cover strings/binary values, all supported collections, streams/groups, TTLs,
   transactions, concurrent writers, flushes, partial tails, mid-file corruption and
-  restart. Documentation shall retain missing RDB/AOF-rewrite, compaction,
-  checksums, encryption, multi-process ownership, backup drills, signal drain,
-  stream-pending durability and disk-fault/soak guarantees.
+  restart. A deterministic clock test shall cover TTL replay after a backward
+  system-clock step, and documentation shall state that timezone/daylight-saving
+  changes do not affect Unix-epoch deadlines while a backward system-clock step
+  before persisted deletion can make a key live again. Documentation shall retain
+  missing RDB/AOF-rewrite, compaction, checksums, encryption, multi-process
+  ownership, backup drills, signal drain, stream-pending durability and
+  disk-fault/soak guarantees.
 
 ## Journal compaction (S32)
 
