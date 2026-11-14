@@ -1501,11 +1501,17 @@ impl ShardExecutor {
                 out.extend_from_slice(b"-BUSYGROUP Consumer Group name already exists\r\n");
                 return;
             }
+            let entries_read = match start {
+                None => Some(stream.entries_added),
+                Some(id) if id == StreamId::default() => Some(0),
+                Some(_) => None,
+            };
             let last = start.unwrap_or(stream.last_generated);
             stream.groups.insert(
                 a[3].to_vec(),
                 ConsumerGroup {
                     last_delivered: last,
+                    entries_read,
                     consumers: Default::default(),
                     pending: Default::default(),
                 },
@@ -1560,6 +1566,11 @@ impl ShardExecutor {
                 return;
             };
             g.last_delivered = next.unwrap_or(s.last_generated);
+            g.entries_read = match next {
+                None => Some(s.entries_added),
+                Some(id) if id == StreamId::default() => Some(0),
+                Some(_) => None,
+            };
             data.touch(a[2]);
             simple(b"OK", out);
         } else if a[1].eq_ignore_ascii_case(b"DESTROY") {
@@ -1716,6 +1727,10 @@ impl ShardExecutor {
                         .collect();
                     if entries.is_empty() {
                         continue;
+                    }
+                    if let Some(entries_read) = group.entries_read.as_mut() {
+                        *entries_read = entries_read
+                            .saturating_add(u64::try_from(entries.len()).unwrap_or(u64::MAX));
                     }
                     let consumer = group
                         .consumers
@@ -1891,7 +1906,11 @@ impl ShardExecutor {
             encode_bulk(Some(b"last-delivered-id"), out);
             encode_bulk(Some(&id_text(group.last_delivered)), out);
             encode_bulk(Some(b"entries-read"), out);
-            encode_bulk(None, out);
+            if let Some(entries_read) = group.entries_read {
+                integer(i64::try_from(entries_read).unwrap_or(i64::MAX), out);
+            } else {
+                encode_bulk(None, out);
+            }
             encode_bulk(Some(b"lag"), out);
             integer(
                 stream
@@ -2023,7 +2042,11 @@ impl ShardExecutor {
                 encode_bulk(Some(b"last-delivered-id"), out);
                 encode_bulk(Some(&id_text(g.last_delivered)), out);
                 encode_bulk(Some(b"entries-read"), out);
-                encode_bulk(None, out);
+                if let Some(entries_read) = g.entries_read {
+                    integer(i64::try_from(entries_read).unwrap_or(i64::MAX), out);
+                } else {
+                    encode_bulk(None, out);
+                }
                 encode_bulk(Some(b"lag"), out);
                 integer(
                     s.entries
@@ -2364,5 +2387,62 @@ mod tests {
         let group = &data.entries[key.as_slice()].stream.as_ref().unwrap().groups[group.as_slice()];
         assert!(group.pending.is_empty());
         assert!(group.consumers[consumer.as_slice()].pending.is_empty());
+    }
+
+    #[test]
+    fn group_entries_read_tracks_known_starts_and_new_deliveries() {
+        let store = ShardExecutor::new(1_000_000);
+        for id in [b"1".as_slice(), b"2", b"3"] {
+            assert!(run(&store, &[b"XADD", b"x", id, b"f", b"v"]).starts_with(b"$"));
+        }
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"x", b"zero", b"0"]),
+            b"+OK\r\n"
+        );
+        assert!(
+            run(
+                &store,
+                &[
+                    b"XREADGROUP",
+                    b"GROUP",
+                    b"zero",
+                    b"c",
+                    b"COUNT",
+                    b"2",
+                    b"STREAMS",
+                    b"x",
+                    b">"
+                ]
+            )
+            .starts_with(b"*1\r\n")
+        );
+        let read = |name: &[u8]| {
+            let data = store.data.try_borrow().unwrap();
+            data.entries[b"x".as_slice()]
+                .stream
+                .as_ref()
+                .unwrap()
+                .groups[name]
+                .entries_read
+        };
+        assert_eq!(read(b"zero"), Some(2));
+
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"x", b"all", b"$"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(read(b"all"), Some(3));
+
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"SETID", b"x", b"all", b"0"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(read(b"all"), Some(0));
+
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"SETID", b"x", b"all", b"1-0"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(read(b"all"), None, "an explicit non-zero start is unknown");
     }
 }
