@@ -173,13 +173,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   delivery remains explicitly out of scope unless required by the profile.
 
 - [ ] **C9. Streams remain a bounded subset with volatile delivery state.** [P1]
-  Entries, last IDs and group cursors persist, but consumer objects and pending
-  entry lists (owners, delivery counts, timestamps) are not restored. `XINFO`
-  omits some Redis fields (`entries-read` is null, `nacked-count` is zero, inactive
-  time is approximated), and approximate `XTRIM` follows a different granularity.
-  **Closes when:** pending/consumer state is durable and restored, metadata fields
-  match the declared version or are explicitly excluded, and trim/read semantics
-  pass a differential corpus.
+  Entries, last IDs, group cursors, consumers and pending records survive restart
+  (D6 complete), but `XINFO` still diverges (`nacked-count` is zero, inactive time
+  is approximated), `lag` is retained-entry based rather than Redis's
+  deletion-aware estimator, and approximate `XTRIM` follows a different
+  granularity.
+  **Partial (2026-11-14): known `entries-read` counts.** Groups created at `$` or
+  `0` now report `entries-read` and increment it on new `XREADGROUP ... >`
+  deliveries; explicit non-zero starts, SETID and replayed groups without the
+  counter remain null. Tests cover `$`, `0`, SETID and delivery increments.
+  **Closes when:** metadata fields match the declared version or are explicitly
+  excluded, and trim/read semantics pass a differential corpus.
 
 - [ ] **C10. HyperLogLog is not Redis-interoperable.** [P1]
   The private payload uses an exact hash set then a 2^14-register sketch, not
