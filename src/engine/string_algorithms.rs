@@ -116,7 +116,6 @@ impl ShardExecutor {
             return;
         }
         let previous = entry.map(|e| e.payload_len);
-        let expires = entry.and_then(|e| e.expires);
         let old = entry.and_then(|e| e.value.get(byte)).copied().unwrap_or(0);
         let shift = 7 - (offset % 8) as u8;
         let old_bit = (old >> shift) & 1;
@@ -126,17 +125,18 @@ impl ShardExecutor {
             out.extend_from_slice(OOM);
             return;
         };
-        let mut next = Vec::new();
-        if next.try_reserve_exact(new_len).is_err() {
+        if data
+            .mutate_string(args[1], new_len, payload, self.payload_limit(), |bytes| {
+                if bytes.len() < new_len {
+                    bytes.resize(new_len, 0);
+                }
+                bytes[byte] = (bytes[byte] & !(1 << shift)) | ((value as u8) << shift);
+            })
+            .is_err()
+        {
             out.extend_from_slice(OOM);
             return;
         }
-        if let Some(entry) = data.entries.get(args[1]) {
-            next.extend_from_slice(&entry.value);
-        }
-        next.resize(new_len, 0);
-        next[byte] = (next[byte] & !(1 << shift)) | ((value as u8) << shift);
-        data.put(args[1], &next, expires, payload, now);
         integer(i64::from(old_bit), out);
     }
 
