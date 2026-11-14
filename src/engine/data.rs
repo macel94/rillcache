@@ -369,6 +369,7 @@ pub(crate) struct Data {
     evicted_events: VecDeque<Vec<u8>>,
     expired_field_events: VecDeque<Vec<u8>>,
     deleted_events: VecDeque<Vec<u8>>,
+    hash_events: VecDeque<(Vec<u8>, Vec<u8>)>,
     pub(in crate::engine) expired_keys: u64,
     pub(in crate::engine) expired_subkeys: u64,
     pub(in crate::engine) evicted_keys: u64,
@@ -388,6 +389,9 @@ pub(super) struct Lifecycle {
     pub evicted: Vec<Vec<u8>>,
     pub expired_fields: Vec<Vec<u8>>,
     pub deleted: Vec<Vec<u8>>,
+    /// Ordered `(event, key)` pairs for compound hash commands whose event set
+    /// cannot be derived from the final state alone.
+    pub hash_events: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 fn push_lifecycle(queue: &mut VecDeque<Vec<u8>>, key: &[u8]) {
@@ -472,6 +476,7 @@ impl Data {
             evicted: self.evicted_events.drain(..).collect(),
             expired_fields: self.expired_field_events.drain(..).collect(),
             deleted: self.deleted_events.drain(..).collect(),
+            hash_events: self.hash_events.drain(..).collect(),
         }
     }
 
@@ -482,6 +487,15 @@ impl Data {
         self.evicted_events.clear();
         self.expired_field_events.clear();
         self.deleted_events.clear();
+        self.hash_events.clear();
+    }
+
+    /// Queue one ordered hash notification for the command that is executing.
+    pub fn record_hash_event(&mut self, event: &[u8], key: &[u8]) {
+        if self.hash_events.len() >= MAX_LIFECYCLE_EVENTS {
+            self.hash_events.pop_front();
+        }
+        self.hash_events.push_back((event.to_vec(), key.to_vec()));
     }
 
     /// Record a mutation visible to `WATCH`/`EXEC` conflict checks and to the
@@ -1192,21 +1206,28 @@ mod tests {
         push_lifecycle(&mut data.evicted_events, b"b");
         push_lifecycle(&mut data.expired_field_events, b"c");
         push_lifecycle(&mut data.deleted_events, b"d");
+        data.record_hash_event(b"hset", b"e");
         let lifecycle = data.drain_lifecycle();
         assert_eq!(lifecycle.expired, vec![b"a".to_vec()]);
         assert_eq!(lifecycle.evicted, vec![b"b".to_vec()]);
         assert_eq!(lifecycle.expired_fields, vec![b"c".to_vec()]);
         assert_eq!(lifecycle.deleted, vec![b"d".to_vec()]);
+        assert_eq!(
+            lifecycle.hash_events,
+            vec![(b"hset".to_vec(), b"e".to_vec())]
+        );
 
         push_lifecycle(&mut data.expired_events, b"stale");
         push_lifecycle(&mut data.expired_field_events, b"stale");
         push_lifecycle(&mut data.deleted_events, b"stale");
+        data.record_hash_event(b"hset", b"stale");
         data.clear_lifecycle();
         let lifecycle = data.drain_lifecycle();
         assert!(lifecycle.expired.is_empty());
         assert!(lifecycle.evicted.is_empty());
         assert!(lifecycle.expired_fields.is_empty());
         assert!(lifecycle.deleted.is_empty());
+        assert!(lifecycle.hash_events.is_empty());
 
         for index in 0..MAX_LIFECYCLE_EVENTS + 10 {
             push_lifecycle(&mut data.expired_events, index.to_string().as_bytes());
