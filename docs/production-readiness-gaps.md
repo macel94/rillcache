@@ -321,10 +321,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   tombstone removes it per missing-entry semantics; historical state for deleted
   or renamed consumers is not retained.
 
-- [ ] **D7. Signal-driven graceful drain is missing.** [P0]
-  Managed shutdown joins workers and protocol `SHUTDOWN` flushes the journal, but
-  the standalone process has no portable SIGTERM/SIGINT handler. Container
-  termination can lose in-flight replies and unsynced journal tails.
+- [ ] **D7. Signal-driven graceful drain is partial.** [P0]
+  **Partial (2026-11-14):** the standalone binary captures SIGINT/SIGTERM on Unix
+  (CTRL-C on Windows), requests the server's existing stop path, and joins the
+  signal listener and server workers. A Linux subprocess test sends SIGTERM and
+  verifies an acknowledged `appendfsync always` write survives restart. This
+  does not prove a configurable drain deadline or forced-termination reporting;
+  a supervisor can still kill the process before an unbounded worker drain ends.
   **Closes when:** a reviewed, safe drain path stops admission, flushes within a
   deadline, joins workers and reports forced termination; or the profile states
   the supervisor contract and accepted loss window.

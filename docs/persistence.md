@@ -138,9 +138,12 @@ can request a durable stop over the protocol. `NOSAVE` and `SAVE` are accepted
 for client compatibility but neither writes an RDB file; both flush the journal
 when append-only persistence is enabled. `NOW`/`FORCE` are no-ops because shutdown
 is already immediate, and `ABORT` returns `No shutdown in progress.` because no
-delayed shutdown state exists. The safe-std server still has no portable SIGTERM
-handler; `always` is the only policy that does not depend on a clean process exit
-for recent acknowledged writes unless a client sends `SHUTDOWN`.
+delayed shutdown state exists. The standalone binary captures SIGINT/SIGTERM on
+Unix (CTRL-C on Windows) and requests this same joined shutdown path. A Linux
+subprocess test verifies that an acknowledged `always` write survives SIGTERM
+and restart. There is not yet a configured drain deadline or forced-termination
+reporting; `everysec`/`no` can still lose an unsynced tail if an external
+supervisor kills the process before orderly shutdown completes.
 
 If an append or fsync fails, the command reply is replaced with
 `ERR append-only write failed: ...`, the journal enters a failed state and later

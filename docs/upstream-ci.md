@@ -226,8 +226,10 @@ owned by the harness, terminated in `finally`, waited for, and forcibly killed
 only after bounded waits; no system-wide pkill. Temporary storage and ports are
 unique; no shared service or concurrently destructive suite uses an endpoint.
 SIGINT/SIGTERM runs cleanup where the OS permits. Rillcache's standalone binary
-has no portable signal-handler shutdown API; the harness records termination
-rather than claiming SIGTERM exercised its in-process joined-shutdown contract.
+captures SIGINT/SIGTERM on Unix (CTRL-C on Windows) and routes it through joined
+server shutdown. The Linux durability subprocess test sends SIGTERM and verifies
+an acknowledged `appendfsync always` write after restart; it does not establish a
+hard drain deadline or forced-termination behavior.
 
 When a run fails, inspect in order: build prerequisites/checksums and command
 status; server startup log/readiness and process status; prerequisite JSON; native
