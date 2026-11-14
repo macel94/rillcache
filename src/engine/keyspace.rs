@@ -1,4 +1,4 @@
-use super::data::Entry;
+use super::data::{COMMAND_REAP_LIMIT, Entry};
 use super::*;
 use crate::protocol::encode_bulk;
 use std::io::Write;
@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime as RandomSystemTime, UNIX_EPOCH as RANDOM_EPOCH};
 
 static RANDOMKEY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Random slots probed per RANDOMKEY call before the live-key fallback scan.
+const RANDOMKEY_PROBES: usize = 100;
 const MAX_GLOB_STEPS: usize = 4_000_000;
 
 impl ShardExecutor {
@@ -181,17 +183,19 @@ impl ShardExecutor {
     }
 
     fn keys(&self, pattern: &[u8], output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.try_borrow_mut() else {
+        let Ok(data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
         let now = self.now(&data);
-        data.reap(now, usize::MAX);
+        // Filter logically expired keys while scanning instead of reaping the
+        // whole keyspace: KEYS already visits every key, so this is bounded by
+        // the reply it was going to build anyway.
         let mut matched: Vec<&[u8]> = data
             .entries
-            .keys()
-            .filter(|key| glob_match(pattern, key))
-            .map(Vec::as_slice)
+            .iter()
+            .filter(|(key, entry)| entry.alive(now) && glob_match(pattern, key))
+            .map(|(key, _)| key.as_slice())
             .collect();
         matched.sort_unstable();
         write!(output, "*{}\r\n", matched.len()).expect("Vec write");
@@ -201,12 +205,11 @@ impl ShardExecutor {
     }
 
     fn random_key(&self, output: &mut Vec<u8>) {
-        let Ok(mut data) = self.data.try_borrow_mut() else {
+        let Ok(data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
         let now = self.now(&data);
-        data.reap(now, usize::MAX);
         if data.entries.is_empty() {
             encode_bulk(None, output);
             return;
@@ -217,16 +220,32 @@ impl ShardExecutor {
             .unwrap_or_default()
             .as_nanos() as u64;
         let mut random = nanos ^ sequence.wrapping_mul(0x9e3779b97f4a7c15);
-        random = (random ^ (random >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        random = (random ^ (random >> 27)).wrapping_mul(0x94d049bb133111eb);
-        random ^= random >> 31;
-        let selected = random as usize % data.entries.len();
-        let key = data
-            .entries
-            .keys()
-            .nth(selected)
-            .expect("index below key count");
-        encode_bulk(Some(key), output);
+        // Probe a bounded number of pseudo-random slots for a live key instead
+        // of reaping the whole keyspace; fall back to the first live key only
+        // when a large expired backlog covers the sampled slots.
+        let mut selected = None;
+        for _ in 0..RANDOMKEY_PROBES {
+            random = (random ^ (random >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+            random = (random ^ (random >> 27)).wrapping_mul(0x94d049bb133111eb);
+            random ^= random >> 31;
+            let index = random as usize % data.entries.len();
+            if let Some((key, entry)) = data.entries.iter().nth(index)
+                && entry.alive(now)
+            {
+                selected = Some(key);
+                break;
+            }
+        }
+        let selected = selected.or_else(|| {
+            data.entries
+                .iter()
+                .find(|(_, entry)| entry.alive(now))
+                .map(|(key, _)| key)
+        });
+        match selected {
+            Some(key) => encode_bulk(Some(key), output),
+            None => encode_bulk(None, output),
+        }
     }
 
     fn touch(&self, keys: &[&[u8]], output: &mut Vec<u8>) {
@@ -252,7 +271,10 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
-        data.reap(now, usize::MAX);
+        // Reclaim a bounded batch so ordinary lazy expiry is reflected, while a
+        // mass-expiry backlog cannot stall the size query. Any keys left beyond
+        // the batch are Redis-compatible dict entries until they are reclaimed.
+        data.reap(now, COMMAND_REAP_LIMIT);
         integer(data.entries.len() as i64, output);
     }
 
@@ -501,6 +523,42 @@ mod tests {
             b":2\r\n"
         );
         assert_eq!(call(&store, &[b"DBSIZE"]), b":1\r\n");
+    }
+
+    #[test]
+    fn expired_key_backlog_is_hidden_from_keys_randomkey_scan_and_reaped_in_batches() {
+        let clock = Arc::new(TestClock(AtomicI64::new(100)));
+        let store = ShardExecutor::with_clock(1_000_000, clock.clone());
+        for index in 0..300 {
+            let key = format!("k{index:03}");
+            store.set(
+                key.as_bytes(),
+                b"v",
+                SetOptions {
+                    expiry: Some((ExpiryKind::Px, b"10")),
+                    ..SetOptions::default()
+                },
+                "set",
+                false,
+                &mut Vec::new(),
+            );
+        }
+        clock.0.fetch_add(11, Ordering::SeqCst);
+        // Expired keys are filtered logically even though only a bounded batch
+        // is reclaimed by each command.
+        assert_eq!(call(&store, &[b"KEYS", b"*"]), b"*0\r\n");
+        assert_eq!(call(&store, &[b"RANDOMKEY"]), b"$-1\r\n");
+        assert_eq!(
+            call(&store, &[b"SCAN", b"0", b"COUNT", b"1000"]),
+            b"*2\r\n$1\r\n0\r\n*0\r\n"
+        );
+        // DBSIZE reclaims one bounded batch and reports the remaining entries;
+        // expired-but-unreaped keys are Redis-compatible dict entries.
+        assert_eq!(call(&store, &[b"DBSIZE"]), b":172\r\n");
+        assert_eq!(call(&store, &[b"KEYS", b"*"]), b"*0\r\n");
+        assert_eq!(call(&store, &[b"DBSIZE"]), b":44\r\n");
+        assert_eq!(call(&store, &[b"DBSIZE"]), b":0\r\n");
+        assert!(store.data.try_borrow().unwrap().expirations.is_empty());
     }
 
     #[test]
