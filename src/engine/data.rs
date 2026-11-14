@@ -118,6 +118,14 @@ impl Collection {
         Some(items)
     }
 
+    pub fn list_len(&self) -> Option<usize> {
+        match self {
+            Self::ListPack(values) => Some(values.len()),
+            Self::ListQuick(nodes) => Some(nodes.iter().map(VecDeque::len).sum()),
+            _ => None,
+        }
+    }
+
     pub fn set_len(&self) -> Option<usize> {
         match self {
             Self::Set(values) => Some(values.len()),

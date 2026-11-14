@@ -732,9 +732,8 @@ impl ShardExecutor {
                 entry
                     .collection
                     .as_ref()
-                    .and_then(Collection::list_items)
-                    .expect("list type checked")
-                    .len() as i64,
+                    .and_then(Collection::list_len)
+                    .expect("list type checked") as i64,
                 out,
             ),
             Some(_) => wrong_type(out),
@@ -1014,6 +1013,28 @@ mod tests {
         assert_eq!(run(&store, &[b"EXISTS", b"s"]), b":0\r\n");
         // Only "pack" remains: two 1-byte members, 200 4-byte members and its key.
         assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 806);
+    }
+
+    #[test]
+    fn llen_reads_the_container_length_without_materialising_elements() {
+        let store = ShardExecutor::new(100_000_000);
+        assert_eq!(
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"list-max-listpack-size", b"4"]
+            ),
+            b"+OK\r\n"
+        );
+        let values: Vec<String> = (0..1000).map(|index| format!("v{index:04}")).collect();
+        let mut args = vec![b"RPUSH".as_slice(), b"l"];
+        args.extend(values.iter().map(|value| value.as_bytes()));
+        assert_eq!(run(&store, &args), b":1000\r\n");
+        assert_eq!(run(&store, &[b"LLEN", b"l"]), b":1000\r\n");
+        assert!(run(&store, &[b"LPOP", b"l", b"10"]).starts_with(b"*10\r\n"));
+        assert_eq!(run(&store, &[b"LLEN", b"l"]), b":990\r\n");
+        assert_eq!(run(&store, &[b"LLEN", b"missing"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"DEL", b"l"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"LLEN", b"l"]), b":0\r\n");
     }
 
     #[test]
