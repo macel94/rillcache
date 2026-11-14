@@ -288,7 +288,8 @@ fn hsetex_reaping_emits_only_real_successful_target_write_events() {
         );
     }
     // Lazy expiry of a field on the target must not label a rejected FNX/FXX
-    // write as hset either; field lifecycle notifications are not implemented.
+    // write as hset, but the expired field itself is still reported exactly
+    // once as `hexpired` because the removal really happened.
     for arguments in [
         vec![
             b"HSETEX".as_slice(),
@@ -323,6 +324,14 @@ fn hsetex_reaping_emits_only_real_successful_target_write_events() {
         while receiver.try_recv().is_ok() {}
         clock.0.fetch_add(2, Ordering::SeqCst);
         assert_eq!(run(&store, &arguments), b":0\r\n");
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(b"hexpired");
+        let mut expired = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, b"h\0\xff"],
+            &mut expired,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), expired);
         assert!(
             receiver.try_recv().is_err(),
             "rejected field expiry must not emit hset"
@@ -332,6 +341,49 @@ fn hsetex_reaping_emits_only_real_successful_target_write_events() {
             b"$6\r\nnewnew\r\n"
         );
     }
+}
+
+#[test]
+fn expired_hash_field_emits_hexpired_then_del_for_empty_hash() {
+    use crate::engine::{Clock, NotifyFlags};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    struct TestClock(AtomicI64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let clock = Arc::new(TestClock(AtomicI64::new(100)));
+    let store = Store::with_clock(12, clock.clone());
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"h", b"PX", b"1", b"FIELDS", b"1", b"f", b"v"]
+        ),
+        b":1\r\n"
+    );
+    while receiver.try_recv().is_ok() {}
+    clock.0.fetch_add(2, Ordering::SeqCst);
+    assert_eq!(run(&store, &[b"HGET", b"h", b"f"]), b"$-1\r\n");
+    for event in [b"hexpired".as_slice(), b"del"] {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, b"h"],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    }
+    assert!(
+        receiver.try_recv().is_err(),
+        "field expiry is reported once per batch"
+    );
+    assert_eq!(run(&store, &[b"EXISTS", b"h"]), b":0\r\n");
 }
 
 #[test]
