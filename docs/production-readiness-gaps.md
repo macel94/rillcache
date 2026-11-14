@@ -470,12 +470,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** those controls are implemented or explicitly replaced by a
   reviewed external terminator, with rotation and failure tests.
 
-- [ ] **S6. Live deauthentication/session revocation is missing.** [P1]
-  Rotating or disabling a password affects new authentication decisions; an
-  already authenticated connection remains authenticated. There is no bounded
-  reauthentication or administrative revoke-and-close policy.
-  **Closes when:** a documented revocation policy is implemented and tested for
-  live sessions, or operators have a tested process to close affected sessions.
+- [x] **S6. Live deauthentication/session revocation is missing.** [P1]
+  **Complete (2026-11-14): documented and tested administrative revocation.**
+  `CLIENT KILL USER <name>` closes every matching authenticated session, returns
+  the number closed and skips the caller by default; ID/ADDR/LADDR/MAXAGE/TYPE
+  filters cover narrower clients. The rotation runbook now requires
+  rotate-then-revoke, and `tests/acl.rs::client_kill_user_revokes_live_sessions`
+  proves the closed session, the retained unrelated session and the reconnect
+  path. **Retained limitation:** revocation is operator-driven; changing
+  `requirepass` or an ACL entry does not automatically deauthenticate existing
+  connections, as in Redis.
 
 - [ ] **S7. Tenant isolation is absent.** [P1]
   All ACL users share one process, keyspace, memory budget and CPU. ACL rules do

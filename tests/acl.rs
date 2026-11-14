@@ -1015,3 +1015,64 @@ fn acl_cat_lists_implemented_subcommand_entries() {
     assert!(!read.contains("memory|stats\r\n"), "{read}");
     server.shutdown().unwrap();
 }
+
+#[test]
+fn client_kill_user_revokes_live_sessions() {
+    let path = temp_name("kill-user");
+    std::fs::write(
+        &path,
+        b"user default on nopass ~* &* +@all\n\
+user alice on >alice-password ~* &* +@all\n\
+user bob on >bob-password ~* &* +@all\n",
+    )
+    .unwrap();
+    let server = start(Config {
+        aclfile: Some(path.clone()),
+        ..Config::default()
+    });
+    let mut admin = connect(&server);
+    send(&mut admin, &[b"PING"], b"+PONG\r\n");
+    let mut alice = connect(&server);
+    send(
+        &mut alice,
+        &[b"AUTH", b"alice", b"alice-password"],
+        b"+OK\r\n",
+    );
+    send(&mut alice, &[b"ACL", b"WHOAMI"], b"$5\r\nalice\r\n");
+    let mut bob = connect(&server);
+    send(&mut bob, &[b"AUTH", b"bob", b"bob-password"], b"+OK\r\n");
+    send(&mut bob, &[b"ACL", b"WHOAMI"], b"$3\r\nbob\r\n");
+
+    send(
+        &mut admin,
+        &[b"CLIENT", b"KILL", b"USER", b"alice"],
+        b":1\r\n",
+    );
+    assert!(
+        read_to_end(&mut alice).is_empty(),
+        "the revoked session must be closed"
+    );
+    send(&mut bob, &[b"PING"], b"+PONG\r\n");
+    send(
+        &mut admin,
+        &[b"CLIENT", b"KILL", b"USER", b"alice"],
+        b":0\r\n",
+    );
+
+    // Revocation is administrative, not a password change: Alice can
+    // reconnect with the current credentials and be revoked again.
+    let mut alice = connect(&server);
+    send(
+        &mut alice,
+        &[b"AUTH", b"alice", b"alice-password"],
+        b"+OK\r\n",
+    );
+    send(
+        &mut admin,
+        &[b"CLIENT", b"KILL", b"USER", b"alice"],
+        b":1\r\n",
+    );
+    assert!(read_to_end(&mut alice).is_empty());
+    server.shutdown().unwrap();
+    let _ = std::fs::remove_file(path);
+}
