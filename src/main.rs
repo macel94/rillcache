@@ -326,7 +326,7 @@ fn main() -> ExitCode {
             if let Some(addr) = server.tls_local_addr()? {
                 eprintln!("rillcache TLS 1.3 listening on {addr}");
             }
-            server.run()
+            server.run_with_shutdown_signals()
         }) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {

@@ -215,13 +215,14 @@ fn mixed_tls_compatibility_workers_preserve_launch_cpuset_and_are_counted() {
         }
         tasks += 1;
     }
-    // N network runtimes + bounded cold service + shared data owner + TLS accept.
-    assert_eq!(tasks, budget + 3);
+    // N network runtimes + bounded cold service + data owner + TLS accept +
+    // the one signal listener used by the standalone process.
+    assert_eq!(tasks, budget + 4);
     process.shutdown(&mut stream);
 }
 
 #[test]
-fn one_effective_cpu_runs_one_network_runtime_plus_one_joined_cold_service() {
+fn one_effective_cpu_runs_one_network_runtime_plus_joined_helpers() {
     let core = core_affinity::get_core_ids().unwrap()[0];
     let mut process = Process::start(Some(core));
     let mut stream = process.connect();
@@ -250,12 +251,14 @@ fn one_effective_cpu_runs_one_network_runtime_plus_one_joined_cold_service() {
                 })
                 .collect();
         names.sort();
-        if names == ["rillcache", "rillcache-cold-"] || Instant::now() >= deadline {
+        if names == ["rillcache", "rillcache-cold-", "rillcache-signa"]
+            || Instant::now() >= deadline
+        {
             break names;
         }
         thread::sleep(Duration::from_millis(10));
     };
-    assert_eq!(names, ["rillcache", "rillcache-cold-"]);
+    assert_eq!(names, ["rillcache", "rillcache-cold-", "rillcache-signa"]);
 
     // Exercise mixed-case ACL dispatch and ordered continuation on runtime zero.
     stream

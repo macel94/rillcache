@@ -104,6 +104,29 @@ impl Server {
         let _ = self.stderr.read_to_string(&mut log);
     }
 
+    fn terminate(mut self) {
+        let signal_status = Command::new("/bin/kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(signal_status.success(), "could not send SIGTERM");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "SIGTERM did not finish server shutdown"
+            );
+            std::thread::yield_now();
+        };
+        assert!(status.success(), "SIGTERM exit: {status}");
+        let mut log = String::new();
+        let _ = self.stderr.read_to_string(&mut log);
+        assert!(log.contains("received SIGTERM"), "signal log: {log}");
+    }
+
     fn shutdown(mut self) {
         let mut stream = self.connect();
         stream.write_all(b"*1\r\n$8\r\nSHUTDOWN\r\n").unwrap();
@@ -209,6 +232,30 @@ fn fsync_always_keeps_every_acknowledged_write_across_sigkill() {
     }
     // Recovery must accept new writes on top of the replayed prefix.
     send(&mut stream, &[b"SET", b"after:crash", b"ok"], b"+OK\r\n");
+    restarted.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sigterm_stops_admission_and_flushes_acknowledged_writes() {
+    let dir = temp_dir("sigterm");
+    let server = Server::start(&dir, "always");
+    let mut stream = server.connect();
+    send(
+        &mut stream,
+        &[b"SET", b"before:term", b"durable"],
+        b"+OK\r\n",
+    );
+    drop(stream);
+    server.terminate();
+
+    let restarted = Server::start(&dir, "always");
+    let mut stream = restarted.connect();
+    assert_eq!(
+        get(&mut stream, "before:term").as_deref(),
+        Some(b"durable".as_slice()),
+        "SIGTERM shutdown lost an acknowledged write",
+    );
     restarted.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }

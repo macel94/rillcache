@@ -234,8 +234,17 @@ platforms retain timeout-based fallback admission.
   from the server loop in thread-per-client and fixed-worker modes. `SHUTDOWN`
   shall be rejected inside `MULTI` with dirty-transaction semantics.
 - **R299 (ubiquitous):** Tests shall cover flag validation, `ABORT`, MULTI
-  rejection, caller close, all worker modes, journal durability across restart,
-  and documentation of the remaining absence of a portable SIGTERM handler.
+  rejection, caller close, all worker modes and journal durability across restart.
+  Documentation shall distinguish protocol shutdown, signal-driven shutdown and
+  any remaining drain-deadline limitations.
+- **R300 (event-driven):** When the standalone process receives SIGINT or SIGTERM
+  on Unix (or CTRL-C on Windows), it shall stop admission through the managed
+  shutdown path, join its signal listener and server workers, and flush the
+  journal on orderly exit. Signal setup failure shall be reported before serving.
+- **R301 (verifiable):** A subprocess test shall deliver SIGTERM to the standalone
+  binary and verify clean exit plus restart recovery of an acknowledged
+  `appendfsync always` write. This test shall not claim a bounded drain deadline,
+  forced termination behavior or survival of unsynced `everysec`/`no` tails.
 
 ## Client registry and administrative kill (S38)
 

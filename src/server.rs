@@ -1,10 +1,12 @@
 //! Default Unix Tokio networking, portable managed-client fallback and fixed workers.
 
+use std::future::Future;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
+use std::task::Poll;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -629,10 +631,128 @@ impl Server {
         }
     }
 
-    /// Run until an OS-level process termination or an unrecoverable server error.
-    /// The standard library has no portable signal-handler API.
+    /// Run without installing process signal handlers. Returns on protocol
+    /// shutdown or an unrecoverable server error; standalone callers should use
+    /// `run_with_shutdown_signals` for SIGINT/SIGTERM integration.
     pub fn run(self) -> io::Result<()> {
         self.serve(Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Run the standalone server until protocol shutdown, SIGINT, or SIGTERM.
+    /// Signal handling is isolated in a joined Tokio reactor thread; receipt
+    /// requests the same stop path used by managed shutdown.
+    pub fn run_with_shutdown_signals(self) -> io::Result<()> {
+        let stopping = Arc::new(AtomicBool::new(false));
+        let signal_stopping = Arc::clone(&stopping);
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let (ready_tx, ready_rx) = sync_channel::<Result<(), String>>(1);
+        let signal_thread = thread::Builder::new()
+            .name("rillcache-signals".into())
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let message = error.to_string();
+                        let _ = ready_tx.send(Err(message));
+                        return Err(error);
+                    }
+                };
+
+                #[cfg(unix)]
+                let mut signals = {
+                    let _entered = runtime.enter();
+                    let interrupt =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
+                    let terminate =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+                    match interrupt
+                        .and_then(|interrupt| terminate.map(|terminate| (interrupt, terminate)))
+                    {
+                        Ok(signals) => signals,
+                        Err(error) => {
+                            let message = error.to_string();
+                            let _ = ready_tx.send(Err(message));
+                            return Err(error);
+                        }
+                    }
+                };
+                #[cfg(windows)]
+                let mut signals = {
+                    let _entered = runtime.enter();
+                    match tokio::signal::windows::ctrl_c() {
+                        Ok(signal) => signal,
+                        Err(error) => {
+                            let message = error.to_string();
+                            let _ = ready_tx.send(Err(message));
+                            return Err(error);
+                        }
+                    }
+                };
+                #[cfg(not(any(unix, windows)))]
+                {
+                    let error = io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "shutdown signals are unsupported on this platform",
+                    );
+                    let _ = ready_tx.send(Err(error.to_string()));
+                    return Err(error);
+                }
+
+                let _ = ready_tx.send(Ok(()));
+                let mut cancelled = Box::pin(cancel_rx);
+                #[cfg(unix)]
+                let event = runtime.block_on(std::future::poll_fn(|cx| {
+                    if let Poll::Ready(Some(())) = signals.0.poll_recv(cx) {
+                        return Poll::Ready(Some("SIGINT"));
+                    }
+                    if let Poll::Ready(Some(())) = signals.1.poll_recv(cx) {
+                        return Poll::Ready(Some("SIGTERM"));
+                    }
+                    if cancelled.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(None);
+                    }
+                    Poll::Pending
+                }));
+                #[cfg(windows)]
+                let event = runtime.block_on(std::future::poll_fn(|cx| {
+                    if let Poll::Ready(Some(())) = signals.poll_recv(cx) {
+                        return Poll::Ready(Some("CTRL-C"));
+                    }
+                    if cancelled.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(None);
+                    }
+                    Poll::Pending
+                }));
+                if let Some(signal) = event {
+                    eprintln!("rillcache: received {signal}; stopping admission and draining");
+                    signal_stopping.store(true, Ordering::Release);
+                }
+                Ok(())
+            })?;
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                let _ = signal_thread.join();
+                return Err(io::Error::other(format!(
+                    "signal handler setup failed: {message}"
+                )));
+            }
+            Err(_) => {
+                let _ = signal_thread.join();
+                return Err(io::Error::other("signal handler exited during setup"));
+            }
+        }
+
+        let result = self.serve(stopping);
+        let _ = cancel_tx.send(());
+        let signal_result = signal_thread
+            .join()
+            .map_err(|_| io::Error::other("signal handler thread panicked"))?;
+        result.and(signal_result)
     }
 
     /// Run in a managed background thread, useful for tests and local benchmarks.
