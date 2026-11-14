@@ -278,6 +278,10 @@ pub(crate) struct Consumer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ConsumerGroup {
     pub last_delivered: StreamId,
+    /// Entries read by the group when the count is known (created at `$` or
+    /// `0`). `None` means unknown: an explicit non-zero start id, a `SETID` to
+    /// such an id, or a journal-replayed group without the original counter.
+    pub entries_read: Option<u64>,
     pub consumers: BTreeMap<Vec<u8>, Consumer>,
     pub pending: BTreeMap<StreamId, Pending>,
 }
