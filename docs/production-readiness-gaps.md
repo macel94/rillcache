@@ -145,11 +145,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss`, new-key and `FLUSH*` event classes are unsupported; delivery is
   at-most-once and process-local.
-  **Partial (2026-11-14): hash field-expiry notifications.** A lazy field-expiry
-  pass now publishes one `hexpired` event per affected key and an additional
-  generic `del` when the empty hash is removed, including when the observing
-  command is rejected. Tests cover the rejected-write case and publication order;
-  the documented event matrix records the lazy-only detection point.
+  **Partial (2026-11-14): hash field lifecycle and TTL notifications.** A lazy
+  field-expiry pass now publishes one `hexpired` event per affected key and an
+  additional generic `del` when the empty hash is removed, including when the
+  observing command is rejected. `HEXPIRE`/`HPEXPIRE`/`HEXPIREAT`/`HPEXPIREAT`
+  publish `hexpire` and `HPERSIST` publishes `hpersist` when at least one field
+  actually changed, with no event or `WATCH` bump for condition failures.
+  `HSETEX`/`HGETEX` TTL events and `keymiss`/new-key/`FLUSH*` classes remain
+  open; delivery is at-most-once and process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.

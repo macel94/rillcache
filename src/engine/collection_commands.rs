@@ -1812,6 +1812,9 @@ impl ShardExecutor {
             updates.push((*field, deadline));
             integer(1, out);
         }
+        if updates.is_empty() {
+            return;
+        }
         let key = args[1];
         for (field, deadline) in updates {
             data.set_field_ttl(key, field, deadline);

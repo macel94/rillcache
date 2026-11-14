@@ -102,12 +102,20 @@ event can be delayed until the next access.
 Supported event names mirror the command family: `set`, `del`, `expire`,
 `persist`, `rename_from`, `rename_to`, `copy_to`, `append`, `setrange`, `setbit`,
 `incrby`, `decrby`, list push/pop/insert/trim/rem, set add/remove/pop/move/store,
-hash set/delete/get-delete/counter, sorted-set add/remove/counter/pop/range-removal/store
-algebra/multi-pop, stream add/delete/group/read/ack/claim/trim and `pfadd` for HLL changes. `GEOADD` maps to
+hash set/delete/get-delete/counter/expire/persist, sorted-set
+add/remove/counter/pop/range-removal/store algebra/multi-pop, stream
+add/delete/group/read/ack/claim/trim and `pfadd` for HLL changes. `GEOADD` maps to
 `zadd`; `GEOSEARCHSTORE` emits `geosearchstore` when it writes the destination and
 `del` when an empty result removes it. Unsupported or
 unknown mutating commands emit nothing. Event names are command-family labels,
 not a complete replay log.
+
+`HEXPIRE`/`HPEXPIRE`/`HEXPIREAT`/`HPEXPIREAT` publish `hexpire` (`h` class) only
+when at least one supplied field's deadline actually changes, and `HPERSIST`
+publishes `hpersist` only when at least one field TTL is removed. Conditions that
+leave every field unchanged (an `NX`/`XX`/`GT`/`LT` conflict or a missing field)
+emit nothing and do not advance the key's `WATCH` version. `HSETEX`/`HGETEX`
+with a TTL still report only their existing hash events in this increment.
 
 When notifications are enabled, mutating commands take the store's exclusive
 transaction gate so change capture and publication keep command order. This is a
@@ -137,6 +145,7 @@ publication. Hash-field tests cover the rejected-write case and the
 `hexpired`-then-`del` order when the final field expires. All-mode wire tests
 cover keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
-and rejected writes, hash/list/set/zset/stream/HLL events, expire, rename,
+and rejected writes, hash/list/set/zset/stream/HLL events, hash field
+`hexpire`/`hpersist` with no-op condition checks, expire, rename,
 eviction/`expired` classes, blocking-pop events, binary channels and
 `CONFIG`/`INFO` exposure.
