@@ -1,5 +1,6 @@
 //! Binary-safe typed collection commands. Collection values remain in the same
 //! entry as their key and expiry; mutations stage a new value before admission.
+use super::collection_commands::encode_hash;
 use super::data::{Collection, Entry};
 use super::options::{NOT_INTEGER, OOM, parse_integer};
 use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
@@ -264,6 +265,102 @@ impl ShardExecutor {
         if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_hash))
         {
             wrong_type(out);
+            return;
+        }
+        // Large hashtable hashes update in place: stage the last value per field,
+        // admit the exact byte delta once and insert only those pairs.
+        let previous = current.map(Entry::payload_len);
+        if let Some(entry) = current
+            && let Some(Collection::Hash(values)) = entry.collection.as_ref()
+        {
+            let mut pending: HashMap<&[u8], &[u8]> = HashMap::new();
+            for pair in args[2..].as_chunks::<2>().0 {
+                pending.insert(pair[0], pair[1]);
+            }
+            let mut added = 0i64;
+            let mut delta = 0i64;
+            for (field, value) in &pending {
+                match values.get(*field) {
+                    Some(old) => {
+                        delta += value.len() as i64 - old.len() as i64;
+                    }
+                    None => {
+                        added += 1;
+                        delta += field.len() as i64 + value.len() as i64;
+                    }
+                }
+            }
+            if values.len().saturating_add(pending.len()) > MAX_ELEMENTS {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let Some(new_len) = previous.unwrap_or(0).checked_add_signed(delta as isize) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Some(payload) = data.reserve(key, new_len, previous, self.payload_limit(), now)
+            else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let mut applied = false;
+            if let Some(entry) = data.entries.get_mut(key)
+                && let Some(Collection::Hash(values)) = entry.collection.as_mut()
+            {
+                for (field, value) in &pending {
+                    values.insert(field.to_vec(), value.to_vec());
+                }
+                entry.payload_len = new_len;
+                applied = true;
+            }
+            if applied {
+                data.payload_bytes = payload;
+                data.touch(key);
+                data.remove_field_ttls(
+                    key,
+                    &args[2..]
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|pair| pair[0])
+                        .collect::<Vec<_>>(),
+                );
+                if legacy {
+                    out.extend_from_slice(b"+OK\r\n");
+                } else {
+                    integer(added, out);
+                }
+                return;
+            }
+            // Admission evicted the target: rebuild from the staged pairs.
+            let mut fresh: HashMap<Vec<u8>, Vec<u8>> = pending
+                .into_iter()
+                .map(|(field, value)| (field.to_vec(), value.to_vec()))
+                .collect();
+            added = fresh.len() as i64;
+            if fresh.len() > MAX_ELEMENTS {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let bytes = fresh
+                .iter()
+                .map(|(field, value)| field.len() + value.len())
+                .sum::<usize>();
+            let Some(payload) = data.reserve(key, bytes, None, self.payload_limit(), now) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Ok(config) = self.collection_config.read() else {
+                internal_error(out);
+                return;
+            };
+            let encoded = encode_hash(std::mem::take(&mut fresh), &config);
+            data.put_collection(key, encoded, None, payload, now);
+            if legacy {
+                out.extend_from_slice(b"+OK\r\n");
+            } else {
+                integer(added, out);
+            }
             return;
         }
         let mut hash: HashMap<Vec<u8>, Vec<u8>> = current
@@ -889,6 +986,79 @@ mod tests {
         assert_eq!(run(&store, &[b"TYPE", b"z"]), b"+zset\r\n");
     }
 
+    #[test]
+    fn hash_set_and_del_mutate_large_hashes_in_place_with_exact_accounting() {
+        let store = ShardExecutor::new(100_000_000);
+        let fields: Vec<String> = (0..200).map(|index| format!("f{index:03}")).collect();
+        let mut args = vec![b"HSET".as_slice(), b"h"];
+        let values: Vec<String> = (0..200).map(|_| "v".to_string()).collect();
+        for (field, value) in fields.iter().zip(&values) {
+            args.push(field.as_bytes());
+            args.push(value.as_bytes());
+        }
+        assert_eq!(run(&store, &args), b":200\r\n");
+        let check = |expected_fields: i64| {
+            let data = store.data.try_borrow().unwrap();
+            let entry = data.entries.get(b"h".as_slice()).expect("hash");
+            let bytes: usize = entry
+                .collection
+                .as_ref()
+                .and_then(Collection::hash_items)
+                .expect("hash")
+                .iter()
+                .map(|(field, value)| field.len() + value.len())
+                .sum();
+            assert_eq!(entry.payload_len, bytes);
+            assert_eq!(data.payload_bytes, 1 + bytes);
+            drop(data);
+            assert_eq!(
+                run(&store, &[b"HLEN", b"h"]),
+                format!(":{expected_fields}\r\n").into_bytes()
+            );
+        };
+        // Replacement, a duplicate pair (last wins) and a new field.
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"HSET", b"h", b"f000", b"longer", b"new", b"x", b"new", b"y"
+                ]
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(run(&store, &[b"HGET", b"h", b"new"]), b"$1\r\ny\r\n");
+        check(201);
+        assert_eq!(
+            run(&store, &[b"HDEL", b"h", b"f001", b"f002", b"missing"]),
+            b":2\r\n"
+        );
+        check(199);
+        // HSET clears any per-field TTL on the written field.
+        assert_eq!(
+            run(
+                &store,
+                &[b"HPEXPIRE", b"h", b"10000", b"FIELDS", b"1", b"f003"]
+            ),
+            b"*1\r\n:1\r\n"
+        );
+        assert!(run(&store, &[b"HPTTL", b"h", b"FIELDS", b"1", b"f003"]).starts_with(b"*1\r\n:"));
+        assert_eq!(run(&store, &[b"HSET", b"h", b"f003", b"z"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"HPTTL", b"h", b"FIELDS", b"1", b"f003"]),
+            b"*1\r\n:-1\r\n"
+        );
+        let remaining: Vec<&[u8]> = fields
+            .iter()
+            .filter(|field| field.as_str() != "f001" && field.as_str() != "f002")
+            .map(|field| field.as_bytes())
+            .collect();
+        let mut args = vec![b"HDEL".as_slice(), b"h"];
+        args.extend(remaining);
+        args.push(b"new");
+        assert_eq!(run(&store, &args), b":199\r\n");
+        assert_eq!(run(&store, &[b"EXISTS", b"h"]), b":0\r\n");
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
+    }
     #[test]
     fn direct_member_probes_preserve_intset_pack_and_zset_semantics() {
         let store = ShardExecutor::new(1_000_000);
