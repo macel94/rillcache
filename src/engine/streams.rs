@@ -1482,46 +1482,50 @@ impl ShardExecutor {
             };
             let now = self.now(&data);
             data.expire_key(a[2], now);
-            if data.entries.get(a[2]).is_some_and(|e| e.stream.is_none()) {
-                out.extend_from_slice(
-                    b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-                );
-                return;
-            }
-            let existing_expiry = data.entries.get(a[2]).and_then(|e| e.expires);
-            let mut stream = match data.entries.get(a[2]).and_then(|e| e.stream.clone()) {
-                Some(stream) => stream,
-                None if a.len() == 6 => Stream::default(),
-                None => {
-                    out.extend_from_slice(b"-ERR The XGROUP subcommand requires the key to exist. Note that for CREATE you may want to use the MKSTREAM option to create an empty stream automatically.\r\n");
+            // Group metadata is not part of the entry payload, so an existing
+            // stream can gain its group in place without cloning or re-encoding.
+            if let Some(entry) = data.entries.get_mut(a[2]) {
+                let Some(stream) = entry.stream.as_mut() else {
+                    out.extend_from_slice(
+                        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                    );
+                    return;
+                };
+                if stream.groups.contains_key(a[3]) {
+                    out.extend_from_slice(b"-BUSYGROUP Consumer Group name already exists\r\n");
                     return;
                 }
-            };
-            if stream.groups.contains_key(a[3]) {
-                out.extend_from_slice(b"-BUSYGROUP Consumer Group name already exists\r\n");
+                let last = start.unwrap_or(stream.last_generated);
+                stream.groups.insert(
+                    a[3].to_vec(),
+                    ConsumerGroup {
+                        last_delivered: last,
+                        consumers: Default::default(),
+                        pending: Default::default(),
+                    },
+                );
+                data.touch(a[2]);
+                simple(b"OK", out);
                 return;
             }
-            let last = start.unwrap_or(stream.last_generated);
+            if a.len() != 6 {
+                out.extend_from_slice(b"-ERR The XGROUP subcommand requires the key to exist. Note that for CREATE you may want to use the MKSTREAM option to create an empty stream automatically.\r\n");
+                return;
+            }
+            let mut stream = Stream::default();
             stream.groups.insert(
                 a[3].to_vec(),
                 ConsumerGroup {
-                    last_delivered: last,
+                    last_delivered: start.unwrap_or_default(),
                     consumers: Default::default(),
                     pending: Default::default(),
                 },
             );
-            let previous = data.entries.get(a[2]).map(|e| e.payload_len);
-            let Some(total) = data.reserve(
-                a[2],
-                stream.payload_bytes().unwrap_or(0),
-                previous,
-                self.payload_limit(),
-                now,
-            ) else {
+            let Some(total) = data.reserve(a[2], 0, None, self.payload_limit(), now) else {
                 out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
                 return;
             };
-            data.put_stream(a[2], stream, existing_expiry, total, now);
+            data.put_stream(a[2], stream, None, total, now);
             simple(b"OK", out);
         } else if a[1].eq_ignore_ascii_case(b"SETID") {
             if a.len() != 5 {
@@ -2199,6 +2203,63 @@ mod tests {
         assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 9);
         assert_eq!(run(&store, &[b"XLEN", b"moved"]), b":2\r\n");
     }
+    #[test]
+    fn xgroup_create_mutates_the_stream_in_place_without_payload_change() {
+        let store = ShardExecutor::new(1_000_000);
+        for id in 1..=100 {
+            let id = format!("{id}-0");
+            assert!(run(&store, &[b"XADD", b"s", id.as_bytes(), b"f", b"v"]).starts_with(b"$"));
+        }
+        let before = run(&store, &[b"XRANGE", b"s", b"-", b"+"]);
+        let payload = store.data.try_borrow().unwrap().payload_bytes;
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"s", b"g", b"$"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, payload);
+        assert_eq!(run(&store, &[b"XLEN", b"s"]), b":100\r\n");
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"s", b"g", b"$"]),
+            b"-BUSYGROUP Consumer Group name already exists\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"s", b"h", b"50-0"]),
+            b"+OK\r\n"
+        );
+        let after = run(&store, &[b"XRANGE", b"s", b"-", b"+"]);
+        assert_eq!(before, after);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, payload);
+        for group in [b"g".as_slice(), b"h"] {
+            assert_eq!(
+                run(&store, &[b"XGROUP", b"DESTROY", b"s", group]),
+                b":1\r\n"
+            );
+        }
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, payload);
+
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"missing", b"g", b"$"]),
+            b"-ERR The XGROUP subcommand requires the key to exist. Note that for CREATE you may want to use the MKSTREAM option to create an empty stream automatically.\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"XGROUP", b"CREATE", b"empty", b"g", b"$", b"MKSTREAM"]
+            ),
+            b"+OK\r\n"
+        );
+        assert_eq!(run(&store, &[b"TYPE", b"empty"]), b"+stream\r\n");
+        assert_eq!(run(&store, &[b"XLEN", b"empty"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"empty", b"h", b"0"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"empty", b"g", b"0"]),
+            b"-BUSYGROUP Consumer Group name already exists\r\n"
+        );
+    }
+
     #[test]
     fn mkstream_admission_failure_is_atomic_and_well_framed() {
         let store = ShardExecutor::new(0);
