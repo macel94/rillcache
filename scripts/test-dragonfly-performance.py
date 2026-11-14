@@ -119,9 +119,13 @@ class GateTests(unittest.TestCase):
         self.assertIn("${{ matrix.server == 'valkey' && '--valkey' || '--dragonfly' }}", text)
         self.assertIn('--generator "$RUNNER_TEMP/tools/generator"', text)
         self.assertIn('--workloads "${{ matrix.workload }}"', text)
-        # Losses are published and the required gate fails closed on any failed row.
+        # Dragonfly losses are retained but diagnostic; incomplete evidence
+        # still fails closed, and the Valkey cohort remains the required win.
         self.assertIn('Fail closed when any per-row job did not succeed', text)
+        self.assertIn('A complete diagnostic cohort may exit nonzero', text)
+        self.assertIn('assert manifest["complete"] is True', text)
         self.assertIn('merge-multicpu-gates.py', text)
+        self.assertNotIn('--diagnostic', text)
         self.assertNotIn('continue-on-error:', text)
 
     def test_runtime_children_do_not_receive_workflow_credentials(self):
@@ -252,7 +256,7 @@ class GateTests(unittest.TestCase):
         cpus = [0, 1, 2, 3]
         binaries = {v: "/" + v for v in ("rillcache", "dragonfly", "generator")}
         manifest = dict(schema_version=gate.SCHEMA_VERSION, complete=True, gate_passed=True, allowed_cpus=cpus,
-                        server_cpus=cpus, client_cpus=cpus, runs=3, workloads=gate.WORKLOADS,
+                        server_cpus=cpus, client_cpus=cpus, runs=gate.RUNS, workloads=gate.WORKLOADS,
                         pipelines=gate.PIPELINES, duration_seconds=10, warmup_requests=8000,
                         launch_directory="/original/runner/gate", binaries=binaries,
                         binary_sha256={v: char * 64 for v, char in zip(binaries, "abc")},
