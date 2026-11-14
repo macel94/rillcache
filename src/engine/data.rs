@@ -515,6 +515,7 @@ pub(crate) struct Data {
     expired_field_events: VecDeque<Vec<u8>>,
     deleted_events: VecDeque<Vec<u8>>,
     hash_events: VecDeque<(Vec<u8>, Vec<u8>)>,
+    key_miss_events: VecDeque<Vec<u8>>,
     pub(in crate::engine) expired_keys: u64,
     pub(in crate::engine) expired_subkeys: u64,
     pub(in crate::engine) evicted_keys: u64,
@@ -537,6 +538,7 @@ pub(super) struct Lifecycle {
     /// Ordered `(event, key)` pairs for compound hash commands whose event set
     /// cannot be derived from the final state alone.
     pub hash_events: Vec<(Vec<u8>, Vec<u8>)>,
+    pub key_miss: Vec<Vec<u8>>,
 }
 
 fn push_lifecycle(queue: &mut VecDeque<Vec<u8>>, key: &[u8]) {
@@ -622,6 +624,7 @@ impl Data {
             expired_fields: self.expired_field_events.drain(..).collect(),
             deleted: self.deleted_events.drain(..).collect(),
             hash_events: self.hash_events.drain(..).collect(),
+            key_miss: self.key_miss_events.drain(..).collect(),
         }
     }
 
@@ -633,6 +636,12 @@ impl Data {
         self.expired_field_events.clear();
         self.deleted_events.clear();
         self.hash_events.clear();
+        self.key_miss_events.clear();
+    }
+
+    /// Queue one read miss for the command that is executing.
+    pub fn record_key_miss(&mut self, key: &[u8]) {
+        push_lifecycle(&mut self.key_miss_events, key);
     }
 
     /// Queue one ordered hash notification for the command that is executing.
@@ -1352,6 +1361,7 @@ mod tests {
         push_lifecycle(&mut data.expired_field_events, b"c");
         push_lifecycle(&mut data.deleted_events, b"d");
         data.record_hash_event(b"hset", b"e");
+        data.record_key_miss(b"f");
         let lifecycle = data.drain_lifecycle();
         assert_eq!(lifecycle.expired, vec![b"a".to_vec()]);
         assert_eq!(lifecycle.evicted, vec![b"b".to_vec()]);
@@ -1366,6 +1376,7 @@ mod tests {
         push_lifecycle(&mut data.expired_field_events, b"stale");
         push_lifecycle(&mut data.deleted_events, b"stale");
         data.record_hash_event(b"hset", b"stale");
+        data.record_key_miss(b"stale");
         data.clear_lifecycle();
         let lifecycle = data.drain_lifecycle();
         assert!(lifecycle.expired.is_empty());
@@ -1373,6 +1384,7 @@ mod tests {
         assert!(lifecycle.expired_fields.is_empty());
         assert!(lifecycle.deleted.is_empty());
         assert!(lifecycle.hash_events.is_empty());
+        assert!(lifecycle.key_miss.is_empty());
 
         for index in 0..MAX_LIFECYCLE_EVENTS + 10 {
             push_lifecycle(&mut data.expired_events, index.to_string().as_bytes());
