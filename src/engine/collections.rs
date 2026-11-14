@@ -1,6 +1,6 @@
 //! Binary-safe typed collection commands. Collection values remain in the same
 //! entry as their key and expiry; mutations stage a new value before admission.
-use super::collection_commands::encode_set;
+use super::collection_commands::{encode_set, encode_zset};
 use super::data::{Collection, Entry};
 use super::options::{NOT_INTEGER, OOM, parse_integer};
 use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
@@ -454,6 +454,75 @@ impl ShardExecutor {
         if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_zset))
         {
             wrong_type(out);
+            return;
+        }
+        // Large hashtable zsets update in place: stage the last score per member,
+        // admit the new-member byte delta once and insert only the new members.
+        let previous = current.map(Entry::payload_len);
+        if let Some(entry) = current
+            && let Some(Collection::ZSet(values)) = entry.collection.as_ref()
+        {
+            let mut pending: HashMap<&[u8], f64> = HashMap::new();
+            for (score, member) in &members {
+                pending.insert(*member, *score);
+            }
+            let fresh: Vec<&[u8]> = pending
+                .keys()
+                .filter(|member| !values.contains_key(**member))
+                .copied()
+                .collect();
+            let added = fresh.len();
+            if values.len().saturating_add(added) > MAX_ELEMENTS {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let delta = fresh.iter().map(|member| member.len()).sum::<usize>();
+            let Some(new_len) = previous.unwrap_or(0).checked_add(delta) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Some(payload) = data.reserve(key, new_len, previous, self.payload_limit(), now)
+            else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let mut applied = false;
+            if let Some(entry) = data.entries.get_mut(key)
+                && let Some(Collection::ZSet(values)) = entry.collection.as_mut()
+            {
+                for (member, score) in &pending {
+                    values.insert((*member).to_vec(), *score);
+                }
+                entry.payload_len = new_len;
+                applied = true;
+            }
+            if applied {
+                data.payload_bytes = payload;
+                data.touch(key);
+                integer(added as i64, out);
+                return;
+            }
+            // Admission evicted the target: rebuild from the staged pairs.
+            let mut fresh: HashMap<Vec<u8>, f64> = pending
+                .into_iter()
+                .map(|(member, score)| (member.to_vec(), score))
+                .collect();
+            if fresh.len() > MAX_ELEMENTS {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let bytes = fresh.keys().map(Vec::len).sum::<usize>();
+            let Some(payload) = data.reserve(key, bytes, None, self.payload_limit(), now) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Ok(config) = self.collection_config.read() else {
+                internal_error(out);
+                return;
+            };
+            let encoded = encode_zset(std::mem::take(&mut fresh), &config);
+            data.put_collection(key, encoded, None, payload, now);
+            integer(added as i64, out);
             return;
         }
         let mut zset: HashMap<Vec<u8>, f64> = current
