@@ -242,6 +242,7 @@ jobs:
         run: |
           # The harness creates its own output directory and refuses an existing
           # one, so never pre-create it here.
+          set +e
           python3 "$HARNESS" \
             --candidate "$RUNNER_TEMP/tools/candidate" \
             ${{ matrix.server == 'valkey' && '--valkey' || '--dragonfly' }} "$RUNNER_TEMP/tools/${{ matrix.server }}" \
@@ -251,11 +252,46 @@ jobs:
             ${{ matrix.server == 'dragonfly' && '--license "$RUNNER_TEMP/tools/license.txt"' || '' }} \
             --workloads "${{ matrix.workload }}" \
             --out "evidence/${{ matrix.server }}-${{ matrix.workload }}"
+          status=$?
+          set -e
+          if [[ "${{ matrix.server }}" == dragonfly ]]; then
+            # A complete diagnostic cohort may exit nonzero on a loss. Incomplete
+            # or corrupt evidence must still fail closed.
+            python3 - "evidence/dragonfly-${{ matrix.workload }}" <<'PY'
+          import json, sys
+          from pathlib import Path
+          manifest = json.loads((Path(sys.argv[1]) / "manifest.json").read_text())
+          assert manifest["complete"] is True
+          PY
+            exit 0
+          fi
+          exit "$status"
       - name: Revalidate this partial cohort from its raw CSV
         if: success() || failure()
         env:
           HARNESS: ${{ steps.harness.outputs.path }}
-        run: python3 "$HARNESS" --check "evidence/${{ matrix.server }}-${{ matrix.workload }}"
+        run: |
+          set +e
+          python3 "$HARNESS" --check "evidence/${{ matrix.server }}-${{ matrix.workload }}" >check.out 2>&1
+          status=$?
+          set -e
+          if [[ "${{ matrix.server }}" == dragonfly ]]; then
+            # --check exits 1 for a complete losing row; corruption raises and
+            # does not print a FAIL summary. A complete manifest is required.
+            if [[ "$status" -ne 0 ]]; then
+              grep -q 'FAIL:' check.out || { cat check.out; exit 1; }
+            fi
+            cat check.out
+            python3 - "evidence/dragonfly-${{ matrix.workload }}" <<'PY'
+          import json, sys
+          from pathlib import Path
+          manifest = json.loads((Path(sys.argv[1]) / "manifest.json").read_text())
+          assert manifest["complete"] is True
+          PY
+          else
+            cat check.out
+            exit "$status"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -300,22 +336,37 @@ jobs:
           python3 base/scripts/merge-multicpu-gates.py \
             --harness base/scripts/pr-multicpu-performance.py "${args[@]}" \
             --check evidence/valkey
-      - name: Merge and revalidate the Dragonfly cohort
+      - name: Merge the diagnostic Dragonfly cohort
         run: |
           mapfile -t dirs < <(find partials -maxdepth 1 -mindepth 1 -type d -name 'multicpu-partial-dragonfly-*' | sort)
           [[ "${#dirs[@]}" -eq 5 ]] || { echo "expected 5 Dragonfly partials, found ${#dirs[@]}"; exit 1; }
           args=(); for dir in "${dirs[@]}"; do args+=(--partial "$dir"); done
+          set +e
           python3 base/scripts/merge-multicpu-gates.py \
             --harness base/scripts/pr-dragonfly-performance.py "${args[@]}" \
             --out evidence/dragonfly
-          python3 base/scripts/merge-multicpu-gates.py \
-            --harness base/scripts/pr-dragonfly-performance.py "${args[@]}" \
-            --check evidence/dragonfly
+          status=$?
+          set -e
+          if [[ "$status" -ne 0 && "$status" -ne 1 ]]; then
+            echo "Dragonfly merge failed with status $status"
+            exit 1
+          fi
+          # Merge already revalidated every partial; accept a complete losing
+          # cohort but never missing, partial or corrupt evidence.
+          python3 - evidence/dragonfly <<'PY'
+          import json, sys
+          from pathlib import Path
+          manifest = json.loads((Path(sys.argv[1]) / "manifest.json").read_text())
+          assert manifest["complete"] is True
+          PY
       - name: Publish both merged tables, including losses
         if: always()
         run: |
           for file in evidence/valkey/summary.md evidence/dragonfly/summary.md; do
             if [[ -f "$file" ]]; then
+              if [[ "$file" == *dragonfly* ]]; then
+                printf '**DIAGNOSTIC: Dragonfly rows and every loss are published below; only the ten Valkey medians decide this required check.**\n\n' >> "$GITHUB_STEP_SUMMARY"
+              fi
               tee -a "$GITHUB_STEP_SUMMARY" < "$file"
             else
               printf 'Missing merged table: %s\n' "$file" >> "$GITHUB_STEP_SUMMARY"

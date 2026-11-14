@@ -519,10 +519,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   profile.
 
 - [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
-  `INFO` has aggregate command stats but no `INFO latencystats`, histograms,
-  percentiles, per-client fd/idle/command/buffer/network/memory fields or
-  blocked-client count. `LATENCY` exposes only command and expire-cycle series;
+  `INFO` has aggregate command stats but no `INFO latencystats`, histograms or
+  percentiles. `LATENCY` exposes only command and expire-cycle series;
   `LATENCY GRAPH|HISTOGRAM` are unsupported.
+  **Partial (2026-11-14): bounded CLIENT INFO session state.** `CLIENT INFO`
+  now reports `age`, `b`/`P`/`N` flags, `sub`/`psub` and the WATCH count, using
+  state already held by the session. `INFO clients` already reports `blocked_clients`. Per-client fd,
+  idle time, last command, input/output buffer bytes, network bytes, allocator
+  memory, latency histograms and `INFO latencystats` remain absent.
   **Closes when:** the supported metrics contract reports per-command latency
   distributions and per-client resource/queue state with documented units and
   sampling limits.
