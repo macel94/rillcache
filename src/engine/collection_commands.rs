@@ -2959,16 +2959,14 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let list = match data.entries.get(args[1]) {
+        let collection = match data.entries.get(args[1]) {
             None => {
                 encode_bulk(None, out);
                 return;
             }
-            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_list) => entry
-                .collection
-                .as_ref()
-                .and_then(Collection::list_items)
-                .expect("list type checked"),
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_list) => {
+                entry.collection.as_ref().expect("list type checked")
+            }
             Some(_) => {
                 wrong_type(out);
                 return;
@@ -2978,7 +2976,22 @@ impl ShardExecutor {
             out.extend_from_slice(NOT_INTEGER);
             return;
         };
-        let value = normalize_index(index, list.len()).map(|index| list[index]);
+        let length = match collection {
+            Collection::ListPack(values) => values.len(),
+            Collection::ListQuick(nodes) => nodes.iter().map(std::collections::VecDeque::len).sum(),
+            _ => 0,
+        };
+        let Some(index) = normalize_index(index, length) else {
+            encode_bulk(None, out);
+            return;
+        };
+        // Walk in from the nearer end and take one element, without flattening
+        // the whole list into reference vectors.
+        let reverse = index >= length / 2;
+        let offset = if reverse { length - 1 - index } else { index };
+        let value = collection
+            .list_slice(offset, 1, reverse)
+            .and_then(|slice| slice.first().copied());
         encode_bulk(value, out);
     }
 
