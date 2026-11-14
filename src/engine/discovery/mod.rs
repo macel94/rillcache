@@ -1138,8 +1138,11 @@ impl ShardExecutor {
                 if persistence.aof_enabled {
                     let _ = write!(
                         text,
-                        "\r\naof_rewrite_in_progress:{}\r\naof_last_bgrewrite_status:{}\r\naof_last_write_status:{}",
+                        "\r\naof_rewrite_in_progress:{}\r\naof_rewrite_phase:{}\r\naof_rewrite_keys_done:{}\r\naof_rewrite_keys_total:{}\r\naof_last_bgrewrite_status:{}\r\naof_last_write_status:{}",
                         u8::from(persistence.rewrite_in_progress),
+                        persistence.rewrite_phase,
+                        persistence.rewrite_keys_done,
+                        persistence.rewrite_keys_total,
                         if persistence.rewrite_failed {
                             "err"
                         } else {
