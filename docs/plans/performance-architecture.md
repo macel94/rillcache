@@ -1574,7 +1574,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Range store forms | replies, latency | range handler seeks the bounds and emits only the selected entries into the destination | same | store routes through `select_zset`/`ordered_zset` (full sort) then a `HashMap` and re-encode | **Adapt:** 4.50 seek-based store; measured 100k `ZRANGESTORE` 0–9 51.3 vs 0.28/0.12 ms (177–428×), 0–999 54.6 vs 1.41/0.70, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 138.7 vs 89.8/74.1 (3.49, AC52) |
 | Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
 | INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, no-deadline fast path implemented; counters remain | AC54 (no-deadline rows met) | none |
-| Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k pre-fix 25.5 ms vs 0.40/0.28 (64–91×), post-fix 0.27 vs 0.08/0.07; `LMOVE`/`RPOPLPUSH` 200k 35.3/33.6 vs 0.08–0.34 remain; same-key rotate 16.9; 10-element controls at the floor | 4.53, `SMOVE` implemented; `LMOVE`/`RPOPLPUSH` remain | AC55 (`SMOVE` met) | none |
+| Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k pre-fix 25.5 ms vs 0.40/0.28 (64–91×), post-fix 0.27–0.63 vs 0.08–0.24; `LMOVE`/`RPOPLPUSH` 200k pre-fix 35.3/33.6, post-fix 0.31/0.24 vs 0.20–0.64; same-key rotate 16.9 → 0.11; 10-element controls at the floor | 4.53, implemented | AC55 met | none |
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
 | List element edits | latency, storage | **measured**: 200k `LINSERT` head 19.1 ms vs 0.09/0.24 (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), `LINSERT` middle 21.0 vs 3.51/4.33, `LREM` tail 21.1 vs 6.97/7.28, `LPOS RANK -1` 1.59 vs 0.16/0.27; 10-element controls at the floor | 4.54, admitted (extends 4.35/4.41) | AC56 | none |
 | Set membership reply | replies | **measured lead/null**: `SMEMBERS` 100k 84.75 ms vs 88.71/86.37, 10k 9.95 vs 9.33/9.58, 1k 0.97 vs 1.11/1.24, 10-member control at the floor; the 1.5 MB reply hides the collect+sort | no candidate; keep 4.29 scoped to hashes | n/a | none |
@@ -3864,14 +3864,19 @@ counters close the mixed-TTL case.
   not a move cost. Preloading the four large keys took 13.4 s in Rill versus
   1.4–1.6 s, the 4.35 write path. Candidate 4.53.
 
-- **Post-fix (2026-11-14, `SMOVE` path).** When both keys hold large hashtable
-  sets and the source keeps at least one member, the member is removed and
-  inserted in place; the payload cannot grow (the bytes move, or shrink when the
-  destination already has the member), so no admission/eviction is needed. Packs,
-  missing destinations, emptied sources and `LMOVE`/`RPOPLPUSH` keep the general
-  path. Measured on the built head, 10 repetitions: `SMOVE` 100k **0.27 ms**
-  versus Redis 0.08 and Valkey 0.07 (from 25.5 ms); `LMOVE`/`RPOPLPUSH` remain
-  35.3/33.6 ms and `LMOVE` same-key 16.9 ms for the follow-up.
+- **Post-fix (2026-11-14).** When both keys hold large hashtable sets and the
+  source keeps at least one member, the member is removed and inserted in place;
+  the payload cannot grow (the bytes move, or shrink when the destination already
+  has the member), so no admission/eviction is needed. Packs, missing
+  destinations and emptied sources keep the general path. For two existing
+  quicklists the move pops one element from the source's head/tail chunk deque
+  and pushes it onto the destination's, with the same-key case rotating within
+  one deque; pack lists, a missing destination and a source that would empty keep
+  the general path. Measured on the built head, 10 repetitions: `SMOVE` 100k
+  **0.27–0.63 ms** versus Redis 0.08–0.24 and Valkey 0.07 (from 25.5 ms);
+  `LMOVE` 200k **0.31 ms** versus 0.64/0.20 (from 35.3), `RPOPLPUSH` **0.24**
+  versus 0.25/0.12 (from 33.6), same-key rotate **0.11** versus 0.26/0.36 (from
+  16.9).
 
 **Verdict: adapt in-place two-key moves (4.53).** Admit the destination growth
 first, then remove/pop from the source and insert/push into the destination in
@@ -6681,7 +6686,7 @@ TTL/field-TTL/expiry/reap/eviction/flush/rename/copy/replay churn; `INFO stats`,
 `DBSIZE`, `PING` and all other sections shall be unchanged; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
-### 4.53 In-place two-key moves (candidate; SMOVE implemented)
+### 4.53 In-place two-key moves (candidate; implemented)
 
 **Mechanism.** Move one element between two borrowed containers instead of
 rebuilding both. For `SMOVE`, admit the destination growth (payload limit and
@@ -6731,9 +6736,10 @@ or no gain above the spread.
 
 **Acceptance (AC55).** `SMOVE` on a 100,000-member set shall have p50 ≤0.5 ms and
 p99 ≤2 ms (≥50× faster than the measured 25.5 ms and within ~2× the faster C
-server) — met at 0.27 ms; `LMOVE` and `RPOPLPUSH` on a 200,000-element list shall have p50 ≤0.5 ms
-and p99 ≤2 ms (≥78× faster than 39.2/41.2 ms and within ~1.5× Redis); a same-key
-`LMOVE` rotate shall have p50 ≤0.4 ms; the 10-element controls shall be
+server) — met at 0.27–0.63 ms; `LMOVE` and `RPOPLPUSH` on a 200,000-element
+list shall have p50 ≤0.5 ms and p99 ≤2 ms (≥78× faster than 39.2/41.2 ms and
+within ~1.5× Redis) — met at 0.31/0.24 ms; a same-key `LMOVE` rotate shall have
+p50 ≤0.4 ms — met at 0.11 ms; the 10-element controls shall be
 unchanged; LEFT/RIGHT combinations, same-key identity, missing source,
 non-member, empty-source deletion, TTLs, blocking `BLMOVE`/`BRPOPLPUSH`,
 WATCH/journal/notification/rewrite and accounting tests shall pass; no dependency

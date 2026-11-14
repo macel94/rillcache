@@ -518,3 +518,61 @@ fn list_move_notifies_destination_push_source_pop_and_del() {
 
     server.shutdown().unwrap();
 }
+
+#[test]
+fn lmove_between_large_quicklists_moves_and_rotates_in_place() {
+    let server = start(None);
+    let mut stream = connect(&server);
+    let left: Vec<String> = (0..700).map(|index| format!("v{index:04}")).collect();
+    let right: Vec<String> = (0..700).map(|index| format!("w{index:04}")).collect();
+    for (key, members) in [("l1", &left), ("l2", &right)] {
+        let mut args: Vec<&[u8]> = vec![b"RPUSH", key.as_bytes()];
+        args.extend(members.iter().map(|member| member.as_bytes()));
+        command(&mut stream, &args, b":700\r\n");
+    }
+    command(&mut stream, &[b"LLEN", b"l1"], b":700\r\n");
+    command(&mut stream, &[b"LLEN", b"l2"], b":700\r\n");
+    command(
+        &mut stream,
+        &[b"LMOVE", b"l1", b"l2", b"LEFT", b"RIGHT"],
+        b"$5\r\nv0000\r\n",
+    );
+    command(&mut stream, &[b"LLEN", b"l1"], b":699\r\n");
+    command(&mut stream, &[b"LLEN", b"l2"], b":701\r\n");
+    command(&mut stream, &[b"LINDEX", b"l1", b"0"], b"$5\r\nv0001\r\n");
+    command(&mut stream, &[b"LINDEX", b"l2", b"-1"], b"$5\r\nv0000\r\n");
+    command(
+        &mut stream,
+        &[b"RPOPLPUSH", b"l1", b"l2"],
+        b"$5\r\nv0699\r\n",
+    );
+    command(&mut stream, &[b"LLEN", b"l1"], b":698\r\n");
+    command(&mut stream, &[b"LLEN", b"l2"], b":702\r\n");
+    command(&mut stream, &[b"LINDEX", b"l2", b"0"], b"$5\r\nv0699\r\n");
+    command(&mut stream, &[b"LINDEX", b"l2", b"-1"], b"$5\r\nv0000\r\n");
+    command(
+        &mut stream,
+        &[b"LMOVE", b"l2", b"l2", b"RIGHT", b"LEFT"],
+        b"$5\r\nv0000\r\n",
+    );
+    command(&mut stream, &[b"LINDEX", b"l2", b"0"], b"$5\r\nv0000\r\n");
+    command(&mut stream, &[b"LLEN", b"l2"], b":702\r\n");
+
+    // Small pack lists keep the general path and rotate exactly.
+    command(
+        &mut stream,
+        &[b"RPUSH", b"small", b"a", b"b", b"c"],
+        b":3\r\n",
+    );
+    command(
+        &mut stream,
+        &[b"LMOVE", b"small", b"small", b"RIGHT", b"RIGHT"],
+        b"$1\r\nc\r\n",
+    );
+    command(
+        &mut stream,
+        &[b"LRANGE", b"small", b"0", b"-1"],
+        b"*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n",
+    );
+    server.shutdown().unwrap();
+}
