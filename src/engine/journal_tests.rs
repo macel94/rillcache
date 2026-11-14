@@ -387,6 +387,85 @@ fn expired_hash_field_emits_hexpired_then_del_for_empty_hash() {
 }
 
 #[test]
+fn hash_ttl_updates_emit_hexpire_and_hpersist_only_when_changed() {
+    use crate::engine::{Clock, NotifyFlags};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    struct TestClock(AtomicI64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let clock = Arc::new(TestClock(AtomicI64::new(100)));
+    let store = Store::with_clock(12, clock.clone());
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    assert_eq!(
+        run(&store, &[b"HSET", b"h", b"f", b"v", b"g", b"w"]),
+        b":2\r\n"
+    );
+    while receiver.try_recv().is_ok() {}
+
+    let expect_event = |event: &[u8]| {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, b"h"],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+        assert!(
+            receiver.try_recv().is_err(),
+            "one event per changed command"
+        );
+    };
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HEXPIRE", b"h", b"10", b"FIELDS", b"2", b"f", b"g"]
+        ),
+        b"*2\r\n:1\r\n:1\r\n"
+    );
+    expect_event(b"hexpire");
+
+    // NX finds an existing field TTL for both fields, so nothing changed and no
+    // notification (or WATCH invalidation) may be produced.
+    assert_eq!(
+        run(
+            &store,
+            &[b"HEXPIRE", b"h", b"10", b"NX", b"FIELDS", b"2", b"f", b"g"]
+        ),
+        b"*2\r\n:0\r\n:0\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+
+    assert_eq!(
+        run(&store, &[b"HPERSIST", b"h", b"FIELDS", b"2", b"f", b"g"]),
+        b"*2\r\n:1\r\n:1\r\n"
+    );
+    expect_event(b"hpersist");
+
+    assert_eq!(
+        run(&store, &[b"HPERSIST", b"h", b"FIELDS", b"2", b"f", b"g"]),
+        b"*2\r\n:-1\r\n:-1\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HEXPIRE", b"h", b"1", b"FIELDS", b"1", b"missing"]
+        ),
+        b"*1\r\n:-2\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
