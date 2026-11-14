@@ -1550,7 +1550,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 (map/score/start-0) + 4.38 (rank-select), admitted | AC32/AC40 | none |
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 vs 0.14–0.20; `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
-| List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
+| List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14; nearer-end seek (#319) gives 0.932/0.857/0.179 but the middle still flattens chunks element-wise; `LPOS` hit-first 1.26 vs 0.10–0.13, missing 1.81 (Rill leads) | 4.41 + 4.56 chunk-aware seek | AC43/AC58 | per-element offset index |
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 → 0.151/0.115/0.282 ms vs 0.07–0.19; `ZMSCORE` 8.02/33.37/273.2 → 0.113/0.118/0.253 vs 0.09–0.23; `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; `HMGET` 100 at the floor | 4.44, implemented | AC46 met | none |
@@ -7063,6 +7063,62 @@ rest use
 the existing `std` I/O, parser and in-repo journal/crypto code. Each candidate
 lands as its own PR with AC5 plus the protected gates; no combined integration
 branch.
+
+### 4.56 Chunk-aware list seek (candidate; measured gap)
+
+**Measured gap (2026-11-14).** The nearer-end `LINDEX` change in review (#319)
+removed the whole-list reference vector, but a 200,000-element quicklist still
+measures **0.932/0.857/0.179 ms p50** at index `0/100000/-1` versus Redis
+0.42/0.069/0.053 and Valkey 0.20/0.45/0.41. The remaining cost is structural:
+`Collection::list_slice` flattens chunks with
+`nodes.iter().flat_map(|node| node.iter())` and then discards `offset` elements
+one by one, so a middle index still walks ~100,000 elements. Head should be
+O(1) but measured 0.93 ms under the same host noise; the tail is already 0.179
+ms.
+
+**Redis 8.10.2 / Valkey 9.1.2.** Both store a quicklist of listpack nodes and
+keep a per-node element count. `quicklistGetIteratorAtIdx` walks node counts to
+locate the containing node (O(nodes), not O(elements)), then indexes inside the
+listpack; `LPOS` reuses the same iterator and stops at the requested rank/count
+without flattening
+([`redis quicklist.c#L905`](https://github.com/redis/redis/blob/8.10.2/src/quicklist.c#L905),
+[`t_list.c#L1044`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L1044);
+[Valkey quicklist.c](https://github.com/valkey-io/valkey/blob/9.1.2/src/quicklist.c)).
+Their listpack form indexes directly.
+
+**Candidate.** Add chunk-aware access in `Collection::list_slice`/a new
+`list_at`: walk `VecDeque` chunk lengths (already stored, no new structure),
+subtract whole chunks from `offset`, then index the chosen chunk with
+`VecDeque::get`/`nth` (≤ chunk length). Reverse walks from the back chunk.
+Representation stays `ListPack` for small lists and `ListQuick` for large; no
+index maintenance, no memory change, no persistence change. Extend `LPOS` to
+the same chunk walk so `RANK 1` hit-first stops inside the first matching chunk
+and `MAXLEN` bounds the visited chunks.
+
+**Prediction.** 200k `LINDEX 0/100000/-1` and `LPOS` hit-first fall to
+**≤0.3 ms p50** (10–15 µs of chunk arithmetic plus one chunk touch; Redis
+0.05–0.07). A missing `LPOS` remains scan-bound (already leading at 1.81 vs
+5.0–5.9 ms).
+
+**Risks and obligations.** Negative-index normalization must stay exact;
+chunk boundaries change on push/pop (lengths are read live, so no stale
+prefix); `COUNT 0`/negative-rank/`MAXLEN` semantics and binary-safe values must
+not change; `ListPack` keeps direct indexing; no accounting or ordering change;
+WATCH/journal/rewrite unaffected.
+
+**Rejected options.** A per-element cached offset index (O(n) memory and
+maintenance on every push/pop), a `BTreeMap<position, value>` (duplicates
+storage and node churn), a bespoke skiplist (no asymptotic gain over chunk
+counts at these chunk sizes), and a persistent quicklist with cached prefix
+counts (extra invariants for a read path).
+
+**Acceptance (AC58).** At 200,000 elements, `LINDEX` at `0`, `N/2` and `-1`
+and `LPOS` hit-first shall have p50 ≤0.3 ms and p99 ≤2 ms (≥4.8× faster than
+0.932/0.857 and within ~6× Redis's 0.053–0.069); the 10k→200k p50 ratio shall be
+≤2×; `LPOS RANK -1`, `COUNT`, `MAXLEN` and missing-value results and the
+10-element controls shall be unchanged; all list, quicklist, persistence and
+accounting tests pass; no dependency or `unsafe` is added; and both protected
+gates pass on the exact head.
 
 ## 5. Required libraries, dependencies and policy impact
 
