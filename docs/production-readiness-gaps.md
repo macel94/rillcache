@@ -519,10 +519,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   profile.
 
 - [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
-  `INFO` has aggregate command stats but no `INFO latencystats`, histograms,
-  percentiles, per-client fd/idle/command/buffer/network/memory fields or
-  blocked-client count. `LATENCY` exposes only command and expire-cycle series;
+  `INFO` has aggregate command stats but no per-client
+  fd/idle/command/buffer/network/memory fields or blocked-client count.
+  `LATENCY` exposes only command and expire-cycle series;
   `LATENCY GRAPH|HISTOGRAM` are unsupported.
+  **Partial (2026-11-14): bounded latency percentiles.** Enabling
+  `commandstats-enabled` also records a 32-bucket logarithmic per-command
+  histogram; `INFO latencystats` reports `p50`/`p99`/`p99.9` bucket upper bounds
+  in microseconds. This is an approximation, not HDR or an exact percentile
+  contract. The dispatcher takes no timer or histogram update while the
+  collector is disabled. Per-client resource/queue fields, exact histograms and
+  a cross-process view remain absent.
   **Closes when:** the supported metrics contract reports per-command latency
   distributions and per-client resource/queue state with documented units and
   sampling limits.
