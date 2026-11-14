@@ -310,76 +310,156 @@ impl ShardExecutor {
             append_reply(&results, output);
             return true;
         }
-        let mut bytes = data
-            .entries
-            .get(key)
-            .map_or_else(Vec::new, |entry| entry.value.clone());
-        let mut results = Vec::with_capacity(operations.len());
-        let mut changed = false;
-        for operation in operations {
-            match operation {
-                Op::Get { field, offset } => {
-                    if required_length(offset, field.width).is_none() {
-                        output.extend_from_slice(OFFSET_ERROR);
-                        return true;
+        // A FAIL-overflow write can leave the value unchanged, in which case
+        // the key must not be created or touched. Keep the copy path for that
+        // rare policy and mutate the existing value in place otherwise.
+        let may_fail = operations.iter().any(|operation| match operation {
+            Op::Set { overflow, .. } | Op::Incr { overflow, .. } => *overflow == Overflow::Fail,
+            Op::Get { .. } => false,
+        });
+        if may_fail {
+            let mut bytes = data
+                .entries
+                .get(key)
+                .map_or_else(Vec::new, |entry| entry.value.clone());
+            let mut results = Vec::with_capacity(operations.len());
+            let mut changed = false;
+            for operation in operations {
+                match operation {
+                    Op::Get { field, offset } => {
+                        if required_length(offset, field.width).is_none() {
+                            output.extend_from_slice(OFFSET_ERROR);
+                            return true;
+                        }
+                        results.push(Some(field.read(&bytes, offset)));
                     }
-                    results.push(Some(field.read(&bytes, offset)));
-                }
-                Op::Set {
-                    field,
-                    offset,
-                    value,
-                    overflow,
-                } => {
-                    let Some(length) = required_length(offset, field.width) else {
-                        output.extend_from_slice(OFFSET_ERROR);
-                        return true;
-                    };
-                    let old = field.read(&bytes, offset);
-                    let Some(value) = field.apply(i128::from(value), overflow) else {
-                        results.push(None);
-                        continue;
-                    };
-                    if bytes.len() < length {
-                        bytes.resize(length, 0);
+                    Op::Set {
+                        field,
+                        offset,
+                        value,
+                        overflow,
+                    } => {
+                        let Some(length) = required_length(offset, field.width) else {
+                            output.extend_from_slice(OFFSET_ERROR);
+                            return true;
+                        };
+                        let old = field.read(&bytes, offset);
+                        let Some(value) = field.apply(i128::from(value), overflow) else {
+                            results.push(None);
+                            continue;
+                        };
+                        if bytes.len() < length {
+                            bytes.resize(length, 0);
+                        }
+                        field.write(&mut bytes, offset, value);
+                        changed = true;
+                        results.push(Some(old));
                     }
-                    field.write(&mut bytes, offset, value);
-                    changed = true;
-                    results.push(Some(old));
-                }
-                Op::Incr {
-                    field,
-                    offset,
-                    increment,
-                    overflow,
-                } => {
-                    let Some(length) = required_length(offset, field.width) else {
-                        output.extend_from_slice(OFFSET_ERROR);
-                        return true;
-                    };
-                    let old = field.read(&bytes, offset);
-                    let Some(value) =
-                        field.apply(i128::from(old) + i128::from(increment), overflow)
-                    else {
-                        results.push(None);
-                        continue;
-                    };
-                    if bytes.len() < length {
-                        bytes.resize(length, 0);
+                    Op::Incr {
+                        field,
+                        offset,
+                        increment,
+                        overflow,
+                    } => {
+                        let Some(length) = required_length(offset, field.width) else {
+                            output.extend_from_slice(OFFSET_ERROR);
+                            return true;
+                        };
+                        let old = field.read(&bytes, offset);
+                        let Some(value) =
+                            field.apply(i128::from(old) + i128::from(increment), overflow)
+                        else {
+                            results.push(None);
+                            continue;
+                        };
+                        if bytes.len() < length {
+                            bytes.resize(length, 0);
+                        }
+                        field.write(&mut bytes, offset, value);
+                        changed = true;
+                        results.push(Some(value as i64));
                     }
-                    field.write(&mut bytes, offset, value);
-                    changed = true;
-                    results.push(Some(value as i64));
                 }
             }
+            if changed {
+                let Some(payload) =
+                    data.reserve(key, bytes.len(), previous, self.payload_limit(), now)
+                else {
+                    output.extend_from_slice(OOM);
+                    return true;
+                };
+                data.put(key, &bytes, expires, payload, now);
+            }
+            append_reply(&results, output);
+            return true;
         }
-        if changed {
-            let Some(payload) = data.reserve(key, bytes.len(), previous, self.payload_limit(), now)
-            else {
-                output.extend_from_slice(OOM);
+
+        // Validate every offset before admission/mutation so an error cannot
+        // leave a partially written value, then compute the final length.
+        let mut required = 0usize;
+        for operation in &operations {
+            let (field, offset) = match operation {
+                Op::Get { field, offset } => (*field, *offset),
+                Op::Set { field, offset, .. } | Op::Incr { field, offset, .. } => (*field, *offset),
+            };
+            let Some(length) = required_length(offset, field.width) else {
+                output.extend_from_slice(OFFSET_ERROR);
                 return true;
             };
-            data.put(key, &bytes, expires, payload, now);
+            if operation.is_write() {
+                required = required.max(length);
+            }
+        }
+        let current = data.entries.get(key).map_or(0, |entry| entry.value.len());
+        let length = current.max(required);
+        let Some(payload) = data.reserve(key, length, previous, self.payload_limit(), now) else {
+            output.extend_from_slice(OOM);
+            return true;
+        };
+        let mut results = Vec::with_capacity(operations.len());
+        if data
+            .mutate_string(key, length, payload, self.payload_limit(), |bytes| {
+                if bytes.len() < length {
+                    bytes.resize(length, 0);
+                }
+                for operation in operations {
+                    match operation {
+                        Op::Get { field, offset } => {
+                            results.push(Some(field.read(bytes, offset)));
+                        }
+                        Op::Set {
+                            field,
+                            offset,
+                            value,
+                            overflow,
+                        } => {
+                            let old = field.read(bytes, offset);
+                            let value = field
+                                .apply(i128::from(value), overflow)
+                                .expect("non-FAIL overflow always fits");
+                            field.write(bytes, offset, value);
+                            results.push(Some(old));
+                        }
+                        Op::Incr {
+                            field,
+                            offset,
+                            increment,
+                            overflow,
+                        } => {
+                            let old = field.read(bytes, offset);
+                            let value = field
+                                .apply(i128::from(old) + i128::from(increment), overflow)
+                                .expect("non-FAIL overflow always fits");
+                            field.write(bytes, offset, value);
+                            results.push(Some(value as i64));
+                        }
+                    }
+                }
+            })
+            .is_err()
+        {
+            output.extend_from_slice(OOM);
+            return true;
         }
         append_reply(&results, output);
         true
