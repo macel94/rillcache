@@ -1996,7 +1996,7 @@ for a production claim.
 | Small replies | 16 KiB buffer + reply list + `writev`, deferred flush, 64 KiB cap | same, plus deferred/encoded reply machinery | reused `Vec<u8>`, inline flush, bounded chunks | **Keep:** formatting is allocation-free; deferral has no P1 target and is closed (4.5) |
 | Large replies (≥16 KiB) | refcounted object reference, no value copy | refcounted object reference, no value copy | one copy into the output `Vec`, then the kernel copy | **Adopt:** measured 28.4% (64 KiB GET) and 42–45% (1 MiB GET) loss; 4.15, std `Arc`/`IoSlice`, AC20 |
 | Large multi-bulk replies (list/hash) | reply list/`writev`; hash iterated in internal order | same | list iterated directly; hash collects, sorts and encodes | **Adopt (list leads, hash lags):** 4.29 for 10k `HGETALL`; measured 43% behind Redis (3.2) |
-| Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, and 378–927× on 100k rank/range reads (3.2, 3.22, AC32/AC40) |
+| Sorted-set point lookup and rank range | member→score dict + skiplist/listpack: O(1) `ZSCORE`, O(log n + k) `ZRANGE` | same | `HashMap`; `ZSCORE` linear scan; every `ZRANGE` collects and full-sorts all members | **Adopt:** 4.30 `std` ordered index; measured 19.5–20.4× loss on 10k `ZRANGE 0 9` (528 vs 10,311/10,771 req/s), 67–78% on the full range, and 378–927× on 100k rank/range reads (3.2, 3.22, AC32/AC40); prototype index adds ~0.78 µs per `ZADD` and 67.6 B/member with a duplicated key (shared-key target ≤50) |
 | Sorted-set rank-select | skiplist span counts: O(log n) `ZRANK`, deep `ZRANGE` seek | same | rank requires a full materialize+sort+linear position scan | **Adapt:** 4.38 order-statistic index; measured 100k `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12 (3.22, AC40) |
 | Sorted-set lex ranges and counts | skiplist lex seek (`zslNthInLexRange`) and first/last rank subtraction for `ZLEXCOUNT`/`ZCOUNT` | same | `BYLEX` sorts the whole set before slicing; counts materialize and filter every member | **Adapt:** 4.50 seek + span counts on 4.30/4.38's index; measured 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 vs 0.18–0.74 ms (163–371×), `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 even when empty (3.38, AC52) |
 | Sorted-set algebra and cardinality | one generic pass: sort sources by cardinality, iterate the smallest, `zuiFind` probe, count with early LIMIT or insert directly into the destination | same | `owned_zset` copy per source, result `HashMap` with cloned keys, full `ordered_zset` sort; `ZINTERCARD` clones into a `BTreeSet` | **Adapt:** 4.51 borrowed-source probe and single destination build; measured 100k `ZINTERCARD` 220.6 vs 40.4/17.1 ms (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4 (3.41, AC53) |
@@ -5542,6 +5542,45 @@ cohort: `ZRANGE 0 9` p50 57.4 ms, `ZRANGEBYSCORE -inf +inf LIMIT 0 10` 62.4,
 and the 10-element controls are at the floor. Perf at 10k: ~21.5% sort code,
 ~21.2% libc tuple moves in the sort, 6.4% `zset_items`.
 
+**Prototype cost model (2026-11-14).** A standalone `std`-only prototype
+(`/tmp/opencode/zindex_bench.rs`, `/tmp/opencode/zindex_mem.rs`, untracked)
+built 100,000 7-byte members with scores 100–899. Building the `HashMap` took
+32.8 ms versus 53.6 ms for `BTreeSet<(order_key(f64), Vec<u8>)>` (0.54 µs per
+insert, a load-time cost only). Modelling one `ZADD` score update (map insert +
+index remove + index insert) cost **1,103 ns**, versus **323 ns** for the map
+update alone: the index adds **~0.78 µs per write**, under 0.4% of the current
+~0.25 ms 100k `ZADD` fast path and far below AC37's 0.6 ms, so the "ZADD within
+10%" risk is comfortably met. A tie-heavy build (all scores equal, member
+tie-break) took 62.1 ms. Memory: RSS grew by **6.6 MB for 100k entries = 67.6
+B/member** with a duplicate `Vec<u8>` key; sharing the member bytes as
+`Arc<[u8]>` between the score map and the index would remove the duplicated
+allocation and is the preferred shape (roughly 40–48 B/member), at the cost of
+changing `Collection::ZSet`'s map key type and its encode/journal paths.
+
+| Component | Redis 8.10.2 | Valkey 9.1.2 | Rillcache now | Proposed (safe Rust) |
+| --- | --- | --- | --- | --- |
+| Member→score | dict, O(1) | dict, O(1) | `HashMap`, O(1) | unchanged |
+| Ordered structure | skiplist, 1–32 levels, node span for rank | same | none; full `Vec` + sort per read | `BTreeSet<(OrderedScore, Arc<[u8]>)>` |
+| Range seek | `zslFirstInRange`/`zslLastInRange`, O(log n + k) | same | collect O(n) + sort O(n log n) | `BTreeSet::range`, O(log n + k) |
+| Pop head/tail | `zslDelete` on first/last, O(log n) | same | scan/partition O(n) + remove | `pop_first`/`pop_last`, O(log n) |
+| Rank | node span, O(log n) | same | sort + position O(n log n) | still O(rank) without a rank tree (4.38) |
+| Write cost | dict + skiplist update, ~O(log n) | same | dict only | +0.78 µs measured (prototype) |
+| Extra memory | dict + skiplist nodes (~40–70 B/member) | same | none | 67.6 B/member measured with a copied key; ≤50 with `Arc` sharing |
+| Dependency | none | none | none | `std` only (`BTreeSet`, `Arc`, `f64::total_cmp`) |
+
+**Implementation blueprint (staged, each independently testable).**
+(a) Change `Collection::ZSet` to `HashMap<Arc<[u8]>, f64>` plus
+`BTreeSet<(OrderedScore, Arc<[u8]>)>`, rebuild the index once in `encode_zset`,
+and update it in the five mutators (`ZADD` options path, `ZINCRBY`, `ZREM`,
+range removals, store forms) with a debug-assert helper that re-derives the
+index from the map in tests. (b) Switch `ZRANGE`/`ZRANGEBYSCORE`/`ZSCORE` reads
+to the index/map; rank and deep-start reads stay 4.38. (c) Reuse the index for
+`ZPOPMIN`/`ZPOPMAX`/`ZMPOP` (head/tail removal) and `GEOSEARCH` cell ranges.
+(d) `ZRANGEBYLEX`/`ZLEXCOUNT` seek equal-score blocks and compare members.
+Serialization keeps writing bytes only; `ZSetPack` stays unchanged and converts
+atomically at its threshold. The index is derived state, so rewrite/replay and
+restore rebuild it and never persist it.
+
 **Risks and obligations.** Two structures must stay consistent under `ZADD`,
 `ZINCRBY`, `ZREM`, `ZREMRANGEBY*`, expiry and replay; score equality and ±0.0;
 member ties must be lexicographic; `ZSetPack` (≤128) must keep its current
@@ -5566,11 +5605,13 @@ within 10% of Redis; at 100k, `ZRANGE 0 9` and
 `ZRANGEBYSCORE -inf +inf LIMIT 0 10` shall have p50 ≤0.6 ms and p99 ≤2 ms
 (≥90× faster than 57.4/62.4 ms, within ~8× Redis's 0.08–0.10 ms) and `ZSCORE`
 p50 ≤0.2 ms (≥16× faster than 3.27 ms); the 10k→100k ratio for those rows ≤2×;
-`ZADD` within 10% of its baseline in a matched cohort; every zset command,
-tie-break, rewrite/replay and expiry test passes; the 128-member control and all
-gate commands unchanged; `ZRANK`/`ZREVRANK`/deep-start `ZRANGE` are explicitly
-out of scope here (4.38/AC40); no new dependency; both protected gates green on
-the exact head.
+`ZADD` within 10% of its baseline in a matched cohort (prototype adds ~0.78 µs,
+measured above); index memory shall be bounded and reported (prototype 67.6
+B/member with a duplicated key; ≤50 B/member with a shared `Arc<[u8]>` key); every
+zset command, tie-break, rewrite/replay and expiry test passes; the 128-member
+control and all gate commands unchanged; `ZRANK`/`ZREVRANK`/deep-start `ZRANGE`
+are explicitly out of scope here (4.38/AC40); no new dependency; both protected
+gates green on the exact head.
 
 ### 4.31 Incremental cursor iteration (candidate; admission measured)
 
