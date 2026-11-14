@@ -92,6 +92,77 @@ fn reply(stream: &mut TcpStream, args: &[&[u8]]) -> Vec<u8> {
 }
 
 #[test]
+fn excluded_serialization_hll_and_admin_surfaces_are_explicit() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut stream = connect(&server);
+        let serialization = b"-ERR DUMP, RESTORE and MIGRATE are not supported by this bounded server; use the append-only journal or rillcache-backup\r\n";
+        let hll = b"-ERR PFDEBUG and PFSELFTEST are not supported; HyperLogLog uses a private bounded representation\r\n";
+
+        command(&mut stream, &[b"DUMP", b"key"], serialization);
+        command(
+            &mut stream,
+            &[b"RESTORE", b"key", b"0", b"payload"],
+            serialization,
+        );
+        command(
+            &mut stream,
+            &[b"MIGRATE", b"127.0.0.1", b"6379", b"key", b"0", b"1000"],
+            serialization,
+        );
+        command(
+            &mut stream,
+            &[b"DUMP"],
+            b"-ERR wrong number of arguments for 'dump' command\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"RESTORE", b"key", b"0"],
+            b"-ERR wrong number of arguments for 'restore' command\r\n",
+        );
+
+        command(&mut stream, &[b"PFDEBUG", b"GETREG", b"key"], hll);
+        command(&mut stream, &[b"PFSELFTEST"], hll);
+        command(
+            &mut stream,
+            &[b"PFDEBUG", b"GETREG"],
+            b"-ERR wrong number of arguments for 'pfdebug' command\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"PFSELFTEST", b"extra"],
+            b"-ERR wrong number of arguments for 'pfselftest' command\r\n",
+        );
+
+        command(
+            &mut stream,
+            &[b"COMMAND", b"DOCS"],
+            b"-ERR COMMAND DOCS is not supported; use COMMAND INFO or COMMAND LIST\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"REWRITE"],
+            b"-ERR CONFIG REWRITE is not supported; startup configuration is read-only\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"REWRITE", b"extra"],
+            b"-ERR wrong number of arguments for 'config|rewrite' command\r\n",
+        );
+        let memory = b"-ERR MEMORY MALLOC-STATS and MEMORY PURGE are not supported; memory reporting is payload and process RSS only\r\n";
+        command(&mut stream, &[b"MEMORY", b"MALLOC-STATS"], memory);
+        command(&mut stream, &[b"MEMORY", b"PURGE"], memory);
+        command(
+            &mut stream,
+            &[b"MEMORY", b"PURGE", b"extra"],
+            b"-ERR wrong number of arguments for 'memory|purge' command\r\n",
+        );
+
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn cluster_module_and_wait_surface_is_explicit_in_all_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers);

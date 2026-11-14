@@ -1285,6 +1285,10 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
                 output.extend_from_slice(b"\r\n");
             }
         }
+    } else if sub.eq_ignore_ascii_case(b"DOCS") {
+        output.extend_from_slice(
+            b"-ERR COMMAND DOCS is not supported; use COMMAND INFO or COMMAND LIST\r\n",
+        );
     } else {
         output.extend_from_slice(b"-ERR unsupported COMMAND subcommand\r\n");
     }

@@ -140,6 +140,21 @@ impl ShardExecutor {
             for line in HELP {
                 encode_bulk(Some(line), out);
             }
+        } else if subcommand.eq_ignore_ascii_case(b"MALLOC-STATS")
+            || subcommand.eq_ignore_ascii_case(b"PURGE")
+        {
+            let name = if subcommand.eq_ignore_ascii_case(b"MALLOC-STATS") {
+                "memory|malloc-stats"
+            } else {
+                "memory|purge"
+            };
+            if args.len() != 2 {
+                arity(name, out);
+                return;
+            }
+            out.extend_from_slice(
+                b"-ERR MEMORY MALLOC-STATS and MEMORY PURGE are not supported; memory reporting is payload and process RSS only\r\n",
+            );
         } else {
             out.extend_from_slice(b"-ERR unsupported MEMORY subcommand\r\n");
         }
@@ -341,6 +356,14 @@ fn config(store: &ShardExecutor, args: &[&[u8]], out: &mut Vec<u8>) {
             out.extend_from_slice(b"+OK\r\n");
         } else {
             internal_error(out);
+        }
+    } else if sub.eq_ignore_ascii_case(b"REWRITE") {
+        if args.len() != 2 {
+            arity("config|rewrite", out);
+        } else {
+            out.extend_from_slice(
+                b"-ERR CONFIG REWRITE is not supported; startup configuration is read-only\r\n",
+            );
         }
     } else {
         out.extend_from_slice(b"-ERR unsupported CONFIG subcommand\r\n");

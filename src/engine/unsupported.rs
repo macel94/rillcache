@@ -16,6 +16,8 @@ const RDB_DISABLED: &[u8] = b"-ERR RDB persistence is not supported by this serv
 const REPLICATION_DISABLED: &[u8] =
     b"-ERR replication is not supported by this standalone server\r\n";
 const MULTI_DB_DISABLED: &[u8] = b"-ERR this server supports only database 0\r\n";
+const SERIALIZATION_DISABLED: &[u8] = b"-ERR DUMP, RESTORE and MIGRATE are not supported by this bounded server; use the append-only journal or rillcache-backup\r\n";
+const HLL_DIAGNOSTICS_DISABLED: &[u8] = b"-ERR PFDEBUG and PFSELFTEST are not supported; HyperLogLog uses a private bounded representation\r\n";
 
 impl ShardExecutor {
     pub(super) fn execute_unsupported(&self, args: &[&[u8]], out: &mut Vec<u8>) -> bool {
@@ -194,6 +196,34 @@ impl ShardExecutor {
                 );
             } else {
                 out.extend_from_slice(CLUSTER_DISABLED);
+            }
+        } else if command.eq_ignore_ascii_case(b"DUMP")
+            || command.eq_ignore_ascii_case(b"RESTORE")
+            || command.eq_ignore_ascii_case(b"MIGRATE")
+        {
+            let (name, minimum) = if command.eq_ignore_ascii_case(b"DUMP") {
+                ("dump", 2)
+            } else if command.eq_ignore_ascii_case(b"RESTORE") {
+                ("restore", 4)
+            } else {
+                ("migrate", 6)
+            };
+            if args.len() < minimum {
+                arity(name, out);
+            } else {
+                out.extend_from_slice(SERIALIZATION_DISABLED);
+            }
+        } else if command.eq_ignore_ascii_case(b"PFDEBUG") {
+            if args.len() < 3 {
+                arity("pfdebug", out);
+            } else {
+                out.extend_from_slice(HLL_DIAGNOSTICS_DISABLED);
+            }
+        } else if command.eq_ignore_ascii_case(b"PFSELFTEST") {
+            if args.len() != 1 {
+                arity("pfselftest", out);
+            } else {
+                out.extend_from_slice(HLL_DIAGNOSTICS_DISABLED);
             }
         } else {
             return false;

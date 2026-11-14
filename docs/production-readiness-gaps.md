@@ -113,6 +113,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   GETREDIR`; `COMMAND DOCS`; `CONFIG REWRITE`; `MEMORY MALLOC-STATS|PURGE`;
   `LATENCY GRAPH|HISTOGRAM`; and Redis 8+ command extensions. Some return explicit
   errors, others are unknown commands.
+  **Partial (2026-11-14): named exclusions for common surfaces.**
+  `DUMP`/`RESTORE`/`MIGRATE`, `PFDEBUG`/`PFSELFTEST`, `COMMAND DOCS`,
+  `CONFIG REWRITE` and `MEMORY MALLOC-STATS|PURGE` now return specific
+  capability errors with normal arity validation, documented in
+  [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
+  `LATENCY GRAPH|HISTOGRAM` were already explicit. `CLIENT TRACKING|NO-EVICT|
+  NO-TOUCH|REPLY|CACHING|GETREDIR`, Redis 8+ extensions and the command-by-command
+  differential matrix remain missing.
   **Closes when:** a command-by-command differential matrix exists for supported
   data types and admin surfaces; every absent command is either implemented or
   explicitly excluded with a client-facing error and profile entry.
