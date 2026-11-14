@@ -1554,7 +1554,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` pre-fix 5.32 ms vs 0.349/0.312, post-fix 0.172; `BITCOUNT` pre-fix 23.01 vs 3.37/4.56, post-fix 5.35 vs 2.74/3.43; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor; 16 MB `BITFIELD` write 4.39–4.68 vs 0.087–0.12 (37–52×) while `BITFIELD_RO` reads are at the floor | 4.37 (extended to `BITFIELD` writes) | AC39 on the implemented change | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
 | Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
-| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, plain `INFO` the same, while `INFO stats`/`DBSIZE`/`PING` stay at the floor because the section walks every entry | 4.52, admitted | AC54 | none |
+| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, no-deadline fast path implemented; counters remain | AC54 (no-deadline rows met) | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k 25.5 ms vs 0.40/0.28 (64–91×); `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×); same-key rotate 20.5 vs 0.26/0.21; 10-element controls at the floor | 4.53, admitted (extends 4.35/4.41) | AC55 | none |
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
 | List element edits | latency, storage | **measured**: 200k `LINSERT` head 19.1 ms vs 0.09/0.24 (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), `LINSERT` middle 21.0 vs 3.51/4.33, `LREM` tail 21.1 vs 6.97/7.28, `LPOS RANK -1` 1.59 vs 0.16/0.27; 10-element controls at the floor | 4.54, admitted (extends 4.35/4.41) | AC56 | none |
@@ -3774,11 +3774,21 @@ materialised result). Keep the set-store paths as they are.
   the shared counters. With no TTLs, `DBSIZE` is O(1) here; a large expiring set
   additionally pays the admitted 4.45 mass-expiry path. Candidate 4.52.
 
+- **Post-fix (2026-11-14, no-deadline fast path).** When the expiration index is
+  empty and `field_ttls == 0`, every entry is alive and all expiry fields are
+  zero, so `INFO` reads `entries.len()` and formats without walking. Measured on
+  the built head (10 repetitions, three rotations): 500k `INFO keyspace`
+  **0.160 ms** versus Redis 0.318 and Valkey 0.417, and 100k **0.172 ms** versus
+  0.409/0.089; plain `INFO` 0.357/0.237. Keyspaces with key or field deadlines
+  still take the existing exact walk, so the maintained-counter work in 4.52
+  remains for mixed TTL churn.
+
 **Verdict: adapt maintained keyspace accounting (4.52).** Keep live/expiring/
 subexpiry key counts and a TTL sum updated on every mutation (insert, overwrite,
 expire, persist, remove, reap, eviction, flush, rename/copy, replay), or read the
 container sizes plus a Redis-style maintained/sampled average, and answer the
-section in O(1).
+section in O(1). The no-deadline fast path above lands the common case; the
+counters close the mixed-TTL case.
 
 ### 3.43 Two-key moves (SMOVE/LMOVE/RPOPLPUSH)
 
@@ -6435,7 +6445,7 @@ SUM`, NaN/infinite scores, missing/empty keys, destination-as-source, TTL/
 WATCH/journal/rewrite and accounting tests shall pass; no dependency shall be
 added; and both protected gates shall pass on the exact head.
 
-### 4.52 O(1) INFO keyspace accounting (candidate; admission measured)
+### 4.52 O(1) INFO keyspace accounting (candidate; no-deadline fast path implemented)
 
 **Mechanism.** Stop walking the keyspace to answer `INFO keyspace`/`INFO`/
 `INFO all`. Maintain in `Data` the four values the section reports — live keys,
@@ -6482,7 +6492,8 @@ reap; the controls or reads regress; or no gain above the spread.
 
 **Acceptance (AC54).** At 500,000 keys, `INFO keyspace` and plain `INFO` shall
 have p50 ≤0.4 ms and p99 ≤2 ms (≥25× faster than the measured 10.0/10.1 ms and
-within ~2× the faster C server), and at 100,000 keys p50 ≤0.25 ms; the reported
+within ~2× the faster C server) — the no-deadline path meets this at
+0.160/0.357 ms — and at 100,000 keys p50 ≤0.25 ms; the reported
 `keys`, `expires`, `subexpiry` and `avg_ttl` shall match a full scan after mixed
 TTL/field-TTL/expiry/reap/eviction/flush/rename/copy/replay churn; `INFO stats`,
 `DBSIZE`, `PING` and all other sections shall be unchanged; no dependency shall
