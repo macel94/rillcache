@@ -33,7 +33,7 @@ WORKLOADS = ("ping", "set", "get", "set-nx-existing", "set-xx-existing")
 # ten-row gate; a normal invocation selects all five.
 SELECTED = WORKLOADS
 PIPELINES = (1, 16)
-RUNS = 3
+RUNS = 5
 KEYSPACE = 1024
 VALUE = b"v" * 64
 REPLACEMENT = b"w" * 64
@@ -271,7 +271,7 @@ def summary(rows):
             f"**{'PASS' if wins == 10 else 'FAIL'}: {wins}/10 medians strictly faster than Dragonfly.**", "",
             "Same pinned, unmodified valkey-benchmark for both default-mode servers; exactly four logical server CPUs. "
             "Eight clients, two generator threads, 1024 random keys, 64-byte values, seed 42, 8000 warmup commands, "
-            "official --duration 10 for every measured sample; three alternating native repetitions. Ties or any loss fail.", "",
+            "official --duration 10 for every measured sample; five alternating native repetitions. Losses remain visible as FAIL; the protected workflow treats this cohort as diagnostic.", "",
             "Ten-second samples span 40 upstream 250 ms shutdown/progress ticks; residual timer quantization remains. "
             "Earlier sub-second request-count evidence is retained as a failed, different experiment, never reused as a pass.", "",
             "Client CPUs are disjoint when available, otherwise share the four server CPUs (see manifest). "

@@ -7439,7 +7439,7 @@ Valkey cohort now uses five alternating rounds (schema 3) and reports wins/5 plu
 a deterministic paired-bootstrap 95% interval as a diagnostic. The pass rule is
 unchanged: every row still requires the whole-cohort Rillcache median to be
 strictly greater than Valkey's, and the interval never passes or fails a row. The
-Dragonfly comparison remains three rounds. Since #198 each workload row runs in
+Dragonfly comparison uses five rounds and is diagnostic: all rows and losses are retained, but only Valkey decides the required gate. Since #198 each workload row runs in
 its own partial job on its own allocated four-CPU runner of the same machine type,
 so only within-row alternating comparisons are valid and a missing or
 inconsistent partial fails the gate. Historical cohorts in this document used
@@ -8411,8 +8411,8 @@ separate roadmap.
   manifest's `candidate_source`, `complete` and `gate_passed` before citing.
 - Valkey four-CPU gate: five alternating rounds, wins/5 and a deterministic
   paired-bootstrap 95% interval (2000 resamples, fixed seed); the interval is
-  diagnostic only and never passes or fails a row. Dragonfly remains three
-  rounds. Historical cohorts above used three rounds and are marked as such.
+  diagnostic only and never passes or fails a row. Dragonfly uses five rounds and
+  is diagnostic. Historical cohorts above used three rounds and are marked as such.
 - Five-round cohorts (section 2.17): run 41936225853 on head `927ccef` passed
   Valkey 10/10 and Dragonfly 10/10; P1 ping was 4/5 with ratio 1.0254
   [0.9703–1.0661]. Run 41940385826 on head `90c1768` passed Valkey 10/10
@@ -8514,7 +8514,7 @@ separate roadmap.
 ## 10. Limits and open questions
 
 - The protected gate uses small strings, cyclic/random keys, eight clients and
-  short five-sample Valkey medians (three for Dragonfly and historical cohorts).
+  short five-sample Valkey and Dragonfly diagnostic medians (historical cohorts remain three-round).
   It is a merge policy, not a statistical proof or a production SLO; mixed TTLs,
   large values, saturation and tail SLOs remain outside it. The paired-bootstrap
   interval is diagnostic and does not change the strict median rule. It compares

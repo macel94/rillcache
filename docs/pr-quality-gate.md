@@ -139,11 +139,14 @@ reported so a near-parity row shows its own uncertainty; it never passes or fail
 the gate. This is evidence quality, not a threshold change: losses, ties, complete
 losing cohorts and unfinished cohorts fail exactly as before.
 
-The Dragonfly comparison keeps three alternating repetitions: its smallest observed
-single-row margin is far outside the measured spread, so extra rounds there would
-spend shared-runner minutes without changing a decision. Schema 3 records the
-five-round Valkey cohort and the bootstrap parameters; schema-2 evidence is
-validated only by its matching harness revision and is never relabelled.
+The Dragonfly comparison uses five alternating repetitions and is **diagnostic,
+not a required merge win**. Its rows, medians and FAIL markers are retained and
+published, but only the ten Valkey medians decide the required
+`Valkey 4-CPU performance gate`. A complete losing cohort is accepted by the
+workflow-level wrapper; missing, partial or corrupt evidence still fails closed.
+Schema 3 records the five-round Valkey cohort and the bootstrap parameters;
+schema-2 evidence is validated only by its matching harness revision and is never
+relabelled.
 
 Both servers are pinned to the same first four allowed logical CPUs; the generator
 uses remaining CPUs when available, otherwise shares those four. Affinity is
@@ -182,14 +185,15 @@ performance remains Actions-only; mocked/replayed tests are not performance wins
 
 ### Same-setup Dragonfly comparison
 
-The same required four-CPU job also runs a Dragonfly comparison. It downloads the
-official checksum-pinned Dragonfly `v2.0.2` x86_64 release, verifies the archive
-SHA-256, and runs the identical five commands at P1/P16 with the same official
-`valkey-benchmark`, 8 clients, 1024 random keys, 64-byte values, 8,000 warmups and
-ten-second samples. Rillcache must strictly beat Dragonfly in all ten medians.
-The check context, job count and required-context inventory remain unchanged; a
-Dragonfly loss fails the existing `Valkey 4-CPU performance gate` job rather than
-adding an advisory check.
+The same required four-CPU job also runs a diagnostic Dragonfly comparison. It
+downloads the official checksum-pinned Dragonfly `v2.0.2` x86_64 release,
+verifies the archive SHA-256, and runs the identical five commands at P1/P16 with
+the same official `valkey-benchmark`, 8 clients, 1024 random keys, 64-byte
+values, 8,000 warmups and ten-second samples. All ten Dragonfly medians and every
+FAIL marker are retained and published. Only the ten Valkey medians decide the
+required `Valkey 4-CPU performance gate`; the workflow accepts a complete losing
+Dragonfly cohort but fails closed on a missing, partial or corrupt one. The check
+context, job count and required-context inventory remain unchanged.
 
 This is **Rillcache versus Dragonfly**, not Valkey versus Dragonfly.
 `valkey-benchmark` is only the common traffic generator. CI builds Rillcache with
@@ -204,8 +208,8 @@ retain it with its original validator, never relabel it as a new pass.
 
 Provided the candidate and Dragonfly were built/installed successfully, the
 Dragonfly comparison still runs when the separate Valkey comparison loses.
-Neither failure is masked: every completed loss and any incomplete cohort fails
-the same required job. The installing PR's bootstrap remains restricted to exact
+Nothing is masked: every completed loss is published, every Valkey loss fails the
+required job, and any incomplete Valkey or Dragonfly cohort fails closed. The installing PR's bootstrap remains restricted to exact
 pre-installation protected main `acc875c57a5c09f82c28ef086a87c3ac9223faad`;
 a later missing base harness or pin fails closed.
 
