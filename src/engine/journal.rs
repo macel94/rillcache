@@ -1502,6 +1502,17 @@ impl ShardExecutor {
         for key in lifecycle.deleted {
             self.notify_event("del", &key, NotifyCategory::Generic);
         }
+        for (event, key) in lifecycle.hash_events {
+            let (name, category) = match event.as_slice() {
+                b"del" => ("del", NotifyCategory::Generic),
+                b"hdel" => ("hdel", NotifyCategory::Hash),
+                b"hset" => ("hset", NotifyCategory::Hash),
+                b"hexpire" => ("hexpire", NotifyCategory::Hash),
+                b"hpersist" => ("hpersist", NotifyCategory::Hash),
+                _ => continue,
+            };
+            self.notify_event(name, &key, category);
+        }
     }
 
     pub(super) fn notify_event(&self, event: &str, key: &[u8], category: NotifyCategory) {
@@ -2504,7 +2515,7 @@ fn event_for(
         "sinterstore" => ("sinterstore", NotifyCategory::Set),
         "sunionstore" => ("sunionstore", NotifyCategory::Set),
         "sdiffstore" => ("sdiffstore", NotifyCategory::Set),
-        "hset" | "hsetnx" | "hmset" | "hsetex" => ("hset", NotifyCategory::Hash),
+        "hset" | "hsetnx" | "hmset" => ("hset", NotifyCategory::Hash),
         "hexpire" | "hpexpire" | "hexpireat" | "hpexpireat" => ("hexpire", NotifyCategory::Hash),
         "hpersist" => ("hpersist", NotifyCategory::Hash),
         "hdel" => ("hdel", NotifyCategory::Hash),

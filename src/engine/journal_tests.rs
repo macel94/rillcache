@@ -521,6 +521,87 @@ fn hash_delete_events_report_hdel_then_del_only_for_real_removals() {
 }
 
 #[test]
+fn hsetex_emits_its_exact_write_or_delete_event_pair() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(12);
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect = |event: &[u8], key: &[u8]| {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, key],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(
+        run(&store, &[b"HSETEX", b"h", b"FIELDS", b"1", b"a", b"1"]),
+        b":1\r\n"
+    );
+    expect(b"hset", b"h");
+    assert!(receiver.try_recv().is_err(), "no TTL option, no hexpire");
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"h", b"PX", b"1000", b"FIELDS", b"1", b"a", b"2"]
+        ),
+        b":1\r\n"
+    );
+    expect(b"hset", b"h");
+    expect(b"hexpire", b"h");
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"h", b"KEEPTTL", b"FIELDS", b"1", b"a", b"3"]
+        ),
+        b":1\r\n"
+    );
+    expect(b"hset", b"h");
+    assert!(receiver.try_recv().is_err(), "KEEPTTL emits no hexpire");
+
+    // A past absolute TTL removes the last field, so the hash and its key go.
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"h", b"PXAT", b"1", b"FIELDS", b"1", b"a", b"4"]
+        ),
+        b":1\r\n"
+    );
+    expect(b"hdel", b"h");
+    expect(b"del", b"h");
+    assert_eq!(run(&store, &[b"EXISTS", b"h"]), b":0\r\n");
+
+    // No field existed and nothing was created; the successful no-op emits
+    // nothing and does not touch the key's WATCH version.
+    assert_eq!(
+        run(
+            &store,
+            &[
+                b"HSETEX", b"missing", b"PXAT", b"1", b"FIELDS", b"1", b"a", b"1"
+            ]
+        ),
+        b":1\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(run(&store, &[b"EXISTS", b"missing"]), b":0\r\n");
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"missing", b"FXX", b"FIELDS", b"1", b"a", b"1"]
+        ),
+        b":0\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
