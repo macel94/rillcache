@@ -189,7 +189,8 @@ and `SMISMEMBER` 100 is 11.8 versus 0.21–0.39, because each requested member
 rescans the materialized collection; 4.44 probes directly. Expiry is the last
 systemic stall: the first `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` after 30k keys
 expire costs **36–46 vs 0.6–1.0 ms** because each calls `reap(now, usize::MAX)`,
-while a lazy `GET` is at parity; 4.45 bounds the command-path expiry. `SORT ...
+while a lazy `GET` is at parity; 4.45 replaced it with per-key/bounded work
+(**0.23–0.30 ms** post-fix). `SORT ...
 BY nosort LIMIT 0 10` is the other side of materialization: **7.96 vs 0.12–0.16
 ms** on 100k because the whole list is copied before the slice, while the sorted
 rows are competitive; 4.46 slices the source directly. Large listings repeat
@@ -1279,10 +1280,10 @@ rest are still true even though every row now leads:
     members versus 0.10–0.63), while `HMGET` and the 10-member controls are at
     the floor (section 3.28, candidate 4.44).
 22. **Mass expiry on command paths.** `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` call
-    `reap(now, usize::MAX)`, so the first command after 30k keys expire stalls
-    **36–46 ms** versus 0.6–1.0 ms (37–76×) while a per-key lazy `GET` is at
+    `reap(now, usize::MAX)`, so the first command after 30k keys expire stalled
+    **36–46 ms** versus 0.6–1.0 ms (37–76×) while a per-key lazy `GET` was at
     parity; the purge costs ~1.2–1.5 µs per expired key (section 3.29, candidate
-    4.45).
+    4.45). 4.45 now expires per key or in 128-entry batches: **0.23–0.30 ms**.
 23. **SORT `BY nosort`.** A 100k `SORT ... BY nosort LIMIT 0 10` costs
     **7.96 ms** versus 0.12–0.16 ms (50–66×) because the whole source is copied
     before the slice, while sorted/ALPHA/weighted SORT rows are 0.9–1.5× and the
@@ -1550,7 +1551,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) → 0.165/0.594 vs 0.240/2.855 and 0.088/0.573; at 1k 0.263 → 0.128/0.435 vs 0.133/1.116 and 0.220/0.977; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls unchanged | 4.42, implemented | AC44 met | none |
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
-| Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 ms vs 0.69/0.98, `KEYS` 43.6 vs 0.63/0.80, `RANDOMKEY` 45.5 vs 0.65/0.60, `DBSIZE` 41.2 vs 0.58/0.83; lazy `GET` at parity | 4.45, admitted | AC47 | none |
+| Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 → 0.230 ms vs 0.200/0.244, `KEYS` 43.6 → 0.297 vs 0.215/0.205, `RANDOMKEY` 45.5 → 0.297 vs 0.209/0.217, `DBSIZE` 41.2 → 0.298 vs 0.151/0.247; lazy `GET` 0.254 vs 0.160/0.207 | 4.45, implemented | AC47 met | none |
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
@@ -2007,7 +2008,7 @@ for a production claim.
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Done:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 → 0.165 vs 0.088–0.240 ms, 1k 0.263 → 0.128; reads and controls unchanged (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
-| Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Adapt:** 4.45 bounded lazy expiry; measured after 30k expire `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` 36–46 vs 0.6–1.0 ms, lazy `GET` at parity (3.29, AC47) |
+| Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Done:** 4.45 per-key/bounded expiry; post-fix 0.23–0.30 vs 0.15–0.30 ms, lazy `GET` at parity (3.29, AC47) |
 | SORT `BY nosort` | source-order slice without sorting or copying | same | pre-fix clone every element and build an `Item` before `LIMIT`; post-fix borrowed list slice | **Done (nosort):** 4.46 direct slice; measured 100k pre-fix 7.96 vs 0.12/0.16 ms, post-fix 0.188/0.506 at parity; sorted/ALPHA/weighted rows unchanged (3.30, AC48) |
 | Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
 | Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
@@ -3226,14 +3227,24 @@ order unchanged.
   while the per-key lazy `GET` is at parity. A larger backlog scales the stall
   linearly. Candidate 4.45.
 
-**Verdict: adapt bounded lazy expiry (4.45).** Remove `usize::MAX` from the
-command paths: expire only the keys a read touches, filter `KEYS`/`SCAN` results
-by liveness, retry `RANDOMKEY` a bounded number of times, and let `DBSIZE`
-return the Redis-compatible dict size (expired-but-unreaped keys may still be
-counted) or count live keys without a purge. Keep the bounded periodic purge
-(128/100 ms) and use a bounded reap plus eviction/admission policy on writes so
-an expiry wave can never stall one command. Document the DBSIZE semantics change
-and keep expired values unreadable.
+- **Post-fix (2026-11-14, candidate 4.45).** The command-path full purge is
+  replaced by per-key/bounded work. Same 30,000-key `PX 400`/0.7 s procedure:
+  `MGET` **0.230/0.262 ms** (from 36.3), `KEYS` **0.297/0.333** (from 43.6),
+  `RANDOMKEY` **0.297/0.315** (from 45.5), `DBSIZE` **0.298/0.403** (from 41.2)
+  versus Redis/Valkey 0.15–0.29, and lazy `GET` 0.254/0.338 (from 0.92). Expired
+  keys are never returned: `KEYS`/`SCAN` filter by liveness, `RANDOMKEY` probes
+  live slots, `MGET` expires observed keys, and NX/XX writes expire their
+  destinations after the bounded batch. `DBSIZE` reclaims one 128-key batch and
+  may count the remainder until later commands or the periodic purge drain it.
+
+**Verdict: adapted bounded lazy expiry (4.45, implemented).** `usize::MAX` is
+gone from the command paths: reads expire only the keys they touch, `KEYS`/`SCAN`
+filter by liveness, `RANDOMKEY` probes a bounded number of slots, and `DBSIZE`
+reclaims one bounded batch and returns the Redis-compatible dict size
+(expired-but-unreaped keys may still be counted). The admission fallback reclaims
+in bounded steps until the write fits, so an expiry wave can never stall one
+command. Expired values stay unreadable and the periodic purge still drains the
+backlog.
 
 ### 3.30 SORT and `BY nosort`
 
@@ -6288,7 +6299,7 @@ non-integer and duplicate members and the `SetInt`/`SetPack` semantics shall pas
 no dependency shall be added; and both protected gates shall pass on the exact
 head.
 
-### 4.45 Bounded lazy expiry on command paths (candidate; admission measured)
+### 4.45 Bounded lazy expiry on command paths (candidate; implemented)
 
 **Mechanism.** Replace every `reap(now, usize::MAX)` on a command path: reads
 expire only the keys they touch (`expire_key`, already present); `KEYS` filters
@@ -6310,6 +6321,25 @@ drains the backlog over later ticks, and no expired value is ever returned.
 0.69 and Valkey 0.98; `KEYS` 43.58 versus 0.63/0.80; `RANDOMKEY` 45.45 versus
 0.65/0.60; `DBSIZE` 41.21 versus 0.58/0.83; lazy `GET` 0.92 versus 0.75/0.72.
 The purge costs ~1.2–1.5 µs per expired key.
+
+**Post-fix (2026-11-14).** Every command-path `reap(now, usize::MAX)` is gone.
+`MGET` expires each key it observes (`expire_key`) instead of reaping the
+keyspace; `MSET`/`MSETNX`/`MSETEX` reclaim at most `COMMAND_REAP_LIMIT = 128`
+entries, then expire their destination keys so NX/XX absence and replacement
+accounting stay exact; `KEYS`/`SCAN` filter `entry.alive(now)` during their
+existing scan; `RANDOMKEY` probes 100 pseudo-random live slots and falls back to
+a first-live-key scan; `DBSIZE` reclaims one bounded batch and reports the
+remaining Redis-compatible dict size; and the over-budget admission path reaps
+in bounded steps until the write fits. Measured with the same 30,000-key
+`PX 400`/0.7 s procedure (three rotations, two waves), medians/p99 on the built
+head: `MGET` 100 **0.230/0.262 ms** versus Redis 0.200/0.293 and Valkey
+0.244/0.293 (from 36.29); `KEYS k*` **0.297/0.333** versus 0.215/0.230 and
+0.205/0.266 (from 43.58); `RANDOMKEY` **0.297/0.315** versus 0.209/0.235 and
+0.217/0.268 (from 45.45); `DBSIZE` **0.298/0.403** versus 0.151/0.238 and
+0.247/0.320 (from 41.21); lazy `GET` 0.254/0.338 versus 0.160/0.194 and
+0.207/0.226. All four commands meet AC47 (p50 ≤2 ms, p99 ≤5 ms) and are within
+~1.6× of the faster C server. Raw JSON retained at
+`/tmp/opencode/expirybacklog-result.json` (untracked).
 
 **Risks and obligations.** `DBSIZE` becomes approximate like Redis, so its tests
 and documentation must say so; `KEYS`/`SCAN`/`RANDOMKEY`/`MGET` must never return

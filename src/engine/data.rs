@@ -1,6 +1,11 @@
 use super::eviction::EvictionPolicy;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
+/// Expired keys reclaimed by one bounded admission step. Commands that must not
+/// stall on an unrelated mass-expiry backlog reclaim at most this many keys per
+/// invocation and expire the keys they actually touch.
+pub(crate) const COMMAND_REAP_LIMIT: usize = 128;
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Collection {
     ListPack(VecDeque<Vec<u8>>),
@@ -716,9 +721,12 @@ impl Data {
             return Some(bytes);
         }
         // A logically expired key must not cause a false OOM for a new write.
-        self.reap(now, usize::MAX);
-        if let Some(bytes) = size(self) {
-            return Some(bytes);
+        // Reclaim in bounded steps and stop as soon as the write fits, so an
+        // unrelated mass-expiry backlog cannot stall the admission.
+        while self.reap(now, COMMAND_REAP_LIMIT) > 0 {
+            if let Some(bytes) = size(self) {
+                return Some(bytes);
+            }
         }
         if self.eviction == EvictionPolicy::NoEviction {
             return None;

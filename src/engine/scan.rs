@@ -114,13 +114,19 @@ impl ShardExecutor {
             output.extend_from_slice(b"-ERR syntax error or invalid cursor\r\n");
             return;
         };
-        let Ok(mut data) = self.data.try_borrow_mut() else {
+        let Ok(data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
         let now = self.now(&data);
-        data.reap(now, usize::MAX);
-        let mut keys: Vec<&[u8]> = data.entries.keys().map(Vec::as_slice).collect();
+        // Skip logically expired keys per visited element rather than reaping
+        // the whole keyspace before the cursor slice.
+        let mut keys: Vec<&[u8]> = data
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.alive(now))
+            .map(|(key, _)| key.as_slice())
+            .collect();
         keys.sort_unstable();
         let start = options.cursor.min(keys.len());
         let end = start.saturating_add(options.count).min(keys.len());
