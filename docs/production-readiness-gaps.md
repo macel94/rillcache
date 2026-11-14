@@ -163,8 +163,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   lazy expiry emit no delete event. Tests cover publication order and the no-op
   cases, and the event matrix records the lazy-only detection point.
   `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
-  deadlines, with no-op conditions emitting nothing. `HGETEX` TTL events and
-  `keymiss`/new-key/`FLUSH*` classes remain open; delivery is at-most-once and
+  deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
+  `hexpire`/`hpersist` for future deadlines and successful persists, never a
+  synthetic write; its past-deadline deletion events and the
+  `keymiss`/new-key/`FLUSH*` classes remain open. Delivery is at-most-once and
   process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable

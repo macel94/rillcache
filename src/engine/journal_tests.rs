@@ -602,6 +602,73 @@ fn hsetex_emits_its_exact_write_or_delete_event_pair() {
 }
 
 #[test]
+fn hgetex_reports_its_ttl_events_without_a_write_event() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(12);
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect = |event: &[u8], key: &[u8]| {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, key],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(
+        run(&store, &[b"HSET", b"h", b"a", b"1", b"b", b"2"]),
+        b":2\r\n"
+    );
+    while receiver.try_recv().is_ok() {}
+
+    // Persisting a field with no TTL changes nothing and emits nothing.
+    assert_eq!(
+        run(
+            &store,
+            &[b"HGETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a"]
+        ),
+        b"*1\r\n$1\r\n1\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HGETEX", b"h", b"EX", b"10", b"FIELDS", b"1", b"a"]
+        ),
+        b"*1\r\n$1\r\n1\r\n"
+    );
+    expect(b"hexpire", b"h");
+    assert!(
+        receiver.try_recv().is_err(),
+        "HGETEX must not emit a write event"
+    );
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HGETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a"]
+        ),
+        b"*1\r\n$1\r\n1\r\n"
+    );
+    expect(b"hpersist", b"h");
+
+    // A missing field is a read miss, not a TTL change.
+    assert_eq!(
+        run(
+            &store,
+            &[b"HGETEX", b"h", b"EX", b"10", b"FIELDS", b"1", b"missing"]
+        ),
+        b"*1\r\n$-1\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()

@@ -2122,6 +2122,9 @@ impl ShardExecutor {
                 for field in present {
                     changed |= data.persist_field(key, field);
                 }
+                if changed {
+                    data.record_hash_event(b"hpersist", key);
+                }
             }
             FieldTtlMode::Default | FieldTtlMode::Keep => {}
             _ => {
@@ -2132,6 +2135,8 @@ impl ShardExecutor {
                 }
                 if deleting {
                     data.expire_key(key, now);
+                } else if changed {
+                    data.record_hash_event(b"hexpire", key);
                 }
             }
         }
