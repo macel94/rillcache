@@ -192,6 +192,7 @@ impl ShardExecutor {
             use std::io::Write;
             write!(output, "*{count}\r\n").expect("Vec write");
             for key in &arguments[1..] {
+                let missing = !data.entries.contains_key(*key);
                 encode_bulk(
                     data.entries
                         .get(*key)
@@ -199,6 +200,9 @@ impl ShardExecutor {
                         .map(|entry| entry.value.as_slice()),
                     output,
                 );
+                if missing {
+                    data.record_key_miss(key);
+                }
             }
             return true;
         }
