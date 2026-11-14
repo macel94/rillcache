@@ -143,9 +143,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   pub/sub, TLS, reconnect and error-path tests against the supported profile.
 
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
-  `keymiss`, new-key and `FLUSH*` event classes are unsupported; field-expiry
-  event parity (`hexpire`/`hdel`/`hexpired`) is not implemented; delivery is
+  `keymiss`, new-key and `FLUSH*` event classes are unsupported; delivery is
   at-most-once and process-local.
+  **Partial (2026-11-14): hash field lifecycle and TTL notifications.** A lazy
+  field-expiry pass now publishes one `hexpired` event per affected key and an
+  additional generic `del` when the empty hash is removed, including when the
+  observing command is rejected. `HEXPIRE`/`HPEXPIRE`/`HEXPIREAT`/`HPEXPIREAT`
+  publish `hexpire` and `HPERSIST` publishes `hpersist` when at least one field
+  actually changed, with no event or `WATCH` bump for condition failures.
+  `HSETEX`/`HGETEX` TTL events and `keymiss`/new-key/`FLUSH*` classes remain
+  open; delivery is at-most-once and process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
@@ -481,6 +488,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   There are client/payload/frame limits and bounded output backpressure, but no
   slow-client thresholds, global connection/command budgets, per-user quotas or
   adversarial protocol fuzzing. O(N) commands can occupy the owner.
+  **Partial (2026-11-14): deterministic RESP fuzz/property corpus.**
+  `tests/protocol_fuzz.rs` now drives generated binary frames through every
+  fragmentation boundary, random byte streams under tight frame/bulk/argument
+  limits, random inline input, and multi-command pipelines. It asserts bounded
+  consumption, at-most-once execution, argument/limit bounds and no panic; every
+  case is reproducible from its seed. Slow-client thresholds, global/user
+  budgets, CPU quotas and a documented overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
   shedding behavior exists.
@@ -519,10 +533,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   profile.
 
 - [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
-  `INFO` has aggregate command stats but no `INFO latencystats`, histograms,
-  percentiles, per-client fd/idle/command/buffer/network/memory fields or
-  blocked-client count. `LATENCY` exposes only command and expire-cycle series;
+  `INFO` has aggregate command stats but no `INFO latencystats`, histograms or
+  percentiles. `LATENCY` exposes only command and expire-cycle series;
   `LATENCY GRAPH|HISTOGRAM` are unsupported.
+  **Partial (2026-11-14): bounded CLIENT INFO session state.** `CLIENT INFO`
+  now reports `age`, `b`/`P`/`N` flags, `sub`/`psub` and the WATCH count, using
+  state already held by the session. `INFO clients` already reports `blocked_clients`. Per-client fd,
+  idle time, last command, input/output buffer bytes, network bytes, allocator
+  memory, latency histograms and `INFO latencystats` remain absent.
   **Closes when:** the supported metrics contract reports per-command latency
   distributions and per-client resource/queue state with documented units and
   sampling limits.
@@ -761,6 +779,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,
   randomized model checking or sustained adversarial input corpus.
+  **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
+  adds seeded binary-frame fragmentation, random bytes under tight limits,
+  random inline input and pipeline consumption properties; it runs in ordinary
+  CI and every failure is reproducible from its printed seed. State-machine
+  model checking, command-level differential properties and sustained
+  adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
 - [ ] **V5. Public documentation can still drift from executable behavior.** [P1]

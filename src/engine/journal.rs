@@ -8,7 +8,7 @@
 //! owner materialises the key list, then maintenance encodes bounded slices
 //! between client commands and swaps in the synced snapshot under a short gate.
 
-use super::data::{Collection, Data, StreamId};
+use super::data::{Collection, Data, Lifecycle, StreamId};
 use super::notify::{Category as NotifyCategory, NotifyFlags};
 use super::{Action, ShardExecutor};
 use crate::protocol::{Limits, dispatch_request, encode_request};
@@ -1416,7 +1416,7 @@ impl ShardExecutor {
                 let lifecycle = if notified {
                     data.drain_lifecycle()
                 } else {
-                    (Vec::new(), Vec::new())
+                    Lifecycle::default()
                 };
                 (Vec::new(), Vec::new(), lifecycle)
             } else {
@@ -1443,7 +1443,7 @@ impl ShardExecutor {
                 let lifecycle = if notified {
                     data.drain_lifecycle()
                 } else {
-                    (Vec::new(), Vec::new())
+                    Lifecycle::default()
                 };
                 let records = if journaled {
                     let mut records = Vec::new();
@@ -1489,13 +1489,18 @@ impl ShardExecutor {
         }
     }
 
-    fn publish_lifecycle(&self, lifecycle: (Vec<Vec<u8>>, Vec<Vec<u8>>)) {
-        let (expired, evicted) = lifecycle;
-        for key in expired {
+    pub(super) fn publish_lifecycle(&self, lifecycle: Lifecycle) {
+        for key in lifecycle.expired {
             self.notify_event("expired", &key, NotifyCategory::Expired);
         }
-        for key in evicted {
+        for key in lifecycle.evicted {
             self.notify_event("evicted", &key, NotifyCategory::Evicted);
+        }
+        for key in lifecycle.expired_fields {
+            self.notify_event("hexpired", &key, NotifyCategory::Hash);
+        }
+        for key in lifecycle.deleted {
+            self.notify_event("del", &key, NotifyCategory::Generic);
         }
     }
 
@@ -2440,6 +2445,8 @@ fn event_for(
         "sunionstore" => ("sunionstore", NotifyCategory::Set),
         "sdiffstore" => ("sdiffstore", NotifyCategory::Set),
         "hset" | "hsetnx" | "hmset" | "hsetex" => ("hset", NotifyCategory::Hash),
+        "hexpire" | "hpexpire" | "hexpireat" | "hpexpireat" => ("hexpire", NotifyCategory::Hash),
+        "hpersist" => ("hpersist", NotifyCategory::Hash),
         "hdel" => ("hdel", NotifyCategory::Hash),
         "hincrby" => ("hincrby", NotifyCategory::Hash),
         "hincrbyfloat" => ("hincrbyfloat", NotifyCategory::Hash),
