@@ -50,6 +50,7 @@ mod notify;
 mod options;
 mod owner_actor;
 mod partition;
+mod process_memory;
 mod pubsub;
 mod router;
 mod scan;

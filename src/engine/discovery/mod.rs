@@ -1,6 +1,7 @@
 //! Bounded Redis-style command and server discovery.
 
 use super::ShardExecutor;
+use super::process_memory;
 use crate::protocol::encode_bulk;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -1020,6 +1021,7 @@ impl ShardExecutor {
         let payload_bytes = data.payload_bytes;
         let eviction = data.eviction;
         let lifecycle = (data.expired_keys, data.expired_subkeys, data.evicted_keys);
+        let resident_bytes = process_memory::snapshot().map(|memory| memory.resident_bytes);
         // Do not hold data across helpers that can take data or another lock:
         // std RwLock reads are not reentrant when a writer is queued.
         drop(data);
@@ -1055,9 +1057,18 @@ impl ShardExecutor {
                 );
             }
             if matches!(section.as_slice(), b"memory" | b"default" | b"all") {
+                let resident = resident_bytes.unwrap_or(0);
+                let resident_human = resident_bytes
+                    .map(process_memory::human_bytes)
+                    .unwrap_or_else(|| "0B".to_owned());
+                let resident_scope = if resident_bytes.is_some() {
+                    "process_resident_set_includes_shared_and_allocator_pages_not_payload"
+                } else {
+                    "unavailable_on_this_platform"
+                };
                 let _ = writeln!(
                     text,
-                    "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
+                    "# Memory\r\nrillcache_payload_bytes:{}\r\nrillcache_payload_limit_bytes:{}\r\nrillcache_payload_scope:key_and_value_bytes_not_RSS\r\nused_memory_rss:{resident}\r\nused_memory_rss_human:{resident_human}\r\nused_memory_rss_scope:{resident_scope}\r\nmaxmemory_policy:{}\r\nnotify_keyspace_events:{}\r",
                     payload_bytes,
                     self.payload_limit(),
                     eviction.name(),
