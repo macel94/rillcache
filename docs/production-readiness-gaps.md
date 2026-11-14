@@ -165,9 +165,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
   deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
   `hexpire`/`hpersist` for future deadlines and successful persists, never a
-  synthetic write; its past-deadline deletion events and the
-  `keymiss`/new-key/`FLUSH*` classes remain open. Delivery is at-most-once and
-  process-local.
+  synthetic write; its past-deadline deletion events remain open.
+  **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`
+  and each missing `MGET` occurrence on the normal keyspace/keyevent channels;
+  hits and existing non-string keys do not. `A` intentionally excludes `m`, as in
+  Redis. New-key/`FLUSH*` classes and key-miss coverage for other read commands
+  remain open. Delivery is at-most-once and process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
