@@ -886,7 +886,7 @@ fn random_index(length: usize) -> usize {
     random as usize % length
 }
 
-fn encode_set(set: BTreeSet<Vec<u8>>, config: &CollectionConfig) -> Collection {
+pub(super) fn encode_set(set: BTreeSet<Vec<u8>>, config: &CollectionConfig) -> Collection {
     let compact_ints: Option<BTreeSet<i64>> =
         set.iter().map(|member| parse_integer(member)).collect();
     if let Some(values) =
@@ -3441,6 +3441,33 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
+        data.expire_key(key, now);
+        if let Some(entry) = data.entries.get_mut(key)
+            && let Some(Collection::Set(values)) = entry.collection.as_mut()
+        {
+            let mut removed = 0i64;
+            let mut bytes = 0usize;
+            for member in &args[2..] {
+                if values.remove(*member) {
+                    removed += 1;
+                    bytes = bytes.saturating_add(member.len());
+                }
+            }
+            if removed == 0 {
+                integer(0, out);
+                return;
+            }
+            if values.is_empty() {
+                data.remove(key);
+                integer(removed, out);
+                return;
+            }
+            entry.payload_len = entry.payload_len.saturating_sub(bytes);
+            data.payload_bytes = data.payload_bytes.saturating_sub(bytes);
+            data.touch(key);
+            integer(removed, out);
+            return;
+        }
         let set = match owned_set(&mut data, key, now) {
             Ok(Some(set)) => set,
             Ok(None) => {
