@@ -1104,6 +1104,19 @@ fn quick_list_pop(nodes: &mut VecDeque<VecDeque<Vec<u8>>>, left: bool) -> Option
     }
 }
 
+fn quick_list_get_mut(
+    nodes: &mut VecDeque<VecDeque<Vec<u8>>>,
+    mut index: usize,
+) -> Option<&mut Vec<u8>> {
+    for chunk in nodes.iter_mut() {
+        if index < chunk.len() {
+            return chunk.get_mut(index);
+        }
+        index -= chunk.len();
+    }
+    None
+}
+
 fn quick_list_push(nodes: &mut VecDeque<VecDeque<Vec<u8>>>, left: bool, value: Vec<u8>) {
     if left {
         if nodes.front().is_none() {
@@ -2843,8 +2856,8 @@ impl ShardExecutor {
             return;
         }
         list.insert(position, args[4].to_vec());
-        let expires = entry.expires;
-        let previous = entry.payload_len();
+        let expires = data.entries.get(key).expect("list").expires;
+        let previous = data.entries.get(key).expect("list").payload_len();
         let bytes = list.iter().map(Vec::len).sum::<usize>();
         let Ok(config) = self.collection_config.read() else {
             internal_error(out);
@@ -2939,25 +2952,93 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        let Some(entry) = data.entries.get(key) else {
+        if !data.entries.contains_key(key) {
             out.extend_from_slice(b"-ERR no such key\r\n");
             return;
-        };
-        let Some(mut list) = entry.collection.as_ref().and_then(Collection::list_values) else {
+        }
+        if data
+            .entries
+            .get(key)
+            .and_then(|entry| entry.collection.as_ref())
+            .is_none_or(|collection| !collection.is_list())
+        {
             wrong_type(out);
             return;
-        };
+        }
         let Some(index) = parse_i64(args[2]) else {
             out.extend_from_slice(NOT_INTEGER);
             return;
         };
-        let Some(position) = normalize_index(index, list.len()) else {
+        let Some(position) = data
+            .entries
+            .get(key)
+            .and_then(|entry| entry.collection.as_ref())
+            .map(|collection| match collection {
+                Collection::ListPack(values) => values.len(),
+                Collection::ListQuick(nodes) => quick_list_len(nodes),
+                _ => 0,
+            })
+            .and_then(|len| normalize_index(index, len))
+        else {
             out.extend_from_slice(b"-ERR index out of range\r\n");
             return;
         };
-        list[position] = args[3].to_vec();
-        let expires = entry.expires;
-        let previous = entry.payload_len();
+        let replacement = args[3];
+        // A same-or-shorter replacement cannot grow the payload, so replace the
+        // element inside its chunk without flattening or re-encoding the list.
+        let mut shrink = None;
+        if let Some(entry) = data.entries.get_mut(key) {
+            let (old_len, replaced) = match entry.collection.as_mut() {
+                Some(Collection::ListPack(values)) => values.get_mut(position).map(|slot| {
+                    let old = slot.len();
+                    if replacement.len() <= old {
+                        *slot = replacement.to_vec();
+                        Some(old)
+                    } else {
+                        None
+                    }
+                }),
+                Some(Collection::ListQuick(nodes)) => {
+                    quick_list_get_mut(nodes, position).map(|slot| {
+                        let old = slot.len();
+                        if replacement.len() <= old {
+                            *slot = replacement.to_vec();
+                            Some(old)
+                        } else {
+                            None
+                        }
+                    })
+                }
+                _ => None,
+            }
+            .flatten()
+            .map(|old| (old, true))
+            .unwrap_or((0, false));
+            if replaced {
+                shrink = Some(old_len - replacement.len());
+                entry.payload_len = entry
+                    .payload_len
+                    .saturating_sub(old_len - replacement.len());
+            }
+        }
+        if let Some(diff) = shrink {
+            data.payload_bytes = data.payload_bytes.saturating_sub(diff);
+            data.touch(key);
+            out.extend_from_slice(b"+OK\r\n");
+            return;
+        }
+        let Some(mut list) = data
+            .entries
+            .get(key)
+            .and_then(|entry| entry.collection.as_ref())
+            .and_then(Collection::list_values)
+        else {
+            wrong_type(out);
+            return;
+        };
+        list[position] = replacement.to_vec();
+        let expires = data.entries.get(key).expect("list").expires;
+        let previous = data.entries.get(key).expect("list").payload_len();
         let bytes = list.iter().map(Vec::len).sum::<usize>();
         let Ok(config) = self.collection_config.read() else {
             internal_error(out);

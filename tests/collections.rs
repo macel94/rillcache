@@ -371,3 +371,47 @@ fn smove_between_large_hashtable_sets_moves_one_member_in_place() {
     command(&mut stream, &[b"DBSIZE"], b":2\r\n");
     server.shutdown().unwrap();
 }
+
+#[test]
+fn lset_replaces_quicklist_elements_in_place() {
+    let server = start(None);
+    let mut stream = connect(&server);
+    let members: Vec<String> = (0..700).map(|index| format!("v{index:04}")).collect();
+    let mut args: Vec<&[u8]> = vec![b"RPUSH", b"big"];
+    args.extend(members.iter().map(|member| member.as_bytes()));
+    command(&mut stream, &args, b":700\r\n");
+    command(&mut stream, &[b"LSET", b"big", b"350", b"x"], b"+OK\r\n");
+    command(&mut stream, &[b"LINDEX", b"big", b"350"], b"$1\r\nx\r\n");
+    command(&mut stream, &[b"LLEN", b"big"], b":700\r\n");
+    command(&mut stream, &[b"LSET", b"big", b"-1", b"y"], b"+OK\r\n");
+    command(&mut stream, &[b"LINDEX", b"big", b"-1"], b"$1\r\ny\r\n");
+    // A longer replacement keeps the general path and still succeeds.
+    command(
+        &mut stream,
+        &[b"LSET", b"big", b"0", b"longer-than-before"],
+        b"+OK\r\n",
+    );
+    command(
+        &mut stream,
+        &[b"LINDEX", b"big", b"0"],
+        b"$18\r\nlonger-than-before\r\n",
+    );
+    command(&mut stream, &[b"LLEN", b"big"], b":700\r\n");
+    command(
+        &mut stream,
+        &[b"LSET", b"big", b"700", b"x"],
+        b"-ERR index out of range\r\n",
+    );
+    command(
+        &mut stream,
+        &[b"LSET", b"missing", b"0", b"x"],
+        b"-ERR no such key\r\n",
+    );
+    command(&mut stream, &[b"SET", b"wrong", b"v"], b"+OK\r\n");
+    command(
+        &mut stream,
+        &[b"LSET", b"wrong", b"0", b"x"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    server.shutdown().unwrap();
+}
