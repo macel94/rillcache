@@ -615,6 +615,107 @@ impl ShardExecutor {
             wrong_type(out);
             return;
         }
+        // A large quicklist grows at the head/tail chunk in place: admit the new
+        // bytes once, then push into the edge chunk (splitting at the packing
+        // limit). Packs keep the rebuild path because they are small.
+        let previous = current.map(Entry::payload_len);
+        if let Some(entry) = current
+            && let Some(Collection::ListQuick(nodes)) = entry.collection.as_ref()
+        {
+            let Ok(config) = self.collection_config.read() else {
+                internal_error(out);
+                return;
+            };
+            let length = nodes
+                .iter()
+                .map(std::collections::VecDeque::len)
+                .sum::<usize>();
+            if length
+                .checked_add(args.len() - 2)
+                .is_none_or(|n| n > MAX_ELEMENTS)
+            {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let delta = args[2..].iter().map(|value| value.len()).sum::<usize>();
+            let Some(new_len) = previous.unwrap_or(0).checked_add(delta) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Some(payload) = data.reserve(key, new_len, previous, self.payload_limit(), now)
+            else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let setting = config.list_max_listpack_size;
+            let by_count = setting > 0;
+            let limit = if by_count {
+                setting as usize
+            } else {
+                listpack_byte_limit(setting)
+            };
+            let mut applied = false;
+            if let Some(entry) = data.entries.get_mut(key)
+                && let Some(Collection::ListQuick(nodes)) = entry.collection.as_mut()
+            {
+                for value in &args[2..] {
+                    let edge = if left { nodes.front() } else { nodes.back() };
+                    let full = edge.is_none_or(|chunk| {
+                        if by_count {
+                            chunk.len() >= limit
+                        } else {
+                            chunk.iter().map(Vec::len).sum::<usize>() + value.len() > limit
+                        }
+                    });
+                    if full {
+                        let mut fresh = std::collections::VecDeque::new();
+                        fresh.push_back(value.to_vec());
+                        if left {
+                            nodes.push_front(fresh);
+                        } else {
+                            nodes.push_back(fresh);
+                        }
+                    } else if let Some(chunk) = if left {
+                        nodes.front_mut()
+                    } else {
+                        nodes.back_mut()
+                    } {
+                        if left {
+                            chunk.push_front(value.to_vec());
+                        } else {
+                            chunk.push_back(value.to_vec());
+                        }
+                    }
+                }
+                entry.payload_len = new_len;
+                applied = true;
+            }
+            if applied {
+                data.payload_bytes = payload;
+                data.touch(key);
+                integer((length + args.len() - 2) as i64, out);
+                return;
+            }
+            // Admission evicted the target: rebuild from the requested values.
+            let mut fresh = std::collections::VecDeque::new();
+            for value in &args[2..] {
+                if left {
+                    fresh.push_front(value.to_vec());
+                } else {
+                    fresh.push_back(value.to_vec());
+                }
+            }
+            let bytes = fresh.iter().map(Vec::len).sum::<usize>();
+            let Some(payload) = data.reserve(key, bytes, None, self.payload_limit(), now) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let encoded = encode_list(fresh, setting);
+            let len = encoded.list_items().expect("list encoding").len();
+            data.put_collection(key, encoded, None, payload, now);
+            integer(len as i64, out);
+            return;
+        }
         let mut list = current
             .and_then(|entry| entry.collection.as_ref().and_then(Collection::list_values))
             .unwrap_or_default();
@@ -681,6 +782,74 @@ impl ShardExecutor {
             }
             return;
         };
+        if let Some(Collection::ListQuick(_)) = entry.collection.as_ref() {
+            let length = entry
+                .collection
+                .as_ref()
+                .and_then(Collection::list_len)
+                .expect("list type checked");
+            let previous = entry.payload_len;
+            let number = count.unwrap_or(1).min(length);
+            if number == 0 {
+                out.extend_from_slice(b"*0\r\n");
+                return;
+            }
+            let mut values: Vec<Vec<u8>> = Vec::with_capacity(number);
+            let mut removed = 0usize;
+            if let Some(entry) = data.entries.get_mut(key)
+                && let Some(Collection::ListQuick(nodes)) = entry.collection.as_mut()
+            {
+                for _ in 0..number {
+                    let value = if left {
+                        nodes
+                            .front_mut()
+                            .and_then(std::collections::VecDeque::pop_front)
+                    } else {
+                        nodes
+                            .back_mut()
+                            .and_then(std::collections::VecDeque::pop_back)
+                    };
+                    if let Some(value) = value {
+                        removed = removed.saturating_add(value.len());
+                        values.push(value);
+                    }
+                    let empty = if left {
+                        nodes
+                            .front()
+                            .is_some_and(std::collections::VecDeque::is_empty)
+                    } else {
+                        nodes
+                            .back()
+                            .is_some_and(std::collections::VecDeque::is_empty)
+                    };
+                    if empty {
+                        if left {
+                            nodes.pop_front();
+                        } else {
+                            nodes.pop_back();
+                        }
+                    }
+                }
+                let emptied = nodes.is_empty();
+                if emptied {
+                    data.remove(key);
+                } else {
+                    entry.payload_len = entry.payload_len.saturating_sub(removed);
+                    data.payload_bytes = data.payload_bytes.saturating_sub(removed);
+                    data.touch(key);
+                }
+                debug_assert!(previous >= removed);
+            }
+            if count.is_none() {
+                encode_bulk(values.first().map(Vec::as_slice), out);
+            } else {
+                write!(out, "*{}\r\n", values.len()).expect("Vec write");
+                for value in &values {
+                    encode_bulk(Some(value), out);
+                }
+            }
+            return;
+        }
         let Some(mut list) = entry.collection.as_ref().and_then(Collection::list_values) else {
             wrong_type(out);
             return;
@@ -956,6 +1125,56 @@ mod tests {
         assert_eq!(run(&store, &[b"TYPE", b"s"]), b"+set\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"h"]), b"+hash\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"z"]), b"+zset\r\n");
+    }
+
+    #[test]
+    fn list_push_and_pop_mutate_a_quicklist_in_place_with_exact_accounting() {
+        let store = ShardExecutor::new(100_000_000);
+        // Force the quicklist representation so the in-place paths run.
+        assert_eq!(
+            run(
+                &store,
+                &[b"CONFIG", b"SET", b"list-max-listpack-size", b"4"]
+            ),
+            b"+OK\r\n"
+        );
+        let values: Vec<String> = (0..1000).map(|index| format!("v{index:04}")).collect();
+        let mut args = vec![b"RPUSH".as_slice(), b"l"];
+        args.extend(values.iter().map(|value| value.as_bytes()));
+        assert_eq!(run(&store, &args), b":1000\r\n");
+        let payload = store.data.try_borrow().unwrap().payload_bytes;
+        assert_eq!(payload, 1 + values.iter().map(String::len).sum::<usize>());
+
+        assert_eq!(run(&store, &[b"LPUSH", b"l", b"a", b"b"]), b":1002\r\n");
+        assert_eq!(run(&store, &[b"RPUSH", b"l", b"z"]), b":1003\r\n");
+        assert_eq!(
+            run(&store, &[b"LRANGE", b"l", b"0", b"2"]),
+            b"*3\r\n$1\r\nb\r\n$1\r\na\r\n$5\r\nv0000\r\n"
+        );
+        assert_eq!(run(&store, &[b"LINDEX", b"l", b"-1"]), b"$1\r\nz\r\n");
+        assert_eq!(run(&store, &[b"LLEN", b"l"]), b":1003\r\n");
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, payload + 3);
+        assert_eq!(
+            run(&store, &[b"LPOP", b"l", b"2"]),
+            b"*2\r\n$1\r\nb\r\n$1\r\na\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"RPOP", b"l", b"2"]),
+            b"*2\r\n$1\r\nz\r\n$5\r\nv0999\r\n"
+        );
+        assert_eq!(run(&store, &[b"LPOP", b"l", b"0"]), b"*0\r\n");
+        assert_eq!(run(&store, &[b"LLEN", b"l"]), b":999\r\n");
+        assert_eq!(
+            store.data.try_borrow().unwrap().payload_bytes,
+            1 + values.iter().take(999).map(String::len).sum::<usize>()
+        );
+        assert_eq!(run(&store, &[b"LPOP", b"l"]), b"$5\r\nv0000\r\n");
+        // Popping everything removes the key and its payload.
+        let popped = run(&store, &[b"LPOP", b"l", b"100000"]);
+        assert!(popped.starts_with(b"*998\r\n"));
+        assert!(popped.windows(3).any(|window| window == b"v00"));
+        assert_eq!(run(&store, &[b"EXISTS", b"l"]), b":0\r\n");
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     }
 
     #[test]
