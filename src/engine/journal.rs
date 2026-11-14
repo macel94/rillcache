@@ -1513,6 +1513,9 @@ impl ShardExecutor {
             };
             self.notify_event(name, &key, category);
         }
+        for key in lifecycle.key_miss {
+            self.notify_event("keymiss", &key, NotifyCategory::KeyMiss);
+        }
     }
 
     pub(super) fn notify_event(&self, event: &str, key: &[u8], category: NotifyCategory) {
