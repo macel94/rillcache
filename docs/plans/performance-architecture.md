@@ -203,10 +203,10 @@ collect+sort, so 4.29 stays scoped to hashes. One boundary is not latency at all
 Rill rejects any request above **1,024 total arguments** while Redis/Valkey
 execute `MGET` 10,000 and `MSET` 600 pairs; 4.55 derives the cap from the frame
 budget (section 3.47).
-HyperLogLog is the remaining CPU gap: 100k pipelined adds cost **1.70 vs 0.39–0.41 s**
-and 10k repeated counts **2.66 vs 0.033–0.036 s** because every command
-decodes/encodes 16 KB of registers and nothing is cached; 4.47 keeps them in
-place and caches the count. Bitmaps also hide a scan: a not-found `BITPOS 0` on
+HyperLogLog was the remaining CPU gap: 100k pipelined adds cost **1.70 vs
+0.39–0.41 s** and 10k repeated counts **2.66 vs 0.033–0.036 s** because every
+command decoded/encoded 16 KB of registers and nothing was cached; 4.47 keeps
+them in place and caches the count (adds **0.957 s**, counts **0.0234 s**). Bitmaps also hide a scan: a not-found `BITPOS 0` on
 16 MB is **201.6 vs 5.1 ms** because `find_bit` visits every byte and bit; 4.37
 is extended with a `u64` bit scan. Streams have one more clone on a control path:
 `XGROUP CREATE` on a 5k stream is **8.26 vs 0.08–0.09 ms** (88–99×) because it
@@ -1295,9 +1295,10 @@ rest are still true even though every row now leads:
     the floor (section 3.31, extending 4.29 and 4.31).
 25. **HyperLogLog add/count.** 100k pipelined `PFADD` cost **1.70 s (16.96
     µs/add)** versus 4.1/3.9 µs and 10k repeated `PFCOUNT` **2.66 s (265 µs/call)**
-    versus 3.3–3.6 µs, because every command decodes/encodes the 16 KB register
-    set and there is no cached cardinality; single-call p50 and the 10-element
-    controls are at the floor (section 3.32, candidate 4.47).
+    versus 3.3–3.6 µs, because every command decoded/encoded the 16 KB register
+    set and there was no cached cardinality; single-call p50 and the 10-element
+    controls are at the floor (section 3.32, candidate 4.47). 4.47 now updates in
+    place and caches: adds **0.957 s**, counts **0.0234 s** (113×, at parity).
 26. **BITPOS on a large bitmap.** A not-found `BITPOS 0` on 16 MB costs **201.6
     ms** versus 5.1 ms (39–44×) because it scans byte by byte and bit by bit,
     while a first-bit hit is at the floor; `BITCOUNT` is the previously admitted
@@ -1557,7 +1558,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
 | MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
-| HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
+| HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) → 0.957 s (9.57) vs 3.17/3.61 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) → 0.0234 s (2.34) vs 2.29/2.92; single p50 and controls at the floor | 4.47, implemented | AC49 (count met; add 1.77× but above 6 µs) | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` pre-fix 201.6 ms vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; `BITPOS 0 0 -1` 209.4 vs 4.79/5.96, post-fix 2.23; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
@@ -2012,7 +2013,7 @@ for a production claim.
 | SORT `BY nosort` | source-order slice without sorting or copying | same | pre-fix clone every element and build an `Item` before `LIMIT`; post-fix borrowed list slice | **Done (nosort):** 4.46 direct slice; measured 100k pre-fix 7.96 vs 0.12/0.16 ms, post-fix 0.188/0.506 at parity; sorted/ALPHA/weighted rows unchanged (3.30, AC48) |
 | Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
 | Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
-| HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
+| HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Done (count; add partial):** 4.47 in-place registers + cached count; measured 100k adds 16.96 → 9.57 µs (vs 3.17/3.61) and 10k counts 265 → 2.34 µs (vs 2.29/2.92); the residual add cost is per-command dispatch (3.32, AC49) |
 | Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
 | Stream `XGROUP CREATE` | insert one group in the stream dict; O(1) | same | deep-clone the whole stream, fold payload, replace via `put_stream` | **Adapt:** 4.48 in-place group insert; measured 5k 8.26 vs 0.083/0.094 ms (88–99×), other XGROUP ops at parity (3.34, AC50) |
 | Stream consumer-group reads | radix PEL with a consumer pointer; reply writes stored fields directly | same | per-entry `StreamEntry` clone, two PEL inserts and a consumer-name copy per pending entry | **Keep:** measured near-parity at 10k; the 1,000-entry forms are 1.7× (new read) and 2.1× (`XAUTOCLAIM`), while 100-entry history/`XPENDING`/`XCLAIM` are at parity; re-measure after 4.42 (3.39, no candidate) |
@@ -3380,12 +3381,23 @@ Redis, so the deterministic-order change is an explicit test decision.
   p50 hides the count cost behind the client floor, but a pipelined or repeated
   counter workload pays it every time. Candidate 4.47.
 
-**Verdict: adapt in-place registers and a cached count (4.47).** Keep the HLL
-mutable inside the entry (no decode/serialize/put copies on `PFADD`), and store a
-cached cardinality in the header that `PFADD`/`PFMERGE` invalidate, so
-`PFCOUNT` is O(1) when nothing changed. Preserve the exact/dense
+- **Post-fix (2026-11-14, candidate 4.47).** Dense registers are updated in the
+  entry's payload (header/length validation only; register bytes are opaque
+  6-bit ranks), and an optional cached count lives in a versioned 8-byte trailer
+  that `PFADD`/`PFMERGE` invalidate. Same cohort: `PFADD` **957.3 ms =
+  9.57 µs/add** (from 1,695/16.96) versus Redis 3.17 and Valkey 3.61;
+  `PFCOUNT` **23.4 ms = 2.34 µs/call** (from 2,655/265.5) versus 2.29/2.92, now
+  at Redis parity. The count target is met (113×); the add target is not
+  (1.77×) because the remaining work is per-command dispatch/validation/socket
+  traffic, and profiling shows no HLL hotspot. Old payloads without the trailer
+  still parse.
+
+**Verdict: adapted in-place registers and a cached count (4.47, implemented).**
+Dense `PFADD` mutates the entry payload in place, a versioned trailer caches the
+count for `PFCOUNT` and is invalidated by `PFADD`/`PFMERGE`, and the exact/dense
 representations, serialization/rewrite/replay, the error bound and merge
-semantics.
+semantics are preserved. The count target is met; the add target is missed
+because the residual cost is command dispatch rather than the sketch.
 
 ### 3.33 BITPOS on large bitmaps
 
@@ -6415,7 +6427,7 @@ be unchanged; offset/count edges, `STORE`, missing keys and set/zset sources
 shall pass; no dependency shall be added; and both protected gates shall pass on
 the exact head.
 
-### 4.47 In-place HyperLogLog registers with a cached count (candidate; admission measured)
+### 4.47 In-place HyperLogLog registers with a cached count (candidate; implemented, add target missed)
 
 **Mechanism.** Keep the HLL in the entry as today (exact/dense), but mutate the
 dense registers in place under `entries.get_mut` instead of decode → serialize →
@@ -6435,6 +6447,25 @@ Valkey 389/487/392 (3.92); `PFCOUNT` 2,655/2,771/2,646 ms (265.5 µs/call) versu
 35.7 (3.57) and 33.1 (3.31); single `PFADD`/`PFCOUNT` p50 0.187/0.484 versus
 0.151/0.169 and 0.302/0.059; 10-element controls 0.164/0.185 versus 0.195/0.228
 and 0.073/0.123.
+
+**Post-fix (2026-11-14).** Dense `PFADD` validates only the header/length
+(register bytes are opaque 6-bit ranks), keeps the registers in the entry's
+string payload, updates them in place and clears the cache-valid byte; the exact
+form still re-encodes (small). The payload gained a versioned 8-byte trailer
+(`bytes[7] = 1`) holding an optional cached count; old payloads without it still
+parse, so rewrite/replay keep working. Single-key `PFCOUNT` returns a valid
+cached count, or computes `dense_count` once over the stored registers and
+writes the estimate into the trailer without touching the WATCH version or the
+journal. `PFADD`/`PFMERGE` serialisation always writes an invalid cache. Same
+cohort (100k pipelined adds, 10k repeated counts, three rotations), medians:
+`PFADD` **957.3 ms = 9.57 µs/add** versus Redis 316.8 ms (3.17) and Valkey
+360.9 (3.61) — **1.77×** faster than 16.96 µs but above AC49's ≤6 µs; `PFCOUNT`
+**23.4 ms = 2.34 µs/call** versus 22.9 (2.29) and 29.2 (2.92) — **113×** faster
+than 265.5 µs, within 1.02× of Redis; single `PFADD`/`PFCOUNT` p50
+0.129/0.260 ms and 10-element controls 0.197/0.182. The remaining add cost is
+per-command dispatch/validation/network (profiling shows no HLL hotspot), not
+the sketch. Raw JSON retained at
+`/tmp/opencode/hll-inplace-result-2.json` (untracked).
 
 **Risks and obligations.** Every add/merge and every exact↔dense conversion must
 invalidate the cache; a stale cache returns a wrong count. The serialized header
@@ -6457,7 +6488,11 @@ the 10-element controls shall stay within noise; counts shall be within the HLL
 error bound and identical before/after serialization; the cache shall be
 invalidated by add/merge and exact↔dense conversion; rewrite/replay/restore and
 TTL tests shall pass; no dependency shall be added; and both protected gates
-shall pass on the exact head.
+shall pass on the exact head. Evidence: `PFCOUNT` 23.4 ms / 2.34 µs per call
+(met, 113× faster); `PFADD` 957 ms / 9.57 µs per add (1.77× faster; the ≤6 µs
+target is missed because the remaining cost is per-command dispatch and socket
+work, not the sketch); caches invalidated on add; round-trip/accounting tests
+pass. The serialized payload has a versioned trailer and accepts old payloads.
 
 ### 4.48 In-place stream group creation (candidate; admission measured)
 
