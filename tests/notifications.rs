@@ -1107,8 +1107,47 @@ fn hgetdel_emits_hash_and_deletion_events() {
         frame(&[
             b"pmessage",
             b"__keyevent@0__:*",
+            b"__keyevent@0__:hdel",
+            b"h"
+        ])
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
             b"__keyevent@0__:del",
             b"h"
+        ])
+    );
+
+    send(&mut writer, &[b"HSET", b"h2", b"a", b"1"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hset",
+            b"h2"
+        ])
+    );
+    send(&mut writer, &[b"HDEL", b"h2", b"a"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hdel",
+            b"h2"
+        ])
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:del",
+            b"h2"
         ])
     );
     server.shutdown().unwrap();
