@@ -239,14 +239,11 @@ impl ShardExecutor {
                 return;
             }
         };
-        let members = collection.set_items().expect("set type checked");
         match name {
-            "scard" => integer(members.len() as i64, out),
-            "sismember" => integer(
-                i64::from(members.iter().any(|member| member.as_slice() == args[2])),
-                out,
-            ),
+            "scard" => integer(collection.set_len().expect("set type checked") as i64, out),
+            "sismember" => integer(i64::from(collection.contains_member(args[2])), out),
             _ => {
+                let members = collection.set_items().expect("set type checked");
                 write!(out, "*{}\r\n", members.len()).expect("Vec write");
                 for member in &members {
                     encode_bulk(Some(member), out);
@@ -474,31 +471,29 @@ impl ShardExecutor {
                 return;
             }
         };
-        let members = collection.zset_items().expect("zset type checked");
         if name == "zcard" {
-            integer(members.len() as i64, out);
+            integer(
+                collection.zset_len().expect("zset type checked") as i64,
+                out,
+            );
             return;
         }
         if name == "zscore" {
-            let score = members
-                .iter()
-                .find(|(member, _)| *member == args[2])
-                .map(|(_, score)| score.to_string());
+            let score = collection
+                .zset_score(args[2])
+                .map(|score| score.to_string());
             encode_bulk(score.as_deref().map(str::as_bytes), out);
             return;
         }
         if name == "zmscore" {
             let _ = write!(out, "*{}\r\n", args.len() - 2);
             for member in &args[2..] {
-                let score = members
-                    .iter()
-                    .find(|(candidate, _)| candidate == member)
-                    .map(|(_, score)| score.to_string());
+                let score = collection.zset_score(member).map(|score| score.to_string());
                 encode_bulk(score.as_deref().map(str::as_bytes), out);
             }
             return;
         }
-        let mut ordered = members;
+        let mut ordered = collection.zset_items().expect("zset type checked");
         ordered.sort_unstable_by(|(member_a, score_a), (member_b, score_b)| {
             score_a
                 .total_cmp(score_b)
@@ -892,6 +887,77 @@ mod tests {
         assert_eq!(run(&store, &[b"TYPE", b"s"]), b"+set\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"h"]), b"+hash\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"z"]), b"+zset\r\n");
+    }
+
+    #[test]
+    fn direct_member_probes_preserve_intset_pack_and_zset_semantics() {
+        let store = ShardExecutor::new(1_000_000);
+        assert_eq!(
+            run(&store, &[b"SADD", b"ints", b"1", b"-2", b"300"]),
+            b":3\r\n"
+        );
+        for (member, expected) in [
+            (b"1".as_slice(), b":1\r\n".as_slice()),
+            (b"01", b":0\r\n"),
+            (b"+1", b":0\r\n"),
+            (b"-0", b":0\r\n"),
+            (b"300", b":1\r\n"),
+            (b"301", b":0\r\n"),
+        ] {
+            assert_eq!(run(&store, &[b"SISMEMBER", b"ints", member]), expected);
+        }
+        assert_eq!(
+            run(
+                &store,
+                &[b"SMISMEMBER", b"ints", b"1", b"01", b"nope", b"1"]
+            ),
+            b"*4\r\n:1\r\n:0\r\n:0\r\n:1\r\n"
+        );
+        assert_eq!(run(&store, &[b"SCARD", b"ints"]), b":3\r\n");
+        // A non-canonical member forces the pack/set representation.
+        assert_eq!(
+            run(&store, &[b"SADD", b"pack", b"a", b"b", b"ab"]),
+            b":3\r\n"
+        );
+        assert_eq!(run(&store, &[b"SISMEMBER", b"pack", b"ab"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"SISMEMBER", b"pack", b"abc"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"SMISMEMBER", b"pack", b"a", b"abc", b"b"]),
+            b"*3\r\n:1\r\n:0\r\n:1\r\n"
+        );
+        assert_eq!(run(&store, &[b"SCARD", b"pack"]), b":3\r\n");
+        assert_eq!(run(&store, &[b"SISMEMBER", b"absent", b"x"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"SMISMEMBER", b"absent", b"x", b"y"]),
+            b"*2\r\n:0\r\n:0\r\n"
+        );
+        assert_eq!(run(&store, &[b"SCARD", b"absent"]), b":0\r\n");
+
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"ZADD", b"z", b"inf", b"high", b"-inf", b"low", b"0", b"zero"
+                ]
+            ),
+            b":3\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZCARD", b"z"]), b":3\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"high"]), b"$3\r\ninf\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"missing"]), b"$-1\r\n");
+        assert_eq!(
+            run(
+                &store,
+                &[b"ZMSCORE", b"z", b"zero", b"missing", b"zero", b"low"]
+            ),
+            b"*4\r\n$1\r\n0\r\n$-1\r\n$1\r\n0\r\n$4\r\n-inf\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZCARD", b"absent"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"absent", b"x"]), b"$-1\r\n");
+        assert_eq!(
+            run(&store, &[b"ZMSCORE", b"absent", b"x"]),
+            b"*1\r\n$-1\r\n"
+        );
     }
 
     #[test]

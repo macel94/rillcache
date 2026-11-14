@@ -184,9 +184,9 @@ folds the payload twice; 4.42 makes the append in place. Geospatial search
 repeats the materialization: a 1 km `GEOSEARCH` over 50k is **4.34 vs 0.16–0.17
 ms** and `GEOPOS` 100 is **24.9 vs 0.47–0.61 ms**, because every query scans all
 members; 4.43 adds neighbor-cell search and direct lookups. Multi-member lookups
-are the largest ratio yet: `ZMSCORE` with 100 members is **273 ms versus 0.19–0.63**
-and `SMISMEMBER` 100 is 11.8 versus 0.21–0.39, because each requested member
-rescans the materialized collection; 4.44 probes directly. Expiry is the last
+were the largest ratio yet: `ZMSCORE` with 100 members is **273 ms versus 0.19–0.63**
+and `SMISMEMBER` 100 was 11.8 versus 0.21–0.39, because each requested member
+rescanned the materialized collection; 4.44 probes directly (**0.253/0.282 ms**). Expiry is the last
 systemic stall: the first `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` after 30k keys
 expire costs **36–46 vs 0.6–1.0 ms** because each calls `reap(now, usize::MAX)`,
 while a lazy `GET` is at parity; 4.45 replaced it with per-key/bounded work
@@ -1550,7 +1550,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
-| Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
+| Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 → 0.151/0.115/0.282 ms vs 0.07–0.19; `ZMSCORE` 8.02/33.37/273.2 → 0.113/0.118/0.253 vs 0.09–0.23; `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; `HMGET` 100 at the floor | 4.44, implemented | AC46 met | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 → 0.230 ms vs 0.200/0.244, `KEYS` 43.6 → 0.297 vs 0.215/0.205, `RANDOMKEY` 45.5 → 0.297 vs 0.209/0.217, `DBSIZE` 41.2 → 0.298 vs 0.151/0.247; lazy `GET` 0.254 vs 0.160/0.207 | 4.45, implemented | AC47 met | none |
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
@@ -2007,7 +2007,7 @@ for a production claim.
 | Argument-count parsing | multi-bulk count from the declared length; no fixed 1,024 ceiling | no fixed count limit observed; `.argv` grows as declared within `proto-max-bulk-len` | `Limits.max_arguments = 1024` rejects larger arrays with `too many arguments`, no CLI override | **Adapt:** 4.55 frame-derived cap (`max(1024, min(1M, frame/6))`); measured boundary at 1,024 args, while Redis/Valkey accept `MGET` 10,000 (3.47, AC57) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
-| Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
+| Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Done:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 → 0.253 ms and `SMISMEMBER` 100 11.75 → 0.282; single-member reads also 0.08–0.18; `HMGET` at the floor (3.28, AC46) |
 | Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Done:** 4.45 per-key/bounded expiry; post-fix 0.23–0.30 vs 0.15–0.30 ms, lazy `GET` at parity (3.29, AC47) |
 | SORT `BY nosort` | source-order slice without sorting or copying | same | pre-fix clone every element and build an `Item` before `LIMIT`; post-fix borrowed list slice | **Done (nosort):** 4.46 direct slice; measured 100k pre-fix 7.96 vs 0.12/0.16 ms, post-fix 0.188/0.506 at parity; sorted/ALPHA/weighted rows unchanged (3.30, AC48) |
 | Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
@@ -3174,12 +3174,20 @@ directly. Keep the WGS-84 formulas, units and reply shapes.
   ratio grows with the number of requested members because the scan is repeated
   per member. Candidate 4.44.
 
-**Verdict: adapt per-member direct probes (4.44).** Reuse 4.40's
-`Collection::contains_member` for `SMISMEMBER` and a direct
-`Collection::zset_score(member)` over the score map for `ZMSCORE`, once per
-requested member; no `set_items()` clone/sort and no all-member `Vec`. Keep
-`SISMEMBER`/`ZSCORE` (4.40/4.30), missing/invalid members, duplicates and reply
-order unchanged.
+- **Post-fix (2026-11-14, candidate 4.44).** One container probe per requested
+  member: `SMISMEMBER` 1/10/100 **0.151/0.115/0.282 ms** (from 7.90/8.25/11.75)
+  versus Redis 0.121/0.138/0.193 and Valkey 0.069/0.078/0.141; `ZMSCORE`
+  **0.113/0.118/0.253** (from 8.02/33.37/273.2) versus 0.105/0.099/0.232 and
+  0.086/0.136/0.170. The same probe removes the clone/sort from `SISMEMBER`
+  (0.180), `ZSCORE` (0.136), `SCARD` (0.132) and `ZCARD` (0.080); `HMGET` 100
+  stays at 0.226 ms.
+
+**Verdict: adapted per-member direct probes (4.44, implemented).**
+`Collection::contains_member` serves `SMISMEMBER`/`SISMEMBER` and
+`Collection::zset_score(member)` serves `ZMSCORE`/`ZSCORE`, once per requested
+member; `SCARD`/`ZCARD` read the container length and no `set_items()`
+clone/sort or all-member `Vec` remains on these paths. Missing/invalid members,
+duplicates and reply order are unchanged.
 
 ### 3.29 Mass expiry and command latency
 
@@ -6231,7 +6239,7 @@ implementation exactly on a boundary/dateline fixture; `ASC`/`DESC`/`COUNT`,
 `FROMMEMBER`, `BYRADIUS`/`BYBOX`, `WITH*` and `STORE` tests shall pass; no
 dependency shall be added; and both protected gates shall pass on the exact head.
 
-### 4.44 Per-member probes for multi-member lookups (candidate; admission measured)
+### 4.44 Per-member probes for multi-member lookups (candidate; implemented)
 
 **Mechanism.** For `SMISMEMBER`, call `Collection::contains_member` (4.40) once
 per requested member; for `ZMSCORE`, call a direct
@@ -6253,6 +6261,22 @@ independently, and the `SetInt`/`SetPack`/`HashPack` semantics stay as today.
 0.102/0.422/0.630 and 0.112/0.328/0.187; `HMGET` 1/10/100 0.23/0.36/0.32
 versus 0.47/0.30/0.52 and 0.11/0.07/0.17; controls 0.33/0.26/0.26.
 
+**Post-fix (2026-11-14).** `Collection` gained `set_len`, `contains_member`
+(hash/pack/intset, with `parse_integer`'s canonical integer rule) and `zset_len`/
+`zset_score` (map lookup, linear only for the small `ZSetPack` form).
+`SMISMEMBER` and `SISMEMBER` probe once per requested member; `ZMSCORE` and
+`ZSCORE` do a direct score lookup; `SCARD`/`ZCARD` read the container length; only
+`SMEMBERS`/`ZRANGE` still materialize. A 100,000-member set/hash/zset, 50
+repetitions, three rotations on the built head (p50/p99): `SMISMEMBER` 1/10/100
+**0.151/0.934, 0.115/0.998, 0.282/1.462** versus Redis 0.121/0.138/0.193 and
+Valkey 0.069/0.078/0.141 (from 7.90/8.25/11.75); `ZMSCORE` 1/10/100
+**0.113/0.863, 0.118/0.554, 0.253/0.812** versus 0.105/0.099/0.232 and
+0.086/0.136/0.170 (from 8.02/33.37/273.2); single-member `SISMEMBER` 0.180,
+`ZSCORE` 0.136, `SCARD` 0.132 and `ZCARD` 0.080 also leave the materializing
+path; `HMGET` 100 is 0.226 versus 0.280/0.179. All AC46 p50/p99 targets are met
+and the probes are within ~1.6× of the faster C server. Raw JSON retained at
+`/tmp/opencode/memberprobes-result.json` (untracked).
+
 **Risks and obligations.** `SetInt` must answer integer and non-integer probes
 exactly as today; duplicates, order, missing/empty keys and wrong types must not
 change; `ZSetPack` stays linear but small; no accounting, reply shape or read
@@ -6272,7 +6296,11 @@ the faster C server); 10 members ≤0.2 ms and 1 member ≤0.15 ms; `SMISMEMBER`
 ≤0.2 ms; `HMGET` and the 10-member controls shall be unchanged; missing,
 non-integer and duplicate members and the `SetInt`/`SetPack` semantics shall pass;
 no dependency shall be added; and both protected gates shall pass on the exact
-head.
+head. Evidence: `ZMSCORE` 100/10/1 at 0.253/0.812, 0.118/0.554 and 0.113/0.863;
+`SMISMEMBER` 100/10/1 at 0.282/1.462, 0.115/0.998 and 0.151/0.934; `HMGET` 100
+0.226; single-member `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; the new
+intset/pack/zset probe test covers canonical integers, duplicates, missing
+members and empty keys.
 
 ### 4.45 Bounded lazy expiry on command paths (candidate; implemented)
 
