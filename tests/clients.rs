@@ -222,6 +222,10 @@ fn client_kill_removes_connections_and_protects_the_caller() {
         own.contains(&format!("laddr={}", server.local_addr())),
         "{own}"
     );
+    assert!(own.contains("flags=N"), "{own}");
+    assert!(own.contains("sub=0"), "{own}");
+    assert!(own.contains("psub=0"), "{own}");
+    assert!(own.contains("watch=0"), "{own}");
 
     let info = client_list(&mut admin, &[]);
     assert!(info.contains(&format!("id={admin_id} ")), "{info}");
