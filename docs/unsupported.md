@@ -35,6 +35,12 @@ These replies are explicit capability boundaries, not silent no-ops. Enabling
 cluster routing, replication or module loading requires separate implementation,
 configuration and validation work and is not implied by this surface.
 
+## Client-side caching
+
+`CLIENT TRACKING` returns a named unsupported-capability error for both `ON` and
+`OFF` requests. The server does not enable client-side caching, maintain tracking
+state, or send invalidation messages; the error is not a successful no-op.
+
 ## Serialization, migration, HLL diagnostics and admin exclusions
 
 The following surfaces return a named capability error instead of pretending to

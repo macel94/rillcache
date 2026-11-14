@@ -41,6 +41,29 @@ fn hello_protocol_switch_and_errors_are_atomic() {
 }
 
 #[test]
+fn client_tracking_is_an_explicit_non_mutating_capability_boundary() {
+    let store = Store::new(1024);
+    let mut session = Session::new();
+    assert_eq!(
+        call(&mut session, &store, &[b"SET", b"key", b"value"]),
+        b"+OK\r\n"
+    );
+    for request in [
+        &[b"CLIENT".as_slice(), b"TRACKING", b"ON"][..],
+        &[b"CLIENT".as_slice(), b"TRACKING", b"OFF"][..],
+    ] {
+        assert_eq!(
+            call(&mut session, &store, request),
+            b"-ERR CLIENT TRACKING is not supported; client-side caching and invalidation are unavailable\r\n"
+        );
+    }
+    assert_eq!(
+        call(&mut session, &store, &[b"GET", b"key"]),
+        b"$5\r\nvalue\r\n"
+    );
+}
+
+#[test]
 fn client_info_reports_watch_state() {
     let store = Store::new(1024);
     let mut session = Session::new();

@@ -125,9 +125,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `CONFIG REWRITE` and `MEMORY MALLOC-STATS|PURGE` now return specific
   capability errors with normal arity validation, documented in
   [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
-  `LATENCY GRAPH|HISTOGRAM` were already explicit. `CLIENT TRACKING|NO-EVICT|
-  NO-TOUCH|REPLY|CACHING|GETREDIR`, Redis 8+ extensions and the command-by-command
-  differential matrix remain missing.
+  `LATENCY GRAPH|HISTOGRAM` were already explicit. `CLIENT TRACKING` now returns
+  a named unsupported-capability error, and the draft profile explicitly excludes
+  client-side caching; `NO-EVICT|NO-TOUCH|REPLY|CACHING|GETREDIR`, Redis 8+
+  extensions and the command-by-command differential matrix remain missing.
   **Closes when:** a command-by-command differential matrix exists for supported
   data types and admin surfaces; every absent command is either implemented or
   explicitly excluded with a client-facing error and profile entry.

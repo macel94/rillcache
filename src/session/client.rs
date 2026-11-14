@@ -258,6 +258,10 @@ impl Session {
             self.client_list(store, rest, output);
         } else if subcommand.eq_ignore_ascii_case(b"KILL") {
             self.client_kill(store, rest, output);
+        } else if subcommand.eq_ignore_ascii_case(b"TRACKING") {
+            output.extend_from_slice(
+                b"-ERR CLIENT TRACKING is not supported; client-side caching and invalidation are unavailable\r\n",
+            );
         } else if subcommand.eq_ignore_ascii_case(b"INFO") && rest.is_empty() {
             let mut info = format!("id={} db=0", self.id).into_bytes();
             append_info(&mut info, b"name", self.name.as_deref());

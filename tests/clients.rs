@@ -108,6 +108,18 @@ fn drain_hello(stream: &mut TcpStream) {
 }
 
 #[test]
+fn client_tracking_is_an_explicit_non_mutating_boundary() {
+    let server = start();
+    let mut client = connect(&server);
+    send(&mut client, &[b"SET", b"key", b"value"], b"+OK\r\n");
+    let unsupported = b"-ERR CLIENT TRACKING is not supported; client-side caching and invalidation are unavailable\r\n";
+    send(&mut client, &[b"CLIENT", b"TRACKING", b"ON"], unsupported);
+    send(&mut client, &[b"CLIENT", b"TRACKING", b"OFF"], unsupported);
+    send(&mut client, &[b"GET", b"key"], b"$5\r\nvalue\r\n");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn client_list_reports_names_metadata_and_pubsub_state() {
     let server = start();
     let mut admin = connect(&server);
