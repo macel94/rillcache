@@ -77,6 +77,51 @@ fn send(stream: &mut TcpStream, arguments: &[&[u8]], reply: &[u8]) {
     expect(stream, reply);
 }
 
+#[test]
+fn large_multi_key_commands_are_accepted_with_the_frame_derived_cap() {
+    let server = start(Config::default());
+    let mut stream = connect(&server);
+
+    let keys: Vec<String> = (0..2_000).map(|i| format!("k{i:04}")).collect();
+    let mut arguments: Vec<&[u8]> = Vec::with_capacity(keys.len() + 1);
+    arguments.push(b"MGET");
+    for key in &keys {
+        arguments.push(key.as_bytes());
+    }
+    let mut bytes = Vec::new();
+    encode_request(&arguments, &mut bytes);
+    stream.write_all(&bytes).unwrap();
+    let mut reply = vec![0; b"*2000\r\n".len() + 2_000 * b"$-1\r\n".len()];
+    stream.read_exact(&mut reply).unwrap();
+    assert!(reply.starts_with(b"*2000\r\n"));
+    assert!(
+        reply[b"*2000\r\n".len()..]
+            .chunks(b"$-1\r\n".len())
+            .all(|chunk| chunk == b"$-1\r\n")
+    );
+
+    let mut pairs: Vec<String> = Vec::with_capacity(1_200);
+    for i in 0..600 {
+        pairs.push(format!("k{i:04}"));
+        pairs.push("value".into());
+    }
+    let mut arguments: Vec<&[u8]> = Vec::with_capacity(pairs.len() + 1);
+    arguments.push(b"MSET");
+    for item in &pairs {
+        arguments.push(item.as_bytes());
+    }
+    send(&mut stream, &arguments, b"+OK\r\n");
+
+    let mut arguments: Vec<&[u8]> = Vec::with_capacity(keys.len() + 1);
+    arguments.push(b"EXISTS");
+    for key in &keys {
+        arguments.push(key.as_bytes());
+    }
+    send(&mut stream, &arguments, b":600\r\n");
+
+    server.shutdown().unwrap();
+}
+
 fn info_clients(stream: &mut TcpStream) -> String {
     let mut command = Vec::new();
     encode_request(&[b"INFO", b"clients"], &mut command);

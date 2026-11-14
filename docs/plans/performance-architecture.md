@@ -1982,7 +1982,7 @@ for a production claim.
 | Two-key moves | `setTypeRemove`/`setTypeAdd`; list pop/push on two borrowed containers | same | `owned_set` clones both sets; `list_values` flattens and clones both lists; both re-encode | **Adapt:** 4.53 in-place remove/insert and chunk pop/push, same-key rotate in place; measured `SMOVE` 100k 25.5 vs 0.40/0.28 ms (64–91×), `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×), rotate 20.5 vs 0.26/0.21 (3.43, AC55) |
 | List element edits | quicklist node insert/replace/unlink; split/merge at listpack bounds | same | flatten and clone the whole list, edit the `VecDeque`, re-encode | **Adapt:** 4.54 chunk walk and in-place edit, reusing 4.41/4.35; measured 200k `LINSERT` head 19.1 vs 0.09/0.24 ms (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), middle insert/tail removal 4.9–6.0×/2.9–3.0× (3.45, AC56) |
 | Set membership reply | dict/intset/listpack iteration, unspecified order | same | collect every member into a `Vec`, sort, encode | **Keep:** measured `SMEMBERS` 100k 84.75 vs 88.71/86.37 ms (lead), 10k 9.95 vs 9.33/9.58, 1k within spread; the reply hides the collect+sort, so do not extend 4.29 to sets (3.46) |
-| Argument-count parsing | multi-bulk count from the declared length; no fixed 1,024 ceiling | no fixed count limit observed; `.argv` grows as declared within `proto-max-bulk-len` | `Limits.max_arguments = 1024` rejects larger arrays with `too many arguments`, no CLI override | **Adapt:** 4.55 frame-derived cap (`max(1024, frame/4)`); measured boundary at 1,024 args, while Redis/Valkey accept `MGET` 10,000 (3.47, AC57) |
+| Argument-count parsing | multi-bulk count from the declared length; no fixed 1,024 ceiling | no fixed count limit observed; `.argv` grows as declared within `proto-max-bulk-len` | `Limits.max_arguments = 1024` rejects larger arrays with `too many arguments`, no CLI override | **Adapt:** 4.55 frame-derived cap (`max(1024, min(1M, frame/6))`); measured boundary at 1,024 args, while Redis/Valkey accept `MGET` 10,000 (3.47, AC57) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
@@ -3975,7 +3975,7 @@ target.
   finding is the cap, not the per-command cost. Candidate 4.55.
 
 **Verdict: adapt a frame-derived argument cap (4.55).** Replace the fixed 1,024
-with a bound derived from `max_frame_bytes` (for example `max(1024, frame/4)`)
+with a bound derived from `max_frame_bytes` (for example `max(1024, min(1M, frame/6))`)
 so legitimate large multi-key commands parse while memory stays bounded by the
 frame; keep the frame and bulk limits as the request budget.
 
@@ -6587,13 +6587,15 @@ protected gates shall pass on the exact head.
 ### 4.55 Frame-derived argument cap (candidate; boundary measured)
 
 **Mechanism.** Stop rejecting a request at 1,024 total arguments. Derive the
-count bound from the byte budget it protects, for example
-`max_arguments = max(1024, max_frame_bytes / MIN_ARG_BYTES)` with
-`MIN_ARG_BYTES = 4` (the smallest complete bulk `$0\r\n`), or simply raise the
-default to Redis's scale while keeping the frame bound. The parser already
-rejects a frame above `max_frame_bytes`, and the argument vector is one
+count bound from the byte budget it protects:
+`max_arguments = max(1024, min(1_048_576, max_frame_bytes / MIN_ARG_BYTES))` with
+`MIN_ARG_BYTES = 6` (the smallest complete bulk `$0\r\n\r\n`). The parser
+already rejects a frame above `max_frame_bytes`, and the argument vector is one
 `&[u8]` per argument, so total slice memory stays below
-`max_frame_bytes / 4 × 16 B` (≈8 MiB at the 2 MiB default, transient). Keep the
+`max_frame_bytes / 6 × 16 B` (≈5.6 MiB at the 2 MiB default, transient), and the
+1,048,576 ceiling keeps a very large configured frame from allocating an
+unbounded vector. `--max-frame-bytes` recomputes the cap from the same helper;
+there is still no separate count knob. Keep the
 PING fast path, the canonical/fragment path and the error text unchanged; keep
 `max_bulk_bytes` and `max_frame_bytes` as the real request budgets. No
 dependency, no `unsafe`.

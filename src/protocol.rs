@@ -2,6 +2,11 @@
 
 use std::fmt;
 
+/// Smallest complete bulk-string argument on the wire: `$0\r\n\r\n`.
+pub const MIN_ARGUMENT_BYTES: usize = 6;
+/// Upper bound for the frame-derived argument cap (Redis-scale, 1 Mi elements).
+pub const MAX_ARGUMENTS_CEILING: usize = 1024 * 1024;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub max_frame_bytes: usize,
@@ -9,12 +14,24 @@ pub struct Limits {
     pub max_arguments: usize,
 }
 
+impl Limits {
+    /// Largest argument count a `max_frame_bytes` frame can carry. Each
+    /// argument needs at least six bytes (`$0\r\n\r\n`), so the byte frame already
+    /// bounds the array; keep a 1,024 floor for small test/custom frames and a
+    /// 1 Mi ceiling so a very large frame cannot allocate an unbounded slice
+    /// vector.
+    pub fn argument_cap(max_frame_bytes: usize) -> usize {
+        (max_frame_bytes / MIN_ARGUMENT_BYTES).clamp(1024, MAX_ARGUMENTS_CEILING)
+    }
+}
+
 impl Default for Limits {
     fn default() -> Self {
+        let max_frame_bytes = 2 * 1024 * 1024;
         Self {
-            max_frame_bytes: 2 * 1024 * 1024,
+            max_frame_bytes,
             max_bulk_bytes: 1024 * 1024,
-            max_arguments: 1024,
+            max_arguments: Self::argument_cap(max_frame_bytes),
         }
     }
 }
@@ -531,6 +548,34 @@ mod tests {
     }
 
     #[test]
+    fn frame_derived_argument_cap_accepts_redis_scale_arrays() {
+        let limits = Limits::default();
+        assert_eq!(limits.max_arguments, 349_525);
+        assert_eq!(Limits::argument_cap(4096), 1024);
+        assert_eq!(Limits::argument_cap(64 * 1024 * 1024), 1024 * 1024);
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"*10000\r\n");
+        for _ in 0..10_000 {
+            frame.extend_from_slice(b"$0\r\n\r\n");
+        }
+        let parsed = parse_request(&frame, limits).unwrap().unwrap();
+        assert_eq!(parsed.arguments.len(), 10_000);
+        assert_eq!(parsed.consumed, frame.len());
+
+        let tiny = Limits {
+            max_frame_bytes: 256,
+            max_bulk_bytes: 8,
+            max_arguments: 4,
+        };
+        let too_many = b"*5\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n$1\r\ne\r\n";
+        assert_eq!(
+            parse_request(too_many, tiny),
+            Err(ProtocolError::TooManyArguments)
+        );
+    }
+
+    #[test]
     fn every_fragment_of_a_binary_command_is_incomplete_until_the_end() {
         let arguments: &[&[u8]] = &[b"SET", b"\0\xff\r\n", b"value\0\r\n\xff"];
         let mut bytes = Vec::new();
@@ -662,7 +707,7 @@ mod tests {
             (b"*1\r\n+PING\r\n", ProtocolError::ExpectedBulkString),
             (b"*1\r\n$4\r\nPINGxx", ProtocolError::InvalidTerminator),
             (b"*1\r\n$4\r\nPINGx", ProtocolError::InvalidTerminator),
-            (b"*1025", ProtocolError::TooManyArguments),
+            (b"*524289", ProtocolError::TooManyArguments),
             (b"*1\r\n$1048577", ProtocolError::BulkTooLarge),
             (b"*000000000000000000000", ProtocolError::InvalidLength),
         ] {
