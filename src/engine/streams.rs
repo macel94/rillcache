@@ -427,62 +427,132 @@ impl ShardExecutor {
             return;
         }
         let existing_expiry = data.entries.get(a[1]).and_then(|e| e.expires);
-        let mut stream = data
-            .entries
-            .get(a[1])
-            .and_then(|e| e.stream.clone())
-            .unwrap_or_default();
+        let Some((old_bytes, last_generated, entries_added, max_deleted)) =
+            data.entries.get(a[1]).map_or(
+                Some((0, StreamId::default(), 0, StreamId::default())),
+                |entry| {
+                    entry.stream.as_ref().map(|stream| {
+                        (
+                            entry.payload_len,
+                            stream.last_generated,
+                            stream.entries_added,
+                            stream.max_deleted,
+                        )
+                    })
+                },
+            )
+        else {
+            out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
+            return;
+        };
         let next = if let Some(v) = requested {
             v
-        } else if now > stream.last_generated.ms {
+        } else if now > last_generated.ms {
             StreamId { ms: now, seq: 0 }
         } else {
             StreamId {
-                ms: stream.last_generated.ms,
-                seq: stream.last_generated.seq.saturating_add(1),
+                ms: last_generated.ms,
+                seq: last_generated.seq.saturating_add(1),
             }
         };
         if next == StreamId::default() {
             out.extend_from_slice(b"-ERR The ID specified in XADD must be greater than 0-0\r\n");
             return;
         }
-        if next <= stream.last_generated {
+        if next <= last_generated {
             out.extend_from_slice(b"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n");
             return;
         }
-        stream.entries.insert(next, StreamEntry { fields });
-        stream.last_generated = next;
-        stream.entries_added = stream.entries_added.saturating_add(1);
-        if let Some(strategy) = &strategy {
-            let cap = if approximate {
-                match limit {
-                    Some(0) => None,
-                    Some(value) => Some(value),
-                    None => Some(10000),
-                }
-            } else {
-                None
-            };
-            trim_stream(&mut stream, strategy, cap);
-        }
-        let Some(stream_bytes) = stream.payload_bytes() else {
+        let Some(added) = fields.iter().try_fold(0usize, |total, (field, value)| {
+            total.checked_add(field.len())?.checked_add(value.len())
+        }) else {
             out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
             return;
         };
-        let previous = data.entries.get(a[1]).map(|e| e.payload_len);
-        let Some(payload) =
-            data.reserve(a[1], stream_bytes, previous, self.payload_limit(), current)
+        let cap = if approximate {
+            match limit {
+                Some(0) => None,
+                Some(value) => Some(value),
+                None => Some(10000),
+            }
+        } else {
+            None
+        };
+        let plan = match (
+            &strategy,
+            data.entries.get(a[1]).and_then(|e| e.stream.as_ref()),
+        ) {
+            (Some(strategy), Some(stream)) => plan_trim(stream, next, added, strategy, cap),
+            (Some(strategy), None) => plan_trim(&Stream::default(), next, 0, strategy, cap),
+            (None, _) => Some((Vec::new(), 0, false)),
+        };
+        let Some((trim_ids, removed_bytes, remove_new)) = plan else {
+            out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
+            return;
+        };
+        let Some(new_len) = old_bytes
+            .checked_add(added)
+            .and_then(|length| length.checked_sub(removed_bytes))
         else {
             out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
             return;
         };
-        data.put_stream(
-            a[1],
-            stream,
-            existing_expiry,
-            payload,
-            now.min(i64::MAX as u64) as i64,
-        );
+        let previous = data.entries.get(a[1]).map(|e| e.payload_len);
+        let Some(payload) = data.reserve(a[1], new_len, previous, self.payload_limit(), current)
+        else {
+            out.extend_from_slice(b"-OOM configured payload limit exceeded\r\n");
+            return;
+        };
+        // Reserve may have evicted the key; re-look it up and mutate the owned
+        // stream in place instead of cloning and re-encoding it.
+        let mut fields = Some(fields);
+        let mut applied = false;
+        if let Some(stream) = data.entries.get_mut(a[1]).and_then(|e| e.stream.as_mut()) {
+            if !remove_new && let Some(fields) = fields.take() {
+                stream.entries.insert(next, StreamEntry { fields });
+            }
+            for id in &trim_ids {
+                if stream.entries.remove(id).is_some() {
+                    stream.max_deleted = stream.max_deleted.max(*id);
+                }
+            }
+            if remove_new {
+                stream.max_deleted = stream.max_deleted.max(next);
+            }
+            stream.last_generated = next;
+            stream.entries_added = entries_added.saturating_add(1);
+            applied = true;
+        }
+        if applied {
+            if let Some(entry) = data.entries.get_mut(a[1]) {
+                entry.payload_len = new_len;
+            }
+            data.payload_bytes = payload;
+            data.touch(a[1]);
+        } else {
+            let mut stream = Stream {
+                last_generated: next,
+                entries_added: entries_added.saturating_add(1),
+                max_deleted,
+                ..Stream::default()
+            };
+            if !remove_new && let Some(fields) = fields.take() {
+                stream.entries.insert(next, StreamEntry { fields });
+            }
+            for id in trim_ids {
+                stream.max_deleted = stream.max_deleted.max(id);
+            }
+            if remove_new {
+                stream.max_deleted = stream.max_deleted.max(next);
+            }
+            data.put_stream(
+                a[1],
+                stream,
+                existing_expiry,
+                payload,
+                now.min(i64::MAX as u64) as i64,
+            );
+        }
         encode_bulk(Some(&id_text(next)), out);
     }
     fn xdel(&self, a: &[&[u8]], out: &mut Vec<u8>) {
@@ -2106,36 +2176,58 @@ enum AddTrim {
     MinId(StreamId),
 }
 
-fn trim_stream(stream: &mut Stream, strategy: &AddTrim, cap: Option<usize>) -> usize {
+/// Decide which entries a trim predicate removes, including the entry about to
+/// be appended, without mutating the stream. Returns the removed ids, their
+/// field/value bytes and whether the new entry itself is trimmed away.
+fn plan_trim(
+    stream: &Stream,
+    next: StreamId,
+    added: usize,
+    strategy: &AddTrim,
+    cap: Option<usize>,
+) -> Option<(Vec<StreamId>, usize, bool)> {
     let mut remove = Vec::new();
+    let mut bytes = 0usize;
+    let mut remove_new = false;
+    let entry_bytes = |entry: &StreamEntry| -> Option<usize> {
+        entry
+            .fields
+            .iter()
+            .try_fold(0usize, |total, (field, value)| {
+                total.checked_add(field.len())?.checked_add(value.len())
+            })
+    };
     match strategy {
         AddTrim::MaxLen(maxlen) => {
-            let mut length = stream.entries.len();
-            for id in stream.entries.keys() {
+            let mut length = stream.entries.len().checked_add(1)?;
+            for (id, entry) in &stream.entries {
                 if length as u64 <= *maxlen || cap.is_some_and(|cap| remove.len() >= cap) {
                     break;
                 }
                 remove.push(*id);
+                bytes = bytes.checked_add(entry_bytes(entry)?)?;
                 length -= 1;
+            }
+            if length as u64 > *maxlen && !cap.is_some_and(|cap| remove.len() >= cap) {
+                remove_new = true;
+                bytes = bytes.checked_add(added)?;
             }
         }
         AddTrim::MinId(minid) => {
-            for id in stream.entries.keys() {
+            for (id, entry) in &stream.entries {
                 if id >= minid || cap.is_some_and(|cap| remove.len() >= cap) {
                     break;
                 }
                 remove.push(*id);
+                bytes = bytes.checked_add(entry_bytes(entry)?)?;
+            }
+            if next < *minid && !cap.is_some_and(|cap| remove.len() >= cap) {
+                remove_new = true;
+                bytes = bytes.checked_add(added)?;
             }
         }
     }
-    let mut deleted = 0;
-    for id in remove {
-        if stream.entries.remove(&id).is_some() {
-            deleted += 1;
-            stream.max_deleted = stream.max_deleted.max(id);
-        }
-    }
-    deleted
+    Some((remove, bytes, remove_new))
 }
 
 fn reply_entry(id: StreamId, e: &StreamEntry, out: &mut Vec<u8>) {
@@ -2211,6 +2303,93 @@ mod tests {
         );
         assert_eq!(run(&store, &[b"DBSIZE"]), b":0\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"s"]), b"+none\r\n");
+    }
+
+    #[test]
+    fn xadd_trim_options_mutate_in_place_with_exact_accounting() {
+        let store = ShardExecutor::new(1_000_000);
+        for id in 1..=5 {
+            let id = format!("{id}-0");
+            assert!(run(&store, &[b"XADD", b"s", id.as_bytes(), b"f", b"v"]).starts_with(b"$"));
+        }
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 11);
+        let check = |expected_payload: usize, expected_len: i64| {
+            let data = store.data.try_borrow().unwrap();
+            let entry = data.entries.get(b"s".as_slice()).expect("stream");
+            assert_eq!(entry.payload_len, expected_payload);
+            assert_eq!(
+                entry.stream.as_ref().unwrap().payload_bytes(),
+                Some(expected_payload)
+            );
+            // The single-byte key is charged once on the fresh-key admission.
+            assert_eq!(data.payload_bytes, expected_payload + 1);
+            drop(data);
+            assert_eq!(
+                run(&store, &[b"XLEN", b"s"]),
+                format!(":{expected_len}\r\n").into_bytes()
+            );
+        };
+        // Newest entry survives; three oldest are trimmed.
+        run(
+            &store,
+            &[b"XADD", b"s", b"MAXLEN", b"3", b"6-0", b"f", b"v"],
+        );
+        check(6, 3);
+        // MINID trims by id, keeping the new entry.
+        run(
+            &store,
+            &[b"XADD", b"s", b"MINID", b"5-0", b"7-0", b"f", b"v"],
+        );
+        check(6, 3);
+        // MAXLEN 0 keeps the key but trims the new entry too.
+        run(
+            &store,
+            &[b"XADD", b"s", b"MAXLEN", b"0", b"8-0", b"f", b"v"],
+        );
+        check(0, 0);
+        assert_eq!(run(&store, &[b"TYPE", b"s"]), b"+stream\r\n");
+        // The generated id still advances past the trimmed entry.
+        assert_eq!(
+            run(&store, &[b"XADD", b"s", b"9-0", b"f", b"v"]),
+            b"$3\r\n9-0\r\n"
+        );
+        check(2, 1);
+        // Approximate LIMIT caps the number of entries trimmed.
+        run(
+            &store,
+            &[
+                b"XADD", b"s", b"MAXLEN", b"~", b"0", b"LIMIT", b"1", b"10-0", b"f", b"v",
+            ],
+        );
+        check(2, 1);
+        run(
+            &store,
+            &[b"XADD", b"s", b"MAXLEN", b"~", b"0", b"11-0", b"f", b"v"],
+        );
+        check(0, 0);
+    }
+
+    #[test]
+    fn xadd_oom_is_atomic_for_new_and_existing_streams() {
+        let store = ShardExecutor::new(6);
+        assert_eq!(
+            run(&store, &[b"XADD", b"big", b"1-0", b"f", b"vvvvv"]),
+            b"-OOM configured payload limit exceeded\r\n"
+        );
+        assert_eq!(run(&store, &[b"TYPE", b"big"]), b"+none\r\n");
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
+        assert_eq!(
+            run(&store, &[b"XADD", b"s", b"1-0", b"f", b"vvv"]),
+            b"$3\r\n1-0\r\n"
+        );
+        let before = run(&store, &[b"XINFO", b"STREAM", b"s", b"FULL"]);
+        assert_eq!(
+            run(&store, &[b"XADD", b"s", b"2-0", b"f", b"vvvvvvv"]),
+            b"-OOM configured payload limit exceeded\r\n"
+        );
+        assert_eq!(run(&store, &[b"XLEN", b"s"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"XINFO", b"STREAM", b"s", b"FULL"]), before);
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 5);
     }
 
     #[test]
