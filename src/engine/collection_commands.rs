@@ -4073,6 +4073,127 @@ impl ShardExecutor {
             wrong_type(out);
             return;
         }
+        // Large hashtable zsets update in place: evaluate the options against the
+        // live map plus staged pairs, then insert only the resulting members.
+        let previous = current.map(Entry::payload_len);
+        if let Some(entry) = current
+            && let Some(Collection::ZSet(values)) = entry.collection.as_ref()
+        {
+            let mut pending: HashMap<&[u8], f64> = HashMap::new();
+            let mut added = 0i64;
+            let mut changed = 0i64;
+            let mut increment_reply = None;
+            for &(amount, member) in &pairs {
+                let existing = pending
+                    .get(member)
+                    .copied()
+                    .or_else(|| values.get(member).copied());
+                let score = if incr {
+                    let Some(score) =
+                        Some(existing.unwrap_or(0.0) + amount).filter(|score| !score.is_nan())
+                    else {
+                        out.extend_from_slice(b"-ERR resulting score is not a number (NaN)\r\n");
+                        return;
+                    };
+                    normalize_score(score)
+                } else {
+                    amount
+                };
+                let blocked = (nx && existing.is_some())
+                    || (xx && existing.is_none())
+                    || existing.is_some_and(|old| (gt && score <= old) || (lt && score >= old));
+                if blocked {
+                    continue;
+                }
+                if existing.is_none() {
+                    added += 1;
+                }
+                if existing != Some(score) {
+                    changed += 1;
+                }
+                pending.insert(member, score);
+                if incr {
+                    increment_reply = Some(score);
+                }
+            }
+            if incr && increment_reply.is_none() {
+                encode_bulk(None, out);
+                return;
+            }
+            if changed == 0 {
+                if let Some(score) = increment_reply {
+                    encode_bulk(Some(&score_bytes(score)), out);
+                } else {
+                    integer(if ch { 0 } else { added }, out);
+                }
+                return;
+            }
+            let fresh: Vec<&[u8]> = pending
+                .keys()
+                .filter(|member| !values.contains_key(**member))
+                .copied()
+                .collect();
+            if values.len().saturating_add(fresh.len()) > MAX_ELEMENTS {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let delta = fresh.iter().map(|member| member.len()).sum::<usize>();
+            let Some(new_len) = previous.unwrap_or(0).checked_add(delta) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Some(payload) = data.reserve(key, new_len, previous, self.payload_limit(), now)
+            else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let mut applied = false;
+            if let Some(entry) = data.entries.get_mut(key)
+                && let Some(Collection::ZSet(values)) = entry.collection.as_mut()
+            {
+                for (member, score) in &pending {
+                    values.insert((*member).to_vec(), *score);
+                }
+                entry.payload_len = new_len;
+                applied = true;
+            }
+            if applied {
+                data.payload_bytes = payload;
+                data.touch(key);
+                if let Some(score) = increment_reply {
+                    encode_bulk(Some(&score_bytes(score)), out);
+                } else {
+                    integer(if ch { changed } else { added }, out);
+                }
+                return;
+            }
+            // Admission evicted the target: rebuild from the staged pairs.
+            let mut fresh: HashMap<Vec<u8>, f64> = pending
+                .into_iter()
+                .map(|(member, score)| (member.to_vec(), score))
+                .collect();
+            if fresh.len() > MAX_ELEMENTS {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let bytes = fresh.keys().map(Vec::len).sum::<usize>();
+            let Some(payload) = data.reserve(key, bytes, None, self.payload_limit(), now) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Ok(config) = self.collection_config.read() else {
+                internal_error(out);
+                return;
+            };
+            let encoded = encode_zset(std::mem::take(&mut fresh), &config);
+            data.put_collection(key, encoded, None, payload, now);
+            if let Some(score) = increment_reply {
+                encode_bulk(Some(&score_bytes(score)), out);
+            } else {
+                integer(if ch { changed } else { added }, out);
+            }
+            return;
+        }
         let mut zset: HashMap<Vec<u8>, f64> = current
             .and_then(|entry| entry.collection.as_ref().and_then(Collection::zset_items))
             .unwrap_or_default()
@@ -4155,6 +4276,32 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
+        data.expire_key(key, now);
+        if let Some(entry) = data.entries.get_mut(key)
+            && let Some(Collection::ZSet(values)) = entry.collection.as_mut()
+        {
+            let mut removed = 0i64;
+            let mut bytes = 0usize;
+            for member in &args[2..] {
+                if values.remove(*member).is_some() {
+                    removed += 1;
+                    bytes = bytes.saturating_add(member.len());
+                }
+            }
+            if removed == 0 {
+                integer(0, out);
+                return;
+            }
+            if values.is_empty() {
+                data.remove(key);
+            } else {
+                entry.payload_len = entry.payload_len.saturating_sub(bytes);
+                data.payload_bytes = data.payload_bytes.saturating_sub(bytes);
+                data.touch(key);
+            }
+            integer(removed, out);
+            return;
+        }
         let mut zset = match owned_zset(&mut data, key, now) {
             Ok(Some(zset)) => zset,
             Ok(None) => {
@@ -4211,6 +4358,63 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
+        data.expire_key(key, now);
+        if let Some(entry) = data.entries.get(key)
+            && let Some(Collection::ZSet(values)) = entry.collection.as_ref()
+        {
+            let existing = values.get(member).copied().unwrap_or(0.0);
+            let Some(score) = Some(existing + increment).filter(|score| !score.is_nan()) else {
+                out.extend_from_slice(b"-ERR resulting score is not a number (NaN)\r\n");
+                return;
+            };
+            let score = normalize_score(score);
+            let previous = entry.payload_len;
+            let delta = if values.contains_key(member) {
+                0
+            } else {
+                member.len()
+            };
+            let Some(new_len) = previous.checked_add(delta) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Some(payload) =
+                data.reserve(key, new_len, Some(previous), self.payload_limit(), now)
+            else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            if let Some(entry) = data.entries.get_mut(key)
+                && let Some(Collection::ZSet(values)) = entry.collection.as_mut()
+            {
+                values.insert(member.to_vec(), score);
+                entry.payload_len = new_len;
+                data.payload_bytes = payload;
+                data.touch(key);
+                encode_bulk(Some(&score_bytes(score)), out);
+                return;
+            }
+            // Admission evicted the target: recreate it with the single member.
+            let mut fresh = HashMap::new();
+            fresh.insert(member.to_vec(), score);
+            if fresh.len() > MAX_ELEMENTS {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let bytes = member.len();
+            let Some(payload) = data.reserve(key, bytes, None, self.payload_limit(), now) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Ok(config) = self.collection_config.read() else {
+                internal_error(out);
+                return;
+            };
+            let encoded = encode_zset(fresh, &config);
+            data.put_collection(key, encoded, None, payload, now);
+            encode_bulk(Some(&score_bytes(score)), out);
+            return;
+        }
         let mut zset = match owned_zset(&mut data, key, now) {
             Ok(Some(zset)) => zset,
             Ok(None) => HashMap::new(),
@@ -5437,6 +5641,76 @@ mod tests {
             b"-ERR Only one of FXX or FNX arguments can be specified\r\n"
         );
         assert_eq!(run(&store, &[b"HGET", b"h", b"a"]), b"$1\r\n3\r\n");
+    }
+
+    #[test]
+    fn zset_add_incr_and_remove_mutate_large_zsets_in_place_with_exact_accounting() {
+        let store = ShardExecutor::new(100_000_000);
+        let members: Vec<String> = (0..200).map(|index| format!("m{index:03}")).collect();
+        let mut args = vec![b"ZADD".as_slice(), b"z"];
+        for (index, member) in members.iter().enumerate() {
+            args.push(if index % 2 == 0 { b"1" } else { b"2" });
+            args.push(member.as_bytes());
+        }
+        assert_eq!(run(&store, &args), b":200\r\n");
+        let check = |expected_cardinality: i64| {
+            let data = store.data.try_borrow().unwrap();
+            let entry = data.entries.get(b"z".as_slice()).expect("zset");
+            let bytes: usize = entry
+                .collection
+                .as_ref()
+                .and_then(Collection::zset_items)
+                .expect("zset")
+                .iter()
+                .map(|(member, _)| member.len())
+                .sum();
+            assert_eq!(entry.payload_len, bytes);
+            assert_eq!(data.payload_bytes, 1 + bytes);
+            drop(data);
+            assert_eq!(
+                run(&store, &[b"ZCARD", b"z"]),
+                format!(":{expected_cardinality}\r\n").into_bytes()
+            );
+        };
+        // Score replacement, a new member, and a duplicate whose last score wins.
+        assert_eq!(
+            run(
+                &store,
+                &[b"ZADD", b"z", b"9", b"m000", b"3", b"new", b"4", b"new"]
+            ),
+            b":1\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"m000"]), b"$1\r\n9\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"new"]), b"$1\r\n4\r\n");
+        check(201);
+        assert_eq!(
+            run(&store, &[b"ZINCRBY", b"z", b"2.5", b"new"]),
+            b"$3\r\n6.5\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"new"]), b"$3\r\n6.5\r\n");
+        check(201);
+        assert_eq!(
+            run(&store, &[b"ZINCRBY", b"z", b"1", b"fresh"]),
+            b"$1\r\n1\r\n"
+        );
+        check(202);
+        assert_eq!(
+            run(&store, &[b"ZREM", b"z", b"m001", b"m002", b"missing"]),
+            b":2\r\n"
+        );
+        check(200);
+        let remaining: Vec<&[u8]> = members
+            .iter()
+            .filter(|member| member.as_str() != "m001" && member.as_str() != "m002")
+            .map(|member| member.as_bytes())
+            .collect();
+        let mut args = vec![b"ZREM".as_slice(), b"z"];
+        args.extend(remaining);
+        args.push(b"new");
+        args.push(b"fresh");
+        assert_eq!(run(&store, &args), b":200\r\n");
+        assert_eq!(run(&store, &[b"EXISTS", b"z"]), b":0\r\n");
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     }
 
     #[test]
