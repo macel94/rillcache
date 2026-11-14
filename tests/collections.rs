@@ -477,3 +477,47 @@ fn linsert_edits_quicklist_chunks_in_place() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn lrem_removes_quicklist_elements_without_reencoding() {
+    let server = start(None);
+    let mut stream = connect(&server);
+    let members: Vec<String> = (0..700).map(|index| format!("v{index:04}")).collect();
+    let mut args: Vec<&[u8]> = vec![b"RPUSH", b"big"];
+    args.extend(members.iter().map(|member| member.as_bytes()));
+    command(&mut stream, &args, b":700\r\n");
+    command(&mut stream, &[b"LREM", b"big", b"1", b"v0000"], b":1\r\n");
+    command(&mut stream, &[b"LLEN", b"big"], b":699\r\n");
+    command(&mut stream, &[b"LINDEX", b"big", b"0"], b"$5\r\nv0001\r\n");
+    command(&mut stream, &[b"LREM", b"big", b"-1", b"v0699"], b":1\r\n");
+    command(&mut stream, &[b"LLEN", b"big"], b":698\r\n");
+    command(&mut stream, &[b"LINDEX", b"big", b"-1"], b"$5\r\nv0698\r\n");
+    command(&mut stream, &[b"LREM", b"big", b"0", b"v0350"], b":1\r\n");
+    command(
+        &mut stream,
+        &[b"LINDEX", b"big", b"348"],
+        b"$5\r\nv0349\r\n",
+    );
+    command(
+        &mut stream,
+        &[b"LINDEX", b"big", b"349"],
+        b"$5\r\nv0351\r\n",
+    );
+    command(&mut stream, &[b"LREM", b"big", b"1", b"missing"], b":0\r\n");
+    command(&mut stream, &[b"LLEN", b"big"], b":697\r\n");
+
+    command(
+        &mut stream,
+        &[b"RPUSH", b"dup", b"a", b"a", b"a"],
+        b":3\r\n",
+    );
+    command(&mut stream, &[b"LREM", b"dup", b"2", b"a"], b":2\r\n");
+    command(
+        &mut stream,
+        &[b"LRANGE", b"dup", b"0", b"-1"],
+        b"*1\r\n$1\r\na\r\n",
+    );
+    command(&mut stream, &[b"LREM", b"dup", b"0", b"a"], b":1\r\n");
+    command(&mut stream, &[b"EXISTS", b"dup"], b":0\r\n");
+    server.shutdown().unwrap();
+}

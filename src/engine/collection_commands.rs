@@ -1083,6 +1083,73 @@ pub(crate) enum ListMoveOutcome {
     JournalError,
 }
 
+fn list_remove_matching(
+    collection: &mut Collection,
+    value: &[u8],
+    limit: usize,
+    from_tail: bool,
+) -> Option<(usize, usize)> {
+    let (mut flat, chunk_size) = match collection {
+        Collection::ListPack(values) => {
+            let chunk_size = values.capacity().max(1);
+            (std::mem::take(values), chunk_size)
+        }
+        Collection::ListQuick(nodes) => {
+            let chunk_size = nodes.iter().map(VecDeque::len).max().unwrap_or(128).max(1);
+            let mut flat = VecDeque::new();
+            for mut chunk in std::mem::take(nodes) {
+                while let Some(item) = chunk.pop_front() {
+                    flat.push_back(item);
+                }
+            }
+            (flat, chunk_size)
+        }
+        _ => return None,
+    };
+    let mut removed = 0usize;
+    let mut bytes = 0usize;
+    let mut kept = VecDeque::with_capacity(flat.len());
+    if from_tail {
+        while let Some(item) = flat.pop_back() {
+            if removed < limit && item.as_slice() == value {
+                removed += 1;
+                bytes += item.len();
+            } else {
+                kept.push_front(item);
+            }
+        }
+    } else {
+        while let Some(item) = flat.pop_front() {
+            if removed < limit && item.as_slice() == value {
+                removed += 1;
+                bytes += item.len();
+            } else {
+                kept.push_back(item);
+            }
+        }
+    }
+    match collection {
+        Collection::ListPack(values) => *values = kept,
+        Collection::ListQuick(nodes) => {
+            let mut rebuilt = VecDeque::new();
+            let mut current = VecDeque::with_capacity(chunk_size);
+            for item in kept {
+                current.push_back(item);
+                if current.len() == chunk_size {
+                    rebuilt.push_back(std::mem::take(&mut current));
+                    current = VecDeque::with_capacity(chunk_size);
+                }
+            }
+            if !current.is_empty() {
+                rebuilt.push_back(current);
+            }
+            *nodes = rebuilt;
+        }
+        _ => unreachable!("list checked above"),
+    }
+    Some((removed, bytes))
+}
+
 fn list_position_of(collection: &Collection, value: &[u8]) -> Option<usize> {
     match collection {
         Collection::ListPack(values) => values
@@ -2984,18 +3051,70 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        let Some(entry) = data.entries.get(key) else {
+        if !data.entries.contains_key(key) {
             integer(0, out);
             return;
-        };
-        let Some(list) = entry.collection.as_ref().and_then(Collection::list_values) else {
+        }
+        if data
+            .entries
+            .get(key)
+            .and_then(|entry| entry.collection.as_ref())
+            .is_none_or(|collection| !collection.is_list())
+        {
             wrong_type(out);
             return;
-        };
+        }
         let limit = if count == 0 {
             usize::MAX
         } else {
             usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX)
+        };
+        let old_len = data
+            .entries
+            .get(key)
+            .and_then(|entry| entry.collection.as_ref())
+            .map(|collection| match collection {
+                Collection::ListPack(values) => values.len(),
+                Collection::ListQuick(nodes) => quick_list_len(nodes),
+                _ => 0,
+            })
+            .unwrap_or(0);
+        let mut fast_removed = 0usize;
+        let mut fast_bytes = 0usize;
+        let mut emptied = false;
+        if let Some(entry) = data.entries.get_mut(key)
+            && let Some(collection) = entry.collection.as_mut()
+            && let Some((removed, bytes)) =
+                list_remove_matching(collection, args[3], limit, count < 0)
+        {
+            fast_removed = removed;
+            fast_bytes = bytes;
+            if removed > 0 {
+                if old_len == removed {
+                    emptied = true;
+                } else {
+                    entry.payload_len = entry.payload_len.saturating_sub(bytes);
+                }
+            }
+        }
+        if fast_removed > 0 {
+            if emptied {
+                data.remove(key);
+            } else {
+                data.payload_bytes = data.payload_bytes.saturating_sub(fast_bytes);
+                data.touch(key);
+            }
+            integer(fast_removed as i64, out);
+            return;
+        }
+        let Some(list) = data
+            .entries
+            .get(key)
+            .and_then(|entry| entry.collection.as_ref())
+            .and_then(Collection::list_values)
+        else {
+            wrong_type(out);
+            return;
         };
         let mut removed = 0usize;
         let mut result = VecDeque::with_capacity(list.len());
@@ -3025,8 +3144,8 @@ impl ShardExecutor {
             integer(removed as i64, out);
             return;
         }
-        let expires = entry.expires;
-        let previous = entry.payload_len();
+        let expires = data.entries.get(key).expect("list").expires;
+        let previous = data.entries.get(key).expect("list").payload_len();
         let bytes = result.iter().map(Vec::len).sum::<usize>();
         let Ok(config) = self.collection_config.read() else {
             internal_error(out);
