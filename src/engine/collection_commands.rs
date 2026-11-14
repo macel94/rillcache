@@ -1276,7 +1276,6 @@ pub(crate) enum ZSetPopOutcome {
     },
     Empty,
     WrongType,
-    Oom,
     JournalError,
 }
 
@@ -1294,7 +1293,6 @@ pub(crate) fn zset_pop_reply(outcome: ZSetPopOutcome, out: &mut Vec<u8>) {
         }
         ZSetPopOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
         ZSetPopOutcome::WrongType => wrong_type(out),
-        ZSetPopOutcome::Oom => out.extend_from_slice(OOM),
         ZSetPopOutcome::JournalError => out.extend_from_slice(b"-ERR append-only write failed\r\n"),
     }
 }
@@ -1310,7 +1308,6 @@ pub(crate) fn zset_pop_single_reply(outcome: ZSetPopOutcome, out: &mut Vec<u8>) 
         }
         ZSetPopOutcome::Empty => out.extend_from_slice(b"*-1\r\n"),
         ZSetPopOutcome::WrongType => wrong_type(out),
-        ZSetPopOutcome::Oom => out.extend_from_slice(OOM),
         ZSetPopOutcome::JournalError => out.extend_from_slice(b"-ERR append-only write failed\r\n"),
     }
 }
@@ -1329,6 +1326,126 @@ fn ordered_zset(items: Vec<(&[u8], f64)>, reverse: bool) -> Vec<(Vec<u8>, f64)> 
         ordered.reverse();
     }
     ordered
+}
+
+/// Inline lexicographic member comparison. `slice::cmp` lowers to a libc
+/// `memcmp` call, which dominates a 100k-member pop scan on short member names.
+fn member_order(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
+    let shared = left.len().min(right.len());
+    let mut index = 0;
+    while index < shared {
+        if left[index] != right[index] {
+            return left[index].cmp(&right[index]);
+        }
+        index += 1;
+    }
+    left.len().cmp(&right.len())
+}
+
+/// Select up to `take` members in pop order (ascending for MIN, descending for
+/// MAX, ties by member) from a borrowed zset, without cloning or sorting the
+/// collection. Small pops keep a sorted window in one scan; large pops partition.
+fn pop_candidates(collection: &Collection, max: bool, take: usize) -> Vec<(Vec<u8>, f64)> {
+    let length = collection.zset_len().unwrap_or(0);
+    let take = take.min(length);
+    if take == 0 {
+        return Vec::new();
+    }
+    let better = |left: (f64, &[u8]), right: (f64, &[u8])| {
+        if max {
+            left.0 > right.0
+                || (left.0 == right.0
+                    && member_order(left.1, right.1) == std::cmp::Ordering::Greater)
+        } else {
+            left.0 < right.0
+                || (left.0 == right.0 && member_order(left.1, right.1) == std::cmp::Ordering::Less)
+        }
+    };
+    let mut items = collection.zset_items().unwrap_or_default();
+    if take <= 64 && take < items.len() {
+        // One scan with at most one comparison against the current worst after
+        // the first `take` members have filled the window.
+        let mut selected: Vec<(Vec<u8>, f64)> = Vec::with_capacity(take);
+        for (member, score) in items.drain(..) {
+            if selected.len() < take {
+                let position = selected
+                    .iter()
+                    .position(|(candidate, candidate_score)| {
+                        better((score, member), (*candidate_score, candidate.as_slice()))
+                    })
+                    .unwrap_or(selected.len());
+                selected.insert(position, (member.to_vec(), score));
+                continue;
+            }
+            let (worst_member, worst_score) = selected.last().expect("full window");
+            if better((score, member), (*worst_score, worst_member.as_slice())) {
+                selected.pop();
+                let position = selected
+                    .iter()
+                    .position(|(candidate, candidate_score)| {
+                        better((score, member), (*candidate_score, candidate.as_slice()))
+                    })
+                    .unwrap_or(selected.len());
+                selected.insert(position, (member.to_vec(), score));
+            }
+        }
+        return selected;
+    }
+    let order = |left: &(&[u8], f64), right: &(&[u8], f64)| {
+        left.1.total_cmp(&right.1).then_with(|| left.0.cmp(right.0))
+    };
+    if take == items.len() {
+        items.sort_unstable_by(order);
+        if max {
+            items.reverse();
+        }
+    } else if max {
+        let split = items.len() - take;
+        items.select_nth_unstable_by(split, order);
+        let mut result = items.split_off(split);
+        result.sort_unstable_by(order);
+        result.reverse();
+        return result
+            .into_iter()
+            .map(|(member, score)| (member.to_vec(), score))
+            .collect();
+    } else {
+        items.select_nth_unstable_by(take, order);
+        items.truncate(take);
+        items.sort_unstable_by(order);
+    }
+    items
+        .into_iter()
+        .map(|(member, score)| (member.to_vec(), score))
+        .collect()
+}
+
+/// Remove the selected members from an owned collection and return the removed
+/// member bytes, which are the only payload the zset accounting counts.
+fn remove_zset_members(collection: &mut Collection, candidates: &[(Vec<u8>, f64)]) -> usize {
+    let mut removed = 0usize;
+    match collection {
+        Collection::ZSet(values) => {
+            for (member, _) in candidates {
+                if values.remove(member).is_some() {
+                    removed = removed.saturating_add(member.len());
+                }
+            }
+        }
+        Collection::ZSetPack(values) => {
+            values.retain(|(member, _)| {
+                let selected = candidates
+                    .iter()
+                    .any(|(removed, _)| removed.as_slice() == member.as_slice());
+                if selected {
+                    removed = removed.saturating_add(member.len());
+                }
+                !selected
+            });
+        }
+        _ => {}
+    }
+    removed
 }
 
 impl ShardExecutor {
@@ -4605,55 +4722,37 @@ impl ShardExecutor {
         now: i64,
     ) -> ZSetPopOutcome {
         for key in keys {
-            let mut zset = match owned_zset(data, key, now) {
-                Ok(Some(zset)) => zset,
-                Ok(None) => continue,
-                Err(()) => return ZSetPopOutcome::WrongType,
+            data.expire_key(key, now);
+            let Some(entry) = data.entries.get(*key) else {
+                continue;
             };
-            if zset.is_empty() {
+            let Some(collection) = entry.collection.as_ref() else {
+                return ZSetPopOutcome::WrongType;
+            };
+            if !collection.is_zset() {
+                return ZSetPopOutcome::WrongType;
+            }
+            let length = collection.zset_len().expect("zset type checked");
+            if length == 0 {
                 continue;
             }
-            let entry = data.entries.get(*key).expect("zset exists");
-            let expires = entry.expires;
-            let previous = entry.payload_len();
-            let ordered = ordered_zset(
-                zset.iter()
-                    .map(|(member, score)| (member.as_slice(), *score))
-                    .collect(),
-                max,
-            );
-            let take = count.min(ordered.len());
-            for (member, _) in ordered.iter().take(take) {
-                zset.remove(member);
-            }
-            let encoded = if zset.is_empty() {
-                None
+            let previous = entry.payload_len;
+            let take = count.min(length);
+            let items = pop_candidates(collection, max, take);
+            if take == length {
+                data.remove(key);
             } else {
-                let Ok(config) = self.collection_config.read() else {
-                    return ZSetPopOutcome::JournalError;
-                };
-                Some(encode_zset(zset, &config))
-            };
-            match encoded {
-                Some(encoded) => {
-                    let Some(payload) = data.reserve(
-                        key,
-                        encoded.payload_len(),
-                        Some(previous),
-                        self.payload_limit(),
-                        now,
-                    ) else {
-                        return ZSetPopOutcome::Oom;
-                    };
-                    data.put_collection(key, encoded, expires, payload, now);
-                }
-                None => {
-                    data.remove(key);
-                }
+                let entry = data.entries.get_mut(*key).expect("zset exists");
+                let collection = entry.collection.as_mut().expect("zset type checked");
+                let removed = remove_zset_members(collection, &items);
+                entry.payload_len = entry.payload_len.saturating_sub(removed);
+                data.payload_bytes = data.payload_bytes.saturating_sub(removed);
+                data.touch(key);
             }
+            debug_assert!(previous >= items.iter().map(|(member, _)| member.len()).sum::<usize>());
             return ZSetPopOutcome::Popped {
                 key: key.to_vec(),
-                items: ordered.into_iter().take(take).collect(),
+                items,
             };
         }
         ZSetPopOutcome::Empty
@@ -5314,65 +5413,48 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
-        let mut zset = match owned_zset(&mut data, key, now) {
-            Ok(Some(zset)) => zset,
-            Ok(None) => {
-                out.extend_from_slice(b"*0\r\n");
-                return;
-            }
-            Err(()) => {
-                wrong_type(out);
-                return;
-            }
+        data.expire_key(key, now);
+        let Some(entry) = data.entries.get(key) else {
+            out.extend_from_slice(b"*0\r\n");
+            return;
         };
-        let entry = data.entries.get(key).expect("zset exists");
-        let expires = entry.expires;
-        let previous = entry.payload_len();
-        let ordered = ordered_zset(
-            zset.iter()
-                .map(|(member, score)| (member.as_slice(), *score))
-                .collect(),
-            max,
-        );
-        let take = count.min(ordered.len());
+        let Some(collection) = entry.collection.as_ref().filter(|value| value.is_zset()) else {
+            wrong_type(out);
+            return;
+        };
+        let length = collection.zset_len().expect("zset type checked");
+        let previous = entry.payload_len;
+        let take = count.min(length);
         if take == 0 {
             out.extend_from_slice(b"*0\r\n");
             return;
         }
-        for (member, _) in ordered.iter().take(take) {
-            zset.remove(member);
-        }
-        let encoded = if zset.is_empty() {
-            None
+        // Select from the borrowed score map, then remove in place: no owned
+        // copy and no full sort of the collection.
+        let candidates = pop_candidates(collection, max, take);
+        let removed = if take == length {
+            data.remove(key);
+            previous
         } else {
-            let Ok(config) = self.collection_config.read() else {
-                internal_error(out);
-                return;
-            };
-            Some(encode_zset(zset, &config))
+            let entry = data.entries.get_mut(key).expect("zset exists");
+            let collection = entry.collection.as_mut().expect("zset type checked");
+            let removed = remove_zset_members(collection, &candidates);
+            entry.payload_len = entry.payload_len.saturating_sub(removed);
+            data.payload_bytes = data.payload_bytes.saturating_sub(removed);
+            data.touch(key);
+            removed
         };
-        let payload = encoded.as_ref().map(|encoded| {
-            data.payload_bytes
-                .checked_sub(previous)
-                .and_then(|value| value.checked_add(encoded.payload_len()))
-        });
-        if payload == Some(None) {
-            internal_error(out);
-            return;
-        }
-        write!(out, "*{}\r\n", take * 2).expect("Vec write");
-        for (member, score) in ordered.iter().take(take) {
+        debug_assert!(
+            removed
+                >= candidates
+                    .iter()
+                    .map(|(member, _)| member.len())
+                    .sum::<usize>()
+        );
+        write!(out, "*{}\r\n", candidates.len() * 2).expect("Vec write");
+        for (member, score) in &candidates {
             encode_bulk(Some(member), out);
             encode_bulk(Some(&score_bytes(*score)), out);
-        }
-        match (encoded, payload) {
-            (Some(encoded), Some(Some(payload))) => {
-                data.put_collection(key, encoded, expires, payload, now)
-            }
-            (None, _) => {
-                data.remove(key);
-            }
-            _ => unreachable!("payload checks parallel encoded value"),
         }
     }
 }
@@ -5547,6 +5629,77 @@ mod tests {
         );
         assert_eq!(run(&store, &[b"ZSCORE", b"zu", b"20"]), b"$1\r\n3\r\n");
         assert_eq!(run(&store, &[b"ZSCORE", b"zu", b"10"]), b"$1\r\n1\r\n");
+    }
+
+    #[test]
+    fn zset_pops_select_in_place_with_tie_order_and_exact_accounting() {
+        let store = ShardExecutor::new(1_000_000);
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"ZADD", b"z", b"1", b"a", b"1", b"b", b"2", b"c", b"2", b"d", b"0", b"e"
+                ]
+            ),
+            b":5\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZPOPMIN", b"z"]),
+            b"*2\r\n$1\r\ne\r\n$1\r\n0\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZPOPMIN", b"z", b"2"]),
+            b"*4\r\n$1\r\na\r\n$1\r\n1\r\n$1\r\nb\r\n$1\r\n1\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZPOPMAX", b"z"]),
+            b"*2\r\n$1\r\nd\r\n$1\r\n2\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZPOPMAX", b"z", b"10"]),
+            b"*2\r\n$1\r\nc\r\n$1\r\n2\r\n"
+        );
+        assert_eq!(run(&store, &[b"EXISTS", b"z"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"ZPOPMIN", b"missing"]), b"*0\r\n");
+        assert_eq!(
+            run(&store, &[b"ZPOPMIN", b"missing", b"-1"]),
+            b"-ERR value is out of range, must be positive\r\n"
+        );
+
+        // More than the listpack threshold: the ordered score map path.
+        let mut args = vec![b"ZADD".as_slice(), b"big"];
+        let members: Vec<String> = (0..200).map(|index| format!("m{index:03}")).collect();
+        let scores: Vec<String> = (0..200).map(|index| index.to_string()).collect();
+        for (score, member) in scores.iter().zip(&members) {
+            args.push(score.as_bytes());
+            args.push(member.as_bytes());
+        }
+        assert_eq!(run(&store, &args), b":200\r\n");
+        let removed = run(&store, &[b"ZPOPMIN", b"big", b"10"]);
+        assert!(removed.starts_with(b"*20\r\n$4\r\nm000\r\n$1\r\n0\r\n"));
+        let removed = run(&store, &[b"ZPOPMAX", b"big", b"10"]);
+        assert!(removed.starts_with(b"*20\r\n$4\r\nm199\r\n$3\r\n199\r\n"));
+        assert_eq!(run(&store, &[b"ZCARD", b"big"]), b":180\r\n");
+        assert_eq!(run(&store, &[b"ZPOPMIN", b"big", b"0"]), b"*0\r\n");
+        assert_eq!(run(&store, &[b"ZCARD", b"big"]), b":180\r\n");
+        let data = store.data.try_borrow().unwrap();
+        let entry = data.entries.get(b"big".as_slice()).expect("zset");
+        let members: usize = entry
+            .collection
+            .as_ref()
+            .and_then(Collection::zset_items)
+            .expect("zset")
+            .iter()
+            .map(|(member, _)| member.len())
+            .sum();
+        assert_eq!(entry.payload_len, members);
+        drop(data);
+        let popped = run(&store, &[b"ZMPOP", b"1", b"big", b"MIN", b"COUNT", b"5"]);
+        assert!(popped.starts_with(b"*2\r\n$3\r\nbig\r\n*5\r\n"));
+        assert_eq!(run(&store, &[b"ZCARD", b"big"]), b":175\r\n");
+        assert_eq!(run(&store, &[b"ZPOPMIN", b"big", b"10000"]).len() % 2, 0);
+        assert_eq!(run(&store, &[b"EXISTS", b"big"]), b":0\r\n");
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 0);
     }
 
     #[test]

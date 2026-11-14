@@ -1308,10 +1308,12 @@ rest are still true even though every row now leads:
     scales with length (~165 ms at 100k by extrapolation); the other XGROUP
     subcommands already mutate in place and are at parity (section 3.34,
     candidate 4.48).
-28. **Sorted-set pops.** Every `ZPOPMIN`/`ZPOPMAX`/`ZMPOP` clones and sorts the
+28. **Sorted-set pops.** Every `ZPOPMIN`/`ZPOPMAX`/`ZMPOP` cloned and sorted the
     whole set before removing one member: at 100k they cost **146–160 ms** versus
     0.16–0.42 ms (373–974×), the largest measured ratio, while the 100-member
-    control is at the floor (section 3.35, candidate 4.49).
+    control is at the floor (section 3.35, candidate 4.49). 4.49 now selects and
+    removes in place: **1.08–1.65 ms** (4.8–6.0 in the tie-heavy case); the
+    ordered-index target remains open.
 29. **MONITOR feed under bursts.** The monitor queue is the pub/sub 1,024 queue
     with a 64-line tick drain, so a 2,000-command burst delivers exactly **1,024
     lines** to every monitor in every sample while Redis/Valkey deliver 2,000;
@@ -1564,7 +1566,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` pre-fix 201.6 ms vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; `BITPOS 0 0 -1` 209.4 vs 4.79/5.96, post-fix 2.23; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
-| Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 ms vs 0.42/0.34, `ZPOPMAX` 159.9 vs 0.21/0.29, `ZPOPMIN 10` 146.6 vs 0.35/0.16, `ZMPOP` 155.8 vs 0.16/0.20 (373–974×); 100-member control at the floor | 4.49, admitted | AC51 | none |
+| Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 → 1.082 ms vs 0.664/0.232, `ZPOPMAX` 159.9 → 1.245, `ZPOPMIN 10` 146.6 → 1.542, `ZMPOP` 155.8 → 1.648; tie-heavy (all scores 0) 4.8–6.0; 100-member control at the floor | 4.49, implemented without the ordered index | AC51 missed (1.08–1.65 vs ≤0.3) | ordered `(score, member)` index |
 | Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
@@ -2019,7 +2021,7 @@ for a production claim.
 | Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
 | Stream `XGROUP CREATE` | insert one group in the stream dict; O(1) | same | deep-clone the whole stream, fold payload, replace via `put_stream` | **Adapt:** 4.48 in-place group insert; measured 5k 8.26 vs 0.083/0.094 ms (88–99×), other XGROUP ops at parity (3.34, AC50) |
 | Stream consumer-group reads | radix PEL with a consumer pointer; reply writes stored fields directly | same | per-entry `StreamEntry` clone, two PEL inserts and a consumer-name copy per pending entry | **Keep:** measured near-parity at 10k; the 1,000-entry forms are 1.7× (new read) and 2.1× (`XAUTOCLAIM`), while 100-entry history/`XPENDING`/`XCLAIM` are at parity; re-measure after 4.42 (3.39, no candidate) |
-| Sorted-set pops | skiplist head/tail pop, O(log n) | same | clone, sort and replace the whole set per pop | **Adapt:** 4.49 ordered `(score, member)` index pop; measured 100k `ZPOPMIN` 156.7 vs 0.42/0.34 ms, `ZMPOP` 155.8, `ZPOPMIN 10` 146.6 (373–974×), 100-member control at the floor (3.35, AC51) |
+| Sorted-set pops | skiplist head/tail pop, O(log n) | same | clone, sort and replace the whole set per pop | **Partly done:** 4.49 selects and removes in place with no clone/sort; measured 100k `ZPOPMIN` 156.7 → 1.082 ms (vs 0.23–0.66), `ZMPOP` 1.648, `ZPOPMIN 10` 1.542; tie-heavy 4.8–6.0; an ordered index is still needed for ≤0.3 (3.35, AC51) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | pre-fix: rebuild full-length `Vec` and copy twice; now mutates the entry in place (#258) | **Done:** 4.34 in-place mutation; measured 32 MB post-fix `APPEND` 0.131 vs 0.142/0.219 ms and `SETRANGE` 0.185 vs 0.222/0.289 (3.18, AC36) |
@@ -3501,12 +3503,30 @@ TTL/WATCH/journal/rewrite and the other subcommands as they are.
   419–974×, while the 100-member control is at the floor. The largest measured
   ratio in the record. Candidate 4.49.
 
-**Verdict: adapt ordered pops (4.49).** Reuse 4.30/4.38's ordered
+**Post-fix (2026-11-14).** `ZPOPMIN`/`ZPOPMAX` and `ZMPOP`/`BZPOP*` no longer
+clone, sort and re-encode the set. They select up to `COUNT` members from the
+borrowed score map (a sorted window for small counts, partition for large ones,
+inline member comparison to avoid a libc `memcmp` call per item), remove them in
+place and subtract exactly the removed member bytes. `ZSetPack` remains a small
+linear path. Varied-score cohort (scores 100–899, same as admission; p50/p99):
+`ZPOPMIN` **1.082/3.373 ms** versus Redis 0.664/1.416 and Valkey 0.232/0.802
+(from 156.7); `ZPOPMAX` **1.245/4.308** (from 159.9); `ZPOPMIN COUNT 10`
+**1.542/4.378** (from 146.6); `ZMPOP` **1.648/4.406** (from 155.8); 100-member
+control unchanged. A tie-heavy cohort (all scores 0, 100k members) costs
+4.8–6.0 ms because every comparison falls through to the member name. AC51's
+≤0.3 ms targets are **not met**: without the ordered `(score, member)` index the
+remaining cost is the O(n) scan over a 100k `HashMap` (cache misses), but the
+clone/sort/replace path is gone and single pops are within ~1.6× of Redis. Raw
+JSON retained at `/tmp/opencode/zpop-varied-result.json` and
+`/tmp/opencode/zpop-result.json` (untracked).
+
+**Verdict: adapted pops without the ordered index (4.49, partial).** Reuse 4.30/4.38's ordered
 `(score, member)` index: min/max is its first/last element, so remove that member
 from the map and the index in place, update `payload_len` by the delta, and
 repeat for `COUNT`. No clone, sort, re-encode or replace. `ZMPOP`/`BZPOP*` reuse
 the same primitive; keep score formatting, tie order, empty-key deletion and
-journal/rewrite/accounting semantics.
+journal/rewrite/accounting semantics. Implemented as a scan/in-place pop; the
+≤0.3 ms target needs a maintained ordered index and remains open.
 
 ### 3.36 Multi-command transactions (MULTI/EXEC)
 
@@ -6555,7 +6575,7 @@ the faster C server); the 10-entry control shall be unchanged;
 and TTL shall pass; no dependency shall be added; and both protected gates shall
 pass on the exact head.
 
-### 4.49 Ordered sorted-set pops (candidate; admission measured)
+### 4.49 Ordered sorted-set pops (candidate; scan-based pops implemented, index target missed)
 
 **Mechanism.** Reuse 4.30/4.38's ordered `(score, member)` index: `ZPOPMIN`/
 `ZPOPMAX` take its first/last element (tie order `(score, member)`), remove the
