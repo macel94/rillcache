@@ -481,6 +481,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   There are client/payload/frame limits and bounded output backpressure, but no
   slow-client thresholds, global connection/command budgets, per-user quotas or
   adversarial protocol fuzzing. O(N) commands can occupy the owner.
+  **Partial (2026-11-14): deterministic RESP fuzz/property corpus.**
+  `tests/protocol_fuzz.rs` now drives generated binary frames through every
+  fragmentation boundary, random byte streams under tight frame/bulk/argument
+  limits, random inline input, and multi-command pipelines. It asserts bounded
+  consumption, at-most-once execution, argument/limit bounds and no panic; every
+  case is reproducible from its seed. Slow-client thresholds, global/user
+  budgets, CPU quotas and a documented overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
   shedding behavior exists.
@@ -761,6 +768,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,
   randomized model checking or sustained adversarial input corpus.
+  **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
+  adds seeded binary-frame fragmentation, random bytes under tight limits,
+  random inline input and pipeline consumption properties; it runs in ordinary
+  CI and every failure is reproducible from its printed seed. State-machine
+  model checking, command-level differential properties and sustained
+  adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
 - [ ] **V5. Public documentation can still drift from executable behavior.** [P1]
