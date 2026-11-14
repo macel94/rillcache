@@ -106,11 +106,15 @@ state after the whole queued batch, not each intermediate command. If the bounde
 event log overflows, the server writes `FLUSHALL` followed by a complete snapshot
 of every current key, which is expensive but cannot miss a key.
 
-Expiration is persisted as an absolute deadline, so replay does not depend on when
-the log is loaded. Logically expired keys are emitted as `DEL`; background reaping
-does not need its own record because the deadline reconstructs the same behavior.
-A clock rollback cannot resurrect a key beyond its stored deadline in the current
-process; replay uses the same local clock rules.
+Expiration is persisted as an absolute Unix-epoch-millisecond deadline and
+compared with the operating system wall clock. Replay applies the same deadline,
+independent of load time. Once an expired key is observed and removed, its `DEL`
+is persisted; however, if the clock moves backward before that removal is observed
+and recorded, the key can become live again, including after restart. There is no
+persisted clock high-water mark or anti-rollback state. Operators should keep the
+system clock synchronized and avoid backward steps while using TTLs. Time-zone and
+daylight-saving changes do not alter Unix-epoch time and therefore do not affect
+TTL deadlines; manual or time-sync-induced system-clock steps can.
 
 ## Acknowledgment and fsync policy
 
