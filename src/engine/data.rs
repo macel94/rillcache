@@ -1,4 +1,5 @@
 use super::eviction::EvictionPolicy;
+use super::options::parse_integer;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -110,6 +111,45 @@ impl Collection {
         };
         items.sort_unstable();
         Some(items)
+    }
+
+    pub fn set_len(&self) -> Option<usize> {
+        match self {
+            Self::Set(values) => Some(values.len()),
+            Self::SetPack(values) => Some(values.len()),
+            Self::SetInt(values) => Some(values.len()),
+            _ => None,
+        }
+    }
+
+    pub fn contains_member(&self, member: &[u8]) -> bool {
+        match self {
+            Self::Set(values) => values.contains(member),
+            Self::SetPack(values) => values.iter().any(|value| value.as_slice() == member),
+            Self::SetInt(values) => {
+                parse_integer(member).is_some_and(|value| values.contains(&value))
+            }
+            _ => false,
+        }
+    }
+
+    pub fn zset_len(&self) -> Option<usize> {
+        match self {
+            Self::ZSet(values) => Some(values.len()),
+            Self::ZSetPack(values) => Some(values.len()),
+            _ => None,
+        }
+    }
+
+    pub fn zset_score(&self, member: &[u8]) -> Option<f64> {
+        match self {
+            Self::ZSet(values) => values.get(member).copied(),
+            Self::ZSetPack(values) => values
+                .iter()
+                .find(|(candidate, _)| candidate.as_slice() == member)
+                .map(|(_, score)| *score),
+            _ => None,
+        }
     }
 
     pub fn hash_items(&self) -> Option<Vec<(&[u8], &[u8])>> {
