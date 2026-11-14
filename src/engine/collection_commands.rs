@@ -3077,6 +3077,77 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
+        data.expire_key(source, now);
+        data.expire_key(destination, now);
+        // Large hashtable sets can move one member in place: the member's bytes
+        // leave the source and (unless already present) enter the destination,
+        // so the payload cannot grow and no admission/eviction is needed. Packs
+        // and missing destinations keep the general encode path below.
+        let source_collection = data
+            .entries
+            .get(source)
+            .and_then(|entry| entry.collection.as_ref());
+        let destination_collection = data
+            .entries
+            .get(destination)
+            .and_then(|entry| entry.collection.as_ref());
+        if source_collection.is_some_and(|collection| !collection.is_set())
+            || destination_collection.is_some_and(|collection| !collection.is_set())
+        {
+            wrong_type(out);
+            return;
+        }
+        if let (Some(Collection::Set(source_values)), Some(Collection::Set(destination_values))) =
+            (source_collection, destination_collection)
+        {
+            if !source_values.contains(member) {
+                integer(0, out);
+                return;
+            }
+            if source == destination {
+                integer(1, out);
+                return;
+            }
+            if source_values.len() > 1 {
+                let already = destination_values.contains(member);
+                let source_previous = data.entries.get(source).expect("source").payload_len;
+                let destination_previous = data
+                    .entries
+                    .get(destination)
+                    .expect("destination")
+                    .payload_len;
+                let destination_next = destination_previous.checked_add(member.len());
+                let total = if already {
+                    data.payload_bytes.checked_sub(member.len())
+                } else {
+                    Some(data.payload_bytes)
+                };
+                if let (Some(source_next), Some(destination_next), Some(total)) = (
+                    source_previous.checked_sub(member.len()),
+                    destination_next,
+                    total,
+                ) {
+                    if let Some(entry) = data.entries.get_mut(source)
+                        && let Some(Collection::Set(values)) = entry.collection.as_mut()
+                    {
+                        values.remove(member);
+                        entry.payload_len = source_next;
+                    }
+                    if !already
+                        && let Some(entry) = data.entries.get_mut(destination)
+                        && let Some(Collection::Set(values)) = entry.collection.as_mut()
+                    {
+                        values.insert(member.to_vec());
+                        entry.payload_len = destination_next;
+                    }
+                    data.payload_bytes = total;
+                    data.touch(source);
+                    data.touch(destination);
+                    integer(1, out);
+                    return;
+                }
+            }
+        }
         let mut source_set = match owned_set(&mut data, source, now) {
             Ok(Some(set)) => set,
             Ok(None) => {
