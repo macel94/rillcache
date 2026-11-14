@@ -2445,6 +2445,8 @@ fn event_for(
         "sunionstore" => ("sunionstore", NotifyCategory::Set),
         "sdiffstore" => ("sdiffstore", NotifyCategory::Set),
         "hset" | "hsetnx" | "hmset" | "hsetex" => ("hset", NotifyCategory::Hash),
+        "hexpire" | "hpexpire" | "hexpireat" | "hpexpireat" => ("hexpire", NotifyCategory::Hash),
+        "hpersist" => ("hpersist", NotifyCategory::Hash),
         "hdel" => ("hdel", NotifyCategory::Hash),
         "hincrby" => ("hincrby", NotifyCategory::Hash),
         "hincrbyfloat" => ("hincrbyfloat", NotifyCategory::Hash),
