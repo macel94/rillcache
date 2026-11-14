@@ -1157,17 +1157,14 @@ impl ShardExecutor {
         self.refresh_data_config();
         let started = self.latency_enabled().then(std::time::Instant::now);
 
-        let (count, expired) = {
+        let (count, lifecycle) = {
             let Ok(mut data) = self.data.try_borrow_mut() else {
                 return 0;
             };
             let count = data.reap(self.clock.now_ms().max(0), limit);
-            let (expired, _) = data.drain_lifecycle();
-            (count, expired)
+            (count, data.drain_lifecycle())
         };
-        for key in expired {
-            self.notify_event("expired", &key, NotifyCategory::Expired);
-        }
+        self.publish_lifecycle(lifecycle);
         if let Some(started) = started {
             self.record_expire_latency(started.elapsed());
         }
@@ -1203,25 +1200,16 @@ impl ShardExecutor {
         let flags = self.notify_flags();
         // No lifecycle classes means there is nothing to deliver. Avoid taking
         // a mutable data borrow on every command just to discard queued keys.
-        if !flags.expired && !flags.evicted {
+        if !flags.expired && !flags.evicted && !flags.hash && !flags.generic {
             return;
         }
-        let (expired, evicted) = {
+        let lifecycle = {
             let Ok(mut data) = self.data.try_borrow_mut() else {
                 return;
             };
             data.drain_lifecycle()
         };
-        if flags.expired {
-            for key in expired {
-                self.notify_event("expired", &key, NotifyCategory::Expired);
-            }
-        }
-        if flags.evicted {
-            for key in evicted {
-                self.notify_event("evicted", &key, NotifyCategory::Evicted);
-            }
-        }
+        self.publish_lifecycle(lifecycle);
     }
 
     /// Dispatch inside an admitted owner turn. EXEC and journal replay use

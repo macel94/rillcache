@@ -359,6 +359,8 @@ pub(crate) struct Data {
     rewrite_active: bool,
     expired_events: VecDeque<Vec<u8>>,
     evicted_events: VecDeque<Vec<u8>>,
+    expired_field_events: VecDeque<Vec<u8>>,
+    deleted_events: VecDeque<Vec<u8>>,
     pub(in crate::engine) expired_keys: u64,
     pub(in crate::engine) expired_subkeys: u64,
     pub(in crate::engine) evicted_keys: u64,
@@ -368,6 +370,17 @@ pub(crate) struct Data {
     access_seq: u64,
 }
 const MAX_LIFECYCLE_EVENTS: usize = 1024;
+
+/// Bounded pending lifecycle notifications, published after the command that
+/// observed them. Field expiry is reported once per key and batch, followed by
+/// a generic `del` when the empty hash disappears.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct Lifecycle {
+    pub expired: Vec<Vec<u8>>,
+    pub evicted: Vec<Vec<u8>>,
+    pub expired_fields: Vec<Vec<u8>>,
+    pub deleted: Vec<Vec<u8>>,
+}
 
 fn push_lifecycle(queue: &mut VecDeque<Vec<u8>>, key: &[u8]) {
     if queue.len() >= MAX_LIFECYCLE_EVENTS {
@@ -445,11 +458,13 @@ impl Data {
     }
 
     /// Drain bounded lazy-expiration and eviction keys for notification delivery.
-    pub(super) fn drain_lifecycle(&mut self) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
-        (
-            self.expired_events.drain(..).collect(),
-            self.evicted_events.drain(..).collect(),
-        )
+    pub(super) fn drain_lifecycle(&mut self) -> Lifecycle {
+        Lifecycle {
+            expired: self.expired_events.drain(..).collect(),
+            evicted: self.evicted_events.drain(..).collect(),
+            expired_fields: self.expired_field_events.drain(..).collect(),
+            deleted: self.deleted_events.drain(..).collect(),
+        }
     }
 
     /// Discard pending lifecycle notifications that were queued while their
@@ -457,6 +472,8 @@ impl Data {
     pub(super) fn clear_lifecycle(&mut self) {
         self.expired_events.clear();
         self.evicted_events.clear();
+        self.expired_field_events.clear();
+        self.deleted_events.clear();
     }
 
     /// Record a mutation visible to `WATCH`/`EXEC` conflict checks and to the
@@ -633,6 +650,9 @@ impl Data {
         if expired.is_empty() {
             return;
         }
+        // Redis batches a whole lazy field-expiry pass into one `hexpired`
+        // notification and appends `del` if the hash became empty.
+        push_lifecycle(&mut self.expired_field_events, key);
         for field in &expired {
             entry.field_ttl.remove(field);
             if let Some(collection) = entry.collection.as_mut() {
@@ -648,6 +668,7 @@ impl Data {
             .as_ref()
             .is_some_and(|collection| collection.is_hash() && collection.hash_is_empty());
         if remove_key {
+            push_lifecycle(&mut self.deleted_events, key);
             self.remove(key);
             return;
         }
@@ -1161,15 +1182,23 @@ mod tests {
         let mut data = Data::default();
         push_lifecycle(&mut data.expired_events, b"a");
         push_lifecycle(&mut data.evicted_events, b"b");
-        let (expired, evicted) = data.drain_lifecycle();
-        assert_eq!(expired, vec![b"a".to_vec()]);
-        assert_eq!(evicted, vec![b"b".to_vec()]);
+        push_lifecycle(&mut data.expired_field_events, b"c");
+        push_lifecycle(&mut data.deleted_events, b"d");
+        let lifecycle = data.drain_lifecycle();
+        assert_eq!(lifecycle.expired, vec![b"a".to_vec()]);
+        assert_eq!(lifecycle.evicted, vec![b"b".to_vec()]);
+        assert_eq!(lifecycle.expired_fields, vec![b"c".to_vec()]);
+        assert_eq!(lifecycle.deleted, vec![b"d".to_vec()]);
 
         push_lifecycle(&mut data.expired_events, b"stale");
+        push_lifecycle(&mut data.expired_field_events, b"stale");
+        push_lifecycle(&mut data.deleted_events, b"stale");
         data.clear_lifecycle();
-        let (expired, evicted) = data.drain_lifecycle();
-        assert!(expired.is_empty());
-        assert!(evicted.is_empty());
+        let lifecycle = data.drain_lifecycle();
+        assert!(lifecycle.expired.is_empty());
+        assert!(lifecycle.evicted.is_empty());
+        assert!(lifecycle.expired_fields.is_empty());
+        assert!(lifecycle.deleted.is_empty());
 
         for index in 0..MAX_LIFECYCLE_EVENTS + 10 {
             push_lifecycle(&mut data.expired_events, index.to_string().as_bytes());
