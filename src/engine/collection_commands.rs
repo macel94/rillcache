@@ -870,6 +870,20 @@ fn in_score_range(score: f64, min: (f64, bool), max: (f64, bool)) -> bool {
         && (max.1 && score <= max.0 || !max.1 && score < max.0)
 }
 
+/// Cheap multiply-shift sampling for a bulk sample; seeding once per command
+/// avoids a clock read and atomic per member.
+fn seeded_index(state: &mut u64, length: usize) -> usize {
+    if length <= 1 {
+        return 0;
+    }
+    *state = state.wrapping_add(0x9e3779b97f4a7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^= z >> 31;
+    (((z as u128) * (length as u128)) >> 64) as usize
+}
+
 fn random_index(length: usize) -> usize {
     if length <= 1 {
         return 0;
@@ -1501,48 +1515,52 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let items = match data.entries.get(args[1]) {
-            None => None,
-            Some(entry) => match entry.collection.as_ref().and_then(Collection::hash_items) {
-                Some(items) => Some(
-                    items
-                        .into_iter()
-                        .map(|(field, value)| (field.to_vec(), value.to_vec()))
-                        .collect::<Vec<_>>(),
-                ),
-                None => {
-                    wrong_type(out);
-                    return;
+        let collection = match data.entries.get(args[1]) {
+            None => {
+                if count.is_some() {
+                    out.extend_from_slice(b"*0\r\n");
+                } else {
+                    encode_bulk(None, out);
                 }
-            },
-        };
-        let Some(items) = items else {
-            if count.is_some() {
-                out.extend_from_slice(b"*0\r\n");
-            } else {
-                encode_bulk(None, out);
+                return;
             }
-            return;
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => {
+                entry.collection.as_ref().expect("hash type checked")
+            }
+            Some(_) => {
+                wrong_type(out);
+                return;
+            }
         };
         let Some(count) = count else {
-            let index = random_index(items.len());
-            encode_bulk(items.get(index).map(|(field, _)| field.as_slice()), out);
+            let length = collection.hash_len().expect("hash type checked");
+            if length == 0 {
+                encode_bulk(None, out);
+                return;
+            }
+            let item = collection.hash_field_at(random_index(length));
+            encode_bulk(item.map(|(field, _)| field), out);
             return;
         };
-        if count == 0 || items.is_empty() {
+        let length = collection.hash_len().expect("hash type checked");
+        if count == 0 || length == 0 {
             out.extend_from_slice(b"*0\r\n");
             return;
         }
         let limit = usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX);
         if count > 0 {
-            let mut pool = items;
-            let take = limit.min(pool.len());
-            for index in 0..take {
-                let swap = index + random_index(pool.len() - index);
-                pool.swap(index, swap);
-            }
-            write!(out, "*{}\r\n", take * if with_values { 2 } else { 1 }).expect("Vec write");
-            for (field, value) in pool.iter().take(take) {
+            let take = limit.min(length);
+            let mut state = random_index(usize::MAX) as u64 | 1;
+            let sample = collection
+                .sample_hash(take, &mut |bound| seeded_index(&mut state, bound))
+                .expect("hash type checked");
+            write!(
+                out,
+                "*{}\r\n",
+                sample.len() * if with_values { 2 } else { 1 }
+            )
+            .expect("Vec write");
+            for (field, value) in sample {
                 encode_bulk(Some(field), out);
                 if with_values {
                     encode_bulk(Some(value), out);
@@ -1550,13 +1568,23 @@ impl ShardExecutor {
             }
         } else {
             let take = limit.min(MAX_ELEMENTS);
-            write!(out, "*{}\r\n", take * if with_values { 2 } else { 1 }).expect("Vec write");
+            write!(
+                out,
+                "*{}\r\n",
+                take.saturating_mul(if with_values { 2 } else { 1 })
+            )
+            .expect("Vec write");
+            let mut state = random_index(usize::MAX) as u64 | 1;
+            let pool = collection
+                .sample_hash(length, &mut |_| 0)
+                .expect("hash type checked");
             for _ in 0..take {
-                let index = random_index(items.len());
-                let (field, value) = &items[index];
-                encode_bulk(Some(field), out);
-                if with_values {
-                    encode_bulk(Some(value), out);
+                let index = seeded_index(&mut state, pool.len());
+                if let Some((field, value)) = pool.get(index) {
+                    encode_bulk(Some(field), out);
+                    if with_values {
+                        encode_bulk(Some(value), out);
+                    }
                 }
             }
         }
@@ -3914,9 +3942,9 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
-        let set = match owned_set(&mut data, args[1], now) {
-            Ok(Some(set)) => set,
-            Ok(None) => {
+        data.expire_key(args[1], now);
+        let collection = match data.entries.get(args[1]) {
+            None => {
                 if count.is_some() {
                     out.extend_from_slice(b"*0\r\n");
                 } else {
@@ -3924,39 +3952,45 @@ impl ShardExecutor {
                 }
                 return;
             }
-            Err(()) => {
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_set) => {
+                entry.collection.as_ref().expect("set type checked")
+            }
+            Some(_) => {
                 wrong_type(out);
                 return;
             }
         };
-        let members: Vec<Vec<u8>> = set.into_iter().collect();
+        let length = collection.set_len().expect("set type checked");
         let Some(count) = count else {
-            let index = random_index(members.len());
-            encode_bulk(members.get(index).map(Vec::as_slice), out);
+            let member = collection.set_member_at(random_index(length));
+            encode_bulk(member.as_deref(), out);
             return;
         };
-        if count == 0 || members.is_empty() {
+        if count == 0 || length == 0 {
             out.extend_from_slice(b"*0\r\n");
             return;
         }
         let limit = usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX);
         if count > 0 {
-            let mut pool = members;
-            let take = limit.min(pool.len());
-            for index in 0..take {
-                let swap = index + random_index(pool.len() - index);
-                pool.swap(index, swap);
-            }
-            write!(out, "*{}\r\n", take).expect("Vec write");
-            for member in pool.iter().take(take) {
-                encode_bulk(Some(member), out);
+            let take = limit.min(length);
+            let mut state = random_index(usize::MAX) as u64 | 1;
+            let sample = collection
+                .sample_set(take, &mut |bound| seeded_index(&mut state, bound))
+                .expect("set type checked");
+            write!(out, "*{}\r\n", sample.len()).expect("Vec write");
+            for member in sample {
+                encode_bulk(Some(member.as_ref()), out);
             }
         } else {
             let take = limit.min(MAX_ELEMENTS);
+            let mut state = random_index(usize::MAX) as u64 | 1;
+            let pool = collection
+                .sample_set(length, &mut |_| 0)
+                .expect("set type checked");
             write!(out, "*{take}\r\n").expect("Vec write");
             for _ in 0..take {
-                let index = random_index(members.len());
-                encode_bulk(members.get(index).map(Vec::as_slice), out);
+                let index = seeded_index(&mut state, pool.len());
+                encode_bulk(pool.get(index).map(|member| member.as_ref()), out);
             }
         }
     }
@@ -5137,7 +5171,7 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let items = match data.entries.get(args[1]) {
+        let collection = match data.entries.get(args[1]) {
             None => {
                 if count.is_some() {
                     out.extend_from_slice(b"*0\r\n");
@@ -5146,53 +5180,62 @@ impl ShardExecutor {
                 }
                 return;
             }
-            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => entry
-                .collection
-                .as_ref()
-                .and_then(Collection::zset_items)
-                .expect("zset type checked"),
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => {
+                entry.collection.as_ref().expect("zset type checked")
+            }
             Some(_) => {
                 wrong_type(out);
                 return;
             }
         };
-        let members: Vec<(Vec<u8>, f64)> = items
-            .into_iter()
-            .map(|(member, score)| (member.to_vec(), score))
-            .collect();
+        let length = collection.zset_len().expect("zset type checked");
         let Some(count) = count else {
-            let index = random_index(members.len());
-            encode_bulk(members.get(index).map(|(member, _)| member.as_slice()), out);
+            let item = collection.zset_member_at(random_index(length));
+            encode_bulk(item.map(|(member, _)| member), out);
             return;
         };
-        if count == 0 || members.is_empty() {
+        if count == 0 || length == 0 {
             out.extend_from_slice(b"*0\r\n");
             return;
         }
         let limit = usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX);
         if count > 0 {
-            let mut pool = members;
-            let take = limit.min(pool.len());
-            for index in 0..take {
-                let swap = index + random_index(pool.len() - index);
-                pool.swap(index, swap);
-            }
-            write!(out, "*{}\r\n", take * if with_scores { 2 } else { 1 }).expect("Vec write");
-            for (member, score) in pool.iter().take(take) {
+            let take = limit.min(length);
+            let mut state = random_index(usize::MAX) as u64 | 1;
+            let sample = collection
+                .sample_zset(take, &mut |bound| seeded_index(&mut state, bound))
+                .expect("zset type checked");
+            write!(
+                out,
+                "*{}\r\n",
+                sample.len() * if with_scores { 2 } else { 1 }
+            )
+            .expect("Vec write");
+            for (member, score) in sample {
                 encode_bulk(Some(member), out);
                 if with_scores {
-                    encode_bulk(Some(&score_bytes(*score)), out);
+                    encode_bulk(Some(&score_bytes(score)), out);
                 }
             }
         } else {
             let take = limit.min(MAX_ELEMENTS);
-            write!(out, "*{}\r\n", take * if with_scores { 2 } else { 1 }).expect("Vec write");
+            write!(
+                out,
+                "*{}\r\n",
+                take.saturating_mul(if with_scores { 2 } else { 1 })
+            )
+            .expect("Vec write");
+            let mut state = random_index(usize::MAX) as u64 | 1;
+            let pool = collection
+                .sample_zset(length, &mut |_| 0)
+                .expect("zset type checked");
             for _ in 0..take {
-                let index = random_index(members.len());
-                let (member, score) = &members[index];
-                encode_bulk(Some(member), out);
-                if with_scores {
-                    encode_bulk(Some(&score_bytes(*score)), out);
+                let index = seeded_index(&mut state, pool.len());
+                if let Some((member, score)) = pool.get(index) {
+                    encode_bulk(Some(member), out);
+                    if with_scores {
+                        encode_bulk(Some(&score_bytes(*score)), out);
+                    }
                 }
             }
         }
@@ -5437,6 +5480,64 @@ mod tests {
             b"-ERR Only one of FXX or FNX arguments can be specified\r\n"
         );
         assert_eq!(run(&store, &[b"HGET", b"h", b"a"]), b"$1\r\n3\r\n");
+    }
+
+    #[test]
+    fn random_member_commands_sample_borrowed_collections_correctly() {
+        let store = ShardExecutor::new(10_000_000);
+        let members: Vec<String> = (0..200).map(|index| format!("m{index:03}")).collect();
+        let mut args = vec![b"SADD".as_slice(), b"s"];
+        args.extend(members.iter().map(|member| member.as_bytes()));
+        assert_eq!(run(&store, &args), b":200\r\n");
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..50 {
+            seen.insert(run(&store, &[b"SRANDMEMBER", b"s"]));
+        }
+        assert!(seen.len() > 1, "single draws should vary");
+        assert!(seen.iter().all(|reply| reply.starts_with(b"$4\r\nm")));
+        let many = run(&store, &[b"SRANDMEMBER", b"s", b"20"]);
+        assert!(many.starts_with(b"*20\r\n"));
+        let asked = run(&store, &[b"SRANDMEMBER", b"s", b"-50"]);
+        assert!(asked.starts_with(b"*50\r\n"));
+        assert_eq!(run(&store, &[b"SRANDMEMBER", b"s", b"0"]), b"*0\r\n");
+        assert_eq!(run(&store, &[b"SRANDMEMBER", b"missing"]), b"$-1\r\n");
+        assert_eq!(run(&store, &[b"SRANDMEMBER", b"missing", b"2"]), b"*0\r\n");
+
+        let fields: Vec<String> = (0..200).map(|index| format!("f{index:03}")).collect();
+        let mut args = vec![b"HSET".as_slice(), b"h"];
+        for field in &fields {
+            args.push(field.as_bytes());
+            args.push(b"v");
+        }
+        assert_eq!(run(&store, &args), b":200\r\n");
+        let reply = run(&store, &[b"HRANDFIELD", b"h", b"10", b"WITHVALUES"]);
+        assert!(reply.starts_with(b"*20\r\n"));
+        assert!(reply.windows(3).filter(|window| *window == b"$1\r").count() >= 10);
+        assert_eq!(run(&store, &[b"HRANDFIELD", b"h", b"0"]), b"*0\r\n");
+        assert_eq!(run(&store, &[b"HRANDFIELD", b"missing"]), b"$-1\r\n");
+
+        let mut args = vec![b"ZADD".as_slice(), b"z"];
+        for (index, member) in members.iter().enumerate() {
+            args.push(if index % 2 == 0 { b"1" } else { b"2" });
+            args.push(member.as_bytes());
+        }
+        assert_eq!(run(&store, &args), b":200\r\n");
+        let reply = run(&store, &[b"ZRANDMEMBER", b"z", b"10", b"WITHSCORES"]);
+        assert!(reply.starts_with(b"*20\r\n"));
+        let reply = run(&store, &[b"ZRANDMEMBER", b"z", b"-20"]);
+        assert!(reply.starts_with(b"*20\r\n"));
+        assert_eq!(run(&store, &[b"ZRANDMEMBER", b"z", b"0"]), b"*0\r\n");
+        assert_eq!(run(&store, &[b"ZRANDMEMBER", b"missing", b"3"]), b"*0\r\n");
+
+        // Intset and pack forms answer through the same sampled access.
+        assert_eq!(
+            run(&store, &[b"SADD", b"ints", b"1", b"2", b"3"]),
+            b":3\r\n"
+        );
+        let draw = run(&store, &[b"SRANDMEMBER", b"ints"]);
+        assert!(draw == b"$1\r\n1\r\n" || draw == b"$1\r\n2\r\n" || draw == b"$1\r\n3\r\n");
+        let draws = run(&store, &[b"SRANDMEMBER", b"ints", b"-20"]);
+        assert!(draws.starts_with(b"*20\r\n"));
     }
 
     #[test]

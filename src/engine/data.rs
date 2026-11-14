@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::eviction::EvictionPolicy;
 use super::options::parse_integer;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -35,6 +37,27 @@ fn take_list_slice<'a>(
             break;
         }
         out.push(value.as_slice());
+    }
+    out
+}
+
+/// Reservoir-sample up to `count` items in one pass without materialising the
+/// whole collection. `rng(n)` must return a value below `n`.
+fn reservoir<T, I, F>(iter: I, count: usize, rng: &mut F) -> Vec<T>
+where
+    I: Iterator<Item = T>,
+    F: FnMut(usize) -> usize,
+{
+    let mut out = Vec::with_capacity(count);
+    for (seen, item) in iter.enumerate() {
+        if out.len() < count {
+            out.push(item);
+        } else {
+            let slot = rng(seen + 1);
+            if slot < count {
+                out[slot] = item;
+            }
+        }
     }
     out
 }
@@ -153,6 +176,132 @@ impl Collection {
                 .iter()
                 .find(|(candidate, _)| candidate.as_slice() == member)
                 .map(|(_, score)| *score),
+            _ => None,
+        }
+    }
+
+    pub fn set_member_at(&self, index: usize) -> Option<Cow<'_, [u8]>> {
+        match self {
+            Self::Set(values) => values
+                .iter()
+                .nth(index)
+                .map(|member| Cow::Borrowed(member.as_slice())),
+            Self::SetPack(values) => values
+                .get(index)
+                .map(|member| Cow::Borrowed(member.as_slice())),
+            Self::SetInt(values) => values
+                .iter()
+                .nth(index)
+                .map(|value| Cow::Owned(value.to_string().into_bytes())),
+            _ => None,
+        }
+    }
+
+    pub fn sample_set<F: FnMut(usize) -> usize>(
+        &self,
+        count: usize,
+        rng: &mut F,
+    ) -> Option<Vec<Cow<'_, [u8]>>> {
+        match self {
+            Self::Set(values) => Some(reservoir(
+                values.iter().map(|member| Cow::Borrowed(member.as_slice())),
+                count,
+                rng,
+            )),
+            Self::SetPack(values) => Some(reservoir(
+                values.iter().map(|member| Cow::Borrowed(member.as_slice())),
+                count,
+                rng,
+            )),
+            Self::SetInt(values) => Some(reservoir(
+                values
+                    .iter()
+                    .map(|value| Cow::Owned(value.to_string().into_bytes())),
+                count,
+                rng,
+            )),
+            _ => None,
+        }
+    }
+
+    pub fn hash_len(&self) -> Option<usize> {
+        match self {
+            Self::Hash(values) => Some(values.len()),
+            Self::HashPack(values) => Some(values.len()),
+            _ => None,
+        }
+    }
+
+    pub fn hash_field_at(&self, index: usize) -> Option<(&[u8], &[u8])> {
+        match self {
+            Self::Hash(values) => values
+                .iter()
+                .nth(index)
+                .map(|(field, value)| (field.as_slice(), value.as_slice())),
+            Self::HashPack(values) => values
+                .get(index)
+                .map(|(field, value)| (field.as_slice(), value.as_slice())),
+            _ => None,
+        }
+    }
+
+    pub fn sample_hash<F: FnMut(usize) -> usize>(
+        &self,
+        count: usize,
+        rng: &mut F,
+    ) -> Option<Vec<(&[u8], &[u8])>> {
+        match self {
+            Self::Hash(values) => Some(reservoir(
+                values
+                    .iter()
+                    .map(|(field, value)| (field.as_slice(), value.as_slice())),
+                count,
+                rng,
+            )),
+            Self::HashPack(values) => Some(reservoir(
+                values
+                    .iter()
+                    .map(|(field, value)| (field.as_slice(), value.as_slice())),
+                count,
+                rng,
+            )),
+            _ => None,
+        }
+    }
+
+    pub fn zset_member_at(&self, index: usize) -> Option<(&[u8], f64)> {
+        match self {
+            Self::ZSet(values) => values
+                .iter()
+                .nth(index)
+                .map(|(member, score)| (member.as_slice(), *score)),
+            Self::ZSetPack(values) => values
+                .get(index)
+                .map(|(member, score)| (member.as_slice(), *score)),
+            _ => None,
+        }
+    }
+
+    pub fn sample_zset<F: FnMut(usize) -> usize>(
+        &self,
+        count: usize,
+        rng: &mut F,
+    ) -> Option<Vec<(&[u8], f64)>> {
+        match self {
+            Self::ZSet(values) => Some(reservoir(
+                values
+                    .iter()
+                    .map(|(member, score)| (member.as_slice(), *score)),
+                count,
+                rng,
+            )),
+            Self::ZSetPack(values) => Some(reservoir(
+                values
+                    .iter()
+                    .map(|(member, score)| (member.as_slice(), *score)),
+                count,
+                rng,
+            )),
             _ => None,
         }
     }

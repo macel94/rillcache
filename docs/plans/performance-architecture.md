@@ -1571,7 +1571,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k 6.45, `ZADD` 4.21, `SADD` 1.23; 200k `RPUSH`/`LPOP` 18.3/17.8; at 100k `HSET`/`HDEL` 92.7–99.4, `ZADD`/`ZREM` 61.4–63.9, `SADD`/`SREM` 11.2/10.7 → **0.125/0.210** vs 0.12–0.24; list/hash/zset writes remain | 4.35, set writes implemented; hash/zset/list open | AC37 set rows met | hash/zset/list writes |
-| Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
+| Random-member commands | latency, storage | **measured**: at 100k, `HRANDFIELD` 33.66 → **0.242** (10: 1.257), `ZRANDMEMBER` 21.32 → **0.271** (10: 1.135), `SRANDMEMBER` 11.54 → **1.151** (10/-10: 4.246/3.880) vs 0.08–0.45; `SPOP` 11.11 unchanged; controls at floor | 4.36, borrowed sampling implemented; dense index open | AC38 hash/zset singles met; count rows partial | random index slice |
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` pre-fix 5.32 ms vs 0.349/0.312, post-fix 0.172; `BITCOUNT` pre-fix 23.01 vs 3.37/4.56, post-fix 5.35 vs 2.74/3.43; `BITPOS 0` pre-fix 201.6 vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; 16 MB `BITFIELD` write pre-fix 4.39–4.68 vs 0.087–0.12, post-fix 0.12–0.30; 1 MB/64 B controls at the floor | 4.37, implemented (`BITFIELD`/`SETBIT`/`BITCOUNT`/`BITPOS`) | AC39 met | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
 | Skewed-cardinality algebra | replies, latency | source sets sorted by cardinality; smallest iterated, rest probed | same | every source materialised via `owned_set`/`owned_zset` before intersecting | **Adapt:** 4.51 smallest-source probe; measured 100k + 10 `SINTER` 33.8 vs 0.19/0.19 ms (178×), `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k 33–78×; `SDIFF`/`SUNION` lead (3.48, AC53) |
@@ -2781,6 +2781,15 @@ WATCH/version, journal and rewrite semantics.
   **37–88×** (`SPOP`) and **98–298×** (`HRANDFIELD`), and every 10-element
   control is at the command floor. Rill's 10k→100k ratio is 7–16× (cost grows
   with cardinality) while the C servers stay flat. Candidate 4.36.
+
+- **Post-fix (2026-11-14, candidate 4.36 slice 1).** Single draws read a random
+  position in the borrowed collection (no clone/sort); count forms use one
+  O(count) reservoir pass with a seeded multiply-shift sampler. At 100k,
+  `HRANDFIELD` is **0.242/1.244 ms** (from 33.66) and `ZRANDMEMBER`
+  **0.271/1.033** (from 21.32), with count forms at 1.14–1.26;
+  `SRANDMEMBER` is 1.151 for one and 4.25/3.88 for 10/-10 (from 11.54) because a
+  set has no random access. Hash/zset singles meet AC38; the count and set rows
+  need the dense member index in slice 2. `SPOP` is unchanged.
 
 **Verdict: adapt constant-time random selection (4.36).** A first slice removes
 the clone/sort and samples by reservoir over iteration (O(n) time, O(count)
@@ -5917,7 +5926,7 @@ protected gates shall pass on the exact head. Evidence so far: 100k `SADD`
 hash/zset/list rows remain open. New coverage asserts exact payload accounting
 across in-place add/remove, pack→hashtable promotion on growth and key deletion.
 
-### 4.36 Constant-time random-member selection (candidate; admission measured)
+### 4.36 Constant-time random-member selection (candidate; borrowed sampling implemented, count rows partial)
 
 **Mechanism.** Two slices. First, stop materializing: single-member commands use
 reservoir sampling over the existing iteration, and count commands use a bounded
@@ -5942,6 +5951,21 @@ repetitions at 10k and 50 at 100k, three rotations: 100k `SRANDMEMBER` p50
 `ZRANDMEMBER` 21.32/22.76/20.61 versus 0.25/0.34/0.20 and 0.16/0.20/0.10;
 `SPOP` 11.11 median versus 0.304/0.126. The 10k rows are 1.0–2.6 ms and every
 10-element control is at the command floor.
+
+**Post-fix borrowed sampling (2026-11-14).** Single-member `SRANDMEMBER`,
+`HRANDFIELD` and `ZRANDMEMBER` now pick a random position and read that member
+without cloning or sorting the collection; count forms run one O(count)
+reservoir pass with a per-command seeded multiply-shift sampler, and negative
+counts draw from a single borrowed pass. `SPOP` is unchanged in this slice.
+100k cohort (two clean rotations, p50/p99): `HRANDFIELD` 1 **0.242/1.244 ms**
+(from 33.66) and `HRANDFIELD 10 WITHVALUES` **1.257/2.127**; `ZRANDMEMBER` 1
+**0.271/1.033** (from 21.32) and 10 `WITHSCORES` **1.135/2.567**; `SRANDMEMBER`
+1 **1.151/2.641** (from 11.54), 10 **4.246/6.314** and `-10` **3.880/6.559**
+versus 0.08–0.45 for the C servers. Hash/zset singles meet AC38's ≤0.6 ms; the
+remaining O(n) scan (BTreeSet `nth` for a single set draw, a full pass for
+counts) still misses it, so the dense member index in slice 2 is required for
+the count and set rows. Raw files retained at
+`/tmp/opencode/random-borrowed{2,3}-result.json` (untracked).
 
 **Risks and obligations.** Uniformity is the core: reservoir/swap correctness,
 COUNT semantics including negative counts with repetition, and `SPOP` removal by
@@ -5968,7 +5992,10 @@ distribution test over repeated draws shall be uniform within a stated tolerance
 `SMEMBERS`/`HKEYS`/`ZSCAN` shall be documented with tests updated; `SPOP`
 empty-deletion, TTL, blocking, persistence/rewrite/replay and accounting tests
 shall pass; no dependency shall be added; and both protected gates shall pass on
-the exact head.
+the exact head. Evidence so far: borrowed sampling gives `HRANDFIELD`/
+`ZRANDMEMBER` single at 0.24–0.27 ms and their count forms 1.14–1.26 ms, and
+`SRANDMEMBER` 1/10/-10 at 1.15/4.25/3.88 ms; the ≤0.6 ms rows outside the
+hash/zset singles need the dense index (slice 2).
 
 ### 4.37 Bitmap mutation and popcount (candidate; BITFIELD writes implemented)
 
