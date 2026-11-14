@@ -106,6 +106,41 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
+        let dontsort = by.is_some_and(|pattern| !pattern.contains(&b'*'));
+        // A list read with BY nosort and no GET output is a slice of the stored
+        // order; apply DESC/LIMIT to borrowed elements instead of cloning the
+        // whole source into `Item`s. Sets and zsets keep the general path
+        // because their stored order is not the list order.
+        if dontsort
+            && gets.is_empty()
+            && let Some(list) = data
+                .entries
+                .get(args[1])
+                .and_then(|entry| entry.collection.as_ref())
+                .filter(|collection| collection.is_list())
+        {
+            let (offset, count) = limit.unwrap_or((0, -1));
+            let offset = usize::try_from(offset.max(0)).unwrap_or(usize::MAX);
+            let count = if count >= 0 {
+                usize::try_from(count).unwrap_or(usize::MAX)
+            } else {
+                usize::MAX
+            };
+            let Some(selected) = list.list_slice(offset, count, desc) else {
+                wrong_type(out);
+                return;
+            };
+            if let Some(destination) = store {
+                let selected: Vec<Vec<u8>> = selected.into_iter().map(<[u8]>::to_vec).collect();
+                self.store_sorted(&mut data, destination, selected, now, out);
+            } else {
+                write!(out, "*{}\r\n", selected.len()).expect("Vec write");
+                for value in selected {
+                    encode_bulk(Some(value), out);
+                }
+            }
+            return;
+        }
         let values = match data.entries.get(args[1]) {
             None => None,
             Some(entry) => match entry.collection.as_ref().and_then(source_values) {
@@ -126,7 +161,6 @@ impl ShardExecutor {
             }
             return;
         };
-        let dontsort = by.is_some_and(|pattern| !pattern.contains(&b'*'));
         let mut items = Vec::with_capacity(values.len());
         for value in values {
             let weight = if dontsort {

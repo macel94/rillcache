@@ -1534,7 +1534,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 ms vs 0.69/0.98, `KEYS` 43.6 vs 0.63/0.80, `RANDOMKEY` 45.5 vs 0.65/0.60, `DBSIZE` 41.2 vs 0.58/0.83; lazy `GET` at parity | 4.45, admitted | AC47 | none |
-| SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` 7.96 ms (p99 17.2) vs 0.12/0.16; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, admitted | AC48 | none |
+| SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
@@ -1987,7 +1987,7 @@ for a production claim.
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
 | Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Adapt:** 4.45 bounded lazy expiry; measured after 30k expire `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` 36–46 vs 0.6–1.0 ms, lazy `GET` at parity (3.29, AC47) |
-| SORT `BY nosort` | source-order slice without sorting or copying | same | clone every element and build an `Item` before applying `LIMIT` | **Adapt:** 4.46 direct nosort slice; measured 100k 7.96 vs 0.12/0.16 ms; sorted/ALPHA/weighted rows 0.9–1.5× (3.30, AC48) |
+| SORT `BY nosort` | source-order slice without sorting or copying | same | pre-fix clone every element and build an `Item` before `LIMIT`; post-fix borrowed list slice | **Done (nosort):** 4.46 direct slice; measured 100k pre-fix 7.96 vs 0.12/0.16 ms, post-fix 0.188/0.506 at parity; sorted/ALPHA/weighted rows unchanged (3.30, AC48) |
 | Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
 | Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
 | HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
@@ -3241,7 +3241,10 @@ and keep expired values unreadable.
 
   Sorted and `BY pattern` rows are within **0.9–1.5×** (the ALPHA row leads), but
   `BY nosort LIMIT 10` is **50–66×** slower because it still copies the whole
-  list; the 100-element controls are at the floor. Candidate 4.46.
+  list; the 100-element controls are at the floor. Candidate 4.46. Post-fix
+  (2026-11-14) the copied list slice measures **0.188 ms p50 / 0.506 p99**
+  versus Redis 0.192/0.708 and Valkey 0.136/0.315 on 20 repetitions; a deep
+  `LIMIT 99990 10` is 0.414 and full nosort stays reply-bound.
 
 **Verdict: adapt a direct `BY nosort` slice (4.46).** When `BY` has no `*`
 (`nosort`), apply `offset`/`count` to the source order without building `Item`s
@@ -6145,7 +6148,7 @@ value; the `DBSIZE` semantics shall be documented with tests updated; admission
 shall stay bounded and atomic; TTL expiry/notification/WATCH tests shall pass; no
 dependency shall be added; and both protected gates shall pass on the exact head.
 
-### 4.46 Direct `BY nosort` slice (candidate; admission measured)
+### 4.46 Direct `BY nosort` slice (candidate; implemented)
 
 **Mechanism.** When `BY` has no `*` (`nosort`), do not call `source_values` or
 build `Item`s for the whole source: apply `offset`/`count` directly to the
@@ -6158,6 +6161,14 @@ and `GET` paths are untouched.
 **Prediction.** 100k `SORT ... BY nosort LIMIT 0 10` falls from **7.96 ms to
 ≤0.3 ms** (p99 17.2 → ≤2), while full-nosort remains reply-bound and every other
 SORT row is unchanged.
+
+**Post-fix (2026-11-14).** The list path now takes a borrowed slice
+(`Collection::list_slice`) in stored or reversed order and materialises only
+`STORE`'s selected values; sets/zsets and every `GET`/sorted path keep the
+general code. Measured on the built head, 20 repetitions, three rotations:
+`BY nosort LIMIT 0 10` **0.188 ms p50 / 0.506 p99** versus Redis 0.192/0.708 and
+Valkey 0.136/0.315; a deep `LIMIT 99990 10` 0.414; full nosort remains
+reply-bound (64.4 ms versus 69.8/86.7). AC48 is met.
 
 **Admission evidence (2026-11-12, section 3.30).** A 100k integer list plus
 `w<i>` weight keys, 50 repetitions, three rotations: `BY nosort LIMIT 0 10`
@@ -6180,7 +6191,7 @@ controls or another SORT row regresses, or no gain above the spread.
 
 **Acceptance (AC48).** On a 100,000-element list, `SORT ... BY nosort LIMIT 0 10`
 shall have p50 ≤0.5 ms and p99 ≤2 ms (≥16× faster than the measured 7.96/17.2 ms
-and within ~4× Redis's 0.12/1.17 ms); the full, limited, ALPHA, DESC, `BY w*` and
+and within ~4× Redis's 0.12/1.17 ms) — met at 0.188/0.506; the full, limited, ALPHA, DESC, `BY w*` and
 `GET #` rows shall stay within 1.5× of baseline; the 100-element controls shall
 be unchanged; offset/count edges, `STORE`, missing keys and set/zset sources
 shall pass; no dependency shall be added; and both protected gates shall pass on
