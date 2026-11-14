@@ -96,7 +96,7 @@ impl ShardExecutor {
         }
     }
     pub(super) fn get(&self, key: &[u8], output: &mut Vec<u8>) {
-        let Ok(data) = self.data.try_borrow() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -107,16 +107,13 @@ impl ShardExecutor {
             return;
         }
         if entry.is_none_or(|entry| entry.alive(now)) {
+            let missing = entry.is_none();
             encode_bulk(entry.map(|entry| entry.value.as_slice()), output);
+            if missing {
+                data.record_key_miss(key);
+            }
             return;
         }
-        drop(data);
-        // End the immutable borrow before rechecking and removing expired state.
-        let Ok(mut data) = self.data.try_borrow_mut() else {
-            internal_error(output);
-            return;
-        };
-        let now = self.now(&data);
         data.expire_key(key, now);
         if data
             .entries
@@ -126,10 +123,14 @@ impl ShardExecutor {
             wrong_type(output);
             return;
         }
+        let missing = !data.entries.contains_key(key);
         encode_bulk(
             data.entries.get(key).map(|entry| entry.value.as_slice()),
             output,
         );
+        if missing {
+            data.record_key_miss(key);
+        }
     }
 
     pub(super) fn exists(&self, keys: &[&[u8]], output: &mut Vec<u8>) {
