@@ -184,9 +184,9 @@ folds the payload twice; 4.42 makes the append in place. Geospatial search
 repeats the materialization: a 1 km `GEOSEARCH` over 50k is **4.34 vs 0.16–0.17
 ms** and `GEOPOS` 100 is **24.9 vs 0.47–0.61 ms**, because every query scans all
 members; 4.43 adds neighbor-cell search and direct lookups. Multi-member lookups
-are the largest ratio yet: `ZMSCORE` with 100 members is **273 ms versus 0.19–0.63**
-and `SMISMEMBER` 100 is 11.8 versus 0.21–0.39, because each requested member
-rescans the materialized collection; 4.44 probes directly. Expiry is the last
+were the largest ratio yet: `ZMSCORE` with 100 members is **273 ms versus 0.19–0.63**
+and `SMISMEMBER` 100 was 11.8 versus 0.21–0.39, because each requested member
+rescanned the materialized collection; 4.44 probes directly (**0.253/0.282 ms**). Expiry is the last
 systemic stall: the first `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` after 30k keys
 expire costs **36–46 vs 0.6–1.0 ms** because each calls `reap(now, usize::MAX)`,
 while a lazy `GET` is at parity; 4.45 replaced it with per-key/bounded work
@@ -203,10 +203,10 @@ collect+sort, so 4.29 stays scoped to hashes. One boundary is not latency at all
 Rill rejects any request above **1,024 total arguments** while Redis/Valkey
 execute `MGET` 10,000 and `MSET` 600 pairs; 4.55 derives the cap from the frame
 budget (section 3.47).
-HyperLogLog is the remaining CPU gap: 100k pipelined adds cost **1.70 vs 0.39–0.41 s**
-and 10k repeated counts **2.66 vs 0.033–0.036 s** because every command
-decodes/encodes 16 KB of registers and nothing is cached; 4.47 keeps them in
-place and caches the count. Bitmaps also hide a scan: a not-found `BITPOS 0` on
+HyperLogLog was the remaining CPU gap: 100k pipelined adds cost **1.70 vs
+0.39–0.41 s** and 10k repeated counts **2.66 vs 0.033–0.036 s** because every
+command decoded/encoded 16 KB of registers and nothing was cached; 4.47 keeps
+them in place and caches the count (adds **0.957 s**, counts **0.0234 s**). Bitmaps also hide a scan: a not-found `BITPOS 0` on
 16 MB is **201.6 vs 5.1 ms** because `find_bit` visits every byte and bit; 4.37
 is extended with a `u64` bit scan. Streams have one more clone on a control path:
 `XGROUP CREATE` on a 5k stream is **8.26 vs 0.08–0.09 ms** (88–99×) because it
@@ -1295,9 +1295,10 @@ rest are still true even though every row now leads:
     the floor (section 3.31, extending 4.29 and 4.31).
 25. **HyperLogLog add/count.** 100k pipelined `PFADD` cost **1.70 s (16.96
     µs/add)** versus 4.1/3.9 µs and 10k repeated `PFCOUNT` **2.66 s (265 µs/call)**
-    versus 3.3–3.6 µs, because every command decodes/encodes the 16 KB register
-    set and there is no cached cardinality; single-call p50 and the 10-element
-    controls are at the floor (section 3.32, candidate 4.47).
+    versus 3.3–3.6 µs, because every command decoded/encoded the 16 KB register
+    set and there was no cached cardinality; single-call p50 and the 10-element
+    controls are at the floor (section 3.32, candidate 4.47). 4.47 now updates in
+    place and caches: adds **0.957 s**, counts **0.0234 s** (113×, at parity).
 26. **BITPOS on a large bitmap.** A not-found `BITPOS 0` on 16 MB costs **201.6
     ms** versus 5.1 ms (39–44×) because it scans byte by byte and bit by bit,
     while a first-bit hit is at the floor; `BITCOUNT` is the previously admitted
@@ -1552,14 +1553,14 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
-| Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
+| Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 → 0.151/0.115/0.282 ms vs 0.07–0.19; `ZMSCORE` 8.02/33.37/273.2 → 0.113/0.118/0.253 vs 0.09–0.23; `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; `HMGET` 100 at the floor | 4.44, implemented | AC46 met | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 → 0.230 ms vs 0.200/0.244, `KEYS` 43.6 → 0.297 vs 0.215/0.205, `RANDOMKEY` 45.5 → 0.297 vs 0.209/0.217, `DBSIZE` 41.2 → 0.298 vs 0.151/0.247; lazy `GET` 0.254 vs 0.160/0.207 | 4.45, implemented | AC47 met | none |
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
 | MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
-| HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
+| HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) → 0.957 s (9.57) vs 3.17/3.61 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) → 0.0234 s (2.34) vs 2.29/2.92; single p50 and controls at the floor | 4.47, implemented | AC49 (count met; add 1.77× but above 6 µs) | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` pre-fix 201.6 ms vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; `BITPOS 0 0 -1` 209.4 vs 4.79/5.96, post-fix 2.23; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
@@ -2009,12 +2010,12 @@ for a production claim.
 | Argument-count parsing | multi-bulk count from the declared length; no fixed 1,024 ceiling | no fixed count limit observed; `.argv` grows as declared within `proto-max-bulk-len` | `Limits.max_arguments = 1024` rejects larger arrays with `too many arguments`, no CLI override | **Adapt:** 4.55 frame-derived cap (`max(1024, min(1M, frame/6))`); measured boundary at 1,024 args, while Redis/Valkey accept `MGET` 10,000 (3.47, AC57) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
-| Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
+| Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Done:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 → 0.253 ms and `SMISMEMBER` 100 11.75 → 0.282; single-member reads also 0.08–0.18; `HMGET` at the floor (3.28, AC46) |
 | Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Done:** 4.45 per-key/bounded expiry; post-fix 0.23–0.30 vs 0.15–0.30 ms, lazy `GET` at parity (3.29, AC47) |
 | SORT `BY nosort` | source-order slice without sorting or copying | same | pre-fix clone every element and build an `Item` before `LIMIT`; post-fix borrowed list slice | **Done (nosort):** 4.46 direct slice; measured 100k pre-fix 7.96 vs 0.12/0.16 ms, post-fix 0.188/0.506 at parity; sorted/ALPHA/weighted rows unchanged (3.30, AC48) |
 | Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
 | Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
-| HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
+| HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Done (count; add partial):** 4.47 in-place registers + cached count; measured 100k adds 16.96 → 9.57 µs (vs 3.17/3.61) and 10k counts 265 → 2.34 µs (vs 2.29/2.92); the residual add cost is per-command dispatch (3.32, AC49) |
 | Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
 | Stream `XGROUP CREATE` | insert one group in the stream dict; O(1) | same | deep-clone the whole stream, fold payload, replace via `put_stream` | **Adapt:** 4.48 in-place group insert; measured 5k 8.26 vs 0.083/0.094 ms (88–99×), other XGROUP ops at parity (3.34, AC50) |
 | Stream consumer-group reads | radix PEL with a consumer pointer; reply writes stored fields directly | same | per-entry `StreamEntry` clone, two PEL inserts and a consumer-name copy per pending entry | **Keep:** measured near-parity at 10k; the 1,000-entry forms are 1.7× (new read) and 2.1× (`XAUTOCLAIM`), while 100-entry history/`XPENDING`/`XCLAIM` are at parity; re-measure after 4.42 (3.39, no candidate) |
@@ -3176,12 +3177,20 @@ directly. Keep the WGS-84 formulas, units and reply shapes.
   ratio grows with the number of requested members because the scan is repeated
   per member. Candidate 4.44.
 
-**Verdict: adapt per-member direct probes (4.44).** Reuse 4.40's
-`Collection::contains_member` for `SMISMEMBER` and a direct
-`Collection::zset_score(member)` over the score map for `ZMSCORE`, once per
-requested member; no `set_items()` clone/sort and no all-member `Vec`. Keep
-`SISMEMBER`/`ZSCORE` (4.40/4.30), missing/invalid members, duplicates and reply
-order unchanged.
+- **Post-fix (2026-11-14, candidate 4.44).** One container probe per requested
+  member: `SMISMEMBER` 1/10/100 **0.151/0.115/0.282 ms** (from 7.90/8.25/11.75)
+  versus Redis 0.121/0.138/0.193 and Valkey 0.069/0.078/0.141; `ZMSCORE`
+  **0.113/0.118/0.253** (from 8.02/33.37/273.2) versus 0.105/0.099/0.232 and
+  0.086/0.136/0.170. The same probe removes the clone/sort from `SISMEMBER`
+  (0.180), `ZSCORE` (0.136), `SCARD` (0.132) and `ZCARD` (0.080); `HMGET` 100
+  stays at 0.226 ms.
+
+**Verdict: adapted per-member direct probes (4.44, implemented).**
+`Collection::contains_member` serves `SMISMEMBER`/`SISMEMBER` and
+`Collection::zset_score(member)` serves `ZMSCORE`/`ZSCORE`, once per requested
+member; `SCARD`/`ZCARD` read the container length and no `set_items()`
+clone/sort or all-member `Vec` remains on these paths. Missing/invalid members,
+duplicates and reply order are unchanged.
 
 ### 3.29 Mass expiry and command latency
 
@@ -3374,12 +3383,23 @@ Redis, so the deterministic-order change is an explicit test decision.
   p50 hides the count cost behind the client floor, but a pipelined or repeated
   counter workload pays it every time. Candidate 4.47.
 
-**Verdict: adapt in-place registers and a cached count (4.47).** Keep the HLL
-mutable inside the entry (no decode/serialize/put copies on `PFADD`), and store a
-cached cardinality in the header that `PFADD`/`PFMERGE` invalidate, so
-`PFCOUNT` is O(1) when nothing changed. Preserve the exact/dense
+- **Post-fix (2026-11-14, candidate 4.47).** Dense registers are updated in the
+  entry's payload (header/length validation only; register bytes are opaque
+  6-bit ranks), and an optional cached count lives in a versioned 8-byte trailer
+  that `PFADD`/`PFMERGE` invalidate. Same cohort: `PFADD` **957.3 ms =
+  9.57 µs/add** (from 1,695/16.96) versus Redis 3.17 and Valkey 3.61;
+  `PFCOUNT` **23.4 ms = 2.34 µs/call** (from 2,655/265.5) versus 2.29/2.92, now
+  at Redis parity. The count target is met (113×); the add target is not
+  (1.77×) because the remaining work is per-command dispatch/validation/socket
+  traffic, and profiling shows no HLL hotspot. Old payloads without the trailer
+  still parse.
+
+**Verdict: adapted in-place registers and a cached count (4.47, implemented).**
+Dense `PFADD` mutates the entry payload in place, a versioned trailer caches the
+count for `PFCOUNT` and is invalidated by `PFADD`/`PFMERGE`, and the exact/dense
 representations, serialization/rewrite/replay, the error bound and merge
-semantics.
+semantics are preserved. The count target is met; the add target is missed
+because the residual cost is command dispatch rather than the sketch.
 
 ### 3.33 BITPOS on large bitmaps
 
@@ -6254,7 +6274,7 @@ implementation exactly on a boundary/dateline fixture; `ASC`/`DESC`/`COUNT`,
 `FROMMEMBER`, `BYRADIUS`/`BYBOX`, `WITH*` and `STORE` tests shall pass; no
 dependency shall be added; and both protected gates shall pass on the exact head.
 
-### 4.44 Per-member probes for multi-member lookups (candidate; admission measured)
+### 4.44 Per-member probes for multi-member lookups (candidate; implemented)
 
 **Mechanism.** For `SMISMEMBER`, call `Collection::contains_member` (4.40) once
 per requested member; for `ZMSCORE`, call a direct
@@ -6276,6 +6296,22 @@ independently, and the `SetInt`/`SetPack`/`HashPack` semantics stay as today.
 0.102/0.422/0.630 and 0.112/0.328/0.187; `HMGET` 1/10/100 0.23/0.36/0.32
 versus 0.47/0.30/0.52 and 0.11/0.07/0.17; controls 0.33/0.26/0.26.
 
+**Post-fix (2026-11-14).** `Collection` gained `set_len`, `contains_member`
+(hash/pack/intset, with `parse_integer`'s canonical integer rule) and `zset_len`/
+`zset_score` (map lookup, linear only for the small `ZSetPack` form).
+`SMISMEMBER` and `SISMEMBER` probe once per requested member; `ZMSCORE` and
+`ZSCORE` do a direct score lookup; `SCARD`/`ZCARD` read the container length; only
+`SMEMBERS`/`ZRANGE` still materialize. A 100,000-member set/hash/zset, 50
+repetitions, three rotations on the built head (p50/p99): `SMISMEMBER` 1/10/100
+**0.151/0.934, 0.115/0.998, 0.282/1.462** versus Redis 0.121/0.138/0.193 and
+Valkey 0.069/0.078/0.141 (from 7.90/8.25/11.75); `ZMSCORE` 1/10/100
+**0.113/0.863, 0.118/0.554, 0.253/0.812** versus 0.105/0.099/0.232 and
+0.086/0.136/0.170 (from 8.02/33.37/273.2); single-member `SISMEMBER` 0.180,
+`ZSCORE` 0.136, `SCARD` 0.132 and `ZCARD` 0.080 also leave the materializing
+path; `HMGET` 100 is 0.226 versus 0.280/0.179. All AC46 p50/p99 targets are met
+and the probes are within ~1.6× of the faster C server. Raw JSON retained at
+`/tmp/opencode/memberprobes-result.json` (untracked).
+
 **Risks and obligations.** `SetInt` must answer integer and non-integer probes
 exactly as today; duplicates, order, missing/empty keys and wrong types must not
 change; `ZSetPack` stays linear but small; no accounting, reply shape or read
@@ -6295,7 +6331,11 @@ the faster C server); 10 members ≤0.2 ms and 1 member ≤0.15 ms; `SMISMEMBER`
 ≤0.2 ms; `HMGET` and the 10-member controls shall be unchanged; missing,
 non-integer and duplicate members and the `SetInt`/`SetPack` semantics shall pass;
 no dependency shall be added; and both protected gates shall pass on the exact
-head.
+head. Evidence: `ZMSCORE` 100/10/1 at 0.253/0.812, 0.118/0.554 and 0.113/0.863;
+`SMISMEMBER` 100/10/1 at 0.282/1.462, 0.115/0.998 and 0.151/0.934; `HMGET` 100
+0.226; single-member `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; the new
+intset/pack/zset probe test covers canonical integers, duplicates, missing
+members and empty keys.
 
 ### 4.45 Bounded lazy expiry on command paths (candidate; implemented)
 
@@ -6410,7 +6450,7 @@ be unchanged; offset/count edges, `STORE`, missing keys and set/zset sources
 shall pass; no dependency shall be added; and both protected gates shall pass on
 the exact head.
 
-### 4.47 In-place HyperLogLog registers with a cached count (candidate; admission measured)
+### 4.47 In-place HyperLogLog registers with a cached count (candidate; implemented, add target missed)
 
 **Mechanism.** Keep the HLL in the entry as today (exact/dense), but mutate the
 dense registers in place under `entries.get_mut` instead of decode → serialize →
@@ -6430,6 +6470,25 @@ Valkey 389/487/392 (3.92); `PFCOUNT` 2,655/2,771/2,646 ms (265.5 µs/call) versu
 35.7 (3.57) and 33.1 (3.31); single `PFADD`/`PFCOUNT` p50 0.187/0.484 versus
 0.151/0.169 and 0.302/0.059; 10-element controls 0.164/0.185 versus 0.195/0.228
 and 0.073/0.123.
+
+**Post-fix (2026-11-14).** Dense `PFADD` validates only the header/length
+(register bytes are opaque 6-bit ranks), keeps the registers in the entry's
+string payload, updates them in place and clears the cache-valid byte; the exact
+form still re-encodes (small). The payload gained a versioned 8-byte trailer
+(`bytes[7] = 1`) holding an optional cached count; old payloads without it still
+parse, so rewrite/replay keep working. Single-key `PFCOUNT` returns a valid
+cached count, or computes `dense_count` once over the stored registers and
+writes the estimate into the trailer without touching the WATCH version or the
+journal. `PFADD`/`PFMERGE` serialisation always writes an invalid cache. Same
+cohort (100k pipelined adds, 10k repeated counts, three rotations), medians:
+`PFADD` **957.3 ms = 9.57 µs/add** versus Redis 316.8 ms (3.17) and Valkey
+360.9 (3.61) — **1.77×** faster than 16.96 µs but above AC49's ≤6 µs; `PFCOUNT`
+**23.4 ms = 2.34 µs/call** versus 22.9 (2.29) and 29.2 (2.92) — **113×** faster
+than 265.5 µs, within 1.02× of Redis; single `PFADD`/`PFCOUNT` p50
+0.129/0.260 ms and 10-element controls 0.197/0.182. The remaining add cost is
+per-command dispatch/validation/network (profiling shows no HLL hotspot), not
+the sketch. Raw JSON retained at
+`/tmp/opencode/hll-inplace-result-2.json` (untracked).
 
 **Risks and obligations.** Every add/merge and every exact↔dense conversion must
 invalidate the cache; a stale cache returns a wrong count. The serialized header
@@ -6452,7 +6511,11 @@ the 10-element controls shall stay within noise; counts shall be within the HLL
 error bound and identical before/after serialization; the cache shall be
 invalidated by add/merge and exact↔dense conversion; rewrite/replay/restore and
 TTL tests shall pass; no dependency shall be added; and both protected gates
-shall pass on the exact head.
+shall pass on the exact head. Evidence: `PFCOUNT` 23.4 ms / 2.34 µs per call
+(met, 113× faster); `PFADD` 957 ms / 9.57 µs per add (1.77× faster; the ≤6 µs
+target is missed because the remaining cost is per-command dispatch and socket
+work, not the sketch); caches invalidated on add; round-trip/accounting tests
+pass. The serialized payload has a versioned trailer and accepts old payloads.
 
 ### 4.48 In-place stream group creation (candidate; admission measured)
 

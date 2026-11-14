@@ -17,7 +17,9 @@ const VERSION: u8 = 1;
 const ENCODING_EXACT: u8 = 0;
 const ENCODING_DENSE: u8 = 1;
 const HEADER_BYTES: usize = 8;
+const CACHE_BYTES: usize = 8;
 const DENSE_REGISTERS: usize = 1 << 14;
+const DENSE_PAYLOAD: usize = HEADER_BYTES + DENSE_REGISTERS + CACHE_BYTES;
 const EXACT_LIMIT: usize = 4096;
 const INVALID_HLL: &[u8] = b"-WRONGTYPE Key is not a valid HyperLogLog string value.\r\n";
 
@@ -32,29 +34,52 @@ impl Hll {
         Self::Exact(BTreeSet::new())
     }
 
-    fn parse(bytes: &[u8]) -> Option<Self> {
+    /// Validate the header and encoding length without copying or scanning the
+    /// sketch. Register bytes are opaque (a dense register is a 6-bit rank), so
+    /// the hot add/count paths stay O(1) in the register count.
+    fn shape(bytes: &[u8]) -> Option<()> {
         if bytes.len() < HEADER_BYTES
             || &bytes[..4] != MAGIC
-            || bytes[4] == ENCODING_EXACT && bytes[5] != VERSION
-            || bytes[4] == ENCODING_DENSE && bytes[5] != VERSION
-            || bytes[6] != 0
-            || bytes[7] != 0
+            || bytes[5] != VERSION
+            || bytes[6] > 1
+            || bytes[7] > 1
         {
             return None;
         }
+        let trailer = if bytes[7] == 1 { CACHE_BYTES } else { 0 };
         match bytes[4] {
             ENCODING_EXACT => {
+                if bytes.len() < 12 {
+                    return None;
+                }
                 let count = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
                 if count > EXACT_LIMIT {
                     return None;
                 }
+                let end = 12usize
+                    .checked_add(count.checked_mul(8)?)?
+                    .checked_add(trailer)?;
+                (bytes.len() == end).then_some(())
+            }
+            ENCODING_DENSE => {
+                let end = HEADER_BYTES
+                    .checked_add(DENSE_REGISTERS)?
+                    .checked_add(trailer)?;
+                (bytes.len() == end).then_some(())
+            }
+            _ => None,
+        }
+    }
+
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        Self::shape(bytes)?;
+        match bytes[4] {
+            ENCODING_EXACT => {
+                let count = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
                 let end = 12usize.checked_add(count.checked_mul(8)?)?;
-                if bytes.len() != end {
-                    return None;
-                }
                 let mut hashes = BTreeSet::new();
                 let mut previous = None;
-                for chunk in bytes[12..].as_chunks::<8>().0 {
+                for chunk in bytes[12..end].as_chunks::<8>().0 {
                     let hash = u64::from_le_bytes(*chunk);
                     if previous.is_some_and(|previous| previous >= hash) {
                         return None;
@@ -64,26 +89,19 @@ impl Hll {
                 }
                 Some(Self::Exact(hashes))
             }
-            ENCODING_DENSE => {
-                if bytes.len() != HEADER_BYTES + DENSE_REGISTERS {
-                    return None;
-                }
-                let registers = bytes[HEADER_BYTES..].to_vec();
-                if registers.iter().any(|register| *register > 51) {
-                    return None;
-                }
-                Some(Self::Dense(registers))
-            }
+            ENCODING_DENSE => Some(Self::Dense(
+                bytes[HEADER_BYTES..HEADER_BYTES + DENSE_REGISTERS].to_vec(),
+            )),
             _ => None,
         }
     }
 
-    fn serialize(&self) -> Vec<u8> {
-        match self {
+    fn serialize(&self, cached: Option<u64>) -> Vec<u8> {
+        let mut bytes = match self {
             Self::Exact(hashes) => {
-                let mut bytes = Vec::with_capacity(12 + hashes.len() * 8);
+                let mut bytes = Vec::with_capacity(12 + hashes.len() * 8 + CACHE_BYTES);
                 bytes.extend_from_slice(MAGIC);
-                bytes.extend_from_slice(&[ENCODING_EXACT, VERSION, 0, 0]);
+                bytes.extend_from_slice(&[ENCODING_EXACT, VERSION, u8::from(cached.is_some()), 1]);
                 bytes.extend_from_slice(&(hashes.len() as u32).to_le_bytes());
                 for hash in hashes {
                     bytes.extend_from_slice(&hash.to_le_bytes());
@@ -91,13 +109,34 @@ impl Hll {
                 bytes
             }
             Self::Dense(registers) => {
-                let mut bytes = Vec::with_capacity(HEADER_BYTES + DENSE_REGISTERS);
+                let mut bytes = Vec::with_capacity(DENSE_PAYLOAD);
                 bytes.extend_from_slice(MAGIC);
-                bytes.extend_from_slice(&[ENCODING_DENSE, VERSION, 0, 0]);
+                bytes.extend_from_slice(&[ENCODING_DENSE, VERSION, u8::from(cached.is_some()), 1]);
                 bytes.extend_from_slice(registers);
                 bytes
             }
+        };
+        bytes.extend_from_slice(&cached.unwrap_or(0).to_le_bytes());
+        bytes
+    }
+
+    /// A cached count is only trusted when the trailer marker and validity byte
+    /// are both set; the caller has already validated the payload shape.
+    fn cached_count(bytes: &[u8]) -> Option<u64> {
+        if bytes.get(6) != Some(&1) || bytes.get(7) != Some(&1) {
+            return None;
         }
+        bytes
+            .get(bytes.len().checked_sub(CACHE_BYTES)?..)
+            .and_then(|trailer| trailer.try_into().ok())
+            .map(u64::from_le_bytes)
+    }
+
+    fn dense_registers_mut(bytes: &mut [u8]) -> Option<&mut [u8]> {
+        if bytes[4] != ENCODING_DENSE || bytes[7] != 1 || bytes.len() != DENSE_PAYLOAD {
+            return None;
+        }
+        Some(&mut bytes[HEADER_BYTES..HEADER_BYTES + DENSE_REGISTERS])
     }
 
     fn add_element(&mut self, element: &[u8]) -> bool {
@@ -191,6 +230,34 @@ fn dense_count(registers: &[u8]) -> u64 {
     estimate.round().max(0.0).min(i64::MAX as f64) as u64
 }
 
+enum Shape {
+    Missing,
+    Exact,
+    Dense,
+    WrongType,
+    Invalid,
+}
+
+/// Cheap classification for the in-place paths: validates the payload without
+/// copying the sketch.
+fn inspect_shape(data: &mut Data, key: &[u8], now: i64) -> Shape {
+    data.expire_key(key, now);
+    let Some(entry) = data.entries.get(key) else {
+        return Shape::Missing;
+    };
+    if !entry.is_string() {
+        return Shape::WrongType;
+    }
+    if Hll::shape(&entry.value).is_none() {
+        return Shape::Invalid;
+    }
+    match entry.value[4] {
+        ENCODING_EXACT => Shape::Exact,
+        ENCODING_DENSE => Shape::Dense,
+        _ => Shape::Invalid,
+    }
+}
+
 enum KeyState {
     Missing,
     Hll {
@@ -248,6 +315,46 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
+        let shape = inspect_shape(&mut data, key, now);
+        if matches!(shape, Shape::WrongType) {
+            wrong_type(out);
+            return;
+        }
+        if matches!(shape, Shape::Invalid) {
+            out.extend_from_slice(INVALID_HLL);
+            return;
+        }
+        if matches!(shape, Shape::Dense) {
+            // Dense registers stay in the payload: validate once, update the
+            // registers in place, and invalidate the cached count. The payload
+            // length and therefore the accounting do not change.
+            let hashes: Vec<u64> = args[2..]
+                .iter()
+                .map(|element| super::xxh3::xxh3_64(element))
+                .collect();
+            let Some(entry) = data.entries.get_mut(key) else {
+                integer(0, out);
+                return;
+            };
+            let mut changed = false;
+            {
+                let Some(registers) = Hll::dense_registers_mut(&mut entry.value) else {
+                    out.extend_from_slice(INVALID_HLL);
+                    return;
+                };
+                for hash in hashes {
+                    changed |= update_register(registers, hash);
+                }
+            }
+            entry.value[6] = 0;
+            if changed {
+                data.touch(key);
+                integer(1, out);
+            } else {
+                integer(0, out);
+            }
+            return;
+        }
         let (mut hll, expires, previous, created, mut changed) = match inspect(&mut data, key, now)
         {
             KeyState::Missing => (Hll::empty(), None, None, true, false),
@@ -272,7 +379,7 @@ impl ShardExecutor {
             integer(0, out);
             return;
         }
-        let bytes = hll.serialize();
+        let bytes = hll.serialize(None);
         let Some(payload) = data.reserve(key, bytes.len(), previous, self.payload_limit(), now)
         else {
             out.extend_from_slice(OOM);
@@ -292,6 +399,48 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
+        if args.len() == 2 {
+            let key = args[1];
+            match inspect_shape(&mut data, key, now) {
+                Shape::Missing => {
+                    integer(0, out);
+                    return;
+                }
+                Shape::WrongType => {
+                    wrong_type(out);
+                    return;
+                }
+                Shape::Invalid => {
+                    out.extend_from_slice(INVALID_HLL);
+                    return;
+                }
+                Shape::Exact => {}
+                Shape::Dense => {
+                    let Some(entry) = data.entries.get(key) else {
+                        integer(0, out);
+                        return;
+                    };
+                    if let Some(count) = Hll::cached_count(&entry.value) {
+                        integer(count.min(i64::MAX as u64) as i64, out);
+                        return;
+                    }
+                    let count =
+                        dense_count(&entry.value[HEADER_BYTES..HEADER_BYTES + DENSE_REGISTERS]);
+                    // Cache the estimate in the existing trailer. This is a
+                    // read-path optimisation: it changes no logical state, so
+                    // it does not touch the WATCH version or journal.
+                    let Some(entry) = data.entries.get_mut(key) else {
+                        integer(count.min(i64::MAX as u64) as i64, out);
+                        return;
+                    };
+                    let end = entry.value.len();
+                    entry.value[6] = 1;
+                    entry.value[end - CACHE_BYTES..].copy_from_slice(&count.to_le_bytes());
+                    integer(count.min(i64::MAX as u64) as i64, out);
+                    return;
+                }
+            }
+        }
         let mut merged = Hll::empty();
         for key in &args[1..] {
             match inspect(&mut data, key, now) {
@@ -355,7 +504,7 @@ impl ShardExecutor {
             out.extend_from_slice(b"+OK\r\n");
             return;
         }
-        let bytes = merged.serialize();
+        let bytes = merged.serialize(None);
         let Some(payload) = data.reserve(
             destination,
             bytes.len(),
@@ -448,11 +597,62 @@ mod tests {
             hll.add_hash(super::super::xxh3::xxh3_64(index.to_string().as_bytes()));
         }
         assert!(matches!(hll, Hll::Dense(_)));
-        let bytes = hll.serialize();
-        assert_eq!(bytes.len(), HEADER_BYTES + DENSE_REGISTERS);
+        let bytes = hll.serialize(None);
+        assert_eq!(bytes.len(), DENSE_PAYLOAD);
         let parsed = Hll::parse(&bytes).expect("valid dense payload");
         assert!(parsed.count() >= EXACT_LIMIT as u64);
         assert!(parsed.count() <= (EXACT_LIMIT + 1000) as u64);
+    }
+
+    #[test]
+    fn dense_cache_is_written_invalidated_and_round_trips() {
+        let store = ShardExecutor::new(1 << 20);
+        for batch in 0..((EXACT_LIMIT + 100) / 100) {
+            let members: Vec<String> = (0..100)
+                .map(|offset| format!("element-{}", batch * 100 + offset))
+                .collect();
+            let mut args = vec![b"PFADD".as_slice(), b"h"];
+            args.extend(members.iter().map(|member| member.as_bytes()));
+            assert_eq!(run(&store, &args), b":1\r\n");
+        }
+        let first = run(&store, &[b"PFCOUNT", b"h"]);
+        let data = store.data.try_borrow().unwrap();
+        let entry = data.entries.get(b"h".as_slice()).expect("hll");
+        assert_eq!(entry.value[6], 1, "PFCOUNT caches the dense estimate");
+        assert_eq!(entry.value.len(), DENSE_PAYLOAD);
+        let cached = Hll::cached_count(&entry.value).expect("valid cache");
+        assert_eq!(first, format!(":{cached}\r\n").into_bytes());
+        assert_eq!(
+            Hll::parse(&entry.value).expect("parses").count(),
+            cached,
+            "the sketch and cached count agree"
+        );
+        drop(data);
+        assert_eq!(run(&store, &[b"PFCOUNT", b"h"]), first);
+        // A new element invalidates the cache and the next count refreshes it.
+        assert_eq!(run(&store, &[b"PFADD", b"h", b"new-element"]), b":1\r\n");
+        {
+            let data = store.data.try_borrow().unwrap();
+            assert_eq!(data.entries[b"h".as_slice()].value[6], 0);
+        }
+        let updated = run(&store, &[b"PFCOUNT", b"h"]);
+        assert!(updated != b":0\r\n");
+        let data = store.data.try_borrow().unwrap();
+        let entry = data.entries.get(b"h".as_slice()).expect("hll");
+        assert_eq!(entry.value[6], 1);
+        assert_eq!(
+            updated,
+            format!(
+                ":{}",
+                Hll::cached_count(&entry.value).expect("refreshed cache")
+            )
+            .bytes()
+            .chain(b"\r\n".iter().copied())
+            .collect::<Vec<u8>>()
+        );
+        drop(data);
+        // The serialized payload stays a normal string for GET/TYPE.
+        assert_eq!(run(&store, &[b"TYPE", b"h"]), b"+string\r\n");
     }
 
     #[test]

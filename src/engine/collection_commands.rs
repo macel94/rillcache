@@ -3443,15 +3443,11 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let members = match data.entries.get(args[1]) {
+        let collection = match data.entries.get(args[1]) {
             None => None,
-            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_set) => Some(
-                entry
-                    .collection
-                    .as_ref()
-                    .and_then(Collection::set_items)
-                    .expect("set type checked"),
-            ),
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_set) => {
+                entry.collection.as_ref()
+            }
             Some(_) => {
                 wrong_type(out);
                 return;
@@ -3459,9 +3455,7 @@ impl ShardExecutor {
         };
         write!(out, "*{}\r\n", args.len() - 2).expect("Vec write");
         for member in &args[2..] {
-            let exists = members
-                .as_ref()
-                .is_some_and(|members| members.iter().any(|item| item.as_slice() == *member));
+            let exists = collection.is_some_and(|collection| collection.contains_member(member));
             integer(i64::from(exists), out);
         }
     }
