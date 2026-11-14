@@ -120,8 +120,15 @@ not a complete replay log.
 when at least one supplied field's deadline actually changes, and `HPERSIST`
 publishes `hpersist` only when at least one field TTL is removed. Conditions that
 leave every field unchanged (an `NX`/`XX`/`GT`/`LT` conflict or a missing field)
-emit nothing and do not advance the key's `WATCH` version. `HSETEX`/`HGETEX`
-with a TTL still report only their existing hash events in this increment.
+emit nothing and do not advance the key's `WATCH` version.
+
+`HSETEX` reports the effective write rather than a generic success. A normal
+write publishes `hset`, followed by `hexpire` only when EX/PX/EXAT/PXAT assigned a
+future deadline; `KEEPTTL` and no-TTL writes publish `hset` alone. A deadline in
+the past publishes `hdel` for the removed fields, plus `del` when that emptied the
+hash. A condition miss or a past-deadline write that removed nothing emits no
+event and does not advance the key's `WATCH` version. `HGETEX` TTL events remain
+out of scope in this increment.
 
 When notifications are enabled, mutating commands take the store's exclusive
 transaction gate so change capture and publication keep command order. This is a
@@ -149,7 +156,8 @@ Unit tests cover flag parsing/round-trip, `A` expansion and rejection of
 unsupported classes, plus injected-clock lazy/reaped expiry and eviction
 publication. Hash-field tests cover the rejected-write case and the
 `hexpired`-then-`del` order when the final field expires, plus `hdel`-then-`del`
-for an emptied hash and the no-op delete case. All-mode wire tests cover
+for an emptied hash, the no-op delete case and the `HSETEX` write/`hexpire` versus
+delete/`del` pairs. All-mode wire tests cover
 keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
 and rejected writes, hash/list/set/zset/stream/HLL events, hash field

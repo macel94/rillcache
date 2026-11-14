@@ -1986,6 +1986,7 @@ impl ShardExecutor {
             return;
         }
         let deleting = deadline.is_some_and(|deadline| deadline <= now);
+        let deleted_any = deleting && fields.iter().any(|field| hash.contains_key(*field));
         if deleting {
             // Due writes delete the requested fields without retaining or
             // reserving their supplied values, including duplicate fields.
@@ -1997,9 +1998,17 @@ impl ShardExecutor {
                 hash.insert(pair[0].to_vec(), pair[1].to_vec());
             }
         }
+        if deleting && !deleted_any {
+            // Nothing was removed, so the write is a no-op rather than a
+            // mutation that invalidates WATCH or emits a delete event.
+            integer(1, out);
+            return;
+        }
         if hash.is_empty() {
             data.remove(key);
             data.touch(key);
+            data.record_hash_event(b"hdel", key);
+            data.record_hash_event(b"del", key);
             integer(1, out);
             return;
         }
@@ -2032,6 +2041,17 @@ impl ShardExecutor {
                 for field in fields {
                     data.set_field_ttl(key, field, deadline);
                 }
+            }
+        }
+        if deleting {
+            data.record_hash_event(b"hdel", key);
+        } else {
+            data.record_hash_event(b"hset", key);
+            if matches!(
+                options.ttl,
+                FieldTtlMode::Ex | FieldTtlMode::Px | FieldTtlMode::ExAt | FieldTtlMode::PxAt
+            ) {
+                data.record_hash_event(b"hexpire", key);
             }
         }
         integer(1, out);

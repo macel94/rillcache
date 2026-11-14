@@ -155,8 +155,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   that removal emptied the hash; no-op deletes and commands that only observed
   lazy expiry emit no delete event. Tests cover publication order and the no-op
   cases, and the event matrix records the lazy-only detection point.
-  `HSETEX`/`HGETEX` TTL events and `keymiss`/new-key/`FLUSH*` classes remain
-  open; delivery is at-most-once and process-local.
+  `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
+  deadlines, with no-op conditions emitting nothing. `HGETEX` TTL events and
+  `keymiss`/new-key/`FLUSH*` classes remain open; delivery is at-most-once and
+  process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
