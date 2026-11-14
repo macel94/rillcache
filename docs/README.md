@@ -12,6 +12,7 @@ project's front page.
 | Check whether an application's commands will work | [Compatibility](compatibility.md) |
 | Inspect measured throughput and its scope | [Performance](performance.md) |
 | Compare all five servers in the daily run | [Daily benchmarks](daily-benchmarks.md) |
+| See the draft supported deployment profile | [Production profile](production-profile.md) |
 | Understand remaining production work | [Production readiness](production-readiness.md) |
 | Find every remaining production blocker | [Production readiness gaps](production-readiness-gaps.md) |
 | Give a coding agent repository context | [OpenWiki](../openwiki/quickstart.md) or its [published wiki](https://macel94.github.io/rillcache/) |
