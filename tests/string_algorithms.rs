@@ -210,3 +210,52 @@ fn bitop_is_binary_atomic_alias_safe_and_clears_destination_ttl() {
         b"-ERR syntax error\r\n"
     );
 }
+
+#[test]
+fn bitcount_matches_the_reference_across_eight_byte_chunk_remainders() {
+    let store = Store::new(1024);
+    for len in 0..=17usize {
+        let data: Vec<u8> = (0..len)
+            .map(|i| (i as u8).wrapping_mul(37) ^ 0x5a)
+            .collect();
+        assert_eq!(call(&store, &[b"SET", b"k", &data]), b"+OK\r\n");
+        let full: u32 = data.iter().map(|byte| byte.count_ones()).sum();
+        assert_eq!(
+            call(&store, &[b"BITCOUNT", b"k"]),
+            format!(":{full}\r\n").into_bytes()
+        );
+        if let Some(last) = len.checked_sub(1) {
+            let last_text = last.to_string();
+            let expected: u32 = data[last..].iter().map(|byte| byte.count_ones()).sum();
+            assert_eq!(
+                call(
+                    &store,
+                    &[
+                        b"BITCOUNT",
+                        b"k",
+                        last_text.as_bytes(),
+                        last_text.as_bytes()
+                    ]
+                ),
+                format!(":{expected}\r\n").into_bytes()
+            );
+            let bit_end = last_text.clone();
+            let bit_start = (last * 8).to_string();
+            assert_eq!(
+                call(
+                    &store,
+                    &[
+                        b"BITCOUNT",
+                        b"k",
+                        bit_start.as_bytes(),
+                        (last * 8 + 7).to_string().as_bytes(),
+                        b"BIT"
+                    ]
+                ),
+                format!(":{expected}\r\n").into_bytes(),
+                "bit range for the last byte, len={len}"
+            );
+            let _ = bit_end;
+        }
+    }
+}

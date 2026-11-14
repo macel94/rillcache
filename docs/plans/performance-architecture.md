@@ -1551,7 +1551,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; at 100k `HSET`/`HDEL` 92.7–99.4 vs 0.08–0.32, `ZADD`/`ZREM` 61.4–63.9 vs 0.10–0.23, `SADD`/`SREM` 10.7–11.2 vs 0.08–0.60 (18–1160×); 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
-| Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` pre-fix 5.32 ms vs 0.349/0.312, post-fix 0.172; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor; 16 MB `BITFIELD` write 4.39–4.68 vs 0.087–0.12 (37–52×) while `BITFIELD_RO` reads are at the floor | 4.37 (extended to `BITFIELD` writes) | AC39 on the implemented change | none |
+| Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` pre-fix 5.32 ms vs 0.349/0.312, post-fix 0.172; `BITCOUNT` pre-fix 23.01 vs 3.37/4.56, post-fix 5.35 vs 2.74/3.43; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor; 16 MB `BITFIELD` write 4.39–4.68 vs 0.087–0.12 (37–52×) while `BITFIELD_RO` reads are at the floor | 4.37 (extended to `BITFIELD` writes) | AC39 on the implemented change | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
 | Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
 | INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, plain `INFO` the same, while `INFO stats`/`DBSIZE`/`PING` stay at the floor because the section walks every entry | 4.52, admitted | AC54 | none |
@@ -2803,11 +2803,14 @@ explicit ordering decision. Keep small pack paths and all reply semantics.
   `BITCOUNT` runs at ~0.7 GB/s (23 ms for 16 MB) against the C servers' ~5 GB/s.
   Candidate 4.37.
 
-- **Post-fix (2026-11-14, SETBIT path).** `SETBIT` now admits the final length
-  and patches the entry's own `Vec` through `Data::mutate_string`; 16 MB
-  `SETBIT 0 1` measures **0.172 ms** versus Redis 0.231 and Valkey 0.298 on the
-  built head (10 repetitions, three rotations), down from 5.32–5.39 ms.
-  `BITCOUNT` and `BITPOS` remain for 4.37.
+- **Post-fix (2026-11-14, SETBIT and BITCOUNT paths).** `SETBIT` now admits the
+  final length and patches the entry's own `Vec` through `Data::mutate_string`;
+  16 MB `SETBIT 0 1` measures **0.172 ms** versus Redis 0.231 and Valkey 0.298
+  on the built head (10 repetitions, three rotations), down from 5.32–5.39 ms.
+  `BITCOUNT` now sums `chunks_exact(8)` as `u64::count_ones()` with a remainder
+  pass and keeps the masked head/tail for BIT ranges; full-value 16 MB
+  `BITCOUNT` measures **5.35 ms** versus Redis 2.74 and Valkey 3.43, down from
+  23.0. `BITPOS` remains for 4.37.
 
 **Verdict: adapt both, with the string fix from 4.34.** `SETBIT` should reserve
 and then patch the entry's own `Vec` in place (extend and zero-fill only when the
@@ -5742,7 +5745,8 @@ partial value, the controls or reads regress, or no gain above the spread.
 Redis's 0.349 ms) — met by the in-place path at 0.172 ms; a one-byte `BITFIELD SET`/`INCRBY` (u8 and u63) and a
 100-subcommand write on the 16 MB value shall each have p50 ≤0.5 ms and p99
 ≤2 ms (≥8× faster than the measured 4.39–4.68 ms and within ~2× the faster C
-server); `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms and p99
+server); `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms (met at 5.35 ms)
+and p99
 ≤10 ms (≥3.8× faster than 23.0 ms and within ~2× Redis's 3.37 ms); a not-found
 `BITPOS 0` shall have p50 ≤8 ms and p99 ≤15 ms (≥25× faster than 201.6 ms and
 within ~1.6× Redis's 5.08 ms) while a first-bit hit stays at the floor; the 1 MB
