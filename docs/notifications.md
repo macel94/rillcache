@@ -99,6 +99,12 @@ really happened; an unrelated rejected write still emits no hash command event.
 Field expiry is detected only when the hash key is touched by a command, so the
 event can be delayed until the next access.
 
+An explicit hash delete (`HDEL` or `HGETDEL`) publishes `hdel` when it removed at
+least one field, followed by `del` (`g` class) when that removal emptied the
+hash. A no-op delete, or a command that only observed lazy field expiry, emits
+neither `hdel` nor `del`; the expiry path owns those events and reports them
+once.
+
 Supported event names mirror the command family: `set`, `del`, `expire`,
 `persist`, `rename_from`, `rename_to`, `copy_to`, `append`, `setrange`, `setbit`,
 `incrby`, `decrby`, list push/pop/insert/trim/rem, set add/remove/pop/move/store,
@@ -142,10 +148,11 @@ relative to other connections is therefore not a global happens-before guarantee
 Unit tests cover flag parsing/round-trip, `A` expansion and rejection of
 unsupported classes, plus injected-clock lazy/reaped expiry and eviction
 publication. Hash-field tests cover the rejected-write case and the
-`hexpired`-then-`del` order when the final field expires. All-mode wire tests
-cover keyspace/keyevent frames, category filtering, runtime enable/disable,
+`hexpired`-then-`del` order when the final field expires, plus `hdel`-then-`del`
+for an emptied hash and the no-op delete case. All-mode wire tests cover
+keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
 and rejected writes, hash/list/set/zset/stream/HLL events, hash field
-`hexpire`/`hpersist` with no-op condition checks, expire, rename,
-eviction/`expired` classes, blocking-pop events, binary channels and
-`CONFIG`/`INFO` exposure.
+`hexpire`/`hpersist` with no-op condition checks, `HDEL`/`HGETDEL` deletion
+pairs, expire, rename, eviction/`expired` classes, blocking-pop events, binary
+channels and `CONFIG`/`INFO` exposure.

@@ -466,6 +466,61 @@ fn hash_ttl_updates_emit_hexpire_and_hpersist_only_when_changed() {
 }
 
 #[test]
+fn hash_delete_events_report_hdel_then_del_only_for_real_removals() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(12);
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect = |event: &[u8], key: &[u8]| {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, key],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"HSET", b"h", b"a", b"1"]), b":1\r\n");
+    while receiver.try_recv().is_ok() {}
+    assert_eq!(run(&store, &[b"HDEL", b"h", b"a"]), b":1\r\n");
+    expect(b"hdel", b"h");
+    expect(b"del", b"h");
+
+    assert_eq!(
+        run(&store, &[b"HSET", b"h2", b"a", b"1", b"b", b"2"]),
+        b":2\r\n"
+    );
+    while receiver.try_recv().is_ok() {}
+    assert_eq!(run(&store, &[b"HDEL", b"h2", b"a"]), b":1\r\n");
+    expect(b"hdel", b"h2");
+    assert_eq!(run(&store, &[b"HDEL", b"h2", b"missing"]), b":0\r\n");
+    assert!(receiver.try_recv().is_err(), "a no-op HDEL emits nothing");
+
+    assert_eq!(run(&store, &[b"HSET", b"h3", b"a", b"1"]), b":1\r\n");
+    while receiver.try_recv().is_ok() {}
+    assert_eq!(
+        run(&store, &[b"HGETDEL", b"h3", b"FIELDS", b"1", b"a"]),
+        b"*1\r\n$1\r\n1\r\n"
+    );
+    expect(b"hdel", b"h3");
+    expect(b"del", b"h3");
+
+    assert_eq!(run(&store, &[b"HSET", b"h4", b"a", b"1"]), b":1\r\n");
+    while receiver.try_recv().is_ok() {}
+    assert_eq!(
+        run(&store, &[b"HGETDEL", b"h4", b"FIELDS", b"1", b"missing"]),
+        b"*1\r\n$-1\r\n"
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "a missed HGETDEL emits nothing"
+    );
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
