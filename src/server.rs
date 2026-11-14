@@ -216,6 +216,11 @@ pub struct Config {
     /// Default-user password. `None` or empty disables authentication.
     /// Never include this value in Debug output or logs.
     pub requirepass: Option<Vec<u8>>,
+    /// Path used to load `requirepass`, retained only for optional permission
+    /// validation. The password value itself is never stored here.
+    pub requirepass_file: Option<PathBuf>,
+    /// Refuse group/other-readable secret files. Unix-only; off by default.
+    pub secure_secret_files: bool,
     /// Optional Redis-style ACL file. Mutually exclusive with `requirepass`.
     pub aclfile: Option<PathBuf>,
     /// Optional append-only ACL denial audit file.
@@ -275,6 +280,11 @@ impl std::fmt::Debug for Config {
                 "requirepass",
                 &self.requirepass.as_ref().map(|_| "<redacted>"),
             )
+            .field(
+                "requirepass_file",
+                &self.requirepass_file.as_ref().map(|_| "<redacted-path>"),
+            )
+            .field("secure_secret_files", &self.secure_secret_files)
             .field("aclfile", &self.aclfile)
             .field("audit_log", &self.audit_log)
             .field("audit_log_max_bytes", &self.audit_log_max_bytes)
@@ -318,6 +328,8 @@ impl Default for Config {
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
             requirepass: None,
+            requirepass_file: None,
+            secure_secret_files: false,
             aclfile: None,
             audit_log: None,
             audit_log_max_bytes: 8 * 1024 * 1024,
@@ -413,7 +425,78 @@ impl Config {
                 "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
+        if self.secure_secret_files {
+            if self
+                .requirepass
+                .as_ref()
+                .is_some_and(|password| password.len() < 16)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "--secure-secret-files requires a requirepass of at least 16 bytes (32 random bytes recommended)",
+                ));
+            }
+            self.validate_secret_file_modes()?;
+        }
         Ok(())
+    }
+
+    /// Optional Unix-only hardening: secret files must not be readable or
+    /// writable by group/other. Missing or non-regular paths fail here with a
+    /// clear error instead of surfacing later during credential loading.
+    fn validate_secret_file_modes(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [
+                &self.requirepass_file,
+                &self.aclfile,
+                &self.audit_hmac_key_file,
+                &self.audit_hmac_keyring_file,
+                &self.aof_hmac_key_file,
+                &self.tls_key_file,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let metadata = std::fs::metadata(path).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "--secure-secret-files cannot inspect {}: {error}",
+                            path.display()
+                        ),
+                    )
+                })?;
+                if !metadata.is_file() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "--secure-secret-files requires a regular file: {}",
+                            path.display()
+                        ),
+                    ));
+                }
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "--secure-secret-files rejects {} mode {mode:03o}; remove group/other permissions (for example chmod 600)",
+                            path.display()
+                        ),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "--secure-secret-files is supported on Unix only",
+            ))
+        }
     }
 }
 
@@ -1613,5 +1696,49 @@ mod tests {
                 io::ErrorKind::InvalidInput
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_secret_files_requires_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!(
+            "rillcache-secure-secret-{}-{:?}.acl",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, b"user default on nopass ~* &* +@all\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut config = Config {
+            aclfile: Some(path.clone()),
+            secure_secret_files: true,
+            ..Config::default()
+        };
+        assert_eq!(
+            config.validate().err().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(config.validate().is_ok());
+        config.secure_secret_files = false;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(config.validate().is_ok(), "default stays permissive");
+
+        let short = Config {
+            requirepass: Some(b"short".to_vec()),
+            secure_secret_files: true,
+            ..Config::default()
+        };
+        assert_eq!(
+            short.validate().err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let long = Config {
+            requirepass: Some(b"0123456789abcdef".to_vec()),
+            secure_secret_files: true,
+            ..Config::default()
+        };
+        assert!(long.validate().is_ok());
+        let _ = std::fs::remove_file(path);
     }
 }
