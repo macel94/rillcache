@@ -342,12 +342,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   or the deployment profile excludes it explicitly (the current documentation says
   unsupported).
 
-- [ ] **D9. Wall-clock rollback across restart is unresolved.** [P1]
-  Absolute TTLs are persisted, but a host clock moved backwards can resurrect a
-  key that expired before shutdown. No high-water or recovery-time policy is
-  defined.
-  **Closes when:** the clock policy is documented and tested for backwards jumps,
-  daylight/timezone changes and restart, with an explicit guarantee or limitation.
+- [x] **D9. Wall-clock rollback across restart is a documented limitation.** [P1]
+  **Complete (2026-11-14):** TTL deadlines are absolute Unix-epoch milliseconds
+  evaluated against the system wall clock. If the clock moves backward before an
+  expired key is observed and its deletion is persisted, the deadline can become
+  live again, including on restart; there is no persisted clock high-water mark.
+  Time-zone and daylight-saving changes do not alter Unix-epoch time. Operators
+  should keep the clock synchronized and avoid backward system-clock steps.
+  `src/engine/journal_tests.rs::clock_rollback_after_restart_can_resurrect_a_persisted_expiry`
+  exercises the rollback/replay case with a deterministic clock.
+  **Retained limitation:** Rillcache does not prevent clock-step resurrection;
+  the operational contract is explicit rather than an anti-rollback guarantee.
 
 - [ ] **D10. Durability performance is unmeasured.** [P1]
   Persistence serializes commands through the exclusive gate; there is no

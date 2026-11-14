@@ -185,8 +185,42 @@ impl Store {
         limits: Limits,
         journal_auth: Option<JournalAuth>,
     ) -> std::io::Result<Self> {
-        let mut services =
-            ServerServices::with_clock_and_auth(max_payload_bytes, Arc::new(SystemClock), auth);
+        Self::with_clock_auth_and_journal(
+            max_payload_bytes,
+            auth,
+            path,
+            policy,
+            limits,
+            journal_auth,
+            Arc::new(SystemClock),
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn with_clock_and_journal(
+        path: &Path,
+        policy: FsyncPolicy,
+        clock: Arc<dyn Clock>,
+    ) -> std::io::Result<Self> {
+        Self::with_clock_auth_and_journal(
+            16 * 1024 * 1024,
+            Auth::default(),
+            path,
+            policy,
+            Limits::default(),
+            None,
+            clock,
+        )
+    }
+    fn with_clock_auth_and_journal(
+        max_payload_bytes: usize,
+        auth: Auth,
+        path: &Path,
+        policy: FsyncPolicy,
+        limits: Limits,
+        journal_auth: Option<JournalAuth>,
+        clock: Arc<dyn Clock>,
+    ) -> std::io::Result<Self> {
+        let mut services = ServerServices::with_clock_and_auth(max_payload_bytes, clock, auth);
         let journal = journal::Journal::open(path, policy, limits, journal_auth)?;
         services.journal_limits = limits;
         services.journal = Some(std::sync::Mutex::new(journal));
