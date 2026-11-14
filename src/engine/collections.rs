@@ -1,5 +1,6 @@
 //! Binary-safe typed collection commands. Collection values remain in the same
 //! entry as their key and expiry; mutations stage a new value before admission.
+use super::collection_commands::encode_set;
 use super::data::{Collection, Entry};
 use super::options::{NOT_INTEGER, OOM, parse_integer};
 use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
@@ -169,6 +170,74 @@ impl ShardExecutor {
         let current = data.entries.get(key);
         if current.is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_set)) {
             wrong_type(out);
+            return;
+        }
+        // Large hashtable sets grow in place: insert only the new members after
+        // one admission instead of cloning and re-encoding every member. Packs
+        // and intsets keep the rebuild path (they are small by construction).
+        let previous = current.map(Entry::payload_len);
+        if let Some(entry) = current
+            && let Some(Collection::Set(values)) = entry.collection.as_ref()
+        {
+            let mut fresh: BTreeSet<&[u8]> = BTreeSet::new();
+            for member in &args[2..] {
+                if !values.contains(*member) && !fresh.contains(*member) {
+                    fresh.insert(member);
+                }
+            }
+            let added = fresh.len();
+            if added == 0 {
+                integer(0, out);
+                return;
+            }
+            if values.len().saturating_add(added) > MAX_ELEMENTS {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let delta = fresh.iter().map(|member| member.len()).sum::<usize>();
+            let Some(new_len) = previous.unwrap_or(0).checked_add(delta) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Some(payload) = data.reserve(key, new_len, previous, self.payload_limit(), now)
+            else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let mut applied = false;
+            if let Some(entry) = data.entries.get_mut(key)
+                && let Some(Collection::Set(values)) = entry.collection.as_mut()
+            {
+                for member in fresh {
+                    values.insert(member.to_vec());
+                }
+                entry.payload_len = new_len;
+                applied = true;
+            }
+            if applied {
+                data.payload_bytes = payload;
+                data.touch(key);
+                integer(added as i64, out);
+                return;
+            }
+            // Admission evicted the target: rebuild it from the requested members.
+            let set: BTreeSet<Vec<u8>> = args[2..].iter().map(|member| member.to_vec()).collect();
+            if set.len() > MAX_ELEMENTS {
+                out.extend_from_slice(OOM);
+                return;
+            }
+            let bytes = set.iter().map(Vec::len).sum::<usize>();
+            let Some(payload) = data.reserve(key, bytes, None, self.payload_limit(), now) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Ok(config) = self.collection_config.read() else {
+                internal_error(out);
+                return;
+            };
+            let encoded = encode_set(set, &config);
+            data.put_collection(key, encoded, None, payload, now);
+            integer(added as i64, out);
             return;
         }
         let mut set: BTreeSet<Vec<u8>> = current
@@ -887,6 +956,64 @@ mod tests {
         assert_eq!(run(&store, &[b"TYPE", b"s"]), b"+set\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"h"]), b"+hash\r\n");
         assert_eq!(run(&store, &[b"TYPE", b"z"]), b"+zset\r\n");
+    }
+
+    #[test]
+    fn set_add_and_remove_mutate_large_sets_in_place_with_exact_accounting() {
+        let store = ShardExecutor::new(100_000_000);
+        let members: Vec<String> = (0..200).map(|index| format!("m{index:03}")).collect();
+        let mut args = vec![b"SADD".as_slice(), b"s"];
+        args.extend(members.iter().map(|member| member.as_bytes()));
+        assert_eq!(run(&store, &args), b":200\r\n");
+        let check = |expected_cardinality: i64| {
+            let data = store.data.try_borrow().unwrap();
+            let entry = data.entries.get(b"s".as_slice()).expect("set");
+            let bytes: usize = entry
+                .collection
+                .as_ref()
+                .and_then(Collection::set_items)
+                .expect("set")
+                .iter()
+                .map(|member| member.len())
+                .sum();
+            assert_eq!(entry.payload_len, bytes);
+            assert_eq!(data.payload_bytes, 1 + bytes);
+            drop(data);
+            assert_eq!(
+                run(&store, &[b"SCARD", b"s"]),
+                format!(":{expected_cardinality}\r\n").into_bytes()
+            );
+        };
+        assert_eq!(
+            run(&store, &[b"SADD", b"s", b"new1", b"m000", b"new2", b"new1"]),
+            b":2\r\n"
+        );
+        check(202);
+        assert_eq!(
+            run(&store, &[b"SREM", b"s", b"new1", b"m000", b"missing"]),
+            b":2\r\n"
+        );
+        check(200);
+        // Crossing the pack threshold still promotes to the hashtable form.
+        assert_eq!(run(&store, &[b"SADD", b"pack", b"a", b"b"]), b":2\r\n");
+        for index in 0..200 {
+            let member = format!("p{index:03}");
+            assert_eq!(
+                run(&store, &[b"SADD", b"pack", member.as_bytes()]),
+                b":1\r\n"
+            );
+        }
+        assert_eq!(run(&store, &[b"SCARD", b"pack"]), b":202\r\n");
+        assert_eq!(run(&store, &[b"SISMEMBER", b"pack", b"p199"]), b":1\r\n");
+        // Removing every member deletes the key and its payload.
+        let all: Vec<&[u8]> = members.iter().map(|member| member.as_bytes()).collect();
+        let mut args = vec![b"SREM".as_slice(), b"s"];
+        args.extend(all);
+        args.push(b"new2");
+        assert_eq!(run(&store, &args), b":200\r\n");
+        assert_eq!(run(&store, &[b"EXISTS", b"s"]), b":0\r\n");
+        // Only "pack" remains: two 1-byte members, 200 4-byte members and its key.
+        assert_eq!(store.data.try_borrow().unwrap().payload_bytes, 806);
     }
 
     #[test]
