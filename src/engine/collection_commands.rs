@@ -904,7 +904,10 @@ pub(super) fn encode_set(set: BTreeSet<Vec<u8>>, config: &CollectionConfig) -> C
     }
 }
 
-fn encode_hash(hash: HashMap<Vec<u8>, Vec<u8>>, config: &CollectionConfig) -> Collection {
+pub(super) fn encode_hash(
+    hash: HashMap<Vec<u8>, Vec<u8>>,
+    config: &CollectionConfig,
+) -> Collection {
     let compact = hash.len() <= config.hash_max_listpack_entries
         && hash.iter().all(|(field, value)| {
             field.len() <= config.hash_max_listpack_value
@@ -2186,16 +2189,49 @@ impl ShardExecutor {
             wrong_type(out);
             return;
         }
-        let mut hash: HashMap<Vec<u8>, Vec<u8>> = entry
-            .collection
-            .as_ref()
+        let expires = entry.expires;
+        let previous = entry.payload_len();
+        let mut removed = 0i64;
+        let mut bytes = 0usize;
+        let mut emptied = false;
+        if let Some(entry) = data.entries.get_mut(key)
+            && let Some(Collection::Hash(values)) = entry.collection.as_mut()
+        {
+            for field in &args[2..] {
+                if let Some(value) = values.remove(*field) {
+                    removed += 1;
+                    bytes = bytes
+                        .saturating_add(field.len())
+                        .saturating_add(value.len());
+                }
+            }
+            if removed > 0 {
+                emptied = values.is_empty();
+                if !emptied {
+                    entry.payload_len = entry.payload_len.saturating_sub(bytes);
+                }
+            }
+        }
+        if removed > 0 {
+            data.remove_field_ttls(key, &args[2..]);
+            if emptied {
+                data.remove(key);
+            } else {
+                data.payload_bytes = data.payload_bytes.saturating_sub(bytes);
+                data.touch(key);
+            }
+            integer(removed, out);
+            return;
+        }
+        let mut hash: HashMap<Vec<u8>, Vec<u8>> = data
+            .entries
+            .get(key)
+            .and_then(|entry| entry.collection.as_ref())
             .and_then(Collection::hash_items)
             .expect("hash type checked")
             .into_iter()
             .map(|(field, value)| (field.to_vec(), value.to_vec()))
             .collect();
-        let expires = entry.expires;
-        let previous = entry.payload_len();
         let mut removed = 0i64;
         for field in &args[2..] {
             if hash.remove(*field).is_some() {

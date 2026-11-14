@@ -1570,7 +1570,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
-| In-place collection writes | latency, storage | **measured**: `HSET` 10k 6.45, `ZADD` 4.21, `SADD` 1.23; 200k `RPUSH`/`LPOP` 18.3/17.8; at 100k `HSET`/`HDEL` 92.7–99.4, `ZADD`/`ZREM` 61.4–63.9, `SADD`/`SREM` 11.2/10.7 → **0.125/0.210** vs 0.12–0.24; list/hash/zset writes remain | 4.35, set writes implemented; hash/zset/list open | AC37 set rows met | hash/zset/list writes |
+| In-place collection writes | latency, storage | **measured**: `HSET` 10k 6.45, `ZADD` 4.21, `SADD` 1.23; 200k `RPUSH`/`LPOP` 18.3/17.8; at 100k `HSET`/`HDEL` 92.7–99.4 → **0.132–0.178/0.131**, `SADD`/`SREM` 11.2/10.7 → **0.125/0.210** vs 0.10–0.24; `ZADD`/`ZREM` 61.4–63.9 and list writes remain | 4.35, set+hash writes implemented; zset/list open | AC37 set/hash rows met | zset/list writes |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` pre-fix 5.32 ms vs 0.349/0.312, post-fix 0.172; `BITCOUNT` pre-fix 23.01 vs 3.37/4.56, post-fix 5.35 vs 2.74/3.43; `BITPOS 0` pre-fix 201.6 vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; 16 MB `BITFIELD` write pre-fix 4.39–4.68 vs 0.087–0.12, post-fix 0.12–0.30; 1 MB/64 B controls at the floor | 4.37, implemented (`BITFIELD`/`SETBIT`/`BITCOUNT`/`BITPOS`) | AC39 met | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
@@ -2023,7 +2023,7 @@ for a production claim.
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
 | List/drop representation | quicklist of listpack nodes; UNLINK and ASYNC flush hand off to the bio lazy-free thread | same; DEL async by default | one heap buffer per element; UNLINK == DEL; ASYNC ignored in flush | **Adapt:** 4.32 packed nodes + 4.33 deferred drop; measured `DEL` 7.28 vs 0.166/0.130 ms, `UNLINK` 6.21 vs 0.316/0.235, 142–143 vs 7.5 B/elem, `FLUSHALL ASYNC` 9.20 vs 0.886/0.568 ms (3.17, AC34/35) |
 | String mutation | sds with spare capacity: APPEND copies only the suffix, SETRANGE patches in place | same | pre-fix: rebuild full-length `Vec` and copy twice; now mutates the entry in place (#258) | **Done:** 4.34 in-place mutation; measured 32 MB post-fix `APPEND` 0.131 vs 0.142/0.219 ms and `SETRANGE` 0.185 vs 0.222/0.289 (3.18, AC36) |
-| Collection writes | in-place dict/skiplist/listpack/quicklist update | same | clone the whole collection, re-encode and replace it per write | **Partly done:** 4.35 in-place `SADD`/`SREM`; measured 100k `SADD` 11.2 → 0.125 ms (vs 0.118–0.235) and `SREM` 10.7 → 0.210 (vs 0.116–0.165); `HSET`/`HDEL` 92.7–99.4, `ZADD`/`ZREM` 61.4–63.9, 200k `RPUSH`/`LPOP` 18.3/17.8 remain (3.19, AC37) |
+| Collection writes | in-place dict/skiplist/listpack/quicklist update | same | clone the whole collection, re-encode and replace it per write | **Partly done:** 4.35 in-place `SADD`/`SREM` (11.2/10.7 → 0.125/0.210) and `HSET`/`HDEL` (92.7–99.4 → 0.132–0.178/0.131) versus 0.10–0.24 ms; `ZADD`/`ZREM` 61.4–63.9 and 200k `RPUSH`/`LPOP` 18.3/17.8 remain (3.19, AC37) |
 | Random-member selection | `dictGetRandomKey`/`dictGetSomeKeys`, intset/listpack fast paths | same | clone and sort/copy the whole collection per call | **Adapt:** 4.36 dense member index after a no-copy reservoir slice; measured 100k `SRANDMEMBER` 11.54 vs 0.199/0.326 ms, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164; 10k 1–2.6 ms, controls at the floor (3.20, AC38) |
 | Bitmaps | in-place sds bit write; word/AVX2 popcount | same (scalar/AVX2/NEON popcount) | rebuild the value for `SETBIT` and `BITFIELD` writes (two copies); byte-at-a-time `BITCOUNT` | **Adapt:** 4.37 in-place `SETBIT`/`BITFIELD` (4.34 shape) + `u64` chunk popcount; measured 16 MB 5.32 vs 0.349/0.312 ms, `BITFIELD` write 4.39–4.68 vs 0.087–0.12, and 23.01 vs 3.37/4.56; controls at the floor (3.21, 3.40, AC39) |
 | Parsing | incremental multibulk/inline state | incremental state plus command queue | complete-frame fast path, no resumable cursor | **Keep:** incomplete frames rescan only length headers, not payload; 4.2 closed by bound |
@@ -5763,6 +5763,19 @@ connection, 200/100 repetitions, three rotations: 32 MB `APPEND` p50
 controls 0.080/0.135 versus 0.12–0.17; `GETRANGE` 0.118 versus 0.195/0.243. The
 7.2–7.35 ms matches two 32 MB copies at roughly 9 GB/s.
 
+**Post-fix hash writes (2026-11-14).** Large (`Collection::Hash`) hashes update
+in place: `HSET`/`HMSET` stage the last value per field, count genuinely new
+fields, admit the exact byte delta once and insert those pairs; `HDEL` removes
+from the borrowed `HashMap`, subtracts the removed field+value bytes and deletes
+an emptied key. Both clear per-field TTLs as the rebuild path did, and
+`HashPack` keeps the rebuild path. 100k-field cohort (20 repetitions, three
+rotations, p50/p99): `HSET` existing **0.178/0.711 ms** versus Redis 0.143/0.530
+and Valkey 0.126/0.368 (from 92.8); `HSET` new **0.132/0.713** versus
+0.120/0.791 and 0.099/0.598 (from 92.7); `HDEL` **0.131/0.468** versus
+0.114/0.216 and 0.128/0.424 (from 99.4); 10-field controls 0.11–0.12. AC37's
+hash rows are met. Zset and list writes remain open. Raw JSON retained at
+`/tmp/opencode/hashwrite-result.json` (untracked).
+
 **Risks and obligations.** `reserve` can evict the key being mutated, so re-look
 it up after admission and treat absence as a fresh value; the accounting delta
 must be exact and an OOM must not partially mutate; `SETRANGE` growth must
@@ -5797,7 +5810,7 @@ controls are at the command floor. AC36 is met (56×/39× faster than the
 pre-fix baseline), and the landed persistence tests cover exact bytes, growth
 and journal/replay. The acceptance stays as the regression contract.
 
-### 4.35 In-place collection mutation (candidate; set writes implemented)
+### 4.35 In-place collection mutation (candidate; set and hash writes implemented)
 
 **Mechanism.** After admission/eviction through `Data::reserve`, borrow the
 entry's collection mutably and update only the affected element:
@@ -5845,6 +5858,19 @@ met and `SADD` now leads Redis. Hash, zset and list writes still pay the rebuild
 and remain open. Raw JSON retained at `/tmp/opencode/setwrite-result.json`
 (untracked).
 
+**Post-fix hash writes (2026-11-14).** Large (`Collection::Hash`) hashes update
+in place: `HSET`/`HMSET` stage the last value per field, count genuinely new
+fields, admit the exact byte delta once and insert those pairs; `HDEL` removes
+from the borrowed `HashMap`, subtracts the removed field+value bytes and deletes
+an emptied key. Both clear per-field TTLs as the rebuild path did, and
+`HashPack` keeps the rebuild path. 100k-field cohort (20 repetitions, three
+rotations, p50/p99): `HSET` existing **0.178/0.711 ms** versus Redis 0.143/0.530
+and Valkey 0.126/0.368 (from 92.8); `HSET` new **0.132/0.713** versus
+0.120/0.791 and 0.099/0.598 (from 92.7); `HDEL` **0.131/0.468** versus
+0.114/0.216 and 0.128/0.424 (from 99.4); 10-field controls 0.11–0.12. AC37's
+hash rows are met. Zset and list writes remain open. Raw JSON retained at
+`/tmp/opencode/hashwrite-result.json` (untracked).
+
 **Risks and obligations.** `reserve` can evict the key being mutated, so re-look
 it up and treat absence as a fresh collection; pack↔large conversion at a
 threshold must preserve order and the compact representation; delta accounting
@@ -5872,9 +5898,11 @@ the measured 17.8–18.3 ms); the 10-element controls shall be unchanged; every
 collection command, pack threshold, field TTL, blocking, persistence/rewrite/
 replay and accounting test shall pass; no dependency shall be added; and both
 protected gates shall pass on the exact head. Evidence so far: 100k `SADD`
-0.125/0.583 ms and `SREM` 0.210/1.014 (from 11.2/10.7); the set rows meet AC37,
-hash/zset/list rows remain open. New coverage asserts exact payload accounting
-across in-place add/remove, pack→hashtable promotion on growth and key deletion.
+0.125/0.583 ms and `SREM` 0.210/1.014 (from 11.2/10.7), `HSET` existing/new
+0.178/0.132 and `HDEL` 0.131 (from 92.7–99.4); set and hash rows meet AC37,
+zset/list rows remain open. New coverage asserts exact payload accounting across
+in-place add/remove, duplicate pairs, field-TTL clearing, pack→hashtable
+promotion on growth and key deletion.
 
 ### 4.36 Constant-time random-member selection (candidate; admission measured)
 
