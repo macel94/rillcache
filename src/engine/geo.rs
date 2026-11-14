@@ -207,7 +207,7 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let members = match data.entries.get(args[1]) {
+        let collection = match data.entries.get(args[1]) {
             None => None,
             Some(entry)
                 if entry
@@ -215,10 +215,7 @@ impl ShardExecutor {
                     .as_ref()
                     .is_some_and(|value| value.is_zset()) =>
             {
-                entry
-                    .collection
-                    .as_ref()
-                    .and_then(|value| value.zset_items())
+                entry.collection.as_ref()
             }
             Some(_) => {
                 wrong_type(out);
@@ -227,10 +224,9 @@ impl ShardExecutor {
         };
         write!(out, "*{}\r\n", args.len() - 2).expect("Vec write");
         for member in &args[2..] {
-            let coordinates = members
-                .as_ref()
-                .and_then(|members| members.iter().find(|(name, _)| name == member))
-                .and_then(|(_, score)| decode_geohash(*score));
+            let coordinates = collection
+                .and_then(|collection| collection.zset_score(member))
+                .and_then(decode_geohash);
             match coordinates {
                 Some((lon, lat)) => {
                     out.extend_from_slice(b"*2\r\n");
@@ -258,7 +254,7 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let members = match data.entries.get(args[1]) {
+        let collection = match data.entries.get(args[1]) {
             None => {
                 encode_bulk(None, out);
                 return;
@@ -269,23 +265,14 @@ impl ShardExecutor {
                     .as_ref()
                     .is_some_and(|value| value.is_zset()) =>
             {
-                entry
-                    .collection
-                    .as_ref()
-                    .and_then(|value| value.zset_items())
-                    .expect("zset type checked")
+                entry.collection.as_ref().expect("zset type checked")
             }
             Some(_) => {
                 wrong_type(out);
                 return;
             }
         };
-        let score = |member: &[u8]| {
-            members
-                .iter()
-                .find(|(name, _)| *name == member)
-                .map(|(_, score)| *score)
-        };
+        let score = |member: &[u8]| collection.zset_score(member);
         let (Some(first), Some(second)) = (score(args[2]), score(args[3])) else {
             encode_bulk(None, out);
             return;
@@ -307,7 +294,7 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(args[1], now);
-        let members = match data.entries.get(args[1]) {
+        let collection = match data.entries.get(args[1]) {
             None => None,
             Some(entry)
                 if entry
@@ -315,10 +302,7 @@ impl ShardExecutor {
                     .as_ref()
                     .is_some_and(|value| value.is_zset()) =>
             {
-                entry
-                    .collection
-                    .as_ref()
-                    .and_then(|value| value.zset_items())
+                entry.collection.as_ref()
             }
             Some(_) => {
                 wrong_type(out);
@@ -327,10 +311,9 @@ impl ShardExecutor {
         };
         write!(out, "*{}\r\n", args.len() - 2).expect("Vec write");
         for member in &args[2..] {
-            let hash = members
-                .as_ref()
-                .and_then(|members| members.iter().find(|(name, _)| name == member))
-                .and_then(|(_, score)| decode_geohash(*score))
+            let hash = collection
+                .and_then(|collection| collection.zset_score(member))
+                .and_then(decode_geohash)
                 .map(|(lon, lat)| standard_geohash(lon, lat));
             encode_bulk(hash.as_deref(), out);
         }
@@ -1089,6 +1072,54 @@ mod tests {
             ],
         );
         assert!(search.starts_with(b"*2\r\n$7\r\nCatania\r\n$7\r\nPalermo\r\n"));
+    }
+
+    #[test]
+    fn geo_point_lookups_probe_a_large_zset_directly() {
+        let store = ShardExecutor::new(100_000_000);
+        for index in 0..200 {
+            let longitude = format!("{}", 10.0 + f64::from(index) / 1000.0);
+            let latitude = format!("{}", 40.0 + f64::from(index) / 1000.0);
+            let member = format!("m{index:03}");
+            assert_eq!(
+                run(
+                    &store,
+                    &[
+                        b"GEOADD",
+                        b"geo",
+                        longitude.as_bytes(),
+                        latitude.as_bytes(),
+                        member.as_bytes()
+                    ]
+                ),
+                b":1\r\n"
+            );
+        }
+        // More than the listpack threshold, so the ordered score map path runs.
+        let reply = run(
+            &store,
+            &[b"GEOPOS", b"geo", b"m000", b"missing", b"m000", b"m199"],
+        );
+        assert!(reply.starts_with(b"*4\r\n*2\r\n"));
+        assert_eq!(
+            reply
+                .windows(5)
+                .filter(|window| *window == b"*-1\r\n")
+                .count(),
+            1
+        );
+        let reply = run(&store, &[b"GEOHASH", b"geo", b"m050", b"missing"]);
+        assert!(reply.starts_with(b"*2\r\n$11\r\ns"));
+        assert!(reply.ends_with(b"$-1\r\n"));
+        assert!(run(&store, &[b"GEODIST", b"geo", b"m000", b"m199"]).starts_with(b"$"));
+        assert_eq!(
+            run(&store, &[b"GEODIST", b"geo", b"m000", b"missing"]),
+            b"$-1\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"GEOPOS", b"missing", b"m000"]),
+            b"*1\r\n*-1\r\n"
+        );
     }
 
     #[test]
