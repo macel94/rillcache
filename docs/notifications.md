@@ -99,6 +99,12 @@ really happened; an unrelated rejected write still emits no hash command event.
 Field expiry is detected only when the hash key is touched by a command, so the
 event can be delayed until the next access.
 
+An explicit hash delete (`HDEL` or `HGETDEL`) publishes `hdel` when it removed at
+least one field, followed by `del` (`g` class) when that removal emptied the
+hash. A no-op delete, or a command that only observed lazy field expiry, emits
+neither `hdel` nor `del`; the expiry path owns those events and reports them
+once.
+
 Supported event names mirror the command family: `set`, `del`, `expire`,
 `persist`, `rename_from`, `rename_to`, `copy_to`, `append`, `setrange`, `setbit`,
 `incrby`, `decrby`, list push/pop/insert/trim/rem, set add/remove/pop/move/store,
@@ -114,8 +120,20 @@ not a complete replay log.
 when at least one supplied field's deadline actually changes, and `HPERSIST`
 publishes `hpersist` only when at least one field TTL is removed. Conditions that
 leave every field unchanged (an `NX`/`XX`/`GT`/`LT` conflict or a missing field)
-emit nothing and do not advance the key's `WATCH` version. `HSETEX`/`HGETEX`
-with a TTL still report only their existing hash events in this increment.
+emit nothing and do not advance the key's `WATCH` version.
+
+`HSETEX` reports the effective write rather than a generic success. A normal
+write publishes `hset`, followed by `hexpire` only when EX/PX/EXAT/PXAT assigned a
+future deadline; `KEEPTTL` and no-TTL writes publish `hset` alone. A deadline in
+the past publishes `hdel` for the removed fields, plus `del` when that emptied the
+hash. A condition miss or a past-deadline write that removed nothing emits no
+event and does not advance the key's `WATCH` version.
+
+`HGETEX` never emits a write event. `PERSIST` publishes `hpersist` only when it
+actually removed a field TTL, and `EX`/`PX`/`EXAT`/`PXAT` with a future deadline
+publishes `hexpire` when at least one returned field was updated. Missing fields
+emit nothing, and no synthetic `hset` is emitted. `HGETEX` past-deadline
+deletion events remain out of scope in this increment.
 
 When notifications are enabled, mutating commands take the store's exclusive
 transaction gate so change capture and publication keep command order. This is a
@@ -142,10 +160,13 @@ relative to other connections is therefore not a global happens-before guarantee
 Unit tests cover flag parsing/round-trip, `A` expansion and rejection of
 unsupported classes, plus injected-clock lazy/reaped expiry and eviction
 publication. Hash-field tests cover the rejected-write case and the
-`hexpired`-then-`del` order when the final field expires. All-mode wire tests
-cover keyspace/keyevent frames, category filtering, runtime enable/disable,
+`hexpired`-then-`del` order when the final field expires, plus `hdel`-then-`del`
+for an emptied hash, the no-op delete case, the `HSETEX` write/`hexpire` versus
+delete/`del` pairs, and `HGETEX` `hexpire`/`hpersist` without a write event.
+All-mode wire tests cover
+keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
 and rejected writes, hash/list/set/zset/stream/HLL events, hash field
-`hexpire`/`hpersist` with no-op condition checks, expire, rename,
-eviction/`expired` classes, blocking-pop events, binary channels and
-`CONFIG`/`INFO` exposure.
+`hexpire`/`hpersist` with no-op condition checks, `HDEL`/`HGETDEL` deletion
+pairs, expire, rename, eviction/`expired` classes, blocking-pop events, binary
+channels and `CONFIG`/`INFO` exposure.

@@ -153,26 +153,38 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss`, new-key and `FLUSH*` event classes are unsupported; delivery is
   at-most-once and process-local.
-  **Partial (2026-11-14): hash field lifecycle and TTL notifications.** A lazy
-  field-expiry pass now publishes one `hexpired` event per affected key and an
+  **Partial (2026-11-14): hash lifecycle and TTL notifications.** A lazy
+  field-expiry pass publishes one `hexpired` event per affected key and an
   additional generic `del` when the empty hash is removed, including when the
   observing command is rejected. `HEXPIRE`/`HPEXPIRE`/`HEXPIREAT`/`HPEXPIREAT`
   publish `hexpire` and `HPERSIST` publishes `hpersist` when at least one field
   actually changed, with no event or `WATCH` bump for condition failures.
-  `HSETEX`/`HGETEX` TTL events and `keymiss`/new-key/`FLUSH*` classes remain
-  open; delivery is at-most-once and process-local.
+  `HDEL`/`HGETDEL` publish `hdel` only for a real removal and append `del` when
+  that removal emptied the hash; no-op deletes and commands that only observed
+  lazy expiry emit no delete event. Tests cover publication order and the no-op
+  cases, and the event matrix records the lazy-only detection point.
+  `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
+  deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
+  `hexpire`/`hpersist` for future deadlines and successful persists, never a
+  synthetic write; its past-deadline deletion events and the
+  `keymiss`/new-key/`FLUSH*` classes remain open. Delivery is at-most-once and
+  process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
 
 - [ ] **C9. Streams remain a bounded subset with volatile delivery state.** [P1]
-  Entries, last IDs and group cursors persist, but consumer objects and pending
-  entry lists (owners, delivery counts, timestamps) are not restored. `XINFO`
-  omits some Redis fields (`entries-read` is null, `nacked-count` is zero, inactive
-  time is approximated), and approximate `XTRIM` follows a different granularity.
-  **Closes when:** pending/consumer state is durable and restored, metadata fields
-  match the declared version or are explicitly excluded, and trim/read semantics
-  pass a differential corpus.
+  Entries, last IDs, group cursors, consumers and pending records survive restart
+  (D6 complete), but `XINFO` still diverges (`nacked-count` is zero, inactive time
+  is approximated), `lag` is retained-entry based rather than Redis's
+  deletion-aware estimator, and approximate `XTRIM` follows a different
+  granularity.
+  **Partial (2026-11-14): known `entries-read` counts.** Groups created at `$` or
+  `0` now report `entries-read` and increment it on new `XREADGROUP ... >`
+  deliveries; explicit non-zero starts, SETID and replayed groups without the
+  counter remain null. Tests cover `$`, `0`, SETID and delivery increments.
+  **Closes when:** metadata fields match the declared version or are explicitly
+  excluded, and trim/read semantics pass a differential corpus.
 
 - [ ] **C10. HyperLogLog is not Redis-interoperable.** [P1]
   The private payload uses an exact hash set then a 2^14-register sketch, not
