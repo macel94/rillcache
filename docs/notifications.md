@@ -30,16 +30,19 @@ CONFIG GET notify-keyspace-events
 | `t` | stream events |
 | `x` | expired-key events |
 | `e` | evicted-key events |
-| `A` | alias for `g$lshztxe` |
+| `m` | key-miss events for supported reads |
+| `A` | alias for `g$lshztxe` (deliberately excludes `m`) |
 
-`A` deliberately differs from Redis's alias by excluding key-miss, new-key and
-module classes. Those classes (`m`, `n`, `d`) and any unknown character are
-rejected by startup/config validation rather than silently accepted. Empty flags
-disable publication (the default).
+`m` reports a lookup that found no live key: `GET` and each missing `MGET`
+occurrence emit `keymiss` on the normal keyspace/keyevent channels. Hits and
+existing non-string keys do not. Other read commands are not covered yet.
+New-key and module classes (`n`, `d`) and any unknown character are rejected by
+startup/config validation rather than silently accepted. Empty flags disable
+publication (the default).
 
-While neither the expired nor the evicted class is enabled, command dispatch
-skips the lifecycle-delivery drain entirely instead of taking a store write lock
-to discard keys. Pending lifecycle keys are bounded and are cleared whenever the
+While none of the lifecycle classes (expired, evicted, hash, generic, key-miss)
+is enabled, command dispatch skips the lifecycle-delivery drain entirely instead
+of taking a store write lock to discard keys. Pending lifecycle keys are bounded and are cleared whenever the
 notification flags change, so enabling a class never replays events observed
 before that point.
 
@@ -143,7 +146,8 @@ relative to other connections is therefore not a global happens-before guarantee
 
 ## Limits
 
-- No keymiss, new-key or module events; no `FLUSH*` keyless event.
+- No new-key or module events; no `FLUSH*` keyless event. Key-miss covers
+  only `GET`/`MGET`.
 - Expired/evicted records use bounded in-memory queues, so lifecycle events may be
   lost under queue pressure and are not a complete historical audit.
 - No retry, acknowledgment, durable queue, replay, replication, cluster routing or
@@ -168,5 +172,6 @@ keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
 and rejected writes, hash/list/set/zset/stream/HLL events, hash field
 `hexpire`/`hpersist` with no-op condition checks, `HDEL`/`HGETDEL` deletion
-pairs, expire, rename, eviction/`expired` classes, blocking-pop events, binary
-channels and `CONFIG`/`INFO` exposure.
+pairs, `GET`/`MGET` `keymiss` with hit/non-string exclusions, expire, rename,
+eviction/`expired` classes, blocking-pop events, binary channels and
+`CONFIG`/`INFO` exposure.

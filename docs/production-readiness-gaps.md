@@ -166,9 +166,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
   deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
   `hexpire`/`hpersist` for future deadlines and successful persists, never a
-  synthetic write; its past-deadline deletion events and the
-  `keymiss`/new-key/`FLUSH*` classes remain open. Delivery is at-most-once and
-  process-local.
+  synthetic write; its past-deadline deletion events remain open.
+  **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`
+  and each missing `MGET` occurrence on the normal keyspace/keyevent channels;
+  hits and existing non-string keys do not. `A` intentionally excludes `m`, as in
+  Redis. New-key/`FLUSH*` classes and key-miss coverage for other read commands
+  remain open. Delivery is at-most-once and process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
@@ -217,13 +220,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   before bind, documented with defaults/precedence, and runtime-mutable settings
   are atomic and complete for the profile.
 
-- [ ] **C14. Transaction semantics diverge from Redis.** [P1]
+- [x] **C14. Transaction semantics diverge from Redis.** [P1]
+  **Complete (2026-11-14) for the standalone transaction contract.**
   Connection-local commands are rejected at queue time rather than executed at
   `EXEC` time. There is no rollback, replication of transactions or durable
   distributed commit; the single-process owner is the only isolation boundary.
-  **Closes when:** the supported profile documents the divergence and tests it,
-  or queue-time/EXEC-time behavior matches the declared upstream version and the
-  absence of rollback/durable commit is explicit.
+  [Transactions](transactions.md) now records the divergence explicitly and
+  names the tests: the session control-flow/runtime-error suite and the all-mode
+  `tests/blocking.rs` queue-time rejection cases. Replication, durable commit
+  and failover fencing remain under the availability/durability items and are
+  not implied by this contract.
 
 ---
 

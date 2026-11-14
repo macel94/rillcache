@@ -669,6 +669,62 @@ fn hgetex_reports_its_ttl_events_without_a_write_event() {
 }
 
 #[test]
+fn read_misses_emit_keymiss_only_for_missing_keys() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(12);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"GET", b"missing"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert!(receiver.try_recv().is_err(), "one miss per lookup");
+
+    assert_eq!(run(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+    assert!(
+        receiver.try_recv().is_err(),
+        "m does not include set events"
+    );
+    assert_eq!(run(&store, &[b"GET", b"k"]), b"$1\r\nv\r\n");
+    assert!(receiver.try_recv().is_err(), "a hit is not a key miss");
+
+    assert_eq!(
+        run(&store, &[b"MGET", b"k", b"missing", b"missing"]),
+        b"*3\r\n$1\r\nv\r\n$-1\r\n$-1\r\n"
+    );
+    expect_miss(b"missing");
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"LPUSH", b"w", b"a"]), b":1\r\n");
+    assert!(
+        receiver.try_recv().is_err(),
+        "m does not include list events"
+    );
+    assert_eq!(run(&store, &[b"MGET", b"w"]), b"*1\r\n$-1\r\n");
+    assert!(
+        receiver.try_recv().is_err(),
+        "an existing non-string is not a key miss"
+    );
+
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    assert_eq!(run(&store, &[b"GET", b"missing"]), b"$-1\r\n");
+    assert!(receiver.try_recv().is_err(), "A deliberately excludes m");
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
