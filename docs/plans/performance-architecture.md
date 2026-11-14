@@ -1535,13 +1535,13 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 ms vs 0.07–0.39; `ZMSCORE` 8.02/33.37/273.2 vs 0.10–0.63; `HMGET` and 10-member controls at the floor | 4.44, admitted | AC46 | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 ms vs 0.69/0.98, `KEYS` 43.6 vs 0.63/0.80, `RANDOMKEY` 45.5 vs 0.65/0.60, `DBSIZE` 41.2 vs 0.58/0.83; lazy `GET` at parity | 4.45, admitted | AC47 | none |
-| SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` 7.96 ms (p99 17.2) vs 0.12/0.16; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, admitted | AC48 | none |
+| SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
 | MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
-| BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
+| BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` pre-fix 201.6 ms vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; `BITPOS 0 0 -1` 209.4 vs 4.79/5.96, post-fix 2.23; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 ms vs 0.42/0.34, `ZPOPMAX` 159.9 vs 0.21/0.29, `ZPOPMIN 10` 146.6 vs 0.35/0.16, `ZMPOP` 155.8 vs 0.16/0.20 (373–974×); 100-member control at the floor | 4.49, admitted | AC51 | none |
@@ -1552,10 +1552,10 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k hash 6.45 ms vs 0.111/0.093; `ZADD` 4.21 vs 0.223/0.084; `SADD` 1.23 vs 0.083/0.351; `RPUSH`/`LPOP` 200k list 18.3/17.8 vs 0.07–0.34; at 100k `HSET`/`HDEL` 92.7–99.4 vs 0.08–0.32, `ZADD`/`ZREM` 61.4–63.9 vs 0.10–0.23, `SADD`/`SREM` 10.7–11.2 vs 0.08–0.60 (18–1160×); 10-element controls at the floor | 4.35, admitted | AC37 on the implemented change | none |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
-| Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` 5.32 ms vs 0.349/0.312; `BITCOUNT` 23.01 vs 3.37/4.56; 1 MB 0.33/1.85 vs 0.09–0.31; `GETBIT`/`STRLEN`/64 B controls at the floor; 16 MB `BITFIELD` write pre-fix 4.39–4.68 vs 0.087–0.12 (37–52×), post-fix 0.12–0.30 at parity while `BITFIELD_RO` reads are at the floor | 4.37, `BITFIELD` writes implemented; `SETBIT`/`BITCOUNT`/`BITPOS` remain gated | AC39 (BITFIELD rows met) | none |
+| Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` pre-fix 5.32 ms vs 0.349/0.312, post-fix 0.172; `BITCOUNT` pre-fix 23.01 vs 3.37/4.56, post-fix 5.35 vs 2.74/3.43; `BITPOS 0` pre-fix 201.6 vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; 16 MB `BITFIELD` write pre-fix 4.39–4.68 vs 0.087–0.12, post-fix 0.12–0.30; 1 MB/64 B controls at the floor | 4.37, implemented (`BITFIELD`/`SETBIT`/`BITCOUNT`/`BITPOS`) | AC39 met | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
 | Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
-| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, plain `INFO` the same, while `INFO stats`/`DBSIZE`/`PING` stay at the floor because the section walks every entry | 4.52, admitted | AC54 | none |
+| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, no-deadline fast path implemented; counters remain | AC54 (no-deadline rows met) | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k 25.5 ms vs 0.40/0.28 (64–91×); `LMOVE`/`RPOPLPUSH` 200k 39.2/41.2 vs 0.08–0.34 (79–489×); same-key rotate 20.5 vs 0.26/0.21; 10-element controls at the floor | 4.53, admitted (extends 4.35/4.41) | AC55 | none |
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
 | List element edits | latency, storage | **measured**: 200k `LINSERT` head 19.1 ms vs 0.09/0.24 (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), `LINSERT` middle 21.0 vs 3.51/4.33, `LREM` tail 21.1 vs 6.97/7.28, `LPOS RANK -1` 1.59 vs 0.16/0.27; 10-element controls at the floor | 4.54, admitted (extends 4.35/4.41) | AC56 | none |
@@ -1988,7 +1988,7 @@ for a production claim.
 | Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Adapt:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 vs 0.19–0.63 ms, `SMISMEMBER` 100 11.75 vs 0.21–0.39; `HMGET` at the floor (3.28, AC46) |
 | Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Adapt:** 4.45 bounded lazy expiry; measured after 30k expire `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE` 36–46 vs 0.6–1.0 ms, lazy `GET` at parity (3.29, AC47) |
-| SORT `BY nosort` | source-order slice without sorting or copying | same | clone every element and build an `Item` before applying `LIMIT` | **Adapt:** 4.46 direct nosort slice; measured 100k 7.96 vs 0.12/0.16 ms; sorted/ALPHA/weighted rows 0.9–1.5× (3.30, AC48) |
+| SORT `BY nosort` | source-order slice without sorting or copying | same | pre-fix clone every element and build an `Item` before `LIMIT`; post-fix borrowed list slice | **Done (nosort):** 4.46 direct slice; measured 100k pre-fix 7.96 vs 0.12/0.16 ms, post-fix 0.188/0.506 at parity; sorted/ALPHA/weighted rows unchanged (3.30, AC48) |
 | Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
 | Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
 | HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Adapt:** 4.47 in-place registers + cached count; measured 100k adds 16.96 vs 3.9–4.1 µs and 10k counts 265 vs 3.3–3.6 µs (3.32, AC49) |
@@ -2804,6 +2804,20 @@ explicit ordering decision. Keep small pack paths and all reply semantics.
   `BITCOUNT` runs at ~0.7 GB/s (23 ms for 16 MB) against the C servers' ~5 GB/s.
   Candidate 4.37.
 
+- **Post-fix (2026-11-14, SETBIT and BITCOUNT paths).** `SETBIT` now admits the
+  final length and patches the entry's own `Vec` through `Data::mutate_string`;
+  16 MB `SETBIT 0 1` measures **0.172 ms** versus Redis 0.231 and Valkey 0.298
+  on the built head (10 repetitions, three rotations), down from 5.32–5.39 ms.
+  `BITCOUNT` now sums `chunks_exact(8)` as `u64::count_ones()` with a remainder
+  pass and keeps the masked head/tail for BIT ranges; full-value 16 MB
+  `BITCOUNT` measures **5.35 ms** versus Redis 2.74 and Valkey 3.43, down from
+  23.0. `BITPOS` scans whole middle bytes eight at a time (`leading_zeros` for
+  one bits, `leading_ones` for zero bits) with per-byte masked head/tail; 16 MB
+  `BITPOS 0` measures **2.19 ms** versus Redis 3.84 and Valkey 4.89 and
+  `BITPOS 0 0 -1` 2.23 versus 3.78/4.66, down from 201.6/209.4 ms. The three
+  value paths of 4.37 now meet their targets; the `BITFIELD` write path is a
+  separate PR.
+
 **Verdict: adapt both, with the string fix from 4.34.** `SETBIT` should reserve
 and then patch the entry's own `Vec` in place (extend and zero-fill only when the
 offset passes the end), exactly the 4.34 shape; `BITCOUNT` should consume
@@ -3228,7 +3242,10 @@ and keep expired values unreadable.
 
   Sorted and `BY pattern` rows are within **0.9–1.5×** (the ALPHA row leads), but
   `BY nosort LIMIT 10` is **50–66×** slower because it still copies the whole
-  list; the 100-element controls are at the floor. Candidate 4.46.
+  list; the 100-element controls are at the floor. Candidate 4.46. Post-fix
+  (2026-11-14) the copied list slice measures **0.188 ms p50 / 0.506 p99**
+  versus Redis 0.192/0.708 and Valkey 0.136/0.315 on 20 repetitions; a deep
+  `LIMIT 99990 10` is 0.414 and full nosort stays reply-bound.
 
 **Verdict: adapt a direct `BY nosort` slice (4.46).** When `BY` has no `*`
 (`nosort`), apply `offset`/`count` to the source order without building `Item`s
@@ -3771,11 +3788,21 @@ materialised result). Keep the set-store paths as they are.
   the shared counters. With no TTLs, `DBSIZE` is O(1) here; a large expiring set
   additionally pays the admitted 4.45 mass-expiry path. Candidate 4.52.
 
+- **Post-fix (2026-11-14, no-deadline fast path).** When the expiration index is
+  empty and `field_ttls == 0`, every entry is alive and all expiry fields are
+  zero, so `INFO` reads `entries.len()` and formats without walking. Measured on
+  the built head (10 repetitions, three rotations): 500k `INFO keyspace`
+  **0.160 ms** versus Redis 0.318 and Valkey 0.417, and 100k **0.172 ms** versus
+  0.409/0.089; plain `INFO` 0.357/0.237. Keyspaces with key or field deadlines
+  still take the existing exact walk, so the maintained-counter work in 4.52
+  remains for mixed TTL churn.
+
 **Verdict: adapt maintained keyspace accounting (4.52).** Keep live/expiring/
 subexpiry key counts and a TTL sum updated on every mutation (insert, overwrite,
 expire, persist, remove, reap, eviction, flush, rename/copy, replay), or read the
 container sizes plus a Redis-style maintained/sampled average, and answer the
-section in O(1).
+section in O(1). The no-deadline fast path above lands the common case; the
+counters close the mixed-TTL case.
 
 ### 3.43 Two-key moves (SMOVE/LMOVE/RPOPLPUSH)
 
@@ -5744,14 +5771,16 @@ partial value, the controls or reads regress, or no gain above the spread.
 
 **Acceptance (AC39).** `SETBIT` at offset 0 of a 16 MB bitmap shall have p50
 ≤0.5 ms and p99 ≤2 ms (≥10× faster than the measured 5.32 ms and within ~2×
-Redis's 0.349 ms); a one-byte `BITFIELD SET`/`INCRBY` (u8 and u63) and a
+Redis's 0.349 ms) — met by the in-place path at 0.172 ms; a one-byte `BITFIELD SET`/`INCRBY` (u8 and u63) and a
 100-subcommand write on the 16 MB value shall each have p50 ≤0.5 ms and p99
 ≤2 ms (≥8× faster than the measured 4.39–4.68 ms and within ~2× the faster C
-server) — met by the BITFIELD in-place write path, which measures 0.12–0.30 ms
-at 16 MB; `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms and p99
+server) — met by the BITFIELD in-place write path (0.12–0.30 ms) and the
+in-place `SETBIT` path (0.172 ms); `BITCOUNT` of the 16 MB bitmap shall have p50
+≤6 ms (met at 5.35 ms) and p99
 ≤10 ms (≥3.8× faster than 23.0 ms and within ~2× Redis's 3.37 ms); a not-found
 `BITPOS 0` shall have p50 ≤8 ms and p99 ≤15 ms (≥25× faster than 201.6 ms and
-within ~1.6× Redis's 5.08 ms) while a first-bit hit stays at the floor; the 1 MB
+within ~1.6× Redis's 5.08 ms) — met at 2.19 ms, while a first-bit hit stays at
+the floor; the 1 MB
 rows shall be at the command floor; the 64 B controls, `GETBIT` and `STRLEN`
 shall be unchanged; `BITFIELD_RO` and all-`GET` `BITFIELD` shall stay copy-free;
 BYTE and BIT ranges including negative indices, the offset and 512 MiB limits,
@@ -6131,7 +6160,7 @@ value; the `DBSIZE` semantics shall be documented with tests updated; admission
 shall stay bounded and atomic; TTL expiry/notification/WATCH tests shall pass; no
 dependency shall be added; and both protected gates shall pass on the exact head.
 
-### 4.46 Direct `BY nosort` slice (candidate; admission measured)
+### 4.46 Direct `BY nosort` slice (candidate; implemented)
 
 **Mechanism.** When `BY` has no `*` (`nosort`), do not call `source_values` or
 build `Item`s for the whole source: apply `offset`/`count` directly to the
@@ -6144,6 +6173,14 @@ and `GET` paths are untouched.
 **Prediction.** 100k `SORT ... BY nosort LIMIT 0 10` falls from **7.96 ms to
 ≤0.3 ms** (p99 17.2 → ≤2), while full-nosort remains reply-bound and every other
 SORT row is unchanged.
+
+**Post-fix (2026-11-14).** The list path now takes a borrowed slice
+(`Collection::list_slice`) in stored or reversed order and materialises only
+`STORE`'s selected values; sets/zsets and every `GET`/sorted path keep the
+general code. Measured on the built head, 20 repetitions, three rotations:
+`BY nosort LIMIT 0 10` **0.188 ms p50 / 0.506 p99** versus Redis 0.192/0.708 and
+Valkey 0.136/0.315; a deep `LIMIT 99990 10` 0.414; full nosort remains
+reply-bound (64.4 ms versus 69.8/86.7). AC48 is met.
 
 **Admission evidence (2026-11-12, section 3.30).** A 100k integer list plus
 `w<i>` weight keys, 50 repetitions, three rotations: `BY nosort LIMIT 0 10`
@@ -6166,7 +6203,7 @@ controls or another SORT row regresses, or no gain above the spread.
 
 **Acceptance (AC48).** On a 100,000-element list, `SORT ... BY nosort LIMIT 0 10`
 shall have p50 ≤0.5 ms and p99 ≤2 ms (≥16× faster than the measured 7.96/17.2 ms
-and within ~4× Redis's 0.12/1.17 ms); the full, limited, ALPHA, DESC, `BY w*` and
+and within ~4× Redis's 0.12/1.17 ms) — met at 0.188/0.506; the full, limited, ALPHA, DESC, `BY w*` and
 `GET #` rows shall stay within 1.5× of baseline; the 100-element controls shall
 be unchanged; offset/count edges, `STORE`, missing keys and set/zset sources
 shall pass; no dependency shall be added; and both protected gates shall pass on
@@ -6431,7 +6468,7 @@ SUM`, NaN/infinite scores, missing/empty keys, destination-as-source, TTL/
 WATCH/journal/rewrite and accounting tests shall pass; no dependency shall be
 added; and both protected gates shall pass on the exact head.
 
-### 4.52 O(1) INFO keyspace accounting (candidate; admission measured)
+### 4.52 O(1) INFO keyspace accounting (candidate; no-deadline fast path implemented)
 
 **Mechanism.** Stop walking the keyspace to answer `INFO keyspace`/`INFO`/
 `INFO all`. Maintain in `Data` the four values the section reports — live keys,
@@ -6478,7 +6515,8 @@ reap; the controls or reads regress; or no gain above the spread.
 
 **Acceptance (AC54).** At 500,000 keys, `INFO keyspace` and plain `INFO` shall
 have p50 ≤0.4 ms and p99 ≤2 ms (≥25× faster than the measured 10.0/10.1 ms and
-within ~2× the faster C server), and at 100,000 keys p50 ≤0.25 ms; the reported
+within ~2× the faster C server) — the no-deadline path meets this at
+0.160/0.357 ms — and at 100,000 keys p50 ≤0.25 ms; the reported
 `keys`, `expires`, `subexpiry` and `avg_ttl` shall match a full scan after mixed
 TTL/field-TTL/expiry/reap/eviction/flush/rename/copy/replay churn; `INFO stats`,
 `DBSIZE`, `PING` and all other sections shall be unchanged; no dependency shall

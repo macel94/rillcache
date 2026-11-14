@@ -116,7 +116,6 @@ impl ShardExecutor {
             return;
         }
         let previous = entry.map(|e| e.payload_len);
-        let expires = entry.and_then(|e| e.expires);
         let old = entry.and_then(|e| e.value.get(byte)).copied().unwrap_or(0);
         let shift = 7 - (offset % 8) as u8;
         let old_bit = (old >> shift) & 1;
@@ -126,17 +125,18 @@ impl ShardExecutor {
             out.extend_from_slice(OOM);
             return;
         };
-        let mut next = Vec::new();
-        if next.try_reserve_exact(new_len).is_err() {
+        if data
+            .mutate_string(args[1], new_len, payload, self.payload_limit(), |bytes| {
+                if bytes.len() < new_len {
+                    bytes.resize(new_len, 0);
+                }
+                bytes[byte] = (bytes[byte] & !(1 << shift)) | ((value as u8) << shift);
+            })
+            .is_err()
+        {
             out.extend_from_slice(OOM);
             return;
         }
-        if let Some(entry) = data.entries.get(args[1]) {
-            next.extend_from_slice(&entry.value);
-        }
-        next.resize(new_len, 0);
-        next[byte] = (next[byte] & !(1 << shift)) | ((value as u8) << shift);
-        data.put(args[1], &next, expires, payload, now);
         integer(i64::from(old_bit), out);
     }
 
@@ -421,36 +421,74 @@ fn count_bits(bytes: &[u8], start_bit: usize, end_bit: usize) -> u64 {
         return u64::from((bytes[first] & mask).count_ones());
     }
     let mut total = u64::from((bytes[first] & (0xffu8 >> (start_bit % 8))).count_ones());
-    total += bytes[first + 1..last]
-        .iter()
-        .map(|byte| u64::from(byte.count_ones()))
-        .sum::<u64>();
+    total += popcount(&bytes[first + 1..last]);
     total += u64::from((bytes[last] & (0xffu8 << (7 - (end_bit % 8)))).count_ones());
     total
 }
 
+/// Population count over the whole slice using 8-byte chunks. Endianness is
+/// irrelevant for a count, and `count_ones` compiles to one instruction on
+/// targets with a popcount feature (otherwise a short safe loop).
+fn popcount(bytes: &[u8]) -> u64 {
+    let (chunks, remainder) = bytes.as_chunks::<8>();
+    let mut total = 0u64;
+    for chunk in chunks {
+        total += u64::from(u64::from_le_bytes(*chunk).count_ones());
+    }
+    total
+        + remainder
+            .iter()
+            .map(|byte| u64::from(byte.count_ones()))
+            .sum::<u64>()
+}
+
 fn find_bit(bytes: &[u8], bit: u8, start_bit: usize, end_bit: usize) -> Option<usize> {
-    let first = start_bit / 8;
-    let last = (end_bit / 8).min(bytes.len().checked_sub(1)?);
-    if first > last {
+    if bytes.is_empty() || start_bit > end_bit {
         return None;
     }
-    for (byte_index, byte) in bytes.iter().enumerate().take(last + 1).skip(first) {
-        let from = if byte_index == first {
-            start_bit % 8
+    let last_bit = end_bit.min(bytes.len() * 8 - 1);
+    if start_bit > last_bit {
+        return None;
+    }
+    let first = start_bit / 8;
+    let last = last_bit / 8;
+    if first == last {
+        return find_bit_in_byte(bytes[first], bit, start_bit % 8, last_bit % 8)
+            .map(|offset| first * 8 + offset);
+    }
+    if let Some(offset) = find_bit_in_byte(bytes[first], bit, start_bit % 8, 7) {
+        return Some(first * 8 + offset);
+    }
+    // Full bytes in the middle: eight bytes at a time, MSB-first. `leading_ones`
+    // finds the first zero bit and `leading_zeros` the first one bit in the word.
+    let middle = &bytes[first + 1..last];
+    let (words, remainder) = middle.as_chunks::<8>();
+    for (index, chunk) in words.iter().enumerate() {
+        let word = u64::from_be_bytes(*chunk);
+        let offset = if bit == 0 {
+            word.leading_ones()
         } else {
-            0
+            word.leading_zeros()
         };
-        let to = if byte_index == last { end_bit % 8 } else { 7 };
-        let byte = *byte;
-        for offset in from..=to {
-            let value = (byte >> (7 - offset)) & 1;
-            if value == bit {
-                return Some(byte_index * 8 + offset);
-            }
+        if offset < 64 {
+            return Some((first + 1 + index * 8) * 8 + offset as usize);
         }
     }
+    let middle_bytes = words.len() * 8;
+    for (index, byte) in remainder.iter().enumerate() {
+        if let Some(offset) = find_bit_in_byte(*byte, bit, 0, 7) {
+            return Some((first + 1 + middle_bytes + index) * 8 + offset);
+        }
+    }
+    if let Some(offset) = find_bit_in_byte(bytes[last], bit, 0, last_bit % 8) {
+        return Some(last * 8 + offset);
+    }
     None
+}
+
+/// First bit equal to `bit` in `byte` between MSB-first offsets `from..=to`.
+fn find_bit_in_byte(byte: u8, bit: u8, from: usize, to: usize) -> Option<usize> {
+    (from..=to).find(|offset| ((byte >> (7 - offset)) & 1) == bit)
 }
 
 impl ShardExecutor {
@@ -497,8 +535,7 @@ impl ShardExecutor {
             }
         };
         let (Some(start), Some(end)) = (start, end) else {
-            let count: u64 = bytes.iter().map(|byte| u64::from(byte.count_ones())).sum();
-            integer(count as i64, out);
+            integer(popcount(bytes) as i64, out);
             return;
         };
         let length = if unit == BitUnit::Byte {
@@ -511,10 +548,7 @@ impl ShardExecutor {
             return;
         };
         let count = if unit == BitUnit::Byte {
-            bytes[start..=end]
-                .iter()
-                .map(|byte| u64::from(byte.count_ones()))
-                .sum::<u64>()
+            popcount(&bytes[start..=end])
         } else {
             count_bits(bytes, start, end)
         };
