@@ -77,6 +77,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   There is no published matrix of supported Redis/Valkey versions, commands,
   client libraries, topology, persistence mode and exclusions. "Drop-in" is
   therefore untestable and ambiguous.
+  **Partial (2026-11-14): draft standalone profile.** The
+  [production profile](production-profile.md) now declares the reference
+  versions, topology, supported families, explicit exclusions, persistence and
+  security boundaries, client matrix and limits. It is explicitly a draft, not a
+  readiness claim. The command-by-command CI matrix that runs every profile row
+  against pinned Redis and Valkey is still absent, as are the language-client,
+  durability, security and SLO evidence rows.
   **Closes when:** a versioned profile lists exact upstream versions, command
   matrix, client libraries, deployment topology and excluded features; CI runs
   every row against pinned Redis and Valkey and records pass/fail.
