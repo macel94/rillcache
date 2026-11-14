@@ -35,7 +35,10 @@ full-chain audit signing, key IDs or hot-rotation custody, or credential encrypt
   an empty value disables authentication. Changes are atomic with other
   `CONFIG SET` options: a rejected pair leaves both collection thresholds and the
   credential unchanged. `CONFIG GET requirepass` never returns the secret:
-  unset reports an empty value, configured reports `<redacted>`.
+  unset reports an empty value, configured reports `<redacted>`. Rotation affects
+  new authentication decisions only; close existing sessions explicitly with
+  `CLIENT KILL USER <name>` (or `CLIENT KILL ID/ADDR/MAXAGE`) from an
+  administrative connection, then reconnect with the new credential.
 - **No secret in diagnostics.** `Config`'s `Debug` representation, startup lines,
   errors and `CONFIG GET` redact the password. The password is never logged.
 
@@ -246,11 +249,18 @@ describes current behavior, not a second checklist.
   an attacker can exhaust the table; there is no delay, username lockout,
   cross-process or global rate limit. Use network policy/firewalling and strong,
   unique passwords; do not expose the port directly to untrusted clients.
-- **No live deauthentication.** Rotating or disabling the password affects new
+- **Live revocation is explicit.** Rotating or disabling the password affects new
   authentication decisions; a connection that already authenticated remains
-  authenticated, as in Redis. Close/reconnect administrative clients when rotating.
-  Existing unauthenticated connections begin receiving `NOAUTH` immediately after
-  a password is set.
+  authenticated, as in Redis. The supported revocation procedure is
+  `CLIENT KILL USER <name>` from an administrative connection: it closes every
+  matching normal/pub/sub session, returns the number closed, and skips the
+  caller by default (`SKIPME no` can include it). `CLIENT KILL ID`, `ADDR`,
+  `LADDR`, `MAXAGE` and `TYPE` remain available for narrower or legacy clients.
+  There is no automatic deauthentication when `CONFIG SET requirepass`,
+  `ACL SETUSER`, or `ACL LOAD` changes a credential, so rotate-then-revoke is an
+  operator step. `tests/acl.rs::client_kill_user_revokes_live_sessions` exercises
+  the close/retain/reconnect path. Existing unauthenticated connections begin
+  receiving `NOAUTH` immediately after a password is set.
 - **Process arguments are visible.** `--requirepass VALUE` can appear in process
   listings and shell history. Prefer `--requirepass-file` or `--aclfile` with a
   mode-`0400` secret mount. Files are read at startup and by explicit `ACL LOAD`;

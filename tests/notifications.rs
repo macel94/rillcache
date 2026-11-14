@@ -1107,8 +1107,47 @@ fn hgetdel_emits_hash_and_deletion_events() {
         frame(&[
             b"pmessage",
             b"__keyevent@0__:*",
+            b"__keyevent@0__:hdel",
+            b"h"
+        ])
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
             b"__keyevent@0__:del",
             b"h"
+        ])
+    );
+
+    send(&mut writer, &[b"HSET", b"h2", b"a", b"1"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hset",
+            b"h2"
+        ])
+    );
+    send(&mut writer, &[b"HDEL", b"h2", b"a"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hdel",
+            b"h2"
+        ])
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:del",
+            b"h2"
         ])
     );
     server.shutdown().unwrap();
@@ -1189,5 +1228,46 @@ fn hexpire_and_hpersist_emit_only_changed_field_ttls() {
             b"h"
         ])
     );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn get_and_mget_misses_emit_keymiss_only_for_missing_keys() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+
+    send(&mut writer, &[b"GET", b"missing"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:keymiss",
+            b"missing"
+        ])
+    );
+
+    send(&mut writer, &[b"SET", b"k", b"v"], b"+OK\r\n");
+    send(&mut writer, &[b"GET", b"k"], b"$1\r\nv\r\n");
+    send(
+        &mut writer,
+        &[b"MGET", b"k", b"missing"],
+        b"*2\r\n$1\r\nv\r\n$-1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:keymiss",
+            b"missing"
+        ])
+    );
+
+    // A non-string key exists, so MGET's null is not a lookup miss.
+    send(&mut writer, &[b"LPUSH", b"w", b"a"], b":1\r\n");
+    send(&mut writer, &[b"MGET", b"w"], b"*1\r\n$-1\r\n");
     server.shutdown().unwrap();
 }
