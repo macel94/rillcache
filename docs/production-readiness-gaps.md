@@ -190,13 +190,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   before bind, documented with defaults/precedence, and runtime-mutable settings
   are atomic and complete for the profile.
 
-- [ ] **C14. Transaction semantics diverge from Redis.** [P1]
+- [x] **C14. Transaction semantics diverge from Redis.** [P1]
+  **Complete (2026-11-14) for the standalone transaction contract.**
   Connection-local commands are rejected at queue time rather than executed at
   `EXEC` time. There is no rollback, replication of transactions or durable
   distributed commit; the single-process owner is the only isolation boundary.
-  **Closes when:** the supported profile documents the divergence and tests it,
-  or queue-time/EXEC-time behavior matches the declared upstream version and the
-  absence of rollback/durable commit is explicit.
+  [Transactions](transactions.md) now records the divergence explicitly and
+  names the tests: the session control-flow/runtime-error suite and the all-mode
+  `tests/blocking.rs` queue-time rejection cases. Replication, durable commit
+  and failover fencing remain under the availability/durability items and are
+  not implied by this contract.
 
 ---
 
