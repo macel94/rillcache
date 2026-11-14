@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -7,10 +8,11 @@ use std::time::Duration;
 use rillcache::protocol::Limits;
 use rillcache::{Config, Server};
 
+mod config_file;
 mod healthcheck;
 
 const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
-  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
+  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
 enum Options {
@@ -22,20 +24,28 @@ enum Options {
 
 fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut config = Config::default();
-    let mut arguments = arguments.into_iter();
-    while let Some(option) = arguments.next() {
+    let mut arguments: VecDeque<String> = arguments.into_iter().collect();
+    while let Some(option) = arguments.pop_front() {
+        if option == "--config" || option == "-c" {
+            let path = arguments.pop_front().ok_or("missing value for --config")?;
+            let file_arguments = config_file::load(&path)?;
+            for argument in file_arguments.into_iter().rev() {
+                arguments.push_front(argument);
+            }
+            continue;
+        }
         match option.as_str() {
             "--help" | "-h" => return Ok(Options::Help),
             "--version" | "-V" => return Ok(Options::Version),
             "--healthcheck" => {
                 let address = arguments
-                    .next()
+                    .pop_front()
                     .ok_or("missing value for --healthcheck")?
                     .parse::<SocketAddr>()
                     .ok()
                     .filter(|address| address.port() != 0)
                     .ok_or("--healthcheck requires a numeric IP:port with a nonzero port")?;
-                if arguments.next().is_some() {
+                if arguments.pop_front().is_some() {
                     return Err("unexpected arguments after --healthcheck".into());
                 }
                 return Ok(Options::Healthcheck(address));
@@ -76,7 +86,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--tls-client-ca-file"
             | "--tls-handshake-timeout-ms" => {
                 let value = arguments
-                    .next()
+                    .pop_front()
                     .ok_or_else(|| format!("missing value for {option}"))?;
                 match option.as_str() {
                     "--bind" => {
@@ -443,7 +453,7 @@ mod tests {
         assert!(
             options(["--requirepass-file", path.to_str().unwrap()].map(str::to_owned)).is_err()
         );
-        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
         let Options::Run(journal) = options(
             [
                 "--appendonly",
@@ -586,6 +596,75 @@ mod tests {
         ] {
             assert!(options(arguments.into_iter().map(str::to_owned)).is_err());
         }
+    }
+
+    #[test]
+    fn config_files_are_ordered_bounded_and_overridden_by_later_cli() {
+        let path = std::env::temp_dir().join(format!(
+            "rillcache-config-{}-{}.conf",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "# local startup\nbind 127.0.0.1:26379\nmaxclients 12\nrequirepass \"file secret\"\n",
+        )
+        .unwrap();
+        let path = path.to_str().unwrap();
+
+        let Options::Run(from_file) = options(["--config", path].map(str::to_owned)).unwrap()
+        else {
+            panic!("expected config file");
+        };
+        assert_eq!(from_file.bind_addr, "127.0.0.1:26379".parse().unwrap());
+        assert_eq!(from_file.max_clients, 12);
+        assert_eq!(
+            from_file.requirepass.as_deref(),
+            Some(b"file secret".as_slice())
+        );
+
+        let Options::Run(overridden) = options(
+            [
+                "--config",
+                path,
+                "--max-clients",
+                "34",
+                "--requirepass",
+                "cli secret",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap() else {
+            panic!("expected override");
+        };
+        assert_eq!(overridden.max_clients, 34);
+        assert_eq!(
+            overridden.requirepass.as_deref(),
+            Some(b"cli secret".as_slice())
+        );
+
+        let Options::Run(later_file) =
+            options(["--max-clients", "34", "--config", path].map(str::to_owned)).unwrap()
+        else {
+            panic!("expected later config");
+        };
+        assert_eq!(later_file.max_clients, 12);
+
+        assert!(options(["--config"].map(str::to_owned)).is_err());
+        assert!(options(["--config", ""].map(str::to_owned)).is_err());
+        assert!(
+            options(["--config", "/definitely/missing/rillcache.conf"].map(str::to_owned)).is_err()
+        );
+
+        std::fs::write(path, "unknown-directive value\n").unwrap();
+        assert!(options(["--config", path].map(str::to_owned)).is_err());
+
+        std::fs::write(path, "").unwrap();
+        assert!(options(["--config", path].map(str::to_owned)).is_err());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

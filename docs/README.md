@@ -19,6 +19,7 @@ project's front page.
 ## Run and operate
 
 - [Docker, Compose and Kubernetes](containers.md): images, resource isolation, networking and lifecycle.
+- [Startup configuration](configuration.md): CLI flags and the bounded `--config` startup file.
 - [Security](security.md) and [TLS](tls.md): passwords, ACLs, audit tooling and encrypted listeners.
 - [Persistence](persistence.md): the optional journal, replay, compaction and durability boundaries.
 - [Eviction](eviction.md): payload budgets and memory policies.
