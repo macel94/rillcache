@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use super::data::COMMAND_REAP_LIMIT;
 use super::options::OOM;
 use super::{ShardExecutor, internal_error};
 use crate::protocol::encode_bulk;
@@ -73,7 +74,12 @@ impl ShardExecutor {
                 return;
             }
         };
-        data.reap(now, usize::MAX);
+        data.reap(now, COMMAND_REAP_LIMIT);
+        // Bounded reaping can leave an expired target behind; expire the keys
+        // this command observes so NX/XX see Redis-compatible absence.
+        for key in final_values.keys() {
+            data.expire_key(key, now);
+        }
         let conditional = match options.condition {
             Condition::Always => true,
             Condition::Missing => !final_values
@@ -157,10 +163,10 @@ impl ShardExecutor {
                 return true;
             };
             let now = self.now(&data);
-            data.reap(now, usize::MAX);
             let count = arguments.len() - 1;
             let mut reply_bytes = 3 + decimal_digits(count);
             for key in &arguments[1..] {
+                data.expire_key(key, now);
                 let value_len = data
                     .entries
                     .get(*key)
@@ -222,9 +228,15 @@ impl ShardExecutor {
             return true;
         };
         let now = self.now(&data);
-        // Reap globally before testing existence/admission; expired targets are absent and
-        // their payload must not produce a false OOM on a replacement set.
-        data.reap(now, usize::MAX);
+        // Bounded reap before testing existence/admission: expired targets are
+        // absent and their payload cannot force a false OOM, while a mass-expiry
+        // backlog no longer stalls the command.
+        data.reap(now, COMMAND_REAP_LIMIT);
+        // Bounded reaping can leave an expired target behind; expire the keys
+        // this command observes so NX/MSET replacement accounting stays exact.
+        for key in final_values.keys() {
+            data.expire_key(key, now);
+        }
 
         if nx
             && final_values
@@ -317,6 +329,52 @@ mod tests {
         let mut output = Vec::new();
         store.execute(arguments, &mut output);
         output
+    }
+
+    #[test]
+    fn mass_expiry_does_not_hide_expired_targets_from_msetnx_or_mget() {
+        let (store, clock) = clock_store(1_000_000);
+        for index in 0..300 {
+            let key = format!("k{index:03}");
+            assert_eq!(
+                run(&store, &[b"SET", key.as_bytes(), b"v", b"PX", b"10"]),
+                b"+OK\r\n"
+            );
+        }
+        clock.0.fetch_add(11, Ordering::SeqCst);
+        // The bounded batch reclaims only part of the backlog, but MGET still
+        // expires each key it observes and must report every one as absent.
+        let keys: Vec<String> = (0..300).map(|index| format!("k{index:03}")).collect();
+        let mut arguments: Vec<&[u8]> = vec![b"MGET"];
+        arguments.extend(keys.iter().map(|key| key.as_bytes()));
+        let reply = run(&store, &arguments);
+        assert!(reply.starts_with(b"*300\r\n"));
+        assert_eq!(
+            reply
+                .windows(5)
+                .filter(|window| *window == b"$-1\r\n")
+                .count(),
+            300
+        );
+        // After per-key expiry the expired set is empty again.
+        assert_eq!(run(&store, &[b"DBSIZE"]), b":0\r\n");
+        let data = store.data.try_borrow().unwrap();
+        assert!(data.expirations.is_empty());
+        drop(data);
+
+        // A target beyond the bounded batch is still observed correctly by NX.
+        for index in 0..300 {
+            let key = format!("n{index:03}");
+            assert_eq!(
+                run(&store, &[b"SET", key.as_bytes(), b"v", b"PX", b"10"]),
+                b"+OK\r\n"
+            );
+        }
+        clock.0.fetch_add(11, Ordering::SeqCst);
+        assert_eq!(run(&store, &[b"MSETNX", b"n299", b"z"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"GET", b"n299"]), b"$1\r\nz\r\n");
+        assert_eq!(run(&store, &[b"MSET", b"n299", b"y"]), b"+OK\r\n");
+        assert_eq!(run(&store, &[b"GET", b"n299"]), b"$1\r\ny\r\n");
     }
 
     #[test]
