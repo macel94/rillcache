@@ -329,7 +329,7 @@ fn configuration_publication_reclaims_old_lifecycle_and_applies_eviction_before_
     local.refresh_data_config();
     assert_eq!(
         local.data.borrow_mut().drain_lifecycle(),
-        (Vec::new(), Vec::new())
+        crate::engine::data::Lifecycle::default()
     );
     output.clear();
     local.execute(&[b"SET", b"key", b"value"], &mut output);
