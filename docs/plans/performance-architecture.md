@@ -7095,6 +7095,15 @@ index maintenance, no memory change, no persistence change. Extend `LPOS` to
 the same chunk walk so `RANK 1` hit-first stops inside the first matching chunk
 and `MAXLEN` bounds the visited chunks.
 
+**Measured LPOS gap (2026-11-14).** Same 200k 7-byte list, 20 repetitions:
+`LPOS` hit-first **1.305 ms p50** versus Redis 0.180 and Valkey 0.070
+(7–19×), and `RANK -1` **1.037** versus 0.340/0.267 (3–4×). The middle match
+(**2.088** vs 3.617/3.634) and a missing value (**1.479** vs 5.778/5.678)
+already lead, because the C servers scan forward too; only the cases that could
+stop near an edge pay our full flattening cost. This confirms the candidate
+should reuse chunk counts for the forward/backward start and early stop, not
+add a per-element index.
+
 **Prediction.** 200k `LINDEX 0/100000/-1` and `LPOS` hit-first fall to
 **≤0.3 ms p50** (10–15 µs of chunk arithmetic plus one chunk touch; Redis
 0.05–0.07). A missing `LPOS` remains scan-bound (already leading at 1.81 vs
