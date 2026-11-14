@@ -225,6 +225,52 @@ fn sort_and_sort_ro_work_in_all_modes() {
         );
         command(
             &mut stream,
+            &[b"SORT", b"nums", b"BY", b"nosort", b"LIMIT", b"0", b"1"],
+            b"*1\r\n$1\r\n2\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"BY", b"nosort", b"LIMIT", b"1", b"1"],
+            b"*1\r\n$1\r\n1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"BY", b"nosort", b"LIMIT", b"0", b"-1"],
+            b"*2\r\n$1\r\n2\r\n$1\r\n1\r\n",
+        );
+        command(
+            &mut stream,
+            &[
+                b"SORT", b"nums", b"BY", b"nosort", b"DESC", b"LIMIT", b"0", b"1",
+            ],
+            b"*1\r\n$1\r\n1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"SORT", b"nums", b"BY", b"nosort", b"LIMIT", b"9", b"1"],
+            b"*0\r\n",
+        );
+        command(
+            &mut stream,
+            &[
+                b"SORT", b"nums", b"BY", b"nosort", b"LIMIT", b"0", b"1", b"STORE", b"stored",
+            ],
+            b":1\r\n",
+        );
+        command(
+            &mut stream,
+            &[b"LRANGE", b"stored", b"0", b"-1"],
+            b"*1\r\n$1\r\n2\r\n",
+        );
+        command(
+            &mut stream,
+            &[
+                b"SORT", b"nums", b"BY", b"nosort", b"LIMIT", b"5", b"1", b"STORE", b"stored",
+            ],
+            b":0\r\n",
+        );
+        command(
+            &mut stream,
             &[b"SORT", b"nums", b"BY", b"w_*", b"ALPHA"],
             b"*2\r\n$1\r\n1\r\n$1\r\n2\r\n",
         );

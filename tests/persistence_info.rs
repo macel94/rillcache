@@ -252,6 +252,9 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
             let text = bulk_text(&read_frame(&mut stream, 0));
             assert_eq!(field(&text, "aof_enabled"), Some("1"), "{text}");
             assert_eq!(field(&text, "aof_rewrite_in_progress"), Some("0"), "{text}");
+            assert_eq!(field(&text, "aof_rewrite_phase"), Some("none"), "{text}");
+            assert_eq!(field(&text, "aof_rewrite_keys_done"), Some("0"), "{text}");
+            assert_eq!(field(&text, "aof_rewrite_keys_total"), Some("0"), "{text}");
             assert_eq!(field(&text, "aof_last_write_status"), Some("ok"), "{text}");
             assert_eq!(
                 field(&text, "aof_last_bgrewrite_status"),
@@ -276,6 +279,23 @@ fn persistence_info_reports_live_journal_state_in_all_modes() {
                 encode_request(&[b"INFO", b"persistence"], &mut request);
                 stream.write_all(&request).unwrap();
                 let text = bulk_text(&read_frame(&mut stream, 0));
+                if field(&text, "aof_rewrite_in_progress") == Some("1") {
+                    let phase = field(&text, "aof_rewrite_phase").expect("rewrite phase");
+                    assert!(
+                        matches!(
+                            phase,
+                            "snapshot" | "reconcile" | "sync" | "commit" | "unavailable"
+                        ),
+                        "{text}"
+                    );
+                    let done = field(&text, "aof_rewrite_keys_done")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .expect("rewrite done count");
+                    let total = field(&text, "aof_rewrite_keys_total")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .expect("rewrite total count");
+                    assert!(total > 0 && done <= total, "{text}");
+                }
                 if field(&text, "aof_rewrite_in_progress") == Some("0") {
                     break;
                 }

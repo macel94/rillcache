@@ -13,6 +13,26 @@ pub(crate) enum Collection {
     ZSet(HashMap<Vec<u8>, f64>),
     ZSetPack(Vec<(Vec<u8>, f64)>),
 }
+fn take_list_slice<'a>(
+    iter: impl Iterator<Item = &'a Vec<u8>>,
+    offset: usize,
+    count: usize,
+) -> Vec<&'a [u8]> {
+    let mut out = Vec::new();
+    let mut skipped = 0usize;
+    for value in iter {
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+        if out.len() >= count {
+            break;
+        }
+        out.push(value.as_slice());
+    }
+    out
+}
+
 impl Collection {
     pub fn is_list(&self) -> bool {
         matches!(self, Self::ListPack(_) | Self::ListQuick(_))
@@ -34,6 +54,37 @@ impl Collection {
         match self {
             Self::ListPack(values) => Some(values.iter().map(Vec::as_slice).collect()),
             Self::ListQuick(nodes) => Some(nodes.iter().flatten().map(Vec::as_slice).collect()),
+            _ => None,
+        }
+    }
+
+    /// Borrow at most `count` elements from `offset`, in stored or reversed
+    /// order, without flattening the chunks. `count == usize::MAX` means all
+    /// remaining elements.
+    pub fn list_slice(&self, offset: usize, count: usize, reverse: bool) -> Option<Vec<&[u8]>> {
+        match self {
+            Self::ListPack(values) => {
+                if reverse {
+                    Some(take_list_slice(values.iter().rev(), offset, count))
+                } else {
+                    Some(take_list_slice(values.iter(), offset, count))
+                }
+            }
+            Self::ListQuick(nodes) => {
+                if reverse {
+                    Some(take_list_slice(
+                        nodes.iter().rev().flat_map(|node| node.iter().rev()),
+                        offset,
+                        count,
+                    ))
+                } else {
+                    Some(take_list_slice(
+                        nodes.iter().flat_map(|node| node.iter()),
+                        offset,
+                        count,
+                    ))
+                }
+            }
             _ => None,
         }
     }

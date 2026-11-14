@@ -113,6 +113,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   GETREDIR`; `COMMAND DOCS`; `CONFIG REWRITE`; `MEMORY MALLOC-STATS|PURGE`;
   `LATENCY GRAPH|HISTOGRAM`; and Redis 8+ command extensions. Some return explicit
   errors, others are unknown commands.
+  **Partial (2026-11-14): named exclusions for common surfaces.**
+  `DUMP`/`RESTORE`/`MIGRATE`, `PFDEBUG`/`PFSELFTEST`, `COMMAND DOCS`,
+  `CONFIG REWRITE` and `MEMORY MALLOC-STATS|PURGE` now return specific
+  capability errors with normal arity validation, documented in
+  [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
+  `LATENCY GRAPH|HISTOGRAM` were already explicit. `CLIENT TRACKING|NO-EVICT|
+  NO-TOUCH|REPLY|CACHING|GETREDIR`, Redis 8+ extensions and the command-by-command
+  differential matrix remain missing.
   **Closes when:** a command-by-command differential matrix exists for supported
   data types and admin surfaces; every absent command is either implemented or
   explicitly excluded with a client-facing error and profile entry.
@@ -212,14 +220,20 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   runs outside the gate and the final residual plus rename plus directory sync run
   under a short gate. `INFO persistence` reports `aof_rewrite_in_progress`, and a
   kill mid-rewrite keeps every acknowledged write (`tests/durability_crash.rs`).
+  **Partial (2026-11-14): bounded rewrite progress.** `INFO persistence` also
+  reports `aof_rewrite_phase` (`snapshot`, `reconcile`, `sync`, `commit`, `none`
+  or `unavailable`) and stable snapshot progress as
+  `aof_rewrite_keys_done`/`aof_rewrite_keys_total`. Reconciliation may revisit a
+  key, so progress stops at the snapshot total instead of counting duplicates;
+  byte progress is not reported.
   **Measured (host-local):** old synchronous pass 130 ms full stall and 129 ms
   worst PING for 20,000 keys (2.5 MB); cooperative start pause 9–20 ms
   (key-list materialisation), 1.6–2.4 ms per 512-key slice, commit under 1 ms plus
   the residual fsync. Completion time still scales with the dataset.
   **Remaining:** no fork or copy-on-write, so the start pause is O(key names) and
   enormous keyspaces still need a measured pause SLO; a sustained write storm
-  lengthens reconciliation rounds; there is no progress percentage, only the
-  in-progress flag. RDB and online backup remain separate items.
+  lengthens reconciliation rounds; there is no byte counter or percentage. RDB
+  and online backup remain separate items.
   **Closes when:** the start pause is bounded independently of key count (or an
   accepted SLO is recorded) and progress reporting covers bytes/keys completed.
 

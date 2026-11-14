@@ -289,8 +289,13 @@ rewrite change it is **not** a single blocking pass:
    fsyncs, renames the temporary file over the journal and reopens it at the
    snapshot end.
 
-`INFO persistence` reports `aof_rewrite_in_progress` while a rewrite is running and
-`aof_last_bgrewrite_status:ok|err` for the last completed attempt. The final
+`INFO persistence` reports `aof_rewrite_in_progress` while a rewrite is running,
+the current `aof_rewrite_phase` (`snapshot`, `reconcile`, `sync`, `commit`, or
+`none` when idle), and stable snapshot progress as
+`aof_rewrite_keys_done`/`aof_rewrite_keys_total`. Reconciliation keys may be
+visited more than once, so the done count deliberately stops at the snapshot
+total and does not invent duplicate progress. `aof_last_bgrewrite_status:ok|err`
+describes the last completed attempt. The final
 snapshot checksum is written and synced before the atomic rename. A crash before
 the rename leaves the previous journal intact; the temporary file is removed on the
 next start and never replayed. Killing the server mid-rewrite keeps every

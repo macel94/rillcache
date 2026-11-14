@@ -7,6 +7,25 @@ fn crc32_matches_the_standard_check_vector() {
     assert_eq!(!super::crc32_update(!0u32, b"123456789"), 0xcbf4_3926);
 }
 
+#[test]
+fn rewrite_progress_reports_snapshot_reconcile_sync_and_commit() {
+    let mut job = super::RewriteJob {
+        keys: vec![b"a".to_vec(), b"b".to_vec()],
+        cursor: 0,
+        pending: std::collections::VecDeque::new(),
+        synced: false,
+        rounds: 0,
+    };
+    assert_eq!(job.progress(), ("snapshot", 0, 2));
+    job.cursor = 2;
+    assert_eq!(job.progress(), ("sync", 2, 2));
+    job.pending.push_back(b"a".to_vec());
+    assert_eq!(job.progress(), ("reconcile", 2, 2));
+    job.pending.clear();
+    job.synced = true;
+    assert_eq!(job.progress(), ("commit", 2, 2));
+}
+
 fn aof_path(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "rillcache-aof-{label}-{}-{:?}.aof",

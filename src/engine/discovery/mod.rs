@@ -1004,16 +1004,22 @@ impl ShardExecutor {
                 || section.eq_ignore_ascii_case(b"default")
                 || section.eq_ignore_ascii_case(b"all")
         }) {
-            let now = self.now(&data);
-            for entry in data.entries.values().filter(|entry| entry.alive(now)) {
-                live_keys += 1;
-                subexpiry_keys += usize::from(!entry.field_ttl.is_empty());
-                if let Some(deadline) = entry.expires {
-                    expiring_keys += 1;
-                    ttl_count += 1;
-                    ttl_sum = ttl_sum.saturating_add(
-                        u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0),
-                    );
+            if data.expirations.is_empty() && data.field_ttls == 0 {
+                // No key or field deadline exists, so every entry is alive and
+                // the expiry fields are zero; avoid the per-entry walk.
+                live_keys = data.entries.len();
+            } else {
+                let now = self.now(&data);
+                for entry in data.entries.values().filter(|entry| entry.alive(now)) {
+                    live_keys += 1;
+                    subexpiry_keys += usize::from(!entry.field_ttl.is_empty());
+                    if let Some(deadline) = entry.expires {
+                        expiring_keys += 1;
+                        ttl_count += 1;
+                        ttl_sum = ttl_sum.saturating_add(
+                            u64::try_from(deadline.saturating_sub(now).max(0)).unwrap_or(0),
+                        );
+                    }
                 }
             }
         }
@@ -1138,8 +1144,11 @@ impl ShardExecutor {
                 if persistence.aof_enabled {
                     let _ = write!(
                         text,
-                        "\r\naof_rewrite_in_progress:{}\r\naof_last_bgrewrite_status:{}\r\naof_last_write_status:{}",
+                        "\r\naof_rewrite_in_progress:{}\r\naof_rewrite_phase:{}\r\naof_rewrite_keys_done:{}\r\naof_rewrite_keys_total:{}\r\naof_last_bgrewrite_status:{}\r\naof_last_write_status:{}",
                         u8::from(persistence.rewrite_in_progress),
+                        persistence.rewrite_phase,
+                        persistence.rewrite_keys_done,
+                        persistence.rewrite_keys_total,
                         if persistence.rewrite_failed {
                             "err"
                         } else {
@@ -1282,6 +1291,10 @@ fn command(arguments: &[&[u8]], output: &mut Vec<u8>) {
                 output.extend_from_slice(b"\r\n");
             }
         }
+    } else if sub.eq_ignore_ascii_case(b"DOCS") {
+        output.extend_from_slice(
+            b"-ERR COMMAND DOCS is not supported; use COMMAND INFO or COMMAND LIST\r\n",
+        );
     } else {
         output.extend_from_slice(b"-ERR unsupported COMMAND subcommand\r\n");
     }
@@ -1347,6 +1360,29 @@ fn write_array_len(length: usize, output: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn info_keyspace_fast_path_matches_exact_counts() {
+        let store = crate::engine::Store::new(64 * 1024 * 1024);
+        let mut out = Vec::new();
+        for index in 0..1_000 {
+            let key = format!("k{index:04}");
+            store.execute(&[b"SET", key.as_bytes(), b"v"], &mut out);
+            out.clear();
+        }
+        store.execute(&[b"INFO", b"keyspace"], &mut out);
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("db0:keys=1000,expires=0,avg_ttl=0,subexpiry=0"),
+            "{text}"
+        );
+        out.clear();
+        store.execute(&[b"SET", b"ttl", b"v", b"PX", b"60000"], &mut out);
+        out.clear();
+        store.execute(&[b"INFO", b"keyspace"], &mut out);
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("db0:keys=1001,expires=1,avg_ttl="), "{text}");
+    }
 
     #[test]
     fn info_releases_its_data_snapshot_before_waiting_for_pubsub() {
