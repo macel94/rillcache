@@ -1540,7 +1540,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
 | MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) vs 4.1/3.9 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) vs 3.3–3.6 µs; single p50 and 10-element controls at the floor | 4.47, admitted | AC49 | none |
-| BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` 201.6 ms vs 5.08/5.14 (39–44×); `BITPOS 0 0 -1` 209.4 vs 4.79/5.96; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
+| BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` pre-fix 201.6 ms vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; `BITPOS 0 0 -1` 209.4 vs 4.79/5.96, post-fix 2.23; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 ms vs 0.42/0.34, `ZPOPMAX` 159.9 vs 0.21/0.29, `ZPOPMIN 10` 146.6 vs 0.35/0.16, `ZMPOP` 155.8 vs 0.16/0.20 (373–974×); 100-member control at the floor | 4.49, admitted | AC51 | none |
@@ -2810,7 +2810,12 @@ explicit ordering decision. Keep small pack paths and all reply semantics.
   `BITCOUNT` now sums `chunks_exact(8)` as `u64::count_ones()` with a remainder
   pass and keeps the masked head/tail for BIT ranges; full-value 16 MB
   `BITCOUNT` measures **5.35 ms** versus Redis 2.74 and Valkey 3.43, down from
-  23.0. `BITPOS` remains for 4.37.
+  23.0. `BITPOS` scans whole middle bytes eight at a time (`leading_zeros` for
+  one bits, `leading_ones` for zero bits) with per-byte masked head/tail; 16 MB
+  `BITPOS 0` measures **2.19 ms** versus Redis 3.84 and Valkey 4.89 and
+  `BITPOS 0 0 -1` 2.23 versus 3.78/4.66, down from 201.6/209.4 ms. The three
+  value paths of 4.37 now meet their targets; the `BITFIELD` write path is a
+  separate PR.
 
 **Verdict: adapt both, with the string fix from 4.34.** `SETBIT` should reserve
 and then patch the entry's own `Vec` in place (extend and zero-fill only when the
@@ -5749,7 +5754,8 @@ server); `BITCOUNT` of the 16 MB bitmap shall have p50 ≤6 ms (met at 5.35 ms)
 and p99
 ≤10 ms (≥3.8× faster than 23.0 ms and within ~2× Redis's 3.37 ms); a not-found
 `BITPOS 0` shall have p50 ≤8 ms and p99 ≤15 ms (≥25× faster than 201.6 ms and
-within ~1.6× Redis's 5.08 ms) while a first-bit hit stays at the floor; the 1 MB
+within ~1.6× Redis's 5.08 ms) — met at 2.19 ms, while a first-bit hit stays at
+the floor; the 1 MB
 rows shall be at the command floor; the 64 B controls, `GETBIT` and `STRLEN`
 shall be unchanged; `BITFIELD_RO` and all-`GET` `BITFIELD` shall stay copy-free;
 BYTE and BIT ranges including negative indices, the offset and 512 MiB limits,
