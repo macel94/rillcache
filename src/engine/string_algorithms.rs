@@ -443,27 +443,52 @@ fn popcount(bytes: &[u8]) -> u64 {
 }
 
 fn find_bit(bytes: &[u8], bit: u8, start_bit: usize, end_bit: usize) -> Option<usize> {
-    let first = start_bit / 8;
-    let last = (end_bit / 8).min(bytes.len().checked_sub(1)?);
-    if first > last {
+    if bytes.is_empty() || start_bit > end_bit {
         return None;
     }
-    for (byte_index, byte) in bytes.iter().enumerate().take(last + 1).skip(first) {
-        let from = if byte_index == first {
-            start_bit % 8
+    let last_bit = end_bit.min(bytes.len() * 8 - 1);
+    if start_bit > last_bit {
+        return None;
+    }
+    let first = start_bit / 8;
+    let last = last_bit / 8;
+    if first == last {
+        return find_bit_in_byte(bytes[first], bit, start_bit % 8, last_bit % 8)
+            .map(|offset| first * 8 + offset);
+    }
+    if let Some(offset) = find_bit_in_byte(bytes[first], bit, start_bit % 8, 7) {
+        return Some(first * 8 + offset);
+    }
+    // Full bytes in the middle: eight bytes at a time, MSB-first. `leading_ones`
+    // finds the first zero bit and `leading_zeros` the first one bit in the word.
+    let middle = &bytes[first + 1..last];
+    let (words, remainder) = middle.as_chunks::<8>();
+    for (index, chunk) in words.iter().enumerate() {
+        let word = u64::from_be_bytes(*chunk);
+        let offset = if bit == 0 {
+            word.leading_ones()
         } else {
-            0
+            word.leading_zeros()
         };
-        let to = if byte_index == last { end_bit % 8 } else { 7 };
-        let byte = *byte;
-        for offset in from..=to {
-            let value = (byte >> (7 - offset)) & 1;
-            if value == bit {
-                return Some(byte_index * 8 + offset);
-            }
+        if offset < 64 {
+            return Some((first + 1 + index * 8) * 8 + offset as usize);
         }
     }
+    let middle_bytes = words.len() * 8;
+    for (index, byte) in remainder.iter().enumerate() {
+        if let Some(offset) = find_bit_in_byte(*byte, bit, 0, 7) {
+            return Some((first + 1 + middle_bytes + index) * 8 + offset);
+        }
+    }
+    if let Some(offset) = find_bit_in_byte(bytes[last], bit, 0, last_bit % 8) {
+        return Some(last * 8 + offset);
+    }
     None
+}
+
+/// First bit equal to `bit` in `byte` between MSB-first offsets `from..=to`.
+fn find_bit_in_byte(byte: u8, bit: u8, from: usize, to: usize) -> Option<usize> {
+    (from..=to).find(|offset| ((byte >> (7 - offset)) & 1) == bit)
 }
 
 impl ShardExecutor {

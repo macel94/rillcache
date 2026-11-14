@@ -259,3 +259,52 @@ fn bitcount_matches_the_reference_across_eight_byte_chunk_remainders() {
         }
     }
 }
+
+fn reference_bitpos(data: &[u8], bit: u8, start: usize, end: usize) -> i64 {
+    if data.is_empty() {
+        return -1;
+    }
+    let last = end.min(data.len() * 8 - 1);
+    if start > last {
+        return -1;
+    }
+    (start..=last)
+        .find(|position| ((data[position / 8] >> (7 - position % 8)) & 1) == bit)
+        .map_or(-1, |position| position as i64)
+}
+
+#[test]
+fn bitpos_matches_the_reference_across_word_and_range_boundaries() {
+    let store = Store::new(1024);
+    for pattern in [0x00u8, 0xff, 0x0f, 0xf0, 0x55, 0xaa] {
+        for len in 0..=20usize {
+            let data = vec![pattern; len];
+            assert_eq!(call(&store, &[b"SET", b"k", &data]), b"+OK\r\n");
+            for bit in [0u8, 1] {
+                for start in [0usize, 1, 7, 8, 9, 15, 16, 23, 24] {
+                    for width in [0usize, 1, 7, 8, 9, 15, 16] {
+                        let end = start + width;
+                        let expected = reference_bitpos(&data, bit, start, end);
+                        let start_text = start.to_string();
+                        let end_text = end.to_string();
+                        assert_eq!(
+                            call(
+                                &store,
+                                &[
+                                    b"BITPOS",
+                                    b"k",
+                                    if bit == 0 { b"0" } else { b"1" },
+                                    start_text.as_bytes(),
+                                    end_text.as_bytes(),
+                                    b"BIT"
+                                ]
+                            ),
+                            format!(":{expected}\r\n").into_bytes(),
+                            "pattern={pattern:#x} len={len} bit={bit} start={start} end={end}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
