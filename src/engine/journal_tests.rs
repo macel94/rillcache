@@ -387,6 +387,288 @@ fn expired_hash_field_emits_hexpired_then_del_for_empty_hash() {
 }
 
 #[test]
+fn hash_ttl_updates_emit_hexpire_and_hpersist_only_when_changed() {
+    use crate::engine::{Clock, NotifyFlags};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    struct TestClock(AtomicI64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let clock = Arc::new(TestClock(AtomicI64::new(100)));
+    let store = Store::with_clock(12, clock.clone());
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    assert_eq!(
+        run(&store, &[b"HSET", b"h", b"f", b"v", b"g", b"w"]),
+        b":2\r\n"
+    );
+    while receiver.try_recv().is_ok() {}
+
+    let expect_event = |event: &[u8]| {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, b"h"],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+        assert!(
+            receiver.try_recv().is_err(),
+            "one event per changed command"
+        );
+    };
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HEXPIRE", b"h", b"10", b"FIELDS", b"2", b"f", b"g"]
+        ),
+        b"*2\r\n:1\r\n:1\r\n"
+    );
+    expect_event(b"hexpire");
+
+    // NX finds an existing field TTL for both fields, so nothing changed and no
+    // notification (or WATCH invalidation) may be produced.
+    assert_eq!(
+        run(
+            &store,
+            &[b"HEXPIRE", b"h", b"10", b"NX", b"FIELDS", b"2", b"f", b"g"]
+        ),
+        b"*2\r\n:0\r\n:0\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+
+    assert_eq!(
+        run(&store, &[b"HPERSIST", b"h", b"FIELDS", b"2", b"f", b"g"]),
+        b"*2\r\n:1\r\n:1\r\n"
+    );
+    expect_event(b"hpersist");
+
+    assert_eq!(
+        run(&store, &[b"HPERSIST", b"h", b"FIELDS", b"2", b"f", b"g"]),
+        b"*2\r\n:-1\r\n:-1\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HEXPIRE", b"h", b"1", b"FIELDS", b"1", b"missing"]
+        ),
+        b"*1\r\n:-2\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn hash_delete_events_report_hdel_then_del_only_for_real_removals() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(12);
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect = |event: &[u8], key: &[u8]| {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, key],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"HSET", b"h", b"a", b"1"]), b":1\r\n");
+    while receiver.try_recv().is_ok() {}
+    assert_eq!(run(&store, &[b"HDEL", b"h", b"a"]), b":1\r\n");
+    expect(b"hdel", b"h");
+    expect(b"del", b"h");
+
+    assert_eq!(
+        run(&store, &[b"HSET", b"h2", b"a", b"1", b"b", b"2"]),
+        b":2\r\n"
+    );
+    while receiver.try_recv().is_ok() {}
+    assert_eq!(run(&store, &[b"HDEL", b"h2", b"a"]), b":1\r\n");
+    expect(b"hdel", b"h2");
+    assert_eq!(run(&store, &[b"HDEL", b"h2", b"missing"]), b":0\r\n");
+    assert!(receiver.try_recv().is_err(), "a no-op HDEL emits nothing");
+
+    assert_eq!(run(&store, &[b"HSET", b"h3", b"a", b"1"]), b":1\r\n");
+    while receiver.try_recv().is_ok() {}
+    assert_eq!(
+        run(&store, &[b"HGETDEL", b"h3", b"FIELDS", b"1", b"a"]),
+        b"*1\r\n$1\r\n1\r\n"
+    );
+    expect(b"hdel", b"h3");
+    expect(b"del", b"h3");
+
+    assert_eq!(run(&store, &[b"HSET", b"h4", b"a", b"1"]), b":1\r\n");
+    while receiver.try_recv().is_ok() {}
+    assert_eq!(
+        run(&store, &[b"HGETDEL", b"h4", b"FIELDS", b"1", b"missing"]),
+        b"*1\r\n$-1\r\n"
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "a missed HGETDEL emits nothing"
+    );
+}
+
+#[test]
+fn hsetex_emits_its_exact_write_or_delete_event_pair() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(12);
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect = |event: &[u8], key: &[u8]| {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, key],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(
+        run(&store, &[b"HSETEX", b"h", b"FIELDS", b"1", b"a", b"1"]),
+        b":1\r\n"
+    );
+    expect(b"hset", b"h");
+    assert!(receiver.try_recv().is_err(), "no TTL option, no hexpire");
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"h", b"PX", b"1000", b"FIELDS", b"1", b"a", b"2"]
+        ),
+        b":1\r\n"
+    );
+    expect(b"hset", b"h");
+    expect(b"hexpire", b"h");
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"h", b"KEEPTTL", b"FIELDS", b"1", b"a", b"3"]
+        ),
+        b":1\r\n"
+    );
+    expect(b"hset", b"h");
+    assert!(receiver.try_recv().is_err(), "KEEPTTL emits no hexpire");
+
+    // A past absolute TTL removes the last field, so the hash and its key go.
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"h", b"PXAT", b"1", b"FIELDS", b"1", b"a", b"4"]
+        ),
+        b":1\r\n"
+    );
+    expect(b"hdel", b"h");
+    expect(b"del", b"h");
+    assert_eq!(run(&store, &[b"EXISTS", b"h"]), b":0\r\n");
+
+    // No field existed and nothing was created; the successful no-op emits
+    // nothing and does not touch the key's WATCH version.
+    assert_eq!(
+        run(
+            &store,
+            &[
+                b"HSETEX", b"missing", b"PXAT", b"1", b"FIELDS", b"1", b"a", b"1"
+            ]
+        ),
+        b":1\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(run(&store, &[b"EXISTS", b"missing"]), b":0\r\n");
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HSETEX", b"missing", b"FXX", b"FIELDS", b"1", b"a", b"1"]
+        ),
+        b":0\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn hgetex_reports_its_ttl_events_without_a_write_event() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(12);
+    store.set_notify_flags(NotifyFlags::parse(b"EA").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect = |event: &[u8], key: &[u8]| {
+        let mut channel = b"__keyevent@0__:".to_vec();
+        channel.extend_from_slice(event);
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", &channel, key],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(
+        run(&store, &[b"HSET", b"h", b"a", b"1", b"b", b"2"]),
+        b":2\r\n"
+    );
+    while receiver.try_recv().is_ok() {}
+
+    // Persisting a field with no TTL changes nothing and emits nothing.
+    assert_eq!(
+        run(
+            &store,
+            &[b"HGETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a"]
+        ),
+        b"*1\r\n$1\r\n1\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HGETEX", b"h", b"EX", b"10", b"FIELDS", b"1", b"a"]
+        ),
+        b"*1\r\n$1\r\n1\r\n"
+    );
+    expect(b"hexpire", b"h");
+    assert!(
+        receiver.try_recv().is_err(),
+        "HGETEX must not emit a write event"
+    );
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"HGETEX", b"h", b"PERSIST", b"FIELDS", b"1", b"a"]
+        ),
+        b"*1\r\n$1\r\n1\r\n"
+    );
+    expect(b"hpersist", b"h");
+
+    // A missing field is a read miss, not a TTL change.
+    assert_eq!(
+        run(
+            &store,
+            &[b"HGETEX", b"h", b"EX", b"10", b"FIELDS", b"1", b"missing"]
+        ),
+        b"*1\r\n$-1\r\n"
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()

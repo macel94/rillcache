@@ -1502,6 +1502,17 @@ impl ShardExecutor {
         for key in lifecycle.deleted {
             self.notify_event("del", &key, NotifyCategory::Generic);
         }
+        for (event, key) in lifecycle.hash_events {
+            let (name, category) = match event.as_slice() {
+                b"del" => ("del", NotifyCategory::Generic),
+                b"hdel" => ("hdel", NotifyCategory::Hash),
+                b"hset" => ("hset", NotifyCategory::Hash),
+                b"hexpire" => ("hexpire", NotifyCategory::Hash),
+                b"hpersist" => ("hpersist", NotifyCategory::Hash),
+                _ => continue,
+            };
+            self.notify_event(name, &key, category);
+        }
     }
 
     pub(super) fn notify_event(&self, event: &str, key: &[u8], category: NotifyCategory) {
@@ -2206,6 +2217,9 @@ fn notification_events(
     if command.eq_ignore_ascii_case(b"MSETEX") {
         return msetex_notification_events(data, arguments, keys, flags, reply);
     }
+    if command.eq_ignore_ascii_case(b"HDEL") || command.eq_ignore_ascii_case(b"HGETDEL") {
+        return hash_delete_events(command, data, keys, flags, reply);
+    }
     let hsetex = command.eq_ignore_ascii_case(b"HSETEX");
     if hsetex && reply != b":1\r\n" {
         return Vec::new();
@@ -2344,6 +2358,74 @@ fn list_move_events(
     events
 }
 
+/// `HDEL`/`HGETDEL` publish `hdel` for a real removal and a generic `del` when
+/// that removal emptied and deleted the hash. A command that merely observed
+/// lazy field expiry deleted nothing and must not look like a successful delete.
+fn hash_delete_events(
+    command: &[u8],
+    data: &Data,
+    keys: &[Vec<u8>],
+    flags: NotifyFlags,
+    reply: &[u8],
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let deleted = if command.eq_ignore_ascii_case(b"HDEL") {
+        reply != b":0\r\n"
+    } else {
+        hash_getdel_has_value(reply)
+    };
+    if !deleted {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    for key in keys {
+        if data.was_evicted(key) {
+            continue;
+        }
+        if flags.hash {
+            events.extend(build_event(flags, b"hdel", key));
+        }
+        if flags.generic && !data.entries.contains_key(key) {
+            events.extend(build_event(flags, b"del", key));
+        }
+    }
+    events
+}
+
+/// True when the HGETDEL array reply contains at least one non-null bulk value.
+fn hash_getdel_has_value(reply: &[u8]) -> bool {
+    if !reply.starts_with(b"*") {
+        return false;
+    }
+    let Some(end) = reply.iter().position(|byte| *byte == b'\n') else {
+        return false;
+    };
+    let mut offset = end + 1;
+    while offset < reply.len() {
+        if reply[offset] != b'$' {
+            return false;
+        }
+        let Some(end) = reply[offset..].iter().position(|byte| *byte == b'\n') else {
+            return false;
+        };
+        let header_end = offset + end;
+        let Ok(length) = std::str::from_utf8(&reply[offset + 1..header_end.saturating_sub(1)])
+            .unwrap_or("")
+            .parse::<i64>()
+        else {
+            return false;
+        };
+        offset = header_end + 1;
+        if length < 0 {
+            continue;
+        }
+        let Ok(length) = usize::try_from(length) else {
+            return false;
+        };
+        return offset.saturating_add(length).saturating_add(2) <= reply.len();
+    }
+    false
+}
+
 fn build_event(flags: NotifyFlags, event: &[u8], key: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut events = Vec::with_capacity(2);
     if flags.keyspace {
@@ -2367,17 +2449,6 @@ fn event_for(
     now: i64,
 ) -> Option<(&'static str, NotifyCategory)> {
     let name = std::str::from_utf8(command).ok()?.to_ascii_lowercase();
-    if name == "hgetdel" {
-        let stored = data
-            .entries
-            .get(key)
-            .is_some_and(|entry| entry.collection.as_ref().is_some_and(Collection::is_hash));
-        return Some(if stored {
-            ("hdel", NotifyCategory::Hash)
-        } else {
-            ("del", NotifyCategory::Generic)
-        });
-    }
     let category = match name.as_str() {
         "del" | "delex" | "delifeq" | "unlink" => {
             return Some(("del", NotifyCategory::Generic));
@@ -2444,7 +2515,9 @@ fn event_for(
         "sinterstore" => ("sinterstore", NotifyCategory::Set),
         "sunionstore" => ("sunionstore", NotifyCategory::Set),
         "sdiffstore" => ("sdiffstore", NotifyCategory::Set),
-        "hset" | "hsetnx" | "hmset" | "hsetex" => ("hset", NotifyCategory::Hash),
+        "hset" | "hsetnx" | "hmset" => ("hset", NotifyCategory::Hash),
+        "hexpire" | "hpexpire" | "hexpireat" | "hpexpireat" => ("hexpire", NotifyCategory::Hash),
+        "hpersist" => ("hpersist", NotifyCategory::Hash),
         "hdel" => ("hdel", NotifyCategory::Hash),
         "hincrby" => ("hincrby", NotifyCategory::Hash),
         "hincrbyfloat" => ("hincrbyfloat", NotifyCategory::Hash),

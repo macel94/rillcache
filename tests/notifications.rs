@@ -1107,7 +1107,124 @@ fn hgetdel_emits_hash_and_deletion_events() {
         frame(&[
             b"pmessage",
             b"__keyevent@0__:*",
+            b"__keyevent@0__:hdel",
+            b"h"
+        ])
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
             b"__keyevent@0__:del",
+            b"h"
+        ])
+    );
+
+    send(&mut writer, &[b"HSET", b"h2", b"a", b"1"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hset",
+            b"h2"
+        ])
+    );
+    send(&mut writer, &[b"HDEL", b"h2", b"a"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hdel",
+            b"h2"
+        ])
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:del",
+            b"h2"
+        ])
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn hexpire_and_hpersist_emit_only_changed_field_ttls() {
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+    send(&mut writer, &[b"HSET", b"h", b"f", b"v"], b":1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hset",
+            b"h"
+        ])
+    );
+
+    send(
+        &mut writer,
+        &[b"HEXPIRE", b"h", b"10", b"FIELDS", b"1", b"f"],
+        b"*1\r\n:1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hexpire",
+            b"h"
+        ])
+    );
+
+    // A condition that changes nothing must not publish an event. The next
+    // frame read is the HPERSIST event, proving nothing was queued in between.
+    send(
+        &mut writer,
+        &[b"HEXPIRE", b"h", b"10", b"NX", b"FIELDS", b"1", b"f"],
+        b"*1\r\n:0\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"HPERSIST", b"h", b"FIELDS", b"1", b"f"],
+        b"*1\r\n:1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hpersist",
+            b"h"
+        ])
+    );
+
+    // Repeating HPERSIST changes nothing, so the next frame is the HEXPIRE
+    // event from the following command.
+    send(
+        &mut writer,
+        &[b"HPERSIST", b"h", b"FIELDS", b"1", b"f"],
+        b"*1\r\n:-1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"HEXPIRE", b"h", b"10", b"FIELDS", b"1", b"f"],
+        b"*1\r\n:1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hexpire",
             b"h"
         ])
     );

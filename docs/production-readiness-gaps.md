@@ -77,6 +77,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   There is no published matrix of supported Redis/Valkey versions, commands,
   client libraries, topology, persistence mode and exclusions. "Drop-in" is
   therefore untestable and ambiguous.
+  **Partial (2026-11-14): draft standalone profile.** The
+  [production profile](production-profile.md) now declares the reference
+  versions, topology, supported families, explicit exclusions, persistence and
+  security boundaries, client matrix and limits. It is explicitly a draft, not a
+  readiness claim. The command-by-command CI matrix that runs every profile row
+  against pinned Redis and Valkey is still absent, as are the language-client,
+  durability, security and SLO evidence rows.
   **Closes when:** a versioned profile lists exact upstream versions, command
   matrix, client libraries, deployment topology and excluded features; CI runs
   every row against pinned Redis and Valkey and records pass/fail.
@@ -145,11 +152,22 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss`, new-key and `FLUSH*` event classes are unsupported; delivery is
   at-most-once and process-local.
-  **Partial (2026-11-14): hash field-expiry notifications.** A lazy field-expiry
-  pass now publishes one `hexpired` event per affected key and an additional
-  generic `del` when the empty hash is removed, including when the observing
-  command is rejected. Tests cover the rejected-write case and publication order;
-  the documented event matrix records the lazy-only detection point.
+  **Partial (2026-11-14): hash lifecycle and TTL notifications.** A lazy
+  field-expiry pass publishes one `hexpired` event per affected key and an
+  additional generic `del` when the empty hash is removed, including when the
+  observing command is rejected. `HEXPIRE`/`HPEXPIRE`/`HEXPIREAT`/`HPEXPIREAT`
+  publish `hexpire` and `HPERSIST` publishes `hpersist` when at least one field
+  actually changed, with no event or `WATCH` bump for condition failures.
+  `HDEL`/`HGETDEL` publish `hdel` only for a real removal and append `del` when
+  that removal emptied the hash; no-op deletes and commands that only observed
+  lazy expiry emit no delete event. Tests cover publication order and the no-op
+  cases, and the event matrix records the lazy-only detection point.
+  `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
+  deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
+  `hexpire`/`hpersist` for future deadlines and successful persists, never a
+  synthetic write; its past-deadline deletion events and the
+  `keymiss`/new-key/`FLUSH*` classes remain open. Delivery is at-most-once and
+  process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
@@ -460,12 +478,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** those controls are implemented or explicitly replaced by a
   reviewed external terminator, with rotation and failure tests.
 
-- [ ] **S6. Live deauthentication/session revocation is missing.** [P1]
-  Rotating or disabling a password affects new authentication decisions; an
-  already authenticated connection remains authenticated. There is no bounded
-  reauthentication or administrative revoke-and-close policy.
-  **Closes when:** a documented revocation policy is implemented and tested for
-  live sessions, or operators have a tested process to close affected sessions.
+- [x] **S6. Live deauthentication/session revocation is missing.** [P1]
+  **Complete (2026-11-14): documented and tested administrative revocation.**
+  `CLIENT KILL USER <name>` closes every matching authenticated session, returns
+  the number closed and skips the caller by default; ID/ADDR/LADDR/MAXAGE/TYPE
+  filters cover narrower clients. The rotation runbook now requires
+  rotate-then-revoke, and `tests/acl.rs::client_kill_user_revokes_live_sessions`
+  proves the closed session, the retained unrelated session and the reconnect
+  path. **Retained limitation:** revocation is operator-driven; changing
+  `requirepass` or an ACL entry does not automatically deauthenticate existing
+  connections, as in Redis.
 
 - [ ] **S7. Tenant isolation is absent.** [P1]
   All ACL users share one process, keyspace, memory budget and CPU. ACL rules do
@@ -485,6 +507,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   There are client/payload/frame limits and bounded output backpressure, but no
   slow-client thresholds, global connection/command budgets, per-user quotas or
   adversarial protocol fuzzing. O(N) commands can occupy the owner.
+  **Partial (2026-11-14): deterministic RESP fuzz/property corpus.**
+  `tests/protocol_fuzz.rs` now drives generated binary frames through every
+  fragmentation boundary, random byte streams under tight frame/bulk/argument
+  limits, random inline input, and multi-command pipelines. It asserts bounded
+  consumption, at-most-once execution, argument/limit bounds and no panic; every
+  case is reproducible from its seed. Slow-client thresholds, global/user
+  budgets, CPU quotas and a documented overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
   shedding behavior exists.
@@ -769,6 +798,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,
   randomized model checking or sustained adversarial input corpus.
+  **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
+  adds seeded binary-frame fragmentation, random bytes under tight limits,
+  random inline input and pipeline consumption properties; it runs in ordinary
+  CI and every failure is reproducible from its printed seed. State-machine
+  model checking, command-level differential properties and sustained
+  adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
 - [ ] **V5. Public documentation can still drift from executable behavior.** [P1]
