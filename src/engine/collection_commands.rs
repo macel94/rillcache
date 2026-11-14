@@ -7,6 +7,7 @@
 
 use super::collection_config::CollectionConfig;
 use super::data::{Collection, Data, Entry};
+use super::eviction::EvictionPolicy;
 use super::options::{NOT_INTEGER, OOM, SYNTAX, parse_integer};
 use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
@@ -1080,6 +1081,45 @@ pub(crate) enum ListMoveOutcome {
     WrongType,
     Oom,
     JournalError,
+}
+
+fn list_position_of(collection: &Collection, value: &[u8]) -> Option<usize> {
+    match collection {
+        Collection::ListPack(values) => values
+            .iter()
+            .position(|candidate| candidate.as_slice() == value),
+        Collection::ListQuick(nodes) => {
+            let mut index = 0usize;
+            for chunk in nodes {
+                if let Some(offset) = chunk
+                    .iter()
+                    .position(|candidate| candidate.as_slice() == value)
+                {
+                    return Some(index + offset);
+                }
+                index += chunk.len();
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn quick_list_insert(nodes: &mut VecDeque<VecDeque<Vec<u8>>>, mut position: usize, value: Vec<u8>) {
+    for chunk in nodes.iter_mut() {
+        if position <= chunk.len() {
+            chunk.insert(position, value);
+            return;
+        }
+        position -= chunk.len();
+    }
+    if let Some(back) = nodes.back_mut() {
+        back.push_back(value);
+    } else {
+        let mut chunk = VecDeque::new();
+        chunk.push_back(value);
+        nodes.push_back(chunk);
+    }
 }
 
 fn quick_list_len(nodes: &VecDeque<VecDeque<Vec<u8>>>) -> usize {
@@ -2838,23 +2878,81 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        let Some(entry) = data.entries.get(key) else {
+        if !data.entries.contains_key(key) {
             integer(0, out);
             return;
-        };
-        let Some(mut list) = entry.collection.as_ref().and_then(Collection::list_values) else {
+        }
+        let collection = data
+            .entries
+            .get(key)
+            .and_then(|entry| entry.collection.as_ref());
+        let Some(collection) = collection.filter(|collection| collection.is_list()) else {
             wrong_type(out);
             return;
         };
-        let Some(position) = list.iter().position(|value| value.as_slice() == args[3]) else {
-            integer(-1, out);
-            return;
+        let length = match collection {
+            Collection::ListPack(values) => values.len(),
+            Collection::ListQuick(nodes) => quick_list_len(nodes),
+            _ => 0,
         };
-        let position = if before { position } else { position + 1 };
-        if list.len() >= MAX_ELEMENTS {
+        if length >= MAX_ELEMENTS {
             out.extend_from_slice(OOM);
             return;
         }
+        let Some(pivot) = list_position_of(collection, args[3]) else {
+            integer(-1, out);
+            return;
+        };
+        let position = if before { pivot } else { pivot + 1 };
+        if matches!(data.eviction, EvictionPolicy::NoEviction) {
+            let previous = data.entries.get(key).expect("list").payload_len;
+            let added = args[4].len();
+            let Some(new_payload_len) = previous.checked_add(added) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            let Some(payload) = data.reserve(
+                key,
+                new_payload_len,
+                Some(previous),
+                self.payload_limit(),
+                now,
+            ) else {
+                out.extend_from_slice(OOM);
+                return;
+            };
+            if let Some(entry) = data.entries.get_mut(key) {
+                let inserted = match entry.collection.as_mut() {
+                    Some(Collection::ListPack(values)) if position <= values.len() => {
+                        values.insert(position, args[4].to_vec());
+                        true
+                    }
+                    Some(Collection::ListQuick(nodes)) => {
+                        quick_list_insert(nodes, position, args[4].to_vec());
+                        true
+                    }
+                    _ => false,
+                };
+                if inserted {
+                    entry.payload_len = new_payload_len;
+                    data.payload_bytes = payload;
+                    data.touch(key);
+                    integer((length + 1) as i64, out);
+                    return;
+                }
+            }
+            out.extend_from_slice(OOM);
+            return;
+        }
+        let Some(mut list) = data
+            .entries
+            .get(key)
+            .and_then(|entry| entry.collection.as_ref())
+            .and_then(Collection::list_values)
+        else {
+            wrong_type(out);
+            return;
+        };
         list.insert(position, args[4].to_vec());
         let expires = data.entries.get(key).expect("list").expires;
         let previous = data.entries.get(key).expect("list").payload_len();

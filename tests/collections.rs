@@ -415,3 +415,65 @@ fn lset_replaces_quicklist_elements_in_place() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn linsert_edits_quicklist_chunks_in_place() {
+    let server = start(None);
+    let mut stream = connect(&server);
+    let members: Vec<String> = (0..700).map(|index| format!("v{index:04}")).collect();
+    let mut args: Vec<&[u8]> = vec![b"RPUSH", b"big"];
+    args.extend(members.iter().map(|member| member.as_bytes()));
+    command(&mut stream, &args, b":700\r\n");
+    command(
+        &mut stream,
+        &[b"LINSERT", b"big", b"BEFORE", b"v0350", b"x"],
+        b":701\r\n",
+    );
+    command(&mut stream, &[b"LINDEX", b"big", b"350"], b"$1\r\nx\r\n");
+    command(
+        &mut stream,
+        &[b"LINDEX", b"big", b"351"],
+        b"$5\r\nv0350\r\n",
+    );
+    command(
+        &mut stream,
+        &[b"LINSERT", b"big", b"AFTER", b"v0000", b"y"],
+        b":702\r\n",
+    );
+    command(&mut stream, &[b"LINDEX", b"big", b"0"], b"$5\r\nv0000\r\n");
+    command(&mut stream, &[b"LINDEX", b"big", b"1"], b"$1\r\ny\r\n");
+    command(
+        &mut stream,
+        &[b"LINSERT", b"big", b"BEFORE", b"missing", b"z"],
+        b":-1\r\n",
+    );
+    command(&mut stream, &[b"LLEN", b"big"], b":702\r\n");
+    command(
+        &mut stream,
+        &[b"LINSERT", b"absent", b"BEFORE", b"a", b"b"],
+        b":0\r\n",
+    );
+    command(&mut stream, &[b"SET", b"wrong", b"v"], b"+OK\r\n");
+    command(
+        &mut stream,
+        &[b"LINSERT", b"wrong", b"BEFORE", b"a", b"b"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+
+    command(
+        &mut stream,
+        &[b"RPUSH", b"small", b"a", b"b", b"c"],
+        b":3\r\n",
+    );
+    command(
+        &mut stream,
+        &[b"LINSERT", b"small", b"BEFORE", b"b", b"x"],
+        b":4\r\n",
+    );
+    command(
+        &mut stream,
+        &[b"LRANGE", b"small", b"0", b"-1"],
+        b"*4\r\n$1\r\na\r\n$1\r\nx\r\n$1\r\nb\r\n$1\r\nc\r\n",
+    );
+    server.shutdown().unwrap();
+}
