@@ -14,8 +14,10 @@ name, and optional client-library name/version. State follows the connection
 when a fixed worker owns it or when the managed per-client socket lease is
 handed to another worker. Metadata is limited to 256 bytes for names and 128
 bytes per library field; values must be printable non-space ASCII. Empty names
-clear the name. `CLIENT INFO` exposes the retained ID, database zero, and set
-metadata; it is intentionally a small subset of Redis's connection statistics.
+clear the name. `CLIENT INFO` exposes the retained ID, database zero, set
+metadata, `age`, the `b`/`P`/`N` flags, `sub`/`psub` counts and the WATCH count. It remains a bounded
+subset of Redis's connection statistics: no fd, idle time, input/output buffer,
+allocator, network-byte or cross-process fields are fabricated.
 
 Supported connection commands are `CLIENT ID`, `CLIENT SETNAME`, `CLIENT
 GETNAME`, `CLIENT SETINFO LIB-NAME|LIB-VER`, `CLIENT INFO`, `CLIENT LIST`,

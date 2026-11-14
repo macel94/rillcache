@@ -263,15 +263,40 @@ impl Session {
             append_info(&mut info, b"name", self.name.as_deref());
             append_info(&mut info, b"lib-name", self.library_name.as_deref());
             append_info(&mut info, b"lib-ver", self.library_version.as_deref());
-            if let Some(snapshot) = store.client_snapshot(self.id) {
-                append_info(&mut info, b"addr", Some(snapshot.addr.as_bytes()));
-                append_info(&mut info, b"laddr", Some(snapshot.laddr.as_bytes()));
-                append_info(
-                    &mut info,
-                    b"resp",
-                    Some(if snapshot.resp3 { b"3" } else { b"2" }),
-                );
-                append_info(&mut info, b"user", Some(&snapshot.user));
+            let (age, blocked, sub, psub, addr, laddr, resp, user) =
+                match store.client_snapshot(self.id) {
+                    Some(snapshot) => (
+                        Some(snapshot.age_seconds),
+                        snapshot.blocked,
+                        snapshot.sub,
+                        snapshot.psub,
+                        Some(snapshot.addr),
+                        Some(snapshot.laddr),
+                        if snapshot.resp3 { 3 } else { 2 },
+                        Some(snapshot.user),
+                    ),
+                    None => (None, false, 0, 0, None, None, 2, None),
+                };
+            if let Some(addr) = addr.as_deref() {
+                append_info(&mut info, b"addr", Some(addr.as_bytes()));
+            }
+            if let Some(laddr) = laddr.as_deref() {
+                append_info(&mut info, b"laddr", Some(laddr.as_bytes()));
+            }
+            if let Some(age) = age {
+                let _ = write!(info, " age={age}");
+            }
+            let mut flags = String::new();
+            if blocked {
+                flags.push('b');
+            }
+            flags.push(if sub + psub > 0 { 'P' } else { 'N' });
+            let _ = write!(info, " flags={flags} sub={sub} psub={psub}");
+            let watch = self.watched.tokens().len();
+            let _ = write!(info, " watch={watch}");
+            append_info(&mut info, b"resp", Some(resp.to_string().as_bytes()));
+            if let Some(user) = user.as_deref() {
+                append_info(&mut info, b"user", Some(user));
             }
             encode_bulk(Some(&info), output);
         } else {

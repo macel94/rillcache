@@ -143,9 +143,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   pub/sub, TLS, reconnect and error-path tests against the supported profile.
 
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
-  `keymiss`, new-key and `FLUSH*` event classes are unsupported; field-expiry
-  event parity (`hexpire`/`hdel`/`hexpired`) is not implemented; delivery is
+  `keymiss`, new-key and `FLUSH*` event classes are unsupported; delivery is
   at-most-once and process-local.
+  **Partial (2026-11-14): hash field-expiry notifications.** A lazy field-expiry
+  pass now publishes one `hexpired` event per affected key and an additional
+  generic `del` when the empty hash is removed, including when the observing
+  command is rejected. Tests cover the rejected-write case and publication order;
+  the documented event matrix records the lazy-only detection point.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
@@ -519,10 +523,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   profile.
 
 - [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
-  `INFO` has aggregate command stats but no `INFO latencystats`, histograms,
-  percentiles, per-client fd/idle/command/buffer/network/memory fields or
-  blocked-client count. `LATENCY` exposes only command and expire-cycle series;
+  `INFO` has aggregate command stats but no `INFO latencystats`, histograms or
+  percentiles. `LATENCY` exposes only command and expire-cycle series;
   `LATENCY GRAPH|HISTOGRAM` are unsupported.
+  **Partial (2026-11-14): bounded CLIENT INFO session state.** `CLIENT INFO`
+  now reports `age`, `b`/`P`/`N` flags, `sub`/`psub` and the WATCH count, using
+  state already held by the session. `INFO clients` already reports `blocked_clients`. Per-client fd,
+  idle time, last command, input/output buffer bytes, network bytes, allocator
+  memory, latency histograms and `INFO latencystats` remain absent.
   **Closes when:** the supported metrics contract reports per-command latency
   distributions and per-client resource/queue state with documented units and
   sampling limits.

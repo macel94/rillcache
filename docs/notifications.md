@@ -90,6 +90,15 @@ records can be dropped, and events are never duplicated or retried.
 Command events for a key that was itself chosen as an eviction victim in the same
 command are suppressed so an eviction does not appear as a successful mutation.
 
+Hash field expiry uses its own lifecycle pair. A lazy pass that removes one or
+more expired fields publishes a single `hexpired` event for that key (`h` class),
+and, when the last field disappeared and the key itself was removed, a generic
+`del` event (`g` class) afterwards. The events are published even when the
+command that observed the expiry fails or writes nothing, because the removal
+really happened; an unrelated rejected write still emits no hash command event.
+Field expiry is detected only when the hash key is touched by a command, so the
+event can be delayed until the next access.
+
 Supported event names mirror the command family: `set`, `del`, `expire`,
 `persist`, `rename_from`, `rename_to`, `copy_to`, `append`, `setrange`, `setbit`,
 `incrby`, `decrby`, list push/pop/insert/trim/rem, set add/remove/pop/move/store,
@@ -124,8 +133,10 @@ relative to other connections is therefore not a global happens-before guarantee
 
 Unit tests cover flag parsing/round-trip, `A` expansion and rejection of
 unsupported classes, plus injected-clock lazy/reaped expiry and eviction
-publication. All-mode wire tests cover keyspace/keyevent frames, category
-filtering, runtime enable/disable, `MSET`/`MULTI`, ordered MSETEX set/expire
-pairs, duplicate/binary keys, KEEPTTL and rejected writes, hash/list/set/zset/stream/HLL
-events, expire, rename, eviction/`expired` classes, blocking-pop events, binary
-channels and `CONFIG`/`INFO` exposure.
+publication. Hash-field tests cover the rejected-write case and the
+`hexpired`-then-`del` order when the final field expires. All-mode wire tests
+cover keyspace/keyevent frames, category filtering, runtime enable/disable,
+`MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
+and rejected writes, hash/list/set/zset/stream/HLL events, expire, rename,
+eviction/`expired` classes, blocking-pop events, binary channels and
+`CONFIG`/`INFO` exposure.

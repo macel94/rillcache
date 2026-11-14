@@ -41,6 +41,22 @@ fn hello_protocol_switch_and_errors_are_atomic() {
 }
 
 #[test]
+fn client_info_reports_watch_state() {
+    let store = Store::new(1024);
+    let mut session = Session::new();
+    let info = call(&mut session, &store, &[b"CLIENT", b"INFO"]);
+    assert!(info.windows(7).any(|value| value == b"watch=0"));
+
+    assert_eq!(call(&mut session, &store, &[b"WATCH", b"key"]), b"+OK\r\n");
+    let info = call(&mut session, &store, &[b"CLIENT", b"INFO"]);
+    assert!(info.windows(7).any(|value| value == b"watch=1"));
+
+    assert_eq!(call(&mut session, &store, &[b"UNWATCH"]), b"+OK\r\n");
+    let info = call(&mut session, &store, &[b"CLIENT", b"INFO"]);
+    assert!(info.windows(7).any(|value| value == b"watch=0"));
+}
+
+#[test]
 fn hello_no_argument_reports_current_protocol_and_setname_is_atomic() {
     let store = Store::new(1024);
     let mut session = Session::new();
@@ -108,6 +124,10 @@ fn metadata_validation_is_bounded_atomic_and_observable() {
     let info = call(&mut session, &store, &[b"CLIENT", b"INFO"]);
     assert!(info.windows(13).any(|v| v == b"name=client-a"));
     assert!(info.windows(12).any(|v| v == b"lib-name=lib"));
+    assert!(info.windows(7).any(|v| v == b"flags=N"));
+    assert!(info.windows(5).any(|v| v == b"sub=0"));
+    assert!(info.windows(6).any(|v| v == b"psub=0"));
+    assert!(info.windows(7).any(|v| v == b"watch=0"));
     assert_eq!(
         call(
             &mut session,
