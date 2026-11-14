@@ -11,6 +11,7 @@ use super::eviction::EvictionPolicy;
 use super::options::{NOT_INTEGER, OOM, SYNTAX, parse_integer};
 use super::{ShardExecutor, arity, integer, internal_error, wrong_type};
 use crate::protocol::encode_bulk;
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -3280,6 +3281,108 @@ fn owned_set(data: &mut Data, key: &[u8], now: i64) -> Result<Option<BTreeSet<Ve
     }
 }
 
+/// Expire the requested keys once, then borrow each source collection. A
+/// missing key is `None` and a wrong type aborts before any result work.
+fn borrow_sets<'a>(
+    data: &'a mut Data,
+    keys: &[&[u8]],
+    now: i64,
+) -> Result<Vec<Option<&'a Collection>>, ()> {
+    for key in keys {
+        data.expire_key(key, now);
+    }
+    let mut sources = Vec::with_capacity(keys.len());
+    for key in keys {
+        match data.entries.get(*key) {
+            None => sources.push(None),
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_set) => {
+                sources.push(entry.collection.as_ref());
+            }
+            Some(_) => return Err(()),
+        }
+    }
+    Ok(sources)
+}
+
+/// Members of a set without cloning a hashtable or pack; only the small intset
+/// form is materialised, because its members are stored as integers.
+fn set_members(collection: &Collection) -> Vec<Cow<'_, [u8]>> {
+    match collection {
+        Collection::Set(values) => values
+            .iter()
+            .map(|member| Cow::Borrowed(member.as_slice()))
+            .collect(),
+        Collection::SetPack(values) => values
+            .iter()
+            .map(|member| Cow::Borrowed(member.as_slice()))
+            .collect(),
+        Collection::SetInt(values) => values
+            .iter()
+            .map(|value| Cow::Owned(value.to_string().into_bytes()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn smallest_set(sources: &[Option<&Collection>]) -> Option<usize> {
+    sources
+        .iter()
+        .enumerate()
+        .filter_map(|(index, source)| {
+            source.map(|collection| (index, collection.set_len().unwrap_or(usize::MAX)))
+        })
+        .min_by_key(|(index, length)| (*length, *index))
+        .map(|(index, _)| index)
+}
+
+fn set_algebra_result<'a>(
+    sources: &'a [Option<&'a Collection>],
+    operation: &str,
+) -> Vec<Cow<'a, [u8]>> {
+    match operation {
+        "sinter" | "sinterstore" => {
+            if sources.iter().any(Option::is_none) {
+                return Vec::new();
+            }
+            let Some(smallest) = smallest_set(sources) else {
+                return Vec::new();
+            };
+            let mut result: Vec<Cow<'a, [u8]>> = set_members(sources[smallest].expect("smallest"))
+                .into_iter()
+                .filter(|member| {
+                    sources.iter().enumerate().all(|(index, source)| {
+                        index == smallest || source.is_some_and(|set| set.contains_member(member))
+                    })
+                })
+                .collect();
+            result.sort_unstable();
+            result
+        }
+        "sdiff" | "sdiffstore" => {
+            let Some(Some(first)) = sources.first() else {
+                return Vec::new();
+            };
+            let mut result: Vec<Cow<'a, [u8]>> = set_members(first)
+                .into_iter()
+                .filter(|member| {
+                    sources[1..]
+                        .iter()
+                        .all(|source| source.is_none_or(|set| !set.contains_member(member)))
+                })
+                .collect();
+            result.sort_unstable();
+            result
+        }
+        _ => {
+            let mut result: BTreeSet<Cow<'a, [u8]>> = BTreeSet::new();
+            for source in sources.iter().flatten() {
+                result.extend(set_members(source));
+            }
+            result.into_iter().collect()
+        }
+    }
+}
+
 impl ShardExecutor {
     fn set_remove(&self, args: &[&[u8]], out: &mut Vec<u8>) {
         let key = args[1];
@@ -3536,25 +3639,14 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
-        let mut sets = Vec::with_capacity(args.len() - 1);
-        for key in &args[1..] {
-            match owned_set(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
-                Err(()) => {
-                    wrong_type(out);
-                    return;
-                }
+        let sources = match borrow_sets(&mut data, &args[1..], now) {
+            Ok(sources) => sources,
+            Err(()) => {
+                wrong_type(out);
+                return;
             }
-        }
-        let mut result = sets.first().cloned().unwrap_or_default();
-        for set in &sets[1..] {
-            match operation {
-                "sinter" => result.retain(|member| set.contains(member)),
-                "sunion" => result.extend(set.iter().cloned()),
-                "sdiff" => result.retain(|member| !set.contains(member)),
-                _ => unreachable!(),
-            }
-        }
+        };
+        let result = set_algebra_result(&sources, operation);
         write!(out, "*{}\r\n", result.len()).expect("Vec write");
         for member in result {
             encode_bulk(Some(&member), out);
@@ -3593,28 +3685,28 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
-        let mut sets = Vec::with_capacity(count);
-        for key in &args[2..2 + count] {
-            match owned_set(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
-                Err(()) => {
-                    wrong_type(out);
-                    return;
+        let sources = match borrow_sets(&mut data, &args[2..2 + count], now) {
+            Ok(sources) => sources,
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let mut cardinality = 0usize;
+        if sources.iter().all(Option::is_some)
+            && let Some(smallest) = smallest_set(&sources)
+        {
+            for member in set_members(sources[smallest].expect("smallest")) {
+                if sources.iter().enumerate().all(|(index, source)| {
+                    index == smallest || source.is_some_and(|set| set.contains_member(&member))
+                }) {
+                    cardinality += 1;
+                    if limit != 0 && cardinality >= limit {
+                        break;
+                    }
                 }
             }
         }
-        let mut result = sets.first().cloned().unwrap_or_default();
-        for set in &sets[1..] {
-            result.retain(|member| set.contains(member));
-            if result.is_empty() {
-                break;
-            }
-        }
-        let cardinality = if limit == 0 {
-            result.len()
-        } else {
-            result.len().min(limit)
-        };
         integer(cardinality as i64, out);
     }
 
@@ -3625,25 +3717,16 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
-        let mut sets = Vec::with_capacity(args.len() - 2);
-        for key in &args[2..] {
-            match owned_set(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
-                Err(()) => {
-                    wrong_type(out);
-                    return;
-                }
+        let result: BTreeSet<Vec<u8>> = match borrow_sets(&mut data, &args[2..], now) {
+            Ok(sources) => set_algebra_result(&sources, operation)
+                .into_iter()
+                .map(Cow::into_owned)
+                .collect(),
+            Err(()) => {
+                wrong_type(out);
+                return;
             }
-        }
-        let mut result = sets.first().cloned().unwrap_or_default();
-        for set in &sets[1..] {
-            match operation {
-                "sinterstore" => result.retain(|member| set.contains(member)),
-                "sunionstore" => result.extend(set.iter().cloned()),
-                "sdiffstore" => result.retain(|member| !set.contains(member)),
-                _ => unreachable!(),
-            }
-        }
+        };
         let destination_previous = data.entries.get(destination).map(Entry::payload_len);
         let Some(mut total) = data.payload_bytes.checked_sub(
             destination_previous
@@ -3857,6 +3940,42 @@ fn owned_zset(data: &mut Data, key: &[u8], now: i64) -> Result<Option<HashMap<Ve
         )),
         Some(_) => Err(()),
     }
+}
+
+fn borrow_zsets<'a>(
+    data: &'a mut Data,
+    keys: &[&[u8]],
+    now: i64,
+) -> Result<Vec<Option<&'a Collection>>, ()> {
+    for key in keys {
+        data.expire_key(key, now);
+    }
+    let mut sources = Vec::with_capacity(keys.len());
+    for key in keys {
+        match data.entries.get(*key) {
+            None => sources.push(None),
+            Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => {
+                sources.push(entry.collection.as_ref());
+            }
+            Some(_) => return Err(()),
+        }
+    }
+    Ok(sources)
+}
+
+fn zset_members(collection: &Collection) -> Vec<(&[u8], f64)> {
+    collection.zset_items().unwrap_or_default()
+}
+
+fn smallest_zset(sources: &[Option<&Collection>]) -> Option<usize> {
+    sources
+        .iter()
+        .enumerate()
+        .filter_map(|(index, source)| {
+            source.map(|collection| (index, collection.zset_len().unwrap_or(usize::MAX)))
+        })
+        .min_by_key(|(index, length)| (*length, *index))
+        .map(|(index, _)| index)
 }
 
 impl ShardExecutor {
@@ -4722,23 +4841,21 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
-        let mut sets = Vec::with_capacity(count);
-        for key in &args[keys_start..keys_end] {
-            match owned_zset(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
-                Err(()) => {
-                    wrong_type(out);
-                    return;
-                }
+        let sources = match borrow_zsets(&mut data, &args[keys_start..keys_end], now) {
+            Ok(sources) => sources,
+            Err(()) => {
+                wrong_type(out);
+                return;
             }
-        }
-        let result: HashMap<Vec<u8>, f64> = match operation {
+        };
+        let result: HashMap<Cow<'_, [u8]>, f64> = match operation {
             ZSetOp::Union => {
-                let mut result: HashMap<Vec<u8>, f64> = HashMap::new();
-                for (set, weight) in sets.iter().zip(weights.iter()) {
-                    for (member, score) in set {
+                let mut result: HashMap<Cow<'_, [u8]>, f64> = HashMap::new();
+                for (source, weight) in sources.iter().zip(weights.iter()) {
+                    let Some(collection) = source else { continue };
+                    for (member, score) in zset_members(collection) {
                         let weighted = nan_zero(score * weight);
-                        match result.entry(member.clone()) {
+                        match result.entry(Cow::Borrowed(member)) {
                             std::collections::hash_map::Entry::Vacant(entry) => {
                                 entry.insert(weighted);
                             }
@@ -4756,42 +4873,48 @@ impl ShardExecutor {
                 result
             }
             ZSetOp::Inter => {
-                let mut result: HashMap<Vec<u8>, f64> = HashMap::new();
-                if let Some((first, rest)) = sets.split_first() {
-                    for (member, score) in first {
-                        result.insert(member.clone(), nan_zero(score * weights[0]));
-                    }
-                    for (set, weight) in rest.iter().zip(weights.iter().skip(1)) {
-                        if result.is_empty() {
-                            break;
-                        }
-                        result.retain(|member, current| {
-                            let Some(score) = set.get(member) else {
-                                return false;
+                let mut result: HashMap<Cow<'_, [u8]>, f64> = HashMap::new();
+                if let Some(smallest) = smallest_zset(&sources)
+                    && sources[smallest].is_some()
+                {
+                    for (member, score) in zset_members(sources[smallest].expect("smallest")) {
+                        let mut current = nan_zero(score * weights[smallest]);
+                        let mut present = true;
+                        for (index, source) in sources.iter().enumerate() {
+                            if index == smallest {
+                                continue;
+                            }
+                            let Some(other) = source else {
+                                present = false;
+                                break;
                             };
-                            let weighted = nan_zero(score * weight);
-                            *current = nan_zero(match aggregate {
-                                Aggregate::Sum => *current + weighted,
-                                Aggregate::Min => f64::min(*current, weighted),
-                                Aggregate::Max => f64::max(*current, weighted),
+                            let Some(score) = other.zset_score(member) else {
+                                present = false;
+                                break;
+                            };
+                            let weighted = nan_zero(score * weights[index]);
+                            current = nan_zero(match aggregate {
+                                Aggregate::Sum => current + weighted,
+                                Aggregate::Min => f64::min(current, weighted),
+                                Aggregate::Max => f64::max(current, weighted),
                             });
-                            true
-                        });
+                        }
+                        if present {
+                            result.insert(Cow::Borrowed(member), current);
+                        }
                     }
                 }
                 result
             }
             ZSetOp::Diff => {
-                let mut result: HashMap<Vec<u8>, f64> = HashMap::new();
-                if let Some((first, rest)) = sets.split_first() {
-                    for (member, score) in first {
-                        result.insert(member.clone(), *score);
-                    }
-                    for set in rest {
-                        if result.is_empty() {
-                            break;
+                let mut result: HashMap<Cow<'_, [u8]>, f64> = HashMap::new();
+                if let Some(Some(first)) = sources.first() {
+                    for (member, score) in zset_members(first) {
+                        if sources[1..].iter().all(|source| {
+                            source.is_none_or(|collection| collection.zset_score(member).is_none())
+                        }) {
+                            result.insert(Cow::Borrowed(member), score);
                         }
-                        result.retain(|member, _| !set.contains_key(member));
                     }
                 }
                 result
@@ -4800,7 +4923,7 @@ impl ShardExecutor {
         let ordered = ordered_zset(
             result
                 .iter()
-                .map(|(member, score)| (member.as_slice(), *score))
+                .map(|(member, score)| (member.as_ref(), *score))
                 .collect(),
             false,
         );
@@ -4889,31 +5012,28 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
-        let mut sets = Vec::with_capacity(count);
-        for key in &args[keys_start..keys_end] {
-            match owned_zset(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
-                Err(()) => {
-                    wrong_type(out);
-                    return;
+        let sources = match borrow_zsets(&mut data, &args[keys_start..keys_end], now) {
+            Ok(sources) => sources,
+            Err(()) => {
+                wrong_type(out);
+                return;
+            }
+        };
+        let mut cardinality = 0usize;
+        if sources.iter().all(Option::is_some)
+            && let Some(smallest) = smallest_zset(&sources)
+        {
+            for (member, _) in zset_members(sources[smallest].expect("smallest")) {
+                if sources.iter().enumerate().all(|(index, source)| {
+                    index == smallest || source.is_some_and(|set| set.zset_score(member).is_some())
+                }) {
+                    cardinality += 1;
+                    if limit != 0 && cardinality >= limit {
+                        break;
+                    }
                 }
             }
         }
-        let mut members: BTreeSet<Vec<u8>> = sets
-            .first()
-            .map(|set| set.keys().cloned().collect())
-            .unwrap_or_default();
-        for set in &sets[1..] {
-            if members.is_empty() {
-                break;
-            }
-            members.retain(|member| set.contains_key(member));
-        }
-        let cardinality = if limit == 0 {
-            members.len()
-        } else {
-            members.len().min(limit)
-        };
         integer(cardinality as i64, out);
     }
 
@@ -5334,6 +5454,105 @@ mod tests {
             b"-ERR Only one of FXX or FNX arguments can be specified\r\n"
         );
         assert_eq!(run(&store, &[b"HGET", b"h", b"a"]), b"$1\r\n3\r\n");
+    }
+
+    #[test]
+    fn set_and_zset_algebra_use_borrowed_sources_and_keep_results_exact() {
+        let store = ShardExecutor::new(1_000_000);
+        let ints: Vec<String> = (1..=20).map(|value| value.to_string()).collect();
+        let nums: Vec<String> = (15..=30).map(|value| value.to_string()).collect();
+        let mut args = vec![b"SADD".as_slice(), b"ints"];
+        args.extend(ints.iter().map(|value| value.as_bytes()));
+        assert_eq!(run(&store, &args), b":20\r\n");
+        let mut args = vec![b"SADD".as_slice(), b"nums"];
+        args.extend(nums.iter().map(|value| value.as_bytes()));
+        assert_eq!(run(&store, &args), b":16\r\n");
+
+        // Both sources are intsets: the small intset form is materialised but
+        // the hashtable/pack sources are borrowed and probed directly.
+        assert_eq!(
+            run(&store, &[b"SINTER", b"ints", b"nums"]),
+            b"*6\r\n$2\r\n15\r\n$2\r\n16\r\n$2\r\n17\r\n$2\r\n18\r\n$2\r\n19\r\n$2\r\n20\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"SINTERCARD", b"2", b"ints", b"nums"]),
+            b":6\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[b"SINTERCARD", b"2", b"ints", b"nums", b"LIMIT", b"2"]
+            ),
+            b":2\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"SDIFF", b"nums", b"ints"]),
+            b"*10\r\n$2\r\n21\r\n$2\r\n22\r\n$2\r\n23\r\n$2\r\n24\r\n$2\r\n25\r\n$2\r\n26\r\n$2\r\n27\r\n$2\r\n28\r\n$2\r\n29\r\n$2\r\n30\r\n"
+        );
+        assert_eq!(run(&store, &[b"SUNION", b"ints", b"nums"]).len(), 236);
+        assert_eq!(
+            run(&store, &[b"SINTERSTORE", b"out", b"ints", b"nums"]),
+            b":6\r\n"
+        );
+        assert_eq!(run(&store, &[b"SCARD", b"out"]), b":6\r\n");
+        // The destination is also a source: sources are read before the write.
+        assert_eq!(
+            run(&store, &[b"SINTERSTORE", b"ints", b"ints", b"nums"]),
+            b":6\r\n"
+        );
+        assert_eq!(run(&store, &[b"SCARD", b"ints"]), b":6\r\n");
+        assert_eq!(run(&store, &[b"SISMEMBER", b"ints", b"14"]), b":0\r\n");
+        assert_eq!(run(&store, &[b"SISMEMBER", b"ints", b"20"]), b":1\r\n");
+
+        let za: Vec<String> = (1..=20).map(|value| value.to_string()).collect();
+        let mut args = vec![b"ZADD".as_slice(), b"za"];
+        for value in &za {
+            args.push(b"1");
+            args.push(value.as_bytes());
+        }
+        assert_eq!(run(&store, &args), b":20\r\n");
+        let zb: Vec<String> = (15..=30).map(|value| value.to_string()).collect();
+        let mut args = vec![b"ZADD".as_slice(), b"zb"];
+        for value in &zb {
+            args.push(b"2");
+            args.push(value.as_bytes());
+        }
+        assert_eq!(run(&store, &args), b":16\r\n");
+        assert_eq!(run(&store, &[b"ZINTERCARD", b"2", b"za", b"zb"]), b":6\r\n");
+        assert_eq!(
+            run(&store, &[b"ZINTERCARD", b"2", b"za", b"zb", b"LIMIT", b"2"]),
+            b":2\r\n"
+        );
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"ZINTERSTORE",
+                    b"zi",
+                    b"2",
+                    b"za",
+                    b"zb",
+                    b"WEIGHTS",
+                    b"2",
+                    b"3",
+                    b"AGGREGATE",
+                    b"SUM"
+                ]
+            ),
+            b":6\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZSCORE", b"zi", b"16"]), b"$1\r\n8\r\n");
+        assert_eq!(
+            run(&store, &[b"ZDIFFSTORE", b"zd", b"2", b"zb", b"za"]),
+            b":10\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZSCORE", b"zd", b"30"]), b"$1\r\n2\r\n");
+        assert_eq!(
+            run(&store, &[b"ZUNIONSTORE", b"zu", b"2", b"za", b"zb"]),
+            b":30\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZSCORE", b"zu", b"20"]), b"$1\r\n3\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"zu", b"10"]), b"$1\r\n1\r\n");
     }
 
     #[test]
