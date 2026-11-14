@@ -1082,6 +1082,42 @@ pub(crate) enum ListMoveOutcome {
     JournalError,
 }
 
+fn quick_list_len(nodes: &VecDeque<VecDeque<Vec<u8>>>) -> usize {
+    nodes.iter().map(VecDeque::len).sum()
+}
+
+fn quick_list_pop(nodes: &mut VecDeque<VecDeque<Vec<u8>>>, left: bool) -> Option<Vec<u8>> {
+    if left {
+        let front = nodes.front_mut()?;
+        let value = front.pop_front()?;
+        if front.is_empty() {
+            nodes.pop_front();
+        }
+        Some(value)
+    } else {
+        let back = nodes.back_mut()?;
+        let value = back.pop_back()?;
+        if back.is_empty() {
+            nodes.pop_back();
+        }
+        Some(value)
+    }
+}
+
+fn quick_list_push(nodes: &mut VecDeque<VecDeque<Vec<u8>>>, left: bool, value: Vec<u8>) {
+    if left {
+        if nodes.front().is_none() {
+            nodes.push_front(VecDeque::new());
+        }
+        nodes.front_mut().expect("front chunk").push_front(value);
+    } else {
+        if nodes.back().is_none() {
+            nodes.push_back(VecDeque::new());
+        }
+        nodes.back_mut().expect("back chunk").push_back(value);
+    }
+}
+
 pub(crate) fn list_move_reply(outcome: ListMoveOutcome, out: &mut Vec<u8>) {
     match outcome {
         ListMoveOutcome::Moved { value, .. } => encode_bulk(Some(&value), out),
@@ -2548,12 +2584,91 @@ impl ShardExecutor {
         now: i64,
     ) -> ListMoveOutcome {
         data.expire_key(source, now);
-        let Some(source_entry) = data.entries.get(source) else {
+        if !data.entries.contains_key(source) {
             return ListMoveOutcome::Empty;
-        };
-        let Some(mut source_list) = source_entry
-            .collection
-            .as_ref()
+        }
+        if data
+            .entries
+            .get(source)
+            .and_then(|entry| entry.collection.as_ref())
+            .is_some_and(|collection| !collection.is_list())
+        {
+            return ListMoveOutcome::WrongType;
+        }
+        let same = source == destination;
+        // Quicklists can move one element between their chunk deques without
+        // flattening either list. Keep the general path for pack lists, missing
+        // destinations and a source that would become empty.
+        if same {
+            let mut moved = None;
+            if let Some(entry) = data.entries.get_mut(source)
+                && let Some(Collection::ListQuick(nodes)) = entry.collection.as_mut()
+                && quick_list_len(nodes) > 1
+            {
+                let value = quick_list_pop(nodes, from_left).expect("nonempty quicklist");
+                quick_list_push(nodes, to_left, value.clone());
+                moved = Some(value);
+            }
+            if let Some(value) = moved {
+                data.touch(source);
+                return ListMoveOutcome::Moved {
+                    source: source.to_vec(),
+                    value,
+                    source_emptied: false,
+                };
+            }
+        } else {
+            data.expire_key(destination, now);
+            if data
+                .entries
+                .get(destination)
+                .is_some_and(|entry| !entry.collection.as_ref().is_some_and(Collection::is_list))
+            {
+                return ListMoveOutcome::WrongType;
+            }
+            let source_ready = data
+                .entries
+                .get(source)
+                .and_then(|entry| entry.collection.as_ref())
+                .is_some_and(|collection| match collection {
+                    Collection::ListQuick(nodes) => quick_list_len(nodes) > 1,
+                    _ => false,
+                });
+            let destination_ready = data
+                .entries
+                .get(destination)
+                .and_then(|entry| entry.collection.as_ref())
+                .is_some_and(|collection| matches!(collection, Collection::ListQuick(_)));
+            if source_ready && destination_ready {
+                let mut moved = None;
+                if let Some(entry) = data.entries.get_mut(source)
+                    && let Some(Collection::ListQuick(nodes)) = entry.collection.as_mut()
+                {
+                    let value = quick_list_pop(nodes, from_left).expect("nonempty quicklist");
+                    entry.payload_len = entry.payload_len.saturating_sub(value.len());
+                    moved = Some(value);
+                }
+                if let Some(value) = moved {
+                    if let Some(entry) = data.entries.get_mut(destination)
+                        && let Some(Collection::ListQuick(nodes)) = entry.collection.as_mut()
+                    {
+                        quick_list_push(nodes, to_left, value.clone());
+                        entry.payload_len = entry.payload_len.saturating_add(value.len());
+                    }
+                    data.touch(source);
+                    data.touch(destination);
+                    return ListMoveOutcome::Moved {
+                        source: source.to_vec(),
+                        value,
+                        source_emptied: false,
+                    };
+                }
+            }
+        }
+        let Some(mut source_list) = data
+            .entries
+            .get(source)
+            .and_then(|entry| entry.collection.as_ref())
             .and_then(Collection::list_values)
         else {
             return ListMoveOutcome::WrongType;
@@ -2561,9 +2676,8 @@ impl ShardExecutor {
         if source_list.is_empty() {
             return ListMoveOutcome::Empty;
         }
-        let source_expires = source_entry.expires;
-        let source_previous = source_entry.payload_len();
-        let same = source == destination;
+        let source_expires = data.entries.get(source).expect("source").expires;
+        let source_previous = data.entries.get(source).expect("source").payload_len();
         let mut destination_list = if same {
             VecDeque::new()
         } else {
@@ -3077,6 +3191,77 @@ impl ShardExecutor {
             return;
         };
         let now = self.now(&data);
+        data.expire_key(source, now);
+        data.expire_key(destination, now);
+        // Large hashtable sets can move one member in place: the member's bytes
+        // leave the source and (unless already present) enter the destination,
+        // so the payload cannot grow and no admission/eviction is needed. Packs
+        // and missing destinations keep the general encode path below.
+        let source_collection = data
+            .entries
+            .get(source)
+            .and_then(|entry| entry.collection.as_ref());
+        let destination_collection = data
+            .entries
+            .get(destination)
+            .and_then(|entry| entry.collection.as_ref());
+        if source_collection.is_some_and(|collection| !collection.is_set())
+            || destination_collection.is_some_and(|collection| !collection.is_set())
+        {
+            wrong_type(out);
+            return;
+        }
+        if let (Some(Collection::Set(source_values)), Some(Collection::Set(destination_values))) =
+            (source_collection, destination_collection)
+        {
+            if !source_values.contains(member) {
+                integer(0, out);
+                return;
+            }
+            if source == destination {
+                integer(1, out);
+                return;
+            }
+            if source_values.len() > 1 {
+                let already = destination_values.contains(member);
+                let source_previous = data.entries.get(source).expect("source").payload_len;
+                let destination_previous = data
+                    .entries
+                    .get(destination)
+                    .expect("destination")
+                    .payload_len;
+                let destination_next = destination_previous.checked_add(member.len());
+                let total = if already {
+                    data.payload_bytes.checked_sub(member.len())
+                } else {
+                    Some(data.payload_bytes)
+                };
+                if let (Some(source_next), Some(destination_next), Some(total)) = (
+                    source_previous.checked_sub(member.len()),
+                    destination_next,
+                    total,
+                ) {
+                    if let Some(entry) = data.entries.get_mut(source)
+                        && let Some(Collection::Set(values)) = entry.collection.as_mut()
+                    {
+                        values.remove(member);
+                        entry.payload_len = source_next;
+                    }
+                    if !already
+                        && let Some(entry) = data.entries.get_mut(destination)
+                        && let Some(Collection::Set(values)) = entry.collection.as_mut()
+                    {
+                        values.insert(member.to_vec());
+                        entry.payload_len = destination_next;
+                    }
+                    data.payload_bytes = total;
+                    data.touch(source);
+                    data.touch(destination);
+                    integer(1, out);
+                    return;
+                }
+            }
+        }
         let mut source_set = match owned_set(&mut data, source, now) {
             Ok(Some(set)) => set,
             Ok(None) => {

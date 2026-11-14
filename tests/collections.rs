@@ -324,3 +324,50 @@ fn legacy_hash_score_and_lex_commands_work_over_tcp_in_all_execution_modes() {
         server.shutdown().unwrap();
     }
 }
+
+#[test]
+fn smove_between_large_hashtable_sets_moves_one_member_in_place() {
+    let server = start(None);
+    let mut stream = connect(&server);
+    let members: Vec<String> = (0..700).map(|index| format!("m{index:04}")).collect();
+    for chunk in members.chunks(350) {
+        let mut args: Vec<&[u8]> = vec![b"SADD", b"s1"];
+        args.extend(chunk.iter().map(|member| member.as_bytes()));
+        command(
+            &mut stream,
+            &args,
+            format!(":{}\r\n", chunk.len()).as_bytes(),
+        );
+        let second: Vec<String> = chunk
+            .iter()
+            .map(|member| format!("n{}", &member[1..]))
+            .collect();
+        let mut args: Vec<&[u8]> = vec![b"SADD", b"s2"];
+        args.extend(second.iter().map(|member| member.as_bytes()));
+        command(
+            &mut stream,
+            &args,
+            format!(":{}\r\n", chunk.len()).as_bytes(),
+        );
+    }
+    command(&mut stream, &[b"SCARD", b"s1"], b":700\r\n");
+    command(&mut stream, &[b"SCARD", b"s2"], b":700\r\n");
+    command(&mut stream, &[b"SMOVE", b"s1", b"s2", b"m0000"], b":1\r\n");
+    command(&mut stream, &[b"SCARD", b"s1"], b":699\r\n");
+    command(&mut stream, &[b"SCARD", b"s2"], b":701\r\n");
+    command(&mut stream, &[b"SISMEMBER", b"s1", b"m0000"], b":0\r\n");
+    command(&mut stream, &[b"SISMEMBER", b"s2", b"m0000"], b":1\r\n");
+    // Moving a member the destination already has still removes it from the
+    // source and leaves the destination count unchanged.
+    command(&mut stream, &[b"SADD", b"s2", b"m0001"], b":1\r\n");
+    command(&mut stream, &[b"SMOVE", b"s1", b"s2", b"m0001"], b":1\r\n");
+    command(&mut stream, &[b"SCARD", b"s1"], b":698\r\n");
+    command(&mut stream, &[b"SCARD", b"s2"], b":702\r\n");
+    command(
+        &mut stream,
+        &[b"SMOVE", b"s1", b"s2", b"missing"],
+        b":0\r\n",
+    );
+    command(&mut stream, &[b"DBSIZE"], b":2\r\n");
+    server.shutdown().unwrap();
+}
