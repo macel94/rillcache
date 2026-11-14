@@ -1558,9 +1558,9 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
 | MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
+| Stream group administration | latency, storage | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094; 10-entry control 0.338 vs 0.12/0.10; `CREATECONSUMER`/`SETID`/`DESTROY` at the floor | 4.48, implemented | AC50 met (0.195/1.183) | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) → 0.957 s (9.57) vs 3.17/3.61 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) → 0.0234 s (2.34) vs 2.29/2.92; single p50 and controls at the floor | 4.47, implemented | AC49 (count met; add 1.77× but above 6 µs) | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` pre-fix 201.6 ms vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; `BITPOS 0 0 -1` 209.4 vs 4.79/5.96, post-fix 2.23; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
-| Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 ms vs 0.42/0.34, `ZPOPMAX` 159.9 vs 0.21/0.29, `ZPOPMIN 10` 146.6 vs 0.35/0.16, `ZMPOP` 155.8 vs 0.16/0.20 (373–974×); 100-member control at the floor | 4.49, admitted | AC51 | none |
 | Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
@@ -2013,9 +2013,9 @@ for a production claim.
 | SORT `BY nosort` | source-order slice without sorting or copying | same | pre-fix clone every element and build an `Item` before `LIMIT`; post-fix borrowed list slice | **Done (nosort):** 4.46 direct slice; measured 100k pre-fix 7.96 vs 0.12/0.16 ms, post-fix 0.188/0.506 at parity; sorted/ALPHA/weighted rows unchanged (3.30, AC48) |
 | Large-hash listings | dict/listpack iteration, no per-call ordering | same | collect refs, sort by field, encode | **Adapt:** 4.29 (extended to `HKEYS`/`HVALS`); measured 100k 132/98/102 vs 15.8–37.8 ms; 10-member controls at the floor (3.31, AC31) |
 | Keyspace enumeration | dict scan; unordered `KEYS`; random dict sample | same | collect matched keys, sort, encode; `RANDOMKEY` walks to a random index | **Adapt:** 4.31's ordered key index serves `KEYS`/`RANDOMKEY`; measured 100k `KEYS` 91.1 vs 21–43 ms, `RANDOMKEY` 0.52 vs 0.21–0.29 (3.31, AC33) |
+| Stream groups | group map in the stream object, created in place; metadata not in the entry payload | same | clone the whole `Stream`, insert the group, fold and replace through `put_stream` | **Done:** 4.48 in-place group insert; measured 5k `XGROUP CREATE` 8.26 → 0.195 ms (vs 0.083/0.094), control unchanged (3.34, AC50) |
 | HyperLogLog | registers in the string, in-place add, cached cardinality | same | decode 16 KB registers per command, re-encode and put; recompute every count | **Done (count; add partial):** 4.47 in-place registers + cached count; measured 100k adds 16.96 → 9.57 µs (vs 3.17/3.61) and 10k counts 265 → 2.34 µs (vs 2.29/2.92); the residual add cost is per-command dispatch (3.32, AC49) |
 | Bitmap scan | word-wise `redisBitpos` with `trailing_zeros` | same | byte-and-bit loop in `find_bit` | **Adapt:** extend 4.37 with a `u64` scan; measured 16 MB `BITPOS 0` 201.6 vs 5.08/5.14 ms (39–44×), first-bit hit at the floor (3.33, AC39) |
-| Stream `XGROUP CREATE` | insert one group in the stream dict; O(1) | same | deep-clone the whole stream, fold payload, replace via `put_stream` | **Adapt:** 4.48 in-place group insert; measured 5k 8.26 vs 0.083/0.094 ms (88–99×), other XGROUP ops at parity (3.34, AC50) |
 | Stream consumer-group reads | radix PEL with a consumer pointer; reply writes stored fields directly | same | per-entry `StreamEntry` clone, two PEL inserts and a consumer-name copy per pending entry | **Keep:** measured near-parity at 10k; the 1,000-entry forms are 1.7× (new read) and 2.1× (`XAUTOCLAIM`), while 100-entry history/`XPENDING`/`XCLAIM` are at parity; re-measure after 4.42 (3.39, no candidate) |
 | Sorted-set pops | skiplist head/tail pop, O(log n) | same | clone, sort and replace the whole set per pop | **Adapt:** 4.49 ordered `(score, member)` index pop; measured 100k `ZPOPMIN` 156.7 vs 0.42/0.34 ms, `ZMPOP` 155.8, `ZPOPMIN 10` 146.6 (373–974×), 100-member control at the floor (3.35, AC51) |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | reverse-binary dict cursor, bounded visited buckets, listpack collections in one call | same | per-call full key snapshot + sort; collection deep copy + sort; unbounded expiry reap | **Adopt:** 4.31 ordered index + opaque last-element cursor; measured 42.6 ms vs 0.256/0.164 ms per `SCAN COUNT 10` (167–260×), 20–29× full traversal (3.16, AC33) |
@@ -3463,7 +3463,14 @@ BYTE/BIT range rules and the not-found return values. This is the same safe
   (~165 ms at 100k by extrapolation), while every other XGROUP subcommand is at
   parity because it already mutates in place. Candidate 4.48.
 
-**Verdict: adapt an in-place group insert (4.48).** Borrow `Entry.stream`
+- **Post-fix (2026-11-14, candidate 4.48).** `XGROUP CREATE` inserts the group
+  directly into the borrowed stream; group metadata is excluded from the entry
+  payload, so there is no clone/fold/replace. On the same 5,000-entry stream it
+  costs **0.195/1.183 ms p50/p99** (from 8.26) versus Redis 0.364/3.223 and
+  Valkey 0.096/1.384; the 10-entry control is 0.137/1.307 and
+  `CREATECONSUMER`/`SETID`/`DESTROY` stay at the floor.
+
+**Verdict: adapted an in-place group insert (4.48, implemented).** Borrow `Entry.stream`
 mutably, insert the group (or create an empty stream for `MKSTREAM`), call
 `touch`, and leave `payload_len` unchanged because `payload_bytes` counts only
 entries. Keep `BUSYGROUP`, explicit-ID/`$` semantics, PEL/consumer state,
@@ -6494,7 +6501,7 @@ target is missed because the remaining cost is per-command dispatch and socket
 work, not the sketch); caches invalidated on add; round-trip/accounting tests
 pass. The serialized payload has a versioned trailer and accepts old payloads.
 
-### 4.48 In-place stream group creation (candidate; admission measured)
+### 4.48 In-place stream group creation (candidate; implemented)
 
 **Mechanism.** For `XGROUP CREATE`, borrow `Entry.stream` mutably, insert the
 `ConsumerGroup` (or create an empty stream for `MKSTREAM`), and call `touch`;
@@ -6511,6 +6518,18 @@ XGROUP subcommands already mutate in place.
 (0.09/0.13/0.09); 10-entry control 0.338 versus 0.120/0.097; `CREATECONSUMER`
 0.123 versus 0.227/0.127; `SETID` 0.099 versus 0.283/0.099; `DESTROY` 0.109
 versus 0.097/0.109; 10-entry `CREATECONSUMER` 0.169 versus 0.086/0.069.
+
+**Post-fix (2026-11-14).** `XGROUP CREATE` borrows the existing stream and
+inserts the group in place; group metadata is not part of the entry payload, so
+no clone, payload fold or `put_stream` replace is needed. `MKSTREAM` still
+creates the empty stream through one admission, and duplicate groups still return
+`BUSYGROUP` before any mutation. Same cohort (5,000-entry stream, 20 unique groups,
+three rotations): `XGROUP CREATE` **0.195/1.183 ms p50/p99** versus Redis
+0.364/3.223 and Valkey 0.096/1.384 (from 8.26); 10-entry control 0.137/1.307;
+`CREATECONSUMER` 0.122/0.227, `SETID` 0.094/0.911, `DESTROY` 0.247/1.035, and
+10-entry `CREATECONSUMER` 0.156/0.591. AC50's ≤0.2 p50/≤2 p99 is met and the
+create now leads Redis. Raw JSON retained at
+`/tmp/opencode/xgroup-inplace-result.json` (untracked).
 
 **Risks and obligations.** `BUSYGROUP`, explicit-ID/`$` `last_delivered`,
 `MKSTREAM` creating an empty stream, PEL/consumer state, unchanged payload
@@ -6530,7 +6549,9 @@ differ, the controls regress, or no gain above the spread.
 the faster C server); the 10-entry control shall be unchanged;
 `BUSYGROUP`/`MKSTREAM`/explicit-ID/`$`/PEL/consumer tests, journal/rewrite/replay
 and TTL shall pass; no dependency shall be added; and both protected gates shall
-pass on the exact head.
+pass on the exact head. Evidence: `XGROUP CREATE` 0.195/1.183 ms on 5k entries
+(42× faster, leading Redis); the payload, entries, `BUSYGROUP`, explicit-ID and
+`MKSTREAM` cases are covered by a new in-place test.
 
 ### 4.49 Ordered sorted-set pops (candidate; admission measured)
 
