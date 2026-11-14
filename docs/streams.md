@@ -60,8 +60,12 @@ owned value/tree after checking NX rejection and final payload admission.
   increments entries-added even when the new entry is trimmed; `XDEL`, `XTRIM`
   and XADD trimming advance max-deleted-entry-id.
 - `XINFO GROUPS key` and `XINFO CONSUMERS key group` expose group name, consumer
-  count, pending count, last-delivered ID, unknown `entries-read` (null) and
+  count, pending count, last-delivered ID, `entries-read` when known and
   retained-entry `lag`, plus consumer name, pending count, `idle` and `inactive`.
+  A group created at `$` starts at the stream's entries-added count and one
+  created at `0` starts at zero; new `XREADGROUP ... >` deliveries increment the
+  count. An explicit non-zero create/SETID start, or a journal-replayed group
+  without the original counter, reports null (unknown).
 - `XTRIM key MAXLEN|MINID [~|=] threshold [LIMIT count]` removes oldest entries
   until the retained length/ID threshold is met and returns the removed count.
   Exact mode ignores no entries; approximate (`~`) mode caps work at `LIMIT`
@@ -104,9 +108,11 @@ sequence when the clock does not advance. Consumer delivery time uses the
 store's configured clock. XINFO's FULL response is sufficient for state
 inspection and independent COPY checks but does not include Redis internal radix
 node statistics or every newer Redis-specific extended field. `entries-read` is
-reported as unknown (null); this subset does not track Redis's historical read
-counter or deletion-aware lag estimator. `lag` counts currently retained entries
-after the group's cursor. `nacked-count` is zero because no unowned NACK operation
+reported when the group started at `$` or `0` and is incremented by new
+deliveries; explicit non-zero starts and replayed groups without the counter
+remain unknown (null). The count is not decremented by `XDEL`/`XTRIM`, matching
+the historical read counter, while `lag` still counts currently retained entries
+after the group's cursor rather than Redis's deletion-aware estimator. `nacked-count` is zero because no unowned NACK operation
 is supported; owned pending records are counted by `pel-count`. `XINFO CONSUMERS`
 reports `inactive` from the same `seen_at` activity value as `idle`, not Redis's
 separate active-time field. TCP regression coverage asserts explicit cursor,

@@ -1,7 +1,7 @@
 //! Redis-shaped keyspace notification flags and event categories.
 //!
-//! Supported flags are `K`, `E`, `g`, `$`, `l`, `s`, `h`, `z`, `t`, `x`, `e`
-//! and the `A` alias for all supported categories. Keymiss/new-key/module
+//! Supported flags are `K`, `E`, `g`, `$`, `l`, `s`, `h`, `z`, `t`, `x`, `e`,
+//! `m` and the `A` alias for all categories except key-miss. New-key/module
 //! classes are deliberately rejected instead of silently claiming them.
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -17,6 +17,7 @@ pub struct NotifyFlags {
     pub stream: bool,
     pub expired: bool,
     pub evicted: bool,
+    pub key_miss: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub enum Category {
     Stream,
     Expired,
     Evicted,
+    KeyMiss,
 }
 
 impl NotifyFlags {
@@ -48,6 +50,7 @@ impl NotifyFlags {
                 b't' => flags.stream = true,
                 b'x' => flags.expired = true,
                 b'e' => flags.evicted = true,
+                b'm' => flags.key_miss = true,
                 b'A' => {
                     flags.generic = true;
                     flags.string = true;
@@ -83,6 +86,7 @@ impl NotifyFlags {
             (self.stream, 't'),
             (self.expired, 'x'),
             (self.evicted, 'e'),
+            (self.key_miss, 'm'),
         ] {
             if enabled {
                 text.push(flag);
@@ -103,6 +107,7 @@ impl NotifyFlags {
             | (u32::from(self.stream) << 8)
             | (u32::from(self.expired) << 9)
             | (u32::from(self.evicted) << 10)
+            | (u32::from(self.key_miss) << 11)
     }
 
     pub fn from_bits(bits: u32) -> Self {
@@ -118,6 +123,7 @@ impl NotifyFlags {
             stream: bits & 256 != 0,
             expired: bits & 512 != 0,
             evicted: bits & 1024 != 0,
+            key_miss: bits & 2048 != 0,
         }
     }
 
@@ -132,7 +138,8 @@ impl NotifyFlags {
             || self.zset
             || self.stream
             || self.expired
-            || self.evicted)
+            || self.evicted
+            || self.key_miss)
     }
 
     pub fn category(self, category: Category) -> bool {
@@ -146,6 +153,7 @@ impl NotifyFlags {
             Category::Stream => self.stream,
             Category::Expired => self.expired,
             Category::Evicted => self.evicted,
+            Category::KeyMiss => self.key_miss,
         }
     }
 }
@@ -164,6 +172,9 @@ mod tests {
         assert_eq!(NotifyFlags::parse(b"KEg$lshztxe").unwrap(), flags);
         assert!(NotifyFlags::parse(b"x").unwrap().expired);
         assert!(NotifyFlags::parse(b"e").unwrap().evicted);
+        assert!(NotifyFlags::parse(b"m").unwrap().key_miss);
+        assert!(!NotifyFlags::parse(b"A").unwrap().key_miss);
+        assert_eq!(NotifyFlags::parse(b"KEm").unwrap().as_string(), "KEm");
         assert!(NotifyFlags::parse(b"Q").is_none());
         assert!(NotifyFlags::default().is_empty());
     }

@@ -133,7 +133,7 @@ fn stream_claim_and_introspection_work_over_tcp_in_all_modes() {
         command(
             &mut stream,
             &[b"XINFO", b"GROUPS", b"s"],
-            b"*1\r\n*12\r\n$4\r\nname\r\n$1\r\ng\r\n$9\r\nconsumers\r\n:1\r\n$7\r\npending\r\n:2\r\n$17\r\nlast-delivered-id\r\n$3\r\n2-0\r\n$12\r\nentries-read\r\n$-1\r\n$3\r\nlag\r\n:1\r\n",
+            b"*1\r\n*12\r\n$4\r\nname\r\n$1\r\ng\r\n$9\r\nconsumers\r\n:1\r\n$7\r\npending\r\n:2\r\n$17\r\nlast-delivered-id\r\n$3\r\n2-0\r\n$12\r\nentries-read\r\n:2\r\n$3\r\nlag\r\n:1\r\n",
         );
         let consumers = reply(&mut stream, &[b"XINFO", b"CONSUMERS", b"s", b"g"]);
         assert!(
@@ -212,7 +212,7 @@ fn stream_claim_and_introspection_work_over_tcp_in_all_modes() {
         command(
             &mut stream,
             &[b"XINFO", b"GROUPS", b"s"],
-            b"*1\r\n*12\r\n$4\r\nname\r\n$1\r\ng\r\n$9\r\nconsumers\r\n:2\r\n$7\r\npending\r\n:3\r\n$17\r\nlast-delivered-id\r\n$3\r\n5-0\r\n$12\r\nentries-read\r\n$-1\r\n$3\r\nlag\r\n:0\r\n",
+            b"*1\r\n*12\r\n$4\r\nname\r\n$1\r\ng\r\n$9\r\nconsumers\r\n:2\r\n$7\r\npending\r\n:3\r\n$17\r\nlast-delivered-id\r\n$3\r\n5-0\r\n$12\r\nentries-read\r\n:2\r\n$3\r\nlag\r\n:0\r\n",
         );
 
         let first = reply(
