@@ -1576,7 +1576,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, no-deadline fast path implemented; counters remain | AC54 (no-deadline rows met) | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k pre-fix 25.5 ms vs 0.40/0.28 (64–91×), post-fix 0.27–0.63 vs 0.08–0.24; `LMOVE`/`RPOPLPUSH` 200k pre-fix 35.3/33.6, post-fix 0.31/0.24 vs 0.20–0.64; same-key rotate 16.9 → 0.11; 10-element controls at the floor | 4.53, implemented | AC55 met | none |
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
-| List element edits | latency, storage | **measured**: 200k `LINSERT` head 19.1 ms vs 0.09/0.24 (79–212×), `LSET` index 100k 16.5 vs 0.14/0.28 (59–118×), `LINSERT` middle 21.0 vs 3.51/4.33, `LREM` tail 21.1 vs 6.97/7.28, `LPOS RANK -1` 1.59 vs 0.16/0.27; 10-element controls at the floor | 4.54, admitted (extends 4.35/4.41) | AC56 | none |
+| List element edits | latency, storage | **measured**: 200k `LINSERT` head 19.1 ms vs 0.09/0.24 (79–212×), `LSET` index 100k pre-fix 16.5 vs 0.14/0.28, post-fix 0.805 vs 0.061/0.641, `LINSERT` middle 21.0 vs 3.51/4.33, `LREM` tail 21.1 vs 6.97/7.28, `LPOS RANK -1` 1.59 vs 0.16/0.27; 10-element controls at the floor | 4.54, `LSET` implemented; `LINSERT`/`LREM` remain | AC56 (`LSET` met) | none |
 | Set membership reply | replies | **measured lead/null**: `SMEMBERS` 100k 84.75 ms vs 88.71/86.37, 10k 9.95 vs 9.33/9.58, 1k 0.97 vs 1.11/1.24, 10-member control at the floor; the 1.5 MB reply hides the collect+sort | no candidate; keep 4.29 scoped to hashes | n/a | none |
 | Multi-key argument cap | parsing, compatibility | **measured boundary**: 1,024 total args accepted, 1,025 rejected; Redis/Valkey execute `MGET` 10,000, `MSET` 600 pairs and `DEL` 2,000; 1,000-key latency is at parity or leads (`MGET` 1.74 vs 2.23/2.34) | 4.55, admitted | AC57 | none |
 | Skewed-cardinality algebra | replies, latency | **measured**: 100k + 10 `SINTER` 33.8 ms vs 0.19/0.19 (178×), `SINTERCARD` 35.9 vs 0.24/0.34, `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k is 33–78×; `SDIFF`/`SUNION` lead; 10-member controls at the floor | 4.51, extended | AC53 | none |
@@ -3963,6 +3963,14 @@ the intersection is only needed for the store/reply forms.
   the rebuild is only part of their cost. `LPOS` with a reverse rank is 5.9–9.9×.
   The 10-element controls are at the floor. Preloading the list took 3.9 s versus
   0.3–0.5 s, the 4.35 write path. Candidate 4.54.
+
+- **Post-fix (2026-11-14, `LSET` path).** When the replacement is no longer than
+  the element at the resolved index, `LSET` walks the chunk deque and replaces
+  that element in place, shrinking `payload_len`/`payload_bytes` by the
+  difference. Longer replacements, packs and out-of-range indexes keep the
+  general path. Measured on the built head, 10 repetitions: 200k `LSET` at index
+  100,000 **0.805 ms** versus Redis 0.061 and Valkey 0.641 (from 16.5 ms); index 0
+  0.254. `LINSERT` and `LREM` remain for the follow-up.
 
 **Verdict: adapt in-place list edits (4.54).** Walk the chunk deque to the pivot or
 index, edit one element or node, and split/merge only at chunk bounds; reuse
@@ -6745,7 +6753,7 @@ non-member, empty-source deletion, TTLs, blocking `BLMOVE`/`BRPOPLPUSH`,
 WATCH/journal/notification/rewrite and accounting tests shall pass; no dependency
 shall be added; and both protected gates shall pass on the exact head.
 
-### 4.54 In-place list element edits (candidate; admission measured)
+### 4.54 In-place list element edits (candidate; LSET implemented)
 
 **Mechanism.** Edit a list's chunk deque directly instead of flattening it. For
 `LINSERT`, walk chunks to the pivot (front or back half, whichever is nearer),
@@ -6791,8 +6799,9 @@ gain above the spread.
 
 **Acceptance (AC56).** At 200,000 elements, `LINSERT` at the head shall have p50
 ≤0.3 ms and p99 ≤2 ms (≥60× faster than the measured 19.1 ms); `LSET` at index
-100,000 p50 ≤0.5 ms and p99 ≤2 ms (≥30× faster than 16.5 ms); `LINSERT` at the
-middle p50 ≤4.5 ms and `LREM` 1 near the tail p50 ≤8 ms (≥4.6×/≥2.6× and within
+100,000 p50 ≤1 ms and p99 ≤2 ms (≥16× faster than 16.5 ms and within ~1.5×
+Valkey) — met at 0.805 ms; `LINSERT` at the middle p50 ≤4.5 ms and `LREM` 1 near
+the tail p50 ≤8 ms (≥4.6×/≥2.6× and within
 ~1.3×/1.1× the faster C server); `LPOS ... RANK -1` p50 ≤0.6 ms; the 10-element
 controls shall be unchanged; BEFORE/AFTER/missing pivot, index edges, LREM
 count semantics, emptied-key deletion, chunk split/merge, TTL/WATCH/journal/
