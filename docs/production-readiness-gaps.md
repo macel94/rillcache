@@ -779,12 +779,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,
   randomized model checking or sustained adversarial input corpus.
-  **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
-  adds seeded binary-frame fragmentation, random bytes under tight limits,
-  random inline input and pipeline consumption properties; it runs in ordinary
-  CI and every failure is reproducible from its printed seed. State-machine
-  model checking, command-level differential properties and sustained
-  adversarial corpora remain absent.
+  **Partial (2026-11-14): deterministic RESP and command-state corpora.**
+  `tests/protocol_fuzz.rs` covers seeded binary-frame fragmentation, random
+  bytes under tight limits, random inline input and pipeline-consumption
+  properties. `tests/model_state.rs` runs 600 seeded binary-safe `SET`, `GET`,
+  `APPEND`, `DEL`, `STRLEN` and `MGET` transitions against an independent map
+  model in all three synchronous worker modes, checking every reply and final
+  state. Failures report seed, mode and operation index for reproduction. Both
+  run in ordinary CI. Cross-type/transaction/TTL model checking, broader pinned
+  Redis/Valkey differential coverage and sustained adversarial corpora remain
+  absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
 - [ ] **V5. Public documentation can still drift from executable behavior.** [P1]
