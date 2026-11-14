@@ -1550,7 +1550,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 vs 0.14–0.20; `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
-| Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
+| Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170 (still linear, 7.4 in the new cohort), 2×2 km box 4.49; point lookups `GEOPOS` 1/100 1.99/24.86 → 0.106/0.383 vs 0.27–0.43/0.37–0.98, `GEODIST` 3.12 → 0.079, `GEOHASH` 100 0.175; all-member search at parity | 4.43, point lookups implemented; search open | AC45 partly (point lookups met) | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 → 0.151/0.115/0.282 ms vs 0.07–0.19; `ZMSCORE` 8.02/33.37/273.2 → 0.113/0.118/0.253 vs 0.09–0.23; `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; `HMGET` 100 at the floor | 4.44, implemented | AC46 met | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 → 0.230 ms vs 0.200/0.244, `KEYS` 43.6 → 0.297 vs 0.215/0.205, `RANDOMKEY` 45.5 → 0.297 vs 0.209/0.217, `DBSIZE` 41.2 → 0.298 vs 0.151/0.247; lazy `GET` 0.254 vs 0.160/0.207 | 4.45, implemented | AC47 met | none |
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
@@ -2007,7 +2007,7 @@ for a production claim.
 | Set membership reply | dict/intset/listpack iteration, unspecified order | same | collect every member into a `Vec`, sort, encode | **Keep:** measured `SMEMBERS` 100k 84.75 vs 88.71/86.37 ms (lead), 10k 9.95 vs 9.33/9.58, 1k within spread; the reply hides the collect+sort, so do not extend 4.29 to sets (3.46) |
 | Argument-count parsing | multi-bulk count from the declared length; no fixed 1,024 ceiling | no fixed count limit observed; `.argv` grows as declared within `proto-max-bulk-len` | `Limits.max_arguments = 1024` rejects larger arrays with `too many arguments`, no CLI override | **Adapt:** 4.55 frame-derived cap (`max(1024, min(1M, frame/6))`); measured boundary at 1,024 args, while Redis/Valkey accept `MGET` 10,000 (3.47, AC57) |
 | Stream append | append one rax/listpack entry; incremental length/memory | same | clone the whole `Stream` and fold `payload_bytes()` twice per `XADD` | **Adapt:** 4.42 in-place append with delta accounting; measured 5k `XADD` 1.36 vs 0.104/0.077 ms (13–18×), 1k 0.263; reads at the floor (3.26, AC44) |
-| Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Adapt:** 4.43 neighbor-cell ranges over the ordered index + direct lookup; measured 50k 1 km `GEOSEARCH` 4.34 vs 0.157/0.170 ms, `GEOPOS` 100 24.86 vs 0.47–0.61; all-member search reply-bound (3.27, AC45) |
+| Geospatial commands | geohash zset, nine neighbour cells, dict point lookup | same | scan every member per search; build all members and scan per `GEOPOS`/`GEODIST` member | **Partly done:** 4.43 direct `zset_score` probes for `GEOPOS`/`GEODIST`/`GEOHASH` (100 at 0.383 vs 0.47–0.61 ms, from 24.86; 1 at 0.106); `GEOSEARCH` still scans every member (4.34–7.4 vs 0.16–0.84) (3.27, AC45) |
 | Multi-member point lookups | one dict/intset probe per requested member | same | clone+sort the set, or scan every member once per requested member (`ZMSCORE` O(n·m)) | **Done:** 4.44 direct probe per member; measured 100k `ZMSCORE` 100 273.2 → 0.253 ms and `SMISMEMBER` 100 11.75 → 0.282; single-member reads also 0.08–0.18; `HMGET` at the floor (3.28, AC46) |
 | Expiry on command paths | lazy per-key expiry + bounded active cycle; no full purge | same | `reap(now, usize::MAX)` on `MGET`/`KEYS`/`RANDOMKEY`/`DBSIZE`/`MSET`/`SCAN` and the admission fallback | **Done:** 4.45 per-key/bounded expiry; post-fix 0.23–0.30 vs 0.15–0.30 ms, lazy `GET` at parity (3.29, AC47) |
 | SORT `BY nosort` | source-order slice without sorting or copying | same | pre-fix clone every element and build an `Item` before `LIMIT`; post-fix borrowed list slice | **Done (nosort):** 4.46 direct slice; measured 100k pre-fix 7.96 vs 0.12/0.16 ms, post-fix 0.188/0.506 at parity; sorted/ALPHA/weighted rows unchanged (3.30, AC48) |
@@ -3131,6 +3131,14 @@ read paths unchanged.
   `GEOPOS` is 10–15× for one member and **41–53×** for 100, and `GEODIST` ~19×,
   while the all-members 5 km search is reply-bound at parity and the 10-member
   controls are at the floor. Candidate 4.43.
+
+- **Post-fix (2026-11-14, candidate 4.43 for point lookups).** `GEOPOS`,
+  `GEODIST` and `GEOHASH` probe `Collection::zset_score` per requested member
+  instead of materialising the whole zset: `GEOPOS` 1/100 **0.106/0.383 ms**
+  (from 1.99/24.86) versus Redis 0.268/0.425 and Valkey 0.367/0.984; `GEODIST`
+  **0.079** (from 3.12); `GEOHASH` 100 0.175. `GEOSEARCH` still scans every
+  member (7.417 ms for 1 km in this cohort), so the neighbor-cell search half
+  remains open and the all-member reply stays reply-bound at parity.
 
 **Verdict: adapt neighbor-cell search and direct point lookup (4.43).** Reuse
 the 4.30/4.38 ordered `(score, member)` index: compute the geohash cell ranges
@@ -6202,7 +6210,7 @@ differs, an OOM leaves a partial entry, the controls or reads regress, or the
 shall be unchanged; the 10-entry control shall be unchanged; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
-### 4.43 Geospatial neighbor-cell search (candidate; admission measured)
+### 4.43 Geospatial neighbor-cell search (candidate; direct point lookups implemented)
 
 **Mechanism.** Reuse 4.30/4.38's ordered `(score, member)` index. For
 `GEOSEARCH`/`BYRADIUS`/`BYBOX`, compute the geohash cell size for the shape,
@@ -6224,6 +6232,19 @@ Redis 0.12/0.16/0.16 and Valkey 0.14/0.17/0.23; 2×2 km box 4.49 versus
 3.03/1.32/1.99 versus 0.14/0.19 and 100 26.86/24.86/22.33 versus 0.47/0.61;
 `GEODIST` 0.86/3.77/3.12 versus 0.168/0.167; 10-member controls 0.149/0.139
 versus 0.24/0.165 and 0.18/0.264.
+
+**Post-fix point lookups (2026-11-14).** `GEOPOS`, `GEODIST` and `GEOHASH` now
+read the score map directly through `Collection::zset_score` instead of building
+an all-member vector and scanning it once per requested member. The 50,000-member
+grid cohort (20 repetitions, three rotations, p50/p99): `GEOPOS` 1
+**0.106/2.394 ms** versus Redis 0.268/1.386 and Valkey 0.367/1.510 (from 1.99);
+`GEOPOS` 100 **0.383/2.291** versus 0.425/3.131 and 0.984/3.407 (from 24.86);
+`GEOHASH` 100 **0.175/0.908** versus 0.286/0.656 and 0.227/1.732; `GEODIST`
+**0.079/0.202** versus 0.079/1.583 and 0.059/0.203 (from 3.12). AC45's point
+lookup rows are met and now lead or match the C servers. `GEOSEARCH` still scans
+every member (**7.417 ms** 1 km and 84.3 ms all-member in this cohort versus
+0.844 and 83.6/72.0), so the neighbor-cell half remains open. Raw JSON retained
+at `/tmp/opencode/geo-points-result.json` (untracked).
 
 **Risks and obligations.** The cell computation is the correctness core:
 neighbour enumeration, dateline and pole edges, inclusive score bounds, duplicate
@@ -6250,6 +6271,9 @@ all-member search and the 10-member controls shall be unchanged; results
 implementation exactly on a boundary/dateline fixture; `ASC`/`DESC`/`COUNT`,
 `FROMMEMBER`, `BYRADIUS`/`BYBOX`, `WITH*` and `STORE` tests shall pass; no
 dependency shall be added; and both protected gates shall pass on the exact head.
+Evidence: point lookups are met and leading (`GEOPOS` 1/100 at 0.106/0.383,
+`GEODIST` 0.079, `GEOHASH` 100 0.175) via direct probes; the 1 km/box search
+target is not met (7.4 ms, unchanged linear scan).
 
 ### 4.44 Per-member probes for multi-member lookups (candidate; implemented)
 
