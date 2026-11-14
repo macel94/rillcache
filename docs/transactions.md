@@ -77,3 +77,29 @@ part of the payload budget.
   durable atomic commit, distributed locking or crash
   recovery. `SET key token NX PX ...` plus conditional release still has the
   failover and fencing limits described in [requirements](requirements.md).
+
+## Declared contract and evidence
+
+This is the supported transaction contract for the standalone, single-database
+profile:
+
+- Connection-local commands are rejected at queue time and mark the transaction
+  dirty; `EXEC` then returns `EXECABORT` and runs nothing. Blocking pops are
+  rejected the same way.
+- Redis-shaped `MULTI`/`EXEC`/`DISCARD`/`WATCH`/`UNWATCH` control flow, nested
+  `MULTI` errors, empty `EXEC`, queue-time arity/unknown errors and optimistic
+  watch aborts are covered by `src/session/tests.rs`
+  (`multi_queues_then_executes_one_ordered_array_and_clears_state`,
+  `nested_multi_watch_and_empty_exec_follow_redis_control_flow`,
+  `runtime_errors_are_reported_inside_exec_without_rolling_back`) and the
+  all-mode wire tests in `tests/blocking.rs`.
+- A runtime error inside `EXEC` is returned in the reply array and later queued
+  commands still run; there is no rollback, matching Redis's documented
+  no-rollback behavior.
+- The single owner is the only isolation boundary. There is no replication,
+  durable distributed commit, distributed lock, crash-recovery transaction log or
+  failover fencing; those remain separate availability/durability items and are
+  not implied by this contract.
+
+This declaration covers the standalone profile only. It is not a claim that a
+replicated or clustered deployment has the same transaction semantics.
