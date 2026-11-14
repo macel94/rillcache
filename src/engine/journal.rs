@@ -353,6 +353,23 @@ pub(super) struct RewriteJob {
     rounds: usize,
 }
 
+impl RewriteJob {
+    fn progress(&self) -> (&'static str, u64, u64) {
+        let total = u64::try_from(self.keys.len()).unwrap_or(u64::MAX);
+        let done = u64::try_from(self.cursor).unwrap_or(u64::MAX).min(total);
+        let phase = if self.cursor < self.keys.len() {
+            "snapshot"
+        } else if !self.pending.is_empty() {
+            "reconcile"
+        } else if !self.synced {
+            "sync"
+        } else {
+            "commit"
+        };
+        (phase, done, total)
+    }
+}
+
 /// Exclusive local-filesystem ownership of one append-only journal.
 ///
 /// Two processes pointed at the same journal would interleave appends and corrupt
@@ -528,6 +545,9 @@ pub(super) struct PersistenceStatus {
     pub write_failed: bool,
     pub rewrite_failed: bool,
     pub rewrite_in_progress: bool,
+    pub rewrite_phase: &'static str,
+    pub rewrite_keys_done: u64,
+    pub rewrite_keys_total: u64,
 }
 
 impl Journal {
@@ -1321,6 +1341,9 @@ impl Journal {
             write_failed: self.failed,
             rewrite_failed: self.last_rewrite_failed,
             rewrite_in_progress: self.rewrite.is_some(),
+            rewrite_phase: "none",
+            rewrite_keys_done: 0,
+            rewrite_keys_total: 0,
         }
     }
 
@@ -1720,6 +1743,16 @@ impl ShardExecutor {
         self.rewrite_job.borrow().is_some()
     }
 
+    /// Snapshot progress for `INFO persistence`. Reconciliation may revisit keys
+    /// written during the snapshot, so `keys_done` counts only stable snapshot
+    /// keys and stops at `keys_total`; the phase distinguishes later work.
+    fn rewrite_progress(&self) -> (&'static str, u64, u64) {
+        let Ok(job) = self.rewrite_job.try_borrow() else {
+            return ("unavailable", 0, 0);
+        };
+        job.as_ref().map_or(("none", 0, 0), RewriteJob::progress)
+    }
+
     fn abort_rewrite_job(&self) {
         if self.rewrite_job.borrow_mut().take().is_some() {
             if let Ok(mut data) = self.data.try_borrow_mut() {
@@ -1734,6 +1767,7 @@ impl ShardExecutor {
     }
 
     pub(super) fn persistence_status(&self) -> PersistenceStatus {
+        let (rewrite_phase, rewrite_keys_done, rewrite_keys_total) = self.rewrite_progress();
         let Some(journal) = self.journal.as_ref() else {
             return PersistenceStatus {
                 aof_enabled: false,
@@ -1741,6 +1775,9 @@ impl ShardExecutor {
                 write_failed: false,
                 rewrite_failed: false,
                 rewrite_in_progress: false,
+                rewrite_phase: "none",
+                rewrite_keys_done: 0,
+                rewrite_keys_total: 0,
             };
         };
         let in_progress = self.rewrite_in_progress();
@@ -1751,10 +1788,16 @@ impl ShardExecutor {
                 write_failed: true,
                 rewrite_failed: true,
                 rewrite_in_progress: in_progress,
+                rewrite_phase,
+                rewrite_keys_done,
+                rewrite_keys_total,
             },
             |journal| {
                 let mut status = journal.status();
                 status.rewrite_in_progress = in_progress;
+                status.rewrite_phase = rewrite_phase;
+                status.rewrite_keys_done = rewrite_keys_done;
+                status.rewrite_keys_total = rewrite_keys_total;
                 status
             },
         )

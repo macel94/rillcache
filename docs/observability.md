@@ -197,6 +197,9 @@ state:
 loading:0
 aof_enabled:1
 aof_rewrite_in_progress:0
+aof_rewrite_phase:none
+aof_rewrite_keys_done:0
+aof_rewrite_keys_total:0
 aof_last_bgrewrite_status:ok
 aof_last_write_status:ok
 aof_current_size:1234
@@ -206,8 +209,11 @@ With persistence disabled only `loading:0` and `aof_enabled:0` are returned.
 `aof_last_write_status` reflects the journal's latched failure state and
 `aof_last_bgrewrite_status` the last completed `BGREWRITEAOF`. Since the
 cooperative rewrite change, `aof_rewrite_in_progress` reports whether a rewrite is
-currently running. RDB, backlog, bio and fork fields are omitted because they are
-not implemented or measured.
+currently running, `aof_rewrite_phase` reports the bounded phase, and
+`aof_rewrite_keys_done`/`aof_rewrite_keys_total` report stable snapshot progress.
+Reconciliation may revisit keys, so progress never exceeds the snapshot total.
+RDB, backlog, bio and fork fields are omitted because they are not implemented or
+measured.
 
 ## Deliberate gaps
 
