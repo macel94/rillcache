@@ -82,6 +82,8 @@ expiry and eviction, and journal syncing are not paused. This is deliberately a
 client-command gate, not Redis's full pause surface (which also pauses expiry,
 eviction and replica traffic); replication does not exist here.
 
+`CLIENT HELP` returns the supported subcommand list and argument hints.
+
 `CLIENT LIST`/`KILL` expose addresses, names, users and live connections; they
 require the normal `CLIENT` command permission and are only appropriate for trusted
 administrators. The registry is process-local, bounded by `max_clients`, and does
