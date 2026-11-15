@@ -293,6 +293,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let collection = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 if name == "smembers" {
                     out.extend_from_slice(b"*0\r\n");
                 } else {
@@ -515,6 +516,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let collection = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 if name == "zscore" {
                     encode_bulk(None, out);
                 } else if name == "zmscore" {
