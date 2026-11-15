@@ -228,6 +228,50 @@ fn disabled_observers_and_multi_keep_commandstats_opt_in_and_count_only_exec() {
 }
 
 #[test]
+fn info_latencystats_reports_bounded_percentiles_and_resets_in_all_modes() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers, None);
+        let mut stream = connect(&server);
+
+        let disabled = bulk_text(&reply(&mut stream, &[b"INFO", b"latencystats"]));
+        assert!(
+            !disabled.contains("latency_percentiles_usec_"),
+            "{disabled}"
+        );
+        command(
+            &mut stream,
+            &[b"CONFIG", b"SET", b"commandstats-enabled", b"yes"],
+            b"+OK\r\n",
+        );
+        command(&mut stream, &[b"PING"], b"+PONG\r\n");
+        command(&mut stream, &[b"PING"], b"+PONG\r\n");
+        command(&mut stream, &[b"SET", b"k", b"v"], b"+OK\r\n");
+        command(&mut stream, &[b"GET", b"k"], b"$1\r\nv\r\n");
+
+        let stats = bulk_text(&reply(&mut stream, &[b"INFO", b"latencystats"]));
+        let ping = stats
+            .lines()
+            .find(|line| line.starts_with("latency_percentiles_usec_ping:"))
+            .expect("ping latency percentiles");
+        assert!(ping.contains("p50=") && ping.contains("p99=") && ping.contains("p99.9="));
+        let values: Vec<u64> = ping
+            .split_once(':')
+            .unwrap()
+            .1
+            .split(',')
+            .map(|field| field.split_once('=').unwrap().1.parse().unwrap())
+            .collect();
+        assert_eq!(values.len(), 3);
+        assert!(values[0] <= values[1] && values[1] <= values[2], "{ping}");
+
+        command(&mut stream, &[b"CONFIG", b"RESETSTAT"], b"+OK\r\n");
+        let reset = bulk_text(&reply(&mut stream, &[b"INFO", b"latencystats"]));
+        assert!(!reset.contains("latency_percentiles_usec_ping:"), "{reset}");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn info_commandstats_counts_authentication_rejections_in_all_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers, Some(b"secret"));
