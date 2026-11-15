@@ -629,7 +629,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(a[1], now);
         match data.entries.get(a[1]) {
-            None => integer(0, out),
+            None => {
+                data.record_key_miss(a[1]);
+                integer(0, out)
+            }
             Some(e) => match &e.stream {
                 Some(s) => integer(s.entries.len() as i64, out),
                 None => out.extend_from_slice(
@@ -846,6 +849,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(a[1], now);
         let Some(entry) = data.entries.get(a[1]) else {
+            data.record_key_miss(a[1]);
             array(0, out);
             return;
         };
