@@ -247,6 +247,116 @@ fn assert_command(client: &mut Client, args: &[&[u8]], expected: Resp) {
     assert_eq!(client.command(args).unwrap(), expected, "command {args:?}");
 }
 
+fn assert_deadline(client: &mut Client, key: &[u8], deadline: i64) {
+    assert_command(client, &[b"PEXPIRETIME", key], Resp::Integer(deadline));
+    assert_command(
+        client,
+        &[b"EXPIRETIME", key],
+        Resp::Integer(if deadline < 0 {
+            deadline
+        } else {
+            deadline / 1000
+        }),
+    );
+    // Only compare stable sentinel values; positive remaining TTLs are clock-dependent.
+    if deadline < 0 {
+        assert_command(client, &[b"TTL", key], Resp::Integer(deadline));
+        assert_command(client, &[b"PTTL", key], Resp::Integer(deadline));
+    }
+}
+
+fn run_expiry_corpus(client: &mut Client, suffix: &[u8]) {
+    let source = key(b"rillcache:baseline:expiry:\0", suffix);
+    let destination = key(b"rillcache:baseline:expiry-copy:", suffix);
+    let early = b"4102444800000".as_slice();
+    let later = b"4102444900000".as_slice();
+    let value = b"expiry\0\xff";
+    assert_command(client, &[b"DEL", &source, &destination], Resp::Integer(0));
+    assert_deadline(client, &source, -2);
+    assert_command(client, &[b"PERSIST", &source], Resp::Integer(0));
+    assert_command(
+        client,
+        &[b"SET", &source, value],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_deadline(client, &source, -1);
+
+    // A persistent key has an infinite deadline for GT/LT. Rejected conditions
+    // must leave both the value and the absolute deadline unchanged.
+    for (deadline, option, changed, expected) in [
+        (early, b"GT".as_slice(), 0, -1),
+        (early, b"XX".as_slice(), 0, -1),
+        (early, b"LT".as_slice(), 1, 4_102_444_800_000),
+        (later, b"NX".as_slice(), 0, 4_102_444_800_000),
+        (later, b"XX".as_slice(), 1, 4_102_444_900_000),
+        (early, b"GT".as_slice(), 0, 4_102_444_900_000),
+        (later, b"GT".as_slice(), 0, 4_102_444_900_000),
+        (later, b"LT".as_slice(), 0, 4_102_444_900_000),
+        (early, b"LT".as_slice(), 1, 4_102_444_800_000),
+        (later, b"GT".as_slice(), 1, 4_102_444_900_000),
+    ] {
+        assert_command(
+            client,
+            &[b"PEXPIREAT", &source, deadline, option],
+            Resp::Integer(changed),
+        );
+        assert_deadline(client, &source, expected);
+        assert_command(client, &[b"GET", &source], Resp::Bulk(Some(value.to_vec())));
+    }
+    assert_command(client, &[b"PERSIST", &source], Resp::Integer(1));
+    assert_command(client, &[b"PERSIST", &source], Resp::Integer(0));
+    assert_deadline(client, &source, -1);
+    assert_command(
+        client,
+        &[b"EXPIREAT", &source, b"4102444800", b"NX"],
+        Resp::Integer(1),
+    );
+    assert_deadline(client, &source, 4_102_444_800_000);
+    for command in [
+        &[b"SET".as_slice(), &source, value, b"KEEPTTL"][..],
+        &[b"APPEND".as_slice(), &source, b""][..],
+    ] {
+        let expected = if command[0] == b"SET" {
+            Resp::Simple(b"OK".to_vec())
+        } else {
+            Resp::Integer(value.len() as i64)
+        };
+        assert_command(client, command, expected);
+        assert_deadline(client, &source, 4_102_444_800_000);
+    }
+    assert_command(client, &[b"COPY", &source, &destination], Resp::Integer(1));
+    assert_deadline(client, &destination, 4_102_444_800_000);
+    assert_command(
+        client,
+        &[b"GETEX", &source, b"PERSIST"],
+        Resp::Bulk(Some(value.to_vec())),
+    );
+    assert_deadline(client, &source, -1);
+    assert_deadline(client, &destination, 4_102_444_800_000);
+    assert_command(
+        client,
+        &[b"RENAME", &destination, &source],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_deadline(client, &source, 4_102_444_800_000);
+    assert_deadline(client, &destination, -2);
+    assert_command(
+        client,
+        &[b"GETEX", &source, b"PXAT", b"1"],
+        Resp::Bulk(Some(value.to_vec())),
+    );
+    assert_deadline(client, &source, -2);
+    assert_command(client, &[b"GET", &source], Resp::Bulk(None));
+    assert_command(
+        client,
+        &[b"SET", &source, value],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    assert_command(client, &[b"PEXPIRE", &source, b"0"], Resp::Integer(1));
+    assert_deadline(client, &source, -2);
+    assert_command(client, &[b"DEL", &source, &destination], Resp::Integer(0));
+}
+
 fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     let binary_key = key(b"rillcache:baseline:binary:", suffix);
     let empty_key = key(b"rillcache:baseline:empty:", suffix);
@@ -257,6 +367,7 @@ fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     let deadline = b"4102444800123";
     let binary = b"\0$-1\r\n\xff";
     let mut client = Client::connect(address).unwrap();
+    run_expiry_corpus(&mut client, suffix);
 
     assert_command(
         &mut client,

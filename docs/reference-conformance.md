@@ -20,6 +20,16 @@ ignored by default and requires `RILLCACHE_REFERENCE_ADDR` plus
 - **When** counter updates succeed, **then** the integer result and existing TTL
   shall be preserved; **if** signed-64-bit arithmetic overflows or PEXPIRE receives
   an invalid integer, **then** the error shall leave the value and TTL unchanged.
+- **When** absolute expiry is conditional on NX, XX, GT or LT, **then** the
+  reply, stored value and deadline shall match the pinned references, including
+  equal deadlines and persistent keys treated as having infinite TTL.
+- **When** PERSIST or GETEX PERSIST clears a timeout, SET KEEPTTL or APPEND
+  preserves it, COPY duplicates it, or RENAME overwrites another key, **then**
+  PEXPIRETIME/EXPIRETIME shall report the exact resulting deadline. Clearing the
+  source's expiry shall not change the copy's deadline.
+- **When** GETEX PXAT uses a past timestamp, **then** it shall return the previous
+  binary value and remove the key; PEXPIRE with zero shall also remove it. Missing
+  and persistent keys shall report the stable -2 and -1 TTL/PTTL sentinels.
 - **When** a RESP request arrives byte-by-byte or multiple commands are pipelined,
   **then** framing and ordered one-reply-per-command behavior shall be preserved.
 - **When** QUIT precedes another pipelined write, **then** the server shall flush
@@ -50,9 +60,9 @@ Rillcache servers.
 
 ## Verification and version notes
 
-The command contracts were checked against official Redis SET, GETEX, INCR and
-RESP protocol documentation. The optional reference corpus has been exercised
-against the repository's pinned Redis 8.10.2 and Valkey 9.1.2 binaries. In
+The command contracts were checked against official Redis SET, GETEX, INCR,
+EXPIRE and RESP protocol documentation. The optional reference corpus has been
+exercised against the repository's pinned Redis 8.10.2 and Valkey 9.1.2 binaries. In
 particular, GETEX for a missing key with an invalid EX value differs: Redis returns
 null, while Valkey returns `ERR value is not an integer or out of range`. This
 corpus preserves that explicit distinction instead of declaring the vendors
@@ -80,4 +90,5 @@ or any Rust dependency.
 Sources: [Redis SET](https://redis.io/docs/latest/commands/set/),
 [Redis GETEX](https://redis.io/docs/latest/commands/getex/),
 [Redis INCR](https://redis.io/docs/latest/commands/incr/),
+[Redis EXPIRE](https://redis.io/docs/latest/commands/expire/),
 [RESP specification](https://redis.io/docs/latest/develop/reference/protocol-spec/).
