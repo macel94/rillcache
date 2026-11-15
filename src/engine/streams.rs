@@ -663,6 +663,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(a[1], now);
         let Some(entry) = data.entries.get_mut(a[1]) else {
+            data.record_key_miss(a[1]);
             integer(0, out);
             return;
         };
@@ -754,6 +755,7 @@ impl ShardExecutor {
         let now = self.clock.now_ms().max(0);
         data.expire_key(a[1], now);
         let Some(entry) = data.entries.get(a[1]) else {
+            data.record_key_miss(a[1]);
             out.extend_from_slice(b"-NOGROUP No such key or consumer group\r\n");
             return;
         };
@@ -1065,6 +1067,7 @@ impl ShardExecutor {
         };
         data.expire_key(a[1], now);
         let Some(entry) = data.entries.get_mut(a[1]) else {
+            data.record_key_miss(a[1]);
             out.extend_from_slice(b"-NOGROUP No such key or consumer group\r\n");
             return;
         };
@@ -1196,6 +1199,7 @@ impl ShardExecutor {
         };
         data.expire_key(a[1], now);
         let Some(entry) = data.entries.get_mut(a[1]) else {
+            data.record_key_miss(a[1]);
             out.extend_from_slice(b"-NOGROUP No such key or consumer group\r\n");
             return;
         };
@@ -1937,6 +1941,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(a[2], now);
         let Some(entry) = data.entries.get(a[2]) else {
+            data.record_key_miss(a[2]);
             out.extend_from_slice(b"-ERR no such key\r\n");
             return;
         };
@@ -1985,6 +1990,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(a[2], now);
         let Some(entry) = data.entries.get(a[2]) else {
+            data.record_key_miss(a[2]);
             out.extend_from_slice(b"-ERR no such key\r\n");
             return;
         };
@@ -2067,6 +2073,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(a[2], now);
         let Some(e) = data.entries.get(a[2]) else {
+            data.record_key_miss(a[2]);
             out.extend_from_slice(b"-ERR no such key\r\n");
             return;
         };
