@@ -134,6 +134,11 @@ impl Clock for SystemClock {
     }
 }
 
+/// Bounded logarithmic latency buckets for `INFO latencystats`. Bucket zero is
+/// zero microseconds; bucket n covers `2^(n-1) ..= 2^n - 1`, saturating at the
+/// last bucket. This is an approximation, not an HDR histogram.
+const LATENCY_BUCKETS: usize = 32;
+
 /// Per-command counters exposed through `INFO commandstats`. Each slot maps to
 /// one registered command and is updated with relaxed atomics so recording does
 /// not serialize independent worker threads.
@@ -143,6 +148,7 @@ pub(super) struct CommandStat {
     usec: std::sync::atomic::AtomicU64,
     rejected_calls: std::sync::atomic::AtomicU64,
     failed_calls: std::sync::atomic::AtomicU64,
+    latency: [std::sync::atomic::AtomicU64; LATENCY_BUCKETS],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +158,39 @@ pub(super) struct CommandStatValues {
     pub usec: u64,
     pub rejected_calls: u64,
     pub failed_calls: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CommandLatencyValues {
+    pub name: &'static str,
+    pub p50: u64,
+    pub p99: u64,
+    pub p999: u64,
+}
+
+fn latency_bucket(micros: u64) -> usize {
+    if micros == 0 {
+        0
+    } else {
+        ((u64::BITS - micros.leading_zeros()) as usize).min(LATENCY_BUCKETS - 1)
+    }
+}
+
+fn latency_percentile(counts: &[u64], total: u64, per_mille: u64) -> u64 {
+    let target = (total.saturating_mul(per_mille)).div_ceil(1000).max(1);
+    let mut cumulative = 0u64;
+    for (index, count) in counts.iter().enumerate() {
+        cumulative = cumulative.saturating_add(*count);
+        if cumulative >= target {
+            return if index == 0 {
+                0
+            } else {
+                1u64.checked_shl(u32::try_from(index).unwrap_or(u32::MAX))
+                    .map_or(u64::MAX, |upper| upper - 1)
+            };
+        }
+    }
+    u64::MAX
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -571,10 +610,10 @@ impl ServerServices {
             return;
         };
         stat.calls.fetch_add(1, Ordering::Relaxed);
-        stat.usec.fetch_add(
-            u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
-            Ordering::Relaxed,
-        );
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        stat.usec.fetch_add(micros, Ordering::Relaxed);
+        let bucket = latency_bucket(micros);
+        stat.latency[bucket].fetch_add(1, Ordering::Relaxed);
         if reply.starts_with(b"-") {
             stat.failed_calls.fetch_add(1, Ordering::Relaxed);
         }
@@ -645,6 +684,9 @@ impl ServerServices {
             stat.usec.store(0, Ordering::Relaxed);
             stat.rejected_calls.store(0, Ordering::Relaxed);
             stat.failed_calls.store(0, Ordering::Relaxed);
+            for bucket in &stat.latency {
+                bucket.store(0, Ordering::Relaxed);
+            }
         }
     }
 
@@ -661,6 +703,34 @@ impl ServerServices {
                     usec: stat.usec.load(Ordering::Relaxed),
                     rejected_calls: stat.rejected_calls.load(Ordering::Relaxed),
                     failed_calls: stat.failed_calls.load(Ordering::Relaxed),
+                })
+            })
+            .collect()
+    }
+
+    /// Approximate per-command percentiles from the bounded logarithmic
+    /// histogram. Commands without recorded calls are omitted.
+    pub(super) fn latency_statistics(&self) -> Vec<CommandLatencyValues> {
+        self.command_stats
+            .iter()
+            .enumerate()
+            .filter_map(|(index, stat)| {
+                let calls = stat.calls.load(Ordering::Relaxed);
+                if calls == 0 {
+                    return None;
+                }
+                let mut counts = [0u64; LATENCY_BUCKETS];
+                let mut total = 0u64;
+                for (bucket, count) in stat.latency.iter().enumerate() {
+                    let count = count.load(Ordering::Relaxed);
+                    counts[bucket] = count;
+                    total = total.saturating_add(count);
+                }
+                (total > 0).then(|| CommandLatencyValues {
+                    name: discovery::command_name_at(index).unwrap_or("unknown"),
+                    p50: latency_percentile(&counts, total, 500),
+                    p99: latency_percentile(&counts, total, 990),
+                    p999: latency_percentile(&counts, total, 999),
                 })
             })
             .collect()

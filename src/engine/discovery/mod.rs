@@ -1042,6 +1042,7 @@ impl ShardExecutor {
                     | b"stats"
                     | b"clients"
                     | b"commandstats"
+                    | b"latencystats"
                     | b"replication"
                     | b"persistence"
                     | b"errorstats"
@@ -1131,6 +1132,16 @@ impl ShardExecutor {
                         stat.usec / stat.calls,
                         stat.rejected_calls,
                         stat.failed_calls
+                    );
+                }
+            }
+            if matches!(section.as_slice(), b"latencystats" | b"all") {
+                text.push_str("# Latencystats\r\n");
+                for stat in self.latency_statistics() {
+                    let _ = writeln!(
+                        text,
+                        "latency_percentiles_usec_{}:p50={},p99={},p99.9={}\r",
+                        stat.name, stat.p50, stat.p99, stat.p999
                     );
                 }
             }
