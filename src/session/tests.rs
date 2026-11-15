@@ -1369,3 +1369,33 @@ fn client_no_evict_is_accepted_without_a_client_eviction_path() {
         call(&mut session, &store, &[b"CLIENT", b"NO-EVICT"]).starts_with(b"-ERR wrong number")
     );
 }
+
+#[test]
+fn client_tracking_introspection_reports_the_disabled_state() {
+    let store = Store::new(1024);
+    let mut session = Session::new();
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"GETREDIR"]),
+        b":-1\r\n"
+    );
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"TRACKINGINFO"]),
+        b"*6\r\n$5\r\nflags\r\n*1\r\n$3\r\noff\r\n$8\r\nredirect\r\n:-1\r\n$8\r\nprefixes\r\n*0\r\n"
+    );
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"CACHING", b"YES"]),
+        b"-ERR CLIENT CACHING can be called only when the client is in tracking mode with OPTIN or OPTOUT mode enabled\r\n"
+    );
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"CACHING", b"NO"]),
+        b"-ERR CLIENT CACHING can be called only when the client is in tracking mode with OPTIN or OPTOUT mode enabled\r\n"
+    );
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"CACHING", b"bad"]),
+        b"-ERR syntax error\r\n"
+    );
+    assert!(
+        call(&mut session, &store, &[b"CLIENT", b"GETREDIR", b"x"])
+            .starts_with(b"-ERR unsupported CLIENT subcommand")
+    );
+}
