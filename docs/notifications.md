@@ -40,9 +40,10 @@ occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
 `HVALS`/`HSTRLEN`, `STRLEN`, `GETRANGE`, `GETBIT`, `LLEN`/`LINDEX`/`LRANGE`/
 `LPOS`, `SCARD`/`SISMEMBER`/`SMEMBERS`, `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/
 `ZRANK`/`ZREVRANK`/`ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/`ZREVRANGEBYSCORE`/
-`ZLEXCOUNT`, `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD`, and `XLEN`/`XRANGE`/
-`XREVRANGE` on a missing key emit `keymiss` on the normal keyspace/keyevent channels. Hits, missing
-fields/elements/members in an existing key and existing wrong-type keys do not.
+`ZLEXCOUNT`, `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD`, `XLEN`/`XRANGE`/
+`XREVRANGE`, `HSCAN`/`SSCAN`/`ZSCAN` on a missing key emit `keymiss` on the
+normal keyspace/keyevent channels. Hits, missing fields/elements/members in an
+existing key and existing wrong-type keys do not.
 Other read commands are not covered yet.
 
 `n` reports a key that did not exist and was created by the command: `SET` on a
