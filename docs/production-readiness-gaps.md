@@ -572,8 +572,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Partial (2026-11-13): process RSS is observable.** `INFO memory` and
   `MEMORY STATS` report `used_memory_rss`, `used_memory_rss_human` and an explicit
   scope from Linux `/proc/self/status`; unsupported platforms report unavailable
-  instead of a fake value. `INFO memory` also reports cgroup v2/v1 current and
-  limit bytes plus an explicit scope when readable. Both are observational only
+  instead of a fake value. `INFO memory` and `MEMORY STATS` also report cgroup
+  v2/v1 current and limit bytes plus an explicit scope when readable. Both are observational only
   and are not used for admission, eviction or OOM handling. Allocator
   accounting, enforced cgroup/headroom contracts and OOM behavior remain absent.
   **Closes when:** operators can observe and enforce a documented memory bound
