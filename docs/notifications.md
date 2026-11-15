@@ -34,9 +34,11 @@ CONFIG GET notify-keyspace-events
 | `n` | new-key events for first creation |
 | `A` | alias for `g$lshztxe` (deliberately excludes `m` and `n`) |
 
-`m` reports a lookup that found no live key: `GET` and each missing `MGET`
-occurrence emit `keymiss` on the normal keyspace/keyevent channels. Hits and
-existing non-string keys do not. Other read commands are not covered yet.
+`m` reports a lookup that found no live key: `GET`, each missing `MGET`
+occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
+`EXPIRETIME`/`PEXPIRETIME` on a missing key emit `keymiss` on the normal
+keyspace/keyevent channels. Hits and existing non-string keys do not. Other read
+commands are not covered yet.
 
 `n` reports a key that did not exist and was created by the command: `SET` on a
 missing key, a new hash/list/set/zset/stream key, and a `COPY`/`RENAME`
@@ -179,7 +181,8 @@ keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
 and rejected writes, hash/list/set/zset/stream/HLL events, hash field
 `hexpire`/`hpersist` with no-op condition checks, `HDEL`/`HGETDEL` deletion
-pairs, `GET`/`MGET` `keymiss` with hit/non-string exclusions, first-creation
-`new` events including overwrite and second-entry exclusions, expire, rename,
+pairs, `GET`/`MGET`/`EXISTS`/`TYPE`/`TTL` `keymiss` with hit/non-string
+exclusions, first-creation `new` events including overwrite and second-entry
+exclusions, expire, rename,
 eviction/`expired` classes, blocking-pop events, binary channels and
 `CONFIG`/`INFO` exposure.
