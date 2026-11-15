@@ -805,6 +805,59 @@ fn keyspace_read_misses_emit_keymiss() {
 }
 
 #[test]
+fn hash_and_string_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"HGET", b"missing", b"f"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"STRLEN", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"GETRANGE", b"missing", b"0", b"1"]),
+        b"$0\r\n\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"GETBIT", b"missing", b"0"]), b":0\r\n");
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"HSET", b"h", b"f", b"v"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"SET", b"s", b"x"]), b"+OK\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"HGET", b"h", b"absent"]), b"$-1\r\n");
+    assert_eq!(run(&store, &[b"STRLEN", b"s"]), b":1\r\n");
+    assert_eq!(
+        run(&store, &[b"GETRANGE", b"s", b"0", b"0"]),
+        b"$1\r\nx\r\n"
+    );
+    assert_eq!(run(&store, &[b"GETBIT", b"s", b"0"]), b":0\r\n");
+    assert!(receiver.try_recv().is_err(), "existing keys are not misses");
+
+    assert_eq!(run(&store, &[b"RPUSH", b"l", b"a"]), b":1\r\n");
+    assert_eq!(
+        run(&store, &[b"HGET", b"l", b"f"]),
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+    assert!(receiver.try_recv().is_err(), "wrong type is not a key miss");
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
