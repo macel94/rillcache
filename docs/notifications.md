@@ -46,9 +46,9 @@ and the set store variants, `ZUNION`/`ZINTER`/`ZDIFF`/`ZINTERCARD` and the
 sorted-set store variants, `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`,
 `XINFO STREAM|GROUPS|CONSUMERS`, and `SORT`/`SORT_RO` sources (including
 `STORE`) emit `keymiss` on the normal keyspace/keyevent channels (once per
-missing source key for algebra). Hits, missing fields/elements/members in an
-existing key and existing wrong-type keys do not. `SORT` `BY`/`GET` pattern
-lookups and other read commands are not covered yet.
+missing source key for algebra), including `SORT` `BY`/`GET` pattern-derived
+key lookups. Hits, missing fields/elements/members in an existing key and
+existing wrong-type keys do not. Other read commands are not covered yet.
 
 `n` reports a key that did not exist and was created by the command: `SET` on a
 missing key, a new hash/list/set/zset/stream key, and a `COPY`/`RENAME`
