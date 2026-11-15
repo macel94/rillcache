@@ -387,6 +387,12 @@ fn command_discovery_has_sorted_truthful_resp2_metadata() {
         assert!(rss.parse::<u64>().is_ok(), "{rss:?}");
         assert!(text.contains("used_memory_rss_human:"));
         assert!(text.contains("used_memory_rss_scope:"));
+        if text.contains("used_memory_cgroup:") {
+            assert!(text.contains("used_memory_cgroup_human:"));
+            assert!(text.contains("max_memory_cgroup:"));
+            assert!(text.contains("max_memory_cgroup_human:"));
+            assert!(text.contains("used_memory_cgroup_scope:"));
+        }
         server.shutdown().unwrap();
     }
 }
