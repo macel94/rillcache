@@ -820,7 +820,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(key, now);
         match data.entries.get(key) {
-            None => integer(0, out),
+            None => {
+                data.record_key_miss(key);
+                integer(0, out)
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_list) => integer(
                 entry.collection.as_ref().expect("list type checked").len() as i64,
                 out,
@@ -842,6 +845,7 @@ impl ShardExecutor {
         data.expire_key(key, now);
         let list = match data.entries.get(key) {
             None => {
+                data.record_key_miss(key);
                 out.extend_from_slice(b"*0\r\n");
                 return;
             }

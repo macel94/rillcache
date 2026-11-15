@@ -2651,7 +2651,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let values = match data.entries.get(args[1]) {
-            None => None,
+            None => {
+                data.record_key_miss(args[1]);
+                None
+            }
             Some(entry) => match entry.collection.as_ref().and_then(Collection::list_items) {
                 Some(values) => Some(values),
                 None => {
@@ -3032,6 +3035,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let list = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 encode_bulk(None, out);
                 return;
             }
