@@ -168,7 +168,49 @@ impl Session {
             output.extend_from_slice(b"-ERR wrong number of arguments for 'client' command\r\n");
             return;
         };
-        if subcommand.eq_ignore_ascii_case(b"ID") && rest.is_empty() {
+        if subcommand.eq_ignore_ascii_case(b"HELP") {
+            if !rest.is_empty() {
+                arity("client|help", output);
+                return;
+            }
+            const HELP: &[&[u8]] = &[
+                b"CLIENT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+                b"GETNAME",
+                b"    Return the current connection name.",
+                b"GETREDIR",
+                b"    Return the tracking redirect id (-1 when tracking is off).",
+                b"ID",
+                b"    Return the client id.",
+                b"INFO",
+                b"    Return information about the current client.",
+                b"KILL <ip:port> | <id> | USER <username> ...",
+                b"    Close matching client connections.",
+                b"LIST [TYPE normal|pubsub]",
+                b"    Return information about connected clients.",
+                b"NO-EVICT ON|OFF",
+                b"    Request client eviction protection (clients are never evicted).",
+                b"PAUSE <timeout> [WRITE|ALL]",
+                b"    Suspend command processing for the given milliseconds.",
+                b"REPLY ON|OFF|SKIP",
+                b"    Control command-reply suppression.",
+                b"SETINFO <LIB-NAME|LIB-VER> <value>",
+                b"    Set client library metadata.",
+                b"SETNAME <name>",
+                b"    Set the current connection name.",
+                b"TRACKINGINFO",
+                b"    Return the disabled client-tracking state.",
+                b"UNBLOCK <id> [TIMEOUT|ERROR]",
+                b"    Unblock a blocked client.",
+                b"UNPAUSE",
+                b"    Resume command processing.",
+                b"HELP",
+                b"    Show this help.",
+            ];
+            let _ = write!(output, "*{}\r\n", HELP.len());
+            for line in HELP {
+                encode_bulk(Some(line), output);
+            }
+        } else if subcommand.eq_ignore_ascii_case(b"ID") && rest.is_empty() {
             let _ = write!(output, ":{}\r\n", self.id);
         } else if subcommand.eq_ignore_ascii_case(b"SETNAME") && rest.len() == 1 {
             if !valid_metadata(rest[0], MAX_NAME_BYTES) {
