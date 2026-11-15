@@ -1518,3 +1518,50 @@ fn new_key_events_fire_once_for_real_creations() {
     assert_eq!(run(&store, &[b"COPY", b"k", b"copy"]), b":0\r\n");
     assert!(receiver.try_recv().is_err());
 }
+
+#[test]
+fn additional_hash_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"HEXISTS", b"missing", b"f"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"HMGET", b"missing", b"a", b"b"]),
+        b"*2\r\n$-1\r\n$-1\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"HKEYS", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"HVALS", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"HSTRLEN", b"missing", b"f"]), b":0\r\n");
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"HSET", b"h", b"f", b"v"]), b":1\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"HEXISTS", b"h", b"absent"]), b":0\r\n");
+    assert_eq!(run(&store, &[b"HMGET", b"h", b"absent"]), b"*1\r\n$-1\r\n");
+    assert_eq!(run(&store, &[b"HSTRLEN", b"h", b"absent"]), b":0\r\n");
+    assert_eq!(run(&store, &[b"HKEYS", b"h"]), b"*1\r\n$1\r\nf\r\n");
+    assert!(
+        receiver.try_recv().is_err(),
+        "existing hash fields/keys are not misses"
+    );
+}
