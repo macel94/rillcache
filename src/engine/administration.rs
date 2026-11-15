@@ -140,21 +140,25 @@ impl ShardExecutor {
             for line in HELP {
                 encode_bulk(Some(line), out);
             }
-        } else if subcommand.eq_ignore_ascii_case(b"MALLOC-STATS")
-            || subcommand.eq_ignore_ascii_case(b"PURGE")
-        {
-            let name = if subcommand.eq_ignore_ascii_case(b"MALLOC-STATS") {
-                "memory|malloc-stats"
-            } else {
-                "memory|purge"
-            };
+        } else if subcommand.eq_ignore_ascii_case(b"MALLOC-STATS") {
             if args.len() != 2 {
-                arity(name, out);
+                arity("memory|malloc-stats", out);
                 return;
             }
-            out.extend_from_slice(
-                b"-ERR MEMORY MALLOC-STATS and MEMORY PURGE are not supported; memory reporting is payload and process RSS only\r\n",
+            encode_bulk(
+                Some(
+                    b"# rillcache uses the Rust system allocator; allocator-internal statistics are unavailable. Use MEMORY STATS and INFO memory for payload, RSS and cgroup observability.\n",
+                ),
+                out,
             );
+        } else if subcommand.eq_ignore_ascii_case(b"PURGE") {
+            if args.len() != 2 {
+                arity("memory|purge", out);
+                return;
+            }
+            // Freeing is managed by the platform allocator; there is no
+            // rillcache-owned pool to force-purge.
+            out.extend_from_slice(b"+OK\r\n");
         } else {
             out.extend_from_slice(b"-ERR unsupported MEMORY subcommand\r\n");
         }
@@ -558,5 +562,22 @@ mod tests {
         let help = run(&store, &[b"MEMORY", b"HELP"]);
         assert!(help.windows(b"STATS".len()).any(|part| part == b"STATS"));
         assert!(run(&store, &[b"MEMORY", b"STATS", b"extra"]).starts_with(b"-ERR"));
+    }
+
+    #[test]
+    fn memory_purge_and_malloc_stats_state_the_allocator_boundary() {
+        let store = ShardExecutor::new(1024);
+        assert_eq!(run(&store, &[b"MEMORY", b"PURGE"]), b"+OK\r\n");
+        let stats = run(&store, &[b"MEMORY", b"MALLOC-STATS"]);
+        assert!(stats.starts_with(b"$"));
+        assert!(
+            stats
+                .windows(b"system allocator".len())
+                .any(|part| part == b"system allocator")
+        );
+        assert!(run(&store, &[b"MEMORY", b"PURGE", b"extra"]).starts_with(b"-ERR wrong number"));
+        assert!(
+            run(&store, &[b"MEMORY", b"MALLOC-STATS", b"extra"]).starts_with(b"-ERR wrong number")
+        );
     }
 }

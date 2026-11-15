@@ -51,7 +51,10 @@ reports `used_memory_cgroup`, `used_memory_cgroup_human`, `max_memory_cgroup`
 (`-1` when the limit is `max`/effectively unlimited), `max_memory_cgroup_human`
 and `used_memory_cgroup_scope`. These fields are observational only and are not
 used for admission, eviction or OOM handling; they are absent when no cgroup
-memory files are readable. `MEMORY STATS` reports the RSS pair under
+memory files are readable. `MEMORY MALLOC-STATS` returns a short text stating
+that the Rust system allocator exposes no internal statistics; `MEMORY PURGE`
+replies `+OK` because there is no rillcache-owned pool to force-purge.
+`MEMORY STATS` reports the RSS pair under
 `used_memory_rss` / `used_memory_rss_human` with `rillcache.rss.scope` and, when
 readable, the same cgroup current/limit pair with `rillcache.cgroup.scope`. `evicted_keys` resets with
 `CONFIG RESETSTAT`; the policy itself does not.

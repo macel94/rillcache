@@ -49,8 +49,6 @@ work or falling through to an unqualified unknown-command reply:
   payload is not implemented.
 - `CONFIG REWRITE` reports that startup configuration is read-only; there is no
   generated `redis.conf`.
-- `MEMORY MALLOC-STATS` and `MEMORY PURGE` report that memory reporting covers
-  payload accounting and process RSS, not allocator internals.
 
 Arity is validated before each capability error. These exclusions are part of
 the compatibility profile boundary; they are not implementations and do not
