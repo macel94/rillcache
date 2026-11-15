@@ -76,6 +76,9 @@ impl ShardExecutor {
             wrong_type(out);
             return;
         }
+        if !data.entries.contains_key(args[1]) {
+            data.record_key_miss(args[1]);
+        }
         let byte = (offset / 8) as usize;
         let bit = 7 - (offset % 8) as u8;
         let value = data
