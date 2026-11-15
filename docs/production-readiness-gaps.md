@@ -361,18 +361,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   deadline, joins workers and reports forced termination; or the profile states
   the supervisor contract and accepted loss window.
 
-- [ ] **D8. Multi-process journal ownership is unguarded.** [P1]
-  **Partial (2026-11-05): local exclusive ownership enforced.** Startup claims
-  `<journal>.lock` with an exclusive create recording PID and kernel start time; a
-  second process on the same directory fails with a clear error, a crash-stale lock
-  is reclaimed only when the recorded process is gone or its PID was reused, and
-  clean shutdown removes the lock (`tests/journal_ownership.rs`). The lock is
-  advisory and local: shared/network filesystems are explicitly unsupported.
-  **Remaining:** no distributed lease or shared-volume guarantee; an operator must
-  keep the journal on local storage or enforce single-process access externally.
-  **Closes when:** shared-volume behavior is either implemented with a real lease
-  or the deployment profile excludes it explicitly (the current documentation says
-  unsupported).
+- [x] **D8. Multi-process journal ownership is unguarded.** [P1]
+  **Complete (2026-11-14): local ownership plus explicit profile exclusion.**
+  Startup claims `<journal>.lock` with an exclusive create recording PID and
+  kernel start time; a second process on the same directory fails with a clear
+  error, a crash-stale lock is reclaimed only when the recorded process is gone or
+  its PID was reused, and clean shutdown removes the lock
+  (`tests/journal_ownership.rs`). The [draft standalone profile](production-profile.md)
+  excludes shared/network filesystems and multi-process journal ownership, so the
+  supported deployment is one process on local storage. **Retained limitation:**
+  there is no distributed lease or shared-volume guarantee; an operator must keep
+  the journal on local storage or enforce single-process access externally.
 
 - [x] **D9. Wall-clock rollback across restart is a documented limitation.** [P1]
   **Complete (2026-11-14):** TTL deadlines are absolute Unix-epoch milliseconds
