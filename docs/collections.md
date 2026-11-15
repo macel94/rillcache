@@ -93,7 +93,8 @@ integer spelling (so a probe such as `01` misses), `SetPack`/`HashPack`/`ZSetPac
 scan their small vectors, and `LLEN` walks list nodes without flattening
 elements. Missing keys and WRONGTYPE replies are unchanged, and `SMEMBERS`,
 `HGETALL`, `HKEYS`, `HVALS` and range replies keep their existing ordering and
-reply shape.
+reply shape; packed hashes are already stored in field order, so those replies
+skip a redundant sort.
 
 SMEMBERS, HGETALL, HKEYS, HVALS and set algebra replies use deterministic byte
 ordering for stable output; Redis leaves iteration order unspecified. ZRANGE,

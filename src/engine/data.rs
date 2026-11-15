@@ -193,6 +193,28 @@ impl Collection {
         }
     }
 
+    /// Field/value pairs in byte order. `HashPack` is maintained sorted by
+    /// construction, so this avoids re-sorting packed hashes on every read.
+    pub fn hash_items_sorted(&self) -> Option<Vec<(&[u8], &[u8])>> {
+        match self {
+            Self::Hash(values) => {
+                let mut items: Vec<(&[u8], &[u8])> = values
+                    .iter()
+                    .map(|(field, value)| (field.as_slice(), value.as_slice()))
+                    .collect();
+                items.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                Some(items)
+            }
+            Self::HashPack(values) => Some(
+                values
+                    .iter()
+                    .map(|(field, value)| (field.as_slice(), value.as_slice()))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
     pub fn remove_hash_field(&mut self, field: &[u8]) {
         match self {
             Self::Hash(values) => {
@@ -1267,11 +1289,21 @@ mod tests {
 
         let hash = Collection::Hash(HashMap::from([(b"f".to_vec(), b"v".to_vec())]));
         assert_eq!(hash.len(), 1);
+        let unordered = Collection::Hash(HashMap::from([
+            (b"b".to_vec(), b"2".to_vec()),
+            (b"a".to_vec(), b"1".to_vec()),
+        ]));
+        let sorted = unordered.hash_items_sorted().expect("hash");
+        assert_eq!(sorted[0].0, b"a");
+        assert_eq!(sorted[1].0, b"b");
         let hash_pack = Collection::HashPack(vec![
             (b"a".to_vec(), b"1".to_vec()),
             (b"b".to_vec(), b"2".to_vec()),
         ]);
         assert_eq!(hash_pack.len(), 2);
+        let packed_sorted = hash_pack.hash_items_sorted().expect("hash pack");
+        assert_eq!(packed_sorted[0].0, b"a");
+        assert_eq!(packed_sorted[1].0, b"b");
 
         let zset = Collection::ZSet(HashMap::from([(b"a".to_vec(), 1.5)]));
         assert_eq!(zset.len(), 1);

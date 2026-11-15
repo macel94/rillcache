@@ -421,8 +421,7 @@ impl ShardExecutor {
             "hget" => encode_bulk(collection.hash_get(args[2]), out),
             "hlen" => integer(collection.len() as i64, out),
             _ => {
-                let mut fields = collection.hash_items().expect("hash type checked");
-                fields.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                let fields = collection.hash_items_sorted().expect("hash type checked");
                 write!(out, "*{}\r\n", fields.len() * 2).expect("Vec write");
                 for (field, value) in fields {
                     encode_bulk(Some(field), out);
