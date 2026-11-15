@@ -39,9 +39,9 @@ occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
 `EXPIRETIME`/`PEXPIRETIME`, `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
 `HVALS`/`HSTRLEN`, `STRLEN`, `GETRANGE`, `GETBIT`, `LLEN`/`LINDEX`/`LRANGE`/
 `LPOS`, `SCARD`/`SISMEMBER`/`SMEMBERS`, `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/
-`ZRANK`/`ZREVRANK`/`ZREVRANGE`/
-`ZCOUNT`/`ZRANGEBYSCORE`/`ZREVRANGEBYSCORE`/`ZLEXCOUNT` on a missing key emit
-`keymiss` on the normal keyspace/keyevent channels. Hits, missing
+`ZRANK`/`ZREVRANK`/`ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/`ZREVRANGEBYSCORE`/
+`ZLEXCOUNT`, `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD`, and `XLEN`/`XRANGE`/
+`XREVRANGE` on a missing key emit `keymiss` on the normal keyspace/keyevent channels. Hits, missing
 fields/elements/members in an existing key and existing wrong-type keys do not.
 Other read commands are not covered yet.
 
@@ -186,7 +186,7 @@ keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
 and rejected writes, hash/list/set/zset/stream/HLL events, hash field
 `hexpire`/`hpersist` with no-op condition checks, `HDEL`/`HGETDEL` deletion
-pairs, `GET`/`MGET`/`EXISTS`/`TYPE`/`TTL`/hash/string/set/zset `keymiss` with
+pairs, `GET`/`MGET`/`EXISTS`/`TYPE`/`TTL`/hash/list/set/zset/stream `keymiss` with
 hit/non-string exclusions, first-creation `new` events including overwrite and second-entry
 exclusions, expire, rename,
 eviction/`expired` classes, blocking-pop events, binary channels and
