@@ -43,11 +43,12 @@ occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
 `ZLEXCOUNT`, `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD`, `XLEN`/`XRANGE`/
 `XREVRANGE`, `HSCAN`/`SSCAN`/`ZSCAN`, `SINTER`/`SUNION`/`SDIFF`/`SINTERCARD`
 and the set store variants, `ZUNION`/`ZINTER`/`ZDIFF`/`ZINTERCARD` and the
-sorted-set store variants, `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM` and
-`XINFO STREAM|GROUPS|CONSUMERS` emit `keymiss` on the normal keyspace/keyevent
-channels (once per missing source key for algebra). Hits, missing
-fields/elements/members in an existing key and existing wrong-type keys do not.
-Other read commands are not covered yet.
+sorted-set store variants, `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`,
+`XINFO STREAM|GROUPS|CONSUMERS`, and `SORT`/`SORT_RO` sources (including
+`STORE`) emit `keymiss` on the normal keyspace/keyevent channels (once per
+missing source key for algebra). Hits, missing fields/elements/members in an
+existing key and existing wrong-type keys do not. `SORT` `BY`/`GET` pattern
+lookups and other read commands are not covered yet.
 
 `n` reports a key that did not exist and was created by the command: `SET` on a
 missing key, a new hash/list/set/zset/stream key, and a `COPY`/`RENAME`
