@@ -161,6 +161,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(key, now);
         let Some(entry) = data.entries.get(key) else {
+            data.record_key_miss(key);
             write_cursor_array(0, &[], output);
             return;
         };
