@@ -254,6 +254,18 @@ impl Session {
             };
             let requested = store.request_unblock(id, mode);
             let _ = write!(output, ":{}\r\n", u8::from(requested));
+        } else if subcommand.eq_ignore_ascii_case(b"NO-EVICT") {
+            if rest.len() != 1 {
+                arity("client|no-evict", output);
+                return;
+            }
+            if rest[0].eq_ignore_ascii_case(b"ON") || rest[0].eq_ignore_ascii_case(b"OFF") {
+                // Rejection at max_clients is the only capacity policy; this
+                // server never evicts an established client.
+                output.extend_from_slice(b"+OK\r\n");
+            } else {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+            }
         } else if subcommand.eq_ignore_ascii_case(b"REPLY") {
             if rest.len() != 1 {
                 arity("client|reply", output);
