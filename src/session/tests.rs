@@ -1348,3 +1348,24 @@ fn client_reply_on_off_and_skip_suppress_exactly_the_expected_replies() {
     assert_eq!(call(&mut session, &store, &[b"RESET"]), b"+RESET\r\n");
     assert_eq!(call(&mut session, &store, &[b"PING"]), b"+PONG\r\n");
 }
+
+#[test]
+fn client_no_evict_is_accepted_without_a_client_eviction_path() {
+    let store = Store::new(1024);
+    let mut session = Session::new();
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"NO-EVICT", b"ON"]),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"NO-EVICT", b"OFF"]),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"NO-EVICT", b"bad"]),
+        b"-ERR syntax error\r\n"
+    );
+    assert!(
+        call(&mut session, &store, &[b"CLIENT", b"NO-EVICT"]).starts_with(b"-ERR wrong number")
+    );
+}
