@@ -3738,7 +3738,11 @@ impl ShardExecutor {
         let mut sets = Vec::with_capacity(args.len() - 1);
         for key in &args[1..] {
             match owned_set(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
+                Ok(Some(set)) => sets.push(set),
+                Ok(None) => {
+                    data.record_key_miss(key);
+                    sets.push(BTreeSet::new());
+                }
                 Err(()) => {
                     wrong_type(out);
                     return;
@@ -3795,7 +3799,11 @@ impl ShardExecutor {
         let mut sets = Vec::with_capacity(count);
         for key in &args[2..2 + count] {
             match owned_set(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
+                Ok(Some(set)) => sets.push(set),
+                Ok(None) => {
+                    data.record_key_miss(key);
+                    sets.push(BTreeSet::new());
+                }
                 Err(()) => {
                     wrong_type(out);
                     return;
@@ -3827,7 +3835,11 @@ impl ShardExecutor {
         let mut sets = Vec::with_capacity(args.len() - 2);
         for key in &args[2..] {
             match owned_set(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
+                Ok(Some(set)) => sets.push(set),
+                Ok(None) => {
+                    data.record_key_miss(key);
+                    sets.push(BTreeSet::new());
+                }
                 Err(()) => {
                     wrong_type(out);
                     return;
@@ -4916,7 +4928,11 @@ impl ShardExecutor {
         let mut sets = Vec::with_capacity(count);
         for key in &args[keys_start..keys_end] {
             match owned_zset(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
+                Ok(Some(set)) => sets.push(set),
+                Ok(None) => {
+                    data.record_key_miss(key);
+                    sets.push(HashMap::new());
+                }
                 Err(()) => {
                     wrong_type(out);
                     return;
@@ -5083,7 +5099,11 @@ impl ShardExecutor {
         let mut sets = Vec::with_capacity(count);
         for key in &args[keys_start..keys_end] {
             match owned_zset(&mut data, key, now) {
-                Ok(set) => sets.push(set.unwrap_or_default()),
+                Ok(Some(set)) => sets.push(set),
+                Ok(None) => {
+                    data.record_key_miss(key);
+                    sets.push(HashMap::new());
+                }
                 Err(()) => {
                     wrong_type(out);
                     return;

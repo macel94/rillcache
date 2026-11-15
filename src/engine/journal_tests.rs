@@ -967,6 +967,80 @@ fn random_member_and_stream_read_misses_emit_keymiss() {
 }
 
 #[test]
+fn set_and_sorted_set_algebra_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"SINTER", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"SUNION", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"SDIFF", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"SINTERCARD", b"1", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"SINTERSTORE", b"dst", b"missing"]),
+        b":0\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"SUNIONSTORE", b"dst", b"missing"]),
+        b":0\r\n"
+    );
+    expect_miss(b"missing");
+    // Every source is looked up, so each missing key reports once.
+    assert_eq!(run(&store, &[b"SINTER", b"one", b"two"]), b"*0\r\n");
+    expect_miss(b"one");
+    expect_miss(b"two");
+    assert_eq!(run(&store, &[b"ZUNION", b"1", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"ZINTER", b"1", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"ZDIFF", b"1", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"ZINTERCARD", b"1", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"ZUNIONSTORE", b"dst", b"1", b"missing"]),
+        b":0\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"ZDIFFSTORE", b"dst", b"1", b"missing"]),
+        b":0\r\n"
+    );
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"SADD", b"s", b"a"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"ZADD", b"z", b"1", b"a"]), b":1\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"SINTER", b"s", b"s"]), b"*1\r\n$1\r\na\r\n");
+    assert_eq!(run(&store, &[b"SUNION", b"s"]), b"*1\r\n$1\r\na\r\n");
+    assert_eq!(run(&store, &[b"SINTERCARD", b"1", b"s"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"ZUNION", b"1", b"z"]), b"*1\r\n$1\r\na\r\n");
+    assert_eq!(run(&store, &[b"ZDIFF", b"1", b"z"]), b"*1\r\n$1\r\na\r\n");
+    assert_eq!(run(&store, &[b"ZINTERCARD", b"1", b"z"]), b":1\r\n");
+    assert!(receiver.try_recv().is_err(), "existing keys are not misses");
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
