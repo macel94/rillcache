@@ -134,7 +134,7 @@ impl ShardExecutor {
     }
 
     pub(super) fn exists(&self, keys: &[&[u8]], output: &mut Vec<u8>) {
-        let Ok(data) = self.data.try_borrow() else {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(output);
             return;
         };
@@ -143,29 +143,37 @@ impl ShardExecutor {
             .iter()
             .all(|key| data.entries.get(*key).is_none_or(|entry| entry.alive(now)))
         {
-            integer(
-                keys.iter()
-                    .filter(|key| data.entries.contains_key(**key))
-                    .count() as i64,
-                output,
-            );
+            let count = keys
+                .iter()
+                .filter(|key| data.entries.contains_key(**key))
+                .count();
+            let missing: Vec<&[u8]> = keys
+                .iter()
+                .copied()
+                .filter(|key| !data.entries.contains_key(*key))
+                .collect();
+            for key in missing {
+                data.record_key_miss(key);
+            }
+            integer(count as i64, output);
             return;
         }
-        drop(data);
-        let Ok(mut data) = self.data.try_borrow_mut() else {
-            internal_error(output);
-            return;
-        };
-        let now = self.now(&data);
         for key in keys {
             data.expire_key(key, now);
         }
-        integer(
-            keys.iter()
-                .filter(|key| data.entries.contains_key(**key))
-                .count() as i64,
-            output,
-        );
+        let count = keys
+            .iter()
+            .filter(|key| data.entries.contains_key(**key))
+            .count();
+        let missing: Vec<&[u8]> = keys
+            .iter()
+            .copied()
+            .filter(|key| !data.entries.contains_key(*key))
+            .collect();
+        for key in missing {
+            data.record_key_miss(key);
+        }
+        integer(count as i64, output);
     }
 
     pub(super) fn set(
@@ -357,6 +365,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(key, now);
         let Some(entry) = data.entries.get(key) else {
+            data.record_key_miss(key);
             integer(-2, output);
             return;
         };

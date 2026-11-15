@@ -1269,6 +1269,24 @@ fn get_and_mget_misses_emit_keymiss_only_for_missing_keys() {
     // A non-string key exists, so MGET's null is not a lookup miss.
     send(&mut writer, &[b"LPUSH", b"w", b"a"], b":1\r\n");
     send(&mut writer, &[b"MGET", b"w"], b"*1\r\n$-1\r\n");
+
+    for (command, reply) in [
+        (vec![b"EXISTS".as_slice(), b"missing"], b":0\r\n".as_slice()),
+        (vec![b"TYPE", b"missing"], b"+none\r\n"),
+        (vec![b"TTL", b"missing"], b":-2\r\n"),
+        (vec![b"PTTL", b"missing"], b":-2\r\n"),
+    ] {
+        send(&mut writer, &command, reply);
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                b"missing"
+            ])
+        );
+    }
     server.shutdown().unwrap();
 }
 
