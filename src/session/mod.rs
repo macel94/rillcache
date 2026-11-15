@@ -49,6 +49,7 @@ static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug)]
 pub struct Session {
     protocol: Protocol,
+    reply_mode: ReplyMode,
     id: u64,
     name: Option<Vec<u8>>,
     library_name: Option<Vec<u8>>,
@@ -78,6 +79,13 @@ enum Protocol {
     Resp3,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReplyMode {
+    On,
+    Off,
+    Skip,
+}
+
 impl Default for Session {
     fn default() -> Self {
         Self::new()
@@ -88,6 +96,7 @@ impl Session {
     pub fn new() -> Self {
         Self {
             protocol: Protocol::Resp2,
+            reply_mode: ReplyMode::On,
             id: NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed),
             name: None,
             library_name: None,
@@ -121,10 +130,16 @@ impl Session {
     }
 
     pub fn poll_blocked(&mut self, store: &Store) -> Option<Vec<u8>> {
-        self.poll_blocked_on(store)
+        self.poll_blocked_on(store).map(|mut reply| {
+            self.suppress_owned_reply(&mut reply);
+            reply
+        })
     }
     pub fn poll_paused(&mut self, store: &Store) -> Option<(Vec<u8>, Action)> {
-        self.poll_paused_on(store)
+        self.poll_paused_on(store).map(|(mut reply, action)| {
+            self.suppress_owned_reply(&mut reply);
+            (reply, action)
+        })
     }
 
     pub(crate) fn has_transaction(&self) -> bool {
@@ -140,6 +155,7 @@ impl Session {
         (command.eq_ignore_ascii_case(b"PING")
             || command.eq_ignore_ascii_case(b"ECHO")
             || command.eq_ignore_ascii_case(b"QUIT"))
+            && self.reply_mode == ReplyMode::On
             && self.multi.is_none()
             && !self.is_subscribed()
             && !self.monitoring
@@ -164,11 +180,13 @@ impl Session {
         output: &mut Vec<u8>,
     ) -> Action {
         let start = output.len();
+        let reply_mode_before = self.reply_mode;
         // Bare PING in a plain RESP session is the hottest command. Keep the
         // exact authorization, pause, monitor and observer behavior, but skip
         // the generic command dispatcher and its connection-control probes.
         if arguments.len() == 1
             && arguments[0].eq_ignore_ascii_case(b"PING")
+            && self.reply_mode == ReplyMode::On
             && self.multi.is_none()
             && !self.is_subscribed()
             && !self.monitoring
@@ -256,7 +274,42 @@ impl Session {
         if output.get(start) == Some(&b'-') {
             store.record_error(&output[start..]);
         }
+        self.suppress_reply_at(output, start, reply_mode_before, arguments);
         action
+    }
+
+    fn suppress_reply_at(
+        &mut self,
+        output: &mut Vec<u8>,
+        start: usize,
+        mode_before: ReplyMode,
+        arguments: &[&[u8]],
+    ) {
+        let arms_skip = arguments.len() == 3
+            && arguments[0].eq_ignore_ascii_case(b"CLIENT")
+            && arguments[1].eq_ignore_ascii_case(b"REPLY")
+            && arguments[2].eq_ignore_ascii_case(b"SKIP");
+        let suppress = match mode_before {
+            ReplyMode::Off => self.reply_mode != ReplyMode::On,
+            ReplyMode::Skip => true,
+            ReplyMode::On => false,
+        };
+        if mode_before == ReplyMode::Skip && !arms_skip {
+            self.reply_mode = ReplyMode::On;
+        }
+        if suppress {
+            output.truncate(start);
+        }
+    }
+
+    fn suppress_owned_reply(&mut self, reply: &mut Vec<u8>) {
+        let suppress = self.reply_mode != ReplyMode::On;
+        if self.reply_mode == ReplyMode::Skip {
+            self.reply_mode = ReplyMode::On;
+        }
+        if suppress {
+            reply.clear();
+        }
     }
 
     pub fn id(&self) -> u64 {
@@ -290,6 +343,7 @@ impl Session {
             store.pubsub_unsubscribe_shard(&channel, self.id);
         }
         self.protocol = Protocol::Resp2;
+        self.reply_mode = ReplyMode::On;
         self.authenticated_user = None;
         self.failed_auth = 0;
         self.close_requested = false;
