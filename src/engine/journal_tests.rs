@@ -2175,3 +2175,148 @@ fn sort_pattern_misses_emit_keymiss() {
         "existing pattern keys are not misses"
     );
 }
+
+#[test]
+fn bit_algorithm_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"BITCOUNT", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"BITPOS", b"missing", b"1"]), b":-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"BITFIELD_RO", b"missing", b"GET", b"u8", b"0"]),
+        b"*1\r\n:0\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"LCS", b"a", b"b", b"LEN"]), b":0\r\n");
+    expect_miss(b"a");
+    expect_miss(b"b");
+
+    assert_eq!(run(&store, &[b"SET", b"a", b"x"]), b"+OK\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"BITCOUNT", b"a"]), b":4\r\n");
+    assert_eq!(run(&store, &[b"BITPOS", b"a", b"0"]), b":0\r\n");
+    assert_eq!(
+        run(&store, &[b"BITFIELD_RO", b"a", b"GET", b"u8", b"0"]),
+        b"*1\r\n:120\r\n"
+    );
+    assert!(receiver.try_recv().is_err(), "existing keys are not misses");
+    assert_eq!(run(&store, &[b"LCS", b"a", b"b", b"LEN"]), b":0\r\n");
+    expect_miss(b"b");
+    assert_eq!(run(&store, &[b"LCS", b"a", b"a", b"LEN"]), b":1\r\n");
+    assert!(receiver.try_recv().is_err(), "two hits are not misses");
+
+    assert_eq!(run(&store, &[b"RPUSH", b"l", b"a"]), b":1\r\n");
+    assert_eq!(
+        run(&store, &[b"BITCOUNT", b"l"]),
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+    assert!(receiver.try_recv().is_err(), "wrong type is not a key miss");
+    // A wrong-type first operand fails before Redis reads the second key.
+    assert_eq!(
+        run(&store, &[b"LCS", b"l", b"missing2", b"LEN"]),
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+    assert!(receiver.try_recv().is_err(), "second operand is not read");
+    // A missing first operand is reported before the second operand's type error.
+    assert_eq!(
+        run(&store, &[b"LCS", b"missing3", b"l", b"LEN"]),
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+    expect_miss(b"missing3");
+}
+
+#[test]
+fn introspection_and_hash_ttl_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(
+        run(&store, &[b"OBJECT", b"ENCODING", b"missing"]),
+        b"$-1\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"OBJECT", b"REFCOUNT", b"missing"]),
+        b"$-1\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"MEMORY", b"USAGE", b"missing"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    for command in [
+        b"HTTL".as_slice(),
+        b"HPTTL",
+        b"HEXPIRETIME",
+        b"HPEXPIRETIME",
+    ] {
+        assert_eq!(
+            run(&store, &[command, b"missing", b"FIELDS", b"1", b"f"]),
+            b"*1\r\n:-2\r\n"
+        );
+        expect_miss(b"missing");
+    }
+
+    assert_eq!(run(&store, &[b"SET", b"s", b"v"]), b"+OK\r\n");
+    assert_eq!(run(&store, &[b"HSET", b"h", b"f", b"v"]), b":1\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(
+        run(&store, &[b"OBJECT", b"ENCODING", b"s"]),
+        b"$3\r\nraw\r\n"
+    );
+    assert_eq!(run(&store, &[b"OBJECT", b"REFCOUNT", b"s"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"MEMORY", b"USAGE", b"s"]), b":18\r\n");
+    assert_eq!(
+        run(&store, &[b"OBJECT", b"IDLETIME", b"s"]),
+        b"-ERR OBJECT IDLETIME is not supported by this bounded server: read-idle time is not tracked\r\n"
+    );
+    assert_eq!(
+        run(&store, &[b"OBJECT", b"FREQ", b"s"]),
+        b"-ERR An LFU maxmemory policy is not selected, access frequency not tracked. Please note that when switching between maxmemory policies at runtime LFU and LRU data will take some time to adjust.\r\n"
+    );
+    assert_eq!(
+        run(&store, &[b"HTTL", b"h", b"FIELDS", b"1", b"absent"]),
+        b"*1\r\n:-2\r\n"
+    );
+    assert_eq!(
+        run(&store, &[b"HTTL", b"h", b"FIELDS", b"1", b"f"]),
+        b"*1\r\n:-1\r\n"
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "hits, absent fields and capability errors are not misses"
+    );
+}

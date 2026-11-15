@@ -245,13 +245,20 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         data.expire_key(args[2], now);
-        if [args[1], args[2]].iter().any(|key| {
-            data.entries
-                .get(*key)
+        // Redis looks each operand up in order, so a wrong-type first operand
+        // fails before the second key is ever read.
+        for key in [args[1], args[2]] {
+            if data
+                .entries
+                .get(key)
                 .is_some_and(|entry| !entry.is_string())
-        }) {
-            wrong_type(out);
-            return;
+            {
+                wrong_type(out);
+                return;
+            }
+            if !data.entries.contains_key(key) {
+                data.record_key_miss(key);
+            }
         }
         let a = data
             .entries
@@ -528,6 +535,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let bytes = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 integer(0, out);
                 return;
             }
@@ -615,6 +623,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let bytes = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 integer(if bit == 0 { 0 } else { -1 }, out);
                 return;
             }

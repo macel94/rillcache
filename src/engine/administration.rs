@@ -107,6 +107,7 @@ impl ShardExecutor {
                     out.extend_from_slice(b"-ERR memory size overflow\r\n");
                 }
             } else {
+                data.record_key_miss(args[2]);
                 out.extend_from_slice(b"$-1\r\n");
             }
         } else if subcommand.eq_ignore_ascii_case(b"STATS") {

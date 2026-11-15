@@ -153,7 +153,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   pub/sub, TLS, reconnect and error-path tests against the supported profile.
 
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
-  `keymiss`, new-key and `FLUSH*` event classes are unsupported; delivery is
+  `keymiss` and new-key events are implemented for the documented read/write
+  command set, but `FLUSH*` event classes remain unsupported; delivery is
   at-most-once and process-local.
   **Partial (2026-11-14): hash lifecycle and TTL notifications.** A lazy
   field-expiry pass publishes one `hexpired` event per affected key and an

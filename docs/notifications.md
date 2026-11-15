@@ -45,12 +45,15 @@ occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
 and the set store variants, `ZUNION`/`ZINTER`/`ZDIFF`/`ZINTERCARD` and the
 sorted-set store variants, `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`,
 `XINFO STREAM|GROUPS|CONSUMERS`, and `SORT`/`SORT_RO` sources (including
-`STORE`), `SORT` `BY`/`GET` pattern-derived key lookups, and
-`XREAD`/`XREADGROUP` initial stream lookups emit `keymiss` on the normal
-keyspace/keyevent channels (once per missing source key for algebra and per
-missing stream for reads). Hits, missing fields/elements/members in an existing
-key and existing wrong-type keys do not. Other read commands are not covered
-yet.
+`STORE`), `SORT` `BY`/`GET` pattern-derived key lookups,
+`XREAD`/`XREADGROUP` initial stream lookups, `BITCOUNT`/`BITPOS`/`BITFIELD_RO`
+(and read-only `BITFIELD` blocks), `LCS` operands, `OBJECT ENCODING|REFCOUNT`,
+`MEMORY USAGE`, and `HTTL`/`HPTTL`/`HEXPIRETIME`/`HPEXPIRETIME` missing-key
+lookups emit `keymiss` on the normal keyspace/keyevent channels (once per
+missing source key for algebra and per missing stream or operand where Redis
+looks them up). Hits, missing fields/elements/members in an existing key,
+existing wrong-type keys and `OBJECT IDLETIME`/`FREQ` capability errors do not.
+Other read commands are not covered yet.
 
 `n` reports a key that did not exist and was created by the command: `SET` on a
 missing key, a new hash/list/set/zset/stream key, and a `COPY`/`RENAME`
