@@ -1399,3 +1399,27 @@ fn client_tracking_introspection_reports_the_disabled_state() {
             .starts_with(b"-ERR unsupported CLIENT subcommand")
     );
 }
+
+#[test]
+fn client_help_lists_supported_subcommands() {
+    let store = Store::new(1024);
+    let mut session = Session::new();
+    let help = call(&mut session, &store, &[b"CLIENT", b"HELP"]);
+    assert!(help.starts_with(b"*31\r\n$"));
+    for expected in [
+        b"GETNAME".as_slice(),
+        b"KILL <ip:port> | <id> | USER <username> ...",
+        b"REPLY ON|OFF|SKIP",
+        b"NO-EVICT ON|OFF",
+        b"TRACKINGINFO",
+    ] {
+        assert!(
+            help.windows(expected.len()).any(|part| part == expected),
+            "missing {expected:?}"
+        );
+    }
+    assert!(
+        call(&mut session, &store, &[b"CLIENT", b"HELP", b"extra"])
+            .starts_with(b"-ERR wrong number")
+    );
+}
