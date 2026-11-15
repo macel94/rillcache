@@ -46,8 +46,13 @@ and an explicit `used_memory_rss_scope`. RSS is an observation: it includes
 allocator, index, thread, socket and shared pages, and is not used for payload
 admission or `maxmemory` enforcement. On platforms without a readable resident
 set the value is `0` and the scope says `unavailable_on_this_platform`.
-`MEMORY STATS` reports the same pair under `used_memory_rss` /
-`used_memory_rss_human` with `rillcache.rss.scope`. `evicted_keys` resets with
+When a cgroup v2 (or v1 fallback) memory file is readable, `INFO memory` also
+reports `used_memory_cgroup`, `used_memory_cgroup_human`, `max_memory_cgroup`
+(`-1` when the limit is `max`/effectively unlimited), `max_memory_cgroup_human`
+and `used_memory_cgroup_scope`. These fields are observational only and are not
+used for admission, eviction or OOM handling; they are absent when no cgroup
+memory files are readable. `MEMORY STATS` reports the RSS pair under
+`used_memory_rss` / `used_memory_rss_human` with `rillcache.rss.scope`. `evicted_keys` resets with
 `CONFIG RESETSTAT`; the policy itself does not.
 
 ## INFO commandstats
@@ -89,6 +94,24 @@ is targeted dispatch work reduction, not an all-command performance claim.
   name. `INFO commandstats` does not include its own in-progress call.
 - Counters are relaxed atomics and may be observed slightly asynchronously
   across worker threads. They are diagnostic, not a billing ledger.
+
+## INFO latencystats
+
+Enabling `commandstats-enabled` also records a bounded 32-bucket logarithmic
+per-command latency histogram from the same dispatch timer. `INFO latencystats`
+(and `INFO all`) emits one line per command with measured calls:
+
+```text
+latency_percentiles_usec_ping:p50=15,p99=31,p99.9=63
+```
+
+Values are microseconds and are the upper bounds of the bucket containing each
+percentile, not exact HDR percentiles. Bucket zero is zero microseconds; bucket
+n covers `2^(n-1)..=2^n-1` up to a saturating last bucket. Commands without
+recorded calls are omitted, the disabled state returns an empty section,
+`CONFIG RESETSTAT` clears the histograms, and enabling commandstats starts fresh.
+No timer, histogram update or latency distribution exists while the collector is
+disabled.
 
 `INFO server`, `memory` and `keyspace` remain available. Payload fields
 (`rillcache_payload_*`, `total.allocated`, `dataset.bytes`) are logical key/value
@@ -220,10 +243,11 @@ measured.
 - No per-policy eviction latency or memory-pressure counters beyond `evicted_keys`.
 - No per-client fd/idle/command/buffer/memory/network fields, blocked-client count
   or cross-process client view. `INFO clients` intentionally omits those fields.
-- No `INFO latencystats`, latency histograms/percentiles, CPU accounting,
-  network-byte counters or per-database stats. `LATENCY` exposes only the two
-  measured event series listed above, and command timing is aggregate only with
-  no histogram or tail-latency distribution. RSS is reported but not enforced.
+- `INFO latencystats` uses a bounded 32-bucket logarithmic approximation, not an
+  HDR histogram or exact percentile contract. There is no CPU accounting,
+  network-byte counter or per-database stats. `LATENCY` exposes only the two
+  measured event series listed above; the commandstats histogram is opt-in and
+  its bucket upper bounds are the documented unit. RSS is reported but not enforced.
 - No metrics exporter, OpenTelemetry, structured logs, health beyond PING, alerts,
   SLOs, dashboards or long-running soak evidence.
 - Error statistics are a bounded per-code count, not a full error log or message

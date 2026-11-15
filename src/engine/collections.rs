@@ -399,6 +399,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let collection = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 if name == "hget" {
                     encode_bulk(None, out);
                 } else if name == "hgetall" {
@@ -418,13 +419,9 @@ impl ShardExecutor {
         };
         match name {
             "hget" => encode_bulk(collection.hash_get(args[2]), out),
-            "hlen" => integer(
-                collection.hash_items().expect("hash type checked").len() as i64,
-                out,
-            ),
+            "hlen" => integer(collection.len() as i64, out),
             _ => {
-                let mut fields = collection.hash_items().expect("hash type checked");
-                fields.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                let fields = collection.hash_items_sorted().expect("hash type checked");
                 write!(out, "*{}\r\n", fields.len() * 2).expect("Vec write");
                 for (field, value) in fields {
                     encode_bulk(Some(field), out);
@@ -729,11 +726,7 @@ impl ShardExecutor {
         match data.entries.get(key) {
             None => integer(0, out),
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_list) => integer(
-                entry
-                    .collection
-                    .as_ref()
-                    .and_then(Collection::list_len)
-                    .expect("list type checked") as i64,
+                entry.collection.as_ref().expect("list type checked").len() as i64,
                 out,
             ),
             Some(_) => wrong_type(out),

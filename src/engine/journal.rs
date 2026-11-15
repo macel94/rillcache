@@ -1502,6 +1502,9 @@ impl ShardExecutor {
         for key in lifecycle.deleted {
             self.notify_event("del", &key, NotifyCategory::Generic);
         }
+        for key in lifecycle.new_keys {
+            self.notify_event("new", &key, NotifyCategory::NewKey);
+        }
         for (event, key) in lifecycle.hash_events {
             let (name, category) = match event.as_slice() {
                 b"del" => ("del", NotifyCategory::Generic),
@@ -2093,11 +2096,18 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
         }
         for (index, (name, group)) in stream.groups.iter().enumerate() {
             let id = id_text(group.last_delivered);
-            if index == 0 && stream.entries.is_empty() && tombstones.is_empty() && !needs_sentinel {
-                encode_request(&[b"XGROUP", b"CREATE", key, name, &id, b"MKSTREAM"], output);
-            } else {
-                encode_request(&[b"XGROUP", b"CREATE", key, name, &id], output);
+            let mkstream =
+                index == 0 && stream.entries.is_empty() && tombstones.is_empty() && !needs_sentinel;
+            let entries_read = group.entries_read.map(|value| value.to_string());
+            let mut arguments: Vec<&[u8]> = vec![b"XGROUP", b"CREATE", key, name, &id];
+            if mkstream {
+                arguments.push(b"MKSTREAM");
             }
+            if let Some(entries_read) = entries_read.as_deref() {
+                arguments.push(b"ENTRIESREAD");
+                arguments.push(entries_read.as_bytes());
+            }
+            encode_request(&arguments, output);
             // Consumers and their pending entries are delivery state, not just
             // stream data: recreate the consumer object, then claim each pending
             // id back to its owner with the recorded delivery time and count.

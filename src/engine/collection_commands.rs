@@ -2266,7 +2266,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let exists = match data.entries.get(args[1]) {
-            None => false,
+            None => {
+                data.record_key_miss(args[1]);
+                false
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => entry
                 .collection
                 .as_ref()
@@ -2428,7 +2431,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let collection = match data.entries.get(args[1]) {
-            None => None,
+            None => {
+                data.record_key_miss(args[1]);
+                None
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => {
                 entry.collection.as_ref()
             }
@@ -2455,6 +2461,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let mut items = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 out.extend_from_slice(b"*0\r\n");
                 return;
             }
@@ -2483,7 +2490,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let length = match data.entries.get(args[1]) {
-            None => 0,
+            None => {
+                data.record_key_miss(args[1]);
+                0
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => entry
                 .collection
                 .as_ref()
@@ -3513,7 +3523,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let collection = match data.entries.get(args[1]) {
-            None => None,
+            None => {
+                data.record_key_miss(args[1]);
+                None
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_set) => {
                 entry.collection.as_ref()
             }
@@ -5682,6 +5695,70 @@ mod tests {
         assert_eq!(run(&store, &[b"SCARD", b"u"]), b":4\r\n");
         assert_eq!(run(&store, &[b"SDIFFSTORE", b"d", b"u", b"b"]), b":0\r\n");
         assert_eq!(run(&store, &[b"EXISTS", b"d"]), b":0\r\n");
+    }
+
+    #[test]
+    fn direct_collection_probes_preserve_encoding_semantics() {
+        let store = ShardExecutor::new(4096);
+        assert_eq!(
+            run(&store, &[b"SADD", b"ints", b"1", b"2", b"30"]),
+            b":3\r\n"
+        );
+        assert_eq!(run(&store, &[b"SCARD", b"ints"]), b":3\r\n");
+        assert_eq!(run(&store, &[b"SISMEMBER", b"ints", b"2"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"SISMEMBER", b"ints", b"02"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"SMISMEMBER", b"ints", b"30", b"3"]),
+            b"*2\r\n:1\r\n:0\r\n"
+        );
+        assert_eq!(run(&store, &[b"SADD", b"pack", b"01", b"x"]), b":2\r\n");
+        assert_eq!(run(&store, &[b"SCARD", b"pack"]), b":2\r\n");
+        assert_eq!(run(&store, &[b"SISMEMBER", b"pack", b"01"]), b":1\r\n");
+        assert_eq!(run(&store, &[b"SISMEMBER", b"pack", b"1"]), b":0\r\n");
+        assert_eq!(
+            run(&store, &[b"SMISMEMBER", b"missing", b"1", b"x"]),
+            b"*2\r\n:0\r\n:0\r\n"
+        );
+
+        assert_eq!(
+            run(&store, &[b"HSET", b"h", b"a", b"1", b"b", b"2"]),
+            b":2\r\n"
+        );
+        assert_eq!(run(&store, &[b"HLEN", b"h"]), b":2\r\n");
+
+        assert_eq!(
+            run(&store, &[b"ZADD", b"z", b"1", b"a", b"2.5", b"b"]),
+            b":2\r\n"
+        );
+        assert_eq!(run(&store, &[b"ZCARD", b"z"]), b":2\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"b"]), b"$3\r\n2.5\r\n");
+        assert_eq!(run(&store, &[b"ZSCORE", b"z", b"missing"]), b"$-1\r\n");
+        assert_eq!(
+            run(&store, &[b"ZMSCORE", b"z", b"a", b"missing", b"a"]),
+            b"*3\r\n$1\r\n1\r\n$-1\r\n$1\r\n1\r\n"
+        );
+
+        assert_eq!(run(&store, &[b"RPUSH", b"l", b"a", b"b", b"c"]), b":3\r\n");
+        assert_eq!(run(&store, &[b"LLEN", b"l"]), b":3\r\n");
+        assert_eq!(run(&store, &[b"LLEN", b"missing"]), b":0\r\n");
+
+        assert_eq!(run(&store, &[b"SET", b"plain", b"x"]), b"+OK\r\n");
+        assert_eq!(
+            run(&store, &[b"SCARD", b"plain"]),
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"HLEN", b"plain"]),
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"ZCARD", b"plain"]),
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"LLEN", b"plain"]),
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
     }
 
     #[test]

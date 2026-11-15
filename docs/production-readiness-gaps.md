@@ -169,8 +169,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`
   and each missing `MGET` occurrence on the normal keyspace/keyevent channels;
   hits and existing non-string keys do not. `A` intentionally excludes `m`, as in
-  Redis. New-key/`FLUSH*` classes and key-miss coverage for other read commands
-  remain open. Delivery is at-most-once and process-local.
+  Redis.
+  **Partial (2026-11-14): new-key notifications.** The `n` class reports the
+  first creation of a key by supported mutation paths, including absent
+  COPY/RENAME destinations, while overwrites, extra stream entries and reads do
+  not emit. `A` excludes `n`, as in Redis. `FLUSH*`/module classes and key-miss
+  coverage for other read commands remain open. Delivery is at-most-once and
+  process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
@@ -183,8 +188,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   granularity.
   **Partial (2026-11-14): known `entries-read` counts.** Groups created at `$` or
   `0` now report `entries-read` and increment it on new `XREADGROUP ... >`
-  deliveries; explicit non-zero starts, SETID and replayed groups without the
-  counter remain null. Tests cover `$`, `0`, SETID and delivery increments.
+  deliveries; `XGROUP CREATE|SETID ... ENTRIESREAD n` sets the counter and journal
+  rewrite/replay preserves it. Without an explicit counter, explicit starts and
+  replay reconstruct retained entries up to the cursor (an undercount if history
+  was deleted/trimmed). Tests cover `$`, `0`, SETID, ENTRIESREAD, delivery
+  increments and replay.
   **Closes when:** metadata fields match the declared version or are explicitly
   excluded, and trim/read semantics pass a differential corpus.
 
@@ -212,9 +220,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   implemented and tested.
 
 - [ ] **C13. Configuration compatibility is missing.** [P1]
-  There is no `redis.conf` parser, general configuration file, `CONFIG REWRITE`
-  or complete runtime configuration surface. Startup uses a small CLI subset;
-  only selected `CONFIG GET/SET` options exist.
+  There is no full `redis.conf` parser, `CONFIG REWRITE` or complete runtime
+  configuration surface. Startup historically used only a CLI subset; selected
+  `CONFIG GET/SET` options exist at runtime.
+  **Partial (2026-11-14): bounded startup file.** `--config PATH` (or `-c`)
+  reads a UTF-8 file of one directive/value pair per line, with comments,
+  quoting, `maxmemory`/`maxclients` aliases and the same validation as CLI
+  flags. It is not a general `redis.conf`: includes, multi-value directives,
+  `save`, replication, modules and other unsupported language fail closed before
+  bind; later CLI options override earlier file values. See
+  [startup configuration](configuration.md).
+  **Remaining:** the full supported schema is not versioned, `CONFIG REWRITE`,
+  live reload/rollback and the complete runtime-mutable surface are absent, and
+  the upstream configuration language is not accepted.
   **Closes when:** the supported configuration schema is versioned, validated
   before bind, documented with defaults/precedence, and runtime-mutable settings
   are atomic and complete for the profile.
@@ -361,18 +379,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   deadline, joins workers and reports forced termination; or the profile states
   the supervisor contract and accepted loss window.
 
-- [ ] **D8. Multi-process journal ownership is unguarded.** [P1]
-  **Partial (2026-11-05): local exclusive ownership enforced.** Startup claims
-  `<journal>.lock` with an exclusive create recording PID and kernel start time; a
-  second process on the same directory fails with a clear error, a crash-stale lock
-  is reclaimed only when the recorded process is gone or its PID was reused, and
-  clean shutdown removes the lock (`tests/journal_ownership.rs`). The lock is
-  advisory and local: shared/network filesystems are explicitly unsupported.
-  **Remaining:** no distributed lease or shared-volume guarantee; an operator must
-  keep the journal on local storage or enforce single-process access externally.
-  **Closes when:** shared-volume behavior is either implemented with a real lease
-  or the deployment profile excludes it explicitly (the current documentation says
-  unsupported).
+- [x] **D8. Multi-process journal ownership is unguarded.** [P1]
+  **Complete (2026-11-14): local ownership plus explicit profile exclusion.**
+  Startup claims `<journal>.lock` with an exclusive create recording PID and
+  kernel start time; a second process on the same directory fails with a clear
+  error, a crash-stale lock is reclaimed only when the recorded process is gone or
+  its PID was reused, and clean shutdown removes the lock
+  (`tests/journal_ownership.rs`). The [draft standalone profile](production-profile.md)
+  excludes shared/network filesystems and multi-process journal ownership, so the
+  supported deployment is one process on local storage. **Retained limitation:**
+  there is no distributed lease or shared-volume guarantee; an operator must keep
+  the journal on local storage or enforce single-process access externally.
 
 - [x] **D9. Wall-clock rollback across restart is a documented limitation.** [P1]
   **Complete (2026-11-14):** TTL deadlines are absolute Unix-epoch milliseconds
@@ -509,6 +526,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   Passwords can be passed on the command line, ACL hashes are unsalted
   SHA-256 (Redis-compatible but fast to brute-force offline), and there is no
   secret-manager integration or complete file-permission/rotation audit.
+  **Partial (2026-11-14): optional owner-only secret-file enforcement.**
+  `--secure-secret-files` refuses group/other-accessible password, ACL, audit
+  HMAC/keyring, AOF HMAC and TLS private-key files on Unix and enforces a
+  16-byte minimum password, and the security guide documents modes, a 256-bit
+  random-secret requirement, process-argument risk and rotate-then-revoke. Unit
+  tests cover loose/strict modes, short/long passwords and CLI parsing.
+  Secret-manager integration, enforced entropy/length for `--requirepass`, and
+  automatic audit of every deployment's permissions remain open.
   **Closes when:** the supported secret sources, permissions, rotation and
   process-argument risks are documented and tested, with long random secrets
   required by deployment guidance or enforced.
@@ -547,9 +572,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Partial (2026-11-13): process RSS is observable.** `INFO memory` and
   `MEMORY STATS` report `used_memory_rss`, `used_memory_rss_human` and an explicit
   scope from Linux `/proc/self/status`; unsupported platforms report unavailable
-  instead of a fake value. The field is observational only and is not used for
-  admission or eviction. Allocator accounting, cgroup limits, a documented
-  headroom contract and OOM behavior remain absent.
+  instead of a fake value. `INFO memory` also reports cgroup v2/v1 current and
+  limit bytes plus an explicit scope when readable. Both are observational only
+  and are not used for admission, eviction or OOM handling. Allocator
+  accounting, enforced cgroup/headroom contracts and OOM behavior remain absent.
   **Closes when:** operators can observe and enforce a documented memory bound
   (cgroup/RSS/allocator) with headroom guidance, and OOM behavior is tested.
 
@@ -562,14 +588,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   profile.
 
 - [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
-  `INFO` has aggregate command stats but no `INFO latencystats`, histograms or
-  percentiles. `LATENCY` exposes only command and expire-cycle series;
-  `LATENCY GRAPH|HISTOGRAM` are unsupported.
+  `INFO` has aggregate command stats but no exact histograms, complete
+  per-client resource fields or a cross-process latency view. `LATENCY` exposes
+  only command and expire-cycle series; `LATENCY GRAPH|HISTOGRAM` are
+  unsupported.
   **Partial (2026-11-14): bounded CLIENT INFO session state.** `CLIENT INFO`
   now reports `age`, `b`/`P`/`N` flags, `sub`/`psub` and the WATCH count, using
-  state already held by the session. `INFO clients` already reports `blocked_clients`. Per-client fd,
-  idle time, last command, input/output buffer bytes, network bytes, allocator
-  memory, latency histograms and `INFO latencystats` remain absent.
+  state already held by the session. `INFO clients` already reports
+  `blocked_clients`. Per-client fd, idle time, last command, input/output buffer
+  bytes, network bytes and allocator memory remain absent.
+  **Partial (2026-11-14): bounded latency percentiles.** Enabling
+  `commandstats-enabled` also records a 32-bucket logarithmic per-command
+  histogram; `INFO latencystats` reports `p50`/`p99`/`p99.9` bucket upper bounds
+  in microseconds. This is an approximation, not HDR or an exact percentile
+  contract. The dispatcher takes no timer or histogram update while the
+  collector is disabled.
   **Closes when:** the supported metrics contract reports per-command latency
   distributions and per-client resource/queue state with documented units and
   sampling limits.

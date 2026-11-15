@@ -725,6 +725,139 @@ fn read_misses_emit_keymiss_only_for_missing_keys() {
 }
 
 #[test]
+fn replay_reconstructs_known_group_entries_read() {
+    let path = aof_path("entries-read-replay");
+    {
+        let store = open(&path, FsyncPolicy::Always);
+        assert!(run(&store, &[b"XADD", b"s", b"1-0", b"f", b"v"]).starts_with(b"$"));
+        assert!(run(&store, &[b"XADD", b"s", b"2-0", b"f", b"v"]).starts_with(b"$"));
+        assert_eq!(
+            run(
+                &store,
+                &[b"XGROUP", b"CREATE", b"s", b"g", b"0", b"ENTRIESREAD", b"9"]
+            ),
+            b"+OK\r\n"
+        );
+        assert!(
+            run(
+                &store,
+                &[
+                    b"XREADGROUP",
+                    b"GROUP",
+                    b"g",
+                    b"c",
+                    b"COUNT",
+                    b"2",
+                    b"STREAMS",
+                    b"s",
+                    b">"
+                ]
+            )
+            .starts_with(b"*1\r\n")
+        );
+    }
+    let store = open(&path, FsyncPolicy::Always);
+    let info = run(&store, &[b"XINFO", b"GROUPS", b"s"]);
+    assert!(
+        info.windows(b"$12\r\nentries-read\r\n:11\r\n".len())
+            .any(|window| window == b"$12\r\nentries-read\r\n:11\r\n"),
+        "{info:?}"
+    );
+}
+
+#[test]
+fn keyspace_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"EXISTS", b"missing", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"TYPE", b"missing"]), b"+none\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"TTL", b"missing"]), b":-2\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"PTTL", b"missing"]), b":-2\r\n");
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"RPUSH", b"list", b"a"]), b":1\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"EXISTS", b"list"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"TYPE", b"list"]), b"+list\r\n");
+    assert_eq!(run(&store, &[b"TTL", b"list"]), b":-1\r\n");
+    assert!(receiver.try_recv().is_err(), "existing keys are not misses");
+}
+
+#[test]
+fn hash_and_string_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"HGET", b"missing", b"f"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"STRLEN", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"GETRANGE", b"missing", b"0", b"1"]),
+        b"$0\r\n\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"GETBIT", b"missing", b"0"]), b":0\r\n");
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"HSET", b"h", b"f", b"v"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"SET", b"s", b"x"]), b"+OK\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"HGET", b"h", b"absent"]), b"$-1\r\n");
+    assert_eq!(run(&store, &[b"STRLEN", b"s"]), b":1\r\n");
+    assert_eq!(
+        run(&store, &[b"GETRANGE", b"s", b"0", b"0"]),
+        b"$1\r\nx\r\n"
+    );
+    assert_eq!(run(&store, &[b"GETBIT", b"s", b"0"]), b":0\r\n");
+    assert!(receiver.try_recv().is_err(), "existing keys are not misses");
+
+    assert_eq!(run(&store, &[b"RPUSH", b"l", b"a"]), b":1\r\n");
+    assert_eq!(
+        run(&store, &[b"HGET", b"l", b"f"]),
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+    assert!(receiver.try_recv().is_err(), "wrong type is not a key miss");
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
@@ -1336,4 +1469,99 @@ fn consumer_seen_journal_records_are_binary_safe_and_strictly_framed() {
     trailing.push(b'x');
     assert!(super::parse_consumer_seen(&trailing).is_none());
     assert!(super::parse_consumer_seen(b"__RILLCACHE_CONSUMER_SEEN_V1__:").is_none());
+}
+#[test]
+fn new_key_events_fire_once_for_real_creations() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(1024);
+    store.set_notify_flags(NotifyFlags::parse(b"En").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_new = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", b"__keyevent@0__:new", key],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"GET", b"missing"]), b"$-1\r\n");
+    assert!(
+        receiver.try_recv().is_err(),
+        "a read miss does not create a key"
+    );
+
+    assert_eq!(run(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+    expect_new(b"k");
+    assert_eq!(run(&store, &[b"SET", b"k", b"v2"]), b"+OK\r\n");
+    assert!(receiver.try_recv().is_err(), "overwrite is not a new key");
+
+    assert_eq!(run(&store, &[b"HSET", b"h", b"f", b"v"]), b":1\r\n");
+    expect_new(b"h");
+    assert_eq!(
+        run(&store, &[b"XADD", b"s", b"1-0", b"f", b"v"]),
+        b"$3\r\n1-0\r\n"
+    );
+    expect_new(b"s");
+    assert_eq!(
+        run(&store, &[b"XADD", b"s", b"2-0", b"f", b"v"]),
+        b"$3\r\n2-0\r\n"
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "second entry is not a new key"
+    );
+
+    assert_eq!(run(&store, &[b"COPY", b"k", b"copy"]), b":1\r\n");
+    expect_new(b"copy");
+    assert_eq!(run(&store, &[b"COPY", b"k", b"copy"]), b":0\r\n");
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn additional_hash_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"HEXISTS", b"missing", b"f"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"HMGET", b"missing", b"a", b"b"]),
+        b"*2\r\n$-1\r\n$-1\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"HKEYS", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"HVALS", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"HSTRLEN", b"missing", b"f"]), b":0\r\n");
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"HSET", b"h", b"f", b"v"]), b":1\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"HEXISTS", b"h", b"absent"]), b":0\r\n");
+    assert_eq!(run(&store, &[b"HMGET", b"h", b"absent"]), b"*1\r\n$-1\r\n");
+    assert_eq!(run(&store, &[b"HSTRLEN", b"h", b"absent"]), b":0\r\n");
+    assert_eq!(run(&store, &[b"HKEYS", b"h"]), b"*1\r\n$1\r\nf\r\n");
+    assert!(
+        receiver.try_recv().is_err(),
+        "existing hash fields/keys are not misses"
+    );
 }

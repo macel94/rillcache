@@ -56,6 +56,24 @@ impl Collection {
         matches!(self, Self::ZSet(_) | Self::ZSetPack(_))
     }
 
+    /// Element count without materializing or sorting the collection. A list
+    /// sums its node lengths, so this is O(nodes); the other forms are O(1).
+    /// Used by `HLEN` and `LLEN`; the dedicated set/zset lengths are the
+    /// `set_len` and `zset_len` probes below.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::ListPack(values) => values.len(),
+            Self::ListQuick(nodes) => nodes.iter().map(VecDeque::len).sum(),
+            Self::Set(values) => values.len(),
+            Self::SetPack(values) => values.len(),
+            Self::SetInt(values) => values.len(),
+            Self::Hash(values) => values.len(),
+            Self::HashPack(values) => values.len(),
+            Self::ZSet(values) => values.len(),
+            Self::ZSetPack(values) => values.len(),
+        }
+    }
+
     pub fn list_items(&self) -> Option<Vec<&[u8]>> {
         match self {
             Self::ListPack(values) => Some(values.iter().map(Vec::as_slice).collect()),
@@ -118,14 +136,6 @@ impl Collection {
         Some(items)
     }
 
-    pub fn list_len(&self) -> Option<usize> {
-        match self {
-            Self::ListPack(values) => Some(values.len()),
-            Self::ListQuick(nodes) => Some(nodes.iter().map(VecDeque::len).sum()),
-            _ => None,
-        }
-    }
-
     pub fn set_len(&self) -> Option<usize> {
         match self {
             Self::Set(values) => Some(values.len()),
@@ -173,6 +183,28 @@ impl Collection {
                     .map(|(field, value)| (field.as_slice(), value.as_slice()))
                     .collect(),
             ),
+            Self::HashPack(values) => Some(
+                values
+                    .iter()
+                    .map(|(field, value)| (field.as_slice(), value.as_slice()))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Field/value pairs in byte order. `HashPack` is maintained sorted by
+    /// construction, so this avoids re-sorting packed hashes on every read.
+    pub fn hash_items_sorted(&self) -> Option<Vec<(&[u8], &[u8])>> {
+        match self {
+            Self::Hash(values) => {
+                let mut items: Vec<(&[u8], &[u8])> = values
+                    .iter()
+                    .map(|(field, value)| (field.as_slice(), value.as_slice()))
+                    .collect();
+                items.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                Some(items)
+            }
             Self::HashPack(values) => Some(
                 values
                     .iter()
@@ -375,6 +407,7 @@ pub(crate) struct Data {
     deleted_events: VecDeque<Vec<u8>>,
     hash_events: VecDeque<(Vec<u8>, Vec<u8>)>,
     key_miss_events: VecDeque<Vec<u8>>,
+    new_key_events: VecDeque<Vec<u8>>,
     pub(in crate::engine) expired_keys: u64,
     pub(in crate::engine) expired_subkeys: u64,
     pub(in crate::engine) evicted_keys: u64,
@@ -398,6 +431,7 @@ pub(super) struct Lifecycle {
     /// cannot be derived from the final state alone.
     pub hash_events: Vec<(Vec<u8>, Vec<u8>)>,
     pub key_miss: Vec<Vec<u8>>,
+    pub new_keys: Vec<Vec<u8>>,
 }
 
 fn push_lifecycle(queue: &mut VecDeque<Vec<u8>>, key: &[u8]) {
@@ -484,6 +518,7 @@ impl Data {
             deleted: self.deleted_events.drain(..).collect(),
             hash_events: self.hash_events.drain(..).collect(),
             key_miss: self.key_miss_events.drain(..).collect(),
+            new_keys: self.new_key_events.drain(..).collect(),
         }
     }
 
@@ -496,11 +531,17 @@ impl Data {
         self.deleted_events.clear();
         self.hash_events.clear();
         self.key_miss_events.clear();
+        self.new_key_events.clear();
     }
 
     /// Queue one read miss for the command that is executing.
     pub fn record_key_miss(&mut self, key: &[u8]) {
         push_lifecycle(&mut self.key_miss_events, key);
+    }
+
+    /// Queue a newly created key for `n` class delivery.
+    pub fn record_new_key(&mut self, key: &[u8]) {
+        push_lifecycle(&mut self.new_key_events, key);
     }
 
     /// Queue one ordered hash notification for the command that is executing.
@@ -962,6 +1003,7 @@ impl Data {
                     last_access: access,
                 },
             );
+            self.record_new_key(key);
             if let Some(at) = expires {
                 self.expirations.insert((at, key.to_vec()));
             }
@@ -1019,6 +1061,7 @@ impl Data {
                     last_access: access,
                 },
             );
+            self.record_new_key(key);
         }
         self.access_seq = access;
         self.payload_bytes = payload;
@@ -1029,6 +1072,7 @@ impl Data {
     /// Install an already admitted owned value without copying its buffers or tree.
     /// `payload` is the final total, including replacement of any destination.
     pub fn put_owned(&mut self, key: &[u8], mut entry: Entry, payload: usize, _now: i64) {
+        let existed = self.entries.contains_key(key);
         self.remove(key);
         self.access_seq = self.access_seq.wrapping_add(1);
         entry.last_access = self.access_seq;
@@ -1037,6 +1081,9 @@ impl Data {
         }
         self.field_ttls = self.field_ttls.saturating_add(entry.field_ttl.len());
         self.entries.insert(key.to_vec(), entry);
+        if !existed {
+            self.record_new_key(key);
+        }
         self.payload_bytes = payload;
         self.touch(key);
     }
@@ -1077,6 +1124,7 @@ impl Data {
                     last_access: access,
                 },
             );
+            self.record_new_key(key);
             if let Some(at) = expires {
                 self.expirations.insert((at, key.to_vec()));
             }
@@ -1118,6 +1166,7 @@ impl Data {
                     last_access: access,
                 },
             );
+            self.record_new_key(key);
             if let Some(at) = expires {
                 self.expirations.insert((at, key.to_vec()));
             }
@@ -1213,6 +1262,60 @@ mod tests {
     }
 
     #[test]
+    fn collection_direct_probes_match_materialized_views() {
+        let list = Collection::ListPack(VecDeque::from([b"a".to_vec(), b"b".to_vec()]));
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.list_items().expect("list").len(), 2);
+        let quick = Collection::ListQuick(VecDeque::from([
+            VecDeque::from([b"a".to_vec()]),
+            VecDeque::from([b"b".to_vec(), b"c".to_vec()]),
+        ]));
+        assert_eq!(quick.len(), 3);
+
+        let set = Collection::Set(BTreeSet::from([b"a".to_vec(), b"10".to_vec()]));
+        assert_eq!(set.len(), 2);
+        assert!(set.contains_member(b"a"));
+        assert!(!set.contains_member(b"b"));
+        let pack = Collection::SetPack(vec![b"01".to_vec(), b"x".to_vec()]);
+        assert_eq!(pack.len(), 2);
+        assert!(pack.contains_member(b"01"));
+        assert!(!pack.contains_member(b"1"));
+        let integers = Collection::SetInt(BTreeSet::from([1, 2, 30]));
+        assert_eq!(integers.len(), 3);
+        assert!(integers.contains_member(b"1"));
+        assert!(integers.contains_member(b"30"));
+        assert!(!integers.contains_member(b"03"));
+        assert!(!integers.contains_member(b"x"));
+
+        let hash = Collection::Hash(HashMap::from([(b"f".to_vec(), b"v".to_vec())]));
+        assert_eq!(hash.len(), 1);
+        let unordered = Collection::Hash(HashMap::from([
+            (b"b".to_vec(), b"2".to_vec()),
+            (b"a".to_vec(), b"1".to_vec()),
+        ]));
+        let sorted = unordered.hash_items_sorted().expect("hash");
+        assert_eq!(sorted[0].0, b"a");
+        assert_eq!(sorted[1].0, b"b");
+        let hash_pack = Collection::HashPack(vec![
+            (b"a".to_vec(), b"1".to_vec()),
+            (b"b".to_vec(), b"2".to_vec()),
+        ]);
+        assert_eq!(hash_pack.len(), 2);
+        let packed_sorted = hash_pack.hash_items_sorted().expect("hash pack");
+        assert_eq!(packed_sorted[0].0, b"a");
+        assert_eq!(packed_sorted[1].0, b"b");
+
+        let zset = Collection::ZSet(HashMap::from([(b"a".to_vec(), 1.5)]));
+        assert_eq!(zset.len(), 1);
+        assert_eq!(zset.zset_score(b"a"), Some(1.5));
+        assert_eq!(zset.zset_score(b"missing"), None);
+        let zset_pack = Collection::ZSetPack(vec![(b"a".to_vec(), -0.0), (b"b".to_vec(), 2.0)]);
+        assert_eq!(zset_pack.len(), 2);
+        assert_eq!(zset_pack.zset_score(b"b"), Some(2.0));
+        assert_eq!(zset_pack.zset_score(b"c"), None);
+    }
+
+    #[test]
     fn lifecycle_queues_are_bounded_and_clearable() {
         let mut data = Data::default();
         push_lifecycle(&mut data.expired_events, b"a");
@@ -1221,6 +1324,7 @@ mod tests {
         push_lifecycle(&mut data.deleted_events, b"d");
         data.record_hash_event(b"hset", b"e");
         data.record_key_miss(b"f");
+        data.record_new_key(b"g");
         let lifecycle = data.drain_lifecycle();
         assert_eq!(lifecycle.expired, vec![b"a".to_vec()]);
         assert_eq!(lifecycle.evicted, vec![b"b".to_vec()]);
@@ -1236,6 +1340,7 @@ mod tests {
         push_lifecycle(&mut data.deleted_events, b"stale");
         data.record_hash_event(b"hset", b"stale");
         data.record_key_miss(b"stale");
+        data.record_new_key(b"stale");
         data.clear_lifecycle();
         let lifecycle = data.drain_lifecycle();
         assert!(lifecycle.expired.is_empty());
@@ -1244,6 +1349,7 @@ mod tests {
         assert!(lifecycle.deleted.is_empty());
         assert!(lifecycle.hash_events.is_empty());
         assert!(lifecycle.key_miss.is_empty());
+        assert!(lifecycle.new_keys.is_empty());
 
         for index in 0..MAX_LIFECYCLE_EVENTS + 10 {
             push_lifecycle(&mut data.expired_events, index.to_string().as_bytes());

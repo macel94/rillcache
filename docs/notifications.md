@@ -31,17 +31,27 @@ CONFIG GET notify-keyspace-events
 | `x` | expired-key events |
 | `e` | evicted-key events |
 | `m` | key-miss events for supported reads |
-| `A` | alias for `g$lshztxe` (deliberately excludes `m`) |
+| `n` | new-key events for first creation |
+| `A` | alias for `g$lshztxe` (deliberately excludes `m` and `n`) |
 
-`m` reports a lookup that found no live key: `GET` and each missing `MGET`
-occurrence emit `keymiss` on the normal keyspace/keyevent channels. Hits and
-existing non-string keys do not. Other read commands are not covered yet.
-New-key and module classes (`n`, `d`) and any unknown character are rejected by
-startup/config validation rather than silently accepted. Empty flags disable
-publication (the default).
+`m` reports a lookup that found no live key: `GET`, each missing `MGET`
+occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
+`EXPIRETIME`/`PEXPIRETIME`, `HGET`/`HGETALL`/`HLEN`, `STRLEN`, `GETRANGE` and
+`GETBIT` on a missing key emit `keymiss` on the normal keyspace/keyevent
+channels. Hits, missing fields in an existing hash and existing non-string keys
+do not. Other read commands are not covered yet.
 
-While none of the lifecycle classes (expired, evicted, hash, generic, key-miss)
-is enabled, command dispatch skips the lifecycle-delivery drain entirely instead
+`n` reports a key that did not exist and was created by the command: `SET` on a
+missing key, a new hash/list/set/zset/stream key, and a `COPY`/`RENAME`
+destination that was absent. Overwrites, additional stream entries and read
+misses do not emit `new`.
+
+Module classes (`d`) and any unknown character are rejected by startup/config
+validation rather than silently accepted. Empty flags disable publication (the
+default).
+
+While none of the lifecycle classes (expired, evicted, hash, generic, key-miss,
+new-key) is enabled, command dispatch skips the lifecycle-delivery drain entirely instead
 of taking a store write lock to discard keys. Pending lifecycle keys are bounded and are cleared whenever the
 notification flags change, so enabling a class never replays events observed
 before that point.
@@ -146,8 +156,8 @@ relative to other connections is therefore not a global happens-before guarantee
 
 ## Limits
 
-- No new-key or module events; no `FLUSH*` keyless event. Key-miss covers
-  only `GET`/`MGET`.
+- No module events; no `FLUSH*` keyless event. Key-miss covers only
+  `GET`/`MGET`; new-key covers supported creation paths.
 - Expired/evicted records use bounded in-memory queues, so lifecycle events may be
   lost under queue pressure and are not a complete historical audit.
 - No retry, acknowledgment, durable queue, replay, replication, cluster routing or
@@ -172,6 +182,8 @@ keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
 and rejected writes, hash/list/set/zset/stream/HLL events, hash field
 `hexpire`/`hpersist` with no-op condition checks, `HDEL`/`HGETDEL` deletion
-pairs, `GET`/`MGET` `keymiss` with hit/non-string exclusions, expire, rename,
+pairs, `GET`/`MGET`/`EXISTS`/`TYPE`/`TTL`/hash/string `keymiss` with
+hit/non-string exclusions, first-creation `new` events including overwrite and second-entry
+exclusions, expire, rename,
 eviction/`expired` classes, blocking-pop events, binary channels and
 `CONFIG`/`INFO` exposure.
