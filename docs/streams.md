@@ -64,8 +64,11 @@ owned value/tree after checking NX rejection and final payload admission.
   retained-entry `lag`, plus consumer name, pending count, `idle` and `inactive`.
   A group created at `$` starts at the stream's entries-added count and one
   created at `0` starts at zero; new `XREADGROUP ... >` deliveries increment the
-  count. An explicit non-zero create/SETID start, or a journal-replayed group
-  without the original counter, reports null (unknown).
+  count. An explicit create/SETID start counts retained entries at or before
+  that ID; `XGROUP CREATE|SETID ... ENTRIESREAD n` sets the counter directly
+  (`-1` means unknown/reconstruct), and journal rewrite/replay carries the value
+  so it survives restart. Without `ENTRIESREAD`, deleted/trimmed history can make
+  the reconstruction an undercount of Redis's historical counter.
 - `XTRIM key MAXLEN|MINID [~|=] threshold [LIMIT count]` removes oldest entries
   until the retained length/ID threshold is met and returns the removed count.
   Exact mode ignores no entries; approximate (`~`) mode caps work at `LIMIT`
@@ -109,10 +112,12 @@ store's configured clock. XINFO's FULL response is sufficient for state
 inspection and independent COPY checks but does not include Redis internal radix
 node statistics or every newer Redis-specific extended field. `entries-read` is
 reported when the group started at `$` or `0` and is incremented by new
-deliveries; explicit non-zero starts and replayed groups without the counter
-remain unknown (null). The count is not decremented by `XDEL`/`XTRIM`, matching
-the historical read counter, while `lag` still counts currently retained entries
-after the group's cursor rather than Redis's deletion-aware estimator. `nacked-count` is zero because no unowned NACK operation
+deliveries; explicit starts and replay without an `ENTRIESREAD` record count
+retained entries at or before the cursor, while `ENTRIESREAD` preserves the exact
+value through rewrite/replay. Deleted/trimmed history can undercount Redis's
+historical counter only when no explicit counter was recorded. The live count is not decremented by `XDEL`/`XTRIM`, while `lag` still
+counts currently retained entries after the group's cursor rather than Redis's
+deletion-aware estimator. `nacked-count` is zero because no unowned NACK operation
 is supported; owned pending records are counted by `pel-count`. `XINFO CONSUMERS`
 reports `inactive` from the same `seen_at` activity value as `idle`, not Redis's
 separate active-time field. TCP regression coverage asserts explicit cursor,
