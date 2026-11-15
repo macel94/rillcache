@@ -836,9 +836,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   equivalent differential corpus) with explicit, reviewed exclusions.
 
 - [ ] **V2. The differential corpus is incomplete.** [P0]
-  `tests/reference_baseline.rs` is a small optional string/RESP corpus. It does
-  not cover collections, streams, pub/sub, transactions, ACL, TLS, persistence,
-  errors or all supported commands.
+  `tests/reference_baseline.rs` is a small optional string/RESP corpus. It now
+  also checks deterministic hash, set, sorted-set and stream replies against the
+  pinned native reference, but does not cover pub/sub, transactions, ACL, TLS,
+  persistence, errors or all supported commands.
   **Closes when:** every supported command/type/edge has a differential test
   against the pinned versions, including binary, expiry, wrong-type, OOM and
   transaction cases.
