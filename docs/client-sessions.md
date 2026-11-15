@@ -109,6 +109,12 @@ never evicted—`max_clients` rejects new connections—so both modes have the s
 enforced behavior. The flag is not separately reported because no eviction path
 exists to suppress.
 
+Client-side caching is not implemented, so its introspection reports the disabled
+state: `CLIENT GETREDIR` returns `-1`, `CLIENT TRACKINGINFO` reports flags
+`["off"]`, redirect `-1` and no prefixes, and `CLIENT CACHING YES|NO` returns
+Redis's "only in tracking mode with OPTIN or OPTOUT" error. `CLIENT TRACKING
+ON` remains an explicit unsupported-capability error.
+
 RESP3 conversion is per reply and framing-aware. Current data commands produce
 simple strings, errors, integers, and bulk strings; RESP2 null bulk replies
 become the genuine RESP3 null (`_\r\n`), including RESP2 null arrays

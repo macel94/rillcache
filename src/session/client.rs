@@ -266,6 +266,25 @@ impl Session {
             } else {
                 output.extend_from_slice(b"-ERR syntax error\r\n");
             }
+        } else if subcommand.eq_ignore_ascii_case(b"GETREDIR") && rest.is_empty() {
+            // Client-side caching is unsupported, so no tracking redirect exists.
+            output.extend_from_slice(b":-1\r\n");
+        } else if subcommand.eq_ignore_ascii_case(b"TRACKINGINFO") && rest.is_empty() {
+            output.extend_from_slice(
+                b"*6\r\n$5\r\nflags\r\n*1\r\n$3\r\noff\r\n$8\r\nredirect\r\n:-1\r\n$8\r\nprefixes\r\n*0\r\n",
+            );
+        } else if subcommand.eq_ignore_ascii_case(b"CACHING") {
+            if rest.len() != 1 {
+                arity("client|caching", output);
+                return;
+            }
+            if rest[0].eq_ignore_ascii_case(b"YES") || rest[0].eq_ignore_ascii_case(b"NO") {
+                output.extend_from_slice(
+                    b"-ERR CLIENT CACHING can be called only when the client is in tracking mode with OPTIN or OPTOUT mode enabled\r\n",
+                );
+            } else {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+            }
         } else if subcommand.eq_ignore_ascii_case(b"REPLY") {
             if rest.len() != 1 {
                 arity("client|reply", output);
