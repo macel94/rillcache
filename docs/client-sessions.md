@@ -93,7 +93,16 @@ the protocol to RESP2, selects database zero (the only database), and clears the
 authenticated user so a password-protected deployment requires `AUTH` again. The
 client name and library metadata are retained; there is no `MONITOR`, tracking,
 `NO-EVICT`/`NO-TOUCH` or multiple-database state to clear. `RESET` is allowed
-without authentication and from RESP2 subscriber mode, and replies `+RESET`.
+without authentication and from RESP2 subscriber mode, replies `+RESET`, and
+restores `CLIENT REPLY` to `ON`.
+
+`CLIENT REPLY ON|OFF|SKIP` controls reply suppression. `OFF` suppresses every
+subsequent command reply until `ON` (whose `+OK` is delivered); `SKIP`
+suppresses exactly the next reply. The arming command itself never replies for
+`OFF`/`SKIP`. Suppression covers immediate, paused and blocked-completion
+replies, and disabling replies also disables multi-owner deferral for that
+session so a suppressed reply cannot be written from the owner path. Pub/Sub
+push frames and `MONITOR` feeds are separate from command replies.
 
 RESP3 conversion is per reply and framing-aware. Current data commands produce
 simple strings, errors, integers, and bulk strings; RESP2 null bulk replies
