@@ -149,9 +149,14 @@ fn excluded_serialization_hll_and_admin_surfaces_are_explicit() {
             &[b"CONFIG", b"REWRITE", b"extra"],
             b"-ERR wrong number of arguments for 'config|rewrite' command\r\n",
         );
-        let memory = b"-ERR MEMORY MALLOC-STATS and MEMORY PURGE are not supported; memory reporting is payload and process RSS only\r\n";
-        command(&mut stream, &[b"MEMORY", b"MALLOC-STATS"], memory);
-        command(&mut stream, &[b"MEMORY", b"PURGE"], memory);
+        command(&mut stream, &[b"MEMORY", b"PURGE"], b"+OK\r\n");
+        let memory = reply(&mut stream, &[b"MEMORY", b"MALLOC-STATS"]);
+        assert!(memory.starts_with(b"$"));
+        assert!(
+            memory
+                .windows(b"system allocator".len())
+                .any(|part| part == b"system allocator")
+        );
         command(
             &mut stream,
             &[b"MEMORY", b"PURGE", b"extra"],
