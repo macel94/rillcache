@@ -516,6 +516,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   Passwords can be passed on the command line, ACL hashes are unsalted
   SHA-256 (Redis-compatible but fast to brute-force offline), and there is no
   secret-manager integration or complete file-permission/rotation audit.
+  **Partial (2026-11-14): optional owner-only secret-file enforcement.**
+  `--secure-secret-files` refuses group/other-accessible password, ACL, audit
+  HMAC/keyring, AOF HMAC and TLS private-key files on Unix and enforces a
+  16-byte minimum password, and the security guide documents modes, a 256-bit
+  random-secret requirement, process-argument risk and rotate-then-revoke. Unit
+  tests cover loose/strict modes, short/long passwords and CLI parsing.
+  Secret-manager integration, enforced entropy/length for `--requirepass`, and
+  automatic audit of every deployment's permissions remain open.
   **Closes when:** the supported secret sources, permissions, rotation and
   process-argument risks are documented and tested, with long random secrets
   required by deployment guidance or enforced.
