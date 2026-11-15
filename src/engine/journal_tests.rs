@@ -725,6 +725,47 @@ fn read_misses_emit_keymiss_only_for_missing_keys() {
 }
 
 #[test]
+fn replay_reconstructs_known_group_entries_read() {
+    let path = aof_path("entries-read-replay");
+    {
+        let store = open(&path, FsyncPolicy::Always);
+        assert!(run(&store, &[b"XADD", b"s", b"1-0", b"f", b"v"]).starts_with(b"$"));
+        assert!(run(&store, &[b"XADD", b"s", b"2-0", b"f", b"v"]).starts_with(b"$"));
+        assert_eq!(
+            run(
+                &store,
+                &[b"XGROUP", b"CREATE", b"s", b"g", b"0", b"ENTRIESREAD", b"9"]
+            ),
+            b"+OK\r\n"
+        );
+        assert!(
+            run(
+                &store,
+                &[
+                    b"XREADGROUP",
+                    b"GROUP",
+                    b"g",
+                    b"c",
+                    b"COUNT",
+                    b"2",
+                    b"STREAMS",
+                    b"s",
+                    b">"
+                ]
+            )
+            .starts_with(b"*1\r\n")
+        );
+    }
+    let store = open(&path, FsyncPolicy::Always);
+    let info = run(&store, &[b"XINFO", b"GROUPS", b"s"]);
+    assert!(
+        info.windows(b"$12\r\nentries-read\r\n:11\r\n".len())
+            .any(|window| window == b"$12\r\nentries-read\r\n:11\r\n"),
+        "{info:?}"
+    );
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
