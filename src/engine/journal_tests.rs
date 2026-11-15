@@ -1777,6 +1777,34 @@ fn consumer_seen_journal_records_are_binary_safe_and_strictly_framed() {
     trailing.push(b'x');
     assert!(super::parse_consumer_seen(&trailing).is_none());
     assert!(super::parse_consumer_seen(b"__RILLCACHE_CONSUMER_SEEN_V1__:").is_none());
+
+    let active = super::consumer_active_record(key, group, consumer, 1_700_000_000_456);
+    let mut command = None;
+    let mut payload = None;
+    let parsed = crate::protocol::dispatch_request(&active, Limits::default(), |args| {
+        command = Some(args[0].to_vec());
+        payload = Some(args[1].to_vec());
+        Some(())
+    });
+    assert!(parsed.unwrap().is_some());
+    assert_eq!(command.as_deref(), Some(b"ECHO".as_slice()));
+    let payload = payload.expect("consumer-active payload");
+    assert_eq!(
+        super::parse_consumer_active(&payload),
+        Some((
+            key.as_slice(),
+            group.as_slice(),
+            consumer.as_slice(),
+            1_700_000_000_456
+        ))
+    );
+    let mut truncated = payload.clone();
+    truncated.pop();
+    assert!(super::parse_consumer_active(&truncated).is_none());
+    let mut trailing = payload;
+    trailing.push(b'x');
+    assert!(super::parse_consumer_active(&trailing).is_none());
+    assert!(super::parse_consumer_active(b"__RILLCACHE_CONSUMER_ACTIVE_V1__:").is_none());
 }
 #[test]
 fn new_key_events_fire_once_for_real_creations() {
