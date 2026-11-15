@@ -176,10 +176,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   sets; `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD` random reads; `XLEN`/`XRANGE`/
   `XREVRANGE` streams; `HSCAN`/`SSCAN`/`ZSCAN` collection scans; set/sorted-set
   algebra sources including store variants, with one miss per missing source
-  key; and stream `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`/`XINFO` metadata reads
-  on the normal keyspace/keyevent channels. Hits, absent fields/elements/members
-  and existing wrong-type keys do not. `A` intentionally excludes `m`, as in
-  Redis; other read commands remain open.
+  key; stream `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`/`XINFO` metadata reads;
+  and `SORT`/`SORT_RO` sources including `STORE` on the normal
+  keyspace/keyevent channels. Hits, absent fields/elements/members and existing
+  wrong-type keys do not. `SORT` `BY`/`GET` pattern lookups and other read
+  commands remain open. `A` intentionally excludes `m`, as in Redis.
   **Partial (2026-11-14): new-key notifications.** The `n` class reports the
   first creation of a key by supported mutation paths, including absent
   COPY/RENAME destinations, while overwrites, extra stream entries and reads do
