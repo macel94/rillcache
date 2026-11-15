@@ -46,8 +46,13 @@ and an explicit `used_memory_rss_scope`. RSS is an observation: it includes
 allocator, index, thread, socket and shared pages, and is not used for payload
 admission or `maxmemory` enforcement. On platforms without a readable resident
 set the value is `0` and the scope says `unavailable_on_this_platform`.
-`MEMORY STATS` reports the same pair under `used_memory_rss` /
-`used_memory_rss_human` with `rillcache.rss.scope`. `evicted_keys` resets with
+When a cgroup v2 (or v1 fallback) memory file is readable, `INFO memory` also
+reports `used_memory_cgroup`, `used_memory_cgroup_human`, `max_memory_cgroup`
+(`-1` when the limit is `max`/effectively unlimited), `max_memory_cgroup_human`
+and `used_memory_cgroup_scope`. These fields are observational only and are not
+used for admission, eviction or OOM handling; they are absent when no cgroup
+memory files are readable. `MEMORY STATS` reports the RSS pair under
+`used_memory_rss` / `used_memory_rss_human` with `rillcache.rss.scope`. `evicted_keys` resets with
 `CONFIG RESETSTAT`; the policy itself does not.
 
 ## INFO commandstats
