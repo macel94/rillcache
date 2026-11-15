@@ -171,12 +171,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   family misses; missing `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
   `HVALS`/`HSTRLEN` hashes; `STRLEN`/`GETRANGE`/`GETBIT` strings; missing
   `LLEN`/`LINDEX`/`LRANGE`/`LPOS` lists; missing `SCARD`/`SISMEMBER`/`SMEMBERS`
-  sets; and missing `ZCARD`/`ZSCORE`/`ZMSCORE`/
-  `ZRANGE`/`ZRANK`/`ZREVRANK`/`ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/
-  `ZREVRANGEBYSCORE`/`ZLEXCOUNT` sorted sets on the normal keyspace/keyevent
-  channels. Hits, absent fields/elements/members and existing wrong-type keys do
-  not. `A` intentionally excludes `m`, as in Redis; other read commands remain
-  open.
+  sets; missing `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/`ZRANK`/`ZREVRANK`/
+  `ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/`ZREVRANGEBYSCORE`/`ZLEXCOUNT` sorted
+  sets; `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD` random reads; and `XLEN`/
+  `XRANGE`/`XREVRANGE` streams on the normal keyspace/keyevent channels. Hits,
+  absent fields/elements/members and existing wrong-type keys do not. `A`
+  intentionally excludes `m`, as in Redis; other read commands remain open.
   **Partial (2026-11-14): new-key notifications.** The `n` class reports the
   first creation of a key by supported mutation paths, including absent
   COPY/RENAME destinations, while overwrites, extra stream entries and reads do

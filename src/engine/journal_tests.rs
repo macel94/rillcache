@@ -903,6 +903,70 @@ fn list_read_misses_emit_keymiss() {
 }
 
 #[test]
+fn random_member_and_stream_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"SRANDMEMBER", b"missing"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"SRANDMEMBER", b"missing", b"2"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"ZRANDMEMBER", b"missing"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"ZRANDMEMBER", b"missing", b"2"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"HRANDFIELD", b"missing"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"HRANDFIELD", b"missing", b"2"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"HRANDFIELD", b"missing", b"2", b"WITHVALUES"]),
+        b"*0\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"XLEN", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"XRANGE", b"missing", b"-", b"+"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"XREVRANGE", b"missing", b"+", b"-"]),
+        b"*0\r\n"
+    );
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"SADD", b"s", b"a"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"ZADD", b"z", b"1", b"a"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"HSET", b"h", b"f", b"v"]), b":1\r\n");
+    assert_eq!(
+        run(&store, &[b"XADD", b"x", b"1-1", b"f", b"v"]),
+        b"$3\r\n1-1\r\n"
+    );
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"SRANDMEMBER", b"s"]), b"$1\r\na\r\n");
+    assert_eq!(run(&store, &[b"ZRANDMEMBER", b"z"]), b"$1\r\na\r\n");
+    assert_eq!(run(&store, &[b"HRANDFIELD", b"h"]), b"$1\r\nf\r\n");
+    assert_eq!(run(&store, &[b"XLEN", b"x"]), b":1\r\n");
+    assert!(run(&store, &[b"XRANGE", b"x", b"-", b"+"]).starts_with(b"*1\r\n"));
+    assert!(receiver.try_recv().is_err(), "existing keys are not misses");
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()

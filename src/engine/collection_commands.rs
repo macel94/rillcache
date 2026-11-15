@@ -1502,7 +1502,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let items = match data.entries.get(args[1]) {
-            None => None,
+            None => {
+                data.record_key_miss(args[1]);
+                None
+            }
             Some(entry) => match entry.collection.as_ref().and_then(Collection::hash_items) {
                 Some(items) => Some(
                     items
@@ -3962,6 +3965,7 @@ impl ShardExecutor {
         let set = match owned_set(&mut data, args[1], now) {
             Ok(Some(set)) => set,
             Ok(None) => {
+                data.record_key_miss(args[1]);
                 if count.is_some() {
                     out.extend_from_slice(b"*0\r\n");
                 } else {
@@ -5196,6 +5200,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let items = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 if count.is_some() {
                     out.extend_from_slice(b"*0\r\n");
                 } else {
