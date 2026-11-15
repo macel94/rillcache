@@ -116,8 +116,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **C5. The command and subcommand surface is incomplete.** [P0]
   The registry contains 243 commands, but common surfaces are absent or bounded:
   `DUMP`/`RESTORE`/`MIGRATE`; `OBJECT FREQ|IDLETIME` (explicit unsupported);
-  `PFDEBUG`/`PFSELFTEST`; `CLIENT TRACKING|NO-EVICT|NO-TOUCH|CACHING|
-  GETREDIR`; `COMMAND DOCS`; `CONFIG REWRITE`; `MEMORY MALLOC-STATS|PURGE`;
+  `PFDEBUG`/`PFSELFTEST`; `CLIENT TRACKING|NO-TOUCH|CACHING|GETREDIR`;
+  `COMMAND DOCS`; `CONFIG REWRITE`; `MEMORY MALLOC-STATS|PURGE`;
   `LATENCY GRAPH|HISTOGRAM`; and Redis 8+ command extensions. Some return explicit
   errors, others are unknown commands.
   **Partial (2026-11-14): named exclusions for common surfaces.**
@@ -127,8 +127,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
   `LATENCY GRAPH|HISTOGRAM` were already explicit. `CLIENT REPLY ON|OFF|SKIP`
   now suppresses immediate, paused and blocked-completion replies (RESET
-  restores `ON`). `CLIENT TRACKING|NO-EVICT|NO-TOUCH|CACHING|GETREDIR`, Redis 8+
-  extensions and the command-by-command differential matrix remain missing.
+  restores `ON`), and `CLIENT NO-EVICT ON|OFF` is accepted because established
+  clients are never evicted. `CLIENT TRACKING|NO-TOUCH|CACHING|GETREDIR`, Redis
+  8+ extensions and the command-by-command differential matrix remain missing.
   **Closes when:** a command-by-command differential matrix exists for supported
   data types and admin surfaces; every absent command is either implemented or
   explicitly excluded with a client-facing error and profile entry.

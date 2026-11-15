@@ -92,7 +92,7 @@ active `MULTI`, clears `WATCH`, unsubscribes channel/pattern subscriptions, retu
 the protocol to RESP2, selects database zero (the only database), and clears the
 authenticated user so a password-protected deployment requires `AUTH` again. The
 client name and library metadata are retained; there is no `MONITOR`, tracking,
-`NO-EVICT`/`NO-TOUCH` or multiple-database state to clear. `RESET` is allowed
+`NO-TOUCH` state or multiple-database state to clear. `RESET` is allowed
 without authentication and from RESP2 subscriber mode, replies `+RESET`, and
 restores `CLIENT REPLY` to `ON`.
 
@@ -103,6 +103,11 @@ suppresses exactly the next reply. The arming command itself never replies for
 replies, and disabling replies also disables multi-owner deferral for that
 session so a suppressed reply cannot be written from the owner path. Pub/Sub
 push frames and `MONITOR` feeds are separate from command replies.
+
+`CLIENT NO-EVICT ON|OFF` is accepted and replies `+OK`. Established clients are
+never evicted—`max_clients` rejects new connections—so both modes have the same
+enforced behavior. The flag is not separately reported because no eviction path
+exists to suppress.
 
 RESP3 conversion is per reply and framing-aware. Current data commands produce
 simple strings, errors, integers, and bulk strings; RESP2 null bulk replies
