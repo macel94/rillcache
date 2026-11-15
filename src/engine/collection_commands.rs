@@ -2302,7 +2302,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let exists = match data.entries.get(args[1]) {
-            None => false,
+            None => {
+                data.record_key_miss(args[1]);
+                false
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => entry
                 .collection
                 .as_ref()
@@ -2464,7 +2467,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let collection = match data.entries.get(args[1]) {
-            None => None,
+            None => {
+                data.record_key_miss(args[1]);
+                None
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => {
                 entry.collection.as_ref()
             }
@@ -2491,6 +2497,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let mut items = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 out.extend_from_slice(b"*0\r\n");
                 return;
             }
@@ -2519,7 +2526,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let length = match data.entries.get(args[1]) {
-            None => 0,
+            None => {
+                data.record_key_miss(args[1]);
+                0
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_hash) => entry
                 .collection
                 .as_ref()
@@ -3549,7 +3559,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let collection = match data.entries.get(args[1]) {
-            None => None,
+            None => {
+                data.record_key_miss(args[1]);
+                None
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_set) => {
                 entry.collection.as_ref()
             }
