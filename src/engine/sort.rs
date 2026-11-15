@@ -335,7 +335,13 @@ fn lookup_pattern(data: &mut Data, pattern: &[u8], element: &[u8], now: i64) -> 
     key.extend_from_slice(element);
     key.extend_from_slice(&pattern[star + 1..key_end]);
     data.expire_key(&key, now);
-    let entry = data.entries.get(&key)?;
+    let entry = match data.entries.get(&key) {
+        Some(entry) => entry,
+        None => {
+            data.record_key_miss(&key);
+            return None;
+        }
+    };
     if let Some(field_at) = field_at {
         entry
             .collection

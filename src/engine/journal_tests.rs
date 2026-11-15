@@ -2000,3 +2000,69 @@ fn stream_metadata_read_misses_emit_keymiss() {
     assert!(run(&store, &[b"XINFO", b"CONSUMERS", b"x", b"g"]).starts_with(b"*0\r\n"));
     assert!(receiver.try_recv().is_err(), "existing keys are not misses");
 }
+
+#[test]
+fn sort_pattern_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"RPUSH", b"l", b"a"]), b":1\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(
+        run(&store, &[b"SORT", b"l", b"BY", b"weight_*"]),
+        b"*1\r\n$1\r\na\r\n"
+    );
+    expect_miss(b"weight_a");
+    assert_eq!(
+        run(&store, &[b"SORT", b"l", b"GET", b"data_*", b"ALPHA"]),
+        b"*1\r\n$-1\r\n"
+    );
+    expect_miss(b"data_a");
+    assert_eq!(
+        run(
+            &store,
+            &[b"SORT_RO", b"l", b"GET", b"data_*", b"BY", b"nosort"]
+        ),
+        b"*1\r\n$-1\r\n"
+    );
+    expect_miss(b"data_a");
+    assert_eq!(
+        run(&store, &[b"SORT", b"l", b"BY", b"nosort"]),
+        b"*1\r\n$1\r\na\r\n"
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "constant BY does not look up keys"
+    );
+
+    assert_eq!(run(&store, &[b"SET", b"weight_a", b"1"]), b"+OK\r\n");
+    assert_eq!(run(&store, &[b"SET", b"data_a", b"v"]), b"+OK\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(
+        run(
+            &store,
+            &[b"SORT", b"l", b"BY", b"weight_*", b"GET", b"data_*"]
+        ),
+        b"*1\r\n$1\r\nv\r\n"
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "existing pattern keys are not misses"
+    );
+}
