@@ -183,8 +183,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   granularity.
   **Partial (2026-11-14): known `entries-read` counts.** Groups created at `$` or
   `0` now report `entries-read` and increment it on new `XREADGROUP ... >`
-  deliveries; explicit non-zero starts, SETID and replayed groups without the
-  counter remain null. Tests cover `$`, `0`, SETID and delivery increments.
+  deliveries; `XGROUP CREATE|SETID ... ENTRIESREAD n` sets the counter and journal
+  rewrite/replay preserves it. Without an explicit counter, explicit starts and
+  replay reconstruct retained entries up to the cursor (an undercount if history
+  was deleted/trimmed). Tests cover `$`, `0`, SETID, ENTRIESREAD, delivery
+  increments and replay.
   **Closes when:** metadata fields match the declared version or are explicitly
   excluded, and trim/read semantics pass a differential corpus.
 
