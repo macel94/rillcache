@@ -1378,3 +1378,51 @@ fn consumer_seen_journal_records_are_binary_safe_and_strictly_framed() {
     assert!(super::parse_consumer_seen(&trailing).is_none());
     assert!(super::parse_consumer_seen(b"__RILLCACHE_CONSUMER_SEEN_V1__:").is_none());
 }
+#[test]
+fn new_key_events_fire_once_for_real_creations() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(1024);
+    store.set_notify_flags(NotifyFlags::parse(b"En").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_new = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", b"__keyevent@0__:new", key],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"GET", b"missing"]), b"$-1\r\n");
+    assert!(
+        receiver.try_recv().is_err(),
+        "a read miss does not create a key"
+    );
+
+    assert_eq!(run(&store, &[b"SET", b"k", b"v"]), b"+OK\r\n");
+    expect_new(b"k");
+    assert_eq!(run(&store, &[b"SET", b"k", b"v2"]), b"+OK\r\n");
+    assert!(receiver.try_recv().is_err(), "overwrite is not a new key");
+
+    assert_eq!(run(&store, &[b"HSET", b"h", b"f", b"v"]), b":1\r\n");
+    expect_new(b"h");
+    assert_eq!(
+        run(&store, &[b"XADD", b"s", b"1-0", b"f", b"v"]),
+        b"$3\r\n1-0\r\n"
+    );
+    expect_new(b"s");
+    assert_eq!(
+        run(&store, &[b"XADD", b"s", b"2-0", b"f", b"v"]),
+        b"$3\r\n2-0\r\n"
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "second entry is not a new key"
+    );
+
+    assert_eq!(run(&store, &[b"COPY", b"k", b"copy"]), b":1\r\n");
+    expect_new(b"copy");
+    assert_eq!(run(&store, &[b"COPY", b"k", b"copy"]), b":0\r\n");
+    assert!(receiver.try_recv().is_err());
+}
