@@ -921,6 +921,7 @@ impl ShardExecutor {
         for (key, requested) in options.keys.iter().zip(&options.starts) {
             data.expire_key(key, now);
             let Some(entry) = data.entries.get(*key) else {
+                data.record_key_miss(key);
                 starts.push(StreamId::default());
                 continue;
             };
@@ -1752,6 +1753,7 @@ impl ShardExecutor {
         for key in &options.keys {
             data.expire_key(key, now);
             let Some(entry) = data.entries.get(*key) else {
+                data.record_key_miss(key);
                 return XReadGroupOutcome::NoGroup(key.to_vec());
             };
             let Some(stream) = entry.stream.as_ref() else {

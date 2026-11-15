@@ -1085,6 +1085,87 @@ fn sort_misses_emit_keymiss() {
 }
 
 #[test]
+fn xread_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(
+        run(
+            &store,
+            &[b"XREAD", b"COUNT", b"1", b"STREAMS", b"missing", b"0"]
+        ),
+        b"*-1\r\n"
+    );
+    expect_miss(b"missing");
+    let reply = run(
+        &store,
+        &[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g",
+            b"c",
+            b"COUNT",
+            b"1",
+            b"STREAMS",
+            b"missing",
+            b"0",
+        ],
+    );
+    assert!(reply.starts_with(b"-NOGROUP"), "{reply:?}");
+    expect_miss(b"missing");
+
+    assert_eq!(
+        run(&store, &[b"XADD", b"x", b"1-1", b"f", b"v"]),
+        b"$3\r\n1-1\r\n"
+    );
+    assert_eq!(
+        run(&store, &[b"XGROUP", b"CREATE", b"x", b"g", b"0"]),
+        b"+OK\r\n"
+    );
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert!(
+        run(&store, &[b"XREAD", b"COUNT", b"1", b"STREAMS", b"x", b"0"]).starts_with(b"*1\r\n")
+    );
+    assert!(
+        run(
+            &store,
+            &[
+                b"XREADGROUP",
+                b"GROUP",
+                b"g",
+                b"c",
+                b"COUNT",
+                b"1",
+                b"STREAMS",
+                b"x",
+                b"0",
+            ],
+        )
+        .starts_with(b"*1\r\n")
+    );
+    assert!(
+        receiver.try_recv().is_err(),
+        "existing streams are not misses"
+    );
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
