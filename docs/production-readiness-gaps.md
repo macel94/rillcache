@@ -174,10 +174,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   sets; missing `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/`ZRANK`/`ZREVRANK`/
   `ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/`ZREVRANGEBYSCORE`/`ZLEXCOUNT` sorted
   sets; `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD` random reads; `XLEN`/`XRANGE`/
-  `XREVRANGE` streams; and `HSCAN`/`SSCAN`/`ZSCAN` collection scans on the
-  normal keyspace/keyevent channels. Hits, absent fields/elements/members and
-  existing wrong-type keys do not. `A` intentionally excludes `m`, as in Redis;
-  other read commands remain open.
+  `XREVRANGE` streams; `HSCAN`/`SSCAN`/`ZSCAN` collection scans; and
+  set/sorted-set algebra sources including store variants, with one miss per
+  missing source key, on the normal keyspace/keyevent channels. Hits, absent
+  fields/elements/members and existing wrong-type keys do not. `A` intentionally
+  excludes `m`, as in Redis; other read commands remain open.
   **Partial (2026-11-14): new-key notifications.** The `n` class reports the
   first creation of a key by supported mutation paths, including absent
   COPY/RENAME destinations, while overwrites, extra stream entries and reads do
