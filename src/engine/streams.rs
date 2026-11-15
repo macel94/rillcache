@@ -1457,7 +1457,7 @@ impl ShardExecutor {
             return;
         }
         if a[1].eq_ignore_ascii_case(b"CREATE") {
-            if a.len() < 5 || a.len() > 6 {
+            if a.len() < 5 {
                 arity("xgroup", out);
                 return;
             }
@@ -1472,9 +1472,33 @@ impl ShardExecutor {
                     }
                 }
             };
-            if a.len() == 6 && !a[5].eq_ignore_ascii_case(b"MKSTREAM") {
-                out.extend_from_slice(b"-ERR syntax error\r\n");
-                return;
+            let mut mkstream = false;
+            let mut entries_read_override: Option<Option<u64>> = None;
+            let mut index = 5;
+            while index < a.len() {
+                if a[index].eq_ignore_ascii_case(b"MKSTREAM") && !mkstream {
+                    mkstream = true;
+                    index += 1;
+                } else if a[index].eq_ignore_ascii_case(b"ENTRIESREAD")
+                    && index + 1 < a.len()
+                    && entries_read_override.is_none()
+                {
+                    let Some(value) = parse_i64(a[index + 1]) else {
+                        out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                        return;
+                    };
+                    if value < 0 && value != -1 {
+                        out.extend_from_slice(
+                            b"-ERR value for ENTRIESREAD must be positive or -1\r\n",
+                        );
+                        return;
+                    }
+                    entries_read_override = Some((value >= 0).then_some(value as u64));
+                    index += 2;
+                } else {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
             }
             let Ok(mut data) = self.data.try_borrow_mut() else {
                 internal_error(out);
@@ -1491,7 +1515,7 @@ impl ShardExecutor {
             let existing_expiry = data.entries.get(a[2]).and_then(|e| e.expires);
             let mut stream = match data.entries.get(a[2]).and_then(|e| e.stream.clone()) {
                 Some(stream) => stream,
-                None if a.len() == 6 => Stream::default(),
+                None if mkstream => Stream::default(),
                 None => {
                     out.extend_from_slice(b"-ERR The XGROUP subcommand requires the key to exist. Note that for CREATE you may want to use the MKSTREAM option to create an empty stream automatically.\r\n");
                     return;
@@ -1501,10 +1525,16 @@ impl ShardExecutor {
                 out.extend_from_slice(b"-BUSYGROUP Consumer Group name already exists\r\n");
                 return;
             }
-            let entries_read = match start {
-                None => Some(stream.entries_added),
-                Some(id) if id == StreamId::default() => Some(0),
-                Some(_) => None,
+            let entries_read = match entries_read_override {
+                Some(Some(value)) => Some(value),
+                _ => match start {
+                    None => Some(stream.entries_added),
+                    // Reconstructed from retained entries for explicit starts and
+                    // journal replay. Deleted/trimmed entries are not counted, so
+                    // this is a documented approximation rather than Redis's
+                    // historical counter.
+                    Some(id) => Some(stream.entries.range(..=id).count() as u64),
+                },
             };
             let last = start.unwrap_or(stream.last_generated);
             stream.groups.insert(
@@ -1530,7 +1560,7 @@ impl ShardExecutor {
             data.put_stream(a[2], stream, existing_expiry, total, now);
             simple(b"OK", out);
         } else if a[1].eq_ignore_ascii_case(b"SETID") {
-            if a.len() != 5 {
+            if a.len() < 5 {
                 arity("xgroup", out);
                 return;
             }
@@ -1545,6 +1575,22 @@ impl ShardExecutor {
                     }
                 }
             };
+            let mut entries_read_override: Option<Option<u64>> = None;
+            if a.len() > 5 {
+                if a.len() != 7 || !a[5].eq_ignore_ascii_case(b"ENTRIESREAD") {
+                    out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return;
+                }
+                let Some(value) = parse_i64(a[6]) else {
+                    out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                    return;
+                };
+                if value < 0 && value != -1 {
+                    out.extend_from_slice(b"-ERR value for ENTRIESREAD must be positive or -1\r\n");
+                    return;
+                }
+                entries_read_override = Some((value >= 0).then_some(value as u64));
+            }
             let Ok(mut data) = self.data.try_borrow_mut() else {
                 internal_error(out);
                 return;
@@ -1566,10 +1612,12 @@ impl ShardExecutor {
                 return;
             };
             g.last_delivered = next.unwrap_or(s.last_generated);
-            g.entries_read = match next {
-                None => Some(s.entries_added),
-                Some(id) if id == StreamId::default() => Some(0),
-                Some(_) => None,
+            g.entries_read = match entries_read_override {
+                Some(Some(value)) => Some(value),
+                _ => match next {
+                    None => Some(s.entries_added),
+                    Some(id) => Some(s.entries.range(..=id).count() as u64),
+                },
             };
             data.touch(a[2]);
             simple(b"OK", out);
@@ -2443,6 +2491,58 @@ mod tests {
             run(&store, &[b"XGROUP", b"SETID", b"x", b"all", b"1-0"]),
             b"+OK\r\n"
         );
-        assert_eq!(read(b"all"), None, "an explicit non-zero start is unknown");
+        assert_eq!(
+            read(b"all"),
+            Some(1),
+            "an explicit start counts retained entries at or before it"
+        );
+
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"XGROUP",
+                    b"CREATE",
+                    b"x",
+                    b"custom",
+                    b"0",
+                    b"ENTRIESREAD",
+                    b"9"
+                ]
+            ),
+            b"+OK\r\n"
+        );
+        assert_eq!(read(b"custom"), Some(9));
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"XGROUP",
+                    b"SETID",
+                    b"x",
+                    b"custom",
+                    b"0",
+                    b"ENTRIESREAD",
+                    b"-1"
+                ]
+            ),
+            b"+OK\r\n"
+        );
+        assert_eq!(read(b"custom"), Some(0));
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"XGROUP",
+                    b"CREATE",
+                    b"x",
+                    b"bad",
+                    b"0",
+                    b"ENTRIESREAD",
+                    b"-2"
+                ]
+            ),
+            b"-ERR value for ENTRIESREAD must be positive or -1\r\n"
+        );
     }
 }
