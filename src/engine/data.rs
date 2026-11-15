@@ -516,6 +516,7 @@ pub(crate) struct Data {
     deleted_events: VecDeque<Vec<u8>>,
     hash_events: VecDeque<(Vec<u8>, Vec<u8>)>,
     key_miss_events: VecDeque<Vec<u8>>,
+    new_key_events: VecDeque<Vec<u8>>,
     pub(in crate::engine) expired_keys: u64,
     pub(in crate::engine) expired_subkeys: u64,
     pub(in crate::engine) evicted_keys: u64,
@@ -539,6 +540,7 @@ pub(super) struct Lifecycle {
     /// cannot be derived from the final state alone.
     pub hash_events: Vec<(Vec<u8>, Vec<u8>)>,
     pub key_miss: Vec<Vec<u8>>,
+    pub new_keys: Vec<Vec<u8>>,
 }
 
 fn push_lifecycle(queue: &mut VecDeque<Vec<u8>>, key: &[u8]) {
@@ -625,6 +627,7 @@ impl Data {
             deleted: self.deleted_events.drain(..).collect(),
             hash_events: self.hash_events.drain(..).collect(),
             key_miss: self.key_miss_events.drain(..).collect(),
+            new_keys: self.new_key_events.drain(..).collect(),
         }
     }
 
@@ -637,11 +640,17 @@ impl Data {
         self.deleted_events.clear();
         self.hash_events.clear();
         self.key_miss_events.clear();
+        self.new_key_events.clear();
     }
 
     /// Queue one read miss for the command that is executing.
     pub fn record_key_miss(&mut self, key: &[u8]) {
         push_lifecycle(&mut self.key_miss_events, key);
+    }
+
+    /// Queue a newly created key for `n` class delivery.
+    pub fn record_new_key(&mut self, key: &[u8]) {
+        push_lifecycle(&mut self.new_key_events, key);
     }
 
     /// Queue one ordered hash notification for the command that is executing.
@@ -1103,6 +1112,7 @@ impl Data {
                     last_access: access,
                 },
             );
+            self.record_new_key(key);
             if let Some(at) = expires {
                 self.expirations.insert((at, key.to_vec()));
             }
@@ -1160,6 +1170,7 @@ impl Data {
                     last_access: access,
                 },
             );
+            self.record_new_key(key);
         }
         self.access_seq = access;
         self.payload_bytes = payload;
@@ -1170,6 +1181,7 @@ impl Data {
     /// Install an already admitted owned value without copying its buffers or tree.
     /// `payload` is the final total, including replacement of any destination.
     pub fn put_owned(&mut self, key: &[u8], mut entry: Entry, payload: usize, _now: i64) {
+        let existed = self.entries.contains_key(key);
         self.remove(key);
         self.access_seq = self.access_seq.wrapping_add(1);
         entry.last_access = self.access_seq;
@@ -1178,6 +1190,9 @@ impl Data {
         }
         self.field_ttls = self.field_ttls.saturating_add(entry.field_ttl.len());
         self.entries.insert(key.to_vec(), entry);
+        if !existed {
+            self.record_new_key(key);
+        }
         self.payload_bytes = payload;
         self.touch(key);
     }
@@ -1218,6 +1233,7 @@ impl Data {
                     last_access: access,
                 },
             );
+            self.record_new_key(key);
             if let Some(at) = expires {
                 self.expirations.insert((at, key.to_vec()));
             }
@@ -1259,6 +1275,7 @@ impl Data {
                     last_access: access,
                 },
             );
+            self.record_new_key(key);
             if let Some(at) = expires {
                 self.expirations.insert((at, key.to_vec()));
             }
@@ -1362,6 +1379,7 @@ mod tests {
         push_lifecycle(&mut data.deleted_events, b"d");
         data.record_hash_event(b"hset", b"e");
         data.record_key_miss(b"f");
+        data.record_new_key(b"g");
         let lifecycle = data.drain_lifecycle();
         assert_eq!(lifecycle.expired, vec![b"a".to_vec()]);
         assert_eq!(lifecycle.evicted, vec![b"b".to_vec()]);
@@ -1377,6 +1395,7 @@ mod tests {
         push_lifecycle(&mut data.deleted_events, b"stale");
         data.record_hash_event(b"hset", b"stale");
         data.record_key_miss(b"stale");
+        data.record_new_key(b"stale");
         data.clear_lifecycle();
         let lifecycle = data.drain_lifecycle();
         assert!(lifecycle.expired.is_empty());
@@ -1385,6 +1404,7 @@ mod tests {
         assert!(lifecycle.deleted.is_empty());
         assert!(lifecycle.hash_events.is_empty());
         assert!(lifecycle.key_miss.is_empty());
+        assert!(lifecycle.new_keys.is_empty());
 
         for index in 0..MAX_LIFECYCLE_EVENTS + 10 {
             push_lifecycle(&mut data.expired_events, index.to_string().as_bytes());

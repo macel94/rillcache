@@ -1502,6 +1502,9 @@ impl ShardExecutor {
         for key in lifecycle.deleted {
             self.notify_event("del", &key, NotifyCategory::Generic);
         }
+        for key in lifecycle.new_keys {
+            self.notify_event("new", &key, NotifyCategory::NewKey);
+        }
         for (event, key) in lifecycle.hash_events {
             let (name, category) = match event.as_slice() {
                 b"del" => ("del", NotifyCategory::Generic),

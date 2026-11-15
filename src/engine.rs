@@ -1270,7 +1270,13 @@ impl ShardExecutor {
         let flags = self.notify_flags();
         // No lifecycle classes means there is nothing to deliver. Avoid taking
         // a mutable data borrow on every command just to discard queued keys.
-        if !flags.expired && !flags.evicted && !flags.hash && !flags.generic && !flags.key_miss {
+        if !flags.expired
+            && !flags.evicted
+            && !flags.hash
+            && !flags.generic
+            && !flags.key_miss
+            && !flags.new_key
+        {
             return;
         }
         let lifecycle = {
