@@ -236,8 +236,9 @@ start-time lets startup reclaim a stale lock after a crash. On platforms without
 that process identity source, startup fails closed on any existing lock; after
 confirming the old process is gone, an operator removes the stale `.lock` file.
 The lock does not coordinate writers on a shared/network filesystem; such a volume
-is unsupported, so keep journals on local storage or guarantee single-process
-access externally.
+is unsupported and is explicitly excluded by the
+[standalone production profile](production-profile.md). Keep journals on local
+storage or guarantee single-process access externally.
 
 ## Offline backup and restore
 
