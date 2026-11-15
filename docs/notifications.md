@@ -42,9 +42,10 @@ occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
 `ZRANK`/`ZREVRANK`/`ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/`ZREVRANGEBYSCORE`/
 `ZLEXCOUNT`, `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD`, `XLEN`/`XRANGE`/
 `XREVRANGE`, `HSCAN`/`SSCAN`/`ZSCAN`, `SINTER`/`SUNION`/`SDIFF`/`SINTERCARD`
-and the set store variants, and `ZUNION`/`ZINTER`/`ZDIFF`/`ZINTERCARD` and the
-sorted-set store variants emit `keymiss` (once per missing source key for
-algebra) on the normal keyspace/keyevent channels. Hits, missing
+and the set store variants, `ZUNION`/`ZINTER`/`ZDIFF`/`ZINTERCARD` and the
+sorted-set store variants, `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM` and
+`XINFO STREAM|GROUPS|CONSUMERS` emit `keymiss` on the normal keyspace/keyevent
+channels (once per missing source key for algebra). Hits, missing
 fields/elements/members in an existing key and existing wrong-type keys do not.
 Other read commands are not covered yet.
 
