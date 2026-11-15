@@ -101,6 +101,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(key, now);
         let Some(entry) = data.entries.get(key) else {
+            data.record_key_miss(key);
             integer(0, output);
             return;
         };
@@ -129,6 +130,9 @@ impl ShardExecutor {
         {
             wrong_type(output);
             return;
+        }
+        if !data.entries.contains_key(key) {
+            data.record_key_miss(key);
         }
         let value = data
             .entries
