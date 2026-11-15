@@ -166,10 +166,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
   `hexpire`/`hpersist` for future deadlines and successful persists, never a
   synthetic write; its past-deadline deletion events remain open.
-  **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`
-  and each missing `MGET` occurrence on the normal keyspace/keyevent channels;
-  hits and existing non-string keys do not. `A` intentionally excludes `m`, as in
-  Redis.
+  **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`,
+  each missing `MGET` occurrence and missing `EXISTS` arguments; `TYPE`/`TTL`
+  family misses; missing `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
+  `HVALS`/`HSTRLEN` hashes; `STRLEN`/`GETRANGE`/`GETBIT` strings; missing
+  `LLEN`/`LINDEX`/`LRANGE`/`LPOS` lists; missing `SCARD`/`SISMEMBER`/`SMEMBERS`
+  sets; and missing `ZCARD`/`ZSCORE`/`ZMSCORE`/
+  `ZRANGE`/`ZRANK`/`ZREVRANK`/`ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/
+  `ZREVRANGEBYSCORE`/`ZLEXCOUNT` sorted sets on the normal keyspace/keyevent
+  channels. Hits, absent fields/elements/members and existing wrong-type keys do
+  not. `A` intentionally excludes `m`, as in Redis; other read commands remain
+  open.
   **Partial (2026-11-14): new-key notifications.** The `n` class reports the
   first creation of a key by supported mutation paths, including absent
   COPY/RENAME destinations, while overwrites, extra stream entries and reads do

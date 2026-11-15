@@ -1610,3 +1610,91 @@ fn additional_hash_read_misses_emit_keymiss() {
         "existing hash fields/keys are not misses"
     );
 }
+
+#[test]
+fn set_and_sorted_set_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"SCARD", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"SISMEMBER", b"missing", b"m"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"SMEMBERS", b"missing"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"ZCARD", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"ZSCORE", b"missing", b"m"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"ZMSCORE", b"missing", b"a", b"b"]),
+        b"*2\r\n$-1\r\n$-1\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"ZRANGE", b"missing", b"0", b"-1"]),
+        b"*0\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"ZRANK", b"missing", b"m"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"ZREVRANK", b"missing", b"m"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"ZCOUNT", b"missing", b"-inf", b"+inf"]),
+        b":0\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"ZRANGEBYSCORE", b"missing", b"-inf", b"+inf"]),
+        b"*0\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"ZREVRANGEBYSCORE", b"missing", b"+inf", b"-inf"]),
+        b"*0\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"ZREVRANGE", b"missing", b"0", b"-1"]),
+        b"*0\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"ZLEXCOUNT", b"missing", b"-", b"+"]),
+        b":0\r\n"
+    );
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"SADD", b"s", b"a"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"ZADD", b"z", b"1", b"a"]), b":1\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"SCARD", b"s"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"SISMEMBER", b"s", b"absent"]), b":0\r\n");
+    assert_eq!(run(&store, &[b"SMEMBERS", b"s"]), b"*1\r\n$1\r\na\r\n");
+    assert_eq!(run(&store, &[b"ZCARD", b"z"]), b":1\r\n");
+    assert_eq!(run(&store, &[b"ZSCORE", b"z", b"absent"]), b"$-1\r\n");
+    assert_eq!(run(&store, &[b"ZRANK", b"z", b"absent"]), b"$-1\r\n");
+    assert_eq!(run(&store, &[b"ZCOUNT", b"z", b"5", b"6"]), b":0\r\n");
+    assert_eq!(
+        run(&store, &[b"ZRANGEBYSCORE", b"z", b"5", b"6"]),
+        b"*0\r\n"
+    );
+    assert!(receiver.try_recv().is_err(), "existing keys are not misses");
+}
