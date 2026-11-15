@@ -4302,6 +4302,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let ordered = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 if with_score {
                     out.extend_from_slice(b"*-1\r\n");
                 } else {
@@ -4361,6 +4362,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let ordered = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 out.extend_from_slice(b"*0\r\n");
                 return;
             }
@@ -4423,7 +4425,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let count = match data.entries.get(args[1]) {
-            None => 0,
+            None => {
+                data.record_key_miss(args[1]);
+                0
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => entry
                 .collection
                 .as_ref()
@@ -4493,6 +4498,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let ordered = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 out.extend_from_slice(b"*0\r\n");
                 return;
             }
@@ -4794,6 +4800,9 @@ impl ShardExecutor {
         data.expire_key(source, now);
         let items = match data.entries.get(source) {
             None => {
+                if !store {
+                    data.record_key_miss(source);
+                }
                 if store {
                     data.expire_key(key, now);
                     data.remove(key);
@@ -5094,7 +5103,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let count = match data.entries.get(args[1]) {
-            None => 0,
+            None => {
+                data.record_key_miss(args[1]);
+                0
+            }
             Some(entry) if entry.collection.as_ref().is_some_and(Collection::is_zset) => entry
                 .collection
                 .as_ref()
