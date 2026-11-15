@@ -562,14 +562,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   profile.
 
 - [ ] **O3. Latency distribution and per-client observability are missing.** [P1]
-  `INFO` has aggregate command stats but no `INFO latencystats`, histograms or
-  percentiles. `LATENCY` exposes only command and expire-cycle series;
-  `LATENCY GRAPH|HISTOGRAM` are unsupported.
+  `INFO` has aggregate command stats but no exact histograms, complete
+  per-client resource fields or a cross-process latency view. `LATENCY` exposes
+  only command and expire-cycle series; `LATENCY GRAPH|HISTOGRAM` are
+  unsupported.
   **Partial (2026-11-14): bounded CLIENT INFO session state.** `CLIENT INFO`
   now reports `age`, `b`/`P`/`N` flags, `sub`/`psub` and the WATCH count, using
-  state already held by the session. `INFO clients` already reports `blocked_clients`. Per-client fd,
-  idle time, last command, input/output buffer bytes, network bytes, allocator
-  memory, latency histograms and `INFO latencystats` remain absent.
+  state already held by the session. `INFO clients` already reports
+  `blocked_clients`. Per-client fd, idle time, last command, input/output buffer
+  bytes, network bytes and allocator memory remain absent.
+  **Partial (2026-11-14): bounded latency percentiles.** Enabling
+  `commandstats-enabled` also records a 32-bucket logarithmic per-command
+  histogram; `INFO latencystats` reports `p50`/`p99`/`p99.9` bucket upper bounds
+  in microseconds. This is an approximation, not HDR or an exact percentile
+  contract. The dispatcher takes no timer or histogram update while the
+  collector is disabled.
   **Closes when:** the supported metrics contract reports per-command latency
   distributions and per-client resource/queue state with documented units and
   sampling limits.
