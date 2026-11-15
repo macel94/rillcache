@@ -1549,7 +1549,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, admitted | AC32 on the implemented change | none at 64 B |
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 (map/score/start-0) + 4.38 (rank-select), admitted | AC32/AC40 | none |
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
-| Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 vs 0.14–0.20; `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
+| Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 → **0.33** vs 0.08–0.35 (parity with Redis); `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
@@ -6157,7 +6157,7 @@ counted drop/document disconnect, never a silent truncation); ordering,
 pattern/shard, unsubscribe and shutdown tests shall pass; no dependency shall be
 added; and both protected gates shall pass on the exact head.
 
-### 4.40 O(1) cardinality and membership (candidate; admission measured)
+### 4.40 O(1) cardinality and membership (candidate; set/hash/zset/list lengths implemented)
 
 **Mechanism.** Add `Collection::len()` (list = sum of the inner deque lengths,
 O(nodes); set/hash/zset = the container length) and direct probes:
@@ -6179,6 +6179,14 @@ ms versus Redis 0.19/0.07/0.40 and Valkey 0.22/0.13/0.27; miss 8.67 versus
 `HLEN` 2.24 versus 0.15/0.19; `ZCARD` 1.57 versus 0.12/0.16; `LLEN` 1.55 versus
 0.20/0.14; `HEXISTS` 0.18 versus 0.29/0.14 and `STRLEN` 0.13 versus
 0.16/0.16. Ten-element controls 0.12–0.18.
+
+**Post-fix lengths (2026-11-14).** `SCARD`, `ZCARD`, `HLEN` and `LLEN` read the
+container length directly (`Collection::set_len`/`zset_len`/`hash_len`/`list_len`)
+instead of collecting member references. On a 200,000-element list, `LLEN` falls
+from **1.55 ms to 0.330/3.263 ms p50/p99**, matching Redis (0.350/2.988) and
+behind only Valkey (0.082/0.143); the 100-member control and missing-key path are
+unchanged. The per-member probes (`SISMEMBER`/`ZSCORE`) and `HEXISTS` already
+read the map directly (4.44/4.40).**
 
 **Risks and obligations.** The `SetInt` probe must reproduce the current string
 semantics for integer and non-integer members; `SetPack`/`HashPack` stay linear
