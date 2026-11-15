@@ -25,6 +25,7 @@ const CHECKSUM_RECORD: &[u8] = b"__RILLCACHE_RECORD_CRC32_V1__:";
 const AUTH_ANCHOR: &[u8] = b"__RILLCACHE_AOF_HMAC256_V1__:";
 const AUTH_RECORD: &[u8] = b"__RILLCACHE_RECORD_HMAC256_V1__:";
 const CONSUMER_SEEN: &[u8] = b"__RILLCACHE_CONSUMER_SEEN_V1__:";
+const CONSUMER_ACTIVE: &[u8] = b"__RILLCACHE_CONSUMER_ACTIVE_V1__:";
 const AUTH_ANCHOR_DOMAIN: &[u8] = b"rillcache-aof-auth-anchor-v1\0";
 const AUTH_RECORD_DOMAIN: &[u8] = b"rillcache-aof-auth-record-v1\0";
 
@@ -302,6 +303,20 @@ fn consumer_seen_record(key: &[u8], group: &[u8], consumer: &[u8], seen_at: i64)
     out
 }
 
+fn consumer_active_record(key: &[u8], group: &[u8], consumer: &[u8], active_at: i64) -> Vec<u8> {
+    let mut payload =
+        Vec::with_capacity(CONSUMER_ACTIVE.len() + key.len() + group.len() + consumer.len() + 32);
+    payload.extend_from_slice(CONSUMER_ACTIVE);
+    for field in [key, group, consumer] {
+        payload.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        payload.extend_from_slice(field);
+    }
+    payload.extend_from_slice(&active_at.to_le_bytes());
+    let mut out = Vec::new();
+    encode_request(&[b"ECHO", &payload], &mut out);
+    out
+}
+
 fn take_binary<'a>(rest: &mut &'a [u8]) -> Option<&'a [u8]> {
     let (length, tail) = rest.split_at_checked(4)?;
     let length = u32::from_be_bytes(length.try_into().ok()?) as usize;
@@ -314,6 +329,23 @@ type ConsumerSeen<'a> = (&'a [u8], &'a [u8], &'a [u8], i64);
 
 fn parse_consumer_seen(value: &[u8]) -> Option<ConsumerSeen<'_>> {
     let mut rest = value.strip_prefix(CONSUMER_SEEN)?;
+    let key = take_binary(&mut rest)?;
+    let group = take_binary(&mut rest)?;
+    let consumer = take_binary(&mut rest)?;
+    let (timestamp, tail) = rest.split_at_checked(8)?;
+    if !tail.is_empty() {
+        return None;
+    }
+    Some((
+        key,
+        group,
+        consumer,
+        i64::from_le_bytes(timestamp.try_into().ok()?),
+    ))
+}
+
+fn parse_consumer_active(value: &[u8]) -> Option<ConsumerSeen<'_>> {
+    let mut rest = value.strip_prefix(CONSUMER_ACTIVE)?;
     let key = take_binary(&mut rest)?;
     let group = take_binary(&mut rest)?;
     let consumer = take_binary(&mut rest)?;
@@ -973,6 +1005,20 @@ impl Journal {
         loop {
             while consumed < buffer.len() {
                 let parsed = dispatch_request(&buffer[consumed..], self.limits, |arguments| {
+                    if arguments.len() == 2
+                        && arguments[0].eq_ignore_ascii_case(b"ECHO")
+                        && arguments[1].starts_with(CONSUMER_ACTIVE)
+                    {
+                        let Some((key, group, consumer, active_at)) =
+                            parse_consumer_active(arguments[1])
+                        else {
+                            return Err(());
+                        };
+                        if !store.restore_consumer_active(key, group, consumer, active_at) {
+                            return Err(());
+                        }
+                        return Ok(Action::Continue);
+                    }
                     if arguments.len() == 2
                         && arguments[0].eq_ignore_ascii_case(b"ECHO")
                         && arguments[1].starts_with(CONSUMER_SEEN)
@@ -2155,6 +2201,12 @@ fn encode_key(data: &Data, key: &[u8], now: i64, budget: usize, output: &mut Vec
                         name,
                         consumer.as_slice(),
                         details.seen_at,
+                    ));
+                    output.extend_from_slice(&consumer_active_record(
+                        key,
+                        name,
+                        consumer.as_slice(),
+                        details.active_at,
                     ));
                 }
             }

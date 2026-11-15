@@ -197,8 +197,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **C9. Streams remain a bounded subset with volatile delivery state.** [P1]
   Entries, last IDs, group cursors, consumers and pending records survive restart
-  (D6 complete), but `XINFO` still diverges (`nacked-count` is zero, inactive time
-  is approximated), and approximate `XTRIM` follows a different granularity.
+  (D6 complete), but `XINFO` still diverges (`nacked-count` is zero), and
+  approximate `XTRIM` follows a different granularity.
   **Partial (2026-11-14): known `entries-read` counts.** Groups created at `$` or
   `0` now report `entries-read` and increment it on new `XREADGROUP ... >`
   deliveries; `XGROUP CREATE|SETID ... ENTRIESREAD n` sets the counter and journal
@@ -207,7 +207,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   was deleted/trimmed). Tests cover `$`, `0`, SETID, ENTRIESREAD, delivery
   increments and replay. `lag` now reports `entries_added - entries_read` for
   known counters, stays stable across `XDEL`/`XTRIM`, and is null for
-  `ENTRIESREAD -1` or an unknown counter.
+  `ENTRIESREAD -1` or an unknown counter. Consumer `idle` now uses last
+  attempted interaction and `inactive` uses last successful delivery/claim,
+  with both timestamps persisted across rewrite/replay.
   **Closes when:** metadata fields match the declared version or are explicitly
   excluded, and trim/read semantics pass a differential corpus.
 

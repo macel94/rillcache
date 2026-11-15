@@ -303,7 +303,10 @@ pub(crate) struct Pending {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Consumer {
+    /// Last attempted interaction (XREADGROUP attempt, XCLAIM lookup).
     pub seen_at: i64,
+    /// Last successful interaction (delivered entries or claimed IDs).
+    pub active_at: i64,
     pub pending: BTreeMap<StreamId, Pending>,
 }
 

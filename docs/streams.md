@@ -121,8 +121,9 @@ historical counter only when no explicit counter was recorded. `XGROUP CREATE
 unknown. `lag` is `entries_added - entries_read` when the counter is known, so
 `XDEL`/`XTRIM` do not shrink it, and is null when the counter is unknown. `nacked-count` is zero because no unowned NACK operation
 is supported; owned pending records are counted by `pel-count`. `XINFO CONSUMERS`
-reports `inactive` from the same `seen_at` activity value as `idle`, not Redis's
-separate active-time field. TCP regression coverage asserts explicit cursor,
+reports `idle` from `seen_at` (last attempted interaction) and `inactive` from
+`active_at` (last successful delivery or claim), matching Redis's split; both
+survive journal rewrite/replay. TCP regression coverage asserts explicit cursor,
 pending IDs/owners/counts, ACK, claim/autoclaim, range/read and NOACK behavior,
 not just equality between source and copy.
 

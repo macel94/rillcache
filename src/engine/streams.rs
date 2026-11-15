@@ -1100,6 +1100,7 @@ impl ShardExecutor {
             .entry(a[3].to_vec())
             .or_insert_with(|| Consumer {
                 seen_at: now,
+                active_at: now,
                 pending: Default::default(),
             })
             .seen_at = now;
@@ -1152,9 +1153,11 @@ impl ShardExecutor {
                 .entry(a[3].to_vec())
                 .or_insert_with(|| Consumer {
                     seen_at: now,
+                    active_at: now,
                     pending: Default::default(),
                 });
             consumer.seen_at = now;
+            consumer.active_at = now;
             consumer.pending.insert(id, pending);
             replies.push((id, current));
             changed = true;
@@ -1232,6 +1235,7 @@ impl ShardExecutor {
             .entry(a[3].to_vec())
             .or_insert_with(|| Consumer {
                 seen_at: now,
+                active_at: now,
                 pending: Default::default(),
             })
             .seen_at = now;
@@ -1286,9 +1290,11 @@ impl ShardExecutor {
                 .entry(a[3].to_vec())
                 .or_insert_with(|| Consumer {
                     seen_at: now,
+                    active_at: now,
                     pending: Default::default(),
                 });
             consumer.seen_at = now;
+            consumer.active_at = now;
             consumer.pending.insert(id, updated);
             replies.push((id, current));
             changed = true;
@@ -1732,6 +1738,7 @@ impl ShardExecutor {
                 std::collections::btree_map::Entry::Vacant(entry) => {
                     entry.insert(Consumer {
                         seen_at: now,
+                        active_at: now,
                         pending: Default::default(),
                     });
                     true
@@ -1810,9 +1817,11 @@ impl ShardExecutor {
                         .entry(options.consumer.to_vec())
                         .or_insert_with(|| Consumer {
                             seen_at: now,
+                            active_at: now,
                             pending: Default::default(),
                         });
                     consumer.seen_at = now;
+                    consumer.active_at = now;
                     for (id, _) in &entries {
                         group.last_delivered = *id;
                         if !options.noack {
@@ -1840,6 +1849,7 @@ impl ShardExecutor {
                         .entry(options.consumer.to_vec())
                         .or_insert_with(|| Consumer {
                             seen_at: now,
+                            active_at: now,
                             pending: Default::default(),
                         });
                     consumer.seen_at = now;
@@ -1947,6 +1957,36 @@ impl ShardExecutor {
             return false;
         };
         consumer.seen_at = seen_at.max(0);
+        // Older journals have no active-time record; use seen time until a
+        // CONSUMER_ACTIVE record supplies the exact value.
+        consumer.active_at = consumer.seen_at;
+        true
+    }
+
+    /// Restore the consumer active time recorded by a journal rewrite.
+    pub(super) fn restore_consumer_active(
+        &self,
+        key: &[u8],
+        group: &[u8],
+        consumer: &[u8],
+        active_at: i64,
+    ) -> bool {
+        let Ok(mut data) = self.data.try_borrow_mut() else {
+            return false;
+        };
+        let Some(entry) = data.entries.get_mut(key) else {
+            return false;
+        };
+        let Some(stream) = entry.stream.as_mut() else {
+            return false;
+        };
+        let Some(group) = stream.groups.get_mut(group) else {
+            return false;
+        };
+        let Some(consumer) = group.consumers.get_mut(consumer) else {
+            return false;
+        };
+        consumer.active_at = active_at.max(0);
         true
     }
 
@@ -2021,7 +2061,7 @@ impl ShardExecutor {
             encode_bulk(Some(b"idle"), out);
             integer(now.saturating_sub(consumer.seen_at).max(0), out);
             encode_bulk(Some(b"inactive"), out);
-            integer(now.saturating_sub(consumer.seen_at).max(0), out);
+            integer(now.saturating_sub(consumer.active_at).max(0), out);
         }
     }
 
@@ -2137,7 +2177,7 @@ impl ShardExecutor {
                     encode_bulk(Some(b"seen-time"), out);
                     integer(consumer.seen_at, out);
                     encode_bulk(Some(b"active-time"), out);
-                    integer(consumer.seen_at, out);
+                    integer(consumer.active_at, out);
                     encode_bulk(Some(b"pel-count"), out);
                     integer(consumer.pending.len() as i64, out);
                     encode_bulk(Some(b"pending"), out);
@@ -2630,5 +2670,68 @@ mod tests {
                 .windows(9)
                 .any(|part| part == b"lag\r\n:2\r\n")
         );
+    }
+
+    #[test]
+    fn consumer_idle_and_inactive_use_seen_and_active_times() {
+        let store = ShardExecutor::new(1_000_000);
+        assert!(run(&store, &[b"XADD", b"x", b"1-1", b"f", b"v"]).starts_with(b"$3\r\n"));
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"x", b"g", b"0"]),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATECONSUMER", b"x", b"g", b"c"]),
+            b":1\r\n"
+        );
+        {
+            let mut data = store.data.try_borrow_mut().unwrap();
+            let now = store.now(&data);
+            let consumer = data
+                .entries
+                .get_mut(b"x".as_slice())
+                .unwrap()
+                .stream
+                .as_mut()
+                .unwrap()
+                .groups
+                .get_mut(b"g".as_slice())
+                .unwrap()
+                .consumers
+                .get_mut(b"c".as_slice())
+                .unwrap();
+            consumer.seen_at = now - 5_000;
+            consumer.active_at = now - 1_000;
+        }
+        let reply = run(&store, &[b"XINFO", b"CONSUMERS", b"x", b"g"]);
+        let text = String::from_utf8_lossy(&reply);
+        let idle = text
+            .split("$4\r\nidle\r\n:")
+            .nth(1)
+            .and_then(|rest| rest.split("\r\n").next())
+            .and_then(|value| value.parse::<i64>().ok())
+            .expect("idle value");
+        let inactive = text
+            .split("$8\r\ninactive\r\n:")
+            .nth(1)
+            .and_then(|rest| rest.split("\r\n").next())
+            .and_then(|value| value.parse::<i64>().ok())
+            .expect("inactive value");
+        assert!(idle > inactive, "idle={idle} inactive={inactive}");
+        let full = run(&store, &[b"XINFO", b"STREAM", b"x", b"FULL"]);
+        let full = String::from_utf8_lossy(&full);
+        let active = full
+            .split("$11\r\nactive-time\r\n:")
+            .nth(1)
+            .and_then(|rest| rest.split("\r\n").next())
+            .and_then(|value| value.parse::<i64>().ok())
+            .expect("active-time value");
+        let seen = full
+            .split("$9\r\nseen-time\r\n:")
+            .nth(1)
+            .and_then(|rest| rest.split("\r\n").next())
+            .and_then(|value| value.parse::<i64>().ok())
+            .expect("seen-time value");
+        assert!(active > seen, "active={active} seen={seen}");
     }
 }
