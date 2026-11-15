@@ -52,7 +52,8 @@ reports `used_memory_cgroup`, `used_memory_cgroup_human`, `max_memory_cgroup`
 and `used_memory_cgroup_scope`. These fields are observational only and are not
 used for admission, eviction or OOM handling; they are absent when no cgroup
 memory files are readable. `MEMORY STATS` reports the RSS pair under
-`used_memory_rss` / `used_memory_rss_human` with `rillcache.rss.scope`. `evicted_keys` resets with
+`used_memory_rss` / `used_memory_rss_human` with `rillcache.rss.scope` and, when
+readable, the same cgroup current/limit pair with `rillcache.cgroup.scope`. `evicted_keys` resets with
 `CONFIG RESETSTAT`; the policy itself does not.
 
 ## INFO commandstats
