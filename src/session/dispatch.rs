@@ -9,6 +9,7 @@ use crate::engine::{
 use crate::protocol::encode_bulk;
 
 use super::Protocol;
+use super::ReplyMode;
 use super::Session;
 use super::client::select;
 use super::command::{allows_subscriber_command, arity, command_name, is_auth_exempt};
@@ -400,6 +401,7 @@ impl Session {
         output: &mut Vec<u8>,
     ) -> Action {
         if self.defer_enabled
+            && self.reply_mode == ReplyMode::On
             && self.multi.is_none()
             && !self.is_subscribed()
             && !self.monitoring

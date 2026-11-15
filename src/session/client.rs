@@ -8,7 +8,7 @@ use crate::protocol::encode_bulk;
 
 use super::auth::AUTH_THROTTLED;
 use super::command::arity;
-use super::{MAX_LIBRARY_FIELD_BYTES, MAX_NAME_BYTES, Protocol, Session};
+use super::{MAX_LIBRARY_FIELD_BYTES, MAX_NAME_BYTES, Protocol, ReplyMode, Session};
 
 impl Session {
     pub(super) fn hello<E: Execution>(
@@ -254,6 +254,21 @@ impl Session {
             };
             let requested = store.request_unblock(id, mode);
             let _ = write!(output, ":{}\r\n", u8::from(requested));
+        } else if subcommand.eq_ignore_ascii_case(b"REPLY") {
+            if rest.len() != 1 {
+                arity("client|reply", output);
+                return;
+            }
+            if rest[0].eq_ignore_ascii_case(b"ON") {
+                self.reply_mode = ReplyMode::On;
+                output.extend_from_slice(b"+OK\r\n");
+            } else if rest[0].eq_ignore_ascii_case(b"OFF") {
+                self.reply_mode = ReplyMode::Off;
+            } else if rest[0].eq_ignore_ascii_case(b"SKIP") {
+                self.reply_mode = ReplyMode::Skip;
+            } else {
+                output.extend_from_slice(b"-ERR syntax error\r\n");
+            }
         } else if subcommand.eq_ignore_ascii_case(b"LIST") {
             self.client_list(store, rest, output);
         } else if subcommand.eq_ignore_ascii_case(b"KILL") {

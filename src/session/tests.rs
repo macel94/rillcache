@@ -1306,3 +1306,45 @@ fn expired_and_evicted_notifications_use_injected_clock_and_eviction_policy() {
     assert!(reply.starts_with(b"-OOM"), "{reply:?}");
     assert!(receiver.try_recv().is_err(), "no event for rejected write");
 }
+
+#[test]
+fn client_reply_on_off_and_skip_suppress_exactly_the_expected_replies() {
+    let store = Store::new(1024);
+    let mut session = Session::new();
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"REPLY", b"OFF"]),
+        b""
+    );
+    assert_eq!(call(&mut session, &store, &[b"PING"]), b"");
+    assert_eq!(
+        call(&mut session, &store, &[b"SET", b"reply-key", b"value"]),
+        b""
+    );
+    assert_eq!(call(&mut session, &store, &[b"GET", b"reply-key"]), b"");
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"REPLY", b"ON"]),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        call(&mut session, &store, &[b"GET", b"reply-key"]),
+        b"$5\r\nvalue\r\n"
+    );
+
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"REPLY", b"SKIP"]),
+        b""
+    );
+    assert_eq!(call(&mut session, &store, &[b"PING"]), b"");
+    assert_eq!(call(&mut session, &store, &[b"PING"]), b"+PONG\r\n");
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"REPLY", b"bad"]),
+        b"-ERR syntax error\r\n"
+    );
+
+    assert_eq!(
+        call(&mut session, &store, &[b"CLIENT", b"REPLY", b"OFF"]),
+        b""
+    );
+    assert_eq!(call(&mut session, &store, &[b"RESET"]), b"+RESET\r\n");
+    assert_eq!(call(&mut session, &store, &[b"PING"]), b"+PONG\r\n");
+}
