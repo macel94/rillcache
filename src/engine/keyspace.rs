@@ -111,6 +111,7 @@ impl ShardExecutor {
             output.extend_from_slice(kind);
             output.extend_from_slice(b"\r\n");
         } else {
+            data.record_key_miss(key);
             output.extend_from_slice(b"+none\r\n");
         }
     }
