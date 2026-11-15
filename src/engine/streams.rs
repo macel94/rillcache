@@ -26,6 +26,19 @@ fn parse_u64(bytes: &[u8]) -> Option<u64> {
 fn id_text(id: StreamId) -> Vec<u8> {
     format!("{}-{}", id.ms, id.seq).into_bytes()
 }
+
+/// Redis reports group lag as `entries_added - entries_read`, so deleted
+/// history does not shrink it. Without a known read counter the lag is null.
+fn write_group_lag(stream: &Stream, group: &ConsumerGroup, out: &mut Vec<u8>) {
+    encode_bulk(Some(b"lag"), out);
+    match group.entries_read {
+        Some(read) => integer(
+            i64::try_from(stream.entries_added.saturating_sub(read)).unwrap_or(i64::MAX),
+            out,
+        ),
+        None => encode_bulk(None, out),
+    }
+}
 fn bound_id(raw: &[u8], start: bool) -> Option<StreamId> {
     if raw == b"-" {
         return Some(StreamId { ms: 0, seq: 0 });
@@ -1536,7 +1549,8 @@ impl ShardExecutor {
             }
             let entries_read = match entries_read_override {
                 Some(Some(value)) => Some(value),
-                _ => match start {
+                Some(None) => None,
+                None => match start {
                     None => Some(stream.entries_added),
                     // Reconstructed from retained entries for explicit starts and
                     // journal replay. Deleted/trimmed entries are not counted, so
@@ -1623,7 +1637,8 @@ impl ShardExecutor {
             g.last_delivered = next.unwrap_or(s.last_generated);
             g.entries_read = match entries_read_override {
                 Some(Some(value)) => Some(value),
-                _ => match next {
+                Some(None) => None,
+                None => match next {
                     None => Some(s.entries_added),
                     Some(id) => Some(s.entries.range(..=id).count() as u64),
                 },
@@ -1970,17 +1985,7 @@ impl ShardExecutor {
             } else {
                 encode_bulk(None, out);
             }
-            encode_bulk(Some(b"lag"), out);
-            integer(
-                stream
-                    .entries
-                    .range((
-                        std::ops::Bound::Excluded(group.last_delivered),
-                        std::ops::Bound::Unbounded,
-                    ))
-                    .count() as i64,
-                out,
-            );
+            write_group_lag(stream, group, out);
         }
     }
 
@@ -2108,16 +2113,7 @@ impl ShardExecutor {
                 } else {
                     encode_bulk(None, out);
                 }
-                encode_bulk(Some(b"lag"), out);
-                integer(
-                    s.entries
-                        .range((
-                            std::ops::Bound::Excluded(g.last_delivered),
-                            std::ops::Bound::Unbounded,
-                        ))
-                        .count() as i64,
-                    out,
-                );
+                write_group_lag(s, g, out);
                 encode_bulk(Some(b"pel-count"), out);
                 integer(g.pending.len() as i64, out);
                 encode_bulk(Some(b"nacked-count"), out);
@@ -2541,7 +2537,11 @@ mod tests {
             ),
             b"+OK\r\n"
         );
-        assert_eq!(read(b"custom"), Some(0));
+        assert_eq!(
+            read(b"custom"),
+            None,
+            "ENTRIESREAD -1 marks the counter unknown"
+        );
         assert_eq!(
             run(
                 &store,
@@ -2556,6 +2556,79 @@ mod tests {
                 ]
             ),
             b"-ERR value for ENTRIESREAD must be positive or -1\r\n"
+        );
+    }
+
+    #[test]
+    fn group_lag_uses_entries_added_and_survives_deletion() {
+        let store = ShardExecutor::new(1_000_000);
+        for (id, value) in [(b"1-1".as_slice(), b"a"), (b"2-2", b"b"), (b"3-3", b"c")] {
+            assert!(run(&store, &[b"XADD", b"x", id, b"f", value]).starts_with(b"$3\r\n"));
+        }
+        assert_eq!(
+            run(&store, &[b"XGROUP", b"CREATE", b"x", b"g", b"0"]),
+            b"+OK\r\n"
+        );
+        assert!(
+            run(&store, &[b"XINFO", b"GROUPS", b"x"])
+                .windows(9)
+                .any(|part| part == b"lag\r\n:3\r\n")
+        );
+        assert_eq!(run(&store, &[b"XDEL", b"x", b"1-1"]), b":1\r\n");
+        // Lag is entries_added - entries_read; deleted history does not shrink it.
+        assert!(
+            run(&store, &[b"XINFO", b"GROUPS", b"x"])
+                .windows(9)
+                .any(|part| part == b"lag\r\n:3\r\n")
+        );
+        assert!(
+            run(
+                &store,
+                &[
+                    b"XREADGROUP",
+                    b"GROUP",
+                    b"g",
+                    b"c",
+                    b"COUNT",
+                    b"1",
+                    b"STREAMS",
+                    b"x",
+                    b">"
+                ]
+            )
+            .starts_with(b"*1\r\n")
+        );
+        assert!(
+            run(&store, &[b"XINFO", b"GROUPS", b"x"])
+                .windows(9)
+                .any(|part| part == b"lag\r\n:2\r\n")
+        );
+        // An explicit non-zero start has no known read counter, so lag is null.
+        assert_eq!(
+            run(
+                &store,
+                &[
+                    b"XGROUP",
+                    b"CREATE",
+                    b"x",
+                    b"g2",
+                    b"2-2",
+                    b"ENTRIESREAD",
+                    b"-1",
+                ]
+            ),
+            b"+OK\r\n"
+        );
+        assert!(
+            run(&store, &[b"XINFO", b"GROUPS", b"x"])
+                .windows(10)
+                .any(|part| part == b"lag\r\n$-1\r\n")
+        );
+        // The known-counter group keeps its entries_added-based lag.
+        assert!(
+            run(&store, &[b"XINFO", b"GROUPS", b"x"])
+                .windows(9)
+                .any(|part| part == b"lag\r\n:2\r\n")
         );
     }
 }
