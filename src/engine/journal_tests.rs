@@ -1883,3 +1883,76 @@ fn collection_scan_misses_emit_keymiss() {
     assert!(run(&store, &[b"ZSCAN", b"z", b"0"]).starts_with(b"*2\r\n$1\r\n0\r\n"));
     assert!(receiver.try_recv().is_err(), "existing keys are not misses");
 }
+
+#[test]
+fn stream_metadata_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"XACK", b"missing", b"g", b"1-1"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"XPENDING", b"missing", b"g"]),
+        b"-NOGROUP No such key or consumer group\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"XCLAIM", b"missing", b"g", b"c", b"0", b"1-1"]),
+        b"-NOGROUP No such key or consumer group\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"XAUTOCLAIM", b"missing", b"g", b"c", b"0", b"0"]),
+        b"-NOGROUP No such key or consumer group\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"XINFO", b"STREAM", b"missing"]),
+        b"-ERR no such key\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"XINFO", b"GROUPS", b"missing"]),
+        b"-ERR no such key\r\n"
+    );
+    expect_miss(b"missing");
+    assert_eq!(
+        run(&store, &[b"XINFO", b"CONSUMERS", b"missing", b"g"]),
+        b"-ERR no such key\r\n"
+    );
+    expect_miss(b"missing");
+
+    assert_eq!(
+        run(&store, &[b"XADD", b"x", b"1-1", b"f", b"v"]),
+        b"$3\r\n1-1\r\n"
+    );
+    assert_eq!(
+        run(&store, &[b"XGROUP", b"CREATE", b"x", b"g", b"0"]),
+        b"+OK\r\n"
+    );
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"XACK", b"x", b"g", b"1-1"]), b":0\r\n");
+    assert!(run(&store, &[b"XPENDING", b"x", b"g"]).starts_with(b"*4\r\n"));
+    let info = run(&store, &[b"XINFO", b"STREAM", b"x"]);
+    assert!(info.starts_with(b"*"));
+    assert!(info.windows(6).any(|part| part == b"length"));
+    assert!(run(&store, &[b"XINFO", b"GROUPS", b"x"]).starts_with(b"*1\r\n"));
+    assert!(run(&store, &[b"XINFO", b"CONSUMERS", b"x", b"g"]).starts_with(b"*0\r\n"));
+    assert!(receiver.try_recv().is_err(), "existing keys are not misses");
+}
