@@ -117,19 +117,19 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   The registry contains 243 commands, but common surfaces are absent or bounded:
   `DUMP`/`RESTORE`/`MIGRATE`; `OBJECT FREQ|IDLETIME` (explicit unsupported);
   `PFDEBUG`/`PFSELFTEST`; `CLIENT TRACKING|NO-TOUCH`;
-  `COMMAND DOCS`; `CONFIG REWRITE`; `MEMORY MALLOC-STATS|PURGE`;
-  `LATENCY GRAPH|HISTOGRAM`; and Redis 8+ command extensions. Some return explicit
+  `COMMAND DOCS`; `CONFIG REWRITE`; `LATENCY GRAPH|HISTOGRAM`; and Redis 8+ command extensions. Some return explicit
   errors, others are unknown commands.
   **Partial (2026-11-14): named exclusions for common surfaces.**
   `DUMP`/`RESTORE`/`MIGRATE`, `PFDEBUG`/`PFSELFTEST`, `COMMAND DOCS`,
-  `CONFIG REWRITE` and `MEMORY MALLOC-STATS|PURGE` now return specific
-  capability errors with normal arity validation, documented in
+  `CONFIG REWRITE` now returns a specific
+  capability error with normal arity validation, documented in
   [unsupported surfaces](unsupported.md). `OBJECT IDLETIME|FREQ` and
   `LATENCY GRAPH|HISTOGRAM` were already explicit. `CLIENT REPLY ON|OFF|SKIP`
   now suppresses immediate, paused and blocked-completion replies (RESET
   restores `ON`); `CLIENT NO-EVICT ON|OFF` is accepted because established
   clients are never evicted; and `CLIENT GETREDIR`/`TRACKINGINFO`/`CACHING`
-  report the disabled tracking state. `CLIENT TRACKING|NO-TOUCH`, Redis 8+
+  report the disabled tracking state. `CLIENT TRACKING|NO-TOUCH`; `MEMORY PURGE` is an accepted
+  no-op and `MEMORY MALLOC-STATS` reports the system-allocator boundary; Redis 8+
   extensions and the command-by-command differential matrix remain missing.
   **Closes when:** a command-by-command differential matrix exists for supported
   data types and admin surfaces; every absent command is either implemented or
