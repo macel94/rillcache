@@ -1028,6 +1028,7 @@ impl ShardExecutor {
         let eviction = data.eviction;
         let lifecycle = (data.expired_keys, data.expired_subkeys, data.evicted_keys);
         let resident_bytes = process_memory::snapshot().map(|memory| memory.resident_bytes);
+        let cgroup_memory = process_memory::cgroup_snapshot();
         // Do not hold data across helpers that can take data or another lock:
         // std RwLock reads are not reentrant when a writer is queued.
         drop(data);
@@ -1081,6 +1082,19 @@ impl ShardExecutor {
                     eviction.name(),
                     self.notify_flags().as_string()
                 );
+                if let Some(cgroup) = cgroup_memory {
+                    let limit = cgroup.limit_bytes.map_or(-1, |value| value as i64);
+                    let limit_human = cgroup
+                        .limit_bytes
+                        .map(process_memory::human_bytes)
+                        .unwrap_or_else(|| "unlimited".to_owned());
+                    let _ = writeln!(
+                        text,
+                        "used_memory_cgroup:{}\r\nused_memory_cgroup_human:{}\r\nmax_memory_cgroup:{limit}\r\nmax_memory_cgroup_human:{limit_human}\r\nused_memory_cgroup_scope:cgroup_current_and_limit_not_enforced\r",
+                        cgroup.current_bytes,
+                        process_memory::human_bytes(cgroup.current_bytes)
+                    );
+                }
             }
             if matches!(section.as_slice(), b"keyspace" | b"default" | b"all") {
                 let _ = writeln!(
