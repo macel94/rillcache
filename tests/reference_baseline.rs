@@ -442,6 +442,84 @@ fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
         ],
         Resp::Integer(4),
     );
+    // Collections and streams: exact replies shared with pinned Redis/Valkey.
+    let hash_key = key(b"rillcache:baseline:hash:", suffix);
+    let set_key = key(b"rillcache:baseline:set:", suffix);
+    let zset_key = key(b"rillcache:baseline:zset:", suffix);
+    let stream_key = key(b"rillcache:baseline:stream:", suffix);
+    assert_command(
+        &mut client,
+        &[b"HSET", &hash_key, b"f", b"v"],
+        Resp::Integer(1),
+    );
+    assert_command(
+        &mut client,
+        &[b"HGET", &hash_key, b"f"],
+        Resp::Bulk(Some(b"v".to_vec())),
+    );
+    assert_command(&mut client, &[b"HLEN", &hash_key], Resp::Integer(1));
+    assert_command(
+        &mut client,
+        &[b"HMGET", &hash_key, b"f", b"absent"],
+        Resp::Array(Some(vec![
+            Resp::Bulk(Some(b"v".to_vec())),
+            Resp::Bulk(None),
+        ])),
+    );
+    assert_command(&mut client, &[b"SADD", &set_key, b"a"], Resp::Integer(1));
+    assert_command(&mut client, &[b"SCARD", &set_key], Resp::Integer(1));
+    assert_command(
+        &mut client,
+        &[b"SISMEMBER", &set_key, b"a"],
+        Resp::Integer(1),
+    );
+    assert_command(
+        &mut client,
+        &[b"SMEMBERS", &set_key],
+        Resp::Array(Some(vec![Resp::Bulk(Some(b"a".to_vec()))])),
+    );
+    assert_command(
+        &mut client,
+        &[b"ZADD", &zset_key, b"1", b"a", b"2", b"b"],
+        Resp::Integer(2),
+    );
+    assert_command(&mut client, &[b"ZCARD", &zset_key], Resp::Integer(2));
+    assert_command(
+        &mut client,
+        &[b"ZSCORE", &zset_key, b"b"],
+        Resp::Bulk(Some(b"2".to_vec())),
+    );
+    assert_command(
+        &mut client,
+        &[b"ZRANGE", &zset_key, b"0", b"-1"],
+        Resp::Array(Some(vec![
+            Resp::Bulk(Some(b"a".to_vec())),
+            Resp::Bulk(Some(b"b".to_vec())),
+        ])),
+    );
+    assert_command(&mut client, &[b"ZRANK", &zset_key, b"b"], Resp::Integer(1));
+    assert_command(
+        &mut client,
+        &[b"XADD", &stream_key, b"1-1", b"f", b"v"],
+        Resp::Bulk(Some(b"1-1".to_vec())),
+    );
+    assert_command(&mut client, &[b"XLEN", &stream_key], Resp::Integer(1));
+    assert_command(
+        &mut client,
+        &[b"XRANGE", &stream_key, b"-", b"+"],
+        Resp::Array(Some(vec![Resp::Array(Some(vec![
+            Resp::Bulk(Some(b"1-1".to_vec())),
+            Resp::Array(Some(vec![
+                Resp::Bulk(Some(b"f".to_vec())),
+                Resp::Bulk(Some(b"v".to_vec())),
+            ])),
+        ]))])),
+    );
+    assert_command(
+        &mut client,
+        &[b"DEL", &hash_key, &set_key, &zset_key, &stream_key],
+        Resp::Integer(4),
+    );
     let after_quit_key = key(b"rillcache:baseline:after-quit:", suffix);
     let client = Client::connect(address).unwrap();
     let following: &[&[u8]] = &[b"SET", after_quit_key.as_slice(), b"must-not-run"];
