@@ -77,6 +77,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   There is no published matrix of supported Redis/Valkey versions, commands,
   client libraries, topology, persistence mode and exclusions. "Drop-in" is
   therefore untestable and ambiguous.
+  **Partial (2026-11-14): draft standalone profile.** The
+  [production profile](production-profile.md) now declares the reference
+  versions, topology, supported families, explicit exclusions, persistence and
+  security boundaries, client matrix and limits. It is explicitly a draft, not a
+  readiness claim. The command-by-command CI matrix that runs every profile row
+  against pinned Redis and Valkey is still absent, as are the language-client,
+  durability, security and SLO evidence rows.
   **Closes when:** a versioned profile lists exact upstream versions, command
   matrix, client libraries, deployment topology and excluded features; CI runs
   every row against pinned Redis and Valkey and records pass/fail.
@@ -145,23 +152,41 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss`, new-key and `FLUSH*` event classes are unsupported; delivery is
   at-most-once and process-local.
-  **Partial (2026-11-14): hash field-expiry notifications.** A lazy field-expiry
-  pass now publishes one `hexpired` event per affected key and an additional
-  generic `del` when the empty hash is removed, including when the observing
-  command is rejected. Tests cover the rejected-write case and publication order;
-  the documented event matrix records the lazy-only detection point.
+  **Partial (2026-11-14): hash lifecycle and TTL notifications.** A lazy
+  field-expiry pass publishes one `hexpired` event per affected key and an
+  additional generic `del` when the empty hash is removed, including when the
+  observing command is rejected. `HEXPIRE`/`HPEXPIRE`/`HEXPIREAT`/`HPEXPIREAT`
+  publish `hexpire` and `HPERSIST` publishes `hpersist` when at least one field
+  actually changed, with no event or `WATCH` bump for condition failures.
+  `HDEL`/`HGETDEL` publish `hdel` only for a real removal and append `del` when
+  that removal emptied the hash; no-op deletes and commands that only observed
+  lazy expiry emit no delete event. Tests cover publication order and the no-op
+  cases, and the event matrix records the lazy-only detection point.
+  `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
+  deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
+  `hexpire`/`hpersist` for future deadlines and successful persists, never a
+  synthetic write; its past-deadline deletion events remain open.
+  **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`
+  and each missing `MGET` occurrence on the normal keyspace/keyevent channels;
+  hits and existing non-string keys do not. `A` intentionally excludes `m`, as in
+  Redis. New-key/`FLUSH*` classes and key-miss coverage for other read commands
+  remain open. Delivery is at-most-once and process-local.
   **Closes when:** the event matrix matches the declared Redis/Valkey version for
   supported mutations, with ordering, duplicate/loss and reconnect tests; durable
   delivery remains explicitly out of scope unless required by the profile.
 
 - [ ] **C9. Streams remain a bounded subset with volatile delivery state.** [P1]
-  Entries, last IDs and group cursors persist, but consumer objects and pending
-  entry lists (owners, delivery counts, timestamps) are not restored. `XINFO`
-  omits some Redis fields (`entries-read` is null, `nacked-count` is zero, inactive
-  time is approximated), and approximate `XTRIM` follows a different granularity.
-  **Closes when:** pending/consumer state is durable and restored, metadata fields
-  match the declared version or are explicitly excluded, and trim/read semantics
-  pass a differential corpus.
+  Entries, last IDs, group cursors, consumers and pending records survive restart
+  (D6 complete), but `XINFO` still diverges (`nacked-count` is zero, inactive time
+  is approximated), `lag` is retained-entry based rather than Redis's
+  deletion-aware estimator, and approximate `XTRIM` follows a different
+  granularity.
+  **Partial (2026-11-14): known `entries-read` counts.** Groups created at `$` or
+  `0` now report `entries-read` and increment it on new `XREADGROUP ... >`
+  deliveries; explicit non-zero starts, SETID and replayed groups without the
+  counter remain null. Tests cover `$`, `0`, SETID and delivery increments.
+  **Closes when:** metadata fields match the declared version or are explicitly
+  excluded, and trim/read semantics pass a differential corpus.
 
 - [ ] **C10. HyperLogLog is not Redis-interoperable.** [P1]
   The private payload uses an exact hash set then a 2^14-register sketch, not
@@ -194,13 +219,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   before bind, documented with defaults/precedence, and runtime-mutable settings
   are atomic and complete for the profile.
 
-- [ ] **C14. Transaction semantics diverge from Redis.** [P1]
+- [x] **C14. Transaction semantics diverge from Redis.** [P1]
+  **Complete (2026-11-14) for the standalone transaction contract.**
   Connection-local commands are rejected at queue time rather than executed at
   `EXEC` time. There is no rollback, replication of transactions or durable
   distributed commit; the single-process owner is the only isolation boundary.
-  **Closes when:** the supported profile documents the divergence and tests it,
-  or queue-time/EXEC-time behavior matches the declared upstream version and the
-  absence of rollback/durable commit is explicit.
+  [Transactions](transactions.md) now records the divergence explicitly and
+  names the tests: the session control-flow/runtime-error suite and the all-mode
+  `tests/blocking.rs` queue-time rejection cases. Replication, durable commit
+  and failover fencing remain under the availability/durability items and are
+  not implied by this contract.
 
 ---
 
@@ -333,18 +361,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   deadline, joins workers and reports forced termination; or the profile states
   the supervisor contract and accepted loss window.
 
-- [ ] **D8. Multi-process journal ownership is unguarded.** [P1]
-  **Partial (2026-11-05): local exclusive ownership enforced.** Startup claims
-  `<journal>.lock` with an exclusive create recording PID and kernel start time; a
-  second process on the same directory fails with a clear error, a crash-stale lock
-  is reclaimed only when the recorded process is gone or its PID was reused, and
-  clean shutdown removes the lock (`tests/journal_ownership.rs`). The lock is
-  advisory and local: shared/network filesystems are explicitly unsupported.
-  **Remaining:** no distributed lease or shared-volume guarantee; an operator must
-  keep the journal on local storage or enforce single-process access externally.
-  **Closes when:** shared-volume behavior is either implemented with a real lease
-  or the deployment profile excludes it explicitly (the current documentation says
-  unsupported).
+- [x] **D8. Multi-process journal ownership is unguarded.** [P1]
+  **Complete (2026-11-14): local ownership plus explicit profile exclusion.**
+  Startup claims `<journal>.lock` with an exclusive create recording PID and
+  kernel start time; a second process on the same directory fails with a clear
+  error, a crash-stale lock is reclaimed only when the recorded process is gone or
+  its PID was reused, and clean shutdown removes the lock
+  (`tests/journal_ownership.rs`). The [draft standalone profile](production-profile.md)
+  excludes shared/network filesystems and multi-process journal ownership, so the
+  supported deployment is one process on local storage. **Retained limitation:**
+  there is no distributed lease or shared-volume guarantee; an operator must keep
+  the journal on local storage or enforce single-process access externally.
 
 - [x] **D9. Wall-clock rollback across restart is a documented limitation.** [P1]
   **Complete (2026-11-14):** TTL deadlines are absolute Unix-epoch milliseconds
@@ -460,12 +487,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Closes when:** those controls are implemented or explicitly replaced by a
   reviewed external terminator, with rotation and failure tests.
 
-- [ ] **S6. Live deauthentication/session revocation is missing.** [P1]
-  Rotating or disabling a password affects new authentication decisions; an
-  already authenticated connection remains authenticated. There is no bounded
-  reauthentication or administrative revoke-and-close policy.
-  **Closes when:** a documented revocation policy is implemented and tested for
-  live sessions, or operators have a tested process to close affected sessions.
+- [x] **S6. Live deauthentication/session revocation is missing.** [P1]
+  **Complete (2026-11-14): documented and tested administrative revocation.**
+  `CLIENT KILL USER <name>` closes every matching authenticated session, returns
+  the number closed and skips the caller by default; ID/ADDR/LADDR/MAXAGE/TYPE
+  filters cover narrower clients. The rotation runbook now requires
+  rotate-then-revoke, and `tests/acl.rs::client_kill_user_revokes_live_sessions`
+  proves the closed session, the retained unrelated session and the reconnect
+  path. **Retained limitation:** revocation is operator-driven; changing
+  `requirepass` or an ACL entry does not automatically deauthenticate existing
+  connections, as in Redis.
 
 - [ ] **S7. Tenant isolation is absent.** [P1]
   All ACL users share one process, keyspace, memory budget and CPU. ACL rules do
@@ -485,6 +516,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   There are client/payload/frame limits and bounded output backpressure, but no
   slow-client thresholds, global connection/command budgets, per-user quotas or
   adversarial protocol fuzzing. O(N) commands can occupy the owner.
+  **Partial (2026-11-14): deterministic RESP fuzz/property corpus.**
+  `tests/protocol_fuzz.rs` now drives generated binary frames through every
+  fragmentation boundary, random byte streams under tight frame/bulk/argument
+  limits, random inline input, and multi-command pipelines. It asserts bounded
+  consumption, at-most-once execution, argument/limit bounds and no panic; every
+  case is reproducible from its seed. Slow-client thresholds, global/user
+  budgets, CPU quotas and a documented overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
   shedding behavior exists.
@@ -769,6 +807,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **V4. Fuzz, property and model-based testing are missing.** [P1]
   There is no protocol/parser fuzzing, property-based state-machine testing,
   randomized model checking or sustained adversarial input corpus.
+  **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
+  adds seeded binary-frame fragmentation, random bytes under tight limits,
+  random inline input and pipeline consumption properties; it runs in ordinary
+  CI and every failure is reproducible from its printed seed. State-machine
+  model checking, command-level differential properties and sustained
+  adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
 - [ ] **V5. Public documentation can still drift from executable behavior.** [P1]
