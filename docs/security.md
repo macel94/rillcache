@@ -266,6 +266,16 @@ describes current behavior, not a second checklist.
   mode-`0400` secret mount. Files are read at startup and by explicit `ACL LOAD`;
   later password rotation uses authenticated `CONFIG SET`, and user changes use
   `ACL SETUSER` plus `ACL SAVE`.
+- **Owner-only secret files.** `--secure-secret-files` (Unix) refuses to start
+  when a configured `--requirepass-file`, `--aclfile`, audit HMAC/keyring,
+  AOF HMAC or TLS private-key path is not a regular file with no group/other
+  permission bits, and requires a `requirepass` of at least 16 bytes. Use
+  `chmod 600` or stricter. The flag is off by default for command-line
+  compatibility; a production deployment should enable it. Generate passwords
+  and HMAC keys with at least 32 random bytes (256 bits) from a CSPRNG, supply them through files or a secret mount rather than argv, and
+  rotate with `CONFIG SET requirepass`/`ACL SETUSER` followed by an explicit
+  `CLIENT KILL USER` revocation. This is permission validation, not a secret
+  manager or automatic short-secret detection.
 - **Credential persistence is separate from data persistence.** The password is
   not written to disk and does not survive a restart unless the deployment
   supplies the flag/file again. Data persistence is opt-in append-only journaling;
