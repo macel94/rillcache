@@ -858,6 +858,51 @@ fn hash_and_string_read_misses_emit_keymiss() {
 }
 
 #[test]
+fn list_read_misses_emit_keymiss() {
+    use crate::engine::NotifyFlags;
+    let store = Store::new(128);
+    store.set_notify_flags(NotifyFlags::parse(b"Em").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let expect_miss = |key: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[
+                b"pmessage",
+                b"__keyevent@0__:*",
+                b"__keyevent@0__:keymiss",
+                key,
+            ],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"LLEN", b"missing"]), b":0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"LINDEX", b"missing", b"0"]), b"$-1\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"LRANGE", b"missing", b"0", b"1"]), b"*0\r\n");
+    expect_miss(b"missing");
+    assert_eq!(run(&store, &[b"LPOS", b"missing", b"x"]), b"$-1\r\n");
+    expect_miss(b"missing");
+
+    assert_eq!(run(&store, &[b"RPUSH", b"l", b"a", b"b"]), b":2\r\n");
+    assert!(receiver.try_recv().is_err(), "m covers only read misses");
+    assert_eq!(run(&store, &[b"LLEN", b"l"]), b":2\r\n");
+    assert_eq!(run(&store, &[b"LINDEX", b"l", b"0"]), b"$1\r\na\r\n");
+    assert_eq!(
+        run(&store, &[b"LRANGE", b"l", b"0", b"0"]),
+        b"*1\r\n$1\r\na\r\n"
+    );
+    assert_eq!(run(&store, &[b"LPOS", b"l", b"absent"]), b"$-1\r\n");
+    assert!(
+        receiver.try_recv().is_err(),
+        "existing lists are not misses"
+    );
+}
+
+#[test]
 fn replay_restores_strings_collections_streams_and_expiry() {
     let path = aof_path("roundtrip");
     let deadline = (std::time::SystemTime::now()
