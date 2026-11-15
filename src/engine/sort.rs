@@ -142,7 +142,10 @@ impl ShardExecutor {
             return;
         }
         let values = match data.entries.get(args[1]) {
-            None => None,
+            None => {
+                data.record_key_miss(args[1]);
+                None
+            }
             Some(entry) => match entry.collection.as_ref().and_then(source_values) {
                 Some(values) => Some(values),
                 None => {
