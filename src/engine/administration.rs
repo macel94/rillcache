@@ -181,6 +181,7 @@ impl ShardExecutor {
             limit: self.payload_limit(),
             policy: data.eviction,
             resident_bytes: process_memory::snapshot().map(|memory| memory.resident_bytes),
+            cgroup_memory: process_memory::cgroup_snapshot(),
         })
     }
 
@@ -191,7 +192,12 @@ impl ShardExecutor {
         };
         let percentage = memory_percentage(snapshot.payload, snapshot.limit);
         let resident = snapshot.resident_bytes;
-        let _ = write!(out, "*20\r\n");
+        let cgroup_fields = if snapshot.cgroup_memory.is_some() {
+            10
+        } else {
+            0
+        };
+        let _ = write!(out, "*{}\r\n", 20 + cgroup_fields);
         encode_bulk(Some(b"peak.allocated"), out);
         let _ = write!(out, ":{}\r\n", snapshot.peak);
         encode_bulk(Some(b"total.allocated"), out);
@@ -227,6 +233,34 @@ impl ShardExecutor {
             }),
             out,
         );
+        if let Some(cgroup) = snapshot.cgroup_memory {
+            encode_bulk(Some(b"used_memory_cgroup"), out);
+            let _ = write!(out, ":{}\r\n", cgroup.current_bytes);
+            encode_bulk(Some(b"used_memory_cgroup_human"), out);
+            encode_bulk(
+                Some(process_memory::human_bytes(cgroup.current_bytes).as_bytes()),
+                out,
+            );
+            encode_bulk(Some(b"max_memory_cgroup"), out);
+            let _ = write!(
+                out,
+                ":{}\r\n",
+                cgroup.limit_bytes.map_or(-1, |value| value as i64)
+            );
+            encode_bulk(Some(b"max_memory_cgroup_human"), out);
+            encode_bulk(
+                Some(
+                    cgroup
+                        .limit_bytes
+                        .map(process_memory::human_bytes)
+                        .unwrap_or_else(|| "unlimited".to_owned())
+                        .as_bytes(),
+                ),
+                out,
+            );
+            encode_bulk(Some(b"rillcache.cgroup.scope"), out);
+            encode_bulk(Some(b"cgroup_current_and_limit_not_enforced"), out);
+        }
     }
 
     fn memory_doctor(&self, out: &mut Vec<u8>) {
@@ -274,6 +308,7 @@ struct MemorySnapshot {
     limit: usize,
     policy: EvictionPolicy,
     resident_bytes: Option<u64>,
+    cgroup_memory: Option<process_memory::CgroupMemory>,
 }
 
 const MEMORY_SCOPE: &[u8] = b"key_and_value_bytes_not_RSS";
@@ -479,6 +514,22 @@ mod tests {
                 "missing {field:?}"
             );
         }
+        if empty_stats
+            .windows(b"used_memory_cgroup".len())
+            .any(|part| part == b"used_memory_cgroup")
+        {
+            for field in [
+                b"used_memory_cgroup_human".as_slice(),
+                b"max_memory_cgroup",
+                b"max_memory_cgroup_human",
+                b"rillcache.cgroup.scope",
+            ] {
+                assert!(
+                    empty_stats.windows(field.len()).any(|part| part == field),
+                    "missing {field:?}"
+                );
+            }
+        }
         let value = vec![b'v'; 90];
         assert_eq!(run(&store, &[b"SET", b"key", &value]), b"+OK\r\n");
         assert_eq!(run(&store, &[b"DEL", b"key"]), b":1\r\n");
@@ -489,7 +540,12 @@ mod tests {
         }
         let stats = run(&store, &[b"MEMORY", b"STATS"]);
         let text = String::from_utf8_lossy(&stats);
-        assert!(text.contains("*20\r\n"), "{text}");
+        let header = if process_memory::cgroup_snapshot().is_some() {
+            "*30\r\n"
+        } else {
+            "*20\r\n"
+        };
+        assert!(text.starts_with(header), "{text}");
         assert!(text.contains("$14\r\npeak.allocated\r\n:"), "{text}");
         assert!(text.contains("$15\r\ntotal.allocated\r\n:0\r\n"), "{text}");
         assert!(text.contains("key_and_value_bytes_not_RSS"), "{text}");
