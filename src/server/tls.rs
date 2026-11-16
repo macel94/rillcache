@@ -5,14 +5,32 @@
 //! empty because Redis clients do not use HTTP/2 or HTTP/3.
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
+use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
+use rustls::sign::CertifiedKey;
 use rustls::{RootCertStore, ServerConfig, ServerConnection, StreamOwned};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[derive(Debug)]
+struct SniResolver {
+    default: Arc<CertifiedKey>,
+    identities: HashMap<String, Arc<CertifiedKey>>,
+}
+
+impl ResolvesServerCert for SniResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        match client_hello.server_name() {
+            None => Some(Arc::clone(&self.default)),
+            Some(_) if self.identities.is_empty() => Some(Arc::clone(&self.default)),
+            Some(name) => self.identities.get(&name.to_ascii_lowercase()).cloned(),
+        }
+    }
+}
 
 pub(crate) struct TlsAcceptor {
     config: Arc<ServerConfig>,
@@ -25,6 +43,7 @@ impl TlsAcceptor {
         cert_file: &Path,
         key_file: &Path,
         client_ca_file: Option<&Path>,
+        sni_certificates: &[crate::server::TlsSniCertificate],
         handshake_timeout: Duration,
         idle_timeout: Duration,
     ) -> io::Result<Self> {
@@ -34,6 +53,31 @@ impl TlsAcceptor {
         }
         let key = read_private_key(key_file)?;
         let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let default_key = Arc::new(
+            CertifiedKey::from_der(certs, key, &provider)
+                .map_err(|error| invalid(format!("TLS certificate/key: {error}")))?,
+        );
+        let mut identities = HashMap::new();
+        for identity in sni_certificates {
+            let certs = read_certs(&identity.cert_file)?;
+            if certs.is_empty() {
+                return Err(invalid(format!(
+                    "TLS certificate file for SNI name {} contains no certificates",
+                    identity.server_name
+                )));
+            }
+            let key = read_private_key(&identity.key_file)?;
+            let certified_key = CertifiedKey::from_der(certs, key, &provider).map_err(|error| {
+                invalid(format!(
+                    "TLS certificate/key for SNI name {}: {error}",
+                    identity.server_name
+                ))
+            })?;
+            identities.insert(
+                identity.server_name.to_ascii_lowercase(),
+                Arc::new(certified_key),
+            );
+        }
         let builder = ServerConfig::builder_with_provider(provider)
             .with_protocol_versions(&[&rustls::version::TLS13])
             .map_err(|error| invalid(format!("TLS protocol configuration: {error}")))?;
@@ -55,9 +99,10 @@ impl TlsAcceptor {
                 builder.with_client_cert_verifier(verifier)
             }
         };
-        let config = builder
-            .with_single_cert(certs, key)
-            .map_err(|error| invalid(format!("TLS certificate/key: {error}")))?;
+        let config = builder.with_cert_resolver(Arc::new(SniResolver {
+            default: default_key,
+            identities,
+        }));
         Ok(Self {
             config: Arc::new(config),
             handshake_timeout,

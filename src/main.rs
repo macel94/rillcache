@@ -1,18 +1,18 @@
 #![forbid(unsafe_code)]
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use rillcache::protocol::Limits;
-use rillcache::{Config, Server};
+use rillcache::{Config, Server, TlsSniCertificate};
 
 mod config_file;
 mod healthcheck;
 
 const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
-  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC and TLS key files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
+  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC and TLS key files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-sni-cert-file NAME=PATH  Additional exact SNI certificate chain (repeatable)\n  --tls-sni-key-file NAME=PATH   Private key for the matching SNI name (repeatable)\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
 enum Options {
@@ -30,6 +30,8 @@ enum Options {
 
 fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut config = Config::default();
+    let mut sni_files: BTreeMap<String, (Option<std::path::PathBuf>, Option<std::path::PathBuf>)> =
+        BTreeMap::new();
     let mut arguments: VecDeque<String> = arguments.into_iter().collect();
     while let Some(option) = arguments.pop_front() {
         if option == "--config" || option == "-c" {
@@ -156,6 +158,8 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--tls-cert-file"
             | "--tls-key-file"
             | "--tls-client-ca-file"
+            | "--tls-sni-cert-file"
+            | "--tls-sni-key-file"
             | "--tls-handshake-timeout-ms" => {
                 let value = arguments
                     .pop_front()
@@ -347,6 +351,23 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                     "--tls-cert-file" => config.tls_cert_file = Some(value.into()),
                     "--tls-key-file" => config.tls_key_file = Some(value.into()),
                     "--tls-client-ca-file" => config.tls_client_ca_file = Some(value.into()),
+                    "--tls-sni-cert-file" | "--tls-sni-key-file" => {
+                        let (name, path) = value
+                            .split_once('=')
+                            .ok_or_else(|| format!("{option} requires NAME=PATH"))?;
+                        if name.is_empty() || path.is_empty() {
+                            return Err(format!("{option} requires a nonempty NAME=PATH"));
+                        }
+                        let files = sni_files.entry(name.to_ascii_lowercase()).or_default();
+                        let target = if option == "--tls-sni-cert-file" {
+                            &mut files.0
+                        } else {
+                            &mut files.1
+                        };
+                        if target.replace(path.into()).is_some() {
+                            return Err(format!("duplicate {option} for SNI name {name}"));
+                        }
+                    }
                     "--tls-handshake-timeout-ms" => {
                         config.tls_handshake_timeout =
                             Duration::from_millis(positive(&option, &value)? as u64)
@@ -356,6 +377,17 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             }
             _ => return Err(format!("unknown option: {option}")),
         }
+    }
+    for (server_name, (cert_file, key_file)) in sni_files {
+        let cert_file = cert_file
+            .ok_or_else(|| format!("missing --tls-sni-cert-file for SNI name {server_name}"))?;
+        let key_file = key_file
+            .ok_or_else(|| format!("missing --tls-sni-key-file for SNI name {server_name}"))?;
+        config.tls_sni_certificates.push(TlsSniCertificate {
+            server_name,
+            cert_file,
+            key_file,
+        });
     }
     Ok(Options::Run(config))
 }
@@ -473,6 +505,10 @@ mod tests {
                 "server.key",
                 "--tls-client-ca-file",
                 "ca.pem",
+                "--tls-sni-cert-file",
+                "alt.test=alternate.pem",
+                "--tls-sni-key-file",
+                "alt.test=alternate.key",
                 "--tls-handshake-timeout-ms",
                 "2500",
             ]
@@ -496,6 +532,16 @@ mod tests {
         assert_eq!(
             config.tls_client_ca_file.as_deref(),
             Some(std::path::Path::new("ca.pem"))
+        );
+        assert_eq!(config.tls_sni_certificates.len(), 1);
+        assert_eq!(config.tls_sni_certificates[0].server_name, "alt.test");
+        assert_eq!(
+            config.tls_sni_certificates[0].cert_file,
+            std::path::Path::new("alternate.pem")
+        );
+        assert_eq!(
+            config.tls_sni_certificates[0].key_file,
+            std::path::Path::new("alternate.key")
         );
         assert_eq!(config.tls_handshake_timeout, Duration::from_millis(2500));
         assert!(

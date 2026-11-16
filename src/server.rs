@@ -259,7 +259,17 @@ pub struct Config {
     pub tls_key_file: Option<PathBuf>,
     /// Optional client CA. Setting it requires client certificates.
     pub tls_client_ca_file: Option<PathBuf>,
+    /// Additional exact DNS-name certificates selected from ClientHello SNI.
+    pub tls_sni_certificates: Vec<TlsSniCertificate>,
     pub tls_handshake_timeout: Duration,
+}
+
+/// Startup-only certificate identity selected for one exact SNI DNS name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TlsSniCertificate {
+    pub server_name: String,
+    pub cert_file: PathBuf,
+    pub key_file: PathBuf,
 }
 
 impl std::fmt::Debug for Config {
@@ -310,6 +320,7 @@ impl std::fmt::Debug for Config {
             .field("tls_cert_file", &self.tls_cert_file)
             .field("tls_key_file", &self.tls_key_file)
             .field("tls_client_ca_file", &self.tls_client_ca_file)
+            .field("tls_sni_certificates", &self.tls_sni_certificates)
             .field("tls_handshake_timeout", &self.tls_handshake_timeout)
             .finish()
     }
@@ -353,9 +364,25 @@ impl Default for Config {
             tls_cert_file: None,
             tls_key_file: None,
             tls_client_ca_file: None,
+            tls_sni_certificates: Vec::new(),
             tls_handshake_timeout: Duration::from_secs(5),
         }
     }
+}
+
+fn valid_tls_server_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 253 || !name.is_ascii() {
+        return false;
+    }
+    name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.as_bytes()[0].is_ascii_alphanumeric()
+            && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
 }
 
 impl Config {
@@ -412,10 +439,28 @@ impl Config {
                 .storage_owners
                 .is_some_and(|count| !(1..=64).contains(&count))
             || self.tls_handshake_timeout.is_zero()
+            || self.tls_sni_certificates.len() > 128
+            || self.tls_sni_certificates.iter().any(|identity| {
+                !valid_tls_server_name(&identity.server_name)
+                    || identity.cert_file.as_os_str().is_empty()
+                    || identity.key_file.as_os_str().is_empty()
+            })
+            || self
+                .tls_sni_certificates
+                .iter()
+                .enumerate()
+                .any(|(index, identity)| {
+                    self.tls_sni_certificates[..index].iter().any(|previous| {
+                        previous
+                            .server_name
+                            .eq_ignore_ascii_case(&identity.server_name)
+                    })
+                })
             || (self.tls_bind_addr.is_none()
                 && (self.tls_cert_file.is_some()
                     || self.tls_key_file.is_some()
-                    || self.tls_client_ca_file.is_some()))
+                    || self.tls_client_ca_file.is_some()
+                    || !self.tls_sni_certificates.is_empty()))
             || (self.tls_bind_addr.is_some()
                 && (self.tls_cert_file.is_none() || self.tls_key_file.is_none()))
             || self
@@ -429,7 +474,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
+                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, SNI names must be unique valid DNS names with at most 128 identities, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         if self.secure_secret_files {
@@ -465,7 +510,11 @@ impl Config {
             ]
             .into_iter()
             .flatten()
-            {
+            .chain(
+                self.tls_sni_certificates
+                    .iter()
+                    .map(|identity| &identity.key_file),
+            ) {
                 let metadata = std::fs::metadata(path).map_err(|error| {
                     io::Error::new(
                         error.kind(),
@@ -645,6 +694,7 @@ impl Server {
                         .expect("validated certificate"),
                     config.tls_key_file.as_deref().expect("validated key"),
                     config.tls_client_ca_file.as_deref(),
+                    &config.tls_sni_certificates,
                     config.tls_handshake_timeout,
                     config.idle_timeout,
                 )?;
@@ -1774,6 +1824,27 @@ mod tests {
         );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(config.validate().is_ok());
+        let sni_key = path.with_extension("sni-key");
+        std::fs::write(&sni_key, b"test key").unwrap();
+        std::fs::set_permissions(&sni_key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let sni_config = Config {
+            tls_bind_addr: Some("127.0.0.1:6380".parse().unwrap()),
+            tls_cert_file: Some(path.clone()),
+            tls_key_file: Some(path.clone()),
+            tls_sni_certificates: vec![TlsSniCertificate {
+                server_name: "example.test".into(),
+                cert_file: path.clone(),
+                key_file: sni_key.clone(),
+            }],
+            secure_secret_files: true,
+            ..Config::default()
+        };
+        assert_eq!(
+            sni_config.validate().err().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        std::fs::set_permissions(&sni_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(sni_config.validate().is_ok());
         config.secure_secret_files = false;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(config.validate().is_ok(), "default stays permissive");
@@ -1793,6 +1864,7 @@ mod tests {
             ..Config::default()
         };
         assert!(long.validate().is_ok());
+        let _ = std::fs::remove_file(sni_key);
         let _ = std::fs::remove_file(path);
     }
 }

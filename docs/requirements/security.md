@@ -396,9 +396,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   and FFI-free. Mio is used transitively by Tokio for I/O readiness.
 - **R377 (ubiquitous):** Tests shall cover TLS 1.3 RESP in every execution mode,
   plaintext coexistence, TLS 1.2 rejection, absence of HTTP ALPN, required
-  client-certificate authentication and invalid configuration. Documentation shall
-  retain the absence of SNI/hot reload, OCSP/CRL, client-cert-to-ACL mapping,
-  replication TLS and any durability/HA claim.
+  client-certificate authentication, exact SNI selection and unknown-name
+  rejection, and invalid configuration. Documentation shall retain the absence
+  of certificate hot reload, OCSP/CRL, client-cert-to-ACL mapping, replication
+  TLS and any durability/HA claim.
 
 ## Remaining subcommand categories for administration and pub/sub (S117)
 
