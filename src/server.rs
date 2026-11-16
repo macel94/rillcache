@@ -259,6 +259,8 @@ pub struct Config {
     pub tls_key_file: Option<PathBuf>,
     /// Optional client CA. Setting it requires client certificates.
     pub tls_client_ca_file: Option<PathBuf>,
+    /// Optional operator-controlled generation file; changing its bounded token reloads TLS files.
+    pub tls_reload_trigger: Option<PathBuf>,
     /// Additional exact DNS-name certificates selected from ClientHello SNI.
     pub tls_sni_certificates: Vec<TlsSniCertificate>,
     pub tls_handshake_timeout: Duration,
@@ -320,6 +322,7 @@ impl std::fmt::Debug for Config {
             .field("tls_cert_file", &self.tls_cert_file)
             .field("tls_key_file", &self.tls_key_file)
             .field("tls_client_ca_file", &self.tls_client_ca_file)
+            .field("tls_reload_trigger", &self.tls_reload_trigger)
             .field("tls_sni_certificates", &self.tls_sni_certificates)
             .field("tls_handshake_timeout", &self.tls_handshake_timeout)
             .finish()
@@ -364,6 +367,7 @@ impl Default for Config {
             tls_cert_file: None,
             tls_key_file: None,
             tls_client_ca_file: None,
+            tls_reload_trigger: None,
             tls_sni_certificates: Vec::new(),
             tls_handshake_timeout: Duration::from_secs(5),
         }
@@ -460,7 +464,12 @@ impl Config {
                 && (self.tls_cert_file.is_some()
                     || self.tls_key_file.is_some()
                     || self.tls_client_ca_file.is_some()
+                    || self.tls_reload_trigger.is_some()
                     || !self.tls_sni_certificates.is_empty()))
+            || self
+                .tls_reload_trigger
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
             || (self.tls_bind_addr.is_some()
                 && (self.tls_cert_file.is_none() || self.tls_key_file.is_none()))
             || self
@@ -507,6 +516,7 @@ impl Config {
                 &self.audit_hmac_keyring_file,
                 &self.aof_hmac_key_file,
                 &self.tls_key_file,
+                &self.tls_reload_trigger,
             ]
             .into_iter()
             .flatten()
@@ -695,6 +705,7 @@ impl Server {
                     config.tls_key_file.as_deref().expect("validated key"),
                     config.tls_client_ca_file.as_deref(),
                     &config.tls_sni_certificates,
+                    config.tls_reload_trigger.as_deref(),
                     config.tls_handshake_timeout,
                     config.idle_timeout,
                 )?;
