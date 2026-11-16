@@ -93,7 +93,8 @@ visible in process arguments.
 | --- | --- |
 | Pinned `redis-cli` RESP2/RESP3/AUTH/metadata | Tested in CI |
 | `valkey-benchmark` official generator | Used by the performance gates |
-| `redis-py` / node-redis / go-redis handshake, AUTH/ACL, pipeline, pub/sub, TLS, reconnect | **Unverified** — excluded from this profile |
+| redis-py 5.2.1 RESP2/RESP3, named ACL, binary strings, pipeline/transaction, Pub/Sub, reconnect | **Partial, optional local harness** — three synchronous modes; TLS and error paths not tested; not a support commitment |
+| node-redis / go-redis; full client TLS, error and version matrix | **Unverified** — excluded from this profile |
 | Arbitrary clients issuing unsupported discovery commands | Not covered |
 
 ## Limits
