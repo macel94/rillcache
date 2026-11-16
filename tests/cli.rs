@@ -381,6 +381,141 @@ fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
 }
 
 #[test]
+fn tls_healthcheck_verifies_identity_and_supports_acl_and_journal_checks() {
+    let _fixture = LIVE_SERVER_TEST.lock().unwrap();
+    use rillcache::{Config, Server};
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let fixture = |name: &str| {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/tls")
+            .join(name)
+    };
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-probe-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let password = directory.join("password");
+    let acl = directory.join("users.acl");
+    std::fs::write(&password, b"test-only-tls-probe-secret\n").unwrap();
+    std::fs::write(&acl, b"user default on >test-only-admin-secret -@all\nuser probe on >test-only-tls-probe-secret -@all +ping +info\n").unwrap();
+    let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
+    let config = Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        appendonly: true,
+        dir: directory.clone(),
+        aclfile: Some(acl),
+        worker_threads: match mode.as_str() {
+            "0" => None,
+            _ => Some(mode.parse().unwrap()),
+        },
+        ..Config::default()
+    };
+    let server = Server::bind(config.clone()).unwrap().spawn().unwrap();
+    let address = server.tls_local_addr().unwrap().to_string();
+    let probe = |address: &str, ca: &Path, name: Option<&str>, require_aof: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+        command
+            .args([
+                "--healthcheck",
+                address,
+                "--healthcheck-user",
+                "probe",
+                "--healthcheck-password-file",
+            ])
+            .arg(&password)
+            .arg("--healthcheck-tls-ca-file")
+            .arg(ca);
+        if let Some(name) = name {
+            command.args(["--healthcheck-server-name", name]);
+        }
+        if require_aof {
+            command.arg("--healthcheck-require-aof");
+        }
+        command.output().unwrap()
+    };
+    for name in [None, Some("localhost")] {
+        for require_aof in [false, true] {
+            let output = probe(&address, &fixture("ca.crt"), name, require_aof);
+            assert!(output.status.success(), "{:?}", output.stderr);
+            assert!(output.stdout.is_empty());
+            assert!(output.stderr.is_empty());
+        }
+    }
+    for output in [
+        probe(&address, &fixture("ca.crt"), Some("wrong.example"), false),
+        probe(&address, &fixture("client.crt"), None, false),
+        probe(
+            &server.local_addr().to_string(),
+            &fixture("ca.crt"),
+            None,
+            false,
+        ),
+    ] {
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("test-only-tls-probe-secret"));
+    }
+    std::fs::write(&password, b"wrong-test-only-password").unwrap();
+    let wrong_password = probe(&address, &fixture("ca.crt"), None, false);
+    assert_eq!(wrong_password.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&wrong_password.stderr).contains("wrong-test-only-password"));
+    let invalid_ca = directory.join("invalid-ca");
+    for content in [
+        Vec::new(),
+        b"not-a-certificate".to_vec(),
+        vec![b'x'; 1024 * 1024 + 1],
+        std::fs::read(fixture("ca.crt")).unwrap().repeat(129),
+    ] {
+        std::fs::write(&invalid_ca, content).unwrap();
+        assert_eq!(
+            probe(&address, &invalid_ca, None, false).status.code(),
+            Some(2)
+        );
+    }
+    assert_eq!(
+        probe(&address, &fixture("missing.crt"), None, false)
+            .status
+            .code(),
+        Some(2)
+    );
+    assert_eq!(
+        probe(&address, &fixture("ca.crt"), Some("invalid name"), false)
+            .status
+            .code(),
+        Some(2)
+    );
+    server.shutdown().unwrap();
+
+    // No implicit downgrade or unauthenticated client-certificate workaround.
+    let mut mtls_config = config;
+    mtls_config.tls_client_ca_file = Some(fixture("ca.crt"));
+    let mtls = Server::bind(mtls_config).unwrap().spawn().unwrap();
+    std::fs::write(&password, b"test-only-tls-probe-secret\n").unwrap();
+    assert_eq!(
+        probe(
+            &mtls.tls_local_addr().unwrap().to_string(),
+            &fixture("ca.crt"),
+            None,
+            false
+        )
+        .status
+        .code(),
+        Some(1)
+    );
+    mtls.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn healthcheck_is_quiet_on_success_and_fails_for_an_unavailable_endpoint() {
     let _fixture = LIVE_SERVER_TEST.lock().unwrap();
     use rillcache::{Config, Server};

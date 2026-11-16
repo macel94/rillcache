@@ -130,10 +130,35 @@ AUTH, denied PING, missing/empty/oversized file or malformed response fails
 without printing the password or server error payload. File/argument errors exit
 2; connection, authentication and response failures exit 1. Local file I/O and OS
 scheduling are not subject to a hard real-time deadline. Restrict the mounted
-file's permissions and keep it outside the image/build context. This probe uses
-plaintext TCP: use loopback inside the container, not an untrusted network.
-TLS probes are not supported. The default image health check stays
-unauthenticated; deployments enabling AUTH must explicitly override it.
+file's permissions and keep it outside the image/build context. Without explicit
+TLS options this probe uses plaintext TCP: use loopback inside the container, not
+an untrusted network. The default image health check stays unauthenticated and
+plaintext; deployments enabling AUTH or TLS must explicitly override it.
+
+### Verified TLS probes
+
+Use an explicit read-only PEM CA bundle to probe the TLS listener:
+
+```sh
+/rillcache --healthcheck 127.0.0.1:6380 --healthcheck-tls-ca-file /run/secrets/probe-ca.crt --healthcheck-server-name localhost --healthcheck-user probe --healthcheck-password-file /run/secrets/probe-password
+```
+
+All probe options follow the numeric IP:port address, in any order, without
+duplicates. `--healthcheck-tls-ca-file` enables TLS 1.3 with the existing rustls
+implementation; it does not use system roots, skip verification or fall back to
+plaintext. The certificate chain must validate against the supplied roots and
+match the probe IP, or the explicit DNS/IP identity in `--healthcheck-server-name`.
+The name option requires TLS and changes only certificate verification/SNI, not
+the numeric connection address; it performs no DNS lookup. The CA file is bounded
+to 1 MiB and 128 certificates; missing, empty, invalid or oversized bundles fail
+before connecting. TLS handshake and every underlying socket read/write share
+the same one-second deadline with AUTH, PING and optional INFO. Authentication is
+sent only after a successful handshake. Success is silent, while trust/name,
+handshake and authentication failures exit nonzero. CA-file/argument errors exit
+2. Local certificate parsing/file I/O and OS scheduling have no hard real-time
+guarantee. Client-certificate (mTLS) probe credentials are not supported: a
+listener requiring them fails this probe rather than weakening authentication.
+TLS adds transport verification, not evidence of journal durability or recovery.
 
 ### Require reported journal health
 

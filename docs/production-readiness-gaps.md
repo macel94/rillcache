@@ -639,7 +639,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   write/rewrite statuses; missing/duplicate fields, reported errors, denied INFO
   and malformed replies fail closed. Unit fault-response and all-mode CLI tests
   cover this contract. It does not inject disk faults or prove fsync/recovery.
-  TLS, full journal readiness and operational telemetry remain open.
+  **Partial: verified TLS request-service probe.** An explicit bounded PEM CA
+  bundle enables TLS 1.3 with chain and DNS/IP identity verification before AUTH,
+  under the shared socket deadline; there is no insecure or plaintext fallback.
+  CLI tests in all worker modes cover ACL/journal probing over TLS and wrong
+  trust/name, malformed CA and client-certificate-required failures; a unit test
+  checks the silent-handshake deadline.
+  Client-certificate probes, full journal readiness and operational telemetry
+  remain open.
   **Closes when:** a redacted, documented metrics/log/health contract exists and
   is tested for overload, persistence failure, auth failure and shutdown.
 

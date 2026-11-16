@@ -132,8 +132,16 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   statuses=ok, with missing or duplicate required fields failing closed. It shall
   bound the RESP2 bulk to 16 KiB and its header to 32 bytes, share the same socket
   deadline and require INFO authorization. This checks reported journal status,
-  not disk writability, fsync, recovery, TLS or replication readiness. No external
-  runtime probe tool shall be required.
+  not disk writability, fsync, recovery or replication readiness. Optional
+  `--healthcheck-tls-ca-file PATH` shall enable verified TLS 1.3 using at most
+  1 MiB/128 PEM CA certificates, with no insecure verification mode or plaintext
+  fallback. The certificate shall match the numeric probe IP unless
+  `--healthcheck-server-name NAME` selects a valid DNS/IP identity; this option
+  shall require TLS and shall not change the numeric connection address. The
+  same socket deadline shall cover handshake and every underlying read/write,
+  and AUTH shall follow successful TLS verification. Client-certificate probe
+  authentication remains unsupported. No external runtime probe tool shall be
+  required.
 - **R75 (event-driven):** When trusted main/tag/manual publication runs, automation
   shall first pass offline checks and native amd64/arm64 container tests in all
   three worker modes, then publish only those tested images as one GHCR manifest
