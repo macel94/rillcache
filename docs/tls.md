@@ -44,10 +44,17 @@ rillcache \
   --tls-key-file /etc/rillcache/server-key.pem
 ```
 
+The configured handshake timeout is one monotonic budget across the complete
+initial TLS handshake. Every underlying socket read and write uses the remaining
+time, including rustls handshake flights and partial record I/O; handshake
+progress does not restart the budget. After successful completion, the handshake
+deadline is cleared and the ordinary idle timeout applies.
+
 After the TLS handshake, incomplete RESP plaintext is covered by the configured
 frame-assembly deadline. This does not cover a peer that trickles encrypted TLS
-records without yielding plaintext; the handshake timeout covers handshake
-progress, not that post-handshake record-only case.
+records without yielding plaintext after handshake completion; that established-
+TLS record-only case is not covered by either initial-handshake or RESP-frame
+deadline.
 
 Clients connect to the TLS port with their normal Redis TLS options, for example:
 
@@ -106,6 +113,7 @@ test keys.
 ## Tests
 
 ```sh
+cargo test --locked --offline --lib handshake_deadline_shrinks_read_and_write_budgets
 cargo test --locked --offline --test native_tls
 ```
 

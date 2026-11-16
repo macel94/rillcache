@@ -66,24 +66,31 @@ impl TlsAcceptor {
     }
 
     /// Complete the TLS handshake before returning a stream to the RESP loop.
-    pub(crate) fn accept(&self, mut socket: TcpStream) -> io::Result<Connection> {
-        socket.set_read_timeout(Some(self.handshake_timeout))?;
-        socket.set_write_timeout(Some(self.handshake_timeout))?;
+    pub(crate) fn accept(&self, socket: TcpStream) -> io::Result<Connection> {
+        let handshake_deadline = Instant::now()
+            .checked_add(self.handshake_timeout)
+            .ok_or_else(|| invalid("TLS handshake timeout is too large"))?;
+        let mut sock = DeadlineSocket {
+            stream: socket,
+            baseline_read_timeout: Some(self.handshake_timeout),
+            baseline_write_timeout: Some(self.handshake_timeout),
+            handshake_deadline: Some(handshake_deadline),
+            frame_deadline: None,
+        };
         let mut conn = ServerConnection::new(Arc::clone(&self.config))
             .map_err(|error| invalid(format!("TLS connection setup: {error}")))?;
         while conn.is_handshaking() {
-            conn.complete_io(&mut socket)?;
+            conn.complete_io(&mut sock)?;
         }
-        socket.set_read_timeout(Some(self.idle_timeout))?;
-        socket.set_write_timeout(Some(self.idle_timeout))?;
-        Ok(Connection::Tls(Box::new(StreamOwned::new(
-            conn,
-            DeadlineSocket {
-                stream: socket,
-                baseline_read_timeout: Some(self.idle_timeout),
-                frame_deadline: None,
-            },
-        ))))
+        // rustls can finish processing buffered handshake bytes without another
+        // socket operation, so completion itself must still be inside budget.
+        sock.ensure_handshake_time()?;
+        sock.baseline_read_timeout = Some(self.idle_timeout);
+        sock.baseline_write_timeout = Some(self.idle_timeout);
+        sock.handshake_deadline = None;
+        sock.stream.set_read_timeout(Some(self.idle_timeout))?;
+        sock.stream.set_write_timeout(Some(self.idle_timeout))?;
+        Ok(Connection::Tls(Box::new(StreamOwned::new(conn, sock))))
     }
 }
 
@@ -94,39 +101,84 @@ pub(crate) enum Connection {
     Tls(Box<StreamOwned<ServerConnection, DeadlineSocket>>),
 }
 
-/// Recomputes the underlying socket timeout before every TLS record read.
-/// rustls may perform several reads while assembling one record; a relative
-/// timeout set by the outer RESP loop alone can therefore be extended by trickle
-/// ciphertext. This wrapper turns the RESP frame's absolute deadline into a
-/// fresh remaining-time socket timeout for each internal read.
+/// Recomputes socket timeouts before every TLS record read/write. rustls may
+/// perform multiple underlying operations inside one call; absolute phase
+/// deadlines therefore need to be enforced here, not only by the outer loop.
 pub(crate) struct DeadlineSocket {
     stream: TcpStream,
     baseline_read_timeout: Option<Duration>,
+    baseline_write_timeout: Option<Duration>,
+    handshake_deadline: Option<Instant>,
     frame_deadline: Option<Instant>,
+}
+
+impl DeadlineSocket {
+    fn ensure_handshake_time(&self) -> io::Result<()> {
+        if self
+            .handshake_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        Ok(())
+    }
+
+    fn remaining_timeout(
+        baseline: Option<Duration>,
+        deadlines: impl Iterator<Item = Instant>,
+    ) -> io::Result<Option<Duration>> {
+        let remaining = deadlines
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .min();
+        let timeout = match (baseline, remaining) {
+            (Some(base), Some(remaining)) => Some(base.min(remaining)),
+            (Some(base), None) => Some(base),
+            (None, Some(remaining)) => Some(remaining),
+            (None, None) => None,
+        };
+        if timeout.is_some_and(|timeout| timeout.is_zero()) {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        Ok(timeout)
+    }
+
+    fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        Self::remaining_timeout(
+            self.baseline_read_timeout,
+            self.handshake_deadline
+                .into_iter()
+                .chain(self.frame_deadline),
+        )
+    }
+
+    fn write_timeout(&self) -> io::Result<Option<Duration>> {
+        Self::remaining_timeout(
+            self.baseline_write_timeout,
+            self.handshake_deadline.into_iter(),
+        )
+    }
+
+    fn check_after_handshake_io<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        self.ensure_handshake_time()?;
+        result
+    }
 }
 
 impl Read for DeadlineSocket {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let timeout = self
-            .frame_deadline
-            .map_or(self.baseline_read_timeout, |deadline| {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                Some(
-                    self.baseline_read_timeout
-                        .map_or(remaining, |baseline| baseline.min(remaining)),
-                )
-            });
-        if timeout.is_some_and(|timeout| timeout.is_zero()) {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
-        self.stream.set_read_timeout(timeout)?;
-        self.stream.read(buffer)
+        self.ensure_handshake_time()?;
+        self.stream.set_read_timeout(self.read_timeout()?)?;
+        let result = self.stream.read(buffer);
+        self.check_after_handshake_io(result)
     }
 }
 
 impl Write for DeadlineSocket {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.stream.write(buffer)
+        self.ensure_handshake_time()?;
+        self.stream.set_write_timeout(self.write_timeout()?)?;
+        let result = self.stream.write(buffer);
+        self.check_after_handshake_io(result)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -228,4 +280,35 @@ fn read_private_key(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn handshake_deadline_shrinks_read_and_write_budgets() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let socket = DeadlineSocket {
+            stream,
+            baseline_read_timeout: Some(Duration::from_secs(2)),
+            baseline_write_timeout: Some(Duration::from_secs(2)),
+            handshake_deadline: Some(deadline),
+            frame_deadline: None,
+        };
+
+        let first_read = socket.read_timeout().unwrap().unwrap();
+        let first_write = socket.write_timeout().unwrap().unwrap();
+        thread::sleep(Duration::from_millis(20));
+        let later_read = socket.read_timeout().unwrap().unwrap();
+        let later_write = socket.write_timeout().unwrap().unwrap();
+        assert!(later_read < first_read, "read budget did not shrink");
+        assert!(later_write < first_write, "write budget did not shrink");
+        drop(peer);
+    }
 }
