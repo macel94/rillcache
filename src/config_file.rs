@@ -51,6 +51,8 @@ const SUPPORTED: &[&str] = &[
     "tls-cert-file",
     "tls-key-file",
     "tls-client-ca-file",
+    "tls-sni-cert-file",
+    "tls-sni-key-file",
     "tls-handshake-timeout-ms",
 ];
 
@@ -256,6 +258,22 @@ aof-hmac-migrate no
                 "/var/lib/rillcache data",
                 "--appendonly",
                 "yes",
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_sni_identity_directives_map_to_named_cli_options() {
+        assert_eq!(
+            parse_text(
+                "tls-sni-cert-file a.test=/etc/a-chain.pem\ntls-sni-key-file a.test=/etc/a-key.pem\n"
+            )
+            .unwrap(),
+            vec![
+                "--tls-sni-cert-file",
+                "a.test=/etc/a-chain.pem",
+                "--tls-sni-key-file",
+                "a.test=/etc/a-key.pem",
             ]
         );
     }
