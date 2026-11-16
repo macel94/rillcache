@@ -6,8 +6,9 @@ path has landed and the rest of it remains gated; 4.29 has a source-pinned
 direct-iteration decision (section 2.26), 4.31 has a keyspace-stage cursor
 decision (section 2.27), 4.21 has a per-turn coalescing decision (section
 2.28), 4.22 has a ready-key wake decision (section 2.29), 4.15 has a
-copy-avoidance decision (section 2.30), and 4.25 has a reservation decision
-(section 2.31), but all remain gated; every other runtime item here is historical or
+copy-avoidance decision (section 2.30), 4.25 has a reservation decision
+(section 2.31), and 4.26 has a pooled-sampling decision (section 2.32), but all
+remain gated; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1599,7 +1600,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | TTL index and clock | latency, storage | **measured null** in a limited 8-client cohort (~110–125k/s; differences inside host spread) | no candidate; 4.9 stays closed | clean TTL cohort (4.16 row 1) | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
-| Eviction steady-state cost | storage | **measured**: P16 20,498 vs 144,365 no-eviction (−85.8%), p99 64.5 vs 8.0 ms; policy-independent; C servers ~no penalty | 4.26, admitted | AC29 on the implemented change | none (no maxmemory) |
+| Eviction steady-state cost | storage | **measured**: P16 20,498 vs 144,365 no-eviction (−85.8%), p99 64.5 vs 8.0 ms; policy-independent; C servers ~no penalty | 4.26, pooled-sampling decided (2.32) | AC29 on the implemented change | none (no maxmemory) |
 | Startup AOF replay | persistence, availability | **measured**: 0.258 s at 50k, 1.10–1.24 s at 200k vs 0.011–0.061 s for the C servers | 4.27, admitted | AC30 on the implemented change | none (startup) |
 | AOF HMAC | persistence, security | **measured**: append −10.2% P1 / −23.6% P16; 50k replay 0.21→0.75 s | accept the append cost; fold verification into 4.27 | AC30 HMAC on/off | none (persistence off) |
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
@@ -1985,6 +1986,67 @@ dependency.
 best reference and p99 no worse than 1.25×; over-limit/lying lengths reserve no
 more than the configured bound; fragmentation/truncation/malformed behavior is
 unchanged; the matched A/B shows the gain; both protected gates pass.
+
+### 2.32 2026-11-16 checkpoint: eviction still scans the whole keyspace per write
+
+The protected gate runs without `maxmemory`, so the clean results in sections
+2.26–2.31 do not exercise eviction. The retained pressure cohort (section 3.10)
+measures P16 SET at **20,498 versus 144,365 req/s without eviction (−85.8%)**,
+p99 64.5 vs 8.0 ms, and P1 at 8,339 vs 14,895; the penalty is policy-independent
+on that host (`allkeys-lru` 27.1–31.3k, `allkeys-random` 25.3–27.6k), while the
+C servers show no comparable penalty.
+
+Current source audit:
+
+- `Data::reserve` calls `evictable_bytes` when admission does not fit, which
+  iterates every entry to sum eligible bytes; each `evict_one` then counts every
+  selectable key and scans the map again to choose a best or random candidate.
+  A single admitted write can therefore perform several full keyspace scans.
+- `enforce_budget` repeats `evict_one` until the budget is met, with the same
+  scan cost per key.
+
+The C servers maintain a bounded candidate pool instead:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Sampling | scan every key to count/choose | `evictionPoolPopulate` samples `maxmemory_samples` dict entries and keeps a 16-slot best pool ([`evict.c#L134`](https://github.com/redis/redis/blob/8.10.2/src/evict.c#L134), `#L36`) | same shape ([`evict.c#L113`](https://github.com/valkey-io/valkey/blob/9.1.2/src/evict.c#L113), `#L54`) | **adapt** a bounded candidate pool |
+| Eviction loop | one scan per candidate | `performEvictions` evicts until enough bytes or a time/sample bound ([`evict.c#L532`](https://github.com/redis/redis/blob/8.10.2/src/evict.c#L532)) | same ([`evict.c#L404`](https://github.com/valkey-io/valkey/blob/9.1.2/src/evict.c#L404)) | **copy** the bounded loop |
+| Policy score | mutation recency / TTL / random index | idle/frequency/TTL score in the pool | same | keep our policy semantics |
+| Random source | deterministic `eviction_seq` over a full scan | dict random sampling | hashtable sampling | **adapt** a compact slot index |
+| Dependencies | std only | C/dict | C/hashtable | none |
+
+**Decision.** Copy the bounded pool and evict-until-target shape, but adapt the
+random sample. `std::collections::HashMap` has no random-bucket API, and
+`iter().take(N)` is biased to the same buckets across calls. Keep a compact
+owner-local slot vector of key references (with a per-entry slot or equivalent
+reverse mapping and swap-remove) so a deterministic rotating sequence can sample
+`maxmemory_samples` entries in O(samples), never O(keyspace). Reuse `Arc<[u8]>`
+key storage where possible with the 4.31 keyspace index, but do not pretend the
+two indexes are the same structure. The policy scores, `noeviction` failure,
+payload accounting, expiry/TTL ordering, WATCH/journal order and eviction events
+remain unchanged. Bound the pool to 16, the samples per pass, and the time/keys
+per `reserve`/`enforce_budget` call.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::vec::Vec`, `std::sync::Arc` and the existing `EvictionPolicy`/`Data`.
+The slot vector is derived state, rebuilt by replay/rewrite, counted by
+accounting and never persisted. A deterministic sampler is not a claim of
+uniform random distribution; document the sequence and test that repeated
+pressure does not always target the same prefix.
+
+**Risks and rejected options.** Stale slots after remove/rename/flush/replay,
+two indexes drifting, poor sample quality, over-eviction, accounting errors,
+holding the data borrow for too long and changing policy semantics are the
+failure modes. Preserve `noeviction`, volatile-only eligibility and exact
+evicted counts. Rejected: full-key scans (measured), biased `take(N)`, a new
+random-number dependency, an unsafe/stability-dependent hash-table API, and an
+unbounded eviction pass inside one write.
+
+**Acceptance.** AC29 is the measurable criterion: under continuous eviction,
+P16 SET within 25% of the no-eviction control and p99 within 2× (baseline
+−85.8%, 64.5 vs 8.0 ms), exact evicted counts and payload accounting, every
+policy and `noeviction`, no change without pressure, matched A/B and both
+protected gates.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5674,7 +5736,7 @@ than the configured bound; fragmented, truncated and malformed frames keep their
 current behavior; the matched A/B shows the gain; and both protected gates pass
 on the exact head.
 
-### 4.26 Pooled/batched eviction pass (candidate; admission measured)
+### 4.26 Pooled/batched eviction pass (candidate; pooled-sampling decision)
 
 **Mechanism.** When a write needs memory, run one bounded eviction pass that
 samples candidates into a small pool and evicts until the budget is satisfied or
@@ -5701,6 +5763,15 @@ difference. Shared-host diagnostic; a matched frozen-binary A/B is still needed.
 and changing policy semantics are the failure modes. Preserve exact accounting,
 expiry/TTL ordering, WATCH/journal order and `noeviction`; bound keys/time per
 pass; keep the existing reply when the budget cannot be met.
+
+**Decision (2026-11-16, section 2.32).** Copy the bounded 16-entry pool and
+evict-until-target/time shape, but adapt random sampling with a compact slot
+vector plus per-entry reverse mapping because `std::HashMap` has no random-bucket
+API and `take(N)` is biased. The deterministic rotating sampler is O(samples), not
+O(keyspace); share `Arc<[u8]>` key bytes with 4.31 where possible, but keep the
+derived indexes explicit. Preserve every policy, `noeviction`, accounting,
+expiry/WATCH/journal ordering and eviction events. No dependency or unsafe/FFI.
+AC29 remains the acceptance criterion.
 
 **Rejection condition.** No gain above the spread; over-eviction or accounting
 error; any policy-semantics change; any protected gate row loss.
@@ -5811,7 +5882,9 @@ needs the implementation and persistence-on A/B. The 4.22 ready-key decision
 (section 2.29) fixes the blocked-wake shape and remains the largest measured
 latency/idle-CPU candidate. The 4.15 copy-avoidance decision (section 2.30) fixes
 the large-reply shape, and the 4.25 reservation decision (section 2.31) fixes the
-large-input shape. Then the 4.25 and 4.15 implementations for large values, 4.26 for eviction, 4.45 for
+large-input shape; the 4.26 pooled-sampling decision (section 2.32) fixes the
+pressure path. Then the 4.25, 4.15 and 4.26 implementations for large values and
+memory pressure, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -9040,7 +9113,9 @@ separate roadmap.
   decided but unimplemented, section 2.29); and the persistence-on
   journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
   for the C servers (section 3.9; 4.21 has a per-turn coalescing decision but is
-  unimplemented, section 2.28). The gate runs with persistence off.
+  unimplemented, section 2.28); and eviction pressure (P16 20,498 vs 144,365
+  without eviction; 4.26 has a pooled-sampling decision but is unimplemented,
+  section 2.32). The gate runs with persistence and maxmemory off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
   within-row alternating comparison, but cross-row absolute rates are not
