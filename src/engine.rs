@@ -66,6 +66,11 @@ mod unsupported;
 mod xxh3;
 pub use acl_log::AclLogEntry;
 
+/// SHA-256 fingerprint for a verified TLS client certificate's leaf DER.
+pub(crate) fn tls_certificate_fingerprint(certificate_der: &[u8]) -> [u8; 32] {
+    sha256::digest(certificate_der)
+}
+
 /// Verify a per-line audit HMAC with a shared 16..=1024-byte key.
 pub fn verify_audit_line(key: &[u8], line: &str) -> bool {
     audit::verify_line(key, line)
@@ -487,6 +492,16 @@ impl ServerServices {
             .read()
             .map_err(|_| AuthError::Internal)?
             .verify_user(username, password)
+    }
+
+    pub(crate) fn authenticate_client_certificate_user(
+        &self,
+        username: &[u8],
+    ) -> Result<Vec<u8>, AuthError> {
+        self.auth
+            .read()
+            .map_err(|_| AuthError::Internal)?
+            .verify_client_certificate_user(username)
     }
 
     /// True when any user/rule/key restriction exists, so command authorization

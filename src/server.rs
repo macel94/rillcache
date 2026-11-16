@@ -1,5 +1,6 @@
 //! Default Unix Tokio networking, portable managed-client fallback and fixed workers.
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
@@ -259,6 +260,8 @@ pub struct Config {
     pub tls_key_file: Option<PathBuf>,
     /// Optional client CA. Setting it requires client certificates.
     pub tls_client_ca_file: Option<PathBuf>,
+    /// SHA-256 fingerprints of verified client leaf certificates mapped to ACL usernames.
+    pub tls_client_cert_users: BTreeMap<[u8; 32], Vec<u8>>,
     /// Optional operator-controlled generation file; changing its bounded token reloads TLS files.
     pub tls_reload_trigger: Option<PathBuf>,
     /// Additional exact DNS-name certificates selected from ClientHello SNI.
@@ -322,6 +325,7 @@ impl std::fmt::Debug for Config {
             .field("tls_cert_file", &self.tls_cert_file)
             .field("tls_key_file", &self.tls_key_file)
             .field("tls_client_ca_file", &self.tls_client_ca_file)
+            .field("tls_client_cert_users", &self.tls_client_cert_users)
             .field("tls_reload_trigger", &self.tls_reload_trigger)
             .field("tls_sni_certificates", &self.tls_sni_certificates)
             .field("tls_handshake_timeout", &self.tls_handshake_timeout)
@@ -367,6 +371,7 @@ impl Default for Config {
             tls_cert_file: None,
             tls_key_file: None,
             tls_client_ca_file: None,
+            tls_client_cert_users: BTreeMap::new(),
             tls_reload_trigger: None,
             tls_sni_certificates: Vec::new(),
             tls_handshake_timeout: Duration::from_secs(5),
@@ -464,12 +469,21 @@ impl Config {
                 && (self.tls_cert_file.is_some()
                     || self.tls_key_file.is_some()
                     || self.tls_client_ca_file.is_some()
+                    || !self.tls_client_cert_users.is_empty()
                     || self.tls_reload_trigger.is_some()
                     || !self.tls_sni_certificates.is_empty()))
             || self
                 .tls_reload_trigger
                 .as_ref()
                 .is_some_and(|path| path.as_os_str().is_empty())
+            || (!self.tls_client_cert_users.is_empty() && self.tls_client_ca_file.is_none())
+            || self.tls_client_cert_users.values().any(|name| {
+                name.is_empty()
+                    || name.len() > 128
+                    || !name
+                        .iter()
+                        .all(|byte| (b'!'..=b'~').contains(byte) && *byte != b'|')
+            })
             || (self.tls_bind_addr.is_some()
                 && (self.tls_cert_file.is_none() || self.tls_key_file.is_none()))
             || self
@@ -483,7 +497,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, SNI names must be unique valid DNS names with at most 128 identities, and the journal needs a basename without path separators in a nonempty directory",
+                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, client-certificate ACL mappings require an mTLS CA and valid enabled ACL users, SNI names must be unique valid DNS names with at most 128 identities, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         if self.secure_secret_files {
@@ -656,6 +670,16 @@ impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
         config.validate()?;
         let auth = config.load_auth()?;
+        if config
+            .tls_client_cert_users
+            .values()
+            .any(|username| !auth.has_enabled_user(username))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS client certificate mapping must reference enabled ACL users",
+            ));
+        }
         let audit_hmac_key = config.load_audit_hmac_key()?;
         let aof_hmac_key = config.load_aof_hmac_key()?;
         let mut store = if config.appendonly {
@@ -697,18 +721,19 @@ impl Server {
         listener.set_nonblocking(true)?;
         let (tls_listener, tls_acceptor) = match config.tls_bind_addr {
             Some(addr) => {
-                let acceptor = tls::TlsAcceptor::from_files(
-                    config
+                let acceptor = tls::TlsAcceptor::from_files(tls::TlsSettings {
+                    cert_file: config
                         .tls_cert_file
                         .as_deref()
                         .expect("validated certificate"),
-                    config.tls_key_file.as_deref().expect("validated key"),
-                    config.tls_client_ca_file.as_deref(),
-                    &config.tls_sni_certificates,
-                    config.tls_reload_trigger.as_deref(),
-                    config.tls_handshake_timeout,
-                    config.idle_timeout,
-                )?;
+                    key_file: config.tls_key_file.as_deref().expect("validated key"),
+                    client_ca_file: config.tls_client_ca_file.as_deref(),
+                    sni_certificates: &config.tls_sni_certificates,
+                    reload_trigger: config.tls_reload_trigger.as_deref(),
+                    client_cert_users: &config.tls_client_cert_users,
+                    handshake_timeout: config.tls_handshake_timeout,
+                    idle_timeout: config.idle_timeout,
+                })?;
                 let listener = TcpListener::bind(addr)?;
                 listener.set_nonblocking(true)?;
                 (Some(listener), Some(Arc::new(acceptor)))
@@ -1049,7 +1074,7 @@ fn serve_tls(
                 .name("rillcache-tls-client".into())
                 .stack_size(256 * 1024)
                 .spawn(move || {
-                    let mut connection = match acceptor.accept(stream) {
+                    let (mut connection, mapped_user) = match acceptor.accept(stream) {
                         Ok(connection) => connection,
                         Err(_) => {
                             store.pubsub_remove_client(client_id);
@@ -1057,6 +1082,16 @@ fn serve_tls(
                             return;
                         }
                     };
+                    if let Some(username) = mapped_user {
+                        match store.authenticate_client_certificate_user(&username) {
+                            Ok(canonical) => session.set_tls_client_user(canonical),
+                            Err(_) => {
+                                store.pubsub_remove_client(client_id);
+                                store.unregister_client(client_id);
+                                return;
+                            }
+                        }
+                    }
                     let context = ClientContext {
                         limits,
                         idle_timeout,

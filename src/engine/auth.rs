@@ -524,6 +524,23 @@ impl Auth {
         })
     }
 
+    pub(crate) fn has_enabled_user(&self, name: &[u8]) -> bool {
+        self.lookup_name(name)
+            .and_then(|canonical| self.users.get(&canonical))
+            .is_some_and(|user| user.enabled)
+    }
+
+    pub(crate) fn verify_client_certificate_user(&self, name: &[u8]) -> Result<Vec<u8>, AuthError> {
+        let Some(canonical) = self.lookup_name(name) else {
+            return Err(AuthError::WrongPassword);
+        };
+        self.users
+            .get(&canonical)
+            .filter(|user| user.enabled)
+            .map(|_| canonical)
+            .ok_or(AuthError::WrongPassword)
+    }
+
     fn lookup_name(&self, name: &[u8]) -> Option<Vec<u8>> {
         if let Some((key, _)) = self.users.get_key_value(name) {
             return Some(key.clone());

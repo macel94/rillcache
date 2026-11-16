@@ -35,6 +35,7 @@ remains `unsafe_code = "forbid"`.
 | `--tls-cert-file PATH` | PEM server certificate followed by intermediates |
 | `--tls-key-file PATH` | Unencrypted PEM private key |
 | `--tls-client-ca-file PATH` | Optional client CA; enables required mTLS |
+| `--tls-client-cert-user SHA256=USER` | Repeatable SHA-256 leaf-certificate fingerprint to ACL username mapping; requires the client CA |
 | `--tls-reload-trigger PATH` | Optional operator-controlled reload token file |
 | `--tls-sni-cert-file NAME=PATH` | Repeatable exact SNI DNS name and PEM certificate chain |
 | `--tls-sni-key-file NAME=PATH` | Repeatable matching SNI DNS name and PEM private key |
@@ -89,9 +90,19 @@ rillcache --tls-bind 0.0.0.0:6380 \
 ```
 
 With a client CA configured, every TLS client must present a certificate that
-chains to it. A successful certificate handshake is **not** the same as Rillcache
-authentication: continue using `AUTH`/ACL rules after connecting. Certificate
-identity is not mapped automatically to an ACL user.
+chains to it. To map certificates to ACL identities, add one or more
+`--tls-client-cert-user SHA256=USER` entries. The 64-hex-digit fingerprint is
+SHA-256 over the leaf certificate's DER bytes (for example, compute it with
+`openssl x509 -in client.pem -outform DER | sha256sum`). The mapped ACL user must
+be enabled at startup. A verified but unmapped certificate is rejected before
+RESP commands are served. The mapped user is authenticated for the connection,
+and all its ACL command/key/channel restrictions still apply. `RESET` returns
+to the certificate-mapped identity; `AUTH` may explicitly switch users.
+
+Fingerprint mappings are startup configuration and are not changed by the TLS
+file reload trigger. When replacing a client certificate, update its mapping
+and restart the process; the reload trigger rotates server identities and the
+client-CA verifier only.
 
 ## Development certificate
 
@@ -132,8 +143,9 @@ test keys.
   continue using the last valid identities while a bad generation is present.
   Verify the served identities after rotating. Reload is process-local, not a
   distributed rollout or readiness guarantee. With `--secure-secret-files`, the
-  trigger must also be owner-only (for example, mode 0600). OCSP/CRL and
-  client-certificate-to-ACL mapping remain absent.
+  trigger must also be owner-only (for example, mode 0600). OCSP/CRL remain
+  absent; certificate-to-ACL mappings require explicit leaf fingerprints and
+  are startup-only.
 - There is no ALPN or PROXY protocol.
 - TLS connections use the per-client blocking worker path. The fixed
   worker-pool setting continues to govern plaintext connections; TLS connections
@@ -151,4 +163,5 @@ cargo test --locked --offline --test native_tls
 The tests cover TLS 1.3 RESP in all execution modes, plaintext coexistence, TLS
 1.2 rejection, absent HTTP ALPN, required client certificates, exact SNI
 certificate selection with and without mTLS, unknown-name handshake rejection,
-atomic certificate rotation and invalid replacement retention.
+atomic certificate rotation and invalid replacement retention, and verified
+client-certificate-to-ACL mapping with unmapped-certificate rejection.

@@ -389,17 +389,20 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   and verify client certificates. It shall enforce positive handshake bounds and
   shared client admission, and join TLS workers on shutdown.
 - **R376 (unwanted behavior):** Missing/invalid certificate material, invalid CA
-  bundles, a TLS listener on the plaintext address, non-positive handshake
-  timeouts or TLS files without a listener shall fail startup with a bounded error.
+  bundles, client-certificate mappings without a CA or to a disabled/missing ACL
+  user, a TLS listener on the plaintext address, non-positive handshake timeouts
+  or TLS files without a listener shall fail startup with a bounded error.
   Only the reviewed rustls, Tokio and `core_affinity` dependency graphs, with
   required transitive crates, shall be allowed; project code remains unsafe-free
   and FFI-free. Mio is used transitively by Tokio for I/O readiness.
 - **R377 (ubiquitous):** Tests shall cover TLS 1.3 RESP in every execution mode,
   plaintext coexistence, TLS 1.2 rejection, absence of HTTP ALPN, required
   client-certificate authentication, exact SNI selection and unknown-name
-  rejection, atomic certificate rotation and invalid-replacement retention, and
-  invalid configuration. Documentation shall retain the absence of OCSP/CRL,
-  client-cert-to-ACL mapping, replication TLS and any durability/HA claim.
+  rejection, atomic certificate rotation and invalid-replacement retention,
+  fingerprint-based verified client-certificate-to-ACL mapping, rejection of
+  unmapped certificates and reset identity retention, and invalid configuration.
+  Documentation shall retain the absence of OCSP/CRL, replication TLS and any
+  durability/HA claim.
 
 ## Remaining subcommand categories for administration and pub/sub (S117)
 

@@ -51,6 +51,7 @@ const SUPPORTED: &[&str] = &[
     "tls-cert-file",
     "tls-key-file",
     "tls-client-ca-file",
+    "tls-client-cert-user",
     "tls-reload-trigger",
     "tls-sni-cert-file",
     "tls-sni-key-file",
@@ -276,6 +277,15 @@ aof-hmac-migrate no
                 "--tls-sni-key-file",
                 "a.test=/etc/a-key.pem",
             ]
+        );
+    }
+
+    #[test]
+    fn tls_client_certificate_mapping_directive_maps_to_cli_option() {
+        let mapping = format!("{}=reader", "ab".repeat(32));
+        assert_eq!(
+            parse_text(&format!("tls-client-cert-user {mapping}")).unwrap(),
+            vec!["--tls-client-cert-user", mapping.as_str()]
         );
     }
 

@@ -627,6 +627,113 @@ fn tls12_is_rejected_and_client_certificates_can_be_required() {
 }
 
 #[test]
+fn verified_client_certificate_maps_to_acl_user_without_password_and_survives_reset() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-acl-map-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let acl = directory.join("users.acl");
+    std::fs::write(
+        &acl,
+        b"user default on -@all\nuser cert-reader on nopass ~* &* +@all -@write\n",
+    )
+    .unwrap();
+    let fingerprint = [
+        0xc2, 0x51, 0x50, 0xac, 0x12, 0x67, 0xbf, 0x09, 0xe7, 0x54, 0xf1, 0xc1, 0xcc, 0xbd, 0x78,
+        0x3c, 0x6a, 0x49, 0xaa, 0xaa, 0xb4, 0xc6, 0x6f, 0xe1, 0xf0, 0xb2, 0xe2, 0x17, 0x8b, 0xdd,
+        0x8e, 0x0c,
+    ];
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_client_ca_file: Some(fixture("ca.crt")),
+        tls_client_cert_users: std::collections::BTreeMap::from([(
+            fingerprint,
+            b"cert-reader".to_vec(),
+        )]),
+        aclfile: Some(acl),
+        idle_timeout: Duration::from_secs(30),
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+
+    let mut stream = connect(&server, true);
+    ping(&mut stream);
+    stream
+        .write_all(b"*3\r\n$3\r\nSET\r\n$8\r\napp:key1\r\n$5\r\nvalue\r\n")
+        .unwrap();
+    let denied = b"-NOPERM this user has no permissions to run the 'set' command\r\n";
+    let mut denial = vec![0; denied.len()];
+    stream.read_exact(&mut denial).unwrap();
+    assert_eq!(denial, denied);
+    stream
+        .write_all(b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n")
+        .unwrap();
+    let mut identity = [0u8; 18];
+    stream.read_exact(&mut identity).unwrap();
+    assert_eq!(&identity, b"$11\r\ncert-reader\r\n");
+
+    stream.write_all(b"*1\r\n$5\r\nRESET\r\n").unwrap();
+    let mut reset_reply = [0u8; 8];
+    stream.read_exact(&mut reset_reply).unwrap();
+    assert_eq!(&reset_reply, b"+RESET\r\n");
+    stream
+        .write_all(b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n")
+        .unwrap();
+    stream.read_exact(&mut identity).unwrap();
+    assert_eq!(&identity, b"$11\r\ncert-reader\r\n");
+
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn valid_but_unmapped_client_certificate_is_rejected_and_mapping_requires_mtls_and_enabled_user() {
+    let acl = std::env::temp_dir().join(format!(
+        "rillcache-tls-acl-map-invalid-{}-{:?}.acl",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(
+        &acl,
+        b"user default on -@all\nuser cert-reader on nopass ~* &* +@all\n",
+    )
+    .unwrap();
+    let mapping = std::collections::BTreeMap::from([([0u8; 32], b"cert-reader".to_vec())]);
+    let base = Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_client_ca_file: Some(fixture("ca.crt")),
+        tls_client_cert_users: mapping.clone(),
+        aclfile: Some(acl.clone()),
+        ..Config::default()
+    };
+    let server = Server::bind(base.clone()).unwrap().spawn().unwrap();
+    let mut stream = connect(&server, true);
+    let request = stream.write_all(b"*1\r\n$4\r\nPING\r\n");
+    let mut reply = [0u8; 7];
+    assert!(request.is_err() || stream.read_exact(&mut reply).is_err());
+    server.shutdown().unwrap();
+
+    let mut no_mtls = base.clone();
+    no_mtls.tls_client_ca_file = None;
+    assert!(Server::bind(no_mtls).is_err());
+    let mut missing_user = base;
+    missing_user.tls_client_cert_users =
+        std::collections::BTreeMap::from([([0u8; 32], b"missing-user".to_vec())]);
+    assert!(Server::bind(missing_user).is_err());
+    std::fs::remove_file(acl).unwrap();
+}
+
+#[test]
 fn invalid_tls_configuration_fails_before_listening() {
     let base = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),

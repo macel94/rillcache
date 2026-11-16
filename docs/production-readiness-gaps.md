@@ -520,10 +520,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   TLS 1.3 is available with exact-name SNI selection and bounded operator-
   triggered certificate rotation. Reload publishes the default and all SNI
   identities atomically; failures retain the last valid generation and existing
-  connections keep their TLS snapshots. OCSP/CRL, client-certificate-to-ACL
-  mapping, operator rotation drills and independent TLS interoperability/security
-  review remain open. Unknown SNI names are rejected when SNI mappings are
-  configured; no production-readiness claim is made.
+  connections keep their TLS snapshots. Verified client certificates can map
+  by exact leaf SHA-256 fingerprint to an enabled ACL user; unmapped certificates
+  are rejected and the mapped user's ACL remains enforced. Fingerprint mappings
+  are startup-only. OCSP/CRL, operator rotation drills and independent TLS
+  interoperability/security review remain open. Unknown SNI names are rejected
+  when SNI mappings are configured; no production-readiness claim is made.
   **Closes when:** remaining controls are implemented or explicitly replaced by
   a reviewed external terminator, with rotation and failure tests.
 

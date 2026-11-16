@@ -36,12 +36,24 @@ impl ResolvesServerCert for SniResolver {
 const MAX_TLS_FILE_BYTES: usize = 1024 * 1024;
 const MAX_RELOAD_TOKEN_BYTES: usize = 64;
 
+pub(crate) struct TlsSettings<'a> {
+    pub(crate) cert_file: &'a Path,
+    pub(crate) key_file: &'a Path,
+    pub(crate) client_ca_file: Option<&'a Path>,
+    pub(crate) sni_certificates: &'a [crate::server::TlsSniCertificate],
+    pub(crate) reload_trigger: Option<&'a Path>,
+    pub(crate) client_cert_users: &'a std::collections::BTreeMap<[u8; 32], Vec<u8>>,
+    pub(crate) handshake_timeout: Duration,
+    pub(crate) idle_timeout: Duration,
+}
+
 pub(crate) struct TlsAcceptor {
     config: RwLock<Arc<ServerConfig>>,
     cert_file: PathBuf,
     key_file: PathBuf,
     client_ca_file: Option<PathBuf>,
     sni_certificates: Vec<crate::server::TlsSniCertificate>,
+    client_cert_users: std::collections::BTreeMap<[u8; 32], Vec<u8>>,
     reload_trigger: Option<PathBuf>,
     reload_token: Mutex<Option<Vec<u8>>>,
     reload_error_logged: AtomicBool,
@@ -50,28 +62,26 @@ pub(crate) struct TlsAcceptor {
 }
 
 impl TlsAcceptor {
-    pub(crate) fn from_files(
-        cert_file: &Path,
-        key_file: &Path,
-        client_ca_file: Option<&Path>,
-        sni_certificates: &[crate::server::TlsSniCertificate],
-        reload_trigger: Option<&Path>,
-        handshake_timeout: Duration,
-        idle_timeout: Duration,
-    ) -> io::Result<Self> {
-        let config = Self::build_config(cert_file, key_file, client_ca_file, sni_certificates)?;
-        let reload_token = reload_trigger.map(read_reload_token).transpose()?;
+    pub(crate) fn from_files(settings: TlsSettings<'_>) -> io::Result<Self> {
+        let config = Self::build_config(
+            settings.cert_file,
+            settings.key_file,
+            settings.client_ca_file,
+            settings.sni_certificates,
+        )?;
+        let reload_token = settings.reload_trigger.map(read_reload_token).transpose()?;
         Ok(Self {
             config: RwLock::new(config),
-            cert_file: cert_file.to_owned(),
-            key_file: key_file.to_owned(),
-            client_ca_file: client_ca_file.map(Path::to_owned),
-            sni_certificates: sni_certificates.to_vec(),
-            reload_trigger: reload_trigger.map(Path::to_owned),
+            cert_file: settings.cert_file.to_owned(),
+            key_file: settings.key_file.to_owned(),
+            client_ca_file: settings.client_ca_file.map(Path::to_owned),
+            sni_certificates: settings.sni_certificates.to_vec(),
+            client_cert_users: settings.client_cert_users.clone(),
+            reload_trigger: settings.reload_trigger.map(Path::to_owned),
             reload_token: Mutex::new(reload_token),
             reload_error_logged: AtomicBool::new(false),
-            handshake_timeout,
-            idle_timeout,
+            handshake_timeout: settings.handshake_timeout,
+            idle_timeout: settings.idle_timeout,
         })
     }
 
@@ -188,7 +198,7 @@ impl TlsAcceptor {
     }
 
     /// Complete the TLS handshake before returning a stream to the RESP loop.
-    pub(crate) fn accept(&self, socket: TcpStream) -> io::Result<Connection> {
+    pub(crate) fn accept(&self, socket: TcpStream) -> io::Result<(Connection, Option<Vec<u8>>)> {
         self.refresh_if_requested();
         let handshake_deadline = Instant::now()
             .checked_add(self.handshake_timeout)
@@ -215,6 +225,26 @@ impl TlsAcceptor {
         // rustls can finish processing buffered handshake bytes without another
         // socket operation, so completion itself must still be inside budget.
         sock.ensure_handshake_time()?;
+        let client_user = if self.client_cert_users.is_empty() {
+            None
+        } else {
+            let certificate = conn
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .ok_or_else(|| invalid("TLS client certificate is required for ACL mapping"))?;
+            let fingerprint = crate::engine::tls_certificate_fingerprint(certificate.as_ref());
+            Some(
+                self.client_cert_users
+                    .get(&fingerprint)
+                    .cloned()
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "TLS client certificate has no ACL user mapping",
+                        )
+                    })?,
+            )
+        };
         sock.baseline_read_timeout = Some(self.idle_timeout);
         sock.baseline_write_timeout = Some(self.idle_timeout);
         sock.handshake_deadline = None;
@@ -222,7 +252,10 @@ impl TlsAcceptor {
         sock.reset_plaintext_idle_deadline();
         sock.stream.set_read_timeout(Some(self.idle_timeout))?;
         sock.stream.set_write_timeout(Some(self.idle_timeout))?;
-        Ok(Connection::Tls(Box::new(StreamOwned::new(conn, sock))))
+        Ok((
+            Connection::Tls(Box::new(StreamOwned::new(conn, sock))),
+            client_user,
+        ))
     }
 }
 
