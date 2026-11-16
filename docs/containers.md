@@ -132,9 +132,35 @@ without printing the password or server error payload. File/argument errors exit
 scheduling are not subject to a hard real-time deadline. Restrict the mounted
 file's permissions and keep it outside the image/build context. This probe uses
 plaintext TCP: use loopback inside the container, not an untrusted network.
-TLS probes and persistence readiness are not supported by this option.
-The default image health check stays unauthenticated; deployments enabling AUTH
-must explicitly override it.
+TLS probes are not supported. The default image health check stays
+unauthenticated; deployments enabling AUTH must explicitly override it.
+
+### Require reported journal health
+
+Append `--healthcheck-require-aof` after the address to additionally query
+`INFO persistence` and require exactly one of each of these fields:
+
+- `loading:0`
+- `aof_enabled:1`
+- `aof_last_write_status:ok`
+- `aof_last_bgrewrite_status:ok`
+
+```sh
+/rillcache --healthcheck 127.0.0.1:6379 --healthcheck-require-aof --healthcheck-user probe --healthcheck-password-file /run/secrets/probe-password
+```
+
+This form needs `+info` as well as `+ping`; ordinary PING-only probes need no new
+permission. AUTH, PING and INFO share the same socket deadline. The INFO reply
+must be a RESP2 bulk no larger than 16 KiB with a header no larger than 32 bytes.
+Disabled persistence, reported errors, missing/duplicate required fields, denied
+INFO, malformed/truncated/oversized replies and timeouts fail the probe without
+reflecting server payloads. Other INFO fields are permitted. A rewrite in
+progress is not itself a failure, but a reported failed last rewrite makes this
+conservative probe unhealthy even if the live journal can still accept writes. This is a conservative
+**reported-status** check only: it performs no write or fsync, cannot discover an
+unreported disk fault, and does not prove recovery, backup validity or an RPO/RTO.
+The default container probe does not require a journal; opt in explicitly only
+for deployments that expect persistence.
 
 ## Kubernetes
 
