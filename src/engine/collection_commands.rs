@@ -1838,6 +1838,7 @@ impl ShardExecutor {
         let now = self.clock.now_ms().max(0);
         data.expire_key(args[1], now);
         let Some(entry) = data.entries.get(args[1]) else {
+            data.record_key_miss(args[1]);
             array(fields.len(), out);
             for _ in fields {
                 integer(-2, out);

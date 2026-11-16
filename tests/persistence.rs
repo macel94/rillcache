@@ -23,7 +23,9 @@ fn temp_dir(label: &str) -> PathBuf {
 /// maintenance tick, bounded and without a fixed readiness sleep.
 fn wait_for_rewrite(server: &ServerHandle) {
     let mut stream = connect(server);
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    // The rewrite is synchronous and took ~13 s on the shared VM even in
+    // isolation; a 15 s deadline races ordinary suite load.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
         let info = call(&mut stream, &[b"INFO", b"persistence"]);
         let text = String::from_utf8_lossy(&info);

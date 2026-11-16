@@ -296,6 +296,9 @@ impl ShardExecutor {
             return true;
         }
         if !needs_write {
+            if !data.entries.contains_key(key) {
+                data.record_key_miss(key);
+            }
             let bytes = data
                 .entries
                 .get(key)

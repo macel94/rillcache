@@ -87,20 +87,29 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(args[2], now);
+        let encoding_subcommand = subcommand.eq_ignore_ascii_case(b"ENCODING");
+        let refcount_subcommand = subcommand.eq_ignore_ascii_case(b"REFCOUNT");
+        if !encoding_subcommand && !refcount_subcommand {
+            // IDLETIME/FREQ report a capability error and unknown subcommands a
+            // syntax error before Redis would consult the keyspace.
+            if subcommand.eq_ignore_ascii_case(b"IDLETIME") {
+                out.extend_from_slice(IDLETIME_ERROR);
+            } else if subcommand.eq_ignore_ascii_case(b"FREQ") {
+                out.extend_from_slice(FREQ_ERROR);
+            } else {
+                object_syntax_error(subcommand, out);
+            }
+            return;
+        }
         let Some(entry) = data.entries.get(args[2]) else {
+            data.record_key_miss(args[2]);
             encode_bulk(None, out);
             return;
         };
-        if subcommand.eq_ignore_ascii_case(b"ENCODING") {
+        if encoding_subcommand {
             encode_bulk(Some(encoding(entry)), out);
-        } else if subcommand.eq_ignore_ascii_case(b"REFCOUNT") {
-            super::integer(1, out);
-        } else if subcommand.eq_ignore_ascii_case(b"IDLETIME") {
-            out.extend_from_slice(IDLETIME_ERROR);
-        } else if subcommand.eq_ignore_ascii_case(b"FREQ") {
-            out.extend_from_slice(FREQ_ERROR);
         } else {
-            object_syntax_error(subcommand, out);
+            super::integer(1, out);
         }
     }
 }
