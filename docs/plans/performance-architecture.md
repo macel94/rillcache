@@ -9,7 +9,8 @@ decision (section 2.27), 4.21 has a per-turn coalescing decision (section
 copy-avoidance decision (section 2.30), 4.25 has a reservation decision
 (section 2.31), 4.26 has a pooled-sampling decision (section 2.32), and 4.30
 has an ordered-index decision (section 2.33), and 4.23 has a bounded-
-materialisation decision (section 2.34), but all remain gated; every other runtime item here is historical or
+materialisation decision (section 2.34), and 4.27 has a single-pass replay
+decision (section 2.35), but all remain gated; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1602,7 +1603,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | TTL index and clock | latency, storage | **measured null** in a limited 8-client cohort (~110–125k/s; differences inside host spread) | no candidate; 4.9 stays closed | clean TTL cohort (4.16 row 1) | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
 | Eviction steady-state cost | storage | **measured**: P16 20,498 vs 144,365 no-eviction (−85.8%), p99 64.5 vs 8.0 ms; policy-independent; C servers ~no penalty | 4.26, pooled-sampling decided (2.32) | AC29 on the implemented change | none (no maxmemory) |
-| Startup AOF replay | persistence, availability | **measured**: 0.258 s at 50k, 1.10–1.24 s at 200k vs 0.011–0.061 s for the C servers | 4.27, admitted | AC30 on the implemented change | none (startup) |
+| Startup AOF replay | persistence, availability | **measured**: 0.258 s at 50k, 1.10–1.24 s at 200k vs 0.011–0.061 s for the C servers | 4.27, single-pass decided (2.35) | AC30 on the implemented change | none (startup) |
 | AOF HMAC | persistence, security | **measured**: append −10.2% P1 / −23.6% P16; 50k replay 0.21→0.75 s | accept the append cost; fold verification into 4.27 | AC30 HMAC on/off | none (persistence off) |
 | Duplicate key and value encoding | storage (memory) | source; no RSS cohort | defer | TTL/eviction RSS (AC24) | none |
 | Incremental keyspace rehash | storage | bound at 1024 keys; local 262k growth attempt inconclusive (host-bound max 371 ms) | deferred 4.18 | clean large-keyspace cohort | none |
@@ -2167,6 +2168,64 @@ chain, absolute TTLs, `INFO persistence` phases, kill/replay and joined shutdown
 Rejected: POSIX fork/COW, a background thread with a second live `Data` copy,
 unbounded key materialisation, and installing a snapshot before reconciliation
 finishes. AC26 remains the acceptance criterion.
+
+### 2.35 2026-11-16 checkpoint: replay still parses the journal more than once
+
+The protected gate starts from a fresh process, so the clean results in sections
+2.26–2.34 do not exercise startup replay. The retained replay cohort (section
+3.15) measures 50k keys at **0.258 s** and 200k at **1.10–1.24 s**, versus Redis
+0.011–0.043 and Valkey 0.051–0.061 s; with AOF HMAC on, 50k replay is **0.75 s**
+versus 0.21 s. The 200k DBSIZE is exact, so this is a load-time cost, not lost
+state.
+
+Current source audit:
+
+- `Journal::replay` calls `validate_checksums`, then `validate_authentication`,
+  then seeks to zero and parses/executes the whole file again. Each pass parses
+  every transaction; the execution pass also runs normal `execute_command`,
+  including observers/WATCH bookkeeping and lifecycle work that a load cannot
+  need.
+- Checksums, HMAC chaining and the torn-tail policy are currently spread across
+  those passes rather than verified once at the transaction boundary that applies
+  the state.
+
+The C servers stream one file and apply each command to a fake client:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Parse passes | checksum + auth + replay | one read/apply pass (`aof.c#L1810`) | one read/apply pass (`aof.c#L1526`) | **adapt** one authenticated parse/apply pass |
+| Apply client | normal executors | fake AOF client | fake AOF client | keep direct loader; no client allocation |
+| Checksum/HMAC | separate validation passes | streamed at record boundary | streamed at record boundary | merge into the replay boundary |
+| Tail policy | truncate tainted tail | `valid_up_to` | same | keep before serving |
+| Observers | normal command path | load mode | load mode | **copy** the load-mode skip |
+
+**Decision.** Adapt a single authenticated parse-and-apply pass. Verify each
+transaction's CRC/HMAC at the frame boundary, then immediately apply that
+transaction; never apply a record that failed verification, never skip a record
+that passed, and preserve the existing torn-tail truncation and mid-file
+corruption failure. Add an explicit load mode to the replay executor that skips
+WATCH-version churn, journal re-append, keyspace notifications publicity and
+observability counters, while preserving absolute TTLs, payload accounting,
+stream consumer/PEL state, HMAC chain state and `noeviction` semantics. Do not
+copy the C fake-client allocation; our `ShardExecutor` already has a direct
+loader path.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+the existing parser, SHA-256/HMAC/CRC functions and `ShardExecutor` load path.
+The loader is not a second file format; it only removes duplicate parsing and
+observer work.
+
+**Risks and rejected options.** Any corruption/tail policy change, missed/extra
+record, absolute-TTL drift, accounting mismatch, broken HMAC chain or skipped
+externally visible state is a failure. The load mode must not hide a real
+command error or convert it into partial state. Rejected: the current multiple
+full passes, skipping checksum/HMAC verification for speed, loading with the
+normal client observer path, and any new dependency.
+
+**Acceptance.** AC30 is the measurable criterion: 200k time-to-PING ≤0.3 s and
+50k ≤0.08 s; exact DBSIZE/payload/TTLs; corrupt/truncated tails never served;
+SIGKILL/replay, HMAC on/off, stream consumer/PEL, both protected gates; no
+dependency.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5912,7 +5971,7 @@ exact; every policy (`allkeys`/`volatile` × `lru`/`random`/`ttl`) and
 is not under pressure; the matched A/B shall show the gain; and both protected
 gates shall pass on the exact head.
 
-### 4.27 Single-pass replay fast path (candidate; admission measured)
+### 4.27 Single-pass replay fast path (candidate; single-pass decision)
 
 **Mechanism.** Merge checksum validation into the replay parse so each
 transaction is checked once and applied once, and run the command loader in a
@@ -5943,6 +6002,14 @@ serving; HMAC verification must stay intact; expiry must remain absolute (not
 re-relative); accounting, WATCH versions after load, streams state and
 `noeviction` semantics must match. Do not skip a check that changes externally
 visible state.
+
+**Decision (2026-11-16, section 2.35).** Adapt one authenticated parse/apply
+pass: verify each transaction's CRC/HMAC at its frame boundary and apply it
+immediately, preserving torn-tail truncation and mid-file failure. Add a load
+mode that skips WATCH/version churn, journal re-append, notification publicity
+and observability counters while keeping TTLs, accounting, stream PEL state,
+HMAC chaining and `noeviction`. Do not copy the C fake-client allocation or skip
+verification. No dependency is added; AC30 remains the acceptance criterion.
 
 **Rejection condition.** Any missing or extra key, accounting/TTL mismatch,
 corruption accepted, HMAC failure, or any protected gate row loss.
@@ -6013,8 +6080,9 @@ the large-reply shape, and the 4.25 reservation decision (section 2.31) fixes th
 large-input shape; the 4.26 pooled-sampling decision (section 2.32) fixes the
 pressure path, and the 4.30 ordered-index decision (section 2.33) fixes the
 sorted-set point/range shape, and the 4.23 decision (section 2.34) fixes the
-rewrite start shape. Then the 4.25, 4.15 and 4.26 implementations for large
-values and memory pressure, 4.26 for eviction, 4.45 for
+rewrite start shape; the 4.27 single-pass decision (section 2.35) fixes replay.
+Then the 4.25, 4.15 and 4.26 implementations for large values and memory
+pressure, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -9256,8 +9324,10 @@ separate roadmap.
   section 2.32). The sorted-set ordered-index decision (section 2.33) is the
   largest read-path gap; it is not implemented. The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
-  pause in principle but is not implemented; the gate runs with persistence off. The gate runs with persistence
-  and maxmemory off and has no sorted-set rows.
+  pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
+  versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
+  (section 2.35). The gate runs with persistence and maxmemory off and has no
+  sorted-set rows.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
   within-row alternating comparison, but cross-row absolute rates are not
