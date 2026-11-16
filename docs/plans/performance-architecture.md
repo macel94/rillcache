@@ -5,8 +5,8 @@ both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); 4.37's `BITFIELD` write
 path has landed and the rest of it remains gated; 4.29 has a source-pinned
 direct-iteration decision (section 2.26), 4.31 has a keyspace-stage cursor
 decision (section 2.27), 4.21 has a per-turn coalescing decision (section
-2.28), and 4.22 has a ready-key wake decision (section 2.29), but all remain
-gated; every other runtime item here is historical or
+2.28), 4.22 has a ready-key wake decision (section 2.29), and 4.15 has a
+copy-avoidance decision (section 2.30), but all remain gated; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1548,7 +1548,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | --- | --- | --- | --- | --- | --- |
 | P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; +1.0% and +22.5% vs Redis across two daily cohorts; p99 flips with host | no runtime candidate; measurement/topology | disjoint CPUs need a different runner type; all recent cohorts share `[0,1,2,3]` | the row itself |
 | P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
-| Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, admitted | AC20 on the implemented change | none at 64 B |
+| Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, copy-avoidance decided (2.30) | AC20 on the implemented change | none at 64 B |
 | Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, direct-iteration decision (2.26) | AC31/AC58 on the implemented change | none at 64 B |
 | Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, admitted | AC32 on the implemented change | none at 64 B |
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 (map/score/start-0) + 4.38 (rank-select), admitted | AC32/AC40 | none |
@@ -1874,6 +1874,60 @@ dependency. The 1 ms tick remains a fallback, not the primary wake path.
 within 200 µs of Valkey and at least 2× better than the ~1 ms baseline; ≤1%
 idle CPU with 1 and 1000 blocked clients; FIFO/timeout/unblock/multi-owner/
 shutdown tests; both protected gates; no dependency.
+
+### 2.30 2026-11-16 checkpoint: large bulk replies still copy the value
+
+The protected gate uses 64-byte values, so the clean results in sections 2.26–2.29
+say nothing about large replies. The retained large-value cohort (section 2.21)
+measures 64 KiB GET **28.4% behind Valkey** (p99 3.93 vs 1.21 ms) and 1 MiB GET
+**42.1% behind Redis and 44.9% behind Valkey** (p99 24.9 vs 9.9/10.9 ms), while
+the 64-byte control leads. The gap grows with value size, which is the shape of a
+per-reply value copy, not a fixed dispatch cost.
+
+Current source audit:
+
+- `Store::get` holds the data read borrow and calls `encode_bulk`, which appends
+  the `$<len>\r\n` header, the complete value and `\r\n` into the session
+  output `Vec`. The large value is copied in user space while the store borrow is
+  held.
+- `Client::flush` later writes bounded slices of that `Vec`. A slow reader keeps
+  the copied value resident until the output drains, and a large pipelined reply
+  can hold more than one copy in the output buffer.
+
+The C servers use a referenced bulk reply instead of copying the object:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Reply representation | header + copied value in `Vec` | `bulkStrRef` points at the object/value; prefix is formatted at write time ([`networking.c#L573`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L573), [`#L1359`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L1359)) | same reference shape ([`networking.c#L783`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L783), [`#L1511`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L1511)) | **adapt** an `Arc`/vectored path for large values |
+| Lifetime | output `Vec` owns the copy | refcount held until the write completes | same | clone `Arc` under the read borrow, release it before I/O |
+| Small values | one copy | inline/buffer path | inline/buffer path | keep the current threshold path |
+| Partial writes | bounded `Vec` slices | reply offset/ref retained until drained | same | retain the `Arc` and offset; register writable interest |
+| Dependencies | std only | C/sds/refcounts | C/sds/refcounts | std `Arc`, `IoSlice`, `write_vectored` |
+
+**Decision.** For values at or above the existing 16 KiB threshold, store the
+value as `Arc<[u8]>` (or an equivalent immutable shared representation) and emit
+the bulk reply with `write_vectored`: an `IoSlice` for the header, one for the
+value and one for CRLF. Clone the `Arc` under the data read borrow, drop the
+borrow, then write. If the socket returns `WouldBlock`, retain the `Arc` and the
+written offset in the client until writable, preserving reply order and the
+existing backpressure shape. Keep the current in-place `Vec` path below the
+threshold so the 64-byte gate rows do not change. Do not copy Redis/Valkey's C
+reference lists, refcount implementation or write-time prefix machinery; the
+safe-Rust equivalent is `Arc`, `IoSlice` and the existing output queue.
+
+**Dependencies and policy impact.** No new crate, unsafe/FFI or allocator change:
+`std::sync::Arc`, `std::io::IoSlice` and `Write::write_vectored`. The threshold
+and `Arc` representation must be reflected in payload accounting and in the
+journal/rewrite encoders; an `Arc` is not an RSS or allocator-accounting claim.
+
+**Risks and rejected options.** A large SET/APPEND may now allocate a new
+immutable value where the current path reused capacity; the matched cohort must
+include SET as well as GET. Partial writes, slow readers, half-close, shutdown,
+pipelining, `MULTI` ordering and output-buffer limits must be tested. Rejected:
+copying into `Vec` (measured), `mmap`/unsafe iovec construction, a new
+`bytes`/`iovec` dependency, unconditional `Arc` for 64-byte values, and writing
+the value without retaining it across a `WouldBlock`. AC20 is the measurable
+criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -4932,7 +4986,7 @@ paired ratio is 0.9989 with a 95% interval of [0.9802-1.0128]. Closing it needs 
 mechanism that changes the syscall or TCP work itself, not the reactor's
 bookkeeping.
 
-### 4.15 Large-bulk reply copy avoidance (candidate; admission measured)
+### 4.15 Large-bulk reply copy avoidance (candidate; copy-avoidance decision)
 
 **Mechanism.** Keep values below a 16 KiB threshold in the existing
 capacity-reusing `Vec<u8>` (so the gate path does not change), and store values at
@@ -4966,6 +5020,15 @@ the ordering/backpressure obligations and AC20.
 them on one host with the same pinned generator, and run 64 B (control), 64 KiB
 and 1 MiB GET/SET at P1 and P16 with at least three rotated repetitions, raw
 JSON, p99 and CPU.
+
+**Decision (2026-11-16, section 2.30).** Adapt Redis/Valkey's referenced bulk
+reply without their C reference lists: for values at or above the 16 KiB
+threshold, hold an immutable `Arc<[u8]>`, clone it under the data borrow, release
+the borrow, and use `write_vectored` with header/value/CRLF slices. Retain the
+`Arc` and offset across `WouldBlock`, preserving reply order and backpressure;
+keep the in-place `Vec` path for small values. Reject copying, `mmap`/unsafe
+iovec construction, new dependencies and unconditional `Arc` for small values.
+AC20 remains the acceptance criterion.
 
 **Rejection condition.** No large-GET gain above the cohort spread; any original
 or four-CPU gate row loss; any ordering, partial-write, slow-reader or shutdown
@@ -5681,7 +5744,8 @@ availability (replay) gaps and are contained in the journal path. The 4.21
 per-turn coalescing decision (section 2.28) now fixes the write shape; it still
 needs the implementation and persistence-on A/B. The 4.22 ready-key decision
 (section 2.29) fixes the blocked-wake shape and remains the largest measured
-latency/idle-CPU candidate. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
+latency/idle-CPU candidate. The 4.15 copy-avoidance decision (section 2.30) fixes
+the large-reply shape. Then 4.25 and the 4.15 implementation for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -8899,7 +8963,8 @@ separate roadmap.
   against Redis/Valkey are a small P1 per-command CPU difference whose sign is
   host-dependent, host-dependent P1 tail variance, the large-value reply copy
   and input-growth copies that the 64-byte gate cannot see — **1 MiB GET −42% to
-  −45%, SET −28% to −32%** (sections 2.20–2.22) — the large multi-bulk hash
+  −45%, SET −28% to −32%** (sections 2.20–2.22; 4.15 has a copy-avoidance
+  decision but is unimplemented, section 2.30) — the large multi-bulk hash
   reply (10k `HGETALL` **−43% vs Redis**, section 3.2; 4.29 now has a
   direct-iteration decision and AC58 but is not implemented, section 2.26);
   the keyspace `SCAN` path (42.6 ms per 100k/COUNT 10, section 3.16; 4.31
