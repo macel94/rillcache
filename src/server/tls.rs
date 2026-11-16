@@ -12,8 +12,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -32,8 +33,18 @@ impl ResolvesServerCert for SniResolver {
     }
 }
 
+const MAX_TLS_FILE_BYTES: usize = 1024 * 1024;
+const MAX_RELOAD_TOKEN_BYTES: usize = 64;
+
 pub(crate) struct TlsAcceptor {
-    config: Arc<ServerConfig>,
+    config: RwLock<Arc<ServerConfig>>,
+    cert_file: PathBuf,
+    key_file: PathBuf,
+    client_ca_file: Option<PathBuf>,
+    sni_certificates: Vec<crate::server::TlsSniCertificate>,
+    reload_trigger: Option<PathBuf>,
+    reload_token: Mutex<Option<Vec<u8>>>,
+    reload_error_logged: AtomicBool,
     handshake_timeout: Duration,
     idle_timeout: Duration,
 }
@@ -44,9 +55,32 @@ impl TlsAcceptor {
         key_file: &Path,
         client_ca_file: Option<&Path>,
         sni_certificates: &[crate::server::TlsSniCertificate],
+        reload_trigger: Option<&Path>,
         handshake_timeout: Duration,
         idle_timeout: Duration,
     ) -> io::Result<Self> {
+        let config = Self::build_config(cert_file, key_file, client_ca_file, sni_certificates)?;
+        let reload_token = reload_trigger.map(read_reload_token).transpose()?;
+        Ok(Self {
+            config: RwLock::new(config),
+            cert_file: cert_file.to_owned(),
+            key_file: key_file.to_owned(),
+            client_ca_file: client_ca_file.map(Path::to_owned),
+            sni_certificates: sni_certificates.to_vec(),
+            reload_trigger: reload_trigger.map(Path::to_owned),
+            reload_token: Mutex::new(reload_token),
+            reload_error_logged: AtomicBool::new(false),
+            handshake_timeout,
+            idle_timeout,
+        })
+    }
+
+    fn build_config(
+        cert_file: &Path,
+        key_file: &Path,
+        client_ca_file: Option<&Path>,
+        sni_certificates: &[crate::server::TlsSniCertificate],
+    ) -> io::Result<Arc<ServerConfig>> {
         let certs = read_certs(cert_file)?;
         if certs.is_empty() {
             return Err(invalid("TLS certificate file contains no certificates"));
@@ -99,19 +133,63 @@ impl TlsAcceptor {
                 builder.with_client_cert_verifier(verifier)
             }
         };
-        let config = builder.with_cert_resolver(Arc::new(SniResolver {
-            default: default_key,
-            identities,
-        }));
-        Ok(Self {
-            config: Arc::new(config),
-            handshake_timeout,
-            idle_timeout,
-        })
+        Ok(Arc::new(builder.with_cert_resolver(Arc::new(
+            SniResolver {
+                default: default_key,
+                identities,
+            },
+        ))))
+    }
+
+    fn refresh_if_requested(&self) {
+        let Some(trigger) = &self.reload_trigger else {
+            return;
+        };
+        let Ok(mut previous_token) = self.reload_token.lock() else {
+            eprintln!("rillcache: TLS reload state is unavailable; retaining active certificates");
+            return;
+        };
+        let token = match read_reload_token(trigger) {
+            Ok(token) => token,
+            Err(error) => {
+                if !self.reload_error_logged.swap(true, Ordering::AcqRel) {
+                    eprintln!("rillcache: cannot read TLS reload trigger: {error}");
+                }
+                return;
+            }
+        };
+        self.reload_error_logged.store(false, Ordering::Release);
+        if previous_token.as_ref() == Some(&token) {
+            return;
+        }
+        match Self::build_config(
+            &self.cert_file,
+            &self.key_file,
+            self.client_ca_file.as_deref(),
+            &self.sni_certificates,
+        ) {
+            Ok(config) => match self.config.write() {
+                Ok(mut active) => {
+                    *active = config;
+                    *previous_token = Some(token);
+                    eprintln!("rillcache: TLS certificate generation reloaded");
+                }
+                Err(_) => {
+                    eprintln!("rillcache: TLS config lock poisoned; retaining active certificates")
+                }
+            },
+            Err(error) => {
+                *previous_token = Some(token);
+                eprintln!(
+                    "rillcache: TLS certificate reload rejected; retaining active certificates: {error}"
+                );
+            }
+        }
     }
 
     /// Complete the TLS handshake before returning a stream to the RESP loop.
     pub(crate) fn accept(&self, socket: TcpStream) -> io::Result<Connection> {
+        self.refresh_if_requested();
         let handshake_deadline = Instant::now()
             .checked_add(self.handshake_timeout)
             .ok_or_else(|| invalid("TLS handshake timeout is too large"))?;
@@ -124,7 +202,12 @@ impl TlsAcceptor {
             plaintext_idle_timeout: None,
             plaintext_idle_deadline: None,
         };
-        let mut conn = ServerConnection::new(Arc::clone(&self.config))
+        let config = self
+            .config
+            .read()
+            .map_err(|_| io::Error::other("TLS config lock poisoned"))?
+            .clone();
+        let mut conn = ServerConnection::new(config)
             .map_err(|error| invalid(format!("TLS connection setup: {error}")))?;
         while conn.is_handshaking() {
             conn.complete_io(&mut sock)?;
@@ -322,25 +405,62 @@ impl Write for Connection {
     }
 }
 
-fn read_certs(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
+fn read_bounded_tls_file(path: &Path, description: &str) -> io::Result<Vec<u8>> {
     let file = File::open(path).map_err(|error| {
         invalid(format!(
-            "cannot read TLS certificate {}: {error}",
+            "cannot read TLS {description} {}: {error}",
             path.display()
         ))
     })?;
-    rustls_pemfile::certs(&mut BufReader::new(file)).collect()
+    let mut bytes = Vec::new();
+    file.take((MAX_TLS_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_TLS_FILE_BYTES {
+        return Err(invalid(format!(
+            "TLS {description} {} exceeds the {MAX_TLS_FILE_BYTES}-byte limit",
+            path.display()
+        )));
+    }
+    Ok(bytes)
+}
+
+fn read_certs(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
+    let bytes = read_bounded_tls_file(path, "certificate")?;
+    rustls_pemfile::certs(&mut BufReader::new(std::io::Cursor::new(bytes))).collect()
 }
 
 fn read_private_key(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
-    let file = File::open(path)
-        .map_err(|error| invalid(format!("cannot read TLS key {}: {error}", path.display())))?;
-    rustls_pemfile::private_key(&mut BufReader::new(file))?.ok_or_else(|| {
+    let bytes = read_bounded_tls_file(path, "key")?;
+    rustls_pemfile::private_key(&mut BufReader::new(std::io::Cursor::new(bytes)))?.ok_or_else(
+        || {
+            invalid(format!(
+                "TLS key file {} contains no private key",
+                path.display()
+            ))
+        },
+    )
+}
+
+fn read_reload_token(path: &Path) -> io::Result<Vec<u8>> {
+    let file = File::open(path).map_err(|error| {
         invalid(format!(
-            "TLS key file {} contains no private key",
+            "cannot read TLS reload trigger {}: {error}",
             path.display()
         ))
-    })
+    })?;
+    let mut token = Vec::new();
+    file.take((MAX_RELOAD_TOKEN_BYTES + 1) as u64)
+        .read_to_end(&mut token)?;
+    if token.is_empty()
+        || token.len() > MAX_RELOAD_TOKEN_BYTES
+        || !token.iter().all(|byte| (b'!'..=b'~').contains(byte))
+    {
+        return Err(invalid(format!(
+            "TLS reload trigger {} must contain 1..={MAX_RELOAD_TOKEN_BYTES} visible ASCII bytes",
+            path.display()
+        )));
+    }
+    Ok(token)
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -352,6 +472,22 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn reload_tokens_are_bounded_nonempty_visible_ascii() {
+        let path = std::env::temp_dir().join(format!(
+            "rillcache-tls-token-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, b"generation-1").unwrap();
+        assert_eq!(read_reload_token(&path).unwrap(), b"generation-1");
+        std::fs::write(&path, b"\n").unwrap();
+        assert!(read_reload_token(&path).is_err());
+        std::fs::write(&path, vec![b'x'; MAX_RELOAD_TOKEN_BYTES + 1]).unwrap();
+        assert!(read_reload_token(&path).is_err());
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn plaintext_idle_deadline_is_absolute_and_refreshable_on_progress() {

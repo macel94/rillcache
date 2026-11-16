@@ -199,6 +199,116 @@ fn unknown_sni_is_rejected_instead_of_receiving_the_default_certificate() {
 }
 
 #[test]
+fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_failure() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-reload-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let cert_file = directory.join("server.crt");
+    let key_file = directory.join("server.key");
+    let trigger = directory.join("generation");
+    std::fs::copy(fixture("server.crt"), &cert_file).unwrap();
+    std::fs::copy(fixture("server.key"), &key_file).unwrap();
+    std::fs::write(&trigger, b"generation-1").unwrap();
+
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(cert_file.clone()),
+        tls_key_file: Some(key_file.clone()),
+        tls_reload_trigger: Some(trigger.clone()),
+        idle_timeout: Duration::from_secs(30),
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut established = connect(&server, false);
+    ping(&mut established);
+
+    let cert_next = directory.join("server.crt.next");
+    let key_next = directory.join("server.key.next");
+    std::fs::copy(fixture("alternate.crt"), &cert_next).unwrap();
+    std::fs::copy(fixture("alternate.key"), &key_next).unwrap();
+    std::fs::rename(cert_next, &cert_file).unwrap();
+    std::fs::rename(key_next, &key_file).unwrap();
+    let trigger_next = directory.join("generation.next");
+    std::fs::write(&trigger_next, b"generation-2").unwrap();
+    std::fs::rename(trigger_next, &trigger).unwrap();
+
+    let mut rotated = connect_named(&server, false, "alt.test");
+    ping(&mut rotated);
+    ping(&mut established);
+
+    std::fs::write(&cert_file, b"invalid replacement certificate").unwrap();
+    std::fs::write(&trigger, b"generation-3").unwrap();
+    let mut retained = connect_named(&server, false, "alt.test");
+    ping(&mut retained);
+    ping(&mut rotated);
+    ping(&mut established);
+
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn tls_reload_replaces_configured_sni_identity_for_new_handshakes() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-sni-reload-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let trigger = directory.join("generation");
+    let cert_file = directory.join("sni.crt");
+    let key_file = directory.join("sni.key");
+    std::fs::copy(fixture("alternate.crt"), &cert_file).unwrap();
+    std::fs::copy(fixture("alternate.key"), &key_file).unwrap();
+    std::fs::write(&trigger, b"generation-1").unwrap();
+
+    let mut config = Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_reload_trigger: Some(trigger.clone()),
+        tls_sni_certificates: vec![rillcache::TlsSniCertificate {
+            server_name: "alt.test".into(),
+            cert_file: cert_file.clone(),
+            key_file: key_file.clone(),
+        }],
+        ..Config::default()
+    };
+    config.idle_timeout = Duration::from_secs(30);
+    let server = Server::bind(config).unwrap().spawn().unwrap();
+    let mut initial = connect_named(&server, false, "alt.test");
+    ping(&mut initial);
+
+    let cert_next = directory.join("sni.crt.next");
+    let key_next = directory.join("sni.key.next");
+    std::fs::copy(fixture("server.crt"), &cert_next).unwrap();
+    std::fs::copy(fixture("server.key"), &key_next).unwrap();
+    std::fs::rename(cert_next, &cert_file).unwrap();
+    std::fs::rename(key_next, &key_file).unwrap();
+    let trigger_next = directory.join("generation.next");
+    std::fs::write(&trigger_next, b"generation-2").unwrap();
+    std::fs::rename(trigger_next, &trigger).unwrap();
+
+    let mut rotated = connect_named(&server, false, "alt.test");
+    let handshake = rotated.write_all(b"*1\r\n$4\r\nPING\r\n").and_then(|()| {
+        let mut reply = [0u8; 7];
+        rotated.read_exact(&mut reply)
+    });
+    assert!(handshake.is_err(), "new SNI certificate must be served");
+    ping(&mut initial);
+
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn tls_plaintext_frame_assembly_deadline_closes_trickling_resp() {
     let server = Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -538,6 +648,14 @@ fn invalid_tls_configuration_fails_before_listening() {
         ..Config::default()
     };
     assert!(Server::bind(ca_without_bind).is_err());
+    let trigger_without_bind = Config {
+        tls_reload_trigger: Some(fixture("generation")),
+        ..Config::default()
+    };
+    assert!(Server::bind(trigger_without_bind).is_err());
+    let mut missing_trigger = base.clone();
+    missing_trigger.tls_reload_trigger = Some(fixture("missing-generation"));
+    assert!(Server::bind(missing_trigger).is_err());
     let mut missing_cert = base.clone();
     missing_cert.tls_cert_file = Some(fixture("missing.crt"));
     assert!(Server::bind(missing_cert).is_err());
