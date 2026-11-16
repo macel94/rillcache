@@ -12,14 +12,14 @@ mod config_file;
 mod healthcheck;
 
 const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
-  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC and TLS key files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
+  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC and TLS key files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH as default user from this file\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
 enum Options {
     Run(Config),
     Help,
     Version,
-    Healthcheck(SocketAddr),
+    Healthcheck(SocketAddr, Option<Vec<u8>>),
 }
 
 fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, String> {
@@ -45,10 +45,20 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                     .ok()
                     .filter(|address| address.port() != 0)
                     .ok_or("--healthcheck requires a numeric IP:port with a nonzero port")?;
-                if arguments.pop_front().is_some() {
+                let password = match arguments.pop_front() {
+                    None => None,
+                    Some(flag) if flag == "--healthcheck-password-file" => {
+                        let path = arguments
+                            .pop_front()
+                            .ok_or("missing value for --healthcheck-password-file")?;
+                        Some(read_password_file(&path, "--healthcheck-password-file")?)
+                    }
+                    Some(_) => return Err("unexpected arguments after --healthcheck".into()),
+                };
+                if !arguments.is_empty() {
                     return Err("unexpected arguments after --healthcheck".into());
                 }
-                return Ok(Options::Healthcheck(address));
+                return Ok(Options::Healthcheck(address, password));
             }
             "--aof-hmac-migrate" => config.aof_hmac_migrate = true,
             "--secure-secret-files" => config.secure_secret_files = true,
@@ -167,7 +177,8 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                         config.requirepass = (!value.is_empty()).then(|| value.into_bytes());
                     }
                     "--requirepass-file" => {
-                        config.requirepass = Some(read_password_file(&value)?);
+                        config.requirepass =
+                            Some(read_password_file(&value, "--requirepass-file")?);
                         config.requirepass_file = Some(std::path::PathBuf::from(value));
                     }
                     "--aclfile" => {
@@ -281,9 +292,15 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
 
 /// Read a secret file, stripping at most one trailing line ending. An empty or
 /// oversized file is an error rather than silently disabling authentication.
-fn read_password_file(path: &str) -> Result<Vec<u8>, String> {
-    let mut bytes = std::fs::read(path)
-        .map_err(|error| format!("--requirepass-file could not read {path}: {error}"))?;
+fn read_password_file(path: &str, option: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("{option} could not open password file: {error}"))?;
+    let mut bytes = Vec::new();
+    // One extra byte distinguishes oversized content, allowing a final CRLF.
+    file.take(1027)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{option} could not read password file: {error}"))?;
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
         if bytes.last() == Some(&b'\r') {
@@ -291,10 +308,10 @@ fn read_password_file(path: &str) -> Result<Vec<u8>, String> {
         }
     }
     if bytes.is_empty() {
-        return Err("--requirepass-file must contain a nonempty password".into());
+        return Err(format!("{option} must contain a nonempty password"));
     }
     if bytes.len() > 1024 {
-        return Err("--requirepass-file must not exceed 1024 bytes".into());
+        return Err(format!("{option} must not exceed 1024 bytes"));
     }
     Ok(bytes)
 }
@@ -325,13 +342,15 @@ fn main() -> ExitCode {
             println!("rillcache {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Ok(Options::Healthcheck(address)) => match healthcheck::check(address) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("rillcache: health check failed: {error}");
-                ExitCode::FAILURE
+        Ok(Options::Healthcheck(address, password)) => {
+            match healthcheck::check(address, password.as_deref()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("rillcache: health check failed: {error}");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         Ok(Options::Run(config)) => match Server::bind(config).and_then(|server| {
             eprintln!(
                 "rillcache {} listening on {}",
@@ -562,13 +581,14 @@ mod tests {
             panic!("expected override");
         };
         assert_eq!(overridden.bind_addr, "127.0.0.1:26379".parse().unwrap());
-        let Options::Healthcheck(address) =
+        let Options::Healthcheck(address, password) =
             options(["--bind", "0.0.0.0:6379", "--healthcheck", "[::1]:6379"].map(str::to_owned))
                 .unwrap()
         else {
             panic!("expected health check");
         };
         assert_eq!(address, "[::1]:6379".parse().unwrap());
+        assert!(password.is_none());
     }
 
     #[test]
@@ -697,6 +717,18 @@ mod tests {
             vec!["--healthcheck", "localhost:6379"],
             vec!["--healthcheck", "127.0.0.1:0"],
             vec!["--healthcheck", "127.0.0.1:6379", "--unknown"],
+            vec!["--healthcheck-password-file", "password"],
+            vec![
+                "--healthcheck",
+                "127.0.0.1:6379",
+                "--healthcheck-password-file",
+            ],
+            vec![
+                "--healthcheck",
+                "127.0.0.1:6379",
+                "--healthcheck-password-file",
+                "/definitely/missing/probe-password",
+            ],
             vec!["--requirepass"],
             vec!["--socket-workers", "0"],
             vec!["--socket-workers", "17"],
@@ -750,6 +782,40 @@ mod tests {
         assert_eq!(config.limits.max_bulk_bytes, 8192);
         assert_eq!(config.limits.max_frame_bytes, 16384);
         assert_eq!(config.idle_timeout, Duration::from_millis(250));
+    }
+
+    #[test]
+    fn password_files_enforce_the_payload_limit_and_strip_only_one_line_ending() {
+        let path = std::env::temp_dir().join(format!(
+            "rillcache-password-bound-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let name = path.to_str().unwrap();
+        for ending in [b"".as_slice(), b"\n", b"\r\n"] {
+            let expected = vec![b'x'; 1024];
+            std::fs::write(&path, [expected.as_slice(), ending].concat()).unwrap();
+            assert_eq!(
+                read_password_file(name, "--healthcheck-password-file").unwrap(),
+                expected
+            );
+        }
+        std::fs::write(&path, b"binary\0\xff\n\n").unwrap();
+        assert_eq!(
+            read_password_file(name, "--healthcheck-password-file").unwrap(),
+            b"binary\0\xff\n"
+        );
+        for content in [
+            Vec::new(),
+            b"\r\n".to_vec(),
+            vec![b'x'; 1025],
+            vec![b'x'; 16384],
+        ] {
+            std::fs::write(&path, content).unwrap();
+            assert!(read_password_file(name, "--healthcheck-password-file").is_err());
+            assert!(read_password_file(name, "--requirepass-file").is_err());
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -136,6 +136,87 @@ fn standalone_profiling_validates_all_workloads_and_fails_without_a_target() {
 }
 
 #[test]
+fn authenticated_healthcheck_reads_a_bounded_password_file_without_leaking_secrets() {
+    let _fixture = LIVE_SERVER_TEST.lock().unwrap();
+    use rillcache::{Config, Server};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
+    let secret = b"probe\0\r\n\xff";
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        requirepass: Some(secret.to_vec()),
+        worker_threads: match mode.as_str() {
+            "0" => None,
+            _ => Some(mode.parse().unwrap()),
+        },
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "rillcache-healthcheck-password-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let address = server.local_addr().to_string();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    use std::io::Write;
+    file.write_all(&[secret.as_slice(), b"\r\n"].concat())
+        .unwrap();
+    drop(file);
+    let probe = || {
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--healthcheck", &address, "--healthcheck-password-file"])
+            .arg(&path)
+            .output()
+            .unwrap()
+    };
+    let success = probe();
+    assert!(success.status.success(), "{:?}", success.stderr);
+    assert!(success.stdout.is_empty());
+    assert!(success.stderr.is_empty());
+    let unauthenticated = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+        .args(["--healthcheck", &address])
+        .output()
+        .unwrap();
+    assert_eq!(unauthenticated.status.code(), Some(1));
+    for (content, status) in [
+        (b"wrong-probe-secret".to_vec(), 1),
+        (Vec::new(), 2),
+        (b"\r\n".to_vec(), 2),
+        (vec![b'x'; 1025], 2),
+    ] {
+        std::fs::write(&path, &content).unwrap();
+        let failure = probe();
+        assert_eq!(failure.status.code(), Some(status));
+        assert!(failure.stdout.is_empty());
+        assert!(
+            !failure
+                .stderr
+                .windows(secret.len())
+                .any(|part| part == secret)
+        );
+        assert!(
+            !failure
+                .stderr
+                .windows(18)
+                .any(|part| part == b"wrong-probe-secret")
+        );
+    }
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(probe().status.code(), Some(2));
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn healthcheck_is_quiet_on_success_and_fails_for_an_unavailable_endpoint() {
     let _fixture = LIVE_SERVER_TEST.lock().unwrap();
     use rillcache::{Config, Server};
