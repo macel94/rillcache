@@ -119,7 +119,13 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R74 (event-driven):** When `--healthcheck IP:port` runs, the same binary shall
   send a read-only RESP2 PING, require an exact PONG, remain quiet on success and
   fail on rejection, malformed/truncated replies, connection errors or a bounded
-  one-second I/O deadline. No external runtime probe tool shall be required.
+  one-second I/O deadline. With `--healthcheck-password-file PATH` following the
+  address, it shall read a bounded 1..=1024-byte default-user password (stripping
+  one final LF/CRLF), validate AUTH before PING, share one socket deadline across
+  both exchanges, and never echo the password or server error payload. Invalid
+  files shall fail before connection. This is plaintext request-service probing,
+  not TLS, named-user, persistence or replication readiness. No external runtime
+  probe tool shall be required.
 - **R75 (event-driven):** When trusted main/tag/manual publication runs, automation
   shall first pass offline checks and native amd64/arm64 container tests in all
   three worker modes, then publish only those tested images as one GHCR manifest
