@@ -501,12 +501,6 @@ impl ServerServices {
             .map_or(Access::NoAuth, |auth| auth.authorize(user, arguments))
     }
 
-    pub fn authorize_pubsub_numpat(&self, user: Option<&[u8]>) -> Access {
-        self.auth
-            .read()
-            .map_or(Access::NoAuth, |auth| auth.authorize_pubsub_numpat(user))
-    }
-
     pub fn whoami(&self, user: Option<&[u8]>) -> Option<Vec<u8>> {
         self.auth.read().ok()?.whoami(user)
     }

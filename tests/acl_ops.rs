@@ -194,6 +194,11 @@ fn pubsub_introspection_filters_and_rejects_acl_channel_disclosures() {
             .any(|window| window == b"secret:live")
     );
 
+    send(
+        &mut admin,
+        &[b"ACL", b"DRYRUN", b"observer", b"PUBSUB", b"NUMPAT"],
+        b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
+    );
     let mut observer = connect(&server);
     send(&mut observer, &[b"AUTH", b"observer", b"pw"], b"+OK\r\n");
     send(&mut observer, &[b"PUBSUB", b"CHANNELS"], b"");

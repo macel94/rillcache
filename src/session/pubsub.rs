@@ -256,19 +256,8 @@ impl Session {
             if arguments.len() != 1 {
                 arity("pubsub|numpat", output);
             } else {
-                match store.authorize_pubsub_numpat(self.authenticated_user.as_deref()) {
-                    Access::Allowed => {
-                        let _ = write!(output, ":{}", store.pubsub_numpat());
-                        output.extend_from_slice(b"\r\n");
-                    }
-                    Access::DeniedChannel(channel) => {
-                        self.log_denial(store, "channel", "toplevel", &channel);
-                        output.extend_from_slice(
-                            b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
-                        );
-                    }
-                    _ => output.extend_from_slice(b"-NOAUTH Authentication required.\r\n"),
-                }
+                let _ = write!(output, ":{}", store.pubsub_numpat());
+                output.extend_from_slice(b"\r\n");
             }
         } else if subcommand.eq_ignore_ascii_case(b"SHARDCHANNELS") {
             if arguments.len() > 2 {

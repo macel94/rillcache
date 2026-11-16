@@ -410,6 +410,11 @@ fn ruleset_access(
                     }
                 }
             }
+            Some(subcommand) if subcommand.eq_ignore_ascii_case(b"NUMPAT") => {
+                if !channels.iter().any(|pattern| pattern == b"*") {
+                    return Access::DeniedChannel(Vec::new());
+                }
+            }
             // The extra argument is an internal per-result authorization probe;
             // the optional pattern in the real CHANNELS request is not a channel.
             Some(subcommand)
@@ -583,28 +588,6 @@ impl Auth {
             return Access::NoAuth;
         };
         Self::authorize_user_ref(user, arguments)
-    }
-
-    /// NUMPAT is a global count and cannot be safely filtered by channel. Allow
-    /// it only when an ACL ruleset granting this subcommand grants all channels.
-    pub fn authorize_pubsub_numpat(&self, authenticated: Option<&[u8]>) -> Access {
-        let Some((_, user)) = self.session_user(authenticated) else {
-            return Access::NoAuth;
-        };
-        let arguments = [b"PUBSUB".as_slice(), b"NUMPAT".as_slice()];
-        let grants_all = |rules: &[Rule], channels: &[Vec<u8>]| {
-            rules_allow(rules, &arguments) && channels.iter().any(|pattern| pattern == b"*")
-        };
-        if grants_all(&user.rules, &user.channels)
-            || user
-                .selectors
-                .iter()
-                .any(|selector| grants_all(&selector.rules, &selector.channels))
-        {
-            Access::Allowed
-        } else {
-            Access::DeniedChannel(Vec::new())
-        }
     }
 
     /// Evaluate a named user's rules without changing connection state. Returns
@@ -1465,6 +1448,8 @@ mod tests {
                 || command[1].eq_ignore_ascii_case(b"SHARDNUMSUB")
             {
                 Access::DeniedChannel(b"a".to_vec())
+            } else if command[1].eq_ignore_ascii_case(b"NUMPAT") {
+                Access::DeniedChannel(Vec::new())
             } else {
                 Access::Allowed
             };
