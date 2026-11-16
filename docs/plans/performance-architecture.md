@@ -3,9 +3,9 @@
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); 4.37's `BITFIELD` write
 path has landed and the rest of it remains gated; 4.29 has a source-pinned
-direct-iteration decision (section 2.26) but remains gated; every other runtime
-item here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33,
-4.35–4.55).**
+direct-iteration decision (section 2.26) and 4.31 has a keyspace-stage cursor
+decision (section 2.27), but both remain gated; every other runtime item here is
+historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -1559,7 +1559,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 → 0.230 ms vs 0.200/0.244, `KEYS` 43.6 → 0.297 vs 0.215/0.205, `RANDOMKEY` 45.5 → 0.297 vs 0.209/0.217, `DBSIZE` 41.2 → 0.298 vs 0.151/0.247; lazy `GET` 0.254 vs 0.160/0.207 | 4.45, implemented | AC47 met | none |
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
 | Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, direct iteration decided (2.26) | AC31/AC58 on the implemented change | none |
-| Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
+| Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31 keyspace stage, decided (2.27) | AC33/AC59 | none |
 | MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
 | MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) → 0.957 s (9.57) vs 3.17/3.61 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) → 0.0234 s (2.34) vs 2.29/2.92; single p50 and controls at the floor | 4.47, implemented | AC49 (count met; add 1.77× but above 6 µs) | none |
@@ -1568,7 +1568,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 → 1.082 ms vs 0.664/0.232, `ZPOPMAX` 159.9 → 1.245, `ZPOPMIN 10` 146.6 → 1.542, `ZMPOP` 155.8 → 1.648; tie-heavy (all scores 0) 4.8–6.0; 100-member control at the floor | 4.49, implemented without the ordered index | AC51 missed (1.08–1.65 vs ≤0.3) | ordered `(score, member)` index |
 | Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
-| Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31, admitted | AC33 on the implemented change | none |
+| Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31 keyspace stage decided (2.27); large HSCAN staged | AC33/AC59 | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
@@ -1686,8 +1686,71 @@ claim about slow readers or unbounded output.
 
 **Acceptance.** AC31 is retained and AC58 below makes the decision measurable.
 The bounded reply-path increment selected here is 4.29; it needs no storage
-rewrite and can proceed independently of the larger journal and scan candidates
-in section 4.28.
+rewrite and can proceed independently of the larger journal candidates in
+section 4.28. The keyspace-only 4.31 cursor stage (section 2.27) is the next
+structural candidate and does not depend on the large-hash field-index decision.
+
+### 2.27 2026-11-16 checkpoint: the keyspace cursor is still a per-call sort
+
+The same clean gate head in section 2.26 also leaves the cursor gap unchanged.
+The retained source-pinned cohort (section 3.16, extended by 3.31) measures
+100,000-key `SCAN COUNT 10` at **42.6 ms p50** versus Redis 0.256 and Valkey
+0.164 ms; a full traversal takes **4.81 s** over 101 calls versus 0.239/0.167 s;
+a 10,000-field `HSCAN COUNT 10` takes **5.05 s** versus 0.257/0.247 s. The gate
+does not issue `SCAN`.
+
+Current source audit:
+
+- `scan.rs::scan_keys` builds a fresh `Vec<&[u8]>` of every live key, sorts it,
+  slices by the numeric cursor, then applies `MATCH`/`TYPE`; every call is
+  O(keyspace log keyspace).
+- `scan_collection` similarly clones and sorts hash or sorted-set pairs for each
+  call. `HashPack` is already ordered, but the helper still materialises a
+  vector; large `Collection::Hash` is a `HashMap`.
+- `KEYS` and `RANDOMKEY` use the same collect/sort shape (section 3.31).
+
+The C servers use a stateless reverse-binary hash-table cursor:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Keyspace cursor | decimal index into a fresh sorted snapshot | stateless reverse-binary `dictScan` cursor ([`dict.c#L1529`](https://github.com/redis/redis/blob/8.10.2/src/dict.c#L1529)) | stateless reverse-binary `hashtableScan` cursor ([`dict.c#L1177`](https://github.com/valkey-io/valkey/blob/9.1.2/src/dict.c#L1177)) | **adapt** to an ordered key index with an opaque last-key cursor |
+| Resize behavior | snapshot invalidated by writes | power-of-two chaining, resize-safe, may duplicate | same | **adapt**: ordered index gives a stable total order across writes |
+| Work bound | full keyspace sort per call | `COUNT` plus `maxiterations = COUNT*10` ([`db.c#L1835`](https://github.com/redis/redis/blob/8.10.2/src/db.c#L1835)) | same bounded loop ([`db.c#L1225`](https://github.com/valkey-io/valkey/blob/9.1.2/src/db.c#L1225)) | **copy** the bounded-visited shape |
+| Small encodings | still clones/sorts collection data | return all with cursor 0 | return all with cursor 0 | keep for pack/small shapes |
+| Large hash | clone and sort fields | dict iterator cursor | hashtable iterator cursor | **stage**: a field index is a separate decision |
+| Dependencies | std only | C | C | none |
+
+**Decision.** Copy the *bounded, stateless cursor contract*, not the reverse-binary
+bucket mechanics. `std::collections::HashMap` exposes no stable bucket sequence;
+reaching into `hashbrown::RawTable` would need an unstable/unsafe API and a new
+dependency, so it is rejected. Adapt the contract to a per-owner ordered key
+index (`BTreeSet<Arc<[u8]>>`, sharing key bytes with the entry map where possible)
+beside `entries`. A cursor is an opaque owner plus the last emitted key; a call
+ranges from that key, visits at most `COUNT*10` candidates, applies `MATCH`/`TYPE`
+while visiting, and returns the next key or zero. The same index replaces the
+`KEYS` sort and `RANDOMKEY` walk. For collections, reuse the already ordered `HashPack`, `Set` and pack `ZSet`
+representations; large `ZSet` follows 4.30's ordered index, while a large
+`Collection::Hash` still needs a field index or a bounded snapshot. That large-hash
+stage is explicitly separated from the keyspace stage and does not silently force
+a `BTreeMap` into 4.29's reply path.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI, allocator or build
+script: `std::collections::BTreeSet`, `std::sync::Arc`, and the existing hex
+helper. The index is derived state, rebuilt by replay/rewrite and counted by
+accounting; it is not persisted. The cursor format is an external protocol
+change and needs a documented old-cursor behavior and multi-owner tests.
+
+**Risks and rejected options.** Coverage must remain exact on a stable
+keyspace; a selective `MATCH` must not turn one call into a full walk; the index
+adds O(log n) work and memory to every key mutation and must stay inside the
+accounted bound; expiry must remain lazy/bounded; `TYPE` must still see the same
+live set. Rejected: the per-call full snapshot (measured), a reverse-binary
+cursor over `std::HashMap` (no stable bucket API), a 40-bit hash-prefix cursor
+(collisions can skip keys), and an unbounded expiry reap inside SCAN.
+
+**Acceptance.** AC59 covers the keyspace stage and existing AC33 remains the
+large-collection stage criterion. The keyspace stage is independently
+implementable without waiting for the large-hash field-index decision.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5442,7 +5505,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.22/4.24 async wake | reactor `asynchronous` (`reactor.rs#L91`, `#L467`), `poll_blocked_on` (`blocking.rs#L436`), pub/sub and monitor flags | FIFO; timeout gaps; `CLIENT UNBLOCK`; ordering; shutdown; multi-owner | wake latency, idle CPU, fanout | large |
 | 4.23 rewrite start | `begin_rewrite` (`journal.rs#L1131`), maintenance tick (`reactor.rs#L443`) | atomic rename; replay; reconciliation | 20k/200k pause, kill/replay | medium |
 | 4.30 zset index | `zset_read` (`collections.rs`), `zset_add`, `zset_items`/`ZSet` (`data.rs`), accounting | total score order with member tie-break; ±0/NaN; rank/score/lex ranges; `ZSetPack` ≤128 unchanged; memory accounting; rewrite/replay | 10k `ZRANGE 0 9` / full-range A/B, ZADD regression, zset semantics | large |
-| 4.31 cursor scan | `scan_keys`/`scan_collection` (`scan.rs`), `KEYS`/`RANDOMKEY` (`keyspace.rs`), router `locked_scan`, `Data` keyspace index, `ZSet`/`Hash`/`Set` order, expiry reap | opaque cursor resume; full coverage on a stable keyspace; MATCH/COUNT/TYPE/NOVALUES; pack one-call behavior; bounded work; KEYS/RANDOMKEY order; memory accounting | 100k `SCAN COUNT 10`, full scan, 10k `HSCAN`, 100k `KEYS`/`RANDOMKEY`, SET/GET regression | large |
+| 4.31 cursor scan | `scan_keys`/`scan_collection` (`scan.rs`), `KEYS`/`RANDOMKEY` (`keyspace.rs`), router `locked_scan`, `Data` keyspace index, `ZSet`/`Hash`/`Set` order, expiry reap | opaque cursor resume; full coverage on a stable keyspace; MATCH/COUNT/TYPE/NOVALUES; pack one-call behavior; bounded work; KEYS/RANDOMKEY order; memory accounting | 100k `SCAN COUNT 10`, full scan, 10k `HSCAN`, 100k `KEYS`/`RANDOMKEY`, SET/GET regression | keyspace stage decided; large HSCAN staged |
 | 4.32 packed list nodes | `Collection::ListPack`/`ListQuick` (`data.rs`), list commands (`collections.rs`), `payload_len`, rewrite encoding | node index arithmetic; split/merge; binary safety; max element size; accounting; iteration order; blocking pop | 200k-list RSS and `DEL` A/B, RPUSH/LRANGE/LINSERT/blocking | large |
 | 4.33 deferred drop | `DEL`/`UNLINK` (`dispatch/keyspace.rs`), `FLUSH*` (`administration.rs`), `Data::flush`/`remove`, maintenance tick (`reactor.rs`), accounting | queue bound; pending bytes counted; key recreation; notification/journal order; shutdown drain; SYNC unchanged | `UNLINK`/`FLUSH ASYNC` A/B, DBSIZE/EXISTS/SCAN, drain-on-shutdown | small |
 | 4.34 in-place strings (implemented, #258) | `append`/`setrange` (`string_ranges.rs`), `Data::mutate_string`/`reserve`/`put` (`data.rs`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small, landed |
@@ -5470,8 +5533,11 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 
 **Priority.** For the whole-hash reply path, 4.29 is the next self-contained
 candidate after this checkpoint (section 2.26): it is small, measured and needs
-no dependency. The journal candidates remain the largest steady-state and
-availability gaps, so the broader order starts with 4.21 and 4.27 first: they address the largest measured
+no dependency. The keyspace-only 4.31 cursor stage is the next structural
+candidate (section 2.27); it is independently testable and does not require the
+large-hash field-index decision. The journal candidates remain the largest
+steady-state and availability gaps, so the broader order starts with 4.21 and
+4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
@@ -5519,7 +5585,7 @@ the router cursor, so it follows the journal slices and the ordered-structure
 decision. 4.23 follows the existing bounded slices. 4.20 stays conditional on
 4.19; 4.18 stays deferred.
 
-### 4.29 Large-hash HGETALL reply path (candidate; admission measured)
+### 4.29 Large-hash HGETALL reply path (candidate; direct-iteration decision)
 
 **Mechanism.** Remove the full field/value reference `Vec` and O(n log n) sort
 from `HGETALL` on large hashes. Options: (a) iterate the `HashMap` directly and
@@ -5684,7 +5750,7 @@ control and all gate commands unchanged; `ZRANK`/`ZREVRANK`/deep-start `ZRANGE`
 are explicitly out of scope here (4.38/AC40); no new dependency; both protected
 gates green on the exact head.
 
-### 4.31 Incremental cursor iteration (candidate; admission measured)
+### 4.31 Incremental cursor iteration (candidate; keyspace stage decided)
 
 **Mechanism.** Make each `SCAN`-family call bounded by `COUNT` and index depth.
 For the keyspace, maintain a per-owner ordered key index beside `entries`
@@ -5741,6 +5807,18 @@ multi-owner traversal must not repeat or skip an owner.
 (no stable bucket API; `RawTable` is unstable and unsafe), a 40-bit hash-prefix
 numeric cursor (collisions can skip keys and break coverage), the measured
 per-call full snapshot, and an unbounded expiry reap.
+
+**Decision (2026-11-16, section 2.27).** `std::HashMap` exposes no stable
+bucket sequence, so the Redis/Valkey reverse-binary cursor is not portable to
+safe Rust without an unsafe/unstable table or a dependency. Adapt the contract
+to a per-owner `BTreeSet<Arc<[u8]>>` ordered key index and an opaque last-key
+cursor with a `COUNT*10` visited bound. Land the keyspace `SCAN`, `SSCAN`,
+`ZSCAN`, `KEYS` and `RANDOMKEY` stage first; `HSCAN` on `HashPack`/small hashes
+can join it because those representations are already ordered. Large
+`Collection::Hash` needs a field index or bounded snapshot and is a separate
+stage so it does not force a `BTreeMap` into 4.29's direct-reply decision.
+Reject the per-call snapshot, reverse-binary over `std::HashMap`, hash-prefix
+numeric cursors and unbounded expiry reaps. No dependency is added.
 
 **Rejection condition.** `SET`/`GET` or `HSET` loses more than 10% in a matched
 cohort, any gate row loses, a coverage test can miss a stable key or fail to
@@ -8012,6 +8090,19 @@ samples retained.
   sorted encoding remain unchanged; no pair-vector allocation or sort remains in
   the large-hash branch under source review; no dependency or unsafe/FFI shall
   be added; and both protected gates shall pass on the exact head.
+- **AC59 (keyspace cursor stage of 4.31).** On 100,000 live keys, `SCAN COUNT
+  10` shall have p50 ≤1 ms and p99 ≤5 ms (≥40× faster than 42.6 ms); a full
+  `SCAN COUNT 1000` traversal shall finish in ≤0.5 s (≥9× faster than 4.81 s);
+  each call shall visit at most `COUNT*10` candidates and allocate no
+  keyspace-sized key vector; a stable keyspace shall return every key exactly
+  once, and a selective `MATCH`/`TYPE` shall not degrade one call into a full
+  walk; 100k `KEYS key:*` shall be p50 ≤2× the faster C server (≤42 ms) and
+  `RANDOMKEY` ≤0.2 ms; the ordered index shall be rebuilt by replay/rewrite,
+  counted by accounting and bounded; the cursor format/old-cursor behavior,
+  multi-owner traversal, expiry and pack-sized scans shall be documented and
+  tested; `SET`/`GET` shall stay within noise; no dependency or unsafe/FFI shall
+  be added; and both protected gates shall pass on the exact head. Large
+  `HSCAN` remains AC33 after the separate field-index/snapshot decision.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -8667,8 +8758,10 @@ separate roadmap.
   and input-growth copies that the 64-byte gate cannot see — **1 MiB GET −42% to
   −45%, SET −28% to −32%** (sections 2.20–2.22) — the large multi-bulk hash
   reply (10k `HGETALL` **−43% vs Redis**, section 3.2; 4.29 now has a
-  direct-iteration decision and AC58 but is not implemented, section 2.26) and
-  the persistence-on journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
+  direct-iteration decision and AC58 but is not implemented, section 2.26);
+  the keyspace `SCAN` path (42.6 ms per 100k/COUNT 10, section 3.16; 4.31
+  keyspace stage decided but unimplemented, section 2.27); and the persistence-on
+  journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
   for the C servers (section 3.9). The gate runs with persistence off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
