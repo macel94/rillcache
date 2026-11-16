@@ -50,11 +50,15 @@ time, including rustls handshake flights and partial record I/O; handshake
 progress does not restart the budget. After successful completion, the handshake
 deadline is cleared and the ordinary idle timeout applies.
 
-After the TLS handshake, incomplete RESP plaintext is covered by the configured
-frame-assembly deadline. This does not cover a peer that trickles encrypted TLS
-records without yielding plaintext after handshake completion; that established-
-TLS record-only case is not covered by either initial-handshake or RESP-frame
-deadline.
+After the TLS handshake, the configured idle timeout bounds the complete period
+without application plaintext progress. The deadline is absolute across rustls'
+underlying socket reads and is refreshed only when rustls delivers plaintext to
+the RESP session; partial TLS records and complete control records that produce
+no plaintext do not restart it. Receiving plaintext resumes the idle budget from
+that progress. Incomplete RESP plaintext is additionally covered by the configured
+frame-assembly deadline. These bounds do not establish a global connection or
+resource budget, and other slow-client and O(N) gaps remain; this is not a
+production-readiness claim.
 
 Clients connect to the TLS port with their normal Redis TLS options, for example:
 
