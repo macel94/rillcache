@@ -11,8 +11,8 @@ copy-avoidance decision (section 2.30), 4.25 has a reservation decision
 has an ordered-index decision (section 2.33), and 4.23 has a bounded-
 materialisation decision (section 2.34), and 4.27 has a single-pass replay
 decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
-2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all
-remain gated; every other runtime item here is historical or
+2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all remain gated; the
+shared-structure implementation map is section 2.38; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -2348,6 +2348,48 @@ writes before 4.30.
 must reach p50 ≤0.3 ms at 10k, ≤0.6 ms at 100k/200k with p99 ≤2 ms, preserve
 every pack/TTL/blocking/persistence/accounting test, add no dependency and pass
 both protected gates. Zset rows remain staged behind 4.30.
+
+### 2.38 2026-11-16 implementation dependency map
+
+The decision set is now larger than the remaining independent structures. Several
+candidates share one index, queue or journal hook; implementing them as separate
+branches would duplicate memory, split mutation hooks and create two sources of
+truth. This checkpoint is a synthesis, not another runtime decision.
+
+| Shared structure | Decisions that must share it | Rule |
+| --- | --- | --- |
+| Keyspace ordering | 4.31 SCAN/KEYS/RANDOMKEY, 4.26 eviction sampling, 4.23 rewrite key walk | share `Arc<[u8]>` key bytes; keep one mutation hook that updates the ordered/key-slot state, then let each consumer range or sample it |
+| Sorted-set order | 4.30 point/range/pop, 4.38 rank, 4.49 pops, 4.50 lex/count, 4.43 geo ranges | if 4.38 lands first, its blocked order-statistic index replaces 4.30's BTreeSet rather than adding a second full member index; 4.30's BTreeSet remains the staged fallback only |
+| Async readiness | 4.22 blocked waiters, 4.24 pub/sub+MONITOR, 4.39 burst contract | one bounded ready-client queue and one `Waker` path; separate waiter maps/queues may exist, but they must feed the same post-batch drain |
+| Large values | 4.15 reply copy, 4.25 input reservation | independent directions of one thresholded value representation; do not make 4.25 depend on 4.15 |
+| Journal | 4.21 per-turn writes, 4.27 single-pass replay, 4.23 bounded rewrite | one transaction frame/CRC/HMAC contract; the loader and rewriter consume the same frame parser, never a second format |
+| Collection mutation | 4.35 set/hash/list in-place, 4.30 zset index, 4.36 random members | one admit-then-mutate hook per collection; zset writes wait for the ordered/rank index; random indices must not create a third member copy |
+| Eviction/accounting | 4.26 slot sampling, 4.31/4.30 indexes, 4.35 writes | every derived index is counted in the same payload/eviction accounting and rebuilt by replay/rewrite; no hidden allocation |
+
+**Recommended implementation order.** Start with the two independent large-value
+paths (4.15 reply, 4.25 input), then the journal pair (4.21 writes, 4.27 replay),
+then the shared keyspace index/eviction slot (4.31 keyspace stage + 4.26), then
+the shared sorted-set structure (4.30/4.38, with 4.49/4.50/4.43 reusing it), then
+hash/list collection writes (4.35), then the shared async ready queue
+(4.22/4.24/4.39), then rewrite (4.23) and the storage/drop pair (4.32/4.33).
+This order is a dependency guide, not a claim that any candidate passes the
+gate; each still needs its own matched cohort and fresh exact-head checks.
+
+**Branch/ownership rules.** A branch that adds a shared index owns the mutation
+hook, replay/rewrite rebuild, accounting and tests for that index. A follow-up
+consumer reuses the hook and must not add a parallel index merely to avoid
+touching the owner's files. If two candidates need the same structure, the first
+merged implementation defines it; later candidates adapt to it and record the
+change here. Do not combine unrelated candidates into one PR to avoid resolving
+the dependency.
+
+**Policy and evidence.** None of these structures requires a new crate, unsafe
+code, FFI, allocator or persistent format; the existing std collections,
+`Arc`, `Waker`/inbox, and in-repo CRC/HMAC/hex code suffice. The protected gates
+cover only 64-byte string rows and run with persistence/maxmemory off, so every
+candidate still needs its own measured cohort, AC reference and both performance
+gates on the exact implementation head. A docs-only dependency map is not a
+runtime pass.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -6195,7 +6237,8 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.54 list element edits | `list_insert` (`collection_commands.rs#L2698`), `list_remove` (`#L2750`), `list_set` (`#L2820`), `list_position` (`#L2321`), `Collection::list_values` (`data.rs#L41`) | pivot/index/count semantics; missing/empty; chunk split/merge; emptied-key deletion; TTL/WATCH/journal/rewrite; accounting | 200k `LINSERT` head/middle, `LSET` mid, `LREM` tail, `LPOS RANK -1`, 10-element controls | medium |
 | 4.55 frame-derived argument cap | `Limits`/`parse_request` (`protocol.rs#L5`, `#L17`), `dispatch_request`, server `--max-frame-bytes`/`--max-bulk-bytes` plumbing | count bound derived from the frame; frame error unchanged; PING fast path; arity/protocol tests; bounded slice memory | `MGET` 10k, `DEL`/`EXISTS`/`TOUCH` 2k, `MSET` 600 pairs, 1,023/1,024 boundary, over-frame rejection | small |
 
-**Priority.** For the whole-hash reply path, 4.29 is the next self-contained
+**Priority (see also the shared-structure map in section 2.38).** For the
+whole-hash reply path, 4.29 is the next self-contained
 candidate after this checkpoint (section 2.26): it is small, measured and needs
 no dependency. The keyspace-only 4.31 cursor stage is the next structural
 candidate (section 2.27); it is independently testable and does not require the
