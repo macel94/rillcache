@@ -398,6 +398,31 @@ fn ruleset_access(
             return Access::DeniedChannel(channel.to_vec());
         }
     }
+    if command.eq_ignore_ascii_case(b"PUBSUB") {
+        match arguments.get(1).copied() {
+            Some(subcommand)
+                if subcommand.eq_ignore_ascii_case(b"NUMSUB")
+                    || subcommand.eq_ignore_ascii_case(b"SHARDNUMSUB") =>
+            {
+                for channel in arguments.iter().skip(2) {
+                    if !patterns_allow(channels, channel) {
+                        return Access::DeniedChannel(channel.to_vec());
+                    }
+                }
+            }
+            // The extra argument is an internal per-result authorization probe;
+            // the optional pattern in the real CHANNELS request is not a channel.
+            Some(subcommand)
+                if (subcommand.eq_ignore_ascii_case(b"CHANNELS")
+                    || subcommand.eq_ignore_ascii_case(b"SHARDCHANNELS"))
+                    && arguments.len() == 4
+                    && !patterns_allow(channels, arguments[3]) =>
+            {
+                return Access::DeniedChannel(arguments[3].to_vec());
+            }
+            _ => {}
+        }
+    }
     Access::Allowed
 }
 
@@ -558,6 +583,28 @@ impl Auth {
             return Access::NoAuth;
         };
         Self::authorize_user_ref(user, arguments)
+    }
+
+    /// NUMPAT is a global count and cannot be safely filtered by channel. Allow
+    /// it only when an ACL ruleset granting this subcommand grants all channels.
+    pub fn authorize_pubsub_numpat(&self, authenticated: Option<&[u8]>) -> Access {
+        let Some((_, user)) = self.session_user(authenticated) else {
+            return Access::NoAuth;
+        };
+        let arguments = [b"PUBSUB".as_slice(), b"NUMPAT".as_slice()];
+        let grants_all = |rules: &[Rule], channels: &[Vec<u8>]| {
+            rules_allow(rules, &arguments) && channels.iter().any(|pattern| pattern == b"*")
+        };
+        if grants_all(&user.rules, &user.channels)
+            || user
+                .selectors
+                .iter()
+                .any(|selector| grants_all(&selector.rules, &selector.channels))
+        {
+            Access::Allowed
+        } else {
+            Access::DeniedChannel(Vec::new())
+        }
     }
 
     /// Evaluate a named user's rules without changing connection state. Returns
@@ -1414,8 +1461,15 @@ mod tests {
             &[b"PUBSUB".as_slice(), b"SHARDCHANNELS"],
             &[b"PUBSUB".as_slice(), b"SHARDNUMSUB", b"a"],
         ] {
-            assert_eq!(access(b"pubsub", command), Access::Allowed);
-            assert_eq!(access(b"slow", command), Access::Allowed);
+            let expected = if command[1].eq_ignore_ascii_case(b"NUMSUB")
+                || command[1].eq_ignore_ascii_case(b"SHARDNUMSUB")
+            {
+                Access::DeniedChannel(b"a".to_vec())
+            } else {
+                Access::Allowed
+            };
+            assert_eq!(access(b"pubsub", command), expected);
+            assert_eq!(access(b"slow", command), expected);
             assert_eq!(access(b"fast", command), Access::DeniedCommand);
             assert_eq!(access(b"admin", command), Access::DeniedCommand);
             assert_eq!(access(b"danger", command), Access::DeniedCommand);

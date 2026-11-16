@@ -209,12 +209,20 @@ describes current behavior, not a second checklist.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported.
-  Channel patterns gate PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE.
-  Sharded pub/sub is a separate standalone namespace and keyspace notifications
-  are process-local and at-most-once; neither is cluster-routed or durable.
-  `PUBSUB` introspection
-  is category-governed rather than channel-pattern-filtered, so it can reveal channel
-  names to a user allowed to run `@pubsub`. `CLIENT LIST`/`KILL` reveal connection
+  Channel patterns gate PUBLISH/SPUBLISH, SUBSCRIBE/UNSUBSCRIBE,
+  PSUBSCRIBE/PUNSUBSCRIBE and SSUBSCRIBE/SUNSUBSCRIBE.
+  `PUBSUB CHANNELS` and `SHARDCHANNELS` return only names permitted by the
+  caller's channel patterns (including selector-scoped grants). `NUMSUB` and
+  `SHARDNUMSUB` reject the whole request if any supplied channel is unauthorized,
+  avoiding partial counts. `NUMPAT` is denied unless a ruleset granting that
+  subcommand also grants all channels, because its global count cannot be safely
+  filtered. These introspection checks intentionally strengthen the pinned
+  Valkey 9.1.2 behavior: upstream's PUBSUB handlers return global data and its
+  generic ACL channel checks cover only channel-bearing command metadata. Other
+  unsupported PUBSUB subcommands continue to return their existing unsupported
+  errors. Sharded pub/sub is a separate standalone namespace and keyspace
+  notifications are process-local and at-most-once; neither is cluster-routed or
+  durable. `CLIENT LIST`/`KILL` reveal connection
   addresses/names/users and terminate sessions; grant the CLIENT command only to
   trusted administrators. Key patterns apply only to commands with declared key
   positions:

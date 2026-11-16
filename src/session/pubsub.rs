@@ -1,6 +1,6 @@
 //! Channel, pattern, shard and MONITOR subscription state and delivery.
 
-use crate::engine::Execution;
+use crate::engine::{Access, Execution};
 use std::io::Write;
 use std::sync::mpsc::SyncSender;
 
@@ -237,6 +237,10 @@ impl Session {
                 return;
             }
             let names = store.pubsub_channels(arguments.get(1).copied());
+            let names: Vec<_> = names
+                .into_iter()
+                .filter(|name| self.pubsub_channel_allowed(store, b"CHANNELS", name))
+                .collect();
             let _ = write!(output, "*{}\r\n", names.len());
             for name in names {
                 encode_bulk(Some(&name), output);
@@ -252,8 +256,19 @@ impl Session {
             if arguments.len() != 1 {
                 arity("pubsub|numpat", output);
             } else {
-                let _ = write!(output, ":{}", store.pubsub_numpat());
-                output.extend_from_slice(b"\r\n");
+                match store.authorize_pubsub_numpat(self.authenticated_user.as_deref()) {
+                    Access::Allowed => {
+                        let _ = write!(output, ":{}", store.pubsub_numpat());
+                        output.extend_from_slice(b"\r\n");
+                    }
+                    Access::DeniedChannel(channel) => {
+                        self.log_denial(store, "channel", "toplevel", &channel);
+                        output.extend_from_slice(
+                            b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
+                        );
+                    }
+                    _ => output.extend_from_slice(b"-NOAUTH Authentication required.\r\n"),
+                }
             }
         } else if subcommand.eq_ignore_ascii_case(b"SHARDCHANNELS") {
             if arguments.len() > 2 {
@@ -263,6 +278,10 @@ impl Session {
                 return;
             }
             let names = store.pubsub_shard_channels(arguments.get(1).copied());
+            let names: Vec<_> = names
+                .into_iter()
+                .filter(|name| self.pubsub_channel_allowed(store, b"SHARDCHANNELS", name))
+                .collect();
             let _ = write!(output, "*{}\r\n", names.len());
             for name in names {
                 encode_bulk(Some(&name), output);
@@ -278,6 +297,18 @@ impl Session {
             output.extend_from_slice(b"-ERR unsupported PUBSUB subcommand\r\n");
         }
     }
+    fn pubsub_channel_allowed<E: Execution>(
+        &self,
+        store: &E,
+        subcommand: &[u8],
+        channel: &[u8],
+    ) -> bool {
+        store.authorize(
+            self.authenticated_user.as_deref(),
+            &[b"PUBSUB", subcommand, b"", channel],
+        ) == Access::Allowed
+    }
+
     pub(super) fn subscriber_ping(&self, arguments: &[&[u8]], output: &mut Vec<u8>) {
         if arguments.len() > 1 {
             arity("ping", output);
