@@ -69,7 +69,17 @@ and checksum are also available under **Artifacts** in successful
 | Key/value payload budget | 64 MiB | `--max-data-bytes` |
 | Request argument / frame bound | 1 MiB / 2 MiB | `--max-bulk-bytes` / `--max-frame-bytes` |
 | Socket inactivity timeout | 30 seconds | `--idle-timeout-ms` |
+| Incomplete plaintext request assembly deadline | 60 seconds (`0` disables) | `--frame-assembly-timeout-ms` |
 | Authentication / persistence | Off | [Security](security.md) / [persistence](persistence.md) |
+
+The assembly deadline is independent of the inactivity timeout: once parsing has
+identified an incomplete plaintext request, trickling more bytes does not restart
+its monotonic timer. It applies to RESP/inline plaintext delivered to the parser,
+including plaintext read through an established TLS connection; it does not bound
+a TLS peer that trickles encrypted records without producing plaintext. Complete
+buffered requests are not timed out while command work is paused or backpressured.
+Set the assembly deadline to `0` only when another layer supplies an equivalent
+bound.
 
 The payload budget is not a process-memory limit: metadata, indexes, buffers,
 threads and sockets also use memory. Start with the defaults, then measure your

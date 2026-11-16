@@ -29,6 +29,7 @@ const SUPPORTED: &[&str] = &[
     "max-bulk-bytes",
     "max-frame-bytes",
     "idle-timeout-ms",
+    "frame-assembly-timeout-ms",
     "requirepass",
     "requirepass-file",
     "aclfile",
@@ -256,6 +257,14 @@ aof-hmac-migrate no
                 "--appendonly",
                 "yes",
             ]
+        );
+    }
+
+    #[test]
+    fn frame_assembly_timeout_directive_maps_to_cli_option() {
+        assert_eq!(
+            parse_text("frame-assembly-timeout-ms 0\n").unwrap(),
+            vec!["--frame-assembly-timeout-ms", "0"]
         );
     }
 

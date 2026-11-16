@@ -7,6 +7,7 @@
 //! replacement; see `docs/client-sessions.md` and `docs/requirements.md`.
 
 pub mod engine;
+mod frame_deadline;
 pub mod protocol;
 pub mod server;
 pub mod session;
