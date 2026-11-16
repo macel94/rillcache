@@ -10,7 +10,8 @@ copy-avoidance decision (section 2.30), 4.25 has a reservation decision
 (section 2.31), 4.26 has a pooled-sampling decision (section 2.32), and 4.30
 has an ordered-index decision (section 2.33), and 4.23 has a bounded-
 materialisation decision (section 2.34), and 4.27 has a single-pass replay
-decision (section 2.35), but all remain gated; every other runtime item here is historical or
+decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
+2.36), but all remain gated; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1556,7 +1557,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, direct-iteration decision (2.26) | AC31/AC58 on the implemented change | none at 64 B |
 | Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, ordered-index decided (2.33) | AC32 on the implemented change | none at 64 B |
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 ordered-index decided (2.33); 4.38 rank layer separate | AC32/AC40 | none |
-| Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
+| Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, push-ready decided (2.36, with 4.24) | AC41 | none |
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 → **0.33** vs 0.08–0.35 (parity with Redis); `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
@@ -1597,7 +1598,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, per-turn coalescing decided (2.28) | AC23 implementation + A/B | none (persistence off) |
 | 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1%, post-#226 5.0/21.4 | 4.22, ready-key wake decided (2.29) | AC25 on the implemented change | none |
-| Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%, post-#226 4.6/13.6/22.4 and 4.2/20.8/26.6; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
+| Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%, post-#226 4.6/13.6/22.4 and 4.2/20.8/26.6; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, push-ready decided (2.36) | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23, bounded materialisation decided (2.34) | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | TTL index and clock | latency, storage | **measured null** in a limited 8-client cohort (~110–125k/s; differences inside host spread) | no candidate; 4.9 stays closed | clean TTL cohort (4.16 row 1) | none |
@@ -2226,6 +2227,67 @@ normal client observer path, and any new dependency.
 50k ≤0.08 s; exact DBSIZE/payload/TTLs; corrupt/truncated tails never served;
 SIGKILL/replay, HMAC on/off, stream consumer/PEL, both protected gates; no
 dependency.
+
+### 2.36 2026-11-16 checkpoint: pub/sub and MONITOR still wait for the 1 ms tick
+
+The protected gate has no subscribers or monitors. The retained cohort (section
+3.12) measures idle CPU at **4.6/13.6/22.4%** for 1/100/1000 subscribers and
+**4.2/20.8/26.6%** for monitors after the #226 spin fix, versus under 1% for the
+C servers. Delivery after the publishing/monitored command is **1.05/3.60 ms**
+p50/p99 for pub/sub and **0.37/6.15 ms** for MONITOR, versus roughly
+0.05–0.08 ms p50 and ≤1.19 ms p99 for the C servers. A 2,000-message burst also
+delivers only 1,024 and silently removes the subscription (section 3.23).
+
+Current source audit:
+
+- `PubSub::publish` builds one frame per subscriber and uses
+  `SyncSender::try_send`; on a full queue it returns `false`, and the retain
+  removes the subscriber from the channel map. There is no per-client pending
+  byte budget or counted overflow path.
+- The reactor registers blocked/paused/subscribed/monitoring clients in the same
+  `asynchronous` set and re-enqueues every member on each `ASYNC_TICK`; a
+  published frame waits for that scan before it is drained from the client's
+  receiver.
+
+The C servers append push messages directly to each destination client's reply
+list while publishing, and the event loop writes ready clients:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Fan-out | per-subscriber channel, `try_send` | `pubsubPublishMessage` appends to each client output ([`pubsub.c#L469`](https://github.com/redis/redis/blob/8.10.2/src/pubsub.c#L469)) | same ([`pubsub.c#L508`](https://github.com/valkey-io/valkey/blob/9.1.2/src/pubsub.c#L508)) | **adapt** direct ready marking |
+| Wake | 1 ms async scan | event loop/readiness | event loop/readiness | **adapt** same-pass service |
+| MONITOR | same async set | `replicationFeedMonitors` appends to monitor outputs ([`replication.c#L806`](https://github.com/redis/redis/blob/8.10.2/src/replication.c#L806)) | same ([`replication.c#L694`](https://github.com/valkey-io/valkey/blob/9.1.2/src/replication.c#L694)) | **adapt** direct ready marking |
+| Slow consumer | full queue silently removes subscription | output-buffer limit/disconnect policy | same | **copy the explicit contract**, count drop or disconnect |
+| Dependencies | std channel | C list/output buffers | C list/output buffers | none |
+
+**Decision.** Adapt event-driven push servicing without copying the C reply
+lists. Keep the existing channel/pattern/shard maps and subscriber IDs, but add
+a bounded shared ready queue of client IDs (or per-owner equivalent) and a
+per-client pending-byte counter. A successful publish enqueues the frame and
+marks only its destination clients ready; the reactor drains those clients after
+the current command batch, using the existing `Waker`/inbox rather than a 1 ms
+scan. The same path marks monitors when a command is observed, preserving monitor
+order relative to the command stream. Keep the 1 ms `ASYNC_TICK` as the timeout
+and missed-wake fallback.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or async-runtime change:
+`std::sync::mpsc`, the existing `mio::Waker`/inbox and the existing
+`SyncSender<Vec<u8>>` queue. The ready queue and pending-byte counts are derived,
+bounded state; no message persistence or new dependency is introduced.
+
+**Risks and rejected options.** A missed wake strands a subscriber or monitor;
+duplicate ready marks, out-of-order pushes, fanout memory, unsubscribe while a
+message is queued, monitor ordering, multi-owner routing and shutdown with
+queued pushes are the failure modes. Bound the ready queue and each client's
+pending bytes; on overflow, keep the subscription with a counted drop or
+disconnect explicitly, never silently remove it. Rejected: polling faster than
+1 ms, one thread per subscriber, an unbounded queue, a new async runtime, and
+copying the C output-buffer implementation.
+
+**Acceptance.** AC27 covers idle CPU/delivery latency for subscribers and
+monitors; AC41 covers the burst, counted-overflow/disconnect contract, 10k-channel
+publish and 100-subscriber fanout. Both require the ordered/unsubscribe/shutdown
+tests and the protected gates.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5826,7 +5888,7 @@ total completion shall stay within 25% of the measured 4.85 s (20k) and 43.4 s
 (200k) baselines; both protected gates shall pass; and no dependency shall be
 added.
 
-### 4.24 Event-driven async-client servicing for pub/sub and MONITOR (candidate, admission measured)
+### 4.24 Event-driven async-client servicing for pub/sub and MONITOR (candidate; push-ready decision)
 
 **Mechanism.** Register subscribers and monitoring clients for event-driven wake
 instead of the 1 ms `asynchronous` set: a `PUBLISH` (or a command while a monitor
@@ -5864,6 +5926,15 @@ duplicate or out-of-order delivery, fanout memory, unsubscribe while a message i
 queued, monitor command ordering and shutdown with queued pushes are the failure
 modes. Keep the 1 ms fallback, bound the queue, and preserve the existing
 message ordering.
+
+**Decision (2026-11-16, section 2.36).** Adapt direct destination readiness:
+keep the channel/pattern/shard maps and subscriber IDs, add a bounded shared
+ready-client queue and per-client pending-byte counter, enqueue the frame and mark
+only the destination clients, and drain them after the current command batch
+through the existing `Waker`/inbox. Mark monitors on command observation with the
+same path. Keep the 1 ms tick only as timeout/missed-wake fallback. Reject polling
+faster than 1 ms, per-subscriber threads, unbounded queues/new runtimes and the C
+output-buffer implementation. No dependency; AC27/AC41 remain the criteria.
 
 **Rejection condition.** Any missed, duplicated or out-of-order delivery; any
 unsubscribe or shutdown regression; no idle-CPU improvement; or any protected
@@ -6080,9 +6151,9 @@ the large-reply shape, and the 4.25 reservation decision (section 2.31) fixes th
 large-input shape; the 4.26 pooled-sampling decision (section 2.32) fixes the
 pressure path, and the 4.30 ordered-index decision (section 2.33) fixes the
 sorted-set point/range shape, and the 4.23 decision (section 2.34) fixes the
-rewrite start shape; the 4.27 single-pass decision (section 2.35) fixes replay.
-Then the 4.25, 4.15 and 4.26 implementations for large values and memory
-pressure, 4.26 for eviction, 4.45 for
+rewrite start shape; the 4.27 single-pass decision (section 2.35) fixes replay, and the 4.24/4.39
+push-ready decision (section 2.36) fixes async push. Then the 4.25, 4.15 and
+4.26 implementations for large values and memory pressure, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -6797,7 +6868,7 @@ negative indices, reverse ranges, `LIMIT`, `ZSetPack`, rewrite/replay, TTL and
 accounting tests shall pass; 4.30's AC32 rows shall also pass; no dependency
 shall be added; and both protected gates shall pass on the exact head.
 
-### 4.39 Contract-correct pub/sub fan-out (candidate; admission measured)
+### 4.39 Contract-correct pub/sub fan-out (candidate; push-ready decision)
 
 **Mechanism.** Keep the per-subscriber boundary but make it contract-correct and
 bounded in bytes. Look the channel up with `HashMap::get_mut` and skip the
@@ -6839,6 +6910,12 @@ per-subscriber RESP version/pattern variant respected; memory accounting and the
 **Rejected options.** Keeping the 1,024-message queue and silently removing the
 subscriber (measured loss), an unbounded queue (memory growth), and switching to
 a per-message thread or a new async runtime (outside the dependency boundary).
+
+**Decision (2026-11-16, section 2.36).** The push-ready path above is shared
+with 4.24. Bound the per-client pending bytes and ready queue, account the encoded
+frame, and make overflow a counted drop with the subscription intact or a
+documented disconnect; never silently remove the subscriber or truncate a
+monitor feed. No dependency; AC41 remains the acceptance criterion.
 
 **Rejection condition.** Any message is lost without a counted/documented
 behavior, a subscription disappears while the client stays connected, ordering or
@@ -9322,7 +9399,9 @@ separate roadmap.
   unimplemented, section 2.28); and eviction pressure (P16 20,498 vs 144,365
   without eviction; 4.26 has a pooled-sampling decision but is unimplemented,
   section 2.32). The sorted-set ordered-index decision (section 2.33) is the
-  largest read-path gap; it is not implemented. The 4.23 bounded rewrite
+  largest read-path gap; it is not implemented. The 4.24/4.39 push-ready
+  decision (section 2.36) leaves the measured 4.2–26.6% idle async CPU and
+  1.05/3.60 ms pub/sub delivery unimplemented. The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
