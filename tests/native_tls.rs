@@ -17,12 +17,31 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn start(workers: Option<usize>, client_ca: bool) -> ServerHandle {
+    start_with_timeouts(
+        workers,
+        client_ca,
+        Duration::from_secs(5),
+        Duration::from_secs(30),
+        128,
+    )
+}
+
+fn start_with_timeouts(
+    workers: Option<usize>,
+    client_ca: bool,
+    handshake_timeout: Duration,
+    idle_timeout: Duration,
+    max_clients: usize,
+) -> ServerHandle {
     Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
         tls_cert_file: Some(fixture("server.crt")),
         tls_key_file: Some(fixture("server.key")),
         tls_client_ca_file: client_ca.then(|| fixture("ca.crt")),
+        tls_handshake_timeout: handshake_timeout,
+        idle_timeout,
+        max_clients,
         worker_threads: workers,
         ..Config::default()
     })
@@ -236,6 +255,102 @@ fn completed_tls_frame_clears_deadline_for_later_commands() {
     assert_eq!(&pong, b"+PONG\r\n");
     std::thread::sleep(Duration::from_millis(350));
     ping(&mut tls);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn handshake_deadline_closes_silent_and_clienthello_trickle_peers() {
+    let server = start_with_timeouts(
+        None,
+        false,
+        Duration::from_millis(250),
+        Duration::from_secs(2),
+        1,
+    );
+    let silent = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();
+    silent
+        .set_read_timeout(Some(Duration::from_millis(800)))
+        .unwrap();
+    let started = std::time::Instant::now();
+    let mut byte = [0u8; 1];
+    assert!(matches!((&silent).read(&mut byte), Err(_) | Ok(0)));
+    assert!(started.elapsed() < Duration::from_millis(800));
+    drop(silent);
+
+    let mut trickle = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();
+    trickle
+        .set_read_timeout(Some(Duration::from_millis(800)))
+        .unwrap();
+    trickle
+        .set_write_timeout(Some(Duration::from_millis(800)))
+        .unwrap();
+    let mut hello = ClientConnection::new(
+        client_config(false, false),
+        ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
+    let mut client_hello = Vec::new();
+    hello.write_tls(&mut client_hello).unwrap();
+    assert!(client_hello.len() > 30);
+    let mut dripper = trickle.try_clone().unwrap();
+    let sender = std::thread::spawn(move || {
+        let mut sent = 0;
+        for byte in client_hello {
+            std::thread::sleep(Duration::from_millis(40));
+            if dripper.write_all(&[byte]).is_err() {
+                break;
+            }
+            sent += 1;
+        }
+        sent
+    });
+    let started = std::time::Instant::now();
+    let read = trickle.read(&mut byte);
+    let elapsed = started.elapsed();
+    assert!(matches!(read, Err(_) | Ok(0)));
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "closed after {elapsed:?}"
+    );
+    let sent = sender.join().unwrap();
+    assert!(sent > 1, "peer made no fragmented ClientHello progress");
+    drop(trickle);
+
+    let mut healthy = connect(&server, false);
+    ping(&mut healthy);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn fragmented_clienthello_completes_and_handshake_budget_is_cleared() {
+    let server = start_with_timeouts(
+        None,
+        false,
+        Duration::from_millis(250),
+        Duration::from_secs(2),
+        128,
+    );
+    let mut tcp = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    tcp.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+    let mut conn = ClientConnection::new(
+        client_config(false, false),
+        ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
+    let mut client_hello = Vec::new();
+    conn.write_tls(&mut client_hello).unwrap();
+    for chunk in client_hello.chunks(64) {
+        tcp.write_all(chunk).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let mut stream = StreamOwned::new(conn, tcp);
+    ping(&mut stream);
+
+    // A successful handshake must not leave its short deadline active for
+    // ordinary authenticated protocol traffic on the established connection.
+    std::thread::sleep(Duration::from_millis(350));
+    ping(&mut stream);
     server.shutdown().unwrap();
 }
 
