@@ -30,6 +30,14 @@ ignored by default and requires `RILLCACHE_REFERENCE_ADDR` plus
 - **When** GETEX PXAT uses a past timestamp, **then** it shall return the previous
   binary value and remove the key; PEXPIRE with zero shall also remove it. Missing
   and persistent keys shall report the stable -2 and -1 TTL/PTTL sentinels.
+- **When** commands are queued in MULTI, **then** another connection shall not
+  observe their writes until EXEC; EXEC shall return ordered results, including
+  runtime errors, and continue executing later commands without rollback.
+- **When** DISCARD clears a queue or a queue-time arity error causes EXECABORT,
+  **then** no queued writes shall become visible to another connection.
+- **When** another connection changes a watched key or creates a watched missing
+  key, **then** EXEC shall return a null array and leave the other connection's
+  value intact. The aborted EXEC shall clear WATCH for the next transaction.
 - **When** a RESP request arrives byte-by-byte or multiple commands are pipelined,
   **then** framing and ordered one-reply-per-command behavior shall be preserved.
 - **When** QUIT precedes another pipelined write, **then** the server shall flush
@@ -48,8 +56,8 @@ items, nesting to 16 levels, and socket operations to three seconds. The corpus
 uses future absolute timestamps for deterministic TTL checks rather than sleeps.
 It compares expected stable command semantics, not server identities, version
 text, implementation metadata, or all command behavior. It is not a full Redis
-compatibility suite, client-library integration suite, cluster test, or performance
-benchmark.
+compatibility suite, exhaustive transaction/isolation test, client-library
+integration suite, cluster test, or performance benchmark.
 
 The optional test runs the same current-supported corpus against Rillcache in all
 three managed modes and the selected disposable native reference. Its key namespace
@@ -91,4 +99,5 @@ Sources: [Redis SET](https://redis.io/docs/latest/commands/set/),
 [Redis GETEX](https://redis.io/docs/latest/commands/getex/),
 [Redis INCR](https://redis.io/docs/latest/commands/incr/),
 [Redis EXPIRE](https://redis.io/docs/latest/commands/expire/),
+[Redis transactions](https://redis.io/docs/latest/develop/using-commands/transactions/),
 [RESP specification](https://redis.io/docs/latest/develop/reference/protocol-spec/).
