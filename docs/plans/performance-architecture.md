@@ -5,8 +5,9 @@ both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); 4.37's `BITFIELD` write
 path has landed and the rest of it remains gated; 4.29 has a source-pinned
 direct-iteration decision (section 2.26), 4.31 has a keyspace-stage cursor
 decision (section 2.27), 4.21 has a per-turn coalescing decision (section
-2.28), 4.22 has a ready-key wake decision (section 2.29), and 4.15 has a
-copy-avoidance decision (section 2.30), but all remain gated; every other runtime item here is historical or
+2.28), 4.22 has a ready-key wake decision (section 2.29), 4.15 has a
+copy-avoidance decision (section 2.30), and 4.25 has a reservation decision
+(section 2.31), but all remain gated; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1589,7 +1590,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Multi-key argument cap | parsing, compatibility | **measured boundary**: 1,024 total args accepted, 1,025 rejected; Redis/Valkey execute `MGET` 10,000, `MSET` 600 pairs and `DEL` 2,000; 1,000-key latency is at parity or leads (`MGET` 1.74 vs 2.23/2.34) | 4.55, admitted | AC57 | none |
 | Skewed-cardinality algebra | replies, latency | **measured**: 100k + 10 `SINTER` 33.8 ms vs 0.19/0.19 (178×), `SINTERCARD` 35.9 vs 0.24/0.34, `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k is 33–78×; `SDIFF`/`SUNION` lead; 10-member controls at the floor | 4.51, extended | AC53 | none |
 | Range store forms | replies, latency | **measured**: 100k `ZRANGESTORE` 0–9 51.3 ms vs 0.28/0.12 (177–428×), 50000–50009 51.4, 0–999 54.6 vs 1.41/0.70, `REV` 56.8, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 0–-1 138.7 vs 89.8/74.1; 10-member control at the floor | 4.50, extended (store forms) | AC52 | none |
-| Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
+| Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, reservation decided (2.31) | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, per-turn coalescing decided (2.28) | AC23 implementation + A/B | none (persistence off) |
 | 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1%, post-#226 5.0/21.4 | 4.22, ready-key wake decided (2.29) | AC25 on the implemented change | none |
@@ -1928,6 +1929,62 @@ copying into `Vec` (measured), `mmap`/unsafe iovec construction, a new
 `bytes`/`iovec` dependency, unconditional `Arc` for 64-byte values, and writing
 the value without retaining it across a `WouldBlock`. AC20 is the measurable
 criterion.
+
+### 2.31 2026-11-16 checkpoint: large frames still grow the input buffer in 16 KiB reads
+
+The protected gate sends 64-byte values, so the clean results in sections
+2.26–2.30 do not exercise large request frames. The retained large-value cohort
+(section 2.21) measures 1 MiB SET **28.2% behind Redis and 31.8% behind Valkey**
+with p99 9.79 vs 7.37/7.82 ms, while the 64-byte control leads. The SET reply is
+small, so the gap is on the input/parse side rather than the reply path; 4.15
+covers the separate large-GET copy.
+
+Current source audit:
+
+- `server/pool.rs::Client::receive` and the reactor client path read at most the
+  remaining frame budget into a reusable 16 KiB chunk and `extend_from_slice`
+  into `input`. The `Vec` therefore grows geometrically while a large declared
+  bulk is arriving; no reserve is based on the parsed bulk length.
+- `protocol.rs` parses a bulk header and returns incomplete until the required
+  bytes arrive, but the read loop has no bounded reservation hint.
+
+The C servers reserve from the validated bulk length:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Read chunk | fixed 16 KiB | 16 KiB by default; large argument path sets `readlen` to the remaining declared bulk | same | keep the bounded default read |
+| Large-frame reserve | geometric `Vec` growth | `big_arg` path, `sdsMakeRoomForNonGreedy` for the declared object ([`networking.c#L3278`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L3278), [`#L3893`](https://github.com/redis/redis/blob/8.10.2/src/networking.c#L3893)) | same shape ([`networking.c#L3842`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L3842), [`#L4300`](https://github.com/valkey-io/valkey/blob/9.1.2/src/networking.c#L4300)) | **adapt** a bounded reservation hint |
+| Limit enforcement | frame budget caps the read | `proto_max_bulk_len` and frame checks | same | keep limits authoritative |
+| Small frames | one 16 KiB read | normal reusable buffer | same | unchanged |
+| Dependencies | std `Vec` | C/sds | C/sds | std `Vec::try_reserve`/capacity |
+
+**Decision.** Adapt the reservation, not the C allocation path. Once the parser
+has validated a complete bulk header of length `L` and the total frame is within
+`max_bulk_bytes`/`max_frame_bytes`, return a bounded reservation hint to the
+read loop. Reserve in bounded steps (for example 64 KiB at a time) up to the
+declared frame end, using `Vec::try_reserve` so allocation failure is a visible
+connection error rather than a panic. Never allocate the advertised length
+before validation, never exceed the configured frame limit, and keep the 16 KiB
+default read for small or incomplete frames. The parser, fragmentation,
+truncation, over-limit errors and close ordering remain unchanged.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::vec::Vec::try_reserve` and the existing `Limits`. Both the fixed-worker and
+reactor input paths use the same hint; a lying length consumes at most the
+configured bounded frame, not an arbitrary reservation.
+
+**Risks and rejected options.** A reservation from an untrusted length is a
+memory-DoS surface; cap by the validated frame, reserve in bounded steps, and
+test an allocation failure. Fragmented, truncated, pipelined and half-closed
+frames must behave exactly as today, and 64-byte rows must not take a new
+allocation path. Rejected: allocating the declared bulk length immediately,
+unbounded `Vec::with_capacity`, an unconditional read-size change, and any new
+dependency.
+
+**Acceptance.** AC28 is the measurable criterion: 1 MiB SET within 10% of the
+best reference and p99 no worse than 1.25×; over-limit/lying lengths reserve no
+more than the configured bound; fragmentation/truncation/malformed behavior is
+unchanged; the matched A/B shows the gain; both protected gates pass.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5571,7 +5628,7 @@ delivery p99 shall be within 200 µs of Valkey and at least 2× better than the
 shall pass; no dependency shall be added; and both protected gates shall pass on
 the exact head.
 
-### 4.25 Large-frame input reservation (candidate; admission measured)
+### 4.25 Large-frame input reservation (candidate; reservation decision)
 
 **Mechanism.** After parsing and validating a bulk header of length `L`, ensure
 the input buffer has capacity for the remaining frame (capped by the configured
@@ -5597,6 +5654,14 @@ bound the total by `max_frame`/`max_bulk`, reserve in bounded steps, and keep
 admission and per-client limits unchanged. Fragmented, truncated, malformed and
 over-limit frames must behave exactly as today; no hot-path branch for small
 frames beyond the existing header parse.
+
+**Decision (2026-11-16, section 2.31).** Adapt the C servers' validated-length
+reservation with std `Vec::try_reserve`: the parser returns a bounded reservation
+hint after a complete bulk header, the read loop reserves in bounded steps up to
+the declared frame end, and a lying/over-limit length never reserves beyond the
+configured frame. Keep the 16 KiB default read for small/incomplete frames.
+Reject immediate full-length allocation, unbounded `with_capacity`, unconditional
+read-size changes and new dependencies. AC28 remains the acceptance criterion.
 
 **Rejection condition.** No 1 MiB SET gain above the spread; any unbounded or
 over-limit reservation from a lying length; any parser/limit/close regression; or
@@ -5745,7 +5810,8 @@ per-turn coalescing decision (section 2.28) now fixes the write shape; it still
 needs the implementation and persistence-on A/B. The 4.22 ready-key decision
 (section 2.29) fixes the blocked-wake shape and remains the largest measured
 latency/idle-CPU candidate. The 4.15 copy-avoidance decision (section 2.30) fixes
-the large-reply shape. Then 4.25 and the 4.15 implementation for large values, 4.26 for eviction, 4.45 for
+the large-reply shape, and the 4.25 reservation decision (section 2.31) fixes the
+large-input shape. Then the 4.25 and 4.15 implementations for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -8964,7 +9030,8 @@ separate roadmap.
   host-dependent, host-dependent P1 tail variance, the large-value reply copy
   and input-growth copies that the 64-byte gate cannot see — **1 MiB GET −42% to
   −45%, SET −28% to −32%** (sections 2.20–2.22; 4.15 has a copy-avoidance
-  decision but is unimplemented, section 2.30) — the large multi-bulk hash
+  decision and 4.25 a reservation decision, both unimplemented, sections 2.30–
+  2.31) — the large multi-bulk hash
   reply (10k `HGETALL` **−43% vs Redis**, section 3.2; 4.29 now has a
   direct-iteration decision and AC58 but is not implemented, section 2.26);
   the keyspace `SCAN` path (42.6 ms per 100k/COUNT 10, section 3.16; 4.31
