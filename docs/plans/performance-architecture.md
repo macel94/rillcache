@@ -12,8 +12,9 @@ has an ordered-index decision (section 2.33), and 4.23 has a bounded-
 materialisation decision (section 2.34), and 4.27 has a single-pass replay
 decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all remain gated; the
-shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), 4.32 has a packed-node decision (section 2.41), and 4.36 has a dense-index
-decision (section 2.42); every other runtime item here is historical or
+shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), 4.32 has a packed-node decision (section 2.41), 4.36 has a dense-index
+decision (section 2.42), and 4.50 has a seek decision (section 2.43); every
+other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1335,7 +1336,7 @@ rest are still true even though every row now leads:
     costs **56.0–69.8 ms versus 0.18–0.74** because `select_zset` sorts the whole
     set before filtering, and `ZLEXCOUNT`/`ZCOUNT` scan every member
     (**1.25–15.0 ms versus 0.13–0.39**, including an empty `ZCOUNT`); section
-    3.38, candidate 4.50 on 4.30/4.38's ordered index.
+    3.38, 4.50 seek decided (2.43) on 4.30/4.38's ordered index.
 31. **Stream consumer-group reads.** `XREADGROUP` history/new, `XPENDING`,
     `XCLAIM` and `XAUTOCLAIM` on a 10k-entry stream with a 10k-entry PEL stay
     within **1.3–2.1×** of Redis/Valkey (largest forms: new-read 1000 8.99 vs
@@ -1392,7 +1393,7 @@ rest are still true even though every row now leads:
     **51.3–59.6 ms versus 0.12–0.35** (177–428×) and a 1,000-entry store 54.6
     versus 0.7–1.4 (39–78×); the lex/score `LIMIT 10` stores are 259–310×,
     because the store routes through the full `ordered_zset` sort; the full-range
-    store is 1.5–1.9× (section 3.49, extending 4.50).
+    store is 1.5–1.9× (section 3.49, 4.50 seek/store decided in 2.43).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1576,7 +1577,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 → 1.082 ms vs 0.664/0.232, `ZPOPMAX` 159.9 → 1.245, `ZPOPMIN 10` 146.6 → 1.542, `ZMPOP` 155.8 → 1.648; tie-heavy (all scores 0) 4.8–6.0; 100-member control at the floor | 4.49, implemented without the ordered index | AC51 missed (1.08–1.65 vs ≤0.3) | ordered `(score, member)` index |
-| Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
+| Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, seek decided (2.43) | AC52 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31 keyspace stage decided (2.27); large HSCAN staged | AC33/AC59 | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, packed-node decided (2.41) | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
@@ -1595,7 +1596,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Set membership reply | replies | **measured lead/null**: `SMEMBERS` 100k 84.75 ms vs 88.71/86.37, 10k 9.95 vs 9.33/9.58, 1k 0.97 vs 1.11/1.24, 10-member control at the floor; the 1.5 MB reply hides the collect+sort | no candidate; keep 4.29 scoped to hashes | n/a | none |
 | Multi-key argument cap | parsing, compatibility | **measured boundary**: 1,024 total args accepted, 1,025 rejected; Redis/Valkey execute `MGET` 10,000, `MSET` 600 pairs and `DEL` 2,000; 1,000-key latency is at parity or leads (`MGET` 1.74 vs 2.23/2.34) | 4.55, admitted | AC57 | none |
 | Skewed-cardinality algebra | replies, latency | **measured**: 100k + 10 `SINTER` 33.8 ms vs 0.19/0.19 (178×), `SINTERCARD` 35.9 vs 0.24/0.34, `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k is 33–78×; `SDIFF`/`SUNION` lead; 10-member controls at the floor | 4.51, extended | AC53 | none |
-| Range store forms | replies, latency | **measured**: 100k `ZRANGESTORE` 0–9 51.3 ms vs 0.28/0.12 (177–428×), 50000–50009 51.4, 0–999 54.6 vs 1.41/0.70, `REV` 56.8, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 0–-1 138.7 vs 89.8/74.1; 10-member control at the floor | 4.50, extended (store forms) | AC52 | none |
+| Range store forms | replies, latency | **measured**: 100k `ZRANGESTORE` 0–9 51.3 ms vs 0.28/0.12 (177–428×), 50000–50009 51.4, 0–999 54.6 vs 1.41/0.70, `REV` 56.8, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 0–-1 138.7 vs 89.8/74.1; 10-member control at the floor | 4.50, seek/store decided (2.43) | AC52 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, reservation decided (2.31) | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, per-turn coalescing decided (2.28) | AC23 implementation + A/B | none (persistence off) |
@@ -2531,6 +2532,76 @@ memory accounting, `SMEMBERS`/`HKEYS`/`ZSCAN` ordering and WATCH/journal/rewrite
 must stay exact. Rejected: collecting the whole collection, sorting, rescanning
 for every pick, an external RNG crate and a second copy of each member. AC38 is
 the criterion.
+
+### 2.43 2026-11-16 checkpoint: lex ranges still sort the whole set and counts still scan
+
+The protected gate has no `BYLEX`, `ZLEXCOUNT` or `ZCOUNT` row. The retained
+cohorts (section 3.38, extended by the store cohort in 3.49) measure a 100k
+equal-score zset at **56.0–69.8 ms** for `ZRANGEBYLEX ... LIMIT 10` (unbounded,
+mid-range and reverse) versus 0.18–0.74 ms for Redis and Valkey; a narrow
+`ZLEXCOUNT` is **15.0 vs 0.21–0.22 ms**, `ZCOUNT` is 1.25–1.75 ms even for an
+empty range, the full 100k lex reply is 144.8 versus 87.2–100.2, a ten-entry
+`ZRANGESTORE` is 51.3–59.6 versus 0.12–0.35, and a 1,000-entry store is 54.6
+versus 0.70–1.41. Ten-member controls are at the command floor.
+
+Current source audit:
+
+- `zset_range` reads `zset_items` and calls `select_zset`, which first calls
+  `ordered_zset`: it clones every `(member, score)` into a `Vec<Vec<u8>>` and
+  sorts all 100k entries. `BYLEX`/`BYSCORE` then filter that vector and `LIMIT`
+  is applied last, so a ten-entry reply pays the full clone, sort and filter.
+- The store branch builds a `HashMap` from the selected entries and re-encodes
+  it; the full sort happens before ten entries are copied.
+- `zset_count` and `zset_lex_count` iterate `zset_items` and test every member,
+  so an empty score range still scans the whole set.
+- The decided 4.30/4.38 ordered index is not used yet. Once it exists, both the
+  bound seek and the rank subtraction are available from the same structure.
+
+The C servers seek the stored order and subtract spans:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Bounded `BYLEX` reply | clone + sort + filter + LIMIT | seek nth in lex range, walk `offset + count`, stop at the bound ([`t_zset.c#L3799`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3799)) | same ([`t_zset.c#L3488`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3488)) | **adapt** seek on the shared ordered index |
+| Reverse and `LIMIT` | reverse-sort, then filter | negative nth in lex range, walk `backward` (`zslNthInLexRange`, [`t_zset.c#L866`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L866)) | same ([`t_zset.c#L768`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L768)) | last-block seek + reverse walk |
+| `ZLEXCOUNT` | scan every member | first/last nth in range, subtract ranks ([`t_zset.c#L3721`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3721)) | same ([`t_zset.c#L3410`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3410)) | rank subtraction |
+| `ZCOUNT` | scan every member | same with a score range ([`t_zset.c#L3646`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3646)) | same ([`t_zset.c#L3336`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3336)) | rank subtraction |
+| Range store | full sort, then a ten-entry map and re-encode | the result handler emits only the selected range | same | copy only the selected range |
+| Small packs | small vector | listpack first-in-range and walk | same | keep the direct small path |
+| Dependencies | std only | C/listpack | C/listpack | std `Vec`/binary search/Fenwick, no crate |
+
+**Decision.** Answer lex and score ranges from the shared ordered index decided
+in 2.33/2.40 rather than from `ordered_zset`:
+
+- binary-search the first/last block by `(score, member)` for `BYSCORE` and the
+  rank paths; for `BYLEX` seek the member inside the equal-score run (locating
+  the score group first) and preserve today's result for mixed scores;
+- start at the seeked entry and walk at most `offset + count` entries, keeping
+  the existing negative/zero/overflow `LIMIT` rules and exclusive/infinite bound
+  semantics;
+- `ZCOUNT`/`ZLEXCOUNT` compute `rank(last) − rank(first) + 1` from the 4.38
+  prefix counts, return 0 when either bound seek fails, and return the zset
+  length for a fully unbounded range without touching entries;
+- the reply and store forms share that iterator; a store builds the destination
+  from only the selected entries, clears the destination TTL and accounts its
+  payload exactly, while the source is read before the destination write;
+- packs answer directly below the threshold; conversion at the existing
+  threshold preserves order, and the index is rebuilt by replay/rewrite;
+- no new structure beyond 4.30/4.38, no dependency, no `unsafe`.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::vec::Vec` binary search, `std::sync::Arc` and the small Fenwick prefix
+counts from 4.38. The index stays derived state, is never persisted and is
+counted by payload/eviction accounting. No persistent-format or configuration
+change.
+
+**Risks and rejected options.** Bound parsing (`(`, `[`, `-`, `+`, NaN);
+exclusive, infinite and reversed bounds; `LIMIT` offset arithmetic; mixed
+score/member order; empty results and destination removal; pack conversion;
+store TTL/accounting; WATCH version, journal and rewrite snapshots are the
+obligations. Rejected: sorting and breaking early (still O(n log n)), caching a
+sorted vector per key (invalidated by every write and unbounded), a second
+lex-only index (duplicate storage and another invariant), and keeping the
+per-count scan. AC52 remains the measurable criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5096,8 +5167,9 @@ already-leading union/diff set paths.
   Ten-entry stores are **177–428×** behind; the 1,000-entry store is 39–78× and
   the lex/score three-argument forms are 259–310×. The full-range store is only
   1.5–1.9× because writing 100k destination entries dominates all three servers.
-  The 10-member control is at the floor. Candidate 4.50, extended (the rank seek
-  is 4.30's index; the store obligation was already named in 4.50).
+  The 10-member control is at the floor. 4.50, extended (the rank seek is 4.30's
+  index; the store obligation was already named in 4.50 and is decided in
+  section 2.43).
 
 **Verdict: extend 4.50 to the store forms.** Seek the selected range and build only
 the destination zset; do not sort the source or route a store through the reply
@@ -7703,7 +7775,7 @@ order, score formatting, key deletion, blocking variants, journal/rewrite/replay
 and accounting tests shall pass; no dependency shall be added; and both protected
 gates shall pass on the exact head.
 
-### 4.50 Seek-based lex ranges and span counts (candidate; admission measured)
+### 4.50 Seek-based lex ranges and span counts (candidate; seek decision)
 
 **Mechanism.** Extend the admitted ordered `(score, member)` index (4.30/4.38) so
 a bounded range is answered by seeking, not by sorting:
@@ -7759,6 +7831,17 @@ a store form rewrites a key.
 caching the sorted vector per key (invalidated by every write and unbounded
 memory); a second lex-only index (duplicate storage and more invariants to keep
 consistent on every add/remove/score change).
+
+**Decision (2026-11-16, section 2.43).** Seek the 4.30/4.38 ordered index instead
+of building `ordered_zset`: binary-search blocks by `(score, member)` for
+`BYSCORE`, seek the member inside the equal-score run for `BYLEX`, walk at most
+`offset + count` from the seek, and compute `ZCOUNT`/`ZLEXCOUNT` by subtracting
+the 4.38 prefix ranks of the first and last in-range entries (0 when a bound
+seek fails, the zset length when fully unbounded). Route reply and store forms
+through the same iterator; a store copies only the selected entries, clears the
+destination TTL and accounts the destination payload. Keep the direct pack path
+below the threshold; rebuild the derived index on replay/rewrite. No new
+structure, dependency, unsafe or persistent format change.
 
 **Rejection condition.** Any range, count, order, LIMIT, store, pack or
 mixed-score result differs; the 10-member controls regress; a store form changes
@@ -9673,7 +9756,9 @@ separate roadmap.
   is implemented. The 4.24/4.39 push-ready
   decision (section 2.36) leaves the measured 4.2–26.6% idle async CPU and
   1.05/3.60 ms pub/sub delivery unimplemented. The 4.35 hash/list in-place
-  decision (section 2.37) leaves the 92–99/18 ms write rows unimplemented. The 4.23 bounded rewrite
+  decision (section 2.37) leaves the 92–99/18 ms write rows unimplemented. The
+  4.50 seek decision (section 2.43) leaves the 56–70 ms lex and 1.25–15 ms count
+  rows unimplemented. The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
