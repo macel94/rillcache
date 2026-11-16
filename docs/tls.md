@@ -32,6 +32,7 @@ remains `unsafe_code = "forbid"`.
 | `--tls-key-file PATH` | Unencrypted PEM private key |
 | `--tls-client-ca-file PATH` | Optional client CA; enables required mTLS |
 | `--tls-handshake-timeout-ms N` | Handshake deadline in milliseconds (default 5000) |
+| `--frame-assembly-timeout-ms N` | Deadline after incomplete RESP plaintext reaches the parser (default 60000; `0` disables) |
 
 Example:
 
@@ -42,6 +43,11 @@ rillcache \
   --tls-cert-file /etc/rillcache/server-chain.pem \
   --tls-key-file /etc/rillcache/server-key.pem
 ```
+
+After the TLS handshake, incomplete RESP plaintext is covered by the configured
+frame-assembly deadline. This does not cover a peer that trickles encrypted TLS
+records without yielding plaintext; the handshake timeout covers handshake
+progress, not that post-handshake record-only case.
 
 Clients connect to the TLS port with their normal Redis TLS options, for example:
 

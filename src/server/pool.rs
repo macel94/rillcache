@@ -55,6 +55,7 @@ pub(super) struct Client {
     /// EINTR is not WouldBlock: readiness owners must retain their runnable token.
     pub(super) retry_io: bool,
     pub(super) activity: Instant,
+    pub(super) frame_deadline: crate::frame_deadline::FrameDeadline,
     pub(super) _permit: Option<Permit>,
     pub(super) shutdown_on_drop: bool,
     pub(super) pubsub: Receiver<Vec<u8>>,
@@ -144,9 +145,14 @@ impl Client {
         config: &Config,
         chunk: &mut [u8],
     ) -> io::Result<Option<bool>> {
-        // Like blocking I/O, service already-ready input/output before declaring
-        // inactivity; scheduler delay must not discard buffered commands.
+        // Already-complete buffered commands take precedence over deadlines.
         self.retry_io = false;
+        if self
+            .frame_deadline
+            .expired_now(config.frame_assembly_timeout)
+        {
+            return Ok(None);
+        }
         let mut progress = self.flush()?;
         if self.closing {
             return Ok(if self.output.is_empty() {
@@ -247,6 +253,7 @@ impl Client {
                         self.closing = true;
                         break;
                     }
+                    self.frame_deadline.clear();
                     if self.session.is_blocked() || self.session.is_paused() {
                         break;
                     }
@@ -256,6 +263,14 @@ impl Client {
                     }
                 }
                 Ok(None) => {
+                    let now = Instant::now();
+                    self.frame_deadline.observe_incomplete(true, now);
+                    if self
+                        .frame_deadline
+                        .expired_at(config.frame_assembly_timeout, now)
+                    {
+                        return Ok(None);
+                    }
                     need_input = true;
                     break;
                 }
@@ -302,6 +317,12 @@ impl Client {
         chunk: &mut [u8],
     ) -> io::Result<LocalPoll> {
         self.retry_io = false;
+        if self
+            .frame_deadline
+            .expired_now(config.frame_assembly_timeout)
+        {
+            return Ok(LocalPoll::Closed);
+        }
         let mut progress = self.flush()?;
         if self.closing {
             return Ok(if self.output.is_empty() {
@@ -355,6 +376,7 @@ impl Client {
                     if migrate {
                         break;
                     }
+                    self.frame_deadline.clear();
                     consumed += used;
                     progress = true;
                     if action == Action::Close {
@@ -366,6 +388,14 @@ impl Client {
                     }
                 }
                 Ok(None) => {
+                    let now = Instant::now();
+                    self.frame_deadline.observe_incomplete(true, now);
+                    if self
+                        .frame_deadline
+                        .expired_at(config.frame_assembly_timeout, now)
+                    {
+                        return Ok(LocalPoll::Closed);
+                    }
                     need_input = true;
                     break;
                 }
@@ -532,6 +562,7 @@ pub(super) fn serve(
                 eof: false,
                 retry_io: false,
                 activity: Instant::now(),
+                frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                 _permit: Some(Permit::acquire(&admitted)),
                 shutdown_on_drop: true,
                 pubsub: receiver,
@@ -707,6 +738,7 @@ mod tests {
                 eof: false,
                 retry_io: false,
                 activity: Instant::now(),
+                frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                 _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
                 shutdown_on_drop: true,
                 pubsub: std::sync::mpsc::sync_channel(1).1,
@@ -797,6 +829,7 @@ mod tests {
             eof: false,
             retry_io: false,
             activity: Instant::now() - Duration::from_secs(2),
+            frame_deadline: crate::frame_deadline::FrameDeadline::default(),
             _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
             shutdown_on_drop: true,
             pubsub: std::sync::mpsc::sync_channel(1).1,

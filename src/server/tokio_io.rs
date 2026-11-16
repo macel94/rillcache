@@ -642,6 +642,7 @@ async fn serve_connection(
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; MAX_READ];
     let mut activity = Instant::now();
+    let mut frame_deadline = crate::frame_deadline::FrameDeadline::default();
     loop {
         if context.stopped() {
             return Ok(());
@@ -745,6 +746,15 @@ async fn serve_connection(
             if consumed > 0 {
                 input.drain(..consumed);
             }
+            if need_input && !input.is_empty() {
+                let now = Instant::now();
+                frame_deadline.observe_incomplete(true, now);
+                if frame_deadline.expired_at(config.frame_assembly_timeout, now) {
+                    return Ok(());
+                }
+            } else {
+                frame_deadline.clear();
+            }
             // No new dispatch/read while reply bytes are backpressured. The
             // 64 KiB batch bound can be exceeded by ONE existing atomic reply;
             // it is not a dishonest hard maximum or a change to wire semantics.
@@ -777,11 +787,14 @@ async fn serve_connection(
             || session.is_monitoring()
             || session.is_blocked()
             || session.is_paused();
-        let wait = if asynchronous {
+        let mut wait = if asynchronous {
             POLL_TICK.min(config.idle_timeout)
         } else {
             config.idle_timeout.saturating_sub(activity.elapsed())
         };
+        if let Some(remaining) = frame_deadline.remaining_now(config.frame_assembly_timeout) {
+            wait = wait.min(remaining);
+        }
         if wait.is_zero() {
             return Ok(());
         }
@@ -789,6 +802,9 @@ async fn serve_connection(
         #[cfg(test)]
         let read = tests::observe_read_wait(read);
         match tokio::time::timeout(wait, read).await {
+            Err(_) if frame_deadline.expired_now(config.frame_assembly_timeout) => {
+                return Ok(());
+            }
             Err(_) if asynchronous => continue,
             Err(_) => return Ok(()),
             Ok(Ok(0)) => {

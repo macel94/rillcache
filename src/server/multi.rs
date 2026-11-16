@@ -264,6 +264,7 @@ impl Reactor {
                     eof: false,
                     retry_io: false,
                     activity: Instant::now(),
+                    frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                     _permit: Some(Permit::acquire(&self.admitted)),
                     shutdown_on_drop: true,
                     pubsub: receiver,
@@ -731,6 +732,10 @@ impl Reactor {
                             .as_ref()
                             .filter(|connection| {
                                 connection.client.activity.elapsed() >= self.config.idle_timeout
+                                    || connection
+                                        .client
+                                        .frame_deadline
+                                        .expired_now(self.config.frame_assembly_timeout)
                             })
                             .map(|connection| ReadyKey {
                                 slot,
