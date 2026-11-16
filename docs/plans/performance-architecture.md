@@ -12,8 +12,8 @@ has an ordered-index decision (section 2.33), and 4.23 has a bounded-
 materialisation decision (section 2.34), and 4.27 has a single-pass replay
 decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all remain gated; the
-shared-structure implementation map is section 2.38, and 4.38 has an
-order-statistic decision (section 2.40); every other runtime item here is historical or
+shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), and 4.32 has a packed-node
+decision (section 2.41); every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1578,7 +1578,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 → 1.082 ms vs 0.664/0.232, `ZPOPMAX` 159.9 → 1.245, `ZPOPMIN 10` 146.6 → 1.542, `ZMPOP` 155.8 → 1.648; tie-heavy (all scores 0) 4.8–6.0; 100-member control at the floor | 4.49, implemented without the ordered index | AC51 missed (1.08–1.65 vs ≤0.3) | ordered `(score, member)` index |
 | Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31 keyspace stage decided (2.27); large HSCAN staged | AC33/AC59 | none |
-| List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
+| List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, packed-node decided (2.41) | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k 6.45, `ZADD` 4.21, `SADD` 1.23; 200k `RPUSH`/`LPOP` 18.3/17.8; at 100k `HSET`/`HDEL` 92.7–99.4, `ZADD`/`ZREM` 61.4–63.9, `SADD`/`SREM` 11.2/10.7 → **0.125/0.210** vs 0.12–0.24; list/hash/zset writes remain | 4.35 hash/list stage decided (2.37); zset staged behind 4.30 | AC37 set rows met | hash/list; zset after 4.30 |
@@ -2441,6 +2441,55 @@ score ranges must stay exact. Rejected: a hand-written skiplist, a `BTreeSet`
 plus O(rank) scans, a rank cache invalidated on every write, per-read sorting and
 new dependencies. AC40 remains the measurable criterion; AC32/AC51/AC52 cover the
 shared consumers.
+
+### 2.41 2026-11-16 checkpoint: lists still allocate one buffer per element
+
+The protected gate has no large list. The retained cohort (section 3.17)
+measures a 200,000-element list of 8-byte values at **27.8–28.0 MB RSS
+(142–143 B/element)** versus Redis 1.47 MB (7.5 B) and Valkey 1.48–1.54 MB
+(7.5–7.9 B); `DEL` is **7.28 ms** versus 0.166/0.130 and `UNLINK` 6.21 versus
+0.316/0.235. The 100-element control is at the command floor.
+
+Current source audit:
+
+- `Collection::ListPack` is `VecDeque<Vec<u8>>` and `ListQuick` is a
+  `VecDeque<VecDeque<Vec<u8>>>`; every element owns a separate heap buffer and
+  container overhead, even for an 8-byte value.
+- List writes clone the representation and re-encode; drop therefore frees
+  hundreds of thousands of allocations.
+
+The C servers store elements inside listpack nodes:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Element storage | one `Vec<u8>` per element | listpack bytes inside a quicklist node | same | **adapt** a packed node arena |
+| Node growth | no node model | `_quicklistNodeAllowInsert` checks the estimated node size before append ([`quicklist.c#L541`](https://github.com/redis/redis/blob/8.10.2/src/quicklist.c#L541)) | same ([`quicklist.c#L490`](https://github.com/valkey-io/valkey/blob/9.1.2/src/quicklist.c#L490)) | bounded node byte budget |
+| Push/pop | clone + re-encode | listpack insert/remove inside one node (`quicklistPushHead`/`Tail`) | same | node-local mutation |
+| Index | container walk | node element counts/offsets | same | cached node counts |
+| Dependencies | std only | C/listpack | C/listpack | std `Vec`/arena, no crate |
+
+**Decision.** Replace the per-element `Vec<u8>` stack for large lists with a
+quicklist-shaped container: `VecDeque<Node>` where each node is a byte arena
+holding short elements inline (length + bytes) and an out-of-line `Vec<u8>` only
+above a threshold. Split nodes at the configured byte budget, keep a cumulative
+node-element index for head/tail/push/pop and list index seeks, and confine
+`LINSERT`/`LREM`/`LSET` split/merge to one node. `ListPack`/`ListQuick` and the
+10-element controls keep their current behavior; conversion is atomic at the
+configured threshold. The arena counts exactly toward payload/eviction
+accounting; journal/rewrite encode the same logical elements. Use 4.33's bounded
+deferred drop for whole nodes rather than freeing every element synchronously.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI, allocator or persistent
+format change: `std::vec::Vec`, `VecDeque`, byte offsets and the existing list
+API. Node bounds and out-of-line thresholds are configuration, not a new
+encoding family.
+
+**Risks and rejected options.** Node split/merge, index arithmetic, binary-safe
+zero-length elements, a maximum element size that stays out of line, blocking
+push/pop and FIFO ordering, `LRANGE`/`LSET`/`LINSERT`/`LREM`/`LPOS`, TTL/WATCH/
+journal/rewrite and exact accounting are the obligations. Rejected: the current
+one-buffer-per-element layout, an external list/arena crate, unsafe custom
+allocators, and changing `LRANGE` order. AC34 remains the measurable criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -6645,6 +6694,14 @@ line, and a bounded node budget must not change `LRANGE` order or `LINSERT`/
 `LREM`/`LSET`/`LPOS`/blocking semantics; memory accounting and `maxmemory` must
 count arena and out-of-line bytes; journal/rewrite must preserve exact logical
 payloads; every list, persistence and blocking test must pass without unsafe code.
+
+**Decision (2026-11-16, section 2.41).** Adapt a quicklist-shaped packed node
+container: bounded byte-arena nodes with inline short elements, out-of-line large
+elements, split/merge at the configured node budget, cached cumulative element
+counts and node-local list mutation. Keep the current pack/listpack path for
+small lists and convert atomically at the threshold. Count arena plus out-of-line
+bytes in payload/eviction accounting; use 4.33 for whole-node deferred drop. No
+unsafe/FFI/dependency; AC34 remains the criterion.
 
 **Rejection condition.** `RPUSH`/`LRANGE` loses more than 10%, any list semantic
 or persistence test changes, RSS is not materially lower, or a gate row loses.
