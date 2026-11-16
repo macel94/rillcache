@@ -628,12 +628,18 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 - [ ] **O4. Operational telemetry and alerting are missing.** [P1]
   There is no metrics exporter, OpenTelemetry, structured logging, SLO dashboard,
   alert set, persistence/auth/audit telemetry, replay/rewrite duration or
-  network-byte accounting. Health is a PING probe, not persistence/readiness.
+  network-byte accounting. Default health is a PING probe; optional journal
+  probing checks reported status only, not disk writability or recovery readiness.
   **Partial: authenticated request-service probe.** The built-in probe accepts
   a bounded password file and an optional named ACL user (permitting PING-only
   probe credentials), validates AUTH and PING authorization under one socket
   deadline and keeps credentials/server error payloads out of diagnostics.
-  TLS, journal readiness and operational telemetry remain open.
+  **Partial: opt-in journal-status probe.** `--healthcheck-require-aof` adds a
+  bounded INFO persistence check for loading=0, enabled journal and healthy last
+  write/rewrite statuses; missing/duplicate fields, reported errors, denied INFO
+  and malformed replies fail closed. Unit fault-response and all-mode CLI tests
+  cover this contract. It does not inject disk faults or prove fsync/recovery.
+  TLS, full journal readiness and operational telemetry remain open.
   **Closes when:** a redacted, documented metrics/log/health contract exists and
   is tested for overload, persistence failure, auth failure and shutdown.
 

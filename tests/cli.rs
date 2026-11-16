@@ -305,6 +305,82 @@ fn named_healthcheck_accepts_only_an_enabled_user_with_ping_permission() {
 }
 
 #[test]
+fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
+    let _fixture = LIVE_SERVER_TEST.lock().unwrap();
+    use rillcache::{Config, Server};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-journal-probe-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let acl = directory.join("users.acl");
+    let password = directory.join("password");
+    std::fs::write(&acl, b"user default on nopass ~* &* +@all\nuser probe on >test-only-journal-secret -@all +ping +info\nuser pingonly on >test-only-journal-secret -@all +ping\n").unwrap();
+    std::fs::write(&password, b"test-only-journal-secret\n").unwrap();
+    let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
+    for enabled in [false, true] {
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            appendonly: enabled,
+            dir: directory.clone(),
+            aclfile: Some(acl.clone()),
+            worker_threads: match mode.as_str() {
+                "0" => None,
+                _ => Some(mode.parse().unwrap()),
+            },
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let address = server.local_addr().to_string();
+        for user in ["probe", "pingonly"] {
+            for require_aof in [false, true] {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+                command
+                    .args([
+                        "--healthcheck",
+                        &address,
+                        "--healthcheck-user",
+                        user,
+                        "--healthcheck-password-file",
+                    ])
+                    .arg(&password);
+                if require_aof {
+                    command.arg("--healthcheck-require-aof");
+                }
+                let output = command.output().unwrap();
+                let healthy = !require_aof || (enabled && user == "probe");
+                assert_eq!(
+                    output.status.code(),
+                    Some(if healthy { 0 } else { 1 }),
+                    "aof={enabled}, user={user}, require={require_aof}"
+                );
+                assert!(output.stdout.is_empty());
+                if healthy {
+                    assert!(output.stderr.is_empty());
+                }
+                assert!(
+                    !String::from_utf8_lossy(&output.stderr).contains("test-only-journal-secret")
+                );
+            }
+        }
+        let plain = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--healthcheck", &address, "--healthcheck-require-aof"])
+            .output()
+            .unwrap();
+        assert_eq!(plain.status.code(), Some(if enabled { 0 } else { 1 }));
+        server.shutdown().unwrap();
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn healthcheck_is_quiet_on_success_and_fails_for_an_unavailable_endpoint() {
     let _fixture = LIVE_SERVER_TEST.lock().unwrap();
     use rillcache::{Config, Server};
