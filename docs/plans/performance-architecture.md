@@ -2,8 +2,10 @@
 
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); 4.37's `BITFIELD` write
-path has landed and the rest of it remains gated; every other runtime item here is
-historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
+path has landed and the rest of it remains gated; 4.29 has a source-pinned
+direct-iteration decision (section 2.26) but remains gated; every other runtime
+item here is historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33,
+4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -1545,7 +1547,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | P1 ping strict median vs Valkey/Dragonfly | scheduling, measurement | identical-code −1.35% to +15.4%; +1.0% and +22.5% vs Redis across two daily cohorts; p99 flips with host | no runtime candidate; measurement/topology | disjoint CPUs need a different runner type; all recent cohorts share `[0,1,2,3]` | the row itself |
 | P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
 | Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, admitted | AC20 on the implemented change | none at 64 B |
-| Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, admitted | AC31 on the implemented change | none at 64 B |
+| Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, direct-iteration decision (2.26) | AC31/AC58 on the implemented change | none at 64 B |
 | Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, admitted | AC32 on the implemented change | none at 64 B |
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 (map/score/start-0) + 4.38 (rank-select), admitted | AC32/AC40 | none |
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
@@ -1556,7 +1558,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 → 0.151/0.115/0.282 ms vs 0.07–0.19; `ZMSCORE` 8.02/33.37/273.2 → 0.113/0.118/0.253 vs 0.09–0.23; `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; `HMGET` 100 at the floor | 4.44, implemented | AC46 met | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 → 0.230 ms vs 0.200/0.244, `KEYS` 43.6 → 0.297 vs 0.215/0.205, `RANDOMKEY` 45.5 → 0.297 vs 0.209/0.217, `DBSIZE` 41.2 → 0.298 vs 0.151/0.247; lazy `GET` 0.254 vs 0.160/0.207 | 4.45, implemented | AC47 met | none |
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
-| Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, extended | AC31 on the implemented change | none |
+| Large-hash listing | replies | **measured**: 100k `HGETALL` 132.3 ms vs 25.7/37.8; `HKEYS` 98.5 vs 16.5/15.8; `HVALS` 101.6 vs 19.7/17.9; 10k `HGETALL` 43% behind Redis; controls at the floor | 4.29, direct iteration decided (2.26) | AC31/AC58 on the implemented change | none |
 | Keyspace enumeration | replies, latency | **measured**: 100k `KEYS key:*` 91.1 ms vs 42.8/21.1; `KEYS prefix` 32.7 vs 35.1/7.0; `RANDOMKEY` 0.52 vs 0.21/0.29 | 4.31, extended (index) | AC33 | none |
 | MULTI/EXEC transactions | dispatch | **measured null**: 1,000-command transaction 3.02 ms vs 2.48–2.76; queue-only 1.37 vs 1.30–1.77; 1 KB transaction leads; 100-command within the host spread | keep; no candidate | n/a | none |
 | MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
@@ -1631,6 +1633,61 @@ host-sensitive P1 rows in sections 2.17 and 2.19. No scaling candidate is opened
 the P256 SET dip below P64 is shared-host noise, not a mechanism. This also
 confirms that the 8-client/P16 gate result is not an artifact of a small client
 set.
+
+### 2.26 2026-11-16 checkpoint: the gate is clean, the large-hash reply path is not
+
+The latest required gates on PR #353 (head `2a312915`, squash `d29fbb79`)
+passed: the original 20-condition gate, the 10-condition four-CPU gate and the
+offline suite. Those gate rows use 64-byte PING/SET/GET/NX/XX traffic; they do
+not exercise a 100,000-field hash reply. A clean gate therefore does not close
+the measured scaling gap in section 3.31.
+
+Current source audit on `d29fbb79`:
+
+- `collections.rs::hash_read` routes `HGETALL`, `HKEYS` and `HVALS` through
+  `Collection::hash_items_sorted`.
+- For a large `Collection::Hash`, `hash_items_sorted` allocates a
+  `Vec<(&[u8], &[u8])>` for every field, sorts it by field with
+  `sort_unstable_by`, and only then encodes the reply.
+- `Collection::HashPack` is already maintained in field order, but the same
+  helper still copies every pair into a new `Vec` before encoding.
+- `HSCAN` has a separate per-call snapshot/sort path (section 4.31); this
+  checkpoint is scoped to the three whole-collection reply commands.
+
+The per-component source comparison for this exact path is:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Large hash storage | `HashMap<Vec<u8>, Vec<u8>>` / sorted `HashPack` | dict / listpack | dict / listpack | keep |
+| Whole-hash traversal | collect borrowed pairs, sort, encode | `genericHgetallCommand` over the hash iterator; hashtable path batches 16 entries and prefetches `Entry` structs ([`t_hash.c#L5336`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5336)) | `genericHgetallCommand` over the iterator with deferred reply length ([`t_hash.c#L1779`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L1779)) | **adapt:** iterate directly, no pair `Vec`, no sort |
+| Reply length | known from `len()` | known `hashTypeLength` / map or array header | deferred length finalized after iteration | keep our known length |
+| Field order | sorted for determinism | unspecified dict/listpack order | unspecified dict/listpack order | change for large `Hash`, document |
+| Prefetch | none | `redis_prefetch_read` in 16-entry batches | none visible in this path | **avoid:** no safe `std` prefetch intrinsic; `black_box` is not prefetch |
+| Dependencies | std only | C | C | none |
+
+**Decision.** Adopt option (a) of candidate 4.29 for the large `Collection::Hash`
+representation: iterate the `HashMap` directly and emit each field/value as it is
+visited. Iterate `HashPack` as its existing sorted slice. Do not copy Redis's
+prefetch instructions or Valkey's deferred-length machinery: we can compute the
+header from `len()` and safe Rust has no portable prefetch primitive. Do not
+introduce a `BTreeMap`/sorted index for large hashes: it would move the cost to
+every `HSET`/`HDEL` and add a second ordered structure to account and replay.
+Do not add `indexmap`, `hashbrown` or another dependency; the repository policy
+allows only the reviewed vendored crates.
+
+**Risks and obligations.** `HGETALL`/`HKEYS`/`HVALS` order becomes unspecified
+for large hashes, matching Redis and Valkey; tests that compare exact bytes must
+compare unordered results. The journal encoder already sorts hash fields
+separately, so persistence/replay is unaffected. Reads remain under the existing
+data borrow, the reply is still the same RESP array/map bytes, and expiry,
+field-TTL, missing-key and wrong-type behavior must not change. A large reply
+still relies on the existing bounded output/backpressure path; this is not a
+claim about slow readers or unbounded output.
+
+**Acceptance.** AC31 is retained and AC58 below makes the decision measurable.
+The bounded reply-path increment selected here is 4.29; it needs no storage
+rewrite and can proceed independently of the larger journal and scan candidates
+in section 4.28.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5411,7 +5468,10 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.54 list element edits | `list_insert` (`collection_commands.rs#L2698`), `list_remove` (`#L2750`), `list_set` (`#L2820`), `list_position` (`#L2321`), `Collection::list_values` (`data.rs#L41`) | pivot/index/count semantics; missing/empty; chunk split/merge; emptied-key deletion; TTL/WATCH/journal/rewrite; accounting | 200k `LINSERT` head/middle, `LSET` mid, `LREM` tail, `LPOS RANK -1`, 10-element controls | medium |
 | 4.55 frame-derived argument cap | `Limits`/`parse_request` (`protocol.rs#L5`, `#L17`), `dispatch_request`, server `--max-frame-bytes`/`--max-bulk-bytes` plumbing | count bound derived from the frame; frame error unchanged; PING fast path; arity/protocol tests; bounded slice memory | `MGET` 10k, `DEL`/`EXISTS`/`TOUCH` 2k, `MSET` 600 pairs, 1,023/1,024 boundary, over-frame rejection | small |
 
-**Priority.** 4.21 and 4.27 first: they address the largest measured
+**Priority.** For the whole-hash reply path, 4.29 is the next self-contained
+candidate after this checkpoint (section 2.26): it is small, measured and needs
+no dependency. The journal candidates remain the largest steady-state and
+availability gaps, so the broader order starts with 4.21 and 4.27 first: they address the largest measured
 steady-state (AOF-on) and availability (replay) gaps and are contained in the
 journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
@@ -5497,6 +5557,17 @@ commands, so the candidate and AC31 must include `HKEYS`/`HVALS` at 100k, not
 only the original 10k `HGETALL`. Do not extend it to `SMEMBERS`: the same shape
 measured a lead/parity at 100k in section 3.46, so the hash answer must come from
 a measured hash-specific change, not from removing the collect+sort everywhere.
+
+**Decision (2026-11-16, section 2.26).** Choose option (a) for large hashes:
+iterate the `HashMap` directly with no pair `Vec` or sort; iterate `HashPack` as
+its existing sorted slice. Redis 8.10.2 batches 16 entries and prefetches the
+`Entry`/value pointers, and Valkey 9.1.2 iterates with a deferred reply length;
+we adopt the direct iteration but not the prefetch intrinsic (no safe `std`
+primitive) or deferred length (we know `len()` up front). Reject the `BTreeMap`
+and sorted-index options because they move the cost to every write and add
+memory/replay surface. No dependency is added. Exact-order tests must be changed
+to unordered comparisons, with the order change documented in the command docs;
+the journal's separate sorted field encoder is not affected.
 
 **Rejection condition.** No gain above the spread; any order change without an
 explicit documented decision and updated tests; any gate row loss.
@@ -7111,7 +7182,9 @@ same native evidence and protected gates as any other runtime change. The
 rejected eight-reactor experiment and the closed candidates add no package: 4.9
 stays inside `std::time`/the existing `Clock` trait, 4.15 needs only
 `std::sync::Arc`, `std::io::IoSlice` and `Write::write_vectored`, 4.16 is
-measurement tooling, 4.17–4.18 are rejected, 4.20 needs no crate, 4.21 is
+measurement tooling, 4.17–4.18 are rejected, 4.20 needs no crate, 4.29 iterates
+the existing `HashMap`/`HashPack` slice with the existing encoder and adds no
+prefetch intrinsic, sorted index or dependency, 4.21 is
 `std::fs`/`Write::write_all` plus the existing in-repo SHA-256/HMAC and CRC code,
 and 4.30 is a `std::collections::BTreeSet` plus a local `f64` total-order helper
 (`ordered-float`/`float-ord` are rejected as an unnecessary dependency for ~20
@@ -7927,6 +8000,18 @@ samples retained.
   bounded by `max_frame_bytes`; the PING fast path, all arity/protocol tests and
   both protected gates shall pass on the exact head; and no dependency shall be
   added.
+- **AC58 (direct whole-hash replies, only if the 4.29 decision is implemented).**
+  The `HGETALL`, `HKEYS` and `HVALS` paths for a large `Collection::Hash` shall
+  not allocate a `Vec` of field/value pairs and shall not sort by field; on a
+  100,000-field hash their p50 shall be at most 1.5× the faster C server
+  (≤39 ms for `HGETALL`, ≤24 ms for `HKEYS`/`HVALS`) and at least 3× faster than
+  the measured 132/98/102 ms, with a 10,000-field `HGETALL` within 10% of Redis;
+  `HashPack` output remains in its maintained field order and large-hash output
+  order is explicitly unspecified and documented; all order-sensitive tests use
+  unordered comparisons; miss/wrong-type/field-TTL behavior and the journal's
+  sorted encoding remain unchanged; no pair-vector allocation or sort remains in
+  the large-hash branch under source review; no dependency or unsafe/FFI shall
+  be added; and both protected gates shall pass on the exact head.
 
 INVEST story for the next increment (out-of-gate evidence, then a bounded
 candidate if it loses): independently valuable and testable, with the six
@@ -8581,8 +8666,9 @@ separate roadmap.
   host-dependent, host-dependent P1 tail variance, the large-value reply copy
   and input-growth copies that the 64-byte gate cannot see — **1 MiB GET −42% to
   −45%, SET −28% to −32%** (sections 2.20–2.22) — the large multi-bulk hash
-  reply (10k `HGETALL` **−43% vs Redis**, section 3.2) and the persistence-on
-  journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
+  reply (10k `HGETALL` **−43% vs Redis**, section 3.2; 4.29 now has a
+  direct-iteration decision and AC58 but is not implemented, section 2.26) and
+  the persistence-on journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
   for the C servers (section 3.9). The gate runs with persistence off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
