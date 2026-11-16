@@ -127,9 +127,13 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   default, require the password file, reject invalid/bounded names and duplicate
   options, and fail if the user is disabled, unknown or denied PING. Both options
   may follow the address in either order. Invalid files shall fail before
-  connection. This is plaintext request-service probing, not TLS, persistence
-  or replication readiness. No external runtime
-  probe tool shall be required.
+  connection. Optional `--healthcheck-require-aof` shall query INFO persistence
+  after PING and require loading=0, aof_enabled=1 and both last-write/last-rewrite
+  statuses=ok, with missing or duplicate required fields failing closed. It shall
+  bound the RESP2 bulk to 16 KiB and its header to 32 bytes, share the same socket
+  deadline and require INFO authorization. This checks reported journal status,
+  not disk writability, fsync, recovery, TLS or replication readiness. No external
+  runtime probe tool shall be required.
 - **R75 (event-driven):** When trusted main/tag/manual publication runs, automation
   shall first pass offline checks and native amd64/arm64 container tests in all
   three worker modes, then publish only those tested images as one GHCR manifest
