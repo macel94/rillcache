@@ -11,8 +11,9 @@ copy-avoidance decision (section 2.30), 4.25 has a reservation decision
 has an ordered-index decision (section 2.33), and 4.23 has a bounded-
 materialisation decision (section 2.34), and 4.27 has a single-pass replay
 decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
-2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all remain gated; the
-shared-structure implementation map is section 2.38; every other runtime item here is historical or
+2.36), and 4.35 has a hash/list in-place decision (section 2.37), 4.33 has a deferred-drop
+decision (section 2.39), but all remain gated; the shared-structure implementation
+map is section 2.38; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1578,7 +1579,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31 keyspace stage decided (2.27); large HSCAN staged | AC33/AC59 | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
-| UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
+| UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, deferred-drop decided (2.39) | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k 6.45, `ZADD` 4.21, `SADD` 1.23; 200k `RPUSH`/`LPOP` 18.3/17.8; at 100k `HSET`/`HDEL` 92.7–99.4, `ZADD`/`ZREM` 61.4–63.9, `SADD`/`SREM` 11.2/10.7 → **0.125/0.210** vs 0.12–0.24; list/hash/zset writes remain | 4.35 hash/list stage decided (2.37); zset staged behind 4.30 | AC37 set rows met | hash/list; zset after 4.30 |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
@@ -2390,6 +2391,54 @@ cover only 64-byte string rows and run with persistence/maxmemory off, so every
 candidate still needs its own measured cohort, AC reference and both performance
 gates on the exact implementation head. A docs-only dependency map is not a
 runtime pass.
+
+### 2.39 2026-11-16 checkpoint: UNLINK and FLUSH ASYNC still free synchronously
+
+The protected gate has no large collection drop. The retained cohort (section
+3.17) measures `UNLINK` of a 200k-element list at **6.21 ms** (max 9.8) versus
+Redis 0.316 and Valkey 0.235, and `FLUSHALL ASYNC` on 20k keys at **9.20 ms**
+(max 17.4) versus 0.886/0.568; Rillcache's `FLUSHALL SYNC` is 10.12 ms, so ASYNC
+saves nothing. The 100-element control is at the command floor.
+
+Current source audit:
+
+- `UNLINK` and `DEL` share the same dispatch arm: `Data::remove` drops the
+  `Entry` and its collection inside the exclusive data borrow, so the command
+  pays the full deallocation cost.
+- `FLUSHDB`/`FLUSHALL` parse `ASYNC` but call the same synchronous `Data::flush`
+  for both modes; the mode is validated and ignored.
+
+The C servers hand large frees to a lazy-free worker:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Large drop | synchronous `remove`/`flush` | `freeObjAsync` above a free-effort threshold queues a bio job ([`lazyfree.c#L229`](https://github.com/redis/redis/blob/8.10.2/src/lazyfree.c#L229)) | same ([`lazyfree.c#L192`](https://github.com/valkey-io/valkey/blob/9.1.2/src/lazyfree.c#L192)) | **adapt** a bounded in-process queue |
+| Thread | none | dedicated lazy-free bio thread | same | **avoid**: no detached thread; maintenance-tick drain |
+| ASYNC contract | ignored | immediate logical deletion, deferred free | same | copy logical deletion semantics |
+| Fallback | same path | small object freed inline | same | keep synchronous fallback at the bound |
+| Dependencies | std only | C/pthread/bio | C/pthread/bio | none |
+
+**Decision.** Honor the ASYNC contract with a bounded `pending_free` queue owned
+by the store, drained by the existing maintenance tick. On `UNLINK` or
+`FLUSH* ASYNC`, remove the key(s) from all logical indexes immediately under the
+gate, journal/notify the deletion in the existing order, account the pending
+bytes until freed, and move the detached `Entry`/collection or flushed maps into
+the queue. Free a bounded byte/element budget per tick; if the queue or a single
+command exceeds the bound, free synchronously and record the fallback. `DEL` and
+`FLUSH* SYNC` stay synchronous. A recreated key is independent of its pending
+old value, and shutdown drains the queue before joining workers.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI, detached thread or
+allocator change: `VecDeque`, the existing maintenance tick and `Data`/`Entry`
+ownership. Pending bytes remain in payload accounting and under
+`maxmemory`/eviction; no persistent format change.
+
+**Risks and rejected options.** Queue/bytes must be bounded, accounting and
+`DBSIZE`/`EXISTS`/`SCAN`/`TTL` must reflect the deletion immediately, journal/
+notification/WATCH order must not change, recreated keys must not alias pending
+values, and shutdown must drain. Rejected: synchronous ASYNC (measured), an
+unbounded queue, allocator tricks/`madvise`, making `DEL` asynchronous by
+default, and a detached free thread without a join. AC35 is the criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -6255,8 +6304,8 @@ large-input shape; the 4.26 pooled-sampling decision (section 2.32) fixes the
 pressure path, and the 4.30 ordered-index decision (section 2.33) fixes the
 sorted-set point/range shape, and the 4.23 decision (section 2.34) fixes the
 rewrite start shape; the 4.27 single-pass decision (section 2.35) fixes replay, and the 4.24/4.39
-push-ready decision (section 2.36) fixes async push, and the 4.35 hash/list
-stage (section 2.37) fixes the remaining collection writes. Then the 4.25, 4.15
+push-ready decision (section 2.36) fixes async push, the 4.35 hash/list stage (section 2.37) fixes the remaining collection writes,
+and the 4.33 deferred-drop decision (section 2.39) fixes ASYNC deletion. Then the 4.25, 4.15
 and 4.26 implementations for large values and memory pressure, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
@@ -6606,7 +6655,7 @@ shall be unchanged with matched throughput within 10%; accounting/`maxmemory`,
 rewrite/replay exactness and both protected gates shall pass on the exact head;
 no dependency shall be added.
 
-### 4.33 Deferred drop for UNLINK and FLUSH* ASYNC (candidate; admission measured)
+### 4.33 Deferred drop for UNLINK and FLUSH* ASYNC (candidate; deferred-drop decision)
 
 **Mechanism.** Honor the `ASYNC` contract without a new thread: move the dropped
 `Entry`/collection (or the whole `Data` maps on flush) into a bounded
@@ -6641,6 +6690,14 @@ and no backpressure), unsafe allocator tricks or `madvise` (outside the reviewed
 boundary), making `DEL` async by default (changes the Redis default contract and
 notification timing without a target), and a detached free thread with no
 shutdown join (racy exit and unaccounted memory).
+
+**Decision (2026-11-16, section 2.39).** Adapt the C lazy-free contract with a
+bounded in-process `pending_free` queue drained by the maintenance tick, not a
+detached thread. Remove keys from logical indexes and journal/notify immediately,
+account pending bytes until freed, defer the actual drop with a bounded budget,
+and fall back to synchronous free at the bound. `DEL` and `FLUSH* SYNC` stay
+synchronous; shutdown drains. No dependency, unsafe/FFI or format change. AC35
+remains the criterion.
 
 **Rejection condition.** Any semantics or accounting test differs, pending memory
 grows without a bound, shutdown does not drain, `DEL`/`SYNC` regresses more than
@@ -9515,7 +9572,9 @@ separate roadmap.
   largest read-path gap; it is not implemented. The 4.24/4.39 push-ready
   decision (section 2.36) leaves the measured 4.2–26.6% idle async CPU and
   1.05/3.60 ms pub/sub delivery unimplemented. The 4.35 hash/list in-place
-  decision (section 2.37) leaves the 92–99/18 ms write rows unimplemented. The 4.23 bounded rewrite
+  decision (section 2.37) leaves the 92–99/18 ms write rows unimplemented; the
+  4.33 deferred-drop decision (section 2.39) leaves the 6.2/9.2 ms ASYNC rows
+  unimplemented. The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
