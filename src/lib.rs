@@ -12,4 +12,4 @@ pub mod protocol;
 pub mod server;
 pub mod session;
 
-pub use server::{Config, Server, ServerHandle};
+pub use server::{Config, Server, ServerHandle, TlsSniCertificate};

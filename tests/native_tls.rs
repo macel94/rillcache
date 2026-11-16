@@ -92,15 +92,48 @@ fn connect(
     server: &ServerHandle,
     with_client_cert: bool,
 ) -> StreamOwned<ClientConnection, TcpStream> {
+    connect_named(server, with_client_cert, "localhost")
+}
+
+fn connect_named(
+    server: &ServerHandle,
+    with_client_cert: bool,
+    server_name: &str,
+) -> StreamOwned<ClientConnection, TcpStream> {
     let tcp = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
     let connection = ClientConnection::new(
         client_config(with_client_cert, false),
-        ServerName::try_from("localhost").unwrap(),
+        ServerName::try_from(server_name.to_owned()).unwrap(),
     )
     .unwrap();
     StreamOwned::new(connection, tcp)
+}
+
+fn start_with_sni(client_ca: bool) -> ServerHandle {
+    let mut config = Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_client_ca_file: client_ca.then(|| fixture("ca.crt")),
+        tls_sni_certificates: vec![
+            rillcache::TlsSniCertificate {
+                server_name: "alt.test".into(),
+                cert_file: fixture("alternate.crt"),
+                key_file: fixture("alternate.key"),
+            },
+            rillcache::TlsSniCertificate {
+                server_name: "localhost".into(),
+                cert_file: fixture("server.crt"),
+                key_file: fixture("server.key"),
+            },
+        ],
+        ..Config::default()
+    };
+    config.idle_timeout = Duration::from_secs(30);
+    Server::bind(config).unwrap().spawn().unwrap()
 }
 
 fn ping(stream: &mut StreamOwned<ClientConnection, TcpStream>) {
@@ -137,6 +170,32 @@ fn tls13_resp_works_in_all_execution_modes_and_plaintext_is_unchanged() {
 
         server.shutdown().unwrap();
     }
+}
+
+#[test]
+fn sni_selects_exact_certificate_and_preserves_required_mtls() {
+    for client_ca in [false, true] {
+        let server = start_with_sni(client_ca);
+        let mut alternate = connect_named(&server, client_ca, "alt.test");
+        ping(&mut alternate);
+        assert_eq!(
+            alternate.conn.protocol_version(),
+            Some(rustls::ProtocolVersion::TLSv1_3)
+        );
+
+        let mut default = connect(&server, client_ca);
+        ping(&mut default);
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn unknown_sni_is_rejected_instead_of_receiving_the_default_certificate() {
+    let server = start_with_sni(false);
+    let mut stream = connect_named(&server, false, "unknown.test");
+    let result = stream.conn.complete_io(&mut stream.sock);
+    assert!(result.is_err(), "unknown SNI must abort the handshake");
+    server.shutdown().unwrap();
 }
 
 #[test]
@@ -479,7 +538,30 @@ fn invalid_tls_configuration_fails_before_listening() {
         ..Config::default()
     };
     assert!(Server::bind(ca_without_bind).is_err());
-    let mut missing_cert = base;
+    let mut missing_cert = base.clone();
     missing_cert.tls_cert_file = Some(fixture("missing.crt"));
     assert!(Server::bind(missing_cert).is_err());
+    let mut malformed_name = base.clone();
+    malformed_name
+        .tls_sni_certificates
+        .push(rillcache::TlsSniCertificate {
+            server_name: "*.example.com".into(),
+            cert_file: fixture("alternate.crt"),
+            key_file: fixture("alternate.key"),
+        });
+    assert!(Server::bind(malformed_name).is_err());
+    let mut duplicate_name = base.clone();
+    duplicate_name.tls_sni_certificates = vec![
+        rillcache::TlsSniCertificate {
+            server_name: "alt.test".into(),
+            cert_file: fixture("alternate.crt"),
+            key_file: fixture("alternate.key"),
+        },
+        rillcache::TlsSniCertificate {
+            server_name: "ALT.TEST".into(),
+            cert_file: fixture("alternate.crt"),
+            key_file: fixture("alternate.key"),
+        },
+    ];
+    assert!(Server::bind(duplicate_name).is_err());
 }

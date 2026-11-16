@@ -17,8 +17,12 @@ remains `unsafe_code = "forbid"`.
 - RESP is carried directly over TLS. **HTTP/1.1, HTTP/2 and HTTP/3 are not
   supported or negotiated.** HTTP/2 is an ALPN application protocol and HTTP/3 is
   QUIC over UDP; neither is a transport for Redis clients.
-- One server certificate/chain is supported. SNI-based certificate selection,
-  hot reload and OCSP/CRL integration are not implemented.
+- The configured `--tls-cert-file`/`--tls-key-file` pair is the default when no
+  additional SNI identities are configured. Optional exact-name SNI mappings
+  select distinct certificate chains at startup. When mappings are configured,
+  an unknown SNI name is rejected; there is no wildcard matching or fallback to
+  the default identity for an unknown name. Certificate hot reload and OCSP/CRL
+  integration are not implemented.
 - Plaintext and TLS listeners can run together. Put the TLS listener on the
   exposed interface and bind the plaintext listener to loopback/private space, or
   firewall the plaintext port.
@@ -31,6 +35,8 @@ remains `unsafe_code = "forbid"`.
 | `--tls-cert-file PATH` | PEM server certificate followed by intermediates |
 | `--tls-key-file PATH` | Unencrypted PEM private key |
 | `--tls-client-ca-file PATH` | Optional client CA; enables required mTLS |
+| `--tls-sni-cert-file NAME=PATH` | Repeatable exact SNI DNS name and PEM certificate chain |
+| `--tls-sni-key-file NAME=PATH` | Repeatable matching SNI DNS name and PEM private key |
 | `--tls-handshake-timeout-ms N` | Handshake deadline in milliseconds (default 5000) |
 | `--frame-assembly-timeout-ms N` | Deadline after incomplete RESP plaintext reaches the parser (default 60000; `0` disables) |
 
@@ -41,7 +47,9 @@ rillcache \
   --bind 127.0.0.1:6379 \
   --tls-bind 0.0.0.0:6380 \
   --tls-cert-file /etc/rillcache/server-chain.pem \
-  --tls-key-file /etc/rillcache/server-key.pem
+  --tls-key-file /etc/rillcache/server-key.pem \
+  --tls-sni-cert-file cache.example.com=/etc/rillcache/cache-chain.pem \
+  --tls-sni-key-file cache.example.com=/etc/rillcache/cache-key.pem
 ```
 
 The configured handshake timeout is one monotonic budget across the complete
@@ -104,10 +112,15 @@ test keys.
 
 - TLS does not cover replication or cluster links because those features do not
   exist in this server.
+- SNI mappings are startup-only, exact DNS names, bounded to 128 identities and
+  require a matching certificate/key pair for each name. Duplicate, malformed,
+  missing or mismatched identities fail startup. If mappings are configured,
+  unknown SNI names abort the handshake; the default identity is used only when
+  the ClientHello has no SNI. If no mappings are configured, the single default
+  certificate preserves existing behavior for any SNI name.
 - There is no certificate hot reload; restart during a controlled window to
-  rotate material.
-- There is no SNI, no ALPN, no PROXY protocol and no client-certificate-to-ACL
-  mapping.
+  rotate material. OCSP/CRL and client-certificate-to-ACL mapping remain absent.
+- There is no ALPN or PROXY protocol.
 - TLS connections use the per-client blocking worker path. The fixed
   worker-pool setting continues to govern plaintext connections; TLS connections
   are still bounded by the shared client limit.
@@ -122,5 +135,6 @@ cargo test --locked --offline --test native_tls
 ```
 
 The tests cover TLS 1.3 RESP in all execution modes, plaintext coexistence, TLS
-1.2 rejection, absent HTTP ALPN, required client certificates and invalid TLS
-configuration.
+1.2 rejection, absent HTTP ALPN, required client certificates, exact SNI
+certificate selection with and without mTLS, unknown-name handshake rejection
+and invalid TLS configuration.
