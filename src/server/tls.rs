@@ -76,6 +76,8 @@ impl TlsAcceptor {
             baseline_write_timeout: Some(self.handshake_timeout),
             handshake_deadline: Some(handshake_deadline),
             frame_deadline: None,
+            plaintext_idle_timeout: None,
+            plaintext_idle_deadline: None,
         };
         let mut conn = ServerConnection::new(Arc::clone(&self.config))
             .map_err(|error| invalid(format!("TLS connection setup: {error}")))?;
@@ -88,6 +90,8 @@ impl TlsAcceptor {
         sock.baseline_read_timeout = Some(self.idle_timeout);
         sock.baseline_write_timeout = Some(self.idle_timeout);
         sock.handshake_deadline = None;
+        sock.plaintext_idle_timeout = Some(self.idle_timeout);
+        sock.reset_plaintext_idle_deadline();
         sock.stream.set_read_timeout(Some(self.idle_timeout))?;
         sock.stream.set_write_timeout(Some(self.idle_timeout))?;
         Ok(Connection::Tls(Box::new(StreamOwned::new(conn, sock))))
@@ -110,6 +114,8 @@ pub(crate) struct DeadlineSocket {
     baseline_write_timeout: Option<Duration>,
     handshake_deadline: Option<Instant>,
     frame_deadline: Option<Instant>,
+    plaintext_idle_timeout: Option<Duration>,
+    plaintext_idle_deadline: Option<Instant>,
 }
 
 impl DeadlineSocket {
@@ -147,8 +153,16 @@ impl DeadlineSocket {
             self.baseline_read_timeout,
             self.handshake_deadline
                 .into_iter()
-                .chain(self.frame_deadline),
+                .chain(self.frame_deadline)
+                .chain(self.plaintext_idle_deadline),
         )
+    }
+
+    fn reset_plaintext_idle_deadline(&mut self) {
+        self.plaintext_idle_deadline = self.plaintext_idle_timeout.map(|timeout| {
+            let now = Instant::now();
+            now.checked_add(timeout).unwrap_or(now)
+        });
     }
 
     fn write_timeout(&self) -> io::Result<Option<Duration>> {
@@ -236,7 +250,13 @@ impl Read for Connection {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Plain(stream) => stream.read(buffer),
-            Self::Tls(stream) => stream.read(buffer),
+            Self::Tls(stream) => {
+                let result = stream.read(buffer);
+                if result.as_ref().is_ok_and(|&size| size > 0) {
+                    stream.sock.reset_plaintext_idle_deadline();
+                }
+                result
+            }
         }
     }
 }
@@ -289,6 +309,38 @@ mod tests {
     use std::thread;
 
     #[test]
+    fn plaintext_idle_deadline_is_absolute_and_refreshable_on_progress() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut socket = DeadlineSocket {
+            stream,
+            baseline_read_timeout: Some(Duration::from_secs(2)),
+            baseline_write_timeout: Some(Duration::from_secs(2)),
+            handshake_deadline: None,
+            frame_deadline: None,
+            plaintext_idle_timeout: Some(Duration::from_millis(500)),
+            plaintext_idle_deadline: None,
+        };
+        socket.reset_plaintext_idle_deadline();
+        let first = socket.plaintext_idle_deadline.unwrap();
+        thread::sleep(Duration::from_millis(20));
+        socket.reset_plaintext_idle_deadline();
+        let refreshed = socket.plaintext_idle_deadline.unwrap();
+        assert!(refreshed > first);
+
+        socket.plaintext_idle_deadline = Some(Instant::now() + Duration::from_millis(30));
+        let before = socket.read_timeout().unwrap().unwrap();
+        thread::sleep(Duration::from_millis(40));
+        assert_eq!(
+            socket.read_timeout().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert!(before <= Duration::from_millis(30));
+        drop(peer);
+    }
+
+    #[test]
     fn handshake_deadline_shrinks_read_and_write_budgets() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -300,6 +352,8 @@ mod tests {
             baseline_write_timeout: Some(Duration::from_secs(2)),
             handshake_deadline: Some(deadline),
             frame_deadline: None,
+            plaintext_idle_timeout: None,
+            plaintext_idle_deadline: None,
         };
 
         let first_read = socket.read_timeout().unwrap().unwrap();

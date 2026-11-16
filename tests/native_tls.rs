@@ -232,6 +232,66 @@ fn tls_record_trickle_after_resp_frame_start_obeys_absolute_deadline() {
 }
 
 #[test]
+fn established_tls_record_only_trickle_is_bounded_by_plaintext_idle_timeout() {
+    let idle_timeout = Duration::from_millis(250);
+    let server = start_with_timeouts(None, false, Duration::from_secs(2), idle_timeout, 1);
+    let mut idle_control = connect(&server, false);
+    ping(&mut idle_control);
+    std::thread::sleep(Duration::from_millis(150));
+    ping(&mut idle_control);
+    std::thread::sleep(Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let mut response = [0u8; 1];
+    let idle_result = idle_control.read(&mut response);
+    assert!(matches!(idle_result, Err(_) | Ok(0)));
+    assert!(started.elapsed() < Duration::from_millis(700));
+    drop(idle_control);
+
+    let mut tls = connect(&server, false);
+    ping(&mut tls);
+
+    // A valid TLS 1.3 KeyUpdate is a complete authenticated record but carries
+    // no application plaintext. Drip its bytes more frequently than idle_timeout
+    // so restarting the relative socket timeout would retain the connection.
+    tls.conn.refresh_traffic_keys().unwrap();
+    let mut record = Vec::new();
+    tls.conn.write_tls(&mut record).unwrap();
+    assert!(
+        record.len() >= 20,
+        "KeyUpdate record too short: {}",
+        record.len()
+    );
+    let mut raw = tls.sock.try_clone().unwrap();
+    let dripper = std::thread::spawn(move || {
+        for byte in record {
+            std::thread::sleep(Duration::from_millis(30));
+            if raw.write_all(&[byte]).is_err() {
+                break;
+            }
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let result = tls.read(&mut response);
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(result, Err(_) | Ok(0)),
+        "unexpected plaintext: {response:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(700),
+        "record-only TLS connection closed after {elapsed:?}"
+    );
+    dripper.join().unwrap();
+
+    // The hostile client occupied the sole admission slot; closure must release
+    // it so an independent TLS client can still use the server.
+    let mut healthy = connect(&server, false);
+    ping(&mut healthy);
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn completed_tls_frame_clears_deadline_for_later_commands() {
     let server = Server::bind(Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
