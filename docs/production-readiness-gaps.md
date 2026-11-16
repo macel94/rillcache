@@ -846,9 +846,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   pinned native reference. Expiry coverage includes NX/XX/GT/LT conditions,
   equal and persistent deadlines, PERSIST/GETEX, SET KEEPTTL, APPEND, COPY/RENAME
   deadline propagation, immediate deletion and TTL sentinels, exercised against
-  Redis 8.10.2 and Valkey 9.1.2 without timing sleeps. It does not cover pub/sub,
-  transactions, ACL, TLS, persistence, the full error matrix or all supported
-  commands.
+  Redis 8.10.2 and Valkey 9.1.2 without timing sleeps. Two-client transaction
+  cases also verify queue visibility, ordered EXEC results and runtime errors,
+  DISCARD, queue-time EXECABORT, WATCH conflicts (including missing-key creation)
+  and watch reset after abort against those pinned versions. It does not cover
+  pub/sub, ACL, TLS, persistence, exhaustive transaction/error cases or all
+  supported commands.
   **Closes when:** every supported command/type/edge has a differential test
   against the pinned versions, including binary, expiry, wrong-type, OOM and
   transaction cases.
