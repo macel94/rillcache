@@ -120,11 +120,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   send a read-only RESP2 PING, require an exact PONG, remain quiet on success and
   fail on rejection, malformed/truncated replies, connection errors or a bounded
   one-second I/O deadline. With `--healthcheck-password-file PATH` following the
-  address, it shall read a bounded 1..=1024-byte default-user password (stripping
-  one final LF/CRLF), validate AUTH before PING, share one socket deadline across
-  both exchanges, and never echo the password or server error payload. Invalid
-  files shall fail before connection. This is plaintext request-service probing,
-  not TLS, named-user, persistence or replication readiness. No external runtime
+  address, it shall read a bounded 1..=1024-byte password (stripping one final
+  LF/CRLF), validate AUTH before PING, share one socket deadline across both
+  exchanges, and never echo the password or server error payload. Optional
+  `--healthcheck-user NAME` shall authenticate the named ACL user instead of
+  default, require the password file, reject invalid/bounded names and duplicate
+  options, and fail if the user is disabled, unknown or denied PING. Both options
+  may follow the address in either order. Invalid files shall fail before
+  connection. This is plaintext request-service probing, not TLS, persistence
+  or replication readiness. No external runtime
   probe tool shall be required.
 - **R75 (event-driven):** When trusted main/tag/manual publication runs, automation
   shall first pass offline checks and native amd64/arm64 container tests in all
