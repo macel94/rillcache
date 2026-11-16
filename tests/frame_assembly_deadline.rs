@@ -70,7 +70,13 @@ fn trickle_below_idle_timeout_expires_only_slow_frame_and_releases_admission() {
             }
         });
         let mut slow_reply = Vec::new();
-        slow.read_to_end(&mut slow_reply).unwrap();
+        if let Err(error) = slow.read_to_end(&mut slow_reply) {
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset,
+                "slow frame failed for an unexpected reason"
+            );
+        }
         writer.join().unwrap();
         assert!(
             slow_reply.is_empty(),
