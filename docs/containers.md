@@ -103,6 +103,27 @@ real-time scheduling guarantee. It checks request service, not persistence or
 replication, and does not probe the journal. An overloaded/full client limit can make it fail; leave probe headroom.
 Changing the bind/port requires updating probe addresses and port mappings too.
 
+For a password-protected **default user**, override the probe command to use a
+read-only mounted secret rather than putting the password in process arguments:
+
+```sh
+/rillcache --healthcheck 127.0.0.1:6379 --healthcheck-password-file /run/secrets/probe-password
+```
+
+The password-file option must follow the probe address. The probe reads at most
+1027 file bytes and accepts 1..=1024 password bytes after stripping one trailing
+LF or CRLF. It validates an exact AUTH `+OK` before sending PING; both exchanges
+share the same one-second socket deadline. Success remains silent. A rejected
+AUTH, denied PING, missing/empty/oversized file or malformed response fails
+without printing the password or server error payload. File/argument errors exit
+2; connection, authentication and response failures exit 1. Local file I/O and OS
+scheduling are not subject to a hard real-time deadline. Restrict the mounted
+file's permissions and keep it outside the image/build context. This probe uses
+plaintext TCP: use loopback inside the container, not an untrusted network. Named
+ACL users, TLS probes and persistence readiness are not supported by this option.
+The default image health check stays unauthenticated; deployments enabling AUTH
+must explicitly override it.
+
 ## Kubernetes
 
 ```sh

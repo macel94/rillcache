@@ -629,6 +629,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   There is no metrics exporter, OpenTelemetry, structured logging, SLO dashboard,
   alert set, persistence/auth/audit telemetry, replay/rewrite duration or
   network-byte accounting. Health is a PING probe, not persistence/readiness.
+  **Partial: authenticated request-service probe.** The built-in probe accepts
+  a bounded default-user password file, validates AUTH before PING under one
+  socket deadline and keeps credentials/server error payloads out of diagnostics.
+  Named ACL users, TLS, journal readiness and operational telemetry remain open.
   **Closes when:** a redacted, documented metrics/log/health contract exists and
   is tested for overload, persistence failure, auth failure and shutdown.
 
