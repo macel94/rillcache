@@ -8,7 +8,8 @@ decision (section 2.27), 4.21 has a per-turn coalescing decision (section
 2.28), 4.22 has a ready-key wake decision (section 2.29), 4.15 has a
 copy-avoidance decision (section 2.30), 4.25 has a reservation decision
 (section 2.31), 4.26 has a pooled-sampling decision (section 2.32), and 4.30
-has an ordered-index decision (section 2.33), but all remain gated; every other runtime item here is historical or
+has an ordered-index decision (section 2.33), and 4.23 has a bounded-
+materialisation decision (section 2.34), but all remain gated; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1596,7 +1597,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, per-turn coalescing decided (2.28) | AC23 implementation + A/B | none (persistence off) |
 | 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1%, post-#226 5.0/21.4 | 4.22, ready-key wake decided (2.29) | AC25 on the implemented change | none |
 | Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%, post-#226 4.6/13.6/22.4 and 4.2/20.8/26.6; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
-| Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
+| Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23, bounded materialisation decided (2.34) | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
 | TTL index and clock | latency, storage | **measured null** in a limited 8-client cohort (~110–125k/s; differences inside host spread) | no candidate; 4.9 stays closed | clean TTL cohort (4.16 row 1) | none |
 | Mutation-time LRU, no LFU | storage | source; read-hit quality gap | keep; revisit only if measured | 4.16 row 6 | none |
@@ -2111,6 +2112,61 @@ requested slice (the start rank needs global order), and claiming rank from a
 **Acceptance.** AC32 covers the 4.30 point/range/pop stage, AC40 the separate
 rank layer, AC51 the pops and AC52 the lex/store forms. The index is staged; a
 pass on the 4.30 rows does not close the rank clause.
+
+### 2.34 2026-11-16 checkpoint: rewrite still copies the key list under the gate
+
+The protected gate runs with persistence off, so the clean results in sections
+2.26–2.33 do not exercise rewrite. The retained rewrite cohort (section 3.13)
+measures the `BGREWRITEAOF` start pause at **9–14 ms for 20k keys** and
+**91–107 ms for 200k keys**, with full passes of 4.85 s and 43.4 s and concurrent
+GET p99 of 10.8/18.8 ms. The C servers fork and rewrite from a COW snapshot, so
+their parent pause is much smaller.
+
+Current source audit:
+
+- `rewrite_journal` takes `data.try_borrow_mut`, calls
+  `begin_rewrite_tracking`, and immediately clones **every key** into a `Vec`
+  before returning. That collection is O(keyspace) under the exclusive gate and
+  is the measured start pause.
+- `rewrite_step` then encodes bounded slices from that list across maintenance
+  ticks and reconciles writes since the snapshot. The encoding is already
+  cooperative; only the initial key-list materialisation is not.
+
+The C servers use a process snapshot rather than a key list:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Start | clone every key under the gate | `rewriteAppendOnlyFileBackground` opens a new incremental AOF and forks ([`aof.c#L3197`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L3197)) | same ([`aof.c#L2595`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L2595)) | **adapt** bounded key collection |
+| Snapshot | current `Data` + reconciliation | fork/COW child rewrites ([`aof.c#L3117`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L3117)) | same ([`aof.c#L2512`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L2512)) | keep in-process reconciliation |
+| Parent pause | O(keys) key clone | fork/page-table setup | same | target bounded slices |
+| Completion | cooperative slices | child process | child process | keep cooperative |
+| Dependencies | std only | POSIX fork/COW | POSIX fork/COW | none |
+
+**Decision.** Do not copy fork/COW: the safe-Rust/no-FFI policy has no portable
+process snapshot, and a fork child would also complicate the journal mutex,
+ownership lock and joined shutdown. Adapt the existing cooperative rewrite by
+starting tracking under the gate and collecting keys in bounded maintenance
+slices (or walking the 4.31 ordered key index with an opaque position) instead
+of cloning the keyspace in the start command. The `+OK`/background reply may be
+sent before the key list is complete; the snapshot is not installed until the
+existing fsynced atomic rename. Reconciliation must cover a key created during
+collection, a key deleted before encoding, and a key created and deleted before
+the walker reaches it; the final commit re-checks the tail under the gate.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI, fork or allocator
+change: the existing `Vec`/`BTreeSet` cursor, maintenance tick and journal
+rewrite state. If 4.31's ordered key index lands, it supplies the collection
+order and avoids a second full key copy; until then a bounded `Vec` slice is
+acceptable. The rewrite is still synchronous with respect to the atomic rename,
+not a background/fork claim.
+
+**Risks and rejected options.** A non-point-in-time key list, missed/duplicated
+keys, a write storm outrunning reconciliation, memory held longer, or a crash
+leaving a temporary file must be tested. Preserve the ownership lock, HMAC/CRC
+chain, absolute TTLs, `INFO persistence` phases, kill/replay and joined shutdown.
+Rejected: POSIX fork/COW, a background thread with a second live `Data` copy,
+unbounded key materialisation, and installing a snapshot before reconciliation
+finishes. AC26 remains the acceptance criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5661,7 +5717,7 @@ stay at or below 1% and shall not scale with the client count; FIFO, ordering,
 timeout, unblock, multi-owner and shutdown tests shall pass; the protected gates
 shall pass on the exact head; and no dependency is added.
 
-### 4.23 Bounded rewrite key-list materialisation (candidate, gated on rewrite latency)
+### 4.23 Bounded rewrite key-list materialisation (candidate; bounded-materialisation decision)
 
 **Mechanism.** Do not collect every key name in one command turn when
 `BGREWRITEAOF` starts. Mark the rewrite generation and collect keys in bounded
@@ -5690,6 +5746,14 @@ during materialisation must be covered by reconciliation, a key deleted during i
 must be checked at encode time, and a key created and deleted before the list
 reaches it must not be resurrected. The list memory is unchanged but held longer.
 Every durability/replay test and the transaction gate stay mandatory.
+
+**Decision (2026-11-16, section 2.34).** Do not copy POSIX fork/COW. Adapt the
+existing cooperative rewrite: start tracking under the gate, collect keys in
+bounded maintenance slices (or walk 4.31's ordered index with an opaque position),
+keep reconciliation, and install the snapshot only after the existing fsynced
+atomic rename. A key created, deleted or recreated during collection must be
+covered by the final tail. No dependency, fork, background `Data` copy or unsafe
+operation. AC26 remains the acceptance criterion.
 
 **Rejection condition.** Any missed, duplicated or resurrected key; total
 completion more than 25% slower; any crash/replay failure; or any protected gate
@@ -5948,8 +6012,9 @@ latency/idle-CPU candidate. The 4.15 copy-avoidance decision (section 2.30) fixe
 the large-reply shape, and the 4.25 reservation decision (section 2.31) fixes the
 large-input shape; the 4.26 pooled-sampling decision (section 2.32) fixes the
 pressure path, and the 4.30 ordered-index decision (section 2.33) fixes the
-sorted-set point/range shape. Then the 4.25, 4.15 and 4.26 implementations for
-large values and memory pressure, 4.26 for eviction, 4.45 for
+sorted-set point/range shape, and the 4.23 decision (section 2.34) fixes the
+rewrite start shape. Then the 4.25, 4.15 and 4.26 implementations for large
+values and memory pressure, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -9189,7 +9254,9 @@ separate roadmap.
   unimplemented, section 2.28); and eviction pressure (P16 20,498 vs 144,365
   without eviction; 4.26 has a pooled-sampling decision but is unimplemented,
   section 2.32). The sorted-set ordered-index decision (section 2.33) is the
-  largest read-path gap; it is not implemented. The gate runs with persistence
+  largest read-path gap; it is not implemented. The 4.23 bounded rewrite
+  materialisation decision (section 2.34) removes the measured 91–107 ms start
+  pause in principle but is not implemented; the gate runs with persistence off. The gate runs with persistence
   and maxmemory off and has no sorted-set rows.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
