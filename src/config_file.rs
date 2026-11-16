@@ -51,6 +51,7 @@ const SUPPORTED: &[&str] = &[
     "tls-cert-file",
     "tls-key-file",
     "tls-client-ca-file",
+    "tls-reload-trigger",
     "tls-sni-cert-file",
     "tls-sni-key-file",
     "tls-handshake-timeout-ms",
@@ -275,6 +276,14 @@ aof-hmac-migrate no
                 "--tls-sni-key-file",
                 "a.test=/etc/a-key.pem",
             ]
+        );
+    }
+
+    #[test]
+    fn tls_reload_trigger_directive_maps_to_cli_option() {
+        assert_eq!(
+            parse_text("tls-reload-trigger /run/rillcache/tls-generation").unwrap(),
+            vec!["--tls-reload-trigger", "/run/rillcache/tls-generation"]
         );
     }
 

@@ -21,8 +21,8 @@ remains `unsafe_code = "forbid"`.
   additional SNI identities are configured. Optional exact-name SNI mappings
   select distinct certificate chains at startup. When mappings are configured,
   an unknown SNI name is rejected; there is no wildcard matching or fallback to
-  the default identity for an unknown name. Certificate hot reload and OCSP/CRL
-  integration are not implemented.
+  the default identity for an unknown name. Optional operator-triggered atomic
+  reload is available; OCSP/CRL integration is not implemented.
 - Plaintext and TLS listeners can run together. Put the TLS listener on the
   exposed interface and bind the plaintext listener to loopback/private space, or
   firewall the plaintext port.
@@ -35,6 +35,7 @@ remains `unsafe_code = "forbid"`.
 | `--tls-cert-file PATH` | PEM server certificate followed by intermediates |
 | `--tls-key-file PATH` | Unencrypted PEM private key |
 | `--tls-client-ca-file PATH` | Optional client CA; enables required mTLS |
+| `--tls-reload-trigger PATH` | Optional operator-controlled reload token file |
 | `--tls-sni-cert-file NAME=PATH` | Repeatable exact SNI DNS name and PEM certificate chain |
 | `--tls-sni-key-file NAME=PATH` | Repeatable matching SNI DNS name and PEM private key |
 | `--tls-handshake-timeout-ms N` | Handshake deadline in milliseconds (default 5000) |
@@ -118,8 +119,21 @@ test keys.
   unknown SNI names abort the handshake; the default identity is used only when
   the ClientHello has no SNI. If no mappings are configured, the single default
   certificate preserves existing behavior for any SNI name.
-- There is no certificate hot reload; restart during a controlled window to
-  rotate material. OCSP/CRL and client-certificate-to-ACL mapping remain absent.
+- Optional certificate rotation uses `--tls-reload-trigger PATH`. The trigger
+  must exist at startup and contain a unique 1..=64-byte visible-ASCII token.
+  Stage replacement PEM files (each at most 1 MiB) by atomic rename, then
+  atomically replace the trigger with a new token. The next accepted TLS
+  connection attempts one bounded reload of the default and every configured
+  SNI identity, together with the optional client CA. Existing connections
+  retain their established rustls configuration snapshot.
+- If reload parsing, CA validation or a certificate/key match fails, the last
+  valid generation remains active and the error is written to stderr. That token
+  is not retried; after fixing files, publish a different token. New handshakes
+  continue using the last valid identities while a bad generation is present.
+  Verify the served identities after rotating. Reload is process-local, not a
+  distributed rollout or readiness guarantee. With `--secure-secret-files`, the
+  trigger must also be owner-only (for example, mode 0600). OCSP/CRL and
+  client-certificate-to-ACL mapping remain absent.
 - There is no ALPN or PROXY protocol.
 - TLS connections use the per-client blocking worker path. The fixed
   worker-pool setting continues to govern plaintext connections; TLS connections
@@ -136,5 +150,5 @@ cargo test --locked --offline --test native_tls
 
 The tests cover TLS 1.3 RESP in all execution modes, plaintext coexistence, TLS
 1.2 rejection, absent HTTP ALPN, required client certificates, exact SNI
-certificate selection with and without mTLS, unknown-name handshake rejection
-and invalid TLS configuration.
+certificate selection with and without mTLS, unknown-name handshake rejection,
+atomic certificate rotation and invalid replacement retention.

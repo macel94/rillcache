@@ -517,11 +517,13 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   deployment requires an external control plane with documented behavior.
 
 - [ ] **S5. TLS hardening is incomplete.** [P0]
-  TLS 1.3 is available and exact-name startup-only SNI selection is implemented
-  (SNI follow-on PR); certificate hot reload/atomic rotation, OCSP/CRL,
-  client-certificate-to-ACL mapping, operator rotation drills and independent TLS
-  interoperability/security review remain absent. Unknown SNI names are rejected
-  when SNI mappings are configured; no production-readiness claim is made.
+  TLS 1.3 is available with exact-name SNI selection and bounded operator-
+  triggered certificate rotation. Reload publishes the default and all SNI
+  identities atomically; failures retain the last valid generation and existing
+  connections keep their TLS snapshots. OCSP/CRL, client-certificate-to-ACL
+  mapping, operator rotation drills and independent TLS interoperability/security
+  review remain open. Unknown SNI names are rejected when SNI mappings are
+  configured; no production-readiness claim is made.
   **Closes when:** remaining controls are implemented or explicitly replaced by
   a reviewed external terminator, with rotation and failure tests.
 
