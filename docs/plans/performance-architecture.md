@@ -7,8 +7,8 @@ direct-iteration decision (section 2.26), 4.31 has a keyspace-stage cursor
 decision (section 2.27), 4.21 has a per-turn coalescing decision (section
 2.28), 4.22 has a ready-key wake decision (section 2.29), 4.15 has a
 copy-avoidance decision (section 2.30), 4.25 has a reservation decision
-(section 2.31), and 4.26 has a pooled-sampling decision (section 2.32), but all
-remain gated; every other runtime item here is historical or
+(section 2.31), 4.26 has a pooled-sampling decision (section 2.32), and 4.30
+has an ordered-index decision (section 2.33), but all remain gated; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1552,8 +1552,8 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | P1 SET/XX far tail | latency | worse on the #212 host in every round, better on the first daily, worse on all five P1 rows in the second daily | 4.19 attribution first | paired client + server p99 histograms | none |
 | Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, copy-avoidance decided (2.30) | AC20 on the implemented change | none at 64 B |
 | Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, direct-iteration decision (2.26) | AC31/AC58 on the implemented change | none at 64 B |
-| Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, admitted | AC32 on the implemented change | none at 64 B |
-| Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 (map/score/start-0) + 4.38 (rank-select), admitted | AC32/AC40 | none |
+| Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, ordered-index decided (2.33) | AC32 on the implemented change | none at 64 B |
+| Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 ordered-index decided (2.33); 4.38 rank layer separate | AC32/AC40 | none |
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, admitted (with 4.24) | AC41 | none |
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 → **0.33** vs 0.08–0.35 (parity with Redis); `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
@@ -2047,6 +2047,70 @@ P16 SET within 25% of the no-eviction control and p99 within 2× (baseline
 −85.8%, 64.5 vs 8.0 ms), exact evicted counts and payload accounting, every
 policy and `noeviction`, no change without pressure, matched A/B and both
 protected gates.
+
+### 2.33 2026-11-16 checkpoint: sorted-set reads still collect and sort the whole set
+
+The protected gate contains no sorted-set command, so the clean results in
+sections 2.26–2.32 do not exercise this path. The retained cohorts are the
+largest read ratios in the record: 10k `ZRANGE 0 9` is **528 req/s** versus Redis
+10,311 and Valkey 10,771; at 100k, `ZRANGE 0 9` is **57.4 ms**,
+`ZRANGEBYSCORE -inf +inf LIMIT 0 10` 62.4 ms and `ZSCORE` 3.27 ms versus
+0.07–0.17 ms; `ZRANK`/`ZREVRANK`/deep `ZRANGE` are 378–927×, `ZRANGEBYLEX LIMIT
+10` 163–371× and `ZLEXCOUNT` 71×; `ZPOPMIN` 156.7 ms before the partial pop fix
+still misses its target. The 128-member control is at the floor.
+
+Current source audit:
+
+- `Collection::ZSet` is a `HashMap<Vec<u8>, f64>`; `zset_read`, `zset_rank`,
+  `zset_range_by_score`, algebra and store forms collect `zset_items`, sort the
+  full set, then slice. The sort and tuple moves dominate the 10k profile
+  (section 3.2).
+- The per-member map lookup is already O(1); the missing piece is an ordered
+  representation, not a hash-table change.
+
+The C servers keep a dict plus a skiplist whose forward nodes carry spans:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Member→score | `HashMap`, O(1) | dict, O(1) | dict, O(1) | keep |
+| Ordered structure | none; collect + sort per read | skiplist, 1–32 levels, span per link (`t_zset.c` `zslInsert`/`zslDelete`) | same | **adapt** a `BTreeSet<(OrderedScore, Arc<[u8]>)>` |
+| Range seek | O(n log n) + O(k) | `zslFirstInRange`/`zslLastInRange`, O(log n + k) | same | `BTreeSet::range`, O(log n + k) |
+| Rank | sort + position | `zslGetRank` walks spans, O(log n) | same | **stage** 4.38; `BTreeSet` has no rank-select |
+| Pop head/tail | scan/sort + remove | `zslDelete` on first/last | same | `pop_first`/`pop_last` |
+| Write cost | map only | dict + skiplist update | same | +0.78 µs measured prototype |
+| Dependency | std only | C | C | std `BTreeSet`, `Arc`, `f64::total_cmp` |
+
+**Decision.** Adopt the `BTreeSet<(OrderedScore, Arc<[u8]>)>` index for the
+point/range/pop stage (4.30), keeping the score map for `ZSCORE`. Normalize
+`-0.0` to `0.0`, reject NaN at parse, and use `(score, member)` lexicographic
+tie-break. Do not write a Rust skiplist: the `BTreeSet` has the same asymptotic
+range/seek shape for this stage with no hand-written level/span machinery.
+`BTreeSet` has no O(log n) rank-select, so do **not** claim 4.38/AC40 with this
+index; the rank layer must be a separate measured block/rank structure or an
+explicitly accepted O(rank) path. The same ordered index serves
+`ZRANGEBYLEX`/`ZLEXCOUNT` equal-score blocks, `ZPOPMIN`/`ZPOPMAX`/`ZMPOP`,
+`ZSCAN` order, and geospatial score ranges, but each is tested separately.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::BTreeSet`, `std::sync::Arc` and `f64::total_cmp`. The index
+is derived state, rebuilt by `encode_zset`/replay/rewrite and never persisted;
+`ZSetPack` stays authoritative up to its 128-member threshold and converts
+atomically. The score map and index share member bytes via `Arc` where possible;
+both are counted by payload/eviction accounting.
+
+**Risks and rejected options.** Two structures must stay consistent across
+`ZADD`/`ZINCRBY`/`ZREM`/range removals/store forms/expiry/replay; score equality,
+±0.0, NaN rejection and member ties must match; `WITHSCORES` formatting and
+lex/score boundary semantics must not change; memory accounting and
+`maxmemory` eviction must include the index. Rejected: a custom skiplist (large
+hand-written structure, no dependency but more mutation surface), the
+`ordered-float`/`float-ord` crates (~20 lines for a dependency), sorting only the
+requested slice (the start rank needs global order), and claiming rank from a
+`BTreeSet`.
+
+**Acceptance.** AC32 covers the 4.30 point/range/pop stage, AC40 the separate
+rank layer, AC51 the pops and AC52 the lex/store forms. The index is staged; a
+pass on the 4.30 rows does not close the rank clause.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5883,8 +5947,9 @@ needs the implementation and persistence-on A/B. The 4.22 ready-key decision
 latency/idle-CPU candidate. The 4.15 copy-avoidance decision (section 2.30) fixes
 the large-reply shape, and the 4.25 reservation decision (section 2.31) fixes the
 large-input shape; the 4.26 pooled-sampling decision (section 2.32) fixes the
-pressure path. Then the 4.25, 4.15 and 4.26 implementations for large values and
-memory pressure, 4.26 for eviction, 4.45 for
+pressure path, and the 4.30 ordered-index decision (section 2.33) fixes the
+sorted-set point/range shape. Then the 4.25, 4.15 and 4.26 implementations for
+large values and memory pressure, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -5992,7 +6057,7 @@ order-sensitive tests updated to match; small hashes and the list path shall be
 unchanged; the matched A/B shall show the gain; and both protected gates shall
 pass on the exact head.
 
-### 4.30 Sorted-set ordered index (candidate; admission measured)
+### 4.30 Sorted-set ordered index (candidate; ordered-index decision)
 
 **Mechanism.** Stop collecting and sorting all members per range read. Keep the
 existing `HashMap<Vec<u8>, f64>` for point lookups and add an ordered index
@@ -6076,6 +6141,14 @@ ordered structure to every mutation for the same asymptotic result as the `std`
 `BTreeSet`; the `ordered-float`/`float-ord` crates add a dependency for ~20 lines
 of total-order code; sorting only the requested slice is impossible because the
 slice's start rank requires the global order.
+
+**Decision (2026-11-16, section 2.33).** Adopt the `BTreeSet<(OrderedScore,
+Arc<[u8]>)>` index for point/range/pop, share member bytes with the score map,
+and keep `ZSetPack` authoritative below its threshold. Do not implement a Rust
+skiplist; do not claim rank-select from `BTreeSet` — 4.38 remains a separate
+block/rank structure or an explicit O(rank) decision. The same index serves
+lex ranges, pops, `ZSCAN` order and geospatial score ranges, each with its own
+tests. No dependency, unsafe/FFI or persisted index.
 
 **Rejection condition.** `ZADD` loses more than 10% in a matched cohort, memory
 grows without an accounted bound, any zset semantic test differs, or a gate row
@@ -9115,7 +9188,9 @@ separate roadmap.
   for the C servers (section 3.9; 4.21 has a per-turn coalescing decision but is
   unimplemented, section 2.28); and eviction pressure (P16 20,498 vs 144,365
   without eviction; 4.26 has a pooled-sampling decision but is unimplemented,
-  section 2.32). The gate runs with persistence and maxmemory off.
+  section 2.32). The sorted-set ordered-index decision (section 2.33) is the
+  largest read-path gap; it is not implemented. The gate runs with persistence
+  and maxmemory off and has no sorted-set rows.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
   within-row alternating comparison, but cross-row absolute rates are not
