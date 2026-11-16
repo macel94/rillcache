@@ -12,7 +12,8 @@ has an ordered-index decision (section 2.33), and 4.23 has a bounded-
 materialisation decision (section 2.34), and 4.27 has a single-pass replay
 decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all remain gated; the
-shared-structure implementation map is section 2.38; every other runtime item here is historical or
+shared-structure implementation map is section 2.38, and 4.38 has an
+order-statistic decision (section 2.40); every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1557,7 +1558,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large bulk reply copy | replies | **measured**: 64 KiB GET −28.4% vs Valkey; 1 MiB GET −42% to −45%, p99 2.3–2.5× | 4.15, copy-avoidance decided (2.30) | AC20 on the implemented change | none at 64 B |
 | Large multi-bulk replies | replies | **measured**: `LRANGE` 10k leads (1,272 vs 913/726 req/s); `HGETALL` 10k is 43% behind Redis (313 vs 552) | 4.29, direct-iteration decision (2.26) | AC31/AC58 on the implemented change | none at 64 B |
 | Sorted-set lookup and rank ranges | replies, storage | **measured**: 10k `ZRANGE 0 9` 528 vs 10,311/10,771 req/s (19.5–20.4×), full range 340 vs 1,581/1,036, `ZSCORE` 20–31% behind; 128-member control at parity | 4.30, ordered-index decided (2.33) | AC32 on the implemented change | none at 64 B |
-| Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 ordered-index decided (2.33); 4.38 rank layer separate | AC32/AC40 | none |
+| Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 ordered-index decided (2.33); 4.38 order-statistic decided (2.40) | AC32/AC40 | none |
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, push-ready decided (2.36, with 4.24) | AC41 | none |
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 → **0.33** vs 0.08–0.35 (parity with Redis); `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
@@ -2390,6 +2391,56 @@ cover only 64-byte string rows and run with persistence/maxmemory off, so every
 candidate still needs its own measured cohort, AC reference and both performance
 gates on the exact implementation head. A docs-only dependency map is not a
 runtime pass.
+
+### 2.40 2026-11-16 checkpoint: sorted-set rank still has no order-statistic index
+
+The protected gate has no sorted-set rows. The retained cohorts (sections 3.2
+and 3.22) measure 100k `ZRANK` at **58.6–72.5 ms**, `ZREVRANK` 71.4 ms,
+`ZRANGE 50000 50009` 63.7 ms and 10k rows at 2.4–3.1 ms, versus 0.07–0.17 ms for
+Redis and Valkey; the ratio is **378–927×** and the 10k→100k scaling is 19–24×.
+The 10-element controls are at the floor.
+
+Current source audit:
+
+- `Collection::ZSet` is a `HashMap`; `zset_rank`, deep-start `zset_range` and
+  score/lex range handlers collect/sort the full set and then index or slice it.
+- 4.30's decided `BTreeSet<(OrderedScore, Arc<[u8]>)>` gives score order and
+  ranges but no O(log n) rank-select: `ZRANK` would still walk from the first
+  member, and a deep `ZRANGE` start has the same cost.
+
+The C servers carry a span on every skiplist link:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Order | collect + sort per read | skiplist, `zslInsert`/`zslDelete` | same | ordered index |
+| Rank | sort + position | `zslGetRank` sums spans, O(log n) | same | **adapt** an order-statistic block index |
+| Deep range | full sort then slice | seek by rank/score | same | block seek + prefix count |
+| Update | map only | dict + skiplist spans | same | block insert/remove + Fenwick counts |
+| Dependencies | std only | C | C | std `Vec`/`BTreeSet`/`Arc`, no crate |
+
+**Decision.** When 4.38 is implemented, use one blocked order-statistic index
+over `(OrderedScore, Arc<[u8]>)` rather than adding a second member index beside
+4.30's `BTreeSet`. Blocks hold a bounded sorted run (e.g. 64–256 entries); a
+Fenwick tree over block lengths supplies O(log blocks) rank/select, while a
+binary search over block bounds supplies score/lex seek. Insert/delete updates
+one block plus the Fenwick path; split/merge keeps the block bound. If 4.30 has
+already landed with `BTreeSet`, replace it with this index rather than running
+both. Pops use the first/last block; `ZSCORE` stays the map lookup. The index is
+derived state, rebuilt by replay/rewrite and never persisted.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::vec::Vec`, `std::sync::Arc`, `f64::total_cmp` and a small Fenwick
+implementation. `ZSetPack` remains authoritative below its threshold and
+converts atomically. Memory is entries plus block/Fenwick overhead, counted by
+payload/eviction accounting.
+
+**Risks and rejected options.** Block split/merge, Fenwick updates on every
+score move, tie-break/±0.0/NaN, `ZREM` counts, negative/reverse indices, `LIMIT`,
+`ZSetPack`, rewrite/replay, WATCH/transactions, lex/store forms and geospatial
+score ranges must stay exact. Rejected: a hand-written skiplist, a `BTreeSet`
+plus O(rank) scans, a rank cache invalidated on every write, per-read sorting and
+new dependencies. AC40 remains the measurable criterion; AC32/AC51/AC52 cover the
+shared consumers.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -6968,6 +7019,14 @@ is the search-versus-update trade and needs a matched ZADD cohort.
 (the measured 378–927× gap), a Fenwick tree rebuilt on every mutation (O(n)
 writes), and the current materialize+sort.
 
+**Decision (2026-11-16, section 2.40).** Use one blocked order-statistic index
+over `(OrderedScore, Arc<[u8]>)` with a Fenwick count over sorted blocks; it
+replaces 4.30's `BTreeSet` when rank lands rather than adding a second member
+index. Block binary search serves score/lex seek; Fenwick prefix sums serve
+rank/select; first/last block serves pops; `ZSCORE` stays on the map. Reject a
+custom skiplist, BTreeSet-plus-O(rank), a rank cache invalidated per write and
+new dependencies. No unsafe/FFI; AC40 remains the criterion.
+
 **Rejection condition.** Any rank/reverse/deep-range semantic test differs,
 `ZADD` loses more than 10% in a matched cohort, index memory grows without a
 bound, the 10k→100k ratio is not flat, or a gate row loses.
@@ -9511,8 +9570,9 @@ separate roadmap.
   for the C servers (section 3.9; 4.21 has a per-turn coalescing decision but is
   unimplemented, section 2.28); and eviction pressure (P16 20,498 vs 144,365
   without eviction; 4.26 has a pooled-sampling decision but is unimplemented,
-  section 2.32). The sorted-set ordered-index decision (section 2.33) is the
-  largest read-path gap; it is not implemented. The 4.24/4.39 push-ready
+  section 2.32). The sorted-set ordered-index decision (section 2.33) and the 4.38
+  order-statistic decision (section 2.40) are the largest read-path gap; neither
+  is implemented. The 4.24/4.39 push-ready
   decision (section 2.36) leaves the measured 4.2–26.6% idle async CPU and
   1.05/3.60 ms pub/sub delivery unimplemented. The 4.35 hash/list in-place
   decision (section 2.37) leaves the 92–99/18 ms write rows unimplemented. The 4.23 bounded rewrite
