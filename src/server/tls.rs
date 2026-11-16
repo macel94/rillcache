@@ -12,7 +12,7 @@ use std::io::{self, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(crate) struct TlsAcceptor {
     config: Arc<ServerConfig>,
@@ -76,10 +76,14 @@ impl TlsAcceptor {
         }
         socket.set_read_timeout(Some(self.idle_timeout))?;
         socket.set_write_timeout(Some(self.idle_timeout))?;
-        Ok(Connection::Tls(Box::new(StreamOwned {
+        Ok(Connection::Tls(Box::new(StreamOwned::new(
             conn,
-            sock: socket,
-        })))
+            DeadlineSocket {
+                stream: socket,
+                baseline_read_timeout: Some(self.idle_timeout),
+                frame_deadline: None,
+            },
+        ))))
     }
 }
 
@@ -87,7 +91,53 @@ impl TlsAcceptor {
 /// either without changing session or protocol code.
 pub(crate) enum Connection {
     Plain(TcpStream),
-    Tls(Box<StreamOwned<ServerConnection, TcpStream>>),
+    Tls(Box<StreamOwned<ServerConnection, DeadlineSocket>>),
+}
+
+/// Recomputes the underlying socket timeout before every TLS record read.
+/// rustls may perform several reads while assembling one record; a relative
+/// timeout set by the outer RESP loop alone can therefore be extended by trickle
+/// ciphertext. This wrapper turns the RESP frame's absolute deadline into a
+/// fresh remaining-time socket timeout for each internal read.
+pub(crate) struct DeadlineSocket {
+    stream: TcpStream,
+    baseline_read_timeout: Option<Duration>,
+    frame_deadline: Option<Instant>,
+}
+
+impl Read for DeadlineSocket {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let timeout = self
+            .frame_deadline
+            .map_or(self.baseline_read_timeout, |deadline| {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                Some(
+                    self.baseline_read_timeout
+                        .map_or(remaining, |baseline| baseline.min(remaining)),
+                )
+            });
+        if timeout.is_some_and(|timeout| timeout.is_zero()) {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(timeout)?;
+        self.stream.read(buffer)
+    }
+}
+
+impl Write for DeadlineSocket {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.stream.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+impl DeadlineSocket {
+    fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        self.stream.shutdown(how)
+    }
 }
 
 impl Connection {
@@ -95,8 +145,20 @@ impl Connection {
         Self::Plain(stream)
     }
 
-    pub(crate) fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        self.raw().set_read_timeout(timeout)
+    pub(crate) fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Plain(stream) => stream.set_read_timeout(timeout),
+            Self::Tls(stream) => {
+                stream.sock.baseline_read_timeout = timeout;
+                stream.sock.stream.set_read_timeout(timeout)
+            }
+        }
+    }
+
+    pub(crate) fn set_frame_assembly_deadline(&mut self, deadline: Option<Instant>) {
+        if let Self::Tls(stream) = self {
+            stream.sock.frame_deadline = deadline;
+        }
     }
 
     pub(crate) fn shutdown(&mut self, how: Shutdown) -> io::Result<()> {
@@ -114,13 +176,6 @@ impl Connection {
         match self {
             Self::Plain(stream) => Some(stream),
             Self::Tls(_) => None,
-        }
-    }
-
-    fn raw(&self) -> &TcpStream {
-        match self {
-            Self::Plain(stream) => stream,
-            Self::Tls(stream) => &stream.sock,
         }
     }
 }

@@ -565,8 +565,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   fragmentation boundary, random byte streams under tight frame/bulk/argument
   limits, random inline input, and multi-command pipelines. It asserts bounded
   consumption, at-most-once execution, argument/limit bounds and no panic; every
-  case is reproducible from its seed. Slow-client thresholds, global/user
-  budgets, CPU quotas and a documented overload shedding contract remain open.
+  case is reproducible from its seed. A configurable monotonic per-incomplete-
+  plaintext-frame assembly deadline (60-second default, zero disables) now
+  complements socket inactivity timeouts across synchronous workers, readiness,
+  Tokio and TLS plaintext parsing. It does not bound TLS records that produce no
+  plaintext. Slow-client length/rate thresholds, global/user budgets, CPU quotas
+  and a general overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
   shedding behavior exists.

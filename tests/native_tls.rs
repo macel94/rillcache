@@ -121,6 +121,125 @@ fn tls13_resp_works_in_all_execution_modes_and_plaintext_is_unchanged() {
 }
 
 #[test]
+fn tls_plaintext_frame_assembly_deadline_closes_trickling_resp() {
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        idle_timeout: Duration::from_secs(2),
+        frame_assembly_timeout: Some(Duration::from_millis(250)),
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut slow = connect(&server, false);
+    slow.write_all(b"*").unwrap();
+    slow.flush().unwrap();
+    for byte in b"1\r\n$4\r\nPING\r\n" {
+        std::thread::sleep(Duration::from_millis(60));
+        if slow.write_all(&[*byte]).is_err() || slow.flush().is_err() {
+            break;
+        }
+    }
+    let mut response = [0u8; 1];
+    assert!(slow.read(&mut response).is_err() || response[0] == 0);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn tls_record_trickle_after_resp_frame_start_obeys_absolute_deadline() {
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        idle_timeout: Duration::from_secs(2),
+        frame_assembly_timeout: Some(Duration::from_millis(250)),
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut control = connect(&server, false);
+    control
+        .write_all(b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPI")
+        .unwrap();
+    let mut pong = [0u8; 7];
+    control.read_exact(&mut pong).unwrap();
+    assert_eq!(&pong, b"+PONG\r\n");
+    let started = std::time::Instant::now();
+    let mut byte = [0u8; 1];
+    let control_read = control.read(&mut byte);
+    assert!(matches!(control_read, Err(_) | Ok(0)));
+    assert!(started.elapsed() < Duration::from_millis(800));
+
+    let mut tls = connect(&server, false);
+    tls.write_all(b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPI")
+        .unwrap();
+    tls.read_exact(&mut pong).unwrap();
+    assert_eq!(&pong, b"+PONG\r\n");
+
+    // Generate one valid encrypted record containing the final plaintext bytes,
+    // then drip its ciphertext into the socket. The server already parsed the
+    // RESP prefix, so the absolute frame deadline must bound rustls' internal
+    // record reads as well as the outer RESP read.
+    tls.conn.writer().write_all(b"NG\r\n").unwrap();
+    let mut record = Vec::new();
+    tls.conn.write_tls(&mut record).unwrap();
+    assert!(record.len() >= 24);
+    let mut raw = tls.sock.try_clone().unwrap();
+    let dripper = std::thread::spawn(move || {
+        for byte in record {
+            std::thread::sleep(Duration::from_millis(40));
+            if raw.write_all(&[byte]).is_err() {
+                break;
+            }
+        }
+    });
+    let started = std::time::Instant::now();
+    let read = tls.read(&mut byte);
+    let elapsed = started.elapsed();
+    assert!(matches!(read, Err(_) | Ok(0)));
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "closed after {elapsed:?}"
+    );
+    dripper.join().unwrap();
+    let mut healthy = connect(&server, false);
+    ping(&mut healthy);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn completed_tls_frame_clears_deadline_for_later_commands() {
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        frame_assembly_timeout: Some(Duration::from_millis(250)),
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let mut tls = connect(&server, false);
+    tls.write_all(b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPI")
+        .unwrap();
+    let mut pong = [0u8; 7];
+    tls.read_exact(&mut pong).unwrap();
+    assert_eq!(&pong, b"+PONG\r\n");
+    tls.write_all(b"NG\r\n").unwrap();
+    tls.read_exact(&mut pong).unwrap();
+    assert_eq!(&pong, b"+PONG\r\n");
+    std::thread::sleep(Duration::from_millis(350));
+    ping(&mut tls);
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn tls12_is_rejected_and_client_certificates_can_be_required() {
     let server = start(None, false);
     let tcp = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();

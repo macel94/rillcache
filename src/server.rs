@@ -213,6 +213,8 @@ pub struct Config {
     pub max_data_bytes: usize,
     pub limits: Limits,
     pub idle_timeout: Duration,
+    /// Monotonic deadline for assembling an incomplete plaintext request; None disables it.
+    pub frame_assembly_timeout: Option<Duration>,
     /// Default-user password. `None` or empty disables authentication.
     /// Never include this value in Debug output or logs.
     pub requirepass: Option<Vec<u8>>,
@@ -276,6 +278,7 @@ impl std::fmt::Debug for Config {
             .field("max_data_bytes", &self.max_data_bytes)
             .field("limits", &self.limits)
             .field("idle_timeout", &self.idle_timeout)
+            .field("frame_assembly_timeout", &self.frame_assembly_timeout)
             .field(
                 "requirepass",
                 &self.requirepass.as_ref().map(|_| "<redacted>"),
@@ -327,6 +330,7 @@ impl Default for Config {
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
+            frame_assembly_timeout: Some(Duration::from_secs(60)),
             requirepass: None,
             requirepass_file: None,
             secure_secret_files: false,
@@ -373,6 +377,9 @@ impl Config {
             || self.limits.max_bulk_bytes > self.limits.max_frame_bytes
             || self.limits.max_frame_bytes > 512 * 1024 * 1024
             || self.idle_timeout.is_zero()
+            || self
+                .frame_assembly_timeout
+                .is_some_and(|timeout| timeout.is_zero() || timeout > Duration::from_secs(600))
             || self
                 .requirepass
                 .as_ref()
@@ -422,7 +429,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
+                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         if self.secure_secret_files {
@@ -878,6 +885,7 @@ fn serve_plain(
             let store = Arc::clone(&store);
             let limits = config.limits;
             let idle_timeout = config.idle_timeout;
+            let frame_assembly_timeout = config.frame_assembly_timeout;
             let permit = Permit::acquire(&admitted);
             let sharing = sharing.assign();
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
@@ -898,6 +906,7 @@ fn serve_plain(
                     let context = ClientContext {
                         limits,
                         idle_timeout,
+                        frame_assembly_timeout,
                         policy,
                         permit: &permit,
                         sharing: sharing.as_deref(),
@@ -967,6 +976,7 @@ fn serve_tls(
             let acceptor = Arc::clone(&acceptor);
             let limits = config.limits;
             let idle_timeout = config.idle_timeout;
+            let frame_assembly_timeout = config.frame_assembly_timeout;
             let permit = Permit::acquire(&admitted);
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
@@ -989,6 +999,7 @@ fn serve_tls(
                     let context = ClientContext {
                         limits,
                         idle_timeout,
+                        frame_assembly_timeout,
                         policy,
                         permit: &permit,
                         sharing: None,
@@ -1074,6 +1085,7 @@ impl Drop for ServerHandle {
 struct ClientContext<'a> {
     limits: Limits,
     idle_timeout: Duration,
+    frame_assembly_timeout: Option<Duration>,
     policy: SchedulingPolicy,
     permit: &'a Permit,
     sharing: Option<&'a handoff::Sharing>,
@@ -1092,6 +1104,7 @@ fn serve_client(
         policy,
         permit,
         sharing,
+        ..
     } = context;
     let limits = *limits;
     let idle_timeout = *idle_timeout;
@@ -1100,9 +1113,11 @@ fn serve_client(
     let mut input = Vec::with_capacity(8192.min(limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; 16 * 1024];
+    let mut frame_deadline = crate::frame_deadline::FrameDeadline::default();
     let mut lease_channel = handoff::LeaseChannel::new();
     let result = (|| {
         let mut subscriber_timeout = false;
+        let mut installed_read_timeout = idle_timeout;
         loop {
             // Subscribers poll their bounded message queue and the socket. The short
             // read timeout is a delivery-latency bound, not a busy-poll guarantee.
@@ -1227,6 +1242,23 @@ fn serve_client(
             } else if consumed > 0 {
                 input.drain(..consumed);
             }
+            if input.is_empty() {
+                frame_deadline.clear();
+            } else {
+                let incomplete = matches!(dispatch_request(&input, limits, |_| ()), Ok(None));
+                if incomplete {
+                    let now = Instant::now();
+                    frame_deadline.observe_incomplete(true, now);
+                    if frame_deadline.expired_at(context.frame_assembly_timeout, now) {
+                        return Ok(());
+                    }
+                } else {
+                    frame_deadline.clear();
+                }
+            }
+            stream.set_frame_assembly_deadline(
+                frame_deadline.deadline(context.frame_assembly_timeout),
+            );
             if !output.is_empty() {
                 stream.write_all(&output)?;
                 output.clear();
@@ -1277,6 +1309,17 @@ fn serve_client(
                 stream.write_all(b"-ERR Protocol error: request frame limit exceeded\r\n")?;
                 return Ok(());
             }
+            let desired_read_timeout = if polling {
+                Duration::from_millis(10)
+            } else {
+                frame_deadline
+                    .remaining_now(context.frame_assembly_timeout)
+                    .map_or(idle_timeout, |remaining| idle_timeout.min(remaining))
+            };
+            if desired_read_timeout != installed_read_timeout {
+                stream.set_read_timeout(Some(desired_read_timeout))?;
+                installed_read_timeout = desired_read_timeout;
+            }
             match stream.read(&mut chunk[..room]) {
                 Ok(0) => {
                     if !input.is_empty() {
@@ -1286,6 +1329,9 @@ fn serve_client(
                 }
                 Ok(size) => input.extend_from_slice(&chunk[..size]),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_error) if frame_deadline.expired_now(context.frame_assembly_timeout) => {
+                    return Ok(());
+                }
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -1639,6 +1685,14 @@ mod tests {
             },
             Config {
                 idle_timeout: Duration::ZERO,
+                ..Config::default()
+            },
+            Config {
+                frame_assembly_timeout: Some(Duration::ZERO),
+                ..Config::default()
+            },
+            Config {
+                frame_assembly_timeout: Some(Duration::from_secs(601)),
                 ..Config::default()
             },
             Config {

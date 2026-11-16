@@ -29,6 +29,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   dropped, the server shall interrupt client I/O and join every worker.
 - **R19 (state-driven):** While a client performs no socket I/O for the configured
   inactivity timeout, the server shall release that connection.
+- **R-FRAME1 (state-driven):** While the request parser has buffered plaintext bytes for
+  an incomplete RESP/inline request, the server shall enforce one configurable
+  monotonic frame-assembly deadline independent of socket activity; additional
+  fragments shall not extend it. Consuming the frame shall clear the deadline for
+  the next request. Expiry shall close only that connection and release its
+  admission resources. Complete buffered commands shall not expire while queued,
+  paused, blocked behind command execution or backpressured. The deadline begins
+  when parsing identifies an incomplete request; it does not bound encrypted TLS
+  records that have not yielded RESP plaintext.
 
 ## Default Unix Tokio plain-TCP execution (S-TOKIO-NET)
 
