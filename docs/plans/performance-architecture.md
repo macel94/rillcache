@@ -12,8 +12,8 @@ has an ordered-index decision (section 2.33), and 4.23 has a bounded-
 materialisation decision (section 2.34), and 4.27 has a single-pass replay
 decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all remain gated; the
-shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), and 4.32 has a packed-node
-decision (section 2.41); every other runtime item here is historical or
+shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), 4.32 has a packed-node decision (section 2.41), and 4.36 has a dense-index
+decision (section 2.42); every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1582,7 +1582,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k 6.45, `ZADD` 4.21, `SADD` 1.23; 200k `RPUSH`/`LPOP` 18.3/17.8; at 100k `HSET`/`HDEL` 92.7–99.4, `ZADD`/`ZREM` 61.4–63.9, `SADD`/`SREM` 11.2/10.7 → **0.125/0.210** vs 0.12–0.24; list/hash/zset writes remain | 4.35 hash/list stage decided (2.37); zset staged behind 4.30 | AC37 set rows met | hash/list; zset after 4.30 |
-| Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
+| Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, dense-index decided (2.42) | AC38 on the implemented change | none |
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` pre-fix 5.32 ms vs 0.349/0.312, post-fix 0.172; `BITCOUNT` pre-fix 23.01 vs 3.37/4.56, post-fix 5.35 vs 2.74/3.43; `BITPOS 0` pre-fix 201.6 vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; 16 MB `BITFIELD` write pre-fix 4.39–4.68 vs 0.087–0.12, post-fix 0.12–0.30; 1 MB/64 B controls at the floor | 4.37, implemented (`BITFIELD`/`SETBIT`/`BITCOUNT`/`BITPOS`) | AC39 met | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
 | Skewed-cardinality algebra | replies, latency | source sets sorted by cardinality; smallest iterated, rest probed | same | every source materialised via `owned_set`/`owned_zset` before intersecting | **Adapt:** 4.51 smallest-source probe; measured 100k + 10 `SINTER` 33.8 vs 0.19/0.19 ms (178×), `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k 33–78×; `SDIFF`/`SUNION` lead (3.48, AC53) |
@@ -2490,6 +2490,47 @@ push/pop and FIFO ordering, `LRANGE`/`LSET`/`LINSERT`/`LREM`/`LPOS`, TTL/WATCH/
 journal/rewrite and exact accounting are the obligations. Rejected: the current
 one-buffer-per-element layout, an external list/arena crate, unsafe custom
 allocators, and changing `LRANGE` order. AC34 remains the measurable criterion.
+
+### 2.42 2026-11-16 checkpoint: random-member commands still materialise the collection
+
+The protected gate has no random-member command. The retained cohort (section
+3.20) measures 100k `SRANDMEMBER` at **11.54–11.68 ms**, `HRANDFIELD` 30.8–34.3,
+`ZRANDMEMBER` 20.6–22.8 and `SPOP` 11.11, versus 0.10–0.41 ms for Redis and
+Valkey; 10k rows are 1.0–2.6 ms and controls are at the command floor. The
+current path collects the entire collection before indexing or running partial
+Fisher–Yates.
+
+The C servers sample the stored representation directly:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Single random pick | collect + random index | dict/listpack direct pick ([`t_set.c#L419`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L419)) | same ([`t_set.c#L408`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L408)) | **adapt** a dense member index |
+| COUNT unique | collect + partial shuffle | bounded sampling/swap | same | reservoir / partial Fisher–Yates |
+| SPOP | collect + remove | listpack/dict removal by index | same | swap-remove from the index |
+| Small packs | collect small vector | listpack iteration | same | keep |
+| Dependencies | std only | C/dict/listpack | C/dict/listpack | std `Vec`/`HashMap` |
+
+**Decision.** Add a dense member index beside each large set/hash/zset:
+`Vec<Arc<[u8]>>` plus a map from member to slot (or a per-entry slot) with
+swap-remove. Single picks become O(1), unique COUNT sampling uses reservoir or
+partial Fisher–Yates over the index, and `SPOP` removes by slot. Share member
+bytes with the existing map/ordered index via `Arc`; keep pack/listpack paths
+unchanged and convert atomically at the threshold. Zset random access uses the
+same member bytes but not the ordered range index; 4.30/4.38 remain the ordered
+structure. Negative COUNT with repetition and duplicate-free semantics stay
+explicit tests. The index is counted in payload/eviction accounting and rebuilt
+by replay/rewrite; ordering is documented as unspecified, matching Redis.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::vec::Vec`, `std::collections::HashMap`, `std::sync::Arc` and the existing
+in-repo random-index helper. No persistent format change.
+
+**Risks and rejected options.** Uniformity, duplicate/negative-count semantics,
+swap-remove slot repair, pack↔large conversion, empty-set deletion, field TTL,
+memory accounting, `SMEMBERS`/`HKEYS`/`ZSCAN` ordering and WATCH/journal/rewrite
+must stay exact. Rejected: collecting the whole collection, sorting, rescanning
+for every pick, an external RNG crate and a second copy of each member. AC38 is
+the criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -6909,7 +6950,7 @@ protected gates shall pass on the exact head. Evidence so far: 100k `SADD`
 hash/zset/list rows remain open. New coverage asserts exact payload accounting
 across in-place add/remove, pack→hashtable promotion on growth and key deletion.
 
-### 4.36 Constant-time random-member selection (candidate; admission measured)
+### 4.36 Constant-time random-member selection (candidate; dense-index decision)
 
 **Mechanism.** Two slices. First, stop materializing: single-member commands use
 reservoir sampling over the existing iteration, and count commands use a bounded
