@@ -217,6 +217,94 @@ fn authenticated_healthcheck_reads_a_bounded_password_file_without_leaking_secre
 }
 
 #[test]
+fn named_healthcheck_accepts_only_an_enabled_user_with_ping_permission() {
+    let _fixture = LIVE_SERVER_TEST.lock().unwrap();
+    use rillcache::{Config, Server};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let acl = std::env::temp_dir().join(format!("rillcache-healthcheck-acl-{nonce}"));
+    let password = std::env::temp_dir().join(format!("rillcache-healthcheck-secret-{nonce}"));
+    std::fs::write(&acl, b"user default on >test-only-admin-secret -@all\nuser probe on >test-only-probe-secret -@all +ping\nuser denied on >test-only-probe-secret -@all\nuser disabled off >test-only-probe-secret -@all +ping\n").unwrap();
+    std::fs::write(&password, b"test-only-probe-secret\n").unwrap();
+    let mode = std::env::var("RILLCACHE_TEST_THREADS").unwrap_or_else(|_| "0".into());
+    let server = Server::bind(Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        aclfile: Some(acl.clone()),
+        worker_threads: match mode.as_str() {
+            "0" => None,
+            _ => Some(mode.parse().unwrap()),
+        },
+        ..Config::default()
+    })
+    .unwrap()
+    .spawn()
+    .unwrap();
+    let address = server.local_addr().to_string();
+    for user in ["probe", "denied", "disabled", "missing"] {
+        for user_first in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+            command.args(["--healthcheck", &address]);
+            if user_first {
+                command.args(["--healthcheck-user", user]);
+            }
+            command.arg("--healthcheck-password-file").arg(&password);
+            if !user_first {
+                command.args(["--healthcheck-user", user]);
+            }
+            let output = command.output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if user == "probe" { 0 } else { 1 }),
+                "user {user}"
+            );
+            assert!(output.stdout.is_empty());
+            if user == "probe" {
+                assert!(output.stderr.is_empty());
+            }
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("test-only-probe-secret"));
+        }
+    }
+    for extra in [
+        vec!["--healthcheck-user", "probe"],
+        vec!["--healthcheck-user", ""],
+        vec!["--healthcheck-user", "bad user"],
+        vec!["--healthcheck-user", "bad|user"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--healthcheck", &address])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+    for duplicate in ["--healthcheck-user", "--healthcheck-password-file"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args([
+                "--healthcheck",
+                &address,
+                "--healthcheck-user",
+                "probe",
+                "--healthcheck-password-file",
+            ])
+            .arg(&password)
+            .args([duplicate, "ignored"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+    server.shutdown().unwrap();
+    std::fs::remove_file(acl).unwrap();
+    std::fs::remove_file(password).unwrap();
+}
+
+#[test]
 fn healthcheck_is_quiet_on_success_and_fails_for_an_unavailable_endpoint() {
     let _fixture = LIVE_SERVER_TEST.lock().unwrap();
     use rillcache::{Config, Server};
