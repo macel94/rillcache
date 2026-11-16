@@ -357,6 +357,101 @@ fn run_expiry_corpus(client: &mut Client, suffix: &[u8]) {
     assert_command(client, &[b"DEL", &source, &destination], Resp::Integer(0));
 }
 
+fn run_transaction_corpus(address: SocketAddr, suffix: &[u8]) {
+    let key = key(b"rillcache:baseline:transaction:\0", suffix);
+    let mut client = Client::connect(address).unwrap();
+    let mut observer = Client::connect(address).unwrap();
+    let ok = || Resp::Simple(b"OK".to_vec());
+    let queued = || Resp::Simple(b"QUEUED".to_vec());
+    let bulk = |value: &[u8]| Resp::Bulk(Some(value.to_vec()));
+    let original = b"before\0\xff";
+    let replacement = b"after\0\xff";
+    assert_command(&mut client, &[b"DEL", &key], Resp::Integer(0));
+    assert_command(&mut client, &[b"SET", &key, original], ok());
+    assert_eq!(
+        client
+            .pipeline(&[
+                &[b"MULTI"],
+                &[b"SET", &key, replacement],
+                &[b"GET", &key],
+                &[b"INCR", &key],
+                &[b"SET", &key, b"continued"],
+            ])
+            .unwrap(),
+        vec![ok(), queued(), queued(), queued(), queued()]
+    );
+    // A second connection must not observe queued writes. A runtime error is
+    // one EXEC element, not a rollback or a reason to omit following commands.
+    assert_command(&mut observer, &[b"GET", &key], bulk(original));
+    assert_command(
+        &mut client,
+        &[b"EXEC"],
+        Resp::Array(Some(vec![
+            ok(),
+            bulk(replacement),
+            Resp::Error(b"ERR value is not an integer or out of range".to_vec()),
+            ok(),
+        ])),
+    );
+    assert_command(&mut observer, &[b"GET", &key], bulk(b"continued"));
+    assert_eq!(
+        client
+            .pipeline(&[&[b"MULTI"], &[b"SET", &key, b"discarded"], &[b"DISCARD"]])
+            .unwrap(),
+        vec![ok(), queued(), ok()]
+    );
+    assert_command(&mut observer, &[b"GET", &key], bulk(b"continued"));
+
+    // A queue-time arity error poisons EXEC and discards even valid queued writes.
+    assert_eq!(
+        client
+            .pipeline(&[
+                &[b"MULTI"],
+                &[b"SET", &key, b"must-not-run"],
+                &[b"SET", &key],
+                &[b"EXEC"],
+            ])
+            .unwrap(),
+        vec![
+            ok(),
+            queued(),
+            Resp::Error(b"ERR wrong number of arguments for 'set' command".to_vec()),
+            Resp::Error(b"EXECABORT Transaction discarded because of previous errors.".to_vec()),
+        ]
+    );
+    assert_command(&mut observer, &[b"GET", &key], bulk(b"continued"));
+    assert_command(&mut client, &[b"WATCH", &key], ok());
+    assert_command(&mut observer, &[b"SET", &key, b"outside"], ok());
+    assert_eq!(
+        client
+            .pipeline(&[&[b"MULTI"], &[b"SET", &key, b"conflicted"], &[b"EXEC"]])
+            .unwrap(),
+        vec![ok(), queued(), Resp::Array(None)]
+    );
+    assert_command(&mut observer, &[b"GET", &key], bulk(b"outside"));
+
+    // An aborted EXEC clears WATCH: a new transaction may commit normally.
+    assert_command(&mut observer, &[b"SET", &key, b"new-outside"], ok());
+    assert_eq!(
+        client
+            .pipeline(&[&[b"MULTI"], &[b"SET", &key, replacement], &[b"EXEC"]])
+            .unwrap(),
+        vec![ok(), queued(), Resp::Array(Some(vec![ok()]))]
+    );
+    assert_command(&mut observer, &[b"GET", &key], bulk(replacement));
+    assert_command(&mut observer, &[b"DEL", &key], Resp::Integer(1));
+    assert_command(&mut client, &[b"WATCH", &key], ok());
+    assert_command(&mut observer, &[b"SET", &key, b"created"], ok());
+    assert_eq!(
+        client
+            .pipeline(&[&[b"MULTI"], &[b"DEL", &key], &[b"EXEC"]])
+            .unwrap(),
+        vec![ok(), queued(), Resp::Array(None)]
+    );
+    assert_command(&mut observer, &[b"GET", &key], bulk(b"created"));
+    assert_command(&mut observer, &[b"DEL", &key], Resp::Integer(1));
+}
+
 fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     let binary_key = key(b"rillcache:baseline:binary:", suffix);
     let empty_key = key(b"rillcache:baseline:empty:", suffix);
@@ -368,6 +463,7 @@ fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     let binary = b"\0$-1\r\n\xff";
     let mut client = Client::connect(address).unwrap();
     run_expiry_corpus(&mut client, suffix);
+    run_transaction_corpus(address, suffix);
 
     assert_command(
         &mut client,
