@@ -1,19 +1,126 @@
-//! Read-only container probe using the application binary and safe std only.
+//! Read-only application probe using safe std I/O and the reviewed rustls client.
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+pub struct TlsSettings {
+    config: Arc<rustls::ClientConfig>,
+    server_name: rustls::pki_types::ServerName<'static>,
+}
+
+impl TlsSettings {
+    pub fn from_ca_file(
+        path: &str,
+        name: Option<String>,
+        address: SocketAddr,
+    ) -> Result<Self, String> {
+        let server_name = match name {
+            Some(name) => rustls::pki_types::ServerName::try_from(name)
+                .map_err(|_| "--healthcheck-server-name is not a valid DNS name or IP address")?,
+            None => rustls::pki_types::ServerName::IpAddress(address.ip().into()),
+        };
+        let file = std::fs::File::open(path).map_err(|_| "could not open healthcheck CA file")?;
+        let mut bytes = Vec::new();
+        file.take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "could not read healthcheck CA file")?;
+        if bytes.len() > 1024 * 1024 {
+            return Err("healthcheck CA file exceeds 1 MiB".into());
+        }
+        let mut roots = rustls::RootCertStore::empty();
+        let mut input = std::io::Cursor::new(bytes);
+        for certificate in rustls_pemfile::certs(&mut input) {
+            if roots.len() >= 128 {
+                return Err("healthcheck CA file exceeds 128 certificates".into());
+            }
+            roots
+                .add(certificate.map_err(|_| "invalid healthcheck CA certificate")?)
+                .map_err(|_| "invalid healthcheck CA certificate")?;
+        }
+        if roots.is_empty() {
+            return Err("healthcheck CA file contains no certificates".into());
+        }
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|_| "could not configure healthcheck TLS")?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        Ok(Self {
+            config: Arc::new(config),
+            server_name,
+        })
+    }
+}
+
+// Enforce the remaining budget on every underlying syscall, including calls
+// made inside rustls handshake/record loops rather than only application I/O.
+struct DeadlineSocket {
+    socket: TcpStream,
+    deadline: Instant,
+}
+
+impl Read for DeadlineSocket {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.socket
+            .set_read_timeout(Some(remaining(self.deadline)?))?;
+        self.socket.read(bytes)
+    }
+}
+impl Write for DeadlineSocket {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.socket
+            .set_write_timeout(Some(remaining(self.deadline)?))?;
+        self.socket.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        remaining(self.deadline)?;
+        self.socket.flush()
+    }
+}
+
+enum ProbeStream {
+    Plain(DeadlineSocket),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, DeadlineSocket>>),
+}
+impl Read for ProbeStream {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(stream) => stream.read(bytes),
+            Self::Tls(stream) => stream.read(bytes),
+        }
+    }
+}
+impl Write for ProbeStream {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(stream) => stream.write(bytes),
+            Self::Tls(stream) => stream.write(bytes),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Plain(stream) => stream.flush(),
+            Self::Tls(stream) => stream.flush(),
+        }
+    }
+}
 
 pub fn check(
     address: SocketAddr,
     username: Option<&[u8]>,
     password: Option<&[u8]>,
     require_aof: bool,
+    tls: Option<TlsSettings>,
 ) -> io::Result<()> {
     check_with_timeout(
         address,
         username,
         password,
         require_aof,
+        tls,
         Duration::from_secs(1),
     )
 }
@@ -30,11 +137,28 @@ fn check_with_timeout(
     username: Option<&[u8]>,
     password: Option<&[u8]>,
     require_aof: bool,
+    tls: Option<TlsSettings>,
     timeout: Duration,
 ) -> io::Result<()> {
     let deadline = Instant::now() + timeout;
-    let mut stream = TcpStream::connect_timeout(&address, remaining(deadline)?)?;
-    stream.set_nodelay(true)?;
+    let socket = TcpStream::connect_timeout(&address, remaining(deadline)?)?;
+    socket.set_nodelay(true)?;
+    let socket = DeadlineSocket { socket, deadline };
+    let mut stream = match tls {
+        None => ProbeStream::Plain(socket),
+        Some(tls) => {
+            let connection =
+                rustls::ClientConnection::new(tls.config, tls.server_name).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "could not initialize healthcheck TLS",
+                    )
+                })?;
+            let mut stream = rustls::StreamOwned::new(connection, socket);
+            stream.conn.complete_io(&mut stream.sock)?;
+            ProbeStream::Tls(Box::new(stream))
+        }
+    };
     if let Some(password) = password {
         let mut request = Vec::new();
         if let Some(username) = username {
@@ -51,9 +175,9 @@ fn check_with_timeout(
     Ok(())
 }
 
-fn send_request(stream: &mut TcpStream, mut request: &[u8], deadline: Instant) -> io::Result<()> {
+fn send_request(stream: &mut ProbeStream, mut request: &[u8], deadline: Instant) -> io::Result<()> {
     while !request.is_empty() {
-        stream.set_write_timeout(Some(remaining(deadline)?))?;
+        remaining(deadline)?;
         match stream.write(request) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
             Ok(size) => request = &request[size..],
@@ -61,13 +185,15 @@ fn send_request(stream: &mut TcpStream, mut request: &[u8], deadline: Instant) -
             Err(error) => return Err(error),
         }
     }
+    stream.flush()?;
+    remaining(deadline)?;
     Ok(())
 }
 
-fn read_exact(stream: &mut TcpStream, reply: &mut [u8], deadline: Instant) -> io::Result<()> {
+fn read_exact(stream: &mut ProbeStream, reply: &mut [u8], deadline: Instant) -> io::Result<()> {
     let mut received = 0;
     while received < reply.len() {
-        stream.set_read_timeout(Some(remaining(deadline)?))?;
+        remaining(deadline)?;
         match stream.read(&mut reply[received..]) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(size) => received += size,
@@ -80,7 +206,7 @@ fn read_exact(stream: &mut TcpStream, reply: &mut [u8], deadline: Instant) -> io
 }
 
 fn exchange(
-    stream: &mut TcpStream,
+    stream: &mut ProbeStream,
     request: &[u8],
     expected: &[u8],
     deadline: Instant,
@@ -104,7 +230,7 @@ fn invalid_persistence() -> io::Error {
     )
 }
 
-fn check_persistence(stream: &mut TcpStream, deadline: Instant) -> io::Result<()> {
+fn check_persistence(stream: &mut ProbeStream, deadline: Instant) -> io::Result<()> {
     send_request(
         stream,
         b"*2\r\n$4\r\nINFO\r\n$11\r\npersistence\r\n",
@@ -193,7 +319,7 @@ mod tests {
                     }
                 });
                 assert_eq!(
-                    check(address, None, None, false).is_ok(),
+                    check(address, None, None, false, None).is_ok(),
                     reply == b"+PONG\r\n"
                 );
             });
@@ -250,7 +376,7 @@ mod tests {
                         }
                     }
                 });
-                let result = check(address, username, Some(password), false);
+                let result = check(address, username, Some(password), false, None);
                 assert_eq!(result.is_ok(), accepted);
                 if let Err(error) = result {
                     assert!(!error.to_string().contains("credential-must-not-leak"));
@@ -336,7 +462,7 @@ mod tests {
                         }
                     }
                 });
-                let result = check(address, None, None, true);
+                let result = check(address, None, None, true, None);
                 assert_eq!(result.is_ok(), accepted);
                 if let Err(error) = result {
                     assert!(!error.to_string().contains("secret-server-text"));
@@ -364,8 +490,38 @@ mod tests {
                 wait.recv_timeout(Duration::from_secs(5)).unwrap();
             });
             let started = Instant::now();
-            let result = check_with_timeout(address, None, None, true, Duration::from_millis(100));
+            let result =
+                check_with_timeout(address, None, None, true, None, Duration::from_millis(100));
             assert!(result.is_err());
+            assert!(started.elapsed() < Duration::from_secs(3));
+            release.send(()).unwrap();
+        });
+    }
+
+    #[test]
+    fn a_silent_tls_peer_cannot_extend_the_handshake_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let ca = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls/ca.crt");
+        let tls = TlsSettings::from_ca_file(ca.to_str().unwrap(), None, address).unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let (_stream, _) = listener.accept().unwrap();
+                wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+            let started = Instant::now();
+            assert!(
+                check_with_timeout(
+                    address,
+                    None,
+                    None,
+                    false,
+                    Some(tls),
+                    Duration::from_millis(100)
+                )
+                .is_err()
+            );
             assert!(started.elapsed() < Duration::from_secs(3));
             release.send(()).unwrap();
         });
@@ -383,7 +539,8 @@ mod tests {
             });
             let started = Instant::now();
             assert!(
-                check_with_timeout(address, None, None, false, Duration::from_millis(100)).is_err()
+                check_with_timeout(address, None, None, false, None, Duration::from_millis(100))
+                    .is_err()
             );
             assert!(started.elapsed() < Duration::from_secs(3));
             release.send(()).unwrap();
