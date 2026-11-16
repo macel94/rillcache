@@ -3,9 +3,10 @@
 **Status: RESEARCH. Candidate 4.12 merged as PR #172 (`21ed301`) after passing
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); 4.37's `BITFIELD` write
 path has landed and the rest of it remains gated; 4.29 has a source-pinned
-direct-iteration decision (section 2.26) and 4.31 has a keyspace-stage cursor
-decision (section 2.27), but both remain gated; every other runtime item here is
-historical or explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
+direct-iteration decision (section 2.26), 4.31 has a keyspace-stage cursor
+decision (section 2.27), and 4.21 has a per-turn coalescing decision (section
+2.28), but all remain gated; every other runtime item here is historical or
+explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
 paths, which designs the repository adopted or rejected under its safety and
@@ -1589,7 +1590,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Range store forms | replies, latency | **measured**: 100k `ZRANGESTORE` 0–9 51.3 ms vs 0.28/0.12 (177–428×), 50000–50009 51.4, 0–999 54.6 vs 1.41/0.70, `REV` 56.8, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 0–-1 138.7 vs 89.8/74.1; 10-member control at the floor | 4.50, extended (store forms) | AC52 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
-| One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, admitted | AC23 implementation + A/B | none (persistence off) |
+| One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, per-turn coalescing decided (2.28) | AC23 implementation + A/B | none (persistence off) |
 | 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1%, post-#226 5.0/21.4 | 4.22, admitted; implementation next | AC25 on the implemented change | none |
 | Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%, post-#226 4.6/13.6/22.4 and 4.2/20.8/26.6; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
@@ -1751,6 +1752,68 @@ cursor over `std::HashMap` (no stable bucket API), a 40-bit hash-prefix cursor
 **Acceptance.** AC59 covers the keyspace stage and existing AC33 remains the
 large-collection stage criterion. The keyspace stage is independently
 implementable without waiting for the large-hash field-index decision.
+
+### 2.28 2026-11-16 checkpoint: AOF-on is still one write per command
+
+The protected gate runs with persistence off, so the clean 20/20 and 10/10
+results in sections 2.26–2.27 say nothing about the measured AOF-on loss. The
+retained persistence-on cohort (section 3.9) is still the largest steady-state
+gap in the record: SET throughput falls **−66.5% at pipeline 1 and −90.2% at
+pipeline 16** with `appendfsync everysec`, and P16 p99 is 15.1 ms versus 3.1 ms
+without AOF; Redis loses 8–34% and Valkey 8.5–17.7% in the same cohort.
+
+Current source audit:
+
+- `ShardExecutor::execute` calls `commit_journal` for each command.
+  `Journal::append` builds a CRC32 transaction (and HMAC records when
+  authentication is enabled), performs `file.write_all` and, under `always`,
+  `sync_data`, then returns. The journal mutex is acquired per command.
+- There is no owner-turn AOF byte buffer: the file write and optional fsync are
+  in the command path, not once per reactor pass.
+
+The C servers use an event-loop buffer:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Command feed | frame and write immediately | `feedAppendOnlyFile` appends to `server.aof_buf` ([`aof.c#L1661`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L1661)) | same shape ([`aof.c#L1446`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L1446)) | **adapt** a per-owner-turn buffer |
+| Disk write | one `write_all` per command | one `aofWrite` of the whole buffer before re-entering the loop ([`aof.c#L1399`](https://github.com/redis/redis/blob/8.10.2/src/aof.c#L1399), `#L1470`) | same ([`aof.c#L1178`](https://github.com/valkey-io/valkey/blob/9.1.2/src/aof.c#L1178), `#L1248`) | **copy** one write per turn |
+| `always` durability | `sync_data` per command | flush writes before replies, then policy-specific fsync | same | keep reply-before-ack ordering, sync the batch once |
+| `everysec` | maintenance-tick sync | event-loop write, periodic fsync | same | write per turn, keep maintenance sync |
+| Framing | CRC32/HMAC per transaction | no application CRC/HMAC in this path | same | keep our framing and chain |
+| Dependencies | std `File`/`Vec` | C/sds | C/sds | none |
+
+**Decision.** Adapt the C servers' single-write-per-loop shape to our owner
+turn. Accumulate each command's existing authenticated transaction bytes in a
+reusable per-owner `Vec`, and at the end of the bounded reactor run (or before
+any reply is exposed) perform one `write_all` under one journal-mutex
+acquisition. For `always`, sync that batch once before the replies are flushed;
+for `everysec`, leave the periodic maintenance sync unchanged; for `no`, only
+write. Keep the existing CRC32 and HMAC records and their chain intact; the batch
+is a concatenation of the same records, not a new wire format. On a write or
+sync failure, mark the journal failed and replace every reply in the batch with
+the journal error rather than acknowledging any command, matching the existing
+per-command failure contract. Bound the batch buffer by the existing run quantum
+and configured frame/payload limits; do not defer across turns.
+
+**Rejected options.** Per-command write (measured), writing only after replies
+(violates `always` durability and the current error contract), cross-turn or
+unbounded buffering, a background fsync thread/fork, `O_DSYNC`, `io_uring`, and
+any new dependency. A generic `BufWriter` is not adopted: it hides partial-write
+and fsync error timing and does not own the HMAC chain boundary.
+
+**Risks and obligations.** The batch must preserve journal order across clients
+and transactions, keep `always`/`everysec`/`no` behavior, and handle a failed
+batch after earlier replies in the same turn were already formatted. Multi-owner
+execution must keep one writer/order under the journal mutex, rewrite readiness
+must not race the buffer, and crash/replay plus HMAC/CRC tests must prove every
+acknowledged transaction is present. The p99 improvement is not accepted without
+the matched cohort and both gates on the implementation head.
+
+**Acceptance.** AC23 is the measurable criterion: at most one journal write and
+one lock per K-command batch, every acknowledged command replayed, `always`
+sync-before-reply, `everysec` within its 1 s bound, P16 AOF-on SET within 25% of
+AOF-off and P1 within 10%, P16 p99 no worse than 2× AOF-off, kill/replay,
+HMAC/CRC, rewrite and multi-owner tests, and both protected gates.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5159,7 +5222,7 @@ on a subsequent mutation; scratch multi-owner write sets are unchanged; the
 transaction/WATCH/multi-owner matrix passes; the matched A/B shows the claimed
 tail or CPU effect; and both protected gates pass on the exact head.
 
-### 4.21 Per-batch journal write coalescing (candidate; admission measured)
+### 4.21 Per-batch journal write coalescing (candidate; per-turn coalescing decision)
 
 **Mechanism.** During one reactor service batch, encode each journaled command
 into a reusable per-batch buffer (the existing CRC32/HMAC transaction frames,
@@ -5201,6 +5264,14 @@ cohort (section 3.9). For the implementation, freeze the current and candidate
 binaries, alternate them on one host with the same generator, `appendfsync
 everysec` and `always`, and retain raw JSON, p99, CPU, journal-size and replay
 checks.
+
+**Decision (2026-11-16, section 2.28).** Adapt the Redis/Valkey single
+`aof_buf` write-per-event-loop shape to one owner turn. Reuse a bounded per-owner
+transaction buffer, concatenate the existing CRC32/HMAC records, perform one
+`write_all` and one journal-lock acquisition before replies are exposed, and
+sync the batch once under `always`; keep `everysec`/`no` semantics and the
+maintenance sync. Reject per-command writes, cross-turn/unbounded buffering and a
+generic `BufWriter` that hides error timing. No dependency or wire-format change.
 
 **Rejection condition.** Any durability/replay failure, any reply-before-write
 ordering, any HMAC-chain or CRC boundary error, any gate row loss, no gain above
@@ -5537,9 +5608,10 @@ no dependency. The keyspace-only 4.31 cursor stage is the next structural
 candidate (section 2.27); it is independently testable and does not require the
 large-hash field-index decision. The journal candidates remain the largest
 steady-state and availability gaps, so the broader order starts with 4.21 and
-4.27 first: they address the largest measured
-steady-state (AOF-on) and availability (replay) gaps and are contained in the
-journal path. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
+4.27 first: they address the largest measured steady-state (AOF-on) and
+availability (replay) gaps and are contained in the journal path. The 4.21
+per-turn coalescing decision (section 2.28) now fixes the write shape; it still
+needs the implementation and persistence-on A/B. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -7263,7 +7335,8 @@ stays inside `std::time`/the existing `Clock` trait, 4.15 needs only
 measurement tooling, 4.17–4.18 are rejected, 4.20 needs no crate, 4.29 iterates
 the existing `HashMap`/`HashPack` slice with the existing encoder and adds no
 prefetch intrinsic, sorted index or dependency, 4.21 is
-`std::fs`/`Write::write_all` plus the existing in-repo SHA-256/HMAC and CRC code,
+`std::fs`/`Write::write_all`, a bounded `Vec` turn buffer, and the existing
+in-repo SHA-256/HMAC and CRC code (no `BufWriter` or dependency),
 and 4.30 is a `std::collections::BTreeSet` plus a local `f64` total-order helper
 (`ordered-float`/`float-ord` are rejected as an unnecessary dependency for ~20
 lines), 4.31 is `std` `BTreeSet`/`BTreeMap` plus the in-repo hex helper, 4.32 is
@@ -8762,7 +8835,8 @@ separate roadmap.
   the keyspace `SCAN` path (42.6 ms per 100k/COUNT 10, section 3.16; 4.31
   keyspace stage decided but unimplemented, section 2.27); and the persistence-on
   journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
-  for the C servers (section 3.9). The gate runs with persistence off.
+  for the C servers (section 3.9; 4.21 has a per-turn coalescing decision but is
+  unimplemented, section 2.28). The gate runs with persistence off.
 - Since #198 the four-CPU gate measures each workload row in its own partial job
   on its own allocated runner of the same machine type. That is still a valid
   within-row alternating comparison, but cross-row absolute rates are not
