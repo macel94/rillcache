@@ -339,19 +339,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   deployment's rollback/truncation threat model with documented external state.
 
 - [ ] **D4. Crash, ENOSPC and disk-fault behavior is unverified.** [P0]
-  There is no fault-injection corpus for short writes, ENOSPC, quota, permission
-  loss, fsync failure, process kill or power loss at each journal/rewrite
-  boundary. The journal latches a failed state, but the full acknowledgment and
-  recovery contract is not proven.
-  **Partial evidence (2026-11-05):** `tests/durability_crash.rs` spawns the real
-  binary and asserts, after a `SIGKILL` and restart, that every client-acknowledged
+  A narrow `cfg(test)` fault-injection corpus now exercises a real partial append
+  followed by simulated ENOSPC, `sync_data` failure and shutdown flush/sync
+  failure through actual command/journal paths. The journal latches failures and
+  tests check acknowledgement, status, in-memory accounting, later commands and
+  restart replay. This is not real filesystem exhaustion or a failing device;
+  quota, permission loss, rewrite boundaries, power loss and the full
+  acknowledgment/recovery contract remain unverified.
+  **Partial evidence:** `tests/durability_crash.rs` spawns the real binary and
+  asserts, after a `SIGKILL` and restart, that every client-acknowledged
   write survives with `appendfsync always` (so the reply cannot precede the
   durable append) and that `everysec` recovery yields a contiguous prefix with no
-  holes. ENOSPC, quota, permission loss, fsync failure, power loss and kill during
-  rewrite remain unverified.
-  **Closes when:** a crash/fault harness injects each failure at every boundary,
-  proves no applied-but-unlogged success reply, bounds the loss window, and
-  verifies restart recovery and visible failure states.
+  holes. Deterministic simulated I/O failures cover selected append/sync paths,
+  but ENOSPC is not actual filesystem exhaustion. Quota, permission loss, rewrite
+  failures, power loss and kill during rewrite remain unverified.
+  **Closes when:** a broader crash/fault harness covers remaining boundaries,
+  establishes the acknowledgment contract and bounded loss window, and verifies
+  restart recovery and visible failure states. Simulated errors alone do not close D4.
 
 - [ ] **D5. Backup, restore and point-in-time recovery are Partial.** [P0]
   `rillcache-backup` now creates, verifies and restores versioned, bounded-memory

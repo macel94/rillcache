@@ -410,6 +410,10 @@ impl Store {
     pub(crate) fn journal_policy(&self) -> Option<FsyncPolicy> {
         self.call(ShardExecutor::journal_policy)
     }
+    #[cfg(test)]
+    pub(crate) fn test_payload_bytes(&self) -> usize {
+        self.call(|executor| executor.data.borrow().payload_bytes)
+    }
     pub fn reset_stats(&self) -> bool {
         self.call(ShardExecutor::reset_stats)
     }

@@ -146,7 +146,17 @@ If an append or fsync fails, the command reply is replaced with
 `ERR append-only write failed: ...`, the journal enters a failed state and later
 writes fail. The in-memory mutation may already be applied; a restart replays only
 complete, checksum-verified transactions. Disk-full, quota and permission errors
-are visible rather than silently converted into success.
+are visible rather than silently converted into success. Unit regression tests use
+a `cfg(test)`-only journal seam to write a real partial transaction prefix and
+then return deterministic ENOSPC, and to fail independently at `sync_data`,
+shutdown `flush` and `sync_all` boundaries. They exercise command execution,
+acknowledgement/error replies, latched status, subsequent commands, in-memory
+accounting and restart replay, including that a torn multi-command journal append
+replays neither member.
+These simulations do not exhaust a filesystem or establish behavior under
+real quota/permission changes, a failing kernel/device, power loss or storage that
+misreports flush completion; rewrite I/O boundaries and a complete crash/soak
+campaign remain unverified.
 
 ## Transaction checksums
 

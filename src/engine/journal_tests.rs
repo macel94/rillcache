@@ -47,6 +47,137 @@ fn open(path: &std::path::Path, policy: FsyncPolicy) -> Store {
 }
 
 #[test]
+fn partial_enospc_append_errors_latches_and_replays_only_the_previous_prefix() {
+    let path = aof_path("fault-partial-enospc");
+    let store = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&store, &[b"SET", b"stable", b"before"]), b"+OK\r\n");
+    let accounted_before = store.test_payload_bytes();
+    store
+        .test_services()
+        .inject_journal_io_fault(super::TestIoFault::PartialWrite(7));
+
+    let error = run(&store, &[b"SET", b"stable", b"unacknowledged"]);
+    assert!(
+        error.starts_with(b"-ERR append-only write failed:"),
+        "{error:?}"
+    );
+    assert_eq!(
+        run(&store, &[b"GET", b"stable"]),
+        b"$14\r\nunacknowledged\r\n"
+    );
+    assert!(store.test_payload_bytes() > accounted_before);
+    assert!(store.test_services().test_journal_write_failed());
+    assert!(
+        run(&store, &[b"SET", b"later", b"blocked"]).starts_with(b"-ERR append-only write failed:")
+    );
+    drop(store);
+
+    let replayed = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&replayed, &[b"GET", b"stable"]), b"$6\r\nbefore\r\n");
+    assert_eq!(run(&replayed, &[b"GET", b"later"]), b"$-1\r\n");
+    drop(replayed);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("lock"));
+}
+
+#[test]
+fn partial_multi_command_append_replays_neither_member_of_the_transaction() {
+    let path = aof_path("fault-multi-prefix");
+    let store = open(&path, FsyncPolicy::Always);
+    let watched = store.watch_snapshot(&[]).unwrap();
+    store
+        .test_services()
+        .inject_journal_io_fault(super::TestIoFault::PartialWrite(64));
+    let mut reply = Vec::new();
+    store.execute_transaction(
+        &[
+            vec![b"SET".to_vec(), b"left".to_vec(), b"one".to_vec()],
+            vec![b"SET".to_vec(), b"right".to_vec(), b"two".to_vec()],
+        ],
+        &watched,
+        &mut reply,
+    );
+    assert!(
+        reply
+            .windows(b"append-only write failed".len())
+            .any(|window| window == b"append-only write failed"),
+        "{reply:?}"
+    );
+    assert!(!reply.windows(5).any(|window| window == b"+OK\r\n"));
+    assert_eq!(run(&store, &[b"GET", b"left"]), b"$3\r\none\r\n");
+    assert_eq!(run(&store, &[b"GET", b"right"]), b"$3\r\ntwo\r\n");
+    drop(store);
+
+    let replayed = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&replayed, &[b"GET", b"left"]), b"$-1\r\n");
+    assert_eq!(run(&replayed, &[b"GET", b"right"]), b"$-1\r\n");
+    drop(replayed);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("lock"));
+}
+
+#[test]
+fn always_sync_failure_is_visible_latched_and_distinct_from_write_failure() {
+    let path = aof_path("fault-sync");
+    let store = open(&path, FsyncPolicy::Always);
+    store
+        .test_services()
+        .inject_journal_io_fault(super::TestIoFault::SyncData);
+    assert!(
+        run(&store, &[b"SET", b"key", b"value"])
+            .starts_with(b"-ERR append-only write failed: injected sync_data failure")
+    );
+    assert_eq!(run(&store, &[b"GET", b"key"]), b"$5\r\nvalue\r\n");
+    assert!(store.test_services().test_journal_write_failed());
+    assert!(
+        run(&store, &[b"SET", b"next", b"nope"]).starts_with(b"-ERR append-only write failed:")
+    );
+    drop(store);
+
+    // The injected error occurs before sync_data, not before the OS write. A
+    // normal restart sees the complete checksum group in this disposable file;
+    // this does not model power loss or a device that lies about durability.
+    let replayed = open(&path, FsyncPolicy::Always);
+    assert_eq!(run(&replayed, &[b"GET", b"key"]), b"$5\r\nvalue\r\n");
+    drop(replayed);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("lock"));
+}
+
+#[test]
+fn shutdown_flush_error_is_reported_and_latches_journal() {
+    let path = aof_path("fault-flush");
+    let store = open(&path, FsyncPolicy::No);
+    assert_eq!(run(&store, &[b"SET", b"key", b"value"]), b"+OK\r\n");
+    store
+        .test_services()
+        .inject_journal_io_fault(super::TestIoFault::Flush);
+    assert!(store.journal_flush().is_err());
+    assert!(store.test_services().test_journal_write_failed());
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("lock"));
+}
+
+#[test]
+fn shutdown_sync_error_is_reported_and_latches_journal() {
+    let path = aof_path("fault-flush-sync");
+    let store = open(&path, FsyncPolicy::No);
+    assert_eq!(run(&store, &[b"SET", b"key", b"value"]), b"+OK\r\n");
+    store
+        .test_services()
+        .inject_journal_io_fault(super::TestIoFault::SyncAll);
+    assert!(store.journal_flush().is_err());
+    assert!(store.test_services().test_journal_write_failed());
+    assert!(
+        run(&store, &[b"SET", b"next", b"nope"]).starts_with(b"-ERR append-only write failed:")
+    );
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("lock"));
+}
+
+#[test]
 fn clock_rollback_after_restart_can_resurrect_a_persisted_expiry() {
     use crate::engine::Clock;
     use std::sync::Arc;

@@ -10,7 +10,7 @@
 
 use super::data::{Collection, Data, Lifecycle, StreamId};
 use super::notify::{Category as NotifyCategory, NotifyFlags};
-use super::{Action, ShardExecutor};
+use super::{Action, ServerServices, ShardExecutor};
 use crate::protocol::{Limits, dispatch_request, encode_request};
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
@@ -568,6 +568,18 @@ pub(super) struct Journal {
     auth_tag: Option<[u8; 32]>,
     size: u64,
     rewrite_base: u64,
+    #[cfg(test)]
+    test_fault: Option<TestIoFault>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TestIoFault {
+    /// Write this many bytes of the next append, then fail as if the device were full.
+    PartialWrite(usize),
+    SyncData,
+    Flush,
+    SyncAll,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -634,6 +646,8 @@ impl Journal {
             auth_tag: None,
             size,
             rewrite_base: size,
+            #[cfg(test)]
+            test_fault: None,
         })
     }
 
@@ -1133,6 +1147,20 @@ impl Journal {
             transaction.extend_from_slice(bytes);
             transaction.extend_from_slice(&checksum_record(&nonce, bytes.len() as u64, crc));
         }
+        #[cfg(test)]
+        if matches!(self.test_fault, Some(TestIoFault::PartialWrite(_))) {
+            let Some(TestIoFault::PartialWrite(prefix_len)) = self.test_fault.take() else {
+                unreachable!();
+            };
+            let prefix_len = prefix_len.min(transaction.len());
+            let prefix_result = self.file.write_all(&transaction[..prefix_len]);
+            self.failed = true;
+            prefix_result?;
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "injected ENOSPC after partial append",
+            ));
+        }
         if let Err(error) = self.file.write_all(&transaction) {
             self.failed = true;
             return Err(error);
@@ -1144,6 +1172,11 @@ impl Journal {
         self.dirty = true;
         self.size = self.size.saturating_add(transaction.len() as u64);
         if self.policy == FsyncPolicy::Always {
+            #[cfg(test)]
+            if matches!(self.test_fault.take(), Some(TestIoFault::SyncData)) {
+                self.failed = true;
+                return Err(io::Error::other("injected sync_data failure"));
+            }
             if let Err(error) = self.file.sync_data() {
                 self.failed = true;
                 return Err(error);
@@ -1182,12 +1215,47 @@ impl Journal {
     }
 
     fn sync_all(&mut self) -> io::Result<()> {
-        if let Err(error) = self.file.flush().and_then(|()| self.file.sync_all()) {
+        #[cfg(test)]
+        if matches!(self.test_fault, Some(TestIoFault::Flush)) {
+            self.test_fault = None;
+            self.failed = true;
+            return Err(io::Error::other("injected flush failure"));
+        }
+        if let Err(error) = self.file.flush() {
+            self.failed = true;
+            return Err(error);
+        }
+        #[cfg(test)]
+        if matches!(self.test_fault, Some(TestIoFault::SyncAll)) {
+            self.test_fault = None;
+            self.failed = true;
+            return Err(io::Error::other("injected sync_all failure"));
+        }
+        if let Err(error) = self.file.sync_all() {
             self.failed = true;
             return Err(error);
         }
         self.dirty = false;
         Ok(())
+    }
+}
+
+impl ServerServices {
+    #[cfg(test)]
+    pub(crate) fn inject_journal_io_fault(&self, fault: TestIoFault) {
+        let journal = self.journal.as_ref().expect("journal enabled");
+        journal.lock().unwrap().test_fault = Some(fault);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_journal_write_failed(&self) -> bool {
+        self.journal
+            .as_ref()
+            .expect("journal enabled")
+            .lock()
+            .unwrap()
+            .status()
+            .write_failed
     }
 }
 
