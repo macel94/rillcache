@@ -4,8 +4,9 @@
 both four-CPU gates; 4.34 merged as PR #258 (`d334cde`); 4.37's `BITFIELD` write
 path has landed and the rest of it remains gated; 4.29 has a source-pinned
 direct-iteration decision (section 2.26), 4.31 has a keyspace-stage cursor
-decision (section 2.27), and 4.21 has a per-turn coalescing decision (section
-2.28), but all remain gated; every other runtime item here is historical or
+decision (section 2.27), 4.21 has a per-turn coalescing decision (section
+2.28), and 4.22 has a ready-key wake decision (section 2.29), but all remain
+gated; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1591,7 +1592,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, admitted | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, per-turn coalescing decided (2.28) | AC23 implementation + A/B | none (persistence off) |
-| 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1%, post-#226 5.0/21.4 | 4.22, admitted; implementation next | AC25 on the implemented change | none |
+| 1 ms blocked-client wake | latency, CPU | **measured**: after-push p50 1.16 ms / p99 1.92 ms vs 0.03/0.22 ms; idle CPU 5.6% (1 client) / 22.2% (1000) vs <1%, post-#226 5.0/21.4 | 4.22, ready-key wake decided (2.29) | AC25 on the implemented change | none |
 | Idle pub/sub and MONITOR clients | CPU, scheduling, latency | **measured**: 6.0/17.8/22.2% (1/100/1000 subscribers) and 5.8/20.8/27.4% (monitors) vs <1%, post-#226 4.6/13.6/22.4 and 4.2/20.8/26.6; delivery p50/p99 1.05/3.60 ms (pub/sub) and 0.37/6.15 ms (MONITOR) vs ≤0.08/1.19 ms | 4.24, admitted | AC27 on the implemented change | none |
 | Rewrite start pause | latency, persistence | 9–14 ms at 20k, 91–107 ms at 200k; 4.85/43.4 s passes | 4.23 | rewrite cohort (AC26) | none (persistence off) |
 | Fixed 1,280 reaps/s expiry | storage | source + arithmetic; no TTL cohort | keep; adaptive slices only if measured | 4.16 row 1 | none |
@@ -1814,6 +1815,65 @@ one lock per K-command batch, every acknowledged command replayed, `always`
 sync-before-reply, `everysec` within its 1 s bound, P16 AOF-on SET within 25% of
 AOF-off and P1 within 10%, P16 p99 no worse than 2× AOF-off, kill/replay,
 HMAC/CRC, rewrite and multi-owner tests, and both protected gates.
+
+### 2.29 2026-11-16 checkpoint: blocked-client wake is still a 1 ms scan
+
+The protected gate contains no blocking commands, so the clean 20/20 and 10/10
+results do not exercise the largest measured latency and idle-CPU gap in the
+record. The retained blocked-client cohort (section 3.12) measures, after the
+`LPUSH` reply, **1.16 ms p50 / 1.92 ms p99** to wake a `BLPOP` versus Redis
+0.031/0.221 and Valkey 0.025/0.220 ms, with **5.6% of a core** for one idle
+blocked client and **22.2%** for 1000, versus <1% for both C servers. The
+post-#226 re-measurement is 5.0%/21.4%, so the merged spin fix did not remove the
+per-client 1 ms scan.
+
+Current source audit:
+
+- `server/reactor.rs` keeps blocked, paused, subscribed and monitoring
+  connections in an `asynchronous: HashSet<ReadyKey>` and every `ASYNC_TICK`
+  enqueues every member for a non-blocking poll. There is no mutation-time
+  ready-key signal, and the timeout/fallback path is the same 1 ms tick.
+- `engine/blocking.rs` re-polls the waiting command when the connection is
+  serviced; a push does not directly identify the waiters it made runnable.
+
+The C servers keep both sides of the mapping and signal only affected keys:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Waiting side | per-connection blocked state; no key→waiters map | `blocking_keys` maps key to a FIFO client list (`blocked.c` `blockForKeys`) | same (`blocked.c`) | **adapt** a bounded key→waiter map |
+| Mutation signal | none; next tick scans all async clients | `signalKeyAsReady` checks blocked counts, dedups through `db->ready_keys` and queues `server.ready_keys` ([`blocked.c#L497`](https://github.com/redis/redis/blob/8.10.2/src/blocked.c#L497)) | same ([`blocked.c#L522`](https://github.com/valkey-io/valkey/blob/9.1.2/src/blocked.c#L522)) | **copy** the deduped signal contract |
+| Wake point | 1 ms `ASYNC_TICK` | after `call()` / event-loop service, `handleClientsBlockedOnKeys` runs FIFO and loops for newly ready keys ([`blocked.c#L346`](https://github.com/redis/redis/blob/8.10.2/src/blocked.c#L346), [`server.c#L4846`](https://github.com/redis/redis/blob/8.10.2/src/server.c#L4846)) | same ([`blocked.c#L383`](https://github.com/valkey-io/valkey/blob/9.1.2/src/blocked.c#L383), [`server.c#L4647`](https://github.com/valkey-io/valkey/blob/9.1.2/src/server.c#L4647)) | **adapt** post-batch drain |
+| Timeout fallback | 1 ms async tick | event-loop timeouts plus blocked-state timeout | same | keep the tick only as fallback |
+| Dependencies | std collections | C lists/dicts | C lists/dicts | none |
+
+**Decision.** Adapt the signal contract, not the C pointer structures. Keep a
+bounded owner-local `BTreeMap<Vec<u8>, Vec<ClientKey>>` (or an equivalent set of
+blocked keys per connection plus a reverse map) for waiters, and a bounded
+`BTreeSet<Vec<u8>>` of keys signalled by the current command batch. A mutation
+records the key only when a waiter exists; after the batch, before the reactor
+parks, enqueue the matching waiters in FIFO order and service them in the same
+pass. Keep the 1 ms `ASYNC_TICK` as the fallback for timeouts, expiry,
+`CLIENT UNBLOCK`, cross-owner transfer or a missed signal, so correctness never
+depends on the signal. Do not re-enter the store inside the mutating command and
+do not copy the C recursive ready-list machinery; bound both the key set and the
+number of waiters served per pass.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::BTreeMap`/`BTreeSet`/`Vec`, the existing `ClientKey`/session
+types and the existing reactor. The map is derived state and must be rebuilt on
+connection migration, removed on close/unblock and never persisted.
+
+**Risks and rejected options.** Preserve FIFO ordering, one-winner semantics for
+a push-versus-timeout race, `CLIENT UNBLOCK`, multi-key waiters, key deletion and
+type changes, multi-owner migration, shutdown drain and bounded memory. Rejected:
+scanning every async client on every mutation, polling faster than 1 ms, an
+unbounded ready list, recursive servicing from inside the mutation, and any new
+dependency. The 1 ms tick remains a fallback, not the primary wake path.
+
+**Acceptance.** AC25 is the measurable criterion: matched blocked-wake p99
+within 200 µs of Valkey and at least 2× better than the ~1 ms baseline; ≤1%
+idle CPU with 1 and 1000 blocked clients; FIFO/timeout/unblock/multi-owner/
+shutdown tests; both protected gates; no dependency.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5289,7 +5349,7 @@ AOF-off p99** (measured baseline −90.2%/−66.5% and 15.1 vs 3.1 ms; C servers
 matched persistence-on A/B shows the gain; and both protected gates pass on the
 exact head.
 
-### 4.22 Same-pass blocked-client wakeup (candidate; admission evidence collected)
+### 4.22 Same-pass blocked-client wakeup (candidate; ready-key wake decision)
 
 **Mechanism.** While executing a mutation under the owner data borrow, if the
 command makes a key ready for a blocked type (list push/move, sorted-set add,
@@ -5334,6 +5394,14 @@ transfers working (the owner must retain or transfer the waiter set). The 1 ms
 fallback stays. The no-progress spin component is handled separately in PR #226
 (merged as `b7f5694`); this candidate still needs to remove the 1 ms re-enqueue
 and re-poll of every blocked client.
+
+**Decision (2026-11-16, section 2.29).** Adapt the C servers' ready-key signal
+with std collections: a bounded key→FIFO-waiter map, a deduped per-batch ready
+key set, and a post-batch drain that enqueues only affected waiters before the
+reactor parks. Keep the 1 ms tick for timeouts, expiry, `CLIENT UNBLOCK`,
+cross-owner transfer and missed signals. Do not scan every async client on a
+mutation, re-enter the store inside it, or copy the C recursive ready-list
+machinery. No dependency is added; AC25 remains the acceptance criterion.
 
 **Rejection condition.** Any lost, duplicated or out-of-order wake; any timeout or
 `CLIENT UNBLOCK` regression; no measured latency improvement; no idle-CPU
@@ -5611,7 +5679,9 @@ steady-state and availability gaps, so the broader order starts with 4.21 and
 4.27 first: they address the largest measured steady-state (AOF-on) and
 availability (replay) gaps and are contained in the journal path. The 4.21
 per-turn coalescing decision (section 2.28) now fixes the write shape; it still
-needs the implementation and persistence-on A/B. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
+needs the implementation and persistence-on A/B. The 4.22 ready-key decision
+(section 2.29) fixes the blocked-wake shape and remains the largest measured
+latency/idle-CPU candidate. Then 4.25 and 4.15 for large values, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -8833,7 +8903,9 @@ separate roadmap.
   reply (10k `HGETALL` **−43% vs Redis**, section 3.2; 4.29 now has a
   direct-iteration decision and AC58 but is not implemented, section 2.26);
   the keyspace `SCAN` path (42.6 ms per 100k/COUNT 10, section 3.16; 4.31
-  keyspace stage decided but unimplemented, section 2.27); and the persistence-on
+  keyspace stage decided but unimplemented, section 2.27); the 1 ms blocked
+  wake/idle cost (1.16 ms p50 and 5.0–21.4% idle CPU; 4.22 ready-key wake
+  decided but unimplemented, section 2.29); and the persistence-on
   journal write shape: **−66.5% P1 / −90.2% P16** SET with AOF on versus 8–34%
   for the C servers (section 3.9; 4.21 has a per-turn coalescing decision but is
   unimplemented, section 2.28). The gate runs with persistence off.
