@@ -11,7 +11,8 @@ copy-avoidance decision (section 2.30), 4.25 has a reservation decision
 has an ordered-index decision (section 2.33), and 4.23 has a bounded-
 materialisation decision (section 2.34), and 4.27 has a single-pass replay
 decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
-2.36), but all remain gated; every other runtime item here is historical or
+2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all
+remain gated; every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1579,7 +1580,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, admitted | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
-| In-place collection writes | latency, storage | **measured**: `HSET` 10k 6.45, `ZADD` 4.21, `SADD` 1.23; 200k `RPUSH`/`LPOP` 18.3/17.8; at 100k `HSET`/`HDEL` 92.7–99.4, `ZADD`/`ZREM` 61.4–63.9, `SADD`/`SREM` 11.2/10.7 → **0.125/0.210** vs 0.12–0.24; list/hash/zset writes remain | 4.35, set writes implemented; hash/zset/list open | AC37 set rows met | hash/zset/list writes |
+| In-place collection writes | latency, storage | **measured**: `HSET` 10k 6.45, `ZADD` 4.21, `SADD` 1.23; 200k `RPUSH`/`LPOP` 18.3/17.8; at 100k `HSET`/`HDEL` 92.7–99.4, `ZADD`/`ZREM` 61.4–63.9, `SADD`/`SREM` 11.2/10.7 → **0.125/0.210** vs 0.12–0.24; list/hash/zset writes remain | 4.35 hash/list stage decided (2.37); zset staged behind 4.30 | AC37 set rows met | hash/list; zset after 4.30 |
 | Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` pre-fix 5.32 ms vs 0.349/0.312, post-fix 0.172; `BITCOUNT` pre-fix 23.01 vs 3.37/4.56, post-fix 5.35 vs 2.74/3.43; `BITPOS 0` pre-fix 201.6 vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; 16 MB `BITFIELD` write pre-fix 4.39–4.68 vs 0.087–0.12, post-fix 0.12–0.30; 1 MB/64 B controls at the floor | 4.37, implemented (`BITFIELD`/`SETBIT`/`BITCOUNT`/`BITPOS`) | AC39 met | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
@@ -2288,6 +2289,65 @@ copying the C output-buffer implementation.
 monitors; AC41 covers the burst, counted-overflow/disconnect contract, 10k-channel
 publish and 100-subscriber fanout. Both require the ordered/unsubscribe/shutdown
 tests and the protected gates.
+
+### 2.37 2026-11-16 checkpoint: hash and list writes still rebuild the collection
+
+The protected gate writes only strings, so the clean results in sections
+2.26–2.36 do not exercise large collection mutation. The retained 100k cohort
+(section 3.19) measures `HSET` new/existing at **92.7/92.8 ms**, `HDEL` 99.4 ms,
+and 200k `RPUSH`/`LPOP` at **18.3/17.8 ms**, versus 0.08–0.32 ms for Redis and
+Valkey. The set path is already in place after the earlier fix (`SADD`
+0.125/0.583 ms, `SREM` 0.210/1.014), but hash and list remain 18–1160× behind.
+
+Current source audit:
+
+- `hash_set` materialises every field/value into a new `HashMap`, applies the
+  requested pairs, recomputes the full byte sum, chooses pack/large, and calls
+  `put_collection`; one existing-field update copies the whole hash.
+- `push_list` materialises `list_values`, pushes each element, recomputes the
+  total and re-encodes the entire list; `pop_list` likewise clones the list
+  before removing. Both hold the store borrow across the rebuild.
+
+The C servers mutate the existing representation:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Hash write | clone all fields + re-encode | `hashTypeSet` updates one field in the dict/listpack ([`t_hash.c#L1899`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L1899)) | same ([`t_hash.c#L368`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L368)) | **adapt** in-place field update |
+| List push/pop | clone all values + re-encode | `listTypePush`/`listTypePop` mutate head/tail nodes ([`t_list.c#L147`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L147), `#L176`) | same ([`t_list.c#L156`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L156), `#L185`) | **adapt** in-place chunk push/pop |
+| Pack threshold | full re-encode | conversion at threshold | same | convert exactly at threshold |
+| Accounting | full re-sum | delta | delta | exact delta |
+| Dependencies | std only | C | C | none |
+
+**Decision.** Extend the set-write pattern to hash and list in two independent
+stages. For a large `Collection::Hash`, collect only the requested field/value
+delta, admit it once through `Data::reserve`, re-look the entry, and then
+`insert`/`remove` the affected fields and adjust `payload_len` by the exact
+delta; field TTLs are applied/removed after the mutation. For a large list, push
+or pop at the head/tail chunk and adjust the length/bytes by the delta, preserving
+FIFO/LIFO and blocking-ready semantics. Small pack/listpack representations keep
+the existing rebuild path, and conversion to the large representation happens
+only at the configured threshold. Zset in-place writes wait for 4.30's ordered
+index so score updates and the index stay consistent; do not implement a second
+zset mutation shape here.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+the existing `HashMap`, list chunk containers and `Data::reserve`. The mutation
+must happen only after admission; an OOM leaves the old collection intact. The
+delta accounting and pack conversion are part of the collection API, not a new
+storage layer.
+
+**Risks and rejected options.** `reserve` may evict the target, so re-look and
+treat absence as a fresh collection; duplicate fields and field TTLs, pack/large
+conversion, empty-key deletion, blocking-pop wake, chunk split/merge,
+WATCH/journal/rewrite and exact accounting are the obligations. Rejected:
+keeping the rebuild but skipping re-encode, persistent/COW collection
+dependencies, changing `put_collection` ownership globally, and touching zset
+writes before 4.30.
+
+**Acceptance.** AC37 is the criterion. Its set rows are met; the hash/list rows
+must reach p50 ≤0.3 ms at 10k, ≤0.6 ms at 100k/200k with p99 ≤2 ms, preserve
+every pack/TTL/blocking/persistence/accounting test, add no dependency and pass
+both protected gates. Zset rows remain staged behind 4.30.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -6152,8 +6212,9 @@ large-input shape; the 4.26 pooled-sampling decision (section 2.32) fixes the
 pressure path, and the 4.30 ordered-index decision (section 2.33) fixes the
 sorted-set point/range shape, and the 4.23 decision (section 2.34) fixes the
 rewrite start shape; the 4.27 single-pass decision (section 2.35) fixes replay, and the 4.24/4.39
-push-ready decision (section 2.36) fixes async push. Then the 4.25, 4.15 and
-4.26 implementations for large values and memory pressure, 4.26 for eviction, 4.45 for
+push-ready decision (section 2.36) fixes async push, and the 4.35 hash/list
+stage (section 2.37) fixes the remaining collection writes. Then the 4.25, 4.15
+and 4.26 implementations for large values and memory pressure, 4.26 for eviction, 4.45 for
 the measured mass-expiry stall (37–76×), and 4.33 — small and contract-visible —
 for the measured synchronous `UNLINK`/`ASYNC` drop. 4.49 is the largest measured
 ratio in the record (373–974×) and reuses 4.30/4.38's ordered index, so it lands
@@ -6609,7 +6670,7 @@ controls are at the command floor. AC36 is met (56×/39× faster than the
 pre-fix baseline), and the landed persistence tests cover exact bytes, growth
 and journal/replay. The acceptance stays as the regression contract.
 
-### 4.35 In-place collection mutation (candidate; set writes implemented)
+### 4.35 In-place collection mutation (candidate; hash/list stage decided)
 
 **Mechanism.** After admission/eviction through `Data::reserve`, borrow the
 entry's collection mutably and update only the affected element:
@@ -6668,6 +6729,15 @@ list chunk split/merge; WATCH version, journal and rewrite snapshots.
 O(n) copies), `Rc`/copy-on-write or a persistent-collection dependency, and
 changing `Data::put_collection` to take ownership globally (touches every path
 for no extra gain).
+
+**Decision (2026-11-16, section 2.37).** Extend the set-write shape to hash and
+list independently: admit the delta once, re-look after `reserve`, mutate the
+existing large `HashMap` or list head/tail chunk in place, apply field TTLs and
+exact delta accounting, and convert pack/listpack only at the configured
+threshold. Keep the pack rebuild path unchanged. Zset writes wait for 4.30's
+ordered index so score and index updates remain consistent. Reject the full
+rebuild, COW/persistent collections, global `put_collection` ownership changes
+and premature zset mutation. No dependency; AC37 remains the criterion.
 
 **Rejection condition.** Any collection semantic, persistence or accounting test
 differs, an OOM leaves a partial collection, the small controls or a read path
@@ -9401,7 +9471,8 @@ separate roadmap.
   section 2.32). The sorted-set ordered-index decision (section 2.33) is the
   largest read-path gap; it is not implemented. The 4.24/4.39 push-ready
   decision (section 2.36) leaves the measured 4.2–26.6% idle async CPU and
-  1.05/3.60 ms pub/sub delivery unimplemented. The 4.23 bounded rewrite
+  1.05/3.60 ms pub/sub delivery unimplemented. The 4.35 hash/list in-place
+  decision (section 2.37) leaves the 92–99/18 ms write rows unimplemented. The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
