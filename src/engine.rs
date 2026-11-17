@@ -1461,6 +1461,9 @@ mod eviction_tests;
 #[path = "engine/expiry_tests.rs"]
 mod expiry_tests;
 #[cfg(test)]
+#[path = "engine/hash_expiry_model_tests.rs"]
+mod hash_expiry_model_tests;
+#[cfg(test)]
 #[path = "engine/base_tests.rs"]
 mod tests;
 #[cfg(test)]
