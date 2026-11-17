@@ -169,7 +169,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
   deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
   `hexpire`/`hpersist` for future deadlines and successful persists, never a
-  synthetic write; its past-deadline deletion events remain open.
+  synthetic write. With an already-due `PXAT`/`EXAT` deadline, it returns selected
+  pre-expiry values and publishes `hexpired`, followed by `del` only when the hash
+  becomes empty; all three worker modes now have a regression test for this
+  Valkey-verified ordering.
   **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`,
   each missing `MGET` occurrence and missing `EXISTS` arguments; `TYPE`/`TTL`
   family misses; missing `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
