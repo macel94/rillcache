@@ -108,6 +108,46 @@ fn field<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 }
 
 #[test]
+fn string_overwrite_clears_hash_field_ttls() {
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers);
+        let mut stream = connect(&server);
+
+        command(&mut stream, &[b"HSET", b"h", b"a", b"1"], b":1\r\n");
+        command(
+            &mut stream,
+            &[b"HPEXPIRE", b"h", b"100000", b"FIELDS", b"1", b"a"],
+            b"*1\r\n:1\r\n",
+        );
+
+        let mut request = Vec::new();
+        encode_request(&[b"INFO", b"keyspace"], &mut request);
+        stream.write_all(&request).unwrap();
+        let keyspace = bulk_text(&read_frame(&mut stream, 0));
+        assert!(keyspace.contains("subexpiry=1"), "{keyspace}");
+
+        // Replacing the hash with a string must discard the field deadline too.
+        command(&mut stream, &[b"SET", b"h", b"str"], b"+OK\r\n");
+        command(&mut stream, &[b"GET", b"h"], b"$3\r\nstr\r\n");
+
+        let mut request = Vec::new();
+        encode_request(&[b"INFO", b"keyspace"], &mut request);
+        stream.write_all(&request).unwrap();
+        let keyspace = bulk_text(&read_frame(&mut stream, 0));
+        assert!(keyspace.contains("subexpiry=0"), "{keyspace}");
+
+        // The old hash field deadline must not resurface as a hash command.
+        command(
+            &mut stream,
+            &[b"HPEXPIRE", b"h", b"1", b"FIELDS", b"1", b"a"],
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        );
+
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn subkey_expiry_stats_are_truthful_in_all_modes() {
     for workers in [None, Some(1), Some(4)] {
         let server = start(workers);

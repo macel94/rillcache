@@ -999,6 +999,10 @@ impl Data {
         if let Some(entry) = self.entries.get_mut(key) {
             entry.collection = None;
             entry.stream = None;
+            // A string replacement owns no hash fields; drop any field deadlines
+            // inherited from a hash so INFO/expiry cannot see stale subkeys.
+            self.field_ttls = self.field_ttls.saturating_sub(entry.field_ttl.len());
+            entry.field_ttl.clear();
             entry.payload_len = value.len();
             entry.last_access = access;
             // Reuse admitted overwrites, but release disproportionate old capacity
