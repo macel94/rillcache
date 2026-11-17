@@ -678,9 +678,9 @@ fn subcommand_category(name: &str, subcommand: &[u8], category: &[u8]) -> Option
             }
             if category.eq_ignore_ascii_case(b"read") {
                 Some(usage)
-            } else if category.eq_ignore_ascii_case(b"admin") {
-                Some(false)
-            } else if category.eq_ignore_ascii_case(b"dangerous") {
+            } else if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+            {
                 Some(false)
             } else {
                 None
