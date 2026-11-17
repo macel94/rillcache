@@ -244,9 +244,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   subcommands such as `SETNAME`, `GETNAME`, `ID`, `INFO`, `SETINFO`, `TRACKING`,
   `CACHING`, `REPLY`, `GETREDIR`, `TRACKINGINFO` and `HELP` shall remain governed
   by `+@connection`/`+@slow` and shall be denied by an `@admin`-only grant.
-- **R397 (state-driven):** For `MEMORY`, `USAGE` shall match `@read`, while
-  `STATS`, `DOCTOR`, `PURGE` and `MALLOC-STATS` shall match `@admin` and not
-  `@read`; `@dangerous` shall not grant memory subcommands. For `OBJECT`,
+- **R397 (state-driven):** For `MEMORY`, `USAGE` shall match `@read`; all
+  implemented subcommands shall match `@slow`, but none shall be granted by
+  `@admin` or `@dangerous`. `STATS`, `DOCTOR`, `PURGE` and `MALLOC-STATS` shall
+  not match `@read`. For `OBJECT`,
   `ENCODING`, `REFCOUNT`, `IDLETIME`, `FREQ` and `HELP` shall match `@keyspace`;
   the data-inspection subcommands shall match `@read`, while `HELP` shall not;
   `@admin` and `@dangerous` shall not grant object subcommands.
@@ -443,7 +444,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   for `admin`, `dangerous`, `slow` and `pubsub`. Documentation shall retain the
   bounded family table and command-level fallback for other families.
 
-## Keyspace-wide ACL isolation (S118)
+## Keyspace-wide ACL isolation (S120)
 
 - **R429 (state-driven):** When a user or selector lacks an all-key read grant,
   `KEYS`, `SCAN`, `RANDOMKEY` and `DBSIZE` shall fail before revealing key names
@@ -463,3 +464,22 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Redis/Valkey compatibility restriction: upstream keyless ACL commands are not
   filtered by key patterns, so scoped Rillcache users are denied rather than
   exposed to cross-pattern enumeration or flush.
+
+## ACL category and selector audit (S119)
+
+- **R432 (event-driven):** `ACL CAT` shall enumerate every accepted ACL
+  category and return the registry entries matching each category. Category
+  grants shall include the implemented keyspace, hyperloglog, blocking and
+  sorted-set families; `@sortedset` shall match the same commands as the
+  compatibility alias `@zset`. `ACL DRYRUN` shall agree with the listed category
+  membership for every published command and bounded subcommand entry.
+- **R433 (state-driven):** When root rules deny a command, each selector shall
+  evaluate its own ordered command/category rules and key/channel patterns as
+  one alternative; grants from different selectors shall not be combined.
+  Within one rule set, the last matching category/command rule shall decide.
+  Runtime dispatch and `ACL DRYRUN` shall apply the same selector result.
+- **R434 (ubiquitous):** Tests shall cover every accepted category through
+  `ACL CAT`, `ACL DRYRUN` and runtime dispatch in every worker mode, plus ordered
+  selector overrides, root-vs-selector alternatives and isolated key scopes.
+  Documentation shall identify profile aliases, unsupported categories and the
+  bounded subcommand/fallback boundary without claiming full Redis ACL parity.

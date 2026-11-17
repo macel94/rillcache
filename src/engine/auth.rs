@@ -1282,6 +1282,7 @@ mod tests {
             (b"reader".as_slice(), b"+@read".as_slice()),
             (b"keyspace".as_slice(), b"+@keyspace".as_slice()),
             (b"danger".as_slice(), b"+@dangerous".as_slice()),
+            (b"slow".as_slice(), b"+@slow".as_slice()),
         ] {
             auth.setuser(name, &[b"on", b"nopass", b"allkeys", b"-@all", rule])
                 .unwrap();
@@ -1315,7 +1316,15 @@ mod tests {
             access(b"reader", &[b"MEMORY", b"STATS"]),
             Access::DeniedCommand
         );
-        assert_eq!(access(b"admin", &[b"MEMORY", b"STATS"]), Access::Allowed);
+        assert_eq!(
+            access(b"admin", &[b"MEMORY", b"STATS"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(access(b"slow", &[b"MEMORY", b"STATS"]), Access::Allowed);
+        assert_eq!(
+            access(b"slow", &[b"MEMORY", b"USAGE", b"k"]),
+            Access::Allowed
+        );
         assert_eq!(
             access(b"admin", &[b"MEMORY", b"USAGE", b"k"]),
             Access::DeniedCommand

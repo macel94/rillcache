@@ -5,7 +5,7 @@ use super::{Command, cmd};
 pub(super) const COMMANDS: &[Command] = &[
     cmd("copy", -3, &["write", "denyoom"], 1, 2, 1),
     cmd("dbsize", 1, &["readonly", "fast"], 0, 0, 0),
-    cmd("del", -2, &["write", "fast"], 1, -1, 1),
+    cmd("del", -2, &["write"], 1, -1, 1),
     cmd("delex", -2, &["write", "fast"], 1, 1, 1),
     cmd("delifeq", 3, &["write", "fast"], 1, 1, 1),
     cmd("exists", -2, &["readonly", "fast"], 1, -1, 1),

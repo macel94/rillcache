@@ -11,7 +11,7 @@ pub(super) const COMMANDS: &[Command] = &[
         2,
         1,
     ),
-    cmd("blmpop", -5, &["write"], 3, -1, 1),
+    cmd("blmpop", -5, &["write", "blocking"], 3, -1, 1),
     cmd("blpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
     cmd("brpop", -3, &["write", "noscript", "blocking"], 1, -2, 1),
     cmd(
