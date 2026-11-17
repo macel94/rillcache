@@ -6,7 +6,7 @@ command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
 design. It adds per-connection and per-peer-IP failed-`AUTH` budgets but not
 global/cross-process rate limiting, delayed responses or username lockout, TLS
-hardening (SNI/hot reload/OCSP), collector sender authentication/TLS/federation,
+server-certificate OCSP validation, collector sender authentication/TLS/federation,
 full-chain audit signing, key IDs or hot-rotation custody, or credential encryption at rest.
 
 ## What is implemented
@@ -204,8 +204,8 @@ describes current behavior, not a second checklist.
   `LATENCY`/`SLOWLOG`/`PUBSUB` overrides,
   nested selectors, dynamic key-sandbox rules, collector sender
   authentication/TLS/federation, full-chain signing/key-ID/hot rotation,
-  global/cross-process rate limiting and TLS hardening (SNI/hot reload/OCSP) are
-  absent.
+  global/cross-process rate limiting and server-certificate OCSP validation are
+  absent. Native mTLS client CRL checking is opt-in and fail-closed; see [TLS](tls.md).
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported.

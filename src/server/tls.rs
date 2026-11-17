@@ -4,7 +4,7 @@
 //! PEM files; clients speak ordinary RESP over the TLS stream. ALPN is left
 //! empty because Redis clients do not use HTTP/2 or HTTP/3.
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
 use rustls::sign::CertifiedKey;
 use rustls::{RootCertStore, ServerConfig, ServerConnection, StreamOwned};
@@ -40,6 +40,7 @@ pub(crate) struct TlsSettings<'a> {
     pub(crate) cert_file: &'a Path,
     pub(crate) key_file: &'a Path,
     pub(crate) client_ca_file: Option<&'a Path>,
+    pub(crate) client_crl_file: Option<&'a Path>,
     pub(crate) sni_certificates: &'a [crate::server::TlsSniCertificate],
     pub(crate) reload_trigger: Option<&'a Path>,
     pub(crate) client_cert_users: &'a std::collections::BTreeMap<[u8; 32], Vec<u8>>,
@@ -52,6 +53,7 @@ pub(crate) struct TlsAcceptor {
     cert_file: PathBuf,
     key_file: PathBuf,
     client_ca_file: Option<PathBuf>,
+    client_crl_file: Option<PathBuf>,
     sni_certificates: Vec<crate::server::TlsSniCertificate>,
     client_cert_users: std::collections::BTreeMap<[u8; 32], Vec<u8>>,
     reload_trigger: Option<PathBuf>,
@@ -67,6 +69,7 @@ impl TlsAcceptor {
             settings.cert_file,
             settings.key_file,
             settings.client_ca_file,
+            settings.client_crl_file,
             settings.sni_certificates,
         )?;
         let reload_token = settings.reload_trigger.map(read_reload_token).transpose()?;
@@ -75,6 +78,7 @@ impl TlsAcceptor {
             cert_file: settings.cert_file.to_owned(),
             key_file: settings.key_file.to_owned(),
             client_ca_file: settings.client_ca_file.map(Path::to_owned),
+            client_crl_file: settings.client_crl_file.map(Path::to_owned),
             sni_certificates: settings.sni_certificates.to_vec(),
             client_cert_users: settings.client_cert_users.clone(),
             reload_trigger: settings.reload_trigger.map(Path::to_owned),
@@ -89,6 +93,7 @@ impl TlsAcceptor {
         cert_file: &Path,
         key_file: &Path,
         client_ca_file: Option<&Path>,
+        client_crl_file: Option<&Path>,
         sni_certificates: &[crate::server::TlsSniCertificate],
     ) -> io::Result<Arc<ServerConfig>> {
         let certs = read_certs(cert_file)?;
@@ -137,7 +142,19 @@ impl TlsAcceptor {
                 if roots.is_empty() {
                     return Err(invalid("TLS client CA file contains no certificates"));
                 }
-                let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+                let verifier_builder = WebPkiClientVerifier::builder(Arc::new(roots));
+                let verifier_builder = if let Some(path) = client_crl_file {
+                    let crls = read_crls(path)?;
+                    if crls.is_empty() {
+                        return Err(invalid("TLS client CRL file contains no CRLs"));
+                    }
+                    verifier_builder
+                        .with_crls(crls)
+                        .enforce_revocation_expiration()
+                } else {
+                    verifier_builder
+                };
+                let verifier = verifier_builder
                     .build()
                     .map_err(|error| invalid(format!("TLS client verifier: {error}")))?;
                 builder.with_client_cert_verifier(verifier)
@@ -176,6 +193,7 @@ impl TlsAcceptor {
             &self.cert_file,
             &self.key_file,
             self.client_ca_file.as_deref(),
+            self.client_crl_file.as_deref(),
             &self.sni_certificates,
         ) {
             Ok(config) => match self.config.write() {
@@ -460,6 +478,28 @@ fn read_bounded_tls_file(path: &Path, description: &str) -> io::Result<Vec<u8>> 
 fn read_certs(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
     let bytes = read_bounded_tls_file(path, "certificate")?;
     rustls_pemfile::certs(&mut BufReader::new(std::io::Cursor::new(bytes))).collect()
+}
+
+fn read_crls(path: &Path) -> io::Result<Vec<CertificateRevocationListDer<'static>>> {
+    let file = File::open(path).map_err(|error| {
+        invalid(format!(
+            "cannot read TLS client CRL {}: {error}",
+            path.display()
+        ))
+    })?;
+    let length = file.metadata()?.len();
+    if length == 0 || length > MAX_TLS_FILE_BYTES as u64 {
+        return Err(invalid("TLS client CRL file must be 1..=1048576 bytes"));
+    }
+    let mut bytes = Vec::with_capacity(length as usize);
+    file.take(MAX_TLS_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != length || bytes.len() > MAX_TLS_FILE_BYTES {
+        return Err(invalid(
+            "TLS client CRL file changed or exceeds 1048576 bytes",
+        ));
+    }
+    Ok(vec![CertificateRevocationListDer::from(bytes)])
 }
 
 fn read_private_key(path: &Path) -> io::Result<PrivateKeyDer<'static>> {

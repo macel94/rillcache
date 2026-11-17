@@ -69,7 +69,8 @@ is covered; Python, Node.js and Go client libraries remain unverified in the
 
 Deliberately not supported: empty/null request arrays, RESP3 types beyond the
 current command subset, commands beyond the documented collection/stream subsets,
-nonzero SELECT indices, TLS hardening (SNI/hot reload/OCSP), RDB/AOF-rewrite
+nonzero SELECT indices, server-certificate OCSP validation and remaining mTLS
+identity-lifecycle hardening, RDB/AOF-rewrite
 interoperability, replication, clustering and scripts. Sharded pub/sub and
 keyspace notifications are implemented as standalone, at-most-once surfaces, not
 as cluster-routed or durable delivery. Cluster mode, multi-database and arbitrary

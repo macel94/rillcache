@@ -51,6 +51,7 @@ const SUPPORTED: &[&str] = &[
     "tls-cert-file",
     "tls-key-file",
     "tls-client-ca-file",
+    "tls-client-crl-file",
     "tls-client-cert-user",
     "tls-reload-trigger",
     "tls-sni-cert-file",
