@@ -1593,7 +1593,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Skewed-cardinality algebra | replies, latency | source sets sorted by cardinality; smallest iterated, rest probed | same | every source materialised via `owned_set`/`owned_zset` before intersecting | **Adapt:** 4.51 smallest-source probe; measured 100k + 10 `SINTER` 33.8 vs 0.19/0.19 ms (178×), `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k 33–78×; `SDIFF`/`SUNION` lead (3.48, AC53) |
 | Range store forms | replies, latency | range handler seeks the bounds and emits only the selected entries into the destination | same | store routes through `select_zset`/`ordered_zset` (full sort) then a `HashMap` and re-encode | **Adapt:** 4.50 seek-based store; measured 100k `ZRANGESTORE` 0–9 51.3 vs 0.28/0.12 ms (177–428×), 0–999 54.6 vs 1.41/0.70, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 138.7 vs 89.8/74.1 (3.49, AC52) |
 | Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, borrowed-source decided (2.44) | AC53 | none |
-| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, maintained-counter decided (2.52); fast path implemented | AC54 (no-deadline rows met) | none |
+| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed-TTL 100k 4.57/4.42 ms vs 0.105–0.648 (~10–14×) | 4.52, maintained-counter decided (2.52); fast path implemented | AC54 (no-deadline met; mixed 4.57/4.42 measured) | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k pre-fix 25.5 ms vs 0.40/0.28 (64–91×), post-fix 0.27–0.63 vs 0.08–0.24; `LMOVE`/`RPOPLPUSH` 200k pre-fix 35.3/33.6, post-fix 0.31/0.24 vs 0.20–0.64; same-key rotate 16.9 → 0.11; 10-element controls at the floor | 4.53, implemented | AC55 met | none |
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended, decided (2.44) | AC53 | none |
 | List element edits | latency, storage | **measured**: 200k `LSET` index 100k pre-fix 16.5, post-fix 0.805 vs 0.061/0.641; `LINSERT` head pre-fix 19.1, post-fix 0.069 vs 0.071/0.102; middle pre-fix 21.0, post-fix 1.66 vs 3.475/4.01; `LREM` tail 21.1 vs 6.97/7.28 and `LPOS RANK -1` 1.59 vs 0.16/0.27 remain; 10-element controls at the floor | 4.54, in-place edits decided (2.45); `LSET`/`LINSERT` implemented | AC56 (`LSET`/`LINSERT` met) | none |
@@ -3184,8 +3184,15 @@ measures a no-TTL keyspace at **10.00–10.93 ms** for 500k keys (10.0 plain
 0.11–0.22. The implemented no-deadline fast path brings the same rows to
 **0.160 ms** (`INFO keyspace`) and 0.357 ms (plain `INFO`) at 500k and 0.172 at
 100k. A keyspace with any key or field deadline still executes the original
-per-entry loop, which is the same measured walk plus TTL arithmetic; there is no
-separate mixed-TTL cohort yet.
+per-entry loop. A 2026-11-17 mixed-TTL cohort now measures it: 100,000 keys with
+a one-hour `PX`, 30 repetitions, three rotations, `INFO keyspace`
+**4.538/4.693/4.569 ms** and plain `INFO` 4.981/4.206/4.417 ms versus Redis
+0.556/0.323/0.105 and 0.648/0.346/0.174, and Valkey 0.642/0.128/0.407 and
+0.432/0.165/0.461. Worst p99 was 15.74/13.39 ms versus ≤3.17. A same-host
+100k no-TTL control on the same build measured 0.554/0.660 ms p50 (p99
+3.01/3.91), so the deadline path is **~8×** the fast path and the cross-server
+gap is not host attribution. The mixed path is **~10–14×** the faster C server
+and does not use the no-deadline fast path.
 
 Current source audit:
 
@@ -5484,6 +5491,20 @@ materialised result). Keep the set-store paths as they are.
   0.409/0.089; plain `INFO` 0.357/0.237. Keyspaces with key or field deadlines
   still take the existing exact walk, so the maintained-counter work in 4.52
   remains for mixed TTL churn.
+
+- **Mixed-TTL validation (2026-11-17).** 100,000 keys with a 3,600,000 ms `PX`,
+  preloaded in 500-command pipelines, 30 repetitions per server, three rotations
+  on the shared k3s host. `INFO keyspace` p50 4.538/4.693/4.569 ms versus Redis
+  0.556/0.323/0.105 and Valkey 0.642/0.128/0.407; plain `INFO`
+  4.981/4.206/4.417 versus 0.648/0.346/0.174 and 0.432/0.165/0.461. Worst p99
+  was 15.74/13.39 ms versus ≤3.17. A same-host 100k no-TTL control on the same
+  build measured 0.554/0.660 ms p50 (p99 3.01/3.91), so the deadline path is
+  **~8×** the fast path and the cross-server gap is not host attribution. The
+  mixed path is **~10–14×** the faster C server, confirming that any key or
+  field deadline bypasses the fast path and pays the per-entry walk. Raw JSON
+  retained at `/tmp/perf-arch-info-ttl.json` and
+  `/tmp/perf-arch-info-nottl-control.json` (untracked). AC54's 100k target
+  remains 0.25 ms.
 
 **Verdict: adapt maintained keyspace accounting (4.52).** Keep live/expiring/
 subexpiry key counts and a TTL sum updated on every mutation (insert, overwrite,
@@ -8705,7 +8726,11 @@ versus 0.19/0.10/0.22 and 0.53/0.14/0.09; 2.94/2.79/2.70 at 100k versus
 0.11/0.17/0.19 and 0.13/0.12/0.22; 10.93/10.00/9.14 at 500k versus
 0.13/0.25/0.28 and 0.13/0.30/0.38; plain `INFO` 10.19/10.15/9.40 at 500k versus
 0.35/0.36/0.48 and 0.22/0.37/0.26; `INFO stats` 0.11–0.30 and `DBSIZE`
-0.10–0.43 at 500k, both at the floor.
+0.10–0.43 at 500k, both at the floor. **Mixed-TTL validation (2026-11-17,
+section 3.42).** 100,000 keys with a one-hour `PX`: `INFO keyspace`
+4.538/4.693/4.569 ms and plain `INFO` 4.981/4.206/4.417 ms versus 0.105–0.648
+for the C servers (~10–14×), worst p99 15.74/13.39 ms; the no-deadline fast path
+does not apply once any key or field deadline exists.
 
 **Risks and obligations.** A drifting counter is invisible and wrong: every
 mutation, expiry, eviction, flush, rename/copy, field-TTL add/remove, rewrite and
@@ -10522,7 +10547,8 @@ separate roadmap.
   1.08–1.65 ms pops and 4.8–6.0 ms tie-heavy rows unimplemented. The 4.31
   large-hash stage decision (section 2.51) leaves the 5.05 s `HSCAN` traversal
   and the clone/sort listing rows unimplemented. The 4.52 maintained-counter
-  decision (section 2.52) leaves the mixed-deadline `INFO` walk unimplemented.
+  decision (section 2.52) leaves the mixed-deadline `INFO` walk unimplemented;
+  the new 100k mixed-TTL cohort measures 4.57/4.42 ms versus 0.105–0.648.
   The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
