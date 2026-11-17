@@ -15,8 +15,8 @@ decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), 4.32 has a packed-node decision (section 2.41), 4.36 has a dense-index
 decision (section 2.42), 4.50 has a seek decision (section 2.43), and 4.51 has a
 borrowed-source decision (section 2.44), and 4.54 has an in-place edit decision
-(section 2.45), and 4.48 has an in-place group decision (section 2.46), and 4.43 has a neighbor-cell decision (section 2.47); every
-other runtime item here is historical or
+(section 2.45), and 4.48 has an in-place group decision (section 2.46), and 4.43 has a neighbor-cell decision (section 2.47), and 4.42 has an in-place append decision
+(section 2.48); every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1282,7 +1282,7 @@ rest are still true even though every row now leads:
     payload twice, so at 5,000 entries it costs **1.36 ms** versus
     0.08–0.10 ms (13–18×) and grows with stream length, while `XLEN`/`XRANGE`/
     `XREVRANGE` and the 10-entry control are at the floor (section 3.26,
-    candidate 4.42).
+    4.42 decided in 2.48).
 20. **Geospatial search and point lookups.** `GEOSEARCH` scans every member, so
     a 1 km search over 50k members costs **4.34 ms** versus 0.16–0.17 ms
     (25–28×) and a 2×2 km box 4.49 versus 0.19–0.21; `GEOPOS` is 2.0 ms for one
@@ -1566,7 +1566,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, push-ready decided (2.36, with 4.24) | AC41 | none |
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 → **0.33** vs 0.08–0.35 (parity with Redis); `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
-| Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
+| Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, in-place append decided (2.48) | AC44 | none |
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, neighbor-cell decided (2.47) | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 → 0.151/0.115/0.282 ms vs 0.07–0.19; `ZMSCORE` 8.02/33.37/273.2 → 0.113/0.118/0.253 vs 0.09–0.23; `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; `HMGET` 100 at the floor | 4.44, implemented | AC46 met | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 → 0.230 ms vs 0.200/0.244, `KEYS` 43.6 → 0.297 vs 0.215/0.205, `RANDOMKEY` 45.5 → 0.297 vs 0.209/0.217, `DBSIZE` 41.2 → 0.298 vs 0.151/0.247; lazy `GET` 0.254 vs 0.160/0.207 | 4.45, implemented | AC47 met | none |
@@ -2899,6 +2899,75 @@ distances (stale after every `ZADD` and O(n) memory per query); fixing the step
 at 26 and enumerating low-level cells (far too many ranges); and an R-tree/S2
 dependency (outside policy and unnecessary for nine 52-bit ranges). AC45
 remains the measurable criterion.
+
+### 2.48 2026-11-17 checkpoint: every XADD clones and folds the whole stream
+
+The protected gate has no stream-append row. The retained cohort (section 3.26)
+measures a 5,000-entry stream of one 8-byte field pair at **1.22–1.53 ms** for
+`XADD` (1.36 representative, p99 11.6) versus Redis 0.07–0.30 (p99 1.87) and
+Valkey 0.06–0.14 (p99 1.58); at 1,000 entries it is 0.25–0.43 versus
+0.08–0.15/0.10–0.71. The 1k→5k p50 ratio is **5.2×** while the C servers stay
+flat, and `XLEN`, `XRANGE`/`XREVRANGE` and the 10-entry control are at the command
+floor.
+
+Current source audit:
+
+- `xadd` clones the entire `Stream` through `e.stream.clone()`, deep-cloning
+  every entry, field and value, then inserts the new entry and updates
+  `last_generated`/`entries_added` on the clone.
+- It folds `stream.payload_bytes()` over every entry to admit the result, then
+  calls `put_stream`, which folds `payload_bytes()` **again** before replacing
+  the entry and dropping the old stream.
+- `reserve` runs after the clone, so a full copy exists even when the append is
+  rejected for OOM. Reads already use the `BTreeMap` directly and are flat.
+
+The C servers append into the existing stream structure:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Append | clone the stream, insert, replace | append one entry to the rax/listpack ([`t_stream.c#L505`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L505)) | same ([`t_stream.c#L425`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L425)) | **adapt** an in-place insert |
+| Length/accounting | two full payload folds | increment length and memory by the delta | same | delta-only update |
+| Trimming | mutate the clone | remove from the same structure ([`#L2621`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L2621)) | same ([`#L2041`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L2041)) | trim in place, report removed bytes |
+| Groups/PEL | cloned with the stream | untouched by append | same | keep on the existing value |
+| Reads | already flat | flat | flat | unchanged |
+| Dependencies | std only | C/rax/listpack | C/rax/listpack | std `BTreeMap`, no crate |
+
+**Decision.** Append one entry into the existing stream:
+
+- Parse options, resolve the explicit/automatic ID and validate monotonicity
+  before touching the stream.
+- For an existing key, compute the incoming field/value byte delta and reserve
+  net growth before mutation, subtracting any entries an exact MAXLEN/MINID
+  strategy will remove (read them from the `BTreeMap` without mutating); for
+  approximate `~` trimming reserve the gross entry bytes and reconcile after
+  trim. `reserve` may evict the key being appended, so re-look it up and fall
+  back to the fresh-stream path if it is gone.
+- Borrow `Entry.stream` mutably, insert one `StreamEntry`, update
+  `last_generated`/`entries_added` and apply the trim strategy in place. Have
+  the trim path report the bytes it removes (or accumulate them from the
+  removed entries) so `payload_len` and the global payload counter move by
+  exactly `added - removed` without folding the stream.
+- A missing key (`XADD` without `NOMKSTREAM`, or one evicted by the admission)
+  builds a fresh stream locally, reserves once and inserts it; groups/PEL are
+  absent by definition. `NOMKSTREAM` keeps returning nil.
+- No clone, no `payload_bytes` fold and no `put_stream` replacement on the
+  existing path. TTL, groups/PEL, `max_deleted`, trim semantics, the reply ID,
+  WATCH/journal/rewrite and the read paths stay exact; an OOM or ID error leaves
+  the old stream unchanged.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::BTreeMap`, the existing `StreamEntry`/`Stream` fields and a
+trim helper that returns removed bytes. No new index, no persistent-format
+change and no change to the journal's stream encoding.
+
+**Risks and rejected options.** Monotonic/automatic IDs, `NOMKSTREAM`, MAXLEN/
+MINID and approximate `LIMIT` trimming, `max_deleted`, groups/PEL, exact payload
+accounting, re-look after eviction, TTL/WATCH/journal/rewrite, the reply ID and
+the read/trim semantics are the obligations. Rejected: keeping the clone and
+only removing the second fold (still O(n) copies); a cached length that can
+drift from the map; and an append-only log outside the stream (breaks the
+existing range/read paths). AC44 remains the measurable criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -4352,7 +4421,7 @@ reply formats unchanged.
 
   `XADD` is **13–18×** slower at 5k and grows 5.2× for 5× the entries
   (0.263 → 1.36 ms) while the C servers stay flat; every read and the 10-entry
-  control are at the command floor. Candidate 4.42.
+  control are at the command floor. 4.42 decided in 2.48.
 
 **Verdict: adapt in-place append (4.42).** Admit the entry, then borrow
 `Entry.stream` mutably and insert one `StreamEntry`, updating `payload_len` and
@@ -7665,7 +7734,7 @@ negative indices, `RANK`/`COUNT`/`MAXLEN`, missing keys and wrong-type errors sh
 pass; no dependency shall be added; and both protected gates shall pass on the
 exact head.
 
-### 4.42 In-place stream append (candidate; admission measured)
+### 4.42 In-place stream append (candidate; in-place append decision)
 
 **Mechanism.** Admit the new entry's bytes, then borrow `Entry.stream` mutably
 and insert one `StreamEntry` into the existing `BTreeMap`, updating `payload_len`
@@ -7693,6 +7762,17 @@ reply ID must stay exact; the append must not change read or trim semantics.
 **Rejected options.** Keeping the clone and only removing the second payload
 fold, a separately cached length that can drift from the map, and an
 append-only log outside the stream (breaks the existing range/read paths).
+
+**Decision (2026-11-17, section 2.48).** Parse and validate the ID first, reserve
+the net field/value growth (minus exact-trim removals; gross bytes for
+approximate trimming), re-look the key in case admission evicted it, then borrow `Entry.stream` mutably and insert one `StreamEntry` with the
+counter and trim updates in place. Have trimming report the bytes it removes so
+`payload_len` and the payload counter move by `added - removed` without a fold.
+Use the fresh-stream reserve/insert path only when the key is missing or was
+evicted; keep `NOMKSTREAM` nil. No clone, no double `payload_bytes` fold and no
+`put_stream` replacement on the existing path. TTL, groups/PEL, `max_deleted`,
+trim/ID semantics, journal/rewrite and reads stay exact. No new structure,
+dependency, unsafe or persistent-format change.
 
 **Rejection condition.** Any stream, group/PEL, trim, rewrite or accounting test
 differs, an OOM leaves a partial entry, the controls or reads regress, or the
@@ -10109,7 +10189,9 @@ separate roadmap.
   and 1.6 ms reverse-`LPOS` rows unimplemented. The 4.48 in-place group decision
   (section 2.46) leaves the 8.26 ms `XGROUP CREATE` row unimplemented. The 4.43
   neighbor-cell decision (section 2.47) leaves the 4.34/4.49 ms searches and
-  22–27 ms 100-member `GEOPOS` rows unimplemented. The 4.23 bounded rewrite
+  22–27 ms 100-member `GEOPOS` rows unimplemented. The 4.42 in-place append
+  decision (section 2.48) leaves the 1.36 ms `XADD` row unimplemented. The 4.23
+  bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
