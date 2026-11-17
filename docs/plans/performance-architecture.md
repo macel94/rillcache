@@ -15,7 +15,7 @@ decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), 4.32 has a packed-node decision (section 2.41), 4.36 has a dense-index
 decision (section 2.42), 4.50 has a seek decision (section 2.43), and 4.51 has a
 borrowed-source decision (section 2.44), and 4.54 has an in-place edit decision
-(section 2.45), and 4.48 has an in-place group decision (section 2.46); every
+(section 2.45), and 4.48 has an in-place group decision (section 2.46), and 4.43 has a neighbor-cell decision (section 2.47); every
 other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
@@ -1287,7 +1287,8 @@ rest are still true even though every row now leads:
     a 1 km search over 50k members costs **4.34 ms** versus 0.16–0.17 ms
     (25–28×) and a 2×2 km box 4.49 versus 0.19–0.21; `GEOPOS` is 2.0 ms for one
     member and 24.9 ms for 100 (41–53×), and `GEODIST` ~19×, while a search that
-    returns all 50k is reply-bound at parity (section 3.27, candidate 4.43).
+    returns all 50k is reply-bound at parity (section 3.27, 4.43 decided in
+    2.47).
 21. **Multi-member point lookups.** `SMISMEMBER` clones and sorts the set and then
     scans it per member (**7.9–11.8 ms** versus 0.08–0.39), and `ZMSCORE` scans
     all members once per requested member (**8.0/33.4/273 ms** for 1/10/100
@@ -1566,7 +1567,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 → **0.33** vs 0.08–0.35 (parity with Redis); `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
 | List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
-| Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
+| Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, neighbor-cell decided (2.47) | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 → 0.151/0.115/0.282 ms vs 0.07–0.19; `ZMSCORE` 8.02/33.37/273.2 → 0.113/0.118/0.253 vs 0.09–0.23; `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; `HMGET` 100 at the floor | 4.44, implemented | AC46 met | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 → 0.230 ms vs 0.200/0.244, `KEYS` 43.6 → 0.297 vs 0.215/0.205, `RANDOMKEY` 45.5 → 0.297 vs 0.209/0.217, `DBSIZE` 41.2 → 0.298 vs 0.151/0.247; lazy `GET` 0.254 vs 0.160/0.207 | 4.45, implemented | AC47 met | none |
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
@@ -2827,6 +2828,77 @@ the obligations. Rejected: keeping the clone and only skipping the fold (still
 O(n) copies); a separate group registry outside the stream (breaks read, range
 and rewrite consistency); and moving the group maps out of the stream value.
 AC50 remains the measurable criterion.
+
+### 2.47 2026-11-17 checkpoint: geo search scans every member and point lookups rebuild the index
+
+The protected gate has no geospatial row. The retained cohort (section 3.27)
+measures a 50,000-member grid over ~0.5° at:
+
+- 1 km `GEOSEARCH` **4.34 ms** (3.85–4.40) versus Redis 0.12–0.16 and Valkey
+  0.14–0.23 (25–28×); a 2×2 km `BYBOX` 4.49 versus 0.19–0.21.
+- `GEOPOS` for one member 1.32–3.03 ms versus 0.14–0.19, and for 100 members
+  **22.33–26.86 ms** versus 0.47–0.61 (41–53×).
+- `GEODIST` 0.86–3.77 (3.12 representative) versus 0.167/0.168 (~19×).
+- A 5 km search returning all 50,000 members is 10.38 versus 10.09/10.91,
+  reply-bound at parity; 10-member controls are 0.139–0.149 and at the floor.
+
+Current source audit:
+
+- `run_search` calls `zset_items()` to collect every member reference, decodes
+  and haversines all of them, and only then filters, sorts and truncates. A
+  small-radius search therefore pays the whole 50,000-member index.
+- `GEOPOS` and `GEODIST` also materialise `zset_items()` and linearly scan it
+  once per requested member; 100 `GEOPOS` names pay 100 scans.
+- `geo.rs` already has the 52-bit interleave/decode and WGS-84 haversine
+  helpers, but no step estimate, cell-range or neighbour enumeration.
+
+The C servers query only the cells that can contain a hit:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Search candidates | decode and test every member | estimate a geohash step, enumerate nine cells, range-read only those scores ([`geo.c#L524`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L524), [`geohash_helper.c#L62`](https://github.com/redis/redis/blob/8.10.2/src/geohash_helper.c#L62)) | same ([`geo.c#L533`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L533)) | **adapt** nine-cell search |
+| Cell to score range | none | align the cell prefix to 52 bits, half-open min/max ([`scoresOfGeoHashBox`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L326)) | same | half-open ranges on 4.30/4.38 |
+| Neighbour duplicates | none | skip an identical previously processed neighbour ([`geo.c#L418`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L418)) | same | skip identical ranges |
+| `GEOPOS`/`GEODIST`/`GEOHASH` | materialise, linear find per member | one zset dict lookup per member ([`geo.c#L941`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L941), [`#L974`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L974)) | same ([`#L960`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L960), [`#L993`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L993)) | direct `zset_score` probes |
+| All-member search | linear, reply-bound | cell ranges still cover it | same | unchanged latency class |
+| Dependencies | std only | C/geohash/zset | C/geohash/zset | existing helpers, std maps, no crate |
+
+**Decision.** Keep the geo index as the existing sorted set of 52-bit geohash
+scores and query it by cell:
+
+- Estimate the cell step from the search radius with the radius-doubling rule
+  (1–26, latitude >66/80 adjustment), using half the box diagonal for `BYBOX`;
+  verify the nine cells cover the requested bounds and reduce the step once when
+  a neighbour edge falls short, as Redis does.
+- Encode the centre at that step, enumerate `x-1..=x+1` and `y-1..=y+1`, wrap
+  `x` across the dateline, skip rows outside the poles, and mask the 26-bit
+  latitude/longitude offsets to the step before interleaving.
+- Map each cell to a half-open 52-bit score range
+  `[cell << 2*(26-step), (cell + 1) << 2*(26-step))`, skip duplicate ranges,
+  range-read through the 4.30/4.38 ordered index, decode and apply the exact
+  haversine or box test, then sort (`ASC`/`DESC`/hash) and apply `COUNT`.
+- `GEOPOS`, `GEODIST` and `GEOHASH` probe `zset_score` once per requested member;
+  `FROMMEMBER` resolves its centre with one probe. No all-member vector.
+- Keep the WGS-84 formulas, units, `WITHCOORD`/`WITHDIST`/`WITHHASH`, `STORE`,
+  result and payload bounds, TTL/type errors and the existing zset
+  representation. Scores that are not valid geohashes remain skipped, as today.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+the existing `interleave_geohash`/`decode_geohash`/`haversine` helpers, integer
+masking/shifting, a fixed nine-slot array for duplicate-range suppression and
+the ordered index's range read. No new index and no persistent-format change.
+
+**Risks and rejected options.** Step estimation and the coverage check, dateline
+wrap and pole clamping, half-open range edges, duplicate cells, `BYBOX`
+width/height versus radius, `FROMMEMBER` near an edge, `ASC`/`DESC`/`COUNT`
+ordering, exact equality with the linear reference on a boundary fixture,
+all-member reply-bound parity, `STORE` and accounting are the obligations.
+Rejected: keeping the linear scan (measured 25–53×); caching per-member
+distances (stale after every `ZADD` and O(n) memory per query); fixing the step
+at 26 and enumerating low-level cells (far too many ranges); and an R-tree/S2
+dependency (outside policy and unnecessary for nine 52-bit ranges). AC45
+remains the measurable criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -4328,7 +4400,7 @@ read paths unchanged.
   A small-radius search is **25–28×** slower and a box 21–24×;
   `GEOPOS` is 10–15× for one member and **41–53×** for 100, and `GEODIST` ~19×,
   while the all-members 5 km search is reply-bound at parity and the 10-member
-  controls are at the floor. Candidate 4.43.
+  controls are at the floor. 4.43 decided in 2.47.
 
 **Verdict: adapt neighbor-cell search and direct point lookup (4.43).** Reuse
 the 4.30/4.38 ordered `(score, member)` index: compute the geohash cell ranges
@@ -7633,7 +7705,7 @@ differs, an OOM leaves a partial entry, the controls or reads regress, or the
 shall be unchanged; the 10-entry control shall be unchanged; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
-### 4.43 Geospatial neighbor-cell search (candidate; admission measured)
+### 4.43 Geospatial neighbor-cell search (candidate; neighbor-cell decision)
 
 **Mechanism.** Reuse 4.30/4.38's ordered `(score, member)` index. For
 `GEOSEARCH`/`BYRADIUS`/`BYBOX`, compute the geohash cell size for the shape,
@@ -7667,6 +7739,18 @@ unchanged; the search must remain bounded by the result and payload limits.
 per-member distances (stale on zset updates and O(n) memory per query), and an
 R-tree/S2 dependency (outside the policy and unnecessary for 52-bit geohash
 ranges).
+
+**Decision (2026-11-17, section 2.47).** Query only the geohash cells that can
+contain a hit. Estimate the step from the radius (1–26 with the latitude
+adjustment and the nine-cell coverage check), encode the centre, enumerate the
+nine neighbours with dateline wrap and pole skips, and map each cell to a
+half-open 52-bit score range. Range-read through the 4.30/4.38 ordered index,
+skip duplicate ranges, decode and apply the exact haversine/box test, then sort
+and apply `COUNT`. `GEOPOS`/`GEODIST`/`GEOHASH`/`FROMMEMBER` use
+`zset_score`/the member map directly, never an all-member vector. Keep the
+WGS-84 formulas, units, `WITH*`, `STORE`, result/payload bounds and the existing
+zset representation; invalid geohash scores stay skipped. No new structure,
+dependency, unsafe or persistent-format change.
 
 **Rejection condition.** Any result member, order, distance, hash or coordinate
 differs from the linear reference on the boundary fixture, the controls or the
@@ -10023,8 +10107,9 @@ separate roadmap.
   220/306/331/477 ms algebra rows and the 50.7/267.2 ms LIMIT rows unimplemented.
   The 4.54 in-place edit decision (section 2.45) leaves the 21 ms tail-`LREM`
   and 1.6 ms reverse-`LPOS` rows unimplemented. The 4.48 in-place group decision
-  (section 2.46) leaves the 8.26 ms `XGROUP CREATE` row unimplemented. The 4.23
-  bounded rewrite
+  (section 2.46) leaves the 8.26 ms `XGROUP CREATE` row unimplemented. The 4.43
+  neighbor-cell decision (section 2.47) leaves the 4.34/4.49 ms searches and
+  22–27 ms 100-member `GEOPOS` rows unimplemented. The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
