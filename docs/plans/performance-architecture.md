@@ -13,8 +13,9 @@ materialisation decision (section 2.34), and 4.27 has a single-pass replay
 decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all remain gated; the
 shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), 4.32 has a packed-node decision (section 2.41), 4.36 has a dense-index
-decision (section 2.42), and 4.50 has a seek decision (section 2.43); every
-other runtime item here is historical or
+decision (section 2.42), 4.50 has a seek decision (section 2.43), and 4.51 has a
+borrowed-source decision (section 2.44); every other runtime item here is
+historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1352,7 +1353,7 @@ rest are still true even though every row now leads:
     **220.6 ms versus 40.4/17.1** (5.5–12.9×) and `ZINTERSTORE`/`ZDIFFSTORE`
     306.6/331.3 versus 102–111/61–62 (2.8–5.4×), because every source is copied
     into an owned map and the result is re-sorted; `ZUNIONSTORE` is 1.3–1.7×
-    behind and set-store variants already lead (section 3.41, candidate 4.51).
+    behind and set-store variants already lead (section 3.41, 4.51 decided in 2.44).
 34. **INFO keyspace over a large keyspace.** With no TTLs, `INFO keyspace` costs
     **2.79 ms at 100k keys and 10.0 ms at 500k** versus 0.13–0.30 ms for the C
     servers (16–40×), and plain `INFO` pays the same walk, while `INFO stats`,
@@ -1368,7 +1369,7 @@ rest are still true even though every row now leads:
     100k-member containers still cost **50.7/267.2 ms versus 0.20–0.25** because
     the limit is applied after the full intersection (205–1,377×), while
     `LIMIT 0` costs the same as no limit and 10-member controls are at the floor;
-    section 3.44, extending 4.51.
+    section 3.44, 4.51 decided in 2.44.
 37. **List element edits.** `LINSERT` at the head of a 200k list costs **19.1 ms
     versus 0.09/0.24** (79–212×), `LSET` at index 100k 16.5 versus 0.14/0.28
     (59–118×), while the scan-bound middle insert and tail removal are 4.9–6.0×
@@ -1388,7 +1389,7 @@ rest are still true even though every row now leads:
     **33.8 ms for `SINTER` and 163.4 ms for `ZINTER` versus 0.13–0.76** (178–778×)
     because every source is materialised, while a 1,000-member filter is 33–78×;
     `SDIFF`/`SUNION` already lead and `ZDIFF`/`ZUNION` are 1.4–2.5× (section
-    3.48, extending 4.51).
+    3.48, 4.51 decided in 2.44).
 41. **Range store forms.** `ZRANGESTORE` of 10 entries from a 100k zset costs
     **51.3–59.6 ms versus 0.12–0.35** (177–428×) and a 1,000-entry store 54.6
     versus 0.7–1.4 (39–78×); the lex/score `LIMIT 10` stores are 259–310×,
@@ -1588,14 +1589,14 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
 | Skewed-cardinality algebra | replies, latency | source sets sorted by cardinality; smallest iterated, rest probed | same | every source materialised via `owned_set`/`owned_zset` before intersecting | **Adapt:** 4.51 smallest-source probe; measured 100k + 10 `SINTER` 33.8 vs 0.19/0.19 ms (178×), `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k 33–78×; `SDIFF`/`SUNION` lead (3.48, AC53) |
 | Range store forms | replies, latency | range handler seeks the bounds and emits only the selected entries into the destination | same | store routes through `select_zset`/`ordered_zset` (full sort) then a `HashMap` and re-encode | **Adapt:** 4.50 seek-based store; measured 100k `ZRANGESTORE` 0–9 51.3 vs 0.28/0.12 ms (177–428×), 0–999 54.6 vs 1.41/0.70, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 138.7 vs 89.8/74.1 (3.49, AC52) |
-| Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
+| Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, borrowed-source decided (2.44) | AC53 | none |
 | INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, no-deadline fast path implemented; counters remain | AC54 (no-deadline rows met) | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k pre-fix 25.5 ms vs 0.40/0.28 (64–91×), post-fix 0.27–0.63 vs 0.08–0.24; `LMOVE`/`RPOPLPUSH` 200k pre-fix 35.3/33.6, post-fix 0.31/0.24 vs 0.20–0.64; same-key rotate 16.9 → 0.11; 10-element controls at the floor | 4.53, implemented | AC55 met | none |
-| Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
+| Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended, decided (2.44) | AC53 | none |
 | List element edits | latency, storage | **measured**: 200k `LSET` index 100k pre-fix 16.5, post-fix 0.805 vs 0.061/0.641; `LINSERT` head pre-fix 19.1, post-fix 0.069 vs 0.071/0.102; middle pre-fix 21.0, post-fix 1.66 vs 3.475/4.01; `LREM` tail 21.1 vs 6.97/7.28 and `LPOS RANK -1` 1.59 vs 0.16/0.27 remain; 10-element controls at the floor | 4.54, `LSET`/`LINSERT` implemented; `LREM` remains | AC56 (`LSET`/`LINSERT` met) | none |
 | Set membership reply | replies | **measured lead/null**: `SMEMBERS` 100k 84.75 ms vs 88.71/86.37, 10k 9.95 vs 9.33/9.58, 1k 0.97 vs 1.11/1.24, 10-member control at the floor; the 1.5 MB reply hides the collect+sort | no candidate; keep 4.29 scoped to hashes | n/a | none |
 | Multi-key argument cap | parsing, compatibility | **measured boundary**: 1,024 total args accepted, 1,025 rejected; Redis/Valkey execute `MGET` 10,000, `MSET` 600 pairs and `DEL` 2,000; 1,000-key latency is at parity or leads (`MGET` 1.74 vs 2.23/2.34) | 4.55, admitted | AC57 | none |
-| Skewed-cardinality algebra | replies, latency | **measured**: 100k + 10 `SINTER` 33.8 ms vs 0.19/0.19 (178×), `SINTERCARD` 35.9 vs 0.24/0.34, `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k is 33–78×; `SDIFF`/`SUNION` lead; 10-member controls at the floor | 4.51, extended | AC53 | none |
+| Skewed-cardinality algebra | replies, latency | **measured**: 100k + 10 `SINTER` 33.8 ms vs 0.19/0.19 (178×), `SINTERCARD` 35.9 vs 0.24/0.34, `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k is 33–78×; `SDIFF`/`SUNION` lead; 10-member controls at the floor | 4.51, extended, decided (2.44) | AC53 | none |
 | Range store forms | replies, latency | **measured**: 100k `ZRANGESTORE` 0–9 51.3 ms vs 0.28/0.12 (177–428×), 50000–50009 51.4, 0–999 54.6 vs 1.41/0.70, `REV` 56.8, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 0–-1 138.7 vs 89.8/74.1; 10-member control at the floor | 4.50, seek/store decided (2.43) | AC52 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, reservation decided (2.31) | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
@@ -2602,6 +2603,95 @@ obligations. Rejected: sorting and breaking early (still O(n log n)), caching a
 sorted vector per key (invalidated by every write and unbounded), a second
 lex-only index (duplicate storage and another invariant), and keeping the
 per-count scan. AC52 remains the measurable criterion.
+
+### 2.44 2026-11-17 checkpoint: algebra copies every source and sorts stores
+
+The protected gate has no set/zset algebra row. The retained cohorts (sections
+3.41, 3.44 and 3.48) measure two 100,000-member collections at:
+
+- `ZINTERCARD` **220.6 ms** versus Redis 40.4 and Valkey 17.1 (5.5–12.9×);
+  `ZINTERSTORE` 306.6 versus 110.5/61.6 and `ZDIFFSTORE` 331.3 versus
+  102.0/61.4; `ZUNIONSTORE` 477.6 versus 366.6/280.4; `SINTERSTORE` 42.0–50.5
+  versus 57.2–67.3/29.4–39.4, already ahead of Redis and 1.1–1.7× behind Valkey.
+- `SINTERCARD ... LIMIT 10` **49.5–59.1 ms** versus 0.15–0.28 and `ZINTERCARD
+  ... LIMIT 10` **259.5–313.8** versus 0.08–0.49; `LIMIT 0` costs the same as
+  the unlimited form, and 10-member controls are at the command floor.
+- A 10-member filter against a 100,000-member source costs **28.5–40.5 ms** for
+  `SINTER`, 28.0–36.8 for `SINTERCARD`, 162.3–206.3 for `ZINTER` and
+  160.7–204.3 for `ZINTERCARD`, versus 0.10–1.30 ms; the 1,000-member filter
+  is 33–78× behind. `SDIFF`/`SUNION` already lead.
+
+Current source audit:
+
+- `owned_set` clones every source into a fresh `BTreeSet<Vec<u8>>`;
+  `owned_zset` clones every source into a `HashMap<Vec<u8>, f64>`. Every
+  command pays an O(sum of sources) allocation and copy before any work.
+- `set_algebra` starts from the first key's cloned set and retains against the
+  rest; it does not order sources by length. `set_intercard` clones all sources,
+  computes the whole intersection, and only then applies `LIMIT` with `min`.
+- `zset_algebra` clones all sources, starts the intersection from the first
+  key, builds a result `HashMap`, then calls `ordered_zset`, which clones and
+  sorts every result member. The store branch discards that order, builds a
+  second `HashMap` and re-encodes it.
+- `zset_intercard` clones all zsets, builds a `BTreeSet` of the first key's
+  members, retains against the rest, and applies `min(limit)` afterwards.
+- The stored forms already expose `set_len`/`zset_len`, `contains_member`
+  (set/pack/intset) and `zset_score` (map, linear only for the small pack), so
+  borrowing needs no new container.
+
+The C servers borrow the stored objects and keep only the result:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Source access | clone each into an owned set/map | borrow `zsetopsrc`/`setopsrc` subjects | same | **adapt** borrowed probes |
+| Intersection order | first key, then retain | sort by cardinality ascending and iterate the smallest ([`t_zset.c#L3012`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3012), [`t_set.c#L1450`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L1450)) | same ([`t_zset.c#L2722`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L2722), [`t_set.c#L1304`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L1304)) | smallest-source iteration |
+| Membership | cloned-map/container lookup | direct dict/listpack/intset probe (`zuiFind`, [`t_zset.c#L2597`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L2597); `setTypeIsMemberAux`, [`t_set.c#L303`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L303)) | same ([`t_zset.c#L2338`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L2338), [`t_set.c#L292`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L292)) | existing `contains_member`/`zset_score` |
+| Cardinality `LIMIT` | materialise, then `min` | count matches, stop at the limit, no destination ([`t_zset.c#L3056`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3056), [`t_set.c#L1501`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L1501)) | same ([`t_zset.c#L2766`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L2766), [`t_set.c#L1353`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L1353)) | early exit |
+| Store | sort the result, rebuild a map, re-encode | build the destination directly (dict+skiplist or listpack) | same | encode the result once |
+| Reply order | clone and sort the full result | reply from the destination's ordered structure | same | move the result into a `Vec` and sort once |
+| Dependencies | std only | C/dict/listpack | C/dict/listpack | std `Vec`/`BTreeSet`/`HashMap`, no crate |
+
+**Decision.** Borrow the stored sources and build at most one result:
+
+- Collect borrowed `&Collection` sources after expiry and validate every type
+  before any mutation; a missing key is an empty source. Keep each source's
+  weight beside it, then sort the non-diff sources by ascending cardinality to
+  match Redis/Valkey aggregation order.
+- `ZINTER`/`SINTER` iterate the smallest source and probe every other source
+  with `zset_score`/`contains_member`, aggregating the weighted score in that
+  sorted order and inserting only survivors into one result map. `ZUNION`
+  iterates the borrowed sources in the same order and inserts each member once.
+  `ZDIFF` keeps first-minus-rest order.
+- `ZINTERCARD`/`SINTERCARD` build no result: count matches and stop after
+  `LIMIT` hits, with `LIMIT 0` unlimited. Add a borrowed set-member iterator
+  covering `Set`, `SetPack` and `SetInt` (stack-formatting integers), and use
+  the map/pack iterators for zsets.
+- The reply forms move the result map into a `Vec`, sort once by
+  `(score, member)` and encode. The store forms skip that sort and pass the
+  result map straight to `encode_zset`/`encode_set`, which already choose the
+  compact form.
+- Read the destination before `reserve` when it is also a source; clear its TTL,
+  account the new payload exactly and remove it for an empty result. Weights,
+  per-occurrence duplicate keys, `AGGREGATE MIN/MAX/SUM`, NaN/±0 and the
+  existing pack/intset thresholds stay exact.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::{BTreeSet, HashMap}`, `std::vec::Vec`, `HashMap::into_iter`
+and the existing collection accessors plus one borrowed-iteration helper. The
+result map is transient; nothing new is persisted or counted beyond the
+destination's existing payload accounting.
+
+**Risks and rejected options.** Source-order-dependent floating `SUM`, ±0/NaN
+and infinity, per-occurrence weights and duplicate keys, missing/empty and
+wrong-type sources, destination-as-source, reply ordering, `LIMIT 0` versus a
+positive limit, TTL clearing, accounting, WATCH/journal/rewrite and the
+`SetInt`/`SetPack`/`ZSetPack` conversions are the obligations. Rejected:
+keeping the owned copies and optimising only downstream; a temporary borrowed
+`HashSet` of the smaller source (another allocation for the same probe);
+parallelising the intersection; sorting the result for stores that never use
+the order; and per-source destination maps. AC53 remains the measurable
+criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -4789,7 +4879,7 @@ read path borrowed and unmodified.
   set-store variants already lead because the destination set is encoded once
   without a map-then-sort pass. Preloading the four 100k collections took 16.0 s
   in Rill versus 1.5–1.7 s, the admitted 4.35 clone-per-write path, not this
-  read. Candidate 4.51.
+  read. 4.51 decided in 2.44.
 
 **Verdict: adapt borrowed-source algebra (4.51).** Iterate the smallest borrowed
 source, probe the others in place, count with an early `LIMIT` exit, and for the
@@ -4942,7 +5032,7 @@ rotates within one container. This reuses 4.35's in-place set mutation and
   because the limit does not reduce the work at all; `LIMIT 0` (unlimited) has
   the same cost as no limit, as the contract requires. The 10-member controls are
   at the floor. Preloading the four 100k keys took 16.0 s versus 1.5–1.6 s, the
-  4.35 write path. Candidate 4.51, extended.
+  4.35 write path. 4.51, extended, decided in 2.44.
 
 **Verdict: extend 4.51 to set cardinality and make `LIMIT` an early exit.** Probe
 the smallest borrowed source, count matches, and stop at `LIMIT`; materialising
@@ -5128,7 +5218,7 @@ frame; keep the frame and bulk limits as the request budget.
   already lead (their result is the big set and Rill's builder is efficient),
   and `ZDIFF`/`ZUNION` are 1.4–2.5×, so only the intersections need the
   smallest-source rule. The 10-member controls are at the floor. Candidate
-  4.51, extended.
+  4.51, extended, decided in 2.44.
 
 **Verdict: extend 4.51 to skewed intersections.** Sort the sources by length,
 probe from the smallest, and materialise only the result; do not change the
@@ -7862,7 +7952,7 @@ mixed-score, exclusive and infinite bounds, LIMIT edge cases, store forms
 TTL/WATCH/journal/rewrite and accounting tests shall pass; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
-### 4.51 Borrowed-source set/zset algebra and cardinality (candidate; admission measured)
+### 4.51 Borrowed-source set/zset algebra and cardinality (candidate; borrowed-source decision)
 
 **Mechanism.** Stop materialising owned copies of every source. Borrow each
 source collection (the set container, `Collection::ZSet`'s map or `ZSetPack`'s
@@ -7926,6 +8016,19 @@ change result membership or order for skewed inputs.
 (still copies both sources); a borrowed `HashSet` of the smaller source (extra
 allocation and hash pass); parallelising the intersection (thread coordination
 for a sub-500 ms operation, outside the one-owner model).
+
+**Decision (2026-11-17, section 2.44).** Borrow the stored collections instead of
+calling `owned_set`/`owned_zset` per source: validate types, order the non-diff
+sources by ascending cardinality, iterate the smallest, and probe the rest with
+`contains_member`/`zset_score`. Build one result map for the reply/store forms,
+moving it into a sorted `Vec` only for replies; stores pass the map directly to
+`encode_zset`/`encode_set`. `ZINTERCARD`/`SINTERCARD` count probes and stop at a
+positive `LIMIT` without a destination (`LIMIT 0` unlimited), using a borrowed
+set-member iterator that covers `Set`, `SetPack` and `SetInt`. Read a
+destination that is also a source before `reserve`, clear its TTL, account the
+result exactly and remove it when empty. Keep weights, per-occurrence duplicate
+keys, aggregate/NaN semantics and the existing thresholds. No new structure,
+dependency, unsafe or persistent-format change.
 
 **Rejection condition.** Any score, weight, aggregate, order, `LIMIT`, empty,
 store or destination-as-source result differs; the 10-member controls or
@@ -9758,7 +9861,9 @@ separate roadmap.
   1.05/3.60 ms pub/sub delivery unimplemented. The 4.35 hash/list in-place
   decision (section 2.37) leaves the 92–99/18 ms write rows unimplemented. The
   4.50 seek decision (section 2.43) leaves the 56–70 ms lex and 1.25–15 ms count
-  rows unimplemented. The 4.23 bounded rewrite
+  rows unimplemented. The 4.51 borrowed-source decision (section 2.44) leaves the
+  220/306/331/477 ms algebra rows and the 50.7/267.2 ms LIMIT rows unimplemented.
+  The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
