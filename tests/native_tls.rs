@@ -3,12 +3,17 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rillcache::{Config, Server, ServerHandle};
-use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+use rustls::client::WebPkiServerVerifier;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{
+    ClientConfig, ClientConnection, DigitallySignedStruct, Error, RootCertStore, SignatureScheme,
+    StreamOwned,
+};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -57,6 +62,74 @@ fn roots() -> RootCertStore {
         store.add(cert.unwrap()).unwrap();
     }
     store
+}
+
+#[derive(Debug)]
+struct OcspCaptureVerifier {
+    inner: Arc<WebPkiServerVerifier>,
+    responses: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl ServerCertVerifier for OcspCaptureVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, Error> {
+        self.responses.lock().unwrap().push(ocsp_response.to_vec());
+        let verify_name = if matches!(server_name, ServerName::IpAddress(_)) {
+            ServerName::try_from("localhost").unwrap()
+        } else {
+            server_name.to_owned()
+        };
+        self.inner
+            .verify_server_cert(end_entity, intermediates, &verify_name, &[], now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+fn client_config_with_ocsp_capture(responses: Arc<Mutex<Vec<Vec<u8>>>>) -> Arc<ClientConfig> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier =
+        WebPkiServerVerifier::builder_with_provider(Arc::new(roots()), Arc::clone(&provider))
+            .build()
+            .unwrap();
+    let verifier = Arc::new(OcspCaptureVerifier {
+        inner: verifier,
+        responses,
+    });
+    Arc::new(
+        ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth(),
+    )
 }
 
 fn client_config(with_client_cert: bool, tls12: bool) -> Arc<ClientConfig> {
@@ -123,11 +196,13 @@ fn start_with_sni(client_ca: bool) -> ServerHandle {
                 server_name: "alt.test".into(),
                 cert_file: fixture("alternate.crt"),
                 key_file: fixture("alternate.key"),
+                ocsp_file: None,
             },
             rillcache::TlsSniCertificate {
                 server_name: "localhost".into(),
                 cert_file: fixture("server.crt"),
                 key_file: fixture("server.key"),
+                ocsp_file: None,
             },
         ],
         ..Config::default()
@@ -136,11 +211,118 @@ fn start_with_sni(client_ca: bool) -> ServerHandle {
     Server::bind(config).unwrap().spawn().unwrap()
 }
 
+fn connect_capturing_ocsp(
+    server: &ServerHandle,
+    server_name: &str,
+    responses: Arc<Mutex<Vec<Vec<u8>>>>,
+) -> StreamOwned<ClientConnection, TcpStream> {
+    let tcp = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+    let connection = ClientConnection::new(
+        client_config_with_ocsp_capture(responses),
+        ServerName::try_from(server_name.to_owned()).unwrap(),
+    )
+    .unwrap();
+    StreamOwned::new(connection, tcp)
+}
+
+fn connect_without_sni_capturing_ocsp(
+    server: &ServerHandle,
+    responses: Arc<Mutex<Vec<Vec<u8>>>>,
+) -> StreamOwned<ClientConnection, TcpStream> {
+    let tcp = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+    let connection = ClientConnection::new(
+        client_config_with_ocsp_capture(responses),
+        ServerName::IpAddress("127.0.0.1".parse::<std::net::IpAddr>().unwrap().into()),
+    )
+    .unwrap();
+    StreamOwned::new(connection, tcp)
+}
+
 fn ping(stream: &mut StreamOwned<ClientConnection, TcpStream>) {
     stream.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
     let mut reply = [0u8; 7];
     stream.read_exact(&mut reply).unwrap();
     assert_eq!(&reply, b"+PONG\r\n");
+}
+
+#[test]
+fn ocsp_staples_follow_the_selected_default_or_sni_identity_and_absence_is_compatible() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-ocsp-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let default_ocsp = directory.join("default.ocsp.der");
+    let alternate_ocsp = directory.join("alternate.ocsp.der");
+    let default_response = [0x30, 0x03, 0x0a, 0x01, 0x00];
+    let alternate_response = [0x30, 0x03, 0x0a, 0x01, 0x01];
+    std::fs::write(&default_ocsp, default_response).unwrap();
+    std::fs::write(&alternate_ocsp, alternate_response).unwrap();
+
+    let mut config = Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_ocsp_file: Some(default_ocsp.clone()),
+        tls_sni_certificates: vec![
+            rillcache::TlsSniCertificate {
+                server_name: "localhost".into(),
+                cert_file: fixture("server.crt"),
+                key_file: fixture("server.key"),
+                ocsp_file: Some(default_ocsp),
+            },
+            rillcache::TlsSniCertificate {
+                server_name: "alt.test".into(),
+                cert_file: fixture("alternate.crt"),
+                key_file: fixture("alternate.key"),
+                ocsp_file: Some(alternate_ocsp),
+            },
+        ],
+        ..Config::default()
+    };
+    config.idle_timeout = Duration::from_secs(30);
+    for workers in [None, Some(1), Some(4)] {
+        let mut mode_config = config.clone();
+        mode_config.worker_threads = workers;
+        let server = Server::bind(mode_config).unwrap().spawn().unwrap();
+        for (name, expected) in [
+            ("localhost", default_response),
+            ("alt.test", alternate_response),
+        ] {
+            let responses = Arc::new(Mutex::new(Vec::new()));
+            let mut stream = connect_capturing_ocsp(&server, name, Arc::clone(&responses));
+            ping(&mut stream);
+            assert_eq!(responses.lock().unwrap().as_slice(), &[expected]);
+        }
+        let responses = Arc::new(Mutex::new(Vec::new()));
+        let mut no_sni = connect_without_sni_capturing_ocsp(&server, Arc::clone(&responses));
+        ping(&mut no_sni);
+        assert_eq!(responses.lock().unwrap().as_slice(), &[default_response]);
+        let mut wrong_sni = connect_named(&server, false, "wrong.test");
+        let handshake = wrong_sni.write_all(b"*1\r\n$4\r\nPING\r\n").and_then(|()| {
+            let mut reply = [0u8; 7];
+            wrong_sni.read_exact(&mut reply)
+        });
+        assert!(
+            handshake.is_err(),
+            "unknown SNI must not receive a different OCSP identity"
+        );
+        server.shutdown().unwrap();
+    }
+
+    let server = start(None, false);
+    let responses = Arc::new(Mutex::new(Vec::new()));
+    let mut stream = connect_capturing_ocsp(&server, "localhost", Arc::clone(&responses));
+    ping(&mut stream);
+    assert_eq!(responses.lock().unwrap().as_slice(), &[Vec::<u8>::new()]);
+    server.shutdown().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -209,8 +391,12 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
     let cert_file = directory.join("server.crt");
     let key_file = directory.join("server.key");
     let trigger = directory.join("generation");
+    let ocsp_file = directory.join("server.ocsp.der");
+    let response_one = [0x30, 0x03, 0x0a, 0x01, 0x00];
+    let response_two = [0x30, 0x03, 0x0a, 0x01, 0x01];
     std::fs::copy(fixture("server.crt"), &cert_file).unwrap();
     std::fs::copy(fixture("server.key"), &key_file).unwrap();
+    std::fs::write(&ocsp_file, response_one).unwrap();
     std::fs::write(&trigger, b"generation-1").unwrap();
 
     let server = Server::bind(Config {
@@ -218,6 +404,7 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
         tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
         tls_cert_file: Some(cert_file.clone()),
         tls_key_file: Some(key_file.clone()),
+        tls_ocsp_file: Some(ocsp_file.clone()),
         tls_reload_trigger: Some(trigger.clone()),
         idle_timeout: Duration::from_secs(30),
         ..Config::default()
@@ -225,8 +412,14 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
     .unwrap()
     .spawn()
     .unwrap();
-    let mut established = connect(&server, false);
+    let initial_responses = Arc::new(Mutex::new(Vec::new()));
+    let mut established =
+        connect_capturing_ocsp(&server, "localhost", Arc::clone(&initial_responses));
     ping(&mut established);
+    assert_eq!(
+        initial_responses.lock().unwrap().as_slice(),
+        &[response_one]
+    );
 
     let cert_next = directory.join("server.crt.next");
     let key_next = directory.join("server.key.next");
@@ -234,18 +427,30 @@ fn tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_fail
     std::fs::copy(fixture("alternate.key"), &key_next).unwrap();
     std::fs::rename(cert_next, &cert_file).unwrap();
     std::fs::rename(key_next, &key_file).unwrap();
+    std::fs::write(&ocsp_file, response_two).unwrap();
     let trigger_next = directory.join("generation.next");
     std::fs::write(&trigger_next, b"generation-2").unwrap();
     std::fs::rename(trigger_next, &trigger).unwrap();
 
-    let mut rotated = connect_named(&server, false, "alt.test");
+    let rotated_responses = Arc::new(Mutex::new(Vec::new()));
+    let mut rotated = connect_capturing_ocsp(&server, "alt.test", Arc::clone(&rotated_responses));
     ping(&mut rotated);
+    assert_eq!(
+        rotated_responses.lock().unwrap().as_slice(),
+        &[response_two]
+    );
     ping(&mut established);
 
     std::fs::write(&cert_file, b"invalid replacement certificate").unwrap();
+    std::fs::write(&ocsp_file, b"invalid replacement response").unwrap();
     std::fs::write(&trigger, b"generation-3").unwrap();
-    let mut retained = connect_named(&server, false, "alt.test");
+    let retained_responses = Arc::new(Mutex::new(Vec::new()));
+    let mut retained = connect_capturing_ocsp(&server, "alt.test", Arc::clone(&retained_responses));
     ping(&mut retained);
+    assert_eq!(
+        retained_responses.lock().unwrap().as_slice(),
+        &[response_two]
+    );
     ping(&mut rotated);
     ping(&mut established);
 
@@ -278,6 +483,7 @@ fn tls_reload_replaces_configured_sni_identity_for_new_handshakes() {
             server_name: "alt.test".into(),
             cert_file: cert_file.clone(),
             key_file: key_file.clone(),
+            ocsp_file: None,
         }],
         ..Config::default()
     };
@@ -825,6 +1031,23 @@ fn invalid_tls_configuration_fails_before_listening() {
     let mut missing_cert = base.clone();
     missing_cert.tls_cert_file = Some(fixture("missing.crt"));
     assert!(Server::bind(missing_cert).is_err());
+    let ocsp_file =
+        std::env::temp_dir().join(format!("rillcache-invalid-ocsp-{}.der", std::process::id()));
+    let mut invalid_ocsp = base.clone();
+    invalid_ocsp.tls_ocsp_file = Some(ocsp_file.clone());
+    assert!(
+        Server::bind(invalid_ocsp.clone()).is_err(),
+        "missing OCSP file must fail closed"
+    );
+    std::fs::write(&ocsp_file, b"not DER").unwrap();
+    assert!(Server::bind(invalid_ocsp.clone()).is_err());
+    std::fs::write(&ocsp_file, [0x30, 0x01, 0x00]).unwrap();
+    assert!(Server::bind(invalid_ocsp.clone()).is_err());
+    std::fs::write(&ocsp_file, []).unwrap();
+    assert!(Server::bind(invalid_ocsp.clone()).is_err());
+    std::fs::write(&ocsp_file, vec![0x30; 1024 * 1024 + 1]).unwrap();
+    assert!(Server::bind(invalid_ocsp).is_err());
+    std::fs::remove_file(ocsp_file).unwrap();
     let mut malformed_name = base.clone();
     malformed_name
         .tls_sni_certificates
@@ -832,6 +1055,7 @@ fn invalid_tls_configuration_fails_before_listening() {
             server_name: "*.example.com".into(),
             cert_file: fixture("alternate.crt"),
             key_file: fixture("alternate.key"),
+            ocsp_file: None,
         });
     assert!(Server::bind(malformed_name).is_err());
     let mut duplicate_name = base.clone();
@@ -840,11 +1064,13 @@ fn invalid_tls_configuration_fails_before_listening() {
             server_name: "alt.test".into(),
             cert_file: fixture("alternate.crt"),
             key_file: fixture("alternate.key"),
+            ocsp_file: None,
         },
         rillcache::TlsSniCertificate {
             server_name: "ALT.TEST".into(),
             cert_file: fixture("alternate.crt"),
             key_file: fixture("alternate.key"),
+            ocsp_file: None,
         },
     ];
     assert!(Server::bind(duplicate_name).is_err());

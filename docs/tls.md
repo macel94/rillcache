@@ -22,7 +22,7 @@ remains `unsafe_code = "forbid"`.
   select distinct certificate chains at startup. When mappings are configured,
   an unknown SNI name is rejected; there is no wildcard matching or fallback to
   the default identity for an unknown name. Optional operator-triggered atomic
-  reload is available. A DER CRL can fail closed for verified client certificates; OCSP validation of the server identity is not implemented.
+  reload is available. A DER CRL can fail closed for verified client certificates. Native servers can staple operator-provisioned OCSP bytes, but do not validate their signature, status, freshness, or certificate identity.
 - Plaintext and TLS listeners can run together. Put the TLS listener on the
   exposed interface and bind the plaintext listener to loopback/private space, or
   firewall the plaintext port.
@@ -34,12 +34,14 @@ remains `unsafe_code = "forbid"`.
 | `--tls-bind ADDRESS` | Native TLS listener; must differ from `--bind` |
 | `--tls-cert-file PATH` | PEM server certificate followed by intermediates |
 | `--tls-key-file PATH` | Unencrypted PEM private key |
+| `--tls-ocsp-file PATH` | Optional DER OCSP response stapled with the default identity |
 | `--tls-client-ca-file PATH` | Optional client CA; enables required mTLS |
 | `--tls-client-crl-file PATH` | Optional DER CRL; requires the client CA and rejects revoked, unknown or expired client status |
 | `--tls-client-cert-user SHA256=USER` | Repeatable SHA-256 leaf-certificate fingerprint to ACL username mapping; requires the client CA |
 | `--tls-reload-trigger PATH` | Optional operator-controlled reload token file |
 | `--tls-sni-cert-file NAME=PATH` | Repeatable exact SNI DNS name and PEM certificate chain |
 | `--tls-sni-key-file NAME=PATH` | Repeatable matching SNI DNS name and PEM private key |
+| `--tls-sni-ocsp-file NAME=PATH` | Optional DER response for that exact SNI identity |
 | `--tls-handshake-timeout-ms N` | Handshake deadline in milliseconds (default 5000) |
 | `--frame-assembly-timeout-ms N` | Deadline after incomplete RESP plaintext reaches the parser (default 60000; `0` disables) |
 
@@ -51,8 +53,10 @@ rillcache \
   --tls-bind 0.0.0.0:6380 \
   --tls-cert-file /etc/rillcache/server-chain.pem \
   --tls-key-file /etc/rillcache/server-key.pem \
+  --tls-ocsp-file /etc/rillcache/server.ocsp.der \
   --tls-sni-cert-file cache.example.com=/etc/rillcache/cache-chain.pem \
-  --tls-sni-key-file cache.example.com=/etc/rillcache/cache-key.pem
+  --tls-sni-key-file cache.example.com=/etc/rillcache/cache-key.pem \
+  --tls-sni-ocsp-file cache.example.com=/etc/rillcache/cache.ocsp.der
 ```
 
 The configured handshake timeout is one monotonic budget across the complete
@@ -139,17 +143,28 @@ test keys.
   Stage replacement PEM files (each at most 1 MiB) by atomic rename, then
   atomically replace the trigger with a new token. The next accepted TLS
   connection attempts one bounded reload of the default and every configured
-  SNI identity, together with the optional client CA and CRL. Existing connections
+  SNI identity, their associated OCSP response files, and the optional client CA and CRL.
+  Each response follows only its configured certificate/key identity; existing connections
   retain their established rustls configuration snapshot.
 - If reload parsing, CA validation or a certificate/key match fails, the last
   valid generation remains active and the error is written to stderr. That token
   is not retried; after fixing files, publish a different token. New handshakes
-  continue using the last valid identities while a bad generation is present.
+  continue using the last valid identities and stapled bytes while a bad generation is present.
   Verify the served identities after rotating. Reload is process-local, not a
   distributed rollout or readiness guarantee. With `--secure-secret-files`, the
   trigger must also be owner-only (for example, mode 0600). CRL updates are
   included in the new verifier generation; certificate-to-ACL mappings require
   explicit leaf fingerprints and are startup-only.
+- OCSP files must be nonempty, no larger than 1 MiB, and have one bounded DER
+  SEQUENCE envelope. This is framing validation only: the server does not parse
+  OCSP status, verify signatures/responders, check `thisUpdate`/`nextUpdate`, or
+  prove that a response names the configured certificate. Operators must obtain
+  each response from a trusted PKI workflow, keep it current, and renew/stage it
+  with the matching certificate and key. Clients must request and independently
+  validate stapled status according to their policy; clients may ignore a missing
+  or unusable staple. Stapling is not a substitute for client-side CRL policy or
+  an external TLS terminator's security review. Server-certificate OCSP/CRL
+  validation and automatic OCSP fetching remain unsupported.
 
 ### Non-production rotation acceptance drill
 

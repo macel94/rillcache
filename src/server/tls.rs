@@ -39,6 +39,7 @@ const MAX_RELOAD_TOKEN_BYTES: usize = 64;
 pub(crate) struct TlsSettings<'a> {
     pub(crate) cert_file: &'a Path,
     pub(crate) key_file: &'a Path,
+    pub(crate) ocsp_file: Option<&'a Path>,
     pub(crate) client_ca_file: Option<&'a Path>,
     pub(crate) client_crl_file: Option<&'a Path>,
     pub(crate) sni_certificates: &'a [crate::server::TlsSniCertificate],
@@ -52,6 +53,7 @@ pub(crate) struct TlsAcceptor {
     config: RwLock<Arc<ServerConfig>>,
     cert_file: PathBuf,
     key_file: PathBuf,
+    ocsp_file: Option<PathBuf>,
     client_ca_file: Option<PathBuf>,
     client_crl_file: Option<PathBuf>,
     sni_certificates: Vec<crate::server::TlsSniCertificate>,
@@ -68,6 +70,7 @@ impl TlsAcceptor {
         let config = Self::build_config(
             settings.cert_file,
             settings.key_file,
+            settings.ocsp_file,
             settings.client_ca_file,
             settings.client_crl_file,
             settings.sni_certificates,
@@ -77,6 +80,7 @@ impl TlsAcceptor {
             config: RwLock::new(config),
             cert_file: settings.cert_file.to_owned(),
             key_file: settings.key_file.to_owned(),
+            ocsp_file: settings.ocsp_file.map(Path::to_owned),
             client_ca_file: settings.client_ca_file.map(Path::to_owned),
             client_crl_file: settings.client_crl_file.map(Path::to_owned),
             sni_certificates: settings.sni_certificates.to_vec(),
@@ -92,6 +96,7 @@ impl TlsAcceptor {
     fn build_config(
         cert_file: &Path,
         key_file: &Path,
+        ocsp_file: Option<&Path>,
         client_ca_file: Option<&Path>,
         client_crl_file: Option<&Path>,
         sni_certificates: &[crate::server::TlsSniCertificate],
@@ -102,10 +107,10 @@ impl TlsAcceptor {
         }
         let key = read_private_key(key_file)?;
         let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let default_key = Arc::new(
-            CertifiedKey::from_der(certs, key, &provider)
-                .map_err(|error| invalid(format!("TLS certificate/key: {error}")))?,
-        );
+        let mut default_key = CertifiedKey::from_der(certs, key, &provider)
+            .map_err(|error| invalid(format!("TLS certificate/key: {error}")))?;
+        default_key.ocsp = ocsp_file.map(read_ocsp_response).transpose()?;
+        let default_key = Arc::new(default_key);
         let mut identities = HashMap::new();
         for identity in sni_certificates {
             let certs = read_certs(&identity.cert_file)?;
@@ -116,12 +121,18 @@ impl TlsAcceptor {
                 )));
             }
             let key = read_private_key(&identity.key_file)?;
-            let certified_key = CertifiedKey::from_der(certs, key, &provider).map_err(|error| {
-                invalid(format!(
-                    "TLS certificate/key for SNI name {}: {error}",
-                    identity.server_name
-                ))
-            })?;
+            let mut certified_key =
+                CertifiedKey::from_der(certs, key, &provider).map_err(|error| {
+                    invalid(format!(
+                        "TLS certificate/key for SNI name {}: {error}",
+                        identity.server_name
+                    ))
+                })?;
+            certified_key.ocsp = identity
+                .ocsp_file
+                .as_deref()
+                .map(read_ocsp_response)
+                .transpose()?;
             identities.insert(
                 identity.server_name.to_ascii_lowercase(),
                 Arc::new(certified_key),
@@ -192,6 +203,7 @@ impl TlsAcceptor {
         match Self::build_config(
             &self.cert_file,
             &self.key_file,
+            self.ocsp_file.as_deref(),
             self.client_ca_file.as_deref(),
             self.client_crl_file.as_deref(),
             &self.sni_certificates,
@@ -473,6 +485,74 @@ fn read_bounded_tls_file(path: &Path, description: &str) -> io::Result<Vec<u8>> 
         )));
     }
     Ok(bytes)
+}
+
+fn read_ocsp_response(path: &Path) -> io::Result<Vec<u8>> {
+    let bytes = read_bounded_tls_file(path, "OCSP response")?;
+    if !valid_der_sequence(&bytes) {
+        return Err(invalid(format!(
+            "TLS OCSP response {} is not one bounded DER sequence",
+            path.display()
+        )));
+    }
+    Ok(bytes)
+}
+
+// Validate complete DER TLV framing. rustls treats OCSP as opaque bytes; this
+// does not validate OCSP semantics, signatures, status, certificate identity, or freshness.
+fn valid_der_sequence(bytes: &[u8]) -> bool {
+    if bytes.first() != Some(&0x30) {
+        return false;
+    }
+    der_value_end(bytes, 0, 0) == Some(bytes.len())
+}
+
+fn der_value_end(bytes: &[u8], start: usize, depth: usize) -> Option<usize> {
+    if depth > 64 {
+        return None;
+    }
+    let tag = *bytes.get(start)?;
+    if tag & 0x1f == 0x1f || tag == 0 {
+        return None; // High-tag-number form and EOC are not used in OCSPResponse DER.
+    }
+    let first_len = *bytes.get(start.checked_add(1)?)?;
+    let (header_len, content_len) = if first_len < 0x80 {
+        (2usize, first_len as usize)
+    } else {
+        let octets = (first_len & 0x7f) as usize;
+        if octets == 0 || octets > std::mem::size_of::<usize>() {
+            return None; // DER forbids indefinite lengths.
+        }
+        let length_start = start.checked_add(2)?;
+        let length_end = length_start.checked_add(octets)?;
+        let encoded = bytes.get(length_start..length_end)?;
+        if encoded.first() == Some(&0) {
+            return None;
+        }
+        let mut length = 0usize;
+        for byte in encoded {
+            length = length.checked_mul(256)?.checked_add(*byte as usize)?;
+        }
+        if length < 128 {
+            return None; // DER requires short-form for lengths below 128.
+        }
+        (2 + octets, length)
+    };
+    let content_start = start.checked_add(header_len)?;
+    let end = content_start.checked_add(content_len)?;
+    if end > bytes.len() {
+        return None;
+    }
+    if tag & 0x20 != 0 {
+        let mut child = content_start;
+        while child < end {
+            child = der_value_end(&bytes[..end], child, depth + 1)?;
+        }
+        if child != end {
+            return None;
+        }
+    }
+    Some(end)
 }
 
 fn read_certs(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
