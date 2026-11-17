@@ -584,6 +584,53 @@ fn fragmented_clienthello_completes_and_handshake_budget_is_cleared() {
 }
 
 #[test]
+fn client_crl_policy_allows_current_nonrevoked_and_rejects_revoked_or_expired() {
+    for workers in [None, Some(1), Some(4)] {
+        let mut good_config = Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+            tls_cert_file: Some(fixture("server.crt")),
+            tls_key_file: Some(fixture("server.key")),
+            tls_client_ca_file: Some(fixture("ca.crt")),
+            tls_client_crl_file: Some(fixture("client-good.crl.der")),
+            worker_threads: workers,
+            ..Config::default()
+        };
+        good_config.idle_timeout = Duration::from_secs(5);
+        let good = Server::bind(good_config).unwrap().spawn().unwrap();
+        let mut client = connect(&good, true);
+        ping(&mut client);
+        good.shutdown().unwrap();
+
+        for crl in [
+            "client-revoked.crl.der",
+            "client-expired.crl.der",
+            "client-unrelated.crl.der",
+        ] {
+            let server = Server::bind(Config {
+                bind_addr: "127.0.0.1:0".parse().unwrap(),
+                tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+                tls_cert_file: Some(fixture("server.crt")),
+                tls_key_file: Some(fixture("server.key")),
+                tls_client_ca_file: Some(fixture("ca.crt")),
+                tls_client_crl_file: Some(fixture(crl)),
+                worker_threads: workers,
+                ..Config::default()
+            })
+            .unwrap()
+            .spawn()
+            .unwrap();
+            let mut client = connect(&server, true);
+            let result = client.write_all(b"*1\r\n$4\r\nPING\r\n");
+            let mut reply = [0u8; 7];
+            let result = result.and_then(|()| client.read_exact(&mut reply));
+            assert!(result.is_err(), "accepted mTLS client under CRL {crl}");
+            server.shutdown().unwrap();
+        }
+    }
+}
+
+#[test]
 fn tls12_is_rejected_and_client_certificates_can_be_required() {
     let server = start(None, false);
     let tcp = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();
@@ -760,6 +807,18 @@ fn invalid_tls_configuration_fails_before_listening() {
         ..Config::default()
     };
     assert!(Server::bind(trigger_without_bind).is_err());
+    let crl_without_ca = Config {
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_client_crl_file: Some(fixture("client-good.crl.der")),
+        ..Config::default()
+    };
+    assert!(Server::bind(crl_without_ca).is_err());
+    let mut malformed_crl = base.clone();
+    malformed_crl.tls_client_ca_file = Some(fixture("ca.crt"));
+    malformed_crl.tls_client_crl_file = Some(fixture("client.crt"));
+    assert!(Server::bind(malformed_crl).is_err());
     let mut missing_trigger = base.clone();
     missing_trigger.tls_reload_trigger = Some(fixture("missing-generation"));
     assert!(Server::bind(missing_trigger).is_err());
