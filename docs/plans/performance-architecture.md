@@ -15,7 +15,8 @@ decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), 4.32 has a packed-node decision (section 2.41), 4.36 has a dense-index
 decision (section 2.42), 4.50 has a seek decision (section 2.43), and 4.51 has a
 borrowed-source decision (section 2.44), and 4.54 has an in-place edit decision
-(section 2.45); every other runtime item here is historical or
+(section 2.45), and 4.48 has an in-place group decision (section 2.46); every
+other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1320,7 +1321,7 @@ rest are still true even though every row now leads:
     on a 5k-entry stream it costs **8.26 ms** versus 0.08–0.09 ms (88–99×) and
     scales with length (~165 ms at 100k by extrapolation); the other XGROUP
     subcommands already mutate in place and are at parity (section 3.34,
-    candidate 4.48).
+    4.48 decided in 2.46).
 28. **Sorted-set pops.** Every `ZPOPMIN`/`ZPOPMAX`/`ZMPOP` cloned and sorted the
     whole set before removing one member: at 100k they cost **146–160 ms** versus
     0.16–0.42 ms (373–974×), the largest measured ratio, while the 100-member
@@ -1575,7 +1576,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) → 0.957 s (9.57) vs 3.17/3.61 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) → 0.0234 s (2.34) vs 2.29/2.92; single p50 and controls at the floor | 4.47, implemented | AC49 (count met; add 1.77× but above 6 µs) | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` pre-fix 201.6 ms vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; `BITPOS 0 0 -1` 209.4 vs 4.79/5.96, post-fix 2.23; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
-| Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
+| Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, in-place decided (2.46) | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
 | Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 → 1.082 ms vs 0.664/0.232, `ZPOPMAX` 159.9 → 1.245, `ZPOPMIN 10` 146.6 → 1.542, `ZMPOP` 155.8 → 1.648; tie-heavy (all scores 0) 4.8–6.0; 100-member control at the floor | 4.49, implemented without the ordered index | AC51 missed (1.08–1.65 vs ≤0.3) | ordered `(score, member)` index |
 | Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, seek decided (2.43) | AC52 | none |
@@ -2761,6 +2762,71 @@ allocation); a second value-to-position index (invalidated by every edit and
 unbounded); locating by index only (does not cover value-based removal); and
 converting the list to another structure for edits. AC56 remains the measurable
 criterion.
+
+### 2.46 2026-11-17 checkpoint: group creation still clones the whole stream
+
+The protected gate has no stream-group row. The retained cohort (section 3.34)
+measures a 5,000-entry stream at **7.47–13.1 ms** for `XGROUP CREATE` (8.26
+representative) versus Redis 0.07–0.10 and Valkey 0.09–0.13 (88–99×); the
+10-entry control is 0.338 versus 0.120/0.097, while `CREATECONSUMER`, `SETID`
+and `DESTROY` on the same stream are at parity (0.099–0.169 ms). The cost grows
+linearly with stream length and extrapolates to ~165 ms at 100k entries.
+
+Current source audit:
+
+- The `CREATE` branch clones `e.stream` through `e.stream.clone()`, inserts the
+  group into that clone, folds `stream.payload_bytes()` over every entry, calls
+  `data.reserve`, and replaces the key with `put_stream`.
+- The group maps are independent of the entries: creating a group changes no
+  entry, no field and no entry byte count. The clone, the fold and the replace
+  are therefore pure overhead proportional to the stream length.
+- The other `XGROUP` subcommands already borrow `Entry.stream` mutably, mutate
+  one map and call `data.touch`; they are at parity and provide the shape to
+  copy.
+
+The C servers insert one group and leave the entries alone:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Group insert | clone the stream, insert, replace | insert one group in the stream dictionary ([`t_stream.c#L3553`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L3553), [`#L3667`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L3667)) | same ([`t_stream.c#L2582`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L2582)) | **adapt** an in-place insert |
+| Entry bytes | fold every entry | untouched | untouched | leave `payload_len` unchanged |
+| Accounting | reserve the folded total, replace | no entry accounting change | same | no reserve on an existing key |
+| `MKSTREAM` | build a stream, then replace | create an empty stream and group | same | reserve and insert the new key once |
+| Other subcommands | already mutate in place | dict mutation | same | keep |
+| Dependencies | std only | C/dict/rax | C/dict/rax | std maps, no crate |
+
+**Decision.** Split `XGROUP CREATE` into two paths:
+
+- If the key exists, validate the type, reject an existing group with
+  `BUSYGROUP` before mutation, derive `entries_read`/`last_delivered` from the
+  borrowed stream (`$` uses `entries_added`; an explicit ID keeps today's
+  retained-entry count), insert the `ConsumerGroup` into `stream.groups` in
+  place, refresh the key's access stamp so LRU/eviction ordering matches the
+  previous replace, and call `data.touch`. Do not clone the stream, fold
+  `payload_bytes`, call `reserve` or replace the entry.
+- If the key is missing and `MKSTREAM` is set, build the empty `Stream` and its
+  group locally, `reserve` the new key once, and insert it; without `MKSTREAM`
+  keep the existing error. A wrong-type key and a missing key fail before any
+  mutation.
+- Group maps remain outside the entry-byte payload, as today, so
+  `payload_len`/`payload_bytes` do not change for an existing stream. TTL,
+  field TTLs (streams have none), PEL/consumer state, `BUSYGROUP`, `ENTRIESREAD`,
+  journal/rewrite snapshots, WATCH versions and notification order stay exact.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::BTreeMap` inside the existing `Stream`, the existing `touch`
+path and a small access-stamp helper on `Data`. No new index, no persistent
+state and no change to the journal's stream encoding.
+
+**Risks and rejected options.** `BUSYGROUP`, explicit-ID versus `$`, the
+documented retained-entry approximation for `entries_read`, `last_delivered`,
+`MKSTREAM`, OOM before a new key is inserted, PEL/consumer state, LRU access
+stamps, payload accounting, TTL/WATCH/journal/rewrite and notification order are
+the obligations. Rejected: keeping the clone and only skipping the fold (still
+O(n) copies); a separate group registry outside the stream (breaks read, range
+and rewrite consistency); and moving the group maps out of the stream value.
+AC50 remains the measurable criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -4593,7 +4659,7 @@ BYTE/BIT range rules and the not-found return values. This is the same safe
 
   `XGROUP CREATE` is **88–99×** slower and grows linearly with stream length
   (~165 ms at 100k by extrapolation), while every other XGROUP subcommand is at
-  parity because it already mutates in place. Candidate 4.48.
+  parity because it already mutates in place. 4.48 decided in 2.46.
 
 **Verdict: adapt an in-place group insert (4.48).** Borrow `Entry.stream`
 mutably, insert the group (or create an empty stream for `MKSTREAM`), call
@@ -7859,7 +7925,7 @@ target is missed because the remaining cost is per-command dispatch and socket
 work, not the sketch); caches invalidated on add; round-trip/accounting tests
 pass. The serialized payload has a versioned trailer and accepts old payloads.
 
-### 4.48 In-place stream group creation (candidate; admission measured)
+### 4.48 In-place stream group creation (candidate; in-place decision)
 
 **Mechanism.** For `XGROUP CREATE`, borrow `Entry.stream` mutably, insert the
 `ConsumerGroup` (or create an empty stream for `MKSTREAM`), and call `touch`;
@@ -7886,6 +7952,16 @@ group maps are small and the borrow is already admitted).
 **Rejected options.** Keeping the clone and only skipping the payload fold
 (still O(n) copies), and a separate group registry outside the stream (breaks
 range/read/rewrite consistency).
+
+**Decision (2026-11-17, section 2.46).** Borrow `Entry.stream` mutably and insert
+the group in place for an existing key: check the type and `BUSYGROUP` first,
+derive `entries_read`/`last_delivered` from the borrowed stream, insert into
+`stream.groups`, refresh the access stamp and call `data.touch`; skip the clone,
+the `payload_bytes` fold, `reserve` and `put_stream`. For a missing key with
+`MKSTREAM`, build the empty stream and group locally, reserve the new key once
+and insert it; without `MKSTREAM` keep the existing error. Entry payload and TTL
+accounting do not change because groups are not entry bytes. No new structure,
+dependency, unsafe or persistent-format change.
 
 **Rejection condition.** Any group, PEL, `MKSTREAM` or `BUSYGROUP` semantics
 differ, the controls regress, or no gain above the spread.
@@ -9946,7 +10022,9 @@ separate roadmap.
   rows unimplemented. The 4.51 borrowed-source decision (section 2.44) leaves the
   220/306/331/477 ms algebra rows and the 50.7/267.2 ms LIMIT rows unimplemented.
   The 4.54 in-place edit decision (section 2.45) leaves the 21 ms tail-`LREM`
-  and 1.6 ms reverse-`LPOS` rows unimplemented. The 4.23 bounded rewrite
+  and 1.6 ms reverse-`LPOS` rows unimplemented. The 4.48 in-place group decision
+  (section 2.46) leaves the 8.26 ms `XGROUP CREATE` row unimplemented. The 4.23
+  bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
