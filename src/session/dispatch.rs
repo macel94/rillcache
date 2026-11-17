@@ -185,6 +185,16 @@ impl Session {
                         }
                         return Action::Continue;
                     }
+                    Access::DeniedKeyspace(command) => {
+                        self.log_denial(store, "key", "toplevel", &command);
+                        output.extend_from_slice(
+                            b"-NOPERM keyspace-wide commands require an all-key ACL grant with the required access\r\n",
+                        );
+                        if let Some(multi) = self.multi.as_mut() {
+                            multi.dirty = true;
+                        }
+                        return Action::Continue;
+                    }
                     Access::DeniedChannel(channel) => {
                         self.log_denial(store, "channel", "toplevel", &channel);
                         output.extend_from_slice(

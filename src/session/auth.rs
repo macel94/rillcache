@@ -237,6 +237,9 @@ impl Session {
                     Some(Access::DeniedChannel(_)) => output.extend_from_slice(
                         b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
                     ),
+                    Some(Access::DeniedKeyspace(_)) => output.extend_from_slice(
+                        b"-NOPERM keyspace-wide commands require an all-key ACL grant with the required access\r\n",
+                    ),
                     Some(Access::NoAuth) => {
                         output.extend_from_slice(b"-NOAUTH Authentication required.\r\n")
                     }
