@@ -14,8 +14,8 @@ decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all remain gated; the
 shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), 4.32 has a packed-node decision (section 2.41), 4.36 has a dense-index
 decision (section 2.42), 4.50 has a seek decision (section 2.43), and 4.51 has a
-borrowed-source decision (section 2.44); every other runtime item here is
-historical or
+borrowed-source decision (section 2.44), and 4.54 has an in-place edit decision
+(section 2.45); every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1374,7 +1374,7 @@ rest are still true even though every row now leads:
     versus 0.09/0.24** (79–212×), `LSET` at index 100k 16.5 versus 0.14/0.28
     (59–118×), while the scan-bound middle insert and tail removal are 4.9–6.0×
     and 2.9–3.0×; every form flattens the whole list first; 10-element controls
-    are at the floor (section 3.45, candidate 4.54).
+    are at the floor (section 3.45, 4.54 decided in 2.45).
 38. **Set membership reply.** `SMEMBERS` on sets of 1k/10k/100k 8-byte members
     is at parity or **leads** (100k 84.75 ms versus 88.71/86.37; 10k 9.95 versus
     9.33/9.58), despite the same collect+sort+encode shape as the hash listings,
@@ -1593,7 +1593,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, no-deadline fast path implemented; counters remain | AC54 (no-deadline rows met) | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k pre-fix 25.5 ms vs 0.40/0.28 (64–91×), post-fix 0.27–0.63 vs 0.08–0.24; `LMOVE`/`RPOPLPUSH` 200k pre-fix 35.3/33.6, post-fix 0.31/0.24 vs 0.20–0.64; same-key rotate 16.9 → 0.11; 10-element controls at the floor | 4.53, implemented | AC55 met | none |
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended, decided (2.44) | AC53 | none |
-| List element edits | latency, storage | **measured**: 200k `LSET` index 100k pre-fix 16.5, post-fix 0.805 vs 0.061/0.641; `LINSERT` head pre-fix 19.1, post-fix 0.069 vs 0.071/0.102; middle pre-fix 21.0, post-fix 1.66 vs 3.475/4.01; `LREM` tail 21.1 vs 6.97/7.28 and `LPOS RANK -1` 1.59 vs 0.16/0.27 remain; 10-element controls at the floor | 4.54, `LSET`/`LINSERT` implemented; `LREM` remains | AC56 (`LSET`/`LINSERT` met) | none |
+| List element edits | latency, storage | **measured**: 200k `LSET` index 100k pre-fix 16.5, post-fix 0.805 vs 0.061/0.641; `LINSERT` head pre-fix 19.1, post-fix 0.069 vs 0.071/0.102; middle pre-fix 21.0, post-fix 1.66 vs 3.475/4.01; `LREM` tail 21.1 vs 6.97/7.28 and `LPOS RANK -1` 1.59 vs 0.16/0.27 remain; 10-element controls at the floor | 4.54, in-place edits decided (2.45); `LSET`/`LINSERT` implemented | AC56 (`LSET`/`LINSERT` met) | none |
 | Set membership reply | replies | **measured lead/null**: `SMEMBERS` 100k 84.75 ms vs 88.71/86.37, 10k 9.95 vs 9.33/9.58, 1k 0.97 vs 1.11/1.24, 10-member control at the floor; the 1.5 MB reply hides the collect+sort | no candidate; keep 4.29 scoped to hashes | n/a | none |
 | Multi-key argument cap | parsing, compatibility | **measured boundary**: 1,024 total args accepted, 1,025 rejected; Redis/Valkey execute `MGET` 10,000, `MSET` 600 pairs and `DEL` 2,000; 1,000-key latency is at parity or leads (`MGET` 1.74 vs 2.23/2.34) | 4.55, admitted | AC57 | none |
 | Skewed-cardinality algebra | replies, latency | **measured**: 100k + 10 `SINTER` 33.8 ms vs 0.19/0.19 (178×), `SINTERCARD` 35.9 vs 0.24/0.34, `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k is 33–78×; `SDIFF`/`SUNION` lead; 10-member controls at the floor | 4.51, extended, decided (2.44) | AC53 | none |
@@ -2691,6 +2691,75 @@ keeping the owned copies and optimising only downstream; a temporary borrowed
 `HashSet` of the smaller source (another allocation for the same probe);
 parallelising the intersection; sorting the result for stores that never use
 the order; and per-source destination maps. AC53 remains the measurable
+criterion.
+
+### 2.45 2026-11-17 checkpoint: tail removal and reverse LPOS still traverse a flattened copy
+
+The protected gate has no list-edit row. The retained cohort (section 3.45)
+measures a 200,000-element list of distinct 8-byte values at:
+
+- `LREM 1` near the tail **19.90–22.88 ms** versus Redis 6.29–7.12 and Valkey
+  6.57–8.15 (2.9–3.0×); the head/middle forms were fixed by the earlier
+  `LSET`/`LINSERT` work.
+- `LPOS ... RANK -1` **1.31–1.87 ms** versus 0.09–0.30/0.08–0.36 (5.9–9.9×);
+  the forward `RANK 1` path and 10-element controls are at the command floor.
+
+Current source audit:
+
+- `list_remove` calls `Collection::list_values`, which clones every element into
+  a fresh `VecDeque` (`ListPack` clones it; `ListQuick` flattens every node), then
+  builds a second `VecDeque` while filtering, and finally re-encodes and replaces
+  the whole list. A one-element tail removal pays two full copies plus an encode.
+- `list_position` uses `list_items`, which borrows elements but still allocates
+  a `Vec` of all 200,000 references before a reverse scan. The work therefore
+  grows with list length even though the match is near the tail.
+- The earlier `LSET`/`LINSERT` paths already walk chunks and mutate one element;
+  `LREM` and reverse `LPOS` are the two remaining consumers of the flatten.
+
+The C servers remove and position through a directional list iterator:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| `LREM` direction | clone, filter forward or reverse, rebuild | iterator starts at head or tail by the sign of count; `listTypeDelete` unlinks each match ([`t_list.c#L1115`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L1115)) | same ([`t_list.c#L1028`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L1028)) | **adapt** chunk-local removal |
+| `LREM` storage | new `VecDeque` plus re-encode | delete inside the quicklist node, convert/shrink at the end | same | remove in place, split/merge at bounds |
+| Reverse `LPOS` | materialise all references, index backwards | iterator from the tail, index computed from list length ([`t_list.c#L1015`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L1015)) | same ([`t_list.c#L937`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L937)) | **adapt** a backward chunk walk |
+| `RANK`/`COUNT`/`MAXLEN` | materialised positions | counted during the directional scan | same | count while scanning, no position table |
+| Dependencies | std only | C/quicklist/listpack | C/quicklist/listpack | std `VecDeque`/chunk walk, no crate |
+
+**Decision.** Complete the in-place list-edit path for the two remaining forms:
+
+- `LREM` walks the existing chunk deque from the head for a positive count and
+  from the tail for a negative one, scanning each chunk in the requested
+  direction, deleting matches within the chunk and stopping at the count. For a
+  negative count, collect matching indices in the chunk and drain them in
+  descending order so shifts stay inside one bounded chunk; `count == 0`
+  removes every match. Drop emptied chunks, split/merge only at the configured
+  bound, update `payload_len`/`payload_bytes` by the removed bytes, delete the
+  key when the list is empty, and never flatten or rebuild the list; only the
+  affected chunks change, with threshold conversion when a representation
+  boundary is crossed.
+- Reverse `LPOS` walks nodes and elements from the tail without building the
+  reference vector, counts scanned elements for `MAXLEN` and matches for
+  `RANK`/`COUNT`, and reports the head-relative index (`len - 1 - offset`). The
+  forward path keeps the same scan shape.
+- Both paths reuse 4.41's chunk traversal and 4.35's delta accounting, keep the
+  `ListPack`/`ListQuick` threshold conversion exact, and work unchanged when
+  4.32's packed nodes replace per-element buffers.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::VecDeque`, slice indexing and the existing list encoders.
+The removed bytes are subtracted from the existing payload counters; no new
+index or persistent state is introduced.
+
+**Risks and rejected options.** Positive/negative/zero count semantics, order
+after removal, `MAXLEN` counting in the scan direction, head-relative positions,
+empty-key deletion, chunk split/merge and node bounds, `ListPack` conversion,
+TTL/WATCH/journal/rewrite and exact accounting are the obligations. Rejected:
+keeping the flatten but skipping the re-encode (still an O(n) copy and
+allocation); a second value-to-position index (invalidated by every edit and
+unbounded); locating by index only (does not cover value-based removal); and
+converting the list to another structure for edits. AC56 remains the measurable
 criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
@@ -5074,7 +5143,7 @@ the intersection is only needed for the store/reply forms.
   2.9–3.0× (tail removal) because the C servers also walk 100k–200k entries, so
   the rebuild is only part of their cost. `LPOS` with a reverse rank is 5.9–9.9×.
   The 10-element controls are at the floor. Preloading the list took 3.9 s versus
-  0.3–0.5 s, the 4.35 write path. Candidate 4.54.
+  0.3–0.5 s, the 4.35 write path. 4.54 decided in 2.45.
 
 - **Post-fix (2026-11-14, `LSET` and `LINSERT` paths).** When the replacement
   is no longer than the element at the resolved index, `LSET` walks the chunk
@@ -5086,7 +5155,8 @@ the intersection is only needed for the store/reply forms.
   head, 10 repetitions: 200k `LSET` at index 100,000 **0.805 ms** versus Redis
   0.061 and Valkey 0.641 (from 16.5 ms); index 0 0.254; `LINSERT` at the head
   **0.069** versus 0.071/0.102 (from 19.1) and before the middle element **1.66**
-  versus 3.475/4.01 (from 21.0). `LREM` remains for the follow-up.
+  versus 3.475/4.01 (from 21.0). `LREM` and reverse `LPOS` remain, decided in
+  section 2.45.
 
 **Verdict: adapt in-place list edits (4.54).** Walk the chunk deque to the pivot or
 index, edit one element or node, and split/merge only at chunk bounds; reuse
@@ -8169,7 +8239,7 @@ non-member, empty-source deletion, TTLs, blocking `BLMOVE`/`BRPOPLPUSH`,
 WATCH/journal/notification/rewrite and accounting tests shall pass; no dependency
 shall be added; and both protected gates shall pass on the exact head.
 
-### 4.54 In-place list element edits (candidate; LSET/LINSERT implemented)
+### 4.54 In-place list element edits (candidate; in-place edits decision)
 
 **Mechanism.** Edit a list's chunk deque directly instead of flattening it. For
 `LINSERT`, walk chunks to the pivot (front or back half, whichever is nearer),
@@ -8179,6 +8249,18 @@ For `LREM`, walk and unlink matching elements in place, merging or dropping empt
 chunks, with the positive/negative/zero count semantics. `LPOS` with a negative
 rank walks from the tail and needs no flatten. Reuse 4.41's chunk traversal and
 4.35's delta accounting; no new container, no dependency.
+
+**Decision (2026-11-17, section 2.45).** Finish the in-place path: `LREM` walks
+chunks from the head or tail according to the count sign, removes matches inside
+the chunk (draining descending indices for a negative count), stops at the
+count, drops empty chunks, updates payload by the removed bytes, deletes an
+emptied key and never flattens or rebuilds the list; only affected chunks
+change, with threshold conversion at a representation boundary. Reverse `LPOS` walks nodes and
+elements from the tail, counts `MAXLEN`/`RANK`/`COUNT` during the scan and
+reports head-relative positions without materialising the reference vector.
+Keep the existing `LSET`/`LINSERT` paths, chunk bounds and `ListPack`/`ListQuick`
+conversion; the same code applies to 4.32's packed nodes. No new structure,
+dependency, unsafe or persistent-format change.
 
 **Prediction.** At 200k elements, `LINSERT` at the head falls from **19.1 ms to
 ≤0.3 ms** (≥60×), `LSET` at index 100k from 16.5 to ≤0.5 ms (≥30×), `LINSERT` at
@@ -9863,7 +9945,8 @@ separate roadmap.
   4.50 seek decision (section 2.43) leaves the 56–70 ms lex and 1.25–15 ms count
   rows unimplemented. The 4.51 borrowed-source decision (section 2.44) leaves the
   220/306/331/477 ms algebra rows and the 50.7/267.2 ms LIMIT rows unimplemented.
-  The 4.23 bounded rewrite
+  The 4.54 in-place edit decision (section 2.45) leaves the 21 ms tail-`LREM`
+  and 1.6 ms reverse-`LPOS` rows unimplemented. The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
