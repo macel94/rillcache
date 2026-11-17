@@ -116,7 +116,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `RENAME` source versus destination, and store destinations of `SORT`,
   `GEORADIUS*` and `*STORE`). `SORT ... STORE` and `GEORADIUS ... STORE` shall
   require read on the source and write on the effective last-wins destination;
-  `XREAD`/`XREADGROUP` shall check each key in the dynamic `STREAMS` block, and
+  counted `LMPOP`/`BLMPOP` key lists shall contain only the declared keys,
+  excluding direction and optional `COUNT` tokens; `XREAD`/`XREADGROUP` shall
+  check each key in the dynamic `STREAMS` block, and
   `PFCOUNT` shall require both accesses per Redis 7's RW key spec. `SET` with
   `GET` and mutating `BITFIELD` operations shall require both accesses.
 - **R337 (event-driven):** `ACL LIST` and `ACL GETUSER` shall render read-only
@@ -127,7 +129,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R338 (ubiquitous):** Tests shall cover read-only, write-only and read-write
   grants, per-key mixed commands, read denial for a write-only credential, write
   denial for a read-only credential, listing, `ACL DRYRUN`, ACL-file restart
-  round-trips and every worker mode. Documentation shall retain the
+  round-trips and every worker mode. For `LMPOP`, tests shall cover counted keys,
+  direction/COUNT exclusion, binary keys, selector grants versus root command
+  precedence, denied multi-key no-pop behavior and non-executing DRYRUN.
+  Documentation shall retain the
   subcommand-category, dynamic-key-sandbox, centralized-audit, rate-limiting and
   TLS-hardening boundaries.
 

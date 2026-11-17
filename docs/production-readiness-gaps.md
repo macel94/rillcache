@@ -495,8 +495,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **S2. ACL support is not full Redis ACL.** [P0]
   Remaining subcommand-specific categories beyond the bounded overrides,
-  dynamic key sandbox rules, complete channel filtering for `PUBSUB`
-  introspection and commands outside the published table are absent. `KEYS`,
+  dynamic key sandbox rules beyond the explicitly implemented command specs,
+  complete channel filtering for `PUBSUB` introspection and commands outside the
+  published table are absent. `KEYS`,
   `RANDOMKEY`, `DBSIZE`, `FLUSH*` and similar commands are not a per-key sandbox.
   **Closes when:** the supported ACL subset is explicitly versioned and
   differentially tested, or full category/subcommand/key/channel semantics are

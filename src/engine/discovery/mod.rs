@@ -256,6 +256,20 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         keys.extend(destination);
         return keys;
     }
+    // LMPOP takes a counted key list followed by LEFT/RIGHT and optional COUNT.
+    // Its registry key range would otherwise include these trailing options.
+    if name.eq_ignore_ascii_case(b"LMPOP") {
+        let Some(count) = args
+            .get(1)
+            .and_then(|raw| std::str::from_utf8(raw).ok())
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|count| *count > 0)
+        else {
+            return Vec::new();
+        };
+        let end = 2usize.saturating_add(count).min(args.len());
+        return args[2..end].to_vec();
+    }
     if name.eq_ignore_ascii_case(b"BLMPOP") {
         let Some(count) = args
             .get(2)
@@ -1633,6 +1647,22 @@ mod tests {
             vec![b"a".as_slice()]
         );
         assert!(key_arguments(b"SINTERCARD", &[b"SINTERCARD", b"x", b"a"]).is_empty());
+        assert_eq!(
+            key_arguments(b"LMPOP", &[b"LMPOP", b"2", b"a", b"b", b"LEFT"]),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"LMPOP",
+                &[b"LMPOP", b"2", b"a", b"b", b"RIGHT", b"COUNT", b"1"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"LMPOP", &[b"LMPOP", b"1", b"binary:\0key", b"LEFT"]),
+            vec![b"binary:\0key".as_slice()]
+        );
+        assert!(key_arguments(b"LMPOP", &[b"LMPOP", b"0", b"a", b"LEFT"]).is_empty());
         assert_eq!(
             key_arguments(
                 b"ZUNION",

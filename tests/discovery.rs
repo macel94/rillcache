@@ -516,6 +516,22 @@ fn command_getkeys_reuses_acl_key_specs() {
         assert_eq!(
             request(
                 &mut client,
+                &[b"COMMAND", b"GETKEYS", b"LMPOP", b"2", b"a", b"b", b"LEFT"]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
+                    b"COMMAND", b"GETKEYS", b"LMPOP", b"2", b"a", b"b", b"RIGHT", b"COUNT", b"1",
+                ]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
                 &[
                     b"COMMAND",
                     b"GETKEYS",

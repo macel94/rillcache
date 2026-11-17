@@ -597,6 +597,101 @@ fn acl_key_modes_scope_mixed_dynamic_and_option_dependent_specs() {
 }
 
 #[test]
+fn acl_lmpop_checks_only_counted_keys_before_any_pop() {
+    let server = start(Config::default());
+    let mut admin = connect(&server);
+    send(&mut admin, &[b"RPUSH", b"app:list", b"a", b"b"], b":2\r\n");
+    send(
+        &mut admin,
+        &[b"RPUSH", b"private:list", b"secret"],
+        b":1\r\n",
+    );
+    send(&mut admin, &[b"RPUSH", b"app:\0k", b"binary"], b":1\r\n");
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"SETUSER",
+            b"lister",
+            b"on",
+            b">pw",
+            b"-@all",
+            b"+@all",
+            b"-lmpop",
+            b"(+lmpop ~app:*)",
+        ],
+        b"+OK\r\n",
+    );
+    let mut client = connect(&server);
+    send(&mut client, &[b"AUTH", b"lister", b"pw"], b"+OK\r\n");
+
+    // The selector's later command grant overrides the root denial, but it
+    // authorizes only keys matching its own pattern. DRYRUN never pops data.
+    send(
+        &mut client,
+        &[
+            b"ACL",
+            b"DRYRUN",
+            b"lister",
+            b"LMPOP",
+            b"1",
+            b"app:list",
+            b"LEFT",
+        ],
+        b"+OK\r\n",
+    );
+    send(
+        &mut client,
+        &[
+            b"ACL",
+            b"DRYRUN",
+            b"lister",
+            b"LMPOP",
+            b"2",
+            b"app:list",
+            b"private:list",
+            b"LEFT",
+            b"COUNT",
+            b"1",
+        ],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    send(
+        &mut client,
+        &[
+            b"LMPOP",
+            b"2",
+            b"app:list",
+            b"private:list",
+            b"LEFT",
+            b"COUNT",
+            b"1",
+        ],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    send(
+        &mut admin,
+        &[b"LRANGE", b"app:list", b"0", b"-1"],
+        b"*2\r\n$1\r\na\r\n$1\r\nb\r\n",
+    );
+    send(
+        &mut admin,
+        &[b"LRANGE", b"private:list", b"0", b"-1"],
+        b"*1\r\n$6\r\nsecret\r\n",
+    );
+
+    // Binary key bytes are matched and popped as a key, not mistaken for an
+    // option; COUNT is not included in the authorized key list.
+    send(
+        &mut client,
+        &[b"LMPOP", b"1", b"app:\0k", b"RIGHT", b"COUNT", b"1"],
+        b"*2\r\n$6\r\napp:\0k\r\n*1\r\n$6\r\nbinary\r\n",
+    );
+    send(&mut admin, &[b"LRANGE", b"app:\0k", b"0", b"-1"], b"*0\r\n");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn acl_first_argument_rules_scope_subcommands_and_round_trip() {
     let path = temp_name("first-arg");
     std::fs::write(&path, b"user default on nopass ~* &* +@all\n").unwrap();
