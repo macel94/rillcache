@@ -16,7 +16,8 @@ shared-structure implementation map is section 2.38, 4.38 has an order-statistic
 decision (section 2.42), 4.50 has a seek decision (section 2.43), and 4.51 has a
 borrowed-source decision (section 2.44), and 4.54 has an in-place edit decision
 (section 2.45), and 4.48 has an in-place group decision (section 2.46), and 4.43 has a neighbor-cell decision (section 2.47), and 4.42 has an in-place append decision
-(section 2.48); every other runtime item here is historical or
+(section 2.48), and 4.41 has a chunk-seek decision (section 2.49); every other
+runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1277,7 +1278,7 @@ rest are still true even though every row now leads:
     200k list cost **1.26–1.47 ms** versus 0.07–0.14 ms (9–22×) because both
     flatten every element reference; a missing `LPOS` leads because the C
     servers walk every node, and the 10-element controls are at the floor
-    (section 3.25, candidate 4.41).
+    (section 3.25, 4.41 decided in 2.49).
 19. **Stream append.** Every `XADD` clones the whole `Stream` and folds its
     payload twice, so at 5,000 entries it costs **1.36 ms** versus
     0.08–0.10 ms (13–18×) and grows with stream length, while `XLEN`/`XRANGE`/
@@ -1565,7 +1566,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 ordered-index decided (2.33); 4.38 order-statistic decided (2.40) | AC32/AC40 | none |
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, push-ready decided (2.36, with 4.24) | AC41 | none |
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 → **0.33** vs 0.08–0.35 (parity with Redis); `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
-| List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
+| List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, chunk-seek decided (2.49) | AC43 | none |
 | Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, in-place append decided (2.48) | AC44 | none |
 | Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, neighbor-cell decided (2.47) | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 → 0.151/0.115/0.282 ms vs 0.07–0.19; `ZMSCORE` 8.02/33.37/273.2 → 0.113/0.118/0.253 vs 0.09–0.23; `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; `HMGET` 100 at the floor | 4.44, implemented | AC46 met | none |
@@ -2968,6 +2969,70 @@ the read/trim semantics are the obligations. Rejected: keeping the clone and
 only removing the second fold (still O(n) copies); a cached length that can
 drift from the map; and an append-only log outside the stream (breaks the
 existing range/read paths). AC44 remains the measurable criterion.
+
+### 2.49 2026-11-17 checkpoint: LINDEX and forward LPOS still flatten every element reference
+
+The protected gate has no list-random-access row. The retained cohort (section
+3.25) measures a 200,000-element list of 8-byte values at:
+
+- `LINDEX 0` **1.47 ms**, index 100,000 **1.40** and `-1` **1.29** versus Redis
+  0.102–0.107 and Valkey 0.068–0.142 (9–22×).
+- A hit-first `LPOS` **1.26 ms** versus 0.095/0.127 (10–13×); a missing `LPOS`
+  is 1.81 versus 5.02/5.85, already leading because the C servers walk the whole
+  list.
+- 10-element `LINDEX`/`LPOS` controls are 0.10 and at the floor; `LLEN` was
+  fixed by 4.40 and is O(1).
+
+Current source audit:
+
+- `list_index` calls `Collection::list_items`, which flattens every element
+  reference of `ListPack`/`ListQuick` into a `Vec`, then normalizes the index and
+  returns one entry. The allocation is O(elements) for an O(nodes) walk.
+- `list_position` uses the same `list_items` vector before scanning in either
+  direction. The forward scan often stops early, but it has already built the
+  full reference vector.
+- The chunk lengths are already available (`quick_list_len`, `VecDeque::len`),
+  and 4.54's decision covers the reverse `LPOS` walk; only the shared seek shape
+  and the forward hit path remain.
+
+The C servers seek the quicklist by node:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| `LINDEX` | flatten all references, index | walk nodes by cached counts, touch one listpack ([`t_list.c#L621`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L621)) | same ([`t_list.c#L571`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L571)) | **adapt** a chunk walk |
+| Forward `LPOS` | flatten all references, scan | scan from the rank, stop at the match or `MAXLEN` ([`t_list.c#L1015`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L1015)) | same ([`t_list.c#L937`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L937)) | scan chunks, early stop |
+| Negative `LPOS` | flatten, index backwards | scan from the tail | same | reuse 4.54's backward walk |
+| Missing/empty | flatten then none | walk, no match | same | no allocation |
+| Dependencies | std only | C/quicklist/listpack | C/quicklist/listpack | std `VecDeque`, no crate |
+
+**Decision.** Add chunk-aware seeks and stop flattening:
+
+- `Collection::list_get(index)` normalizes the signed index against the known
+  length, returns directly for `ListPack`, and for `ListQuick` walks nodes from
+  the nearer end, subtracting node lengths until the target node, then indexes
+  within that node. No reference vector is built.
+- Forward `LPOS` scans chunks in order with an absolute position counter,
+  applying `RANK`, `COUNT` (`0` means all) and `MAXLEN` as it goes and stopping
+  at the first required match or the scan bound. Negative rank delegates to
+  4.54's backward chunk walk and reports the same head-relative index.
+- Keep `LRANGE`, `LLEN`, replies and the missing/empty/wrong-type returns
+  unchanged. The walk works for the current `ListPack`/`ListQuick` forms and for
+  4.32's packed nodes.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::VecDeque`, slice indexing and the existing length helpers.
+Reads are immutable, so there is no payload or journal change; no new index and
+no persistent-format change.
+
+**Risks and rejected options.** Negative-index normalization, out-of-range nil,
+empty/missing keys and wrong type, `RANK` sign and zero, `COUNT 0`, `MAXLEN`
+counting in the scan direction, head-relative positions, chunk boundaries,
+`ListPack`/`ListQuick` thresholds and unchanged reply formats are the
+obligations. Rejected: a maintained node index just for `LINDEX` (the walk is
+already O(nodes)); keeping the full reference vector; and a list representation
+change (4.32 covers memory independently). AC43 remains the measurable
+criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -4378,7 +4443,8 @@ the `SetInt`/`SetPack`/`HashPack` semantics including non-integer probes.
   `LINDEX` is **9–22×** slower and a hit-first `LPOS` 10–13×, while a missing
   `LPOS` **leads** (1.81 vs 5.02/5.85) because Redis walks every node. The
   control is at the floor. `LLEN` is the same `list_items()` pattern and is
-  covered by 4.40; `LINDEX`/`LPOS` need in-place seeking. Candidate 4.41.
+  covered by 4.40; `LINDEX`/`LPOS` need in-place seeking. 4.41 decided in
+  2.49.
 
 **Verdict: adapt in-place list seeking (4.41).** Add `Collection::list_get`
 (normalize the index, walk `ListQuick` chunks by their lengths without
@@ -7695,7 +7761,7 @@ within ~2× the faster C server); `HLEN` and `ZCARD` p50 ≤0.1 ms; `LLEN` on a
 non-integer probes), missing keys and type errors shall pass; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
-### 4.41 In-place list seek (candidate; admission measured)
+### 4.41 In-place list seek (candidate; chunk-seek decision)
 
 **Mechanism.** Add `Collection::list_get(index)` (normalize the negative index;
 `ListPack` indexes directly, `ListQuick` walks chunk lengths without allocating,
@@ -7722,6 +7788,16 @@ accounting change.
 **Rejected options.** A maintained node index just for `LINDEX` (the chunk walk
 is already O(nodes)), keeping the full materialization (the measured path), and a
 list representation change (4.32 covers memory independently).
+
+**Decision (2026-11-17, section 2.49).** Add `Collection::list_get(index)` that
+normalizes the signed index, returns directly for `ListPack`, and for
+`ListQuick` walks nodes from the nearer end by their lengths before indexing the
+target node. Forward `LPOS` scans chunks with an absolute position counter,
+applying `RANK`/`COUNT`/`MAXLEN` and stopping at the first required match;
+negative rank reuses 4.54's backward walk. Remove the all-reference `Vec` from
+both paths, keep replies, `LRANGE`/`LLEN` and missing/empty/wrong-type returns
+unchanged, and make the walk work for 4.32's packed nodes. No new structure,
+dependency, unsafe or persistent-format change.
 
 **Rejection condition.** Any index or `LPOS` semantics test differs, the controls
 or `LRANGE`/`LLEN` regress, or no gain above the spread.
@@ -10190,8 +10266,9 @@ separate roadmap.
   (section 2.46) leaves the 8.26 ms `XGROUP CREATE` row unimplemented. The 4.43
   neighbor-cell decision (section 2.47) leaves the 4.34/4.49 ms searches and
   22–27 ms 100-member `GEOPOS` rows unimplemented. The 4.42 in-place append
-  decision (section 2.48) leaves the 1.36 ms `XADD` row unimplemented. The 4.23
-  bounded rewrite
+  decision (section 2.48) leaves the 1.36 ms `XADD` row unimplemented. The 4.41
+  chunk-seek decision (section 2.49) leaves the 1.26–1.47 ms list random-access
+  rows unimplemented. The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
