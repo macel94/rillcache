@@ -329,6 +329,7 @@ pub enum Access {
     NoAuth,
     DeniedCommand,
     DeniedKey(Vec<u8>),
+    DeniedKeyspace(Vec<u8>),
     DeniedChannel(Vec<u8>),
 }
 
@@ -373,6 +374,13 @@ fn ruleset_access(
         && !all_keys
     {
         return Access::DeniedKey(b"BY/GET".to_vec());
+    }
+    if let Some(required) = keyspace_wide_access(command)
+        && !keys
+            .iter()
+            .any(|entry| entry.pattern == b"*" && entry.access.grants(required))
+    {
+        return Access::DeniedKeyspace(command.to_vec());
     }
     for (key, access) in discovery::key_accesses(command, arguments) {
         if !key_access_allow(keys, key, access) {
@@ -610,6 +618,10 @@ impl Auth {
             Access::DeniedChannel(channel) => Some(channel.clone()),
             _ => None,
         };
+        let mut keyspace_denial = match &root {
+            Access::DeniedKeyspace(command) => Some(command.clone()),
+            _ => None,
+        };
         for selector in &user.selectors {
             match ruleset_access(
                 &selector.rules,
@@ -627,6 +639,10 @@ impl Auth {
                     command_allowed = true;
                     channel_denial.get_or_insert(channel);
                 }
+                Access::DeniedKeyspace(command) => {
+                    command_allowed = true;
+                    keyspace_denial.get_or_insert(command);
+                }
             }
         }
         if !command_allowed {
@@ -635,6 +651,8 @@ impl Auth {
             Access::DeniedKey(key)
         } else if let Some(channel) = channel_denial {
             Access::DeniedChannel(channel)
+        } else if let Some(command) = keyspace_denial {
+            Access::DeniedKeyspace(command)
         } else {
             Access::DeniedCommand
         }
@@ -1075,6 +1093,20 @@ fn split_command(command: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), AclError>
         return Err(AclError::UnknownCommand);
     };
     Ok((name.as_bytes().to_vec(), subcommand.map(<[u8]>::to_vec)))
+}
+
+fn keyspace_wide_access(command: &[u8]) -> Option<discovery::KeyAccess> {
+    if [b"KEYS".as_slice(), b"SCAN", b"RANDOMKEY", b"DBSIZE"]
+        .iter()
+        .any(|name| command.eq_ignore_ascii_case(name))
+    {
+        Some(discovery::KeyAccess::Read)
+    } else if command.eq_ignore_ascii_case(b"FLUSHDB") || command.eq_ignore_ascii_case(b"FLUSHALL")
+    {
+        Some(discovery::KeyAccess::Write)
+    } else {
+        None
+    }
 }
 
 fn sort_uses_dynamic_keys(arguments: &[&[u8]]) -> bool {
