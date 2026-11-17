@@ -11,8 +11,14 @@ use rillcache::{Config, Server, TlsSniCertificate};
 mod config_file;
 mod healthcheck;
 
+type SniFiles = (
+    Option<std::path::PathBuf>,
+    Option<std::path::PathBuf>,
+    Option<std::path::PathBuf>,
+);
+
 const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
-  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC, TLS key and reload-trigger files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-client-crl-file PATH  DER client CRL; unknown or expired status fails closed (requires CA)\n  --tls-client-cert-user SHA256=USER  Map a verified leaf fingerprint to an ACL user (repeatable)\n  --tls-reload-trigger PATH  Reload TLS files when this file's token changes\n  --tls-sni-cert-file NAME=PATH  Additional exact SNI certificate chain (repeatable)\n  --tls-sni-key-file NAME=PATH   Private key for the matching SNI name (repeatable)\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
+  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC, TLS key and reload-trigger files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-ocsp-file PATH     Optional DER OCSP response stapled with the default identity\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-client-crl-file PATH  DER client CRL; unknown or expired status fails closed (requires CA)\n  --tls-client-cert-user SHA256=USER  Map a verified leaf fingerprint to an ACL user (repeatable)\n  --tls-reload-trigger PATH  Reload TLS files when this file's token changes\n  --tls-sni-cert-file NAME=PATH  Additional exact SNI certificate chain (repeatable)\n  --tls-sni-key-file NAME=PATH   Private key for the matching SNI name (repeatable)\n  --tls-sni-ocsp-file NAME=PATH  Optional DER OCSP response for that SNI identity (repeatable)\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
 enum Options {
@@ -55,8 +61,7 @@ fn parse_tls_client_cert_user(value: &str) -> Result<([u8; 32], Vec<u8>), String
 
 fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut config = Config::default();
-    let mut sni_files: BTreeMap<String, (Option<std::path::PathBuf>, Option<std::path::PathBuf>)> =
-        BTreeMap::new();
+    let mut sni_files: BTreeMap<String, SniFiles> = BTreeMap::new();
     let mut tls_client_cert_users = BTreeMap::new();
     let mut arguments: VecDeque<String> = arguments.into_iter().collect();
     while let Some(option) = arguments.pop_front() {
@@ -183,12 +188,14 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--tls-bind"
             | "--tls-cert-file"
             | "--tls-key-file"
+            | "--tls-ocsp-file"
             | "--tls-client-ca-file"
             | "--tls-client-crl-file"
             | "--tls-client-cert-user"
             | "--tls-reload-trigger"
             | "--tls-sni-cert-file"
             | "--tls-sni-key-file"
+            | "--tls-sni-ocsp-file"
             | "--tls-handshake-timeout-ms" => {
                 let value = arguments
                     .pop_front()
@@ -379,6 +386,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                     }
                     "--tls-cert-file" => config.tls_cert_file = Some(value.into()),
                     "--tls-key-file" => config.tls_key_file = Some(value.into()),
+                    "--tls-ocsp-file" => config.tls_ocsp_file = Some(value.into()),
                     "--tls-client-ca-file" => config.tls_client_ca_file = Some(value.into()),
                     "--tls-client-crl-file" => config.tls_client_crl_file = Some(value.into()),
                     "--tls-client-cert-user" => {
@@ -391,7 +399,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                         }
                     }
                     "--tls-reload-trigger" => config.tls_reload_trigger = Some(value.into()),
-                    "--tls-sni-cert-file" | "--tls-sni-key-file" => {
+                    "--tls-sni-cert-file" | "--tls-sni-key-file" | "--tls-sni-ocsp-file" => {
                         let (name, path) = value
                             .split_once('=')
                             .ok_or_else(|| format!("{option} requires NAME=PATH"))?;
@@ -399,10 +407,10 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                             return Err(format!("{option} requires a nonempty NAME=PATH"));
                         }
                         let files = sni_files.entry(name.to_ascii_lowercase()).or_default();
-                        let target = if option == "--tls-sni-cert-file" {
-                            &mut files.0
-                        } else {
-                            &mut files.1
+                        let target = match option.as_str() {
+                            "--tls-sni-cert-file" => &mut files.0,
+                            "--tls-sni-key-file" => &mut files.1,
+                            _ => &mut files.2,
                         };
                         if target.replace(path.into()).is_some() {
                             return Err(format!("duplicate {option} for SNI name {name}"));
@@ -419,7 +427,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
         }
     }
     config.tls_client_cert_users = tls_client_cert_users;
-    for (server_name, (cert_file, key_file)) in sni_files {
+    for (server_name, (cert_file, key_file, ocsp_file)) in sni_files {
         let cert_file = cert_file
             .ok_or_else(|| format!("missing --tls-sni-cert-file for SNI name {server_name}"))?;
         let key_file = key_file
@@ -428,6 +436,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             server_name,
             cert_file,
             key_file,
+            ocsp_file,
         });
     }
     Ok(Options::Run(config))
@@ -558,6 +567,8 @@ mod tests {
                 "server.pem",
                 "--tls-key-file",
                 "server.key",
+                "--tls-ocsp-file",
+                "server.ocsp.der",
                 "--tls-client-ca-file",
                 "ca.pem",
                 "--tls-client-crl-file",
@@ -570,6 +581,8 @@ mod tests {
                 "alt.test=alternate.pem",
                 "--tls-sni-key-file",
                 "alt.test=alternate.key",
+                "--tls-sni-ocsp-file",
+                "alt.test=alternate.ocsp.der",
                 "--tls-handshake-timeout-ms",
                 "2500",
             ]
@@ -589,6 +602,10 @@ mod tests {
         assert_eq!(
             config.tls_key_file.as_deref(),
             Some(std::path::Path::new("server.key"))
+        );
+        assert_eq!(
+            config.tls_ocsp_file.as_deref(),
+            Some(std::path::Path::new("server.ocsp.der"))
         );
         assert_eq!(
             config.tls_client_ca_file.as_deref(),
@@ -618,6 +635,10 @@ mod tests {
         assert_eq!(
             config.tls_sni_certificates[0].key_file,
             std::path::Path::new("alternate.key")
+        );
+        assert_eq!(
+            config.tls_sni_certificates[0].ocsp_file.as_deref(),
+            Some(std::path::Path::new("alternate.ocsp.der"))
         );
         assert_eq!(config.tls_handshake_timeout, Duration::from_millis(2500));
         assert!(

@@ -427,8 +427,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   fail-closed CRL loading and configuration failure, alongside atomic TLS reload
   retention. Documentation shall state
   that native CRL checks cover only mTLS clients, do not fetch distribution points,
-  and do not revoke the server certificate. Server-certificate OCSP freshness and
-  signature validation remain an external TLS-terminator boundary.
+  and do not revoke the server certificate. Native TLS may staple operator-provisioned
+  server OCSP bytes, but signature/freshness validation and server-certificate CRL
+  checking remain outside this increment; external terminators still require security review.
 
 ## Remaining subcommand categories for administration and pub/sub (S117)
 
@@ -450,6 +451,31 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `COMMAND LIST FILTERBY ACLCAT` shall list the same bounded subcommand entries
   for `admin`, `dangerous`, `slow` and `pubsub`. Documentation shall retain the
   bounded family table and command-level fallback for other families.
+
+## Native TLS server-certificate OCSP stapling (S121)
+
+- **R435 (event-driven):** When an OCSP response file is configured for the
+  default certificate or an exact SNI identity, TLS 1.3 handshakes requesting
+  status shall staple those exact response bytes with that certificate. An
+  omitted response shall preserve existing handshakes. Unknown SNI names shall
+  not receive another identity's response; ClientHello without SNI shall use
+  the default identity and its configured response.
+- **R436 (state-driven):** OCSP response files shall be bounded to 1 MiB and
+  require one nonempty DER SEQUENCE envelope. The response shall be stored in
+  the same resolved `CertifiedKey` and atomically reloaded with its matching
+  certificate/key; established connections shall retain their existing
+  handshake snapshot. Missing, unreadable, malformed or oversized material
+  shall fail startup or reject the complete reload, preserving the last valid
+  generation. This validation does not validate response semantics, signature,
+  status, freshness or certificate identity.
+- **R437 (ubiquitous):** TLS clients requesting status shall verify exact default,
+  SNI, no-SNI and no-response behavior, unknown-SNI rejection, reload generation
+  and failure retention in supported worker modes. Existing mTLS/CRL and TLS
+  deadline tests shall continue to pass. Documentation shall require operators
+  to renew response files with their matching certificate identity, state that
+  clients must independently validate status and may ignore missing/invalid
+  staples, and preserve the limits around server-certificate CRLs, external
+  terminators and security review.
 
 ## Keyspace-wide ACL isolation (S120)
 
