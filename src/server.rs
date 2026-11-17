@@ -258,6 +258,8 @@ pub struct Config {
     pub tls_bind_addr: Option<SocketAddr>,
     pub tls_cert_file: Option<PathBuf>,
     pub tls_key_file: Option<PathBuf>,
+    /// Optional DER-encoded OCSP response stapled with the default server identity.
+    pub tls_ocsp_file: Option<PathBuf>,
     /// Optional client CA. Setting it requires client certificates.
     pub tls_client_ca_file: Option<PathBuf>,
     /// Optional DER CRL bundle; requires a client CA and rejects unknown/expired status.
@@ -277,6 +279,8 @@ pub struct TlsSniCertificate {
     pub server_name: String,
     pub cert_file: PathBuf,
     pub key_file: PathBuf,
+    /// Optional DER-encoded OCSP response for this exact SNI identity.
+    pub ocsp_file: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Config {
@@ -326,6 +330,7 @@ impl std::fmt::Debug for Config {
             .field("tls_bind_addr", &self.tls_bind_addr)
             .field("tls_cert_file", &self.tls_cert_file)
             .field("tls_key_file", &self.tls_key_file)
+            .field("tls_ocsp_file", &self.tls_ocsp_file)
             .field("tls_client_ca_file", &self.tls_client_ca_file)
             .field("tls_client_crl_file", &self.tls_client_crl_file)
             .field("tls_client_cert_users", &self.tls_client_cert_users)
@@ -373,6 +378,7 @@ impl Default for Config {
             tls_bind_addr: None,
             tls_cert_file: None,
             tls_key_file: None,
+            tls_ocsp_file: None,
             tls_client_ca_file: None,
             tls_client_crl_file: None,
             tls_client_cert_users: BTreeMap::new(),
@@ -457,6 +463,10 @@ impl Config {
                 !valid_tls_server_name(&identity.server_name)
                     || identity.cert_file.as_os_str().is_empty()
                     || identity.key_file.as_os_str().is_empty()
+                    || identity
+                        .ocsp_file
+                        .as_ref()
+                        .is_some_and(|path| path.as_os_str().is_empty())
             })
             || self
                 .tls_sni_certificates
@@ -469,9 +479,14 @@ impl Config {
                             .eq_ignore_ascii_case(&identity.server_name)
                     })
                 })
+            || self
+                .tls_ocsp_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
             || (self.tls_bind_addr.is_none()
                 && (self.tls_cert_file.is_some()
                     || self.tls_key_file.is_some()
+                    || self.tls_ocsp_file.is_some()
                     || self.tls_client_ca_file.is_some()
                     || self.tls_client_crl_file.is_some()
                     || !self.tls_client_cert_users.is_empty()
@@ -737,6 +752,7 @@ impl Server {
                         .as_deref()
                         .expect("validated certificate"),
                     key_file: config.tls_key_file.as_deref().expect("validated key"),
+                    ocsp_file: config.tls_ocsp_file.as_deref(),
                     client_ca_file: config.tls_client_ca_file.as_deref(),
                     client_crl_file: config.tls_client_crl_file.as_deref(),
                     sni_certificates: &config.tls_sni_certificates,
@@ -1892,6 +1908,7 @@ mod tests {
                 server_name: "example.test".into(),
                 cert_file: path.clone(),
                 key_file: sni_key.clone(),
+                ocsp_file: None,
             }],
             secure_secret_files: true,
             ..Config::default()
