@@ -100,7 +100,11 @@ because Redis may promote a compact representation even though the command is
 otherwise read-only. `XREAD`/`XREADGROUP` keys are extracted from the `STREAMS`
 key/ID block; malformed/unbalanced blocks do not produce partial key lists.
 Counted list-pop `LMPOP` and `BLMPOP` specifications authorize only the declared
-`numkeys` keys, excluding direction and optional `COUNT` arguments. The pinned
+`numkeys` keys, excluding direction and optional `COUNT` arguments. Rillcache's
+`MSETEX` extension likewise checks only the keys in its counted key/value pairs,
+excluding trailing SET options; its command implementation defines this layout,
+and `COMMAND GETKEYS` is tested against it (this is not a Redis/Valkey command
+compatibility claim). The pinned
 Valkey 9.1.2 reference (`valkey/valkey:9.1.2`, reporting Redis compatibility
 7.2.4) returns exactly those keys from `COMMAND GETKEYS LMPOP`, including with
 `RIGHT COUNT n` and binary key bytes. The last `STORE`/`STOREDIST` destination is

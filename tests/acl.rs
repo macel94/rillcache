@@ -692,6 +692,90 @@ fn acl_lmpop_checks_only_counted_keys_before_any_pop() {
 }
 
 #[test]
+fn acl_msetex_authorizes_only_counted_keys_and_denies_atomically() {
+    let server = start(Config::default());
+    let mut admin = connect(&server);
+    send(&mut admin, &[b"SET", b"app:a", b"old"], b"+OK\r\n");
+    send(&mut admin, &[b"SET", b"private:b", b"hidden"], b"+OK\r\n");
+    send(
+        &mut admin,
+        &[
+            b"ACL",
+            b"SETUSER",
+            b"writer",
+            b"on",
+            b">pw",
+            b"-@all",
+            b"+@all",
+            b"-msetex",
+            b"(+msetex ~app:*)",
+        ],
+        b"+OK\r\n",
+    );
+    let mut client = connect(&server);
+    send(&mut client, &[b"AUTH", b"writer", b"pw"], b"+OK\r\n");
+
+    // A selector's later command grant overrides the root denial and confines
+    // MSETEX to its counted keys, not trailing expiration options.
+    send(
+        &mut client,
+        &[
+            b"ACL", b"DRYRUN", b"writer", b"MSETEX", b"2", b"app:a", b"new", b"app:b", b"second",
+            b"EX", b"60",
+        ],
+        b"+OK\r\n",
+    );
+    send(
+        &mut client,
+        &[
+            b"ACL",
+            b"DRYRUN",
+            b"writer",
+            b"MSETEX",
+            b"2",
+            b"app:a",
+            b"new",
+            b"private:b",
+            b"leak",
+            b"EX",
+            b"60",
+        ],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    send(
+        &mut client,
+        &[
+            b"MSETEX",
+            b"2",
+            b"app:a",
+            b"new",
+            b"private:b",
+            b"leak",
+            b"EX",
+            b"60",
+        ],
+        b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n",
+    );
+    send(&mut admin, &[b"GET", b"app:a"], b"$3\r\nold\r\n");
+    send(&mut admin, &[b"GET", b"private:b"], b"$6\r\nhidden\r\n");
+
+    send(
+        &mut client,
+        &[
+            b"MSETEX", b"2", b"app:a", b"new", b"app:b", b"second", b"EX", b"60",
+        ],
+        b":1\r\n",
+    );
+    send(
+        &mut client,
+        &[b"MSETEX", b"1", b"app:\0k", b"binary", b"PX", b"5000"],
+        b":1\r\n",
+    );
+    send(&mut admin, &[b"GET", b"app:\0k"], b"$6\r\nbinary\r\n");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn acl_first_argument_rules_scope_subcommands_and_round_trip() {
     let path = temp_name("first-arg");
     std::fs::write(&path, b"user default on nopass ~* &* +@all\n").unwrap();

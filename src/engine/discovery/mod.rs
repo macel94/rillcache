@@ -159,6 +159,26 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
     else {
         return Vec::new();
     };
+    // MSETEX declares `numkeys` key/value pairs followed by optional SET
+    // options. The registry's open-ended static range would mistake an expiry
+    // option such as EX for a key.
+    if name.eq_ignore_ascii_case(b"MSETEX") {
+        let Some(count) = args
+            .get(1)
+            .and_then(|raw| super::options::parse_integer(raw))
+            .filter(|count| *count > 0 && *count <= i32::MAX as i64)
+            .map(|count| count as usize)
+        else {
+            return Vec::new();
+        };
+        let Some(pair_end) = count.checked_mul(2).and_then(|pairs| pairs.checked_add(2)) else {
+            return Vec::new();
+        };
+        if pair_end > args.len() {
+            return Vec::new();
+        }
+        return args[2..pair_end].iter().step_by(2).copied().collect();
+    }
     // BITOP's first argument is the operation, then the destination key and
     // source keys; the static first-key index would mistake the operation for a
     // key and misattribute the destination.
@@ -1647,6 +1667,21 @@ mod tests {
             vec![b"a".as_slice()]
         );
         assert!(key_arguments(b"SINTERCARD", &[b"SINTERCARD", b"x", b"a"]).is_empty());
+        assert_eq!(
+            key_arguments(
+                b"MSETEX",
+                &[b"MSETEX", b"2", b"a", b"1", b"b", b"2", b"EX", b"60"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"MSETEX",
+                &[b"MSETEX", b"1", b"binary:\0key", b"v", b"PX", b"5"]
+            ),
+            vec![b"binary:\0key".as_slice()]
+        );
+        assert!(key_arguments(b"MSETEX", &[b"MSETEX", b"2", b"a", b"v"]).is_empty());
         assert_eq!(
             key_arguments(b"LMPOP", &[b"LMPOP", b"2", b"a", b"b", b"LEFT"]),
             vec![b"a".as_slice(), b"b".as_slice()]

@@ -117,7 +117,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `GEORADIUS*` and `*STORE`). `SORT ... STORE` and `GEORADIUS ... STORE` shall
   require read on the source and write on the effective last-wins destination;
   counted `LMPOP`/`BLMPOP` key lists shall contain only the declared keys,
-  excluding direction and optional `COUNT` tokens; `XREAD`/`XREADGROUP` shall
+  excluding direction and optional `COUNT` tokens; the Rillcache `MSETEX`
+  extension shall check only keys in its counted key/value pairs, excluding
+  trailing SET options; `XREAD`/`XREADGROUP` shall
   check each key in the dynamic `STREAMS` block, and
   `PFCOUNT` shall require both accesses per Redis 7's RW key spec. `SET` with
   `GET` and mutating `BITFIELD` operations shall require both accesses.
@@ -129,9 +131,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R338 (ubiquitous):** Tests shall cover read-only, write-only and read-write
   grants, per-key mixed commands, read denial for a write-only credential, write
   denial for a read-only credential, listing, `ACL DRYRUN`, ACL-file restart
-  round-trips and every worker mode. For `LMPOP`, tests shall cover counted keys,
-  direction/COUNT exclusion, binary keys, selector grants versus root command
-  precedence, denied multi-key no-pop behavior and non-executing DRYRUN.
+  round-trips and every worker mode. For counted `LMPOP` and `MSETEX`, tests shall
+  cover key/option exclusion, binary keys, selector grants versus root command
+  precedence, denied multi-key atomicity and non-executing DRYRUN.
   Documentation shall retain the
   subcommand-category, dynamic-key-sandbox, centralized-audit, rate-limiting and
   TLS-hardening boundaries.
