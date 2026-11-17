@@ -1080,12 +1080,12 @@ fn split_command(command: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), AclError>
 fn sort_uses_dynamic_keys(arguments: &[&[u8]]) -> bool {
     let mut index = 2;
     while index < arguments.len() {
-        if arguments[index].eq_ignore_ascii_case(b"BY") {
-            return arguments
+        if (arguments[index].eq_ignore_ascii_case(b"BY")
+            || arguments[index].eq_ignore_ascii_case(b"GET"))
+            && arguments
                 .get(index + 1)
-                .is_some_and(|pattern| pattern.contains(&b'*'));
-        }
-        if arguments[index].eq_ignore_ascii_case(b"GET") {
+                .is_some_and(|pattern| pattern.contains(&b'*'))
+        {
             return true;
         }
         index += 1;
@@ -1462,8 +1462,15 @@ mod tests {
             Access::DeniedKey(b"BY/GET".to_vec())
         );
         assert_eq!(
-            auth.authorize(Some(b"restricted"), &[b"SORT_RO", b"src", b"GET", b"#"]),
+            auth.authorize(
+                Some(b"restricted"),
+                &[b"SORT_RO", b"src", b"GET", b"data_*"]
+            ),
             Access::DeniedKey(b"BY/GET".to_vec())
+        );
+        assert_eq!(
+            auth.authorize(Some(b"restricted"), &[b"SORT_RO", b"src", b"GET", b"#"]),
+            Access::Allowed
         );
         assert_eq!(
             auth.authorize(Some(b"restricted"), &[b"SORT", b"src", b"BY", b"nosort"]),

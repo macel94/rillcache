@@ -126,6 +126,131 @@ fn blocked_and_pubsub_sessions_progress_and_join_on_shutdown_in_every_mode() {
 }
 
 #[test]
+fn sort_dynamic_acl_is_fail_closed_and_store_is_atomic_in_every_mode() {
+    for (workers, async_io) in MODES {
+        let server = start(workers, async_io);
+        let mut admin = connect(&server);
+        let member = b"a\0\xff";
+        let mut weight_key = b"weight:".to_vec();
+        weight_key.extend_from_slice(member);
+        let mut data_key = b"data:".to_vec();
+        data_key.extend_from_slice(member);
+        send(&mut admin, &[b"RPUSH", b"source:allowed", member]);
+        expect(&mut admin, b":1\r\n");
+        send(&mut admin, &[b"RPUSH", b"source:denied", member]);
+        expect(&mut admin, b":1\r\n");
+        send(&mut admin, &[b"SET", &weight_key, b"1"]);
+        expect(&mut admin, b"+OK\r\n");
+        send(&mut admin, &[b"SET", &data_key, b"secret"]);
+        expect(&mut admin, b"+OK\r\n");
+        send(&mut admin, &[b"SET", b"destination:allowed", b"before"]);
+        expect(&mut admin, b"+OK\r\n");
+        send(
+            &mut admin,
+            &[
+                b"ACL",
+                b"SETUSER",
+                b"sorter",
+                b"on",
+                b"nopass",
+                b"-@all",
+                b"+sort",
+                b"+sort_ro",
+                b"%R~source:allowed",
+                b"%W~destination:allowed",
+            ],
+        );
+        expect(&mut admin, b"+OK\r\n");
+        send(
+            &mut admin,
+            &[
+                b"ACL",
+                b"SETUSER",
+                b"sorter-all",
+                b"on",
+                b"nopass",
+                b"-@all",
+                b"+sort_ro",
+                b"allkeys",
+            ],
+        );
+        expect(&mut admin, b"+OK\r\n");
+
+        let mut restricted = connect(&server);
+        send(&mut restricted, &[b"AUTH", b"sorter", b""]);
+        expect(&mut restricted, b"+OK\r\n");
+        let denied =
+            b"-NOPERM this user has no permissions to access one of the keys used as arguments\r\n";
+        send(
+            &mut restricted,
+            &[b"SORT", b"source:allowed", b"BY", b"weight:*"],
+        );
+        expect(&mut restricted, denied);
+        send(
+            &mut restricted,
+            &[
+                b"SORT",
+                b"source:allowed",
+                b"BY",
+                b"weight:*",
+                b"STORE",
+                b"destination:allowed",
+            ],
+        );
+        expect(&mut restricted, denied);
+        send(
+            &mut restricted,
+            &[b"SORT_RO", b"source:allowed", b"GET", b"data:*"],
+        );
+        expect(&mut restricted, denied);
+        send(
+            &mut restricted,
+            &[b"SORT", b"source:allowed", b"STORE", b"destination:blocked"],
+        );
+        expect(&mut restricted, denied);
+        send(&mut restricted, &[b"SORT_RO", b"source:denied"]);
+        expect(&mut restricted, denied);
+        send(
+            &mut admin,
+            &[
+                b"ACL",
+                b"DRYRUN",
+                b"sorter",
+                b"SORT_RO",
+                b"source:allowed",
+                b"GET",
+                b"data:*",
+            ],
+        );
+        expect(&mut admin, denied);
+
+        // A dynamic-reference denial occurs before STORE can alter its target.
+        send(&mut admin, &[b"GET", b"destination:allowed"]);
+        expect(&mut admin, b"$6\r\nbefore\r\n");
+        send(&mut admin, &[b"GET", b"destination:blocked"]);
+        expect(&mut admin, b"$-1\r\n");
+
+        // Hash/data lookups with binary members work for an explicit all-key user.
+        let mut all_keys = connect(&server);
+        send(&mut all_keys, &[b"AUTH", b"sorter-all", b""]);
+        expect(&mut all_keys, b"+OK\r\n");
+        send(
+            &mut all_keys,
+            &[
+                b"SORT_RO",
+                b"source:allowed",
+                b"BY",
+                b"weight:*",
+                b"GET",
+                b"data:*",
+            ],
+        );
+        expect(&mut all_keys, b"*1\r\n$6\r\nsecret\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn backpressured_reply_does_not_stall_healthy_clients_or_shutdown_in_every_mode() {
     for (workers, async_io) in MODES {
         let server = start(workers, async_io);
