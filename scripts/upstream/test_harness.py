@@ -3,6 +3,7 @@
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -75,6 +76,17 @@ class ProcessTests(unittest.TestCase):
             result = common.command([sys.executable, "-c", "import time; time.sleep(30)"], Path(tmp), timeout=0.05)
             self.assertTrue(result["timed_out"])
             self.assertNotEqual(0, result["exit_code"])
+
+    def test_environment_probe_allows_delayed_success_within_bound(self):
+        result = common.probe([sys.executable, "-c", "import time; time.sleep(0.15); print('ready')"],
+                              timeout=1, capture_output=True, text=True, check=False)
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("ready\n", result.stdout)
+
+    def test_environment_probe_times_out_and_reaps_hung_process(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            common.probe([sys.executable, "-c", "import time; time.sleep(30)"],
+                         timeout=0.1, capture_output=True, text=True, check=False)
 
 
 class ErrorDialectTests(unittest.TestCase):
