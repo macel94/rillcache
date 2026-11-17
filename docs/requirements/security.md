@@ -442,3 +442,24 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `COMMAND LIST FILTERBY ACLCAT` shall list the same bounded subcommand entries
   for `admin`, `dangerous`, `slow` and `pubsub`. Documentation shall retain the
   bounded family table and command-level fallback for other families.
+
+## Keyspace-wide ACL isolation (S118)
+
+- **R429 (state-driven):** When a user or selector lacks an all-key read grant,
+  `KEYS`, `SCAN`, `RANDOMKEY` and `DBSIZE` shall fail before revealing key names
+  or counts. When it lacks an all-key write grant, `FLUSHDB` and `FLUSHALL` shall
+  fail before changing any key. The server shall return the documented explicit
+  keyspace-wide `NOPERM`; `ACL DRYRUN` shall make the same decision. Read-all
+  grants permit introspection but not flush; write-all grants permit flush but
+  not introspection. Root/all-key grants preserve existing behavior.
+- **R430 (event-driven):** When a keyspace-wide command is denied, the server
+  shall leave all allowed and disallowed keys unchanged. Command/category
+  permission alone shall not bypass the key-pattern check, and a selector may
+  grant the operation only when that same selector also carries the required
+  all-key access.
+- **R431 (ubiquitous):** Tests shall cover all six commands, read/write grant
+  distinctions, DRYRUN, denied-flush atomicity, selectors, root/all-key controls
+  and every worker mode. Documentation shall explicitly note the stricter-than-
+  Redis/Valkey compatibility restriction: upstream keyless ACL commands are not
+  filtered by key patterns, so scoped Rillcache users are denied rather than
+  exposed to cross-pattern enumeration or flush.

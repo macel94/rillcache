@@ -99,6 +99,17 @@ different patterns. Patterns are cumulative and `resetkeys` clears all modes;
 `%RW~x` is listed canonically as `~x`, and adding read and write grants for the
 same pattern merges them into `~x`.
 
+Keyless keyspace-wide commands receive an additional ACL scope check:
+`KEYS`, `SCAN`, `RANDOMKEY` and `DBSIZE` need an all-key read grant; `FLUSHDB`
+and `FLUSHALL` need an all-key write grant. Without it, the server returns
+`NOPERM keyspace-wide commands require an all-key ACL grant with the required
+access`; `ACL DRYRUN` returns the same result. This deliberately differs from
+Redis/Valkey, where these keyless commands are not filtered by key patterns.
+Rillcache denies them rather than expose or flush keys outside a scoped user's
+patterns. A read-only all-key grant can inspect but cannot flush; a write-only
+all-key grant can flush but cannot inspect. Root/all-key users retain normal
+behavior.
+
 `ACL SETUSER` is atomic: a bad rule leaves the previous user untouched. A
 parenthesized rule group, such as `(+set %W~app:*)`, defines a Redis 7 selector.
 Selectors are alternatives to the root rules: a command is allowed when the root
@@ -216,12 +227,11 @@ describes current behavior, not a second checklist.
   is category-governed rather than channel-pattern-filtered, so it can reveal channel
   names to a user allowed to run `@pubsub`. `CLIENT LIST`/`KILL` reveal connection
   addresses/names/users and terminate sessions; grant the CLIENT command only to
-  trusted administrators. Key patterns apply only to commands with declared key
-  positions:
-  `KEYS`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB/FLUSHALL` and similar commands are not
-  a per-key sandbox. `XREAD` and `XREADGROUP` key lists are extracted from their
-  `STREAMS` block, but dynamic `SORT BY/GET` lookups remain all-key-only. Do not grant these commands to tenants who must not
-  see or clear the whole keyspace.
+  trusted administrators. Key patterns apply to declared key positions; the
+  keyless `KEYS`, `SCAN`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB` and `FLUSHALL` commands
+  instead require the corresponding all-key read/write grant described above.
+  `XREAD` and `XREADGROUP` key lists are extracted from their `STREAMS` block,
+  but dynamic `SORT BY/GET` lookups remain all-key-only.
 - **Hashes are unsalted SHA-256.** This mirrors Redis ACL hash compatibility but
   is fast to brute-force offline; use long random passwords and protect the ACL
   file. File permissions, backups and secret distribution are operator duties.
@@ -304,7 +314,8 @@ describes current behavior, not a second checklist.
 
 Unit tests cover known SHA-256 vectors, constant-time digest equality, disabled and
 rotated credentials, ordered category/command overrides, key-pattern denials,
-atomic failed `SETUSER`, ACL-file hash/rule round-trips, exact Redis-compatible
+keyspace-wide all-key restrictions and selector scope, atomic failed `SETUSER`,
+ACL-file hash/rule round-trips, exact Redis-compatible
 errors, `HELLO` atomicity, `NOAUTH` before data/admin access, unauthenticated
 `QUIT`, and `CONFIG` redaction/rotation. Wire tests run in thread-per-client,
 one-worker and four-worker modes, including ACL-file startup failures, restricted
