@@ -761,6 +761,7 @@ fn acl_subcommand_categories_scope_client_memory_and_object() {
         ("reader", "reader-pass", "+ @read"),
         ("keyspace", "keyspace-pass", "+ @keyspace"),
         ("danger", "danger-pass", "+ @dangerous"),
+        ("slow", "slow-pass", "+ @slow"),
     ] {
         let rule = rule.replace(' ', "");
         send(
@@ -804,12 +805,20 @@ fn acl_subcommand_categories_scope_client_memory_and_object() {
         &[b"CLIENT", b"SETNAME", b"administrator"],
         noperm("client").as_bytes(),
     );
-    assert!(!request(&mut administrator, &[b"MEMORY", b"STATS"]).starts_with(b"-NOPERM"));
+    send(
+        &mut administrator,
+        &[b"MEMORY", b"STATS"],
+        noperm("memory").as_bytes(),
+    );
     send(
         &mut administrator,
         &[b"MEMORY", b"USAGE", b"subcommand:key"],
         noperm("memory").as_bytes(),
     );
+
+    let mut slow = connect(&server);
+    send(&mut slow, &[b"AUTH", b"slow", b"slow-pass"], b"+OK\r\n");
+    assert!(!request(&mut slow, &[b"MEMORY", b"STATS"]).starts_with(b"-NOPERM"));
 
     let mut reader = connect(&server);
     send(
