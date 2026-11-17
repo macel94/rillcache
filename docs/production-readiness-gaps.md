@@ -517,17 +517,21 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   deployment requires an external control plane with documented behavior.
 
 - [ ] **S5. TLS hardening is incomplete.** [P0]
-  TLS 1.3 is available with exact-name SNI selection and bounded operator-
-  triggered certificate rotation. Reload publishes the default and all SNI
-  identities atomically; failures retain the last valid generation and existing
-  connections keep their TLS snapshots. Verified client certificates can map
-  by exact leaf SHA-256 fingerprint to an enabled ACL user; unmapped certificates
-  are rejected and the mapped user's ACL remains enforced. Fingerprint mappings
-  are startup-only. OCSP/CRL, operator rotation drills and independent TLS
-  interoperability/security review remain open. Unknown SNI names are rejected
-  when SNI mappings are configured; no production-readiness claim is made.
-  **Closes when:** remaining controls are implemented or explicitly replaced by
-  a reviewed external terminator, with rotation and failure tests.
+  TLS 1.3 is available with exact-name SNI selection, bounded operator-triggered
+  atomic certificate/CA/CRL rotation, and verified client-certificate mapping to
+  enabled ACL users. Failed identity/CRL parsing retains the last valid generation;
+  live connections keep their handshake-time snapshot. A configured DER CRL (up to
+  1 MiB) checks mTLS client chains and fails closed for revoked, unknown or expired
+  status; distribution points are not fetched. Server-certificate OCSP validation
+  is not implemented: rustls 0.23.46 can staple opaque response bytes but the
+  server does not validate response signature/freshness. Require an independently
+  operated TLS terminator that validates and refreshes OCSP responses, fails closed
+  when missing/stale, and prevents backend bypass for server-certificate revocation.
+  Exact-name SNI, CRL parsing/revocation and atomic replacement have focused tests;
+  independent TLS interoperability/security review remains open. No production-
+  readiness claim is made. **Closes when:** server-certificate OCSP is implemented
+  with tested freshness/failure policy or replaced by the reviewed external
+  terminator boundary, and the configured human security review is complete.
 
 - [x] **S6. Live deauthentication/session revocation is missing.** [P1]
   **Complete (2026-11-14): documented and tested administrative revocation.**

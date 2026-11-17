@@ -260,6 +260,8 @@ pub struct Config {
     pub tls_key_file: Option<PathBuf>,
     /// Optional client CA. Setting it requires client certificates.
     pub tls_client_ca_file: Option<PathBuf>,
+    /// Optional DER CRL bundle; requires a client CA and rejects unknown/expired status.
+    pub tls_client_crl_file: Option<PathBuf>,
     /// SHA-256 fingerprints of verified client leaf certificates mapped to ACL usernames.
     pub tls_client_cert_users: BTreeMap<[u8; 32], Vec<u8>>,
     /// Optional operator-controlled generation file; changing its bounded token reloads TLS files.
@@ -325,6 +327,7 @@ impl std::fmt::Debug for Config {
             .field("tls_cert_file", &self.tls_cert_file)
             .field("tls_key_file", &self.tls_key_file)
             .field("tls_client_ca_file", &self.tls_client_ca_file)
+            .field("tls_client_crl_file", &self.tls_client_crl_file)
             .field("tls_client_cert_users", &self.tls_client_cert_users)
             .field("tls_reload_trigger", &self.tls_reload_trigger)
             .field("tls_sni_certificates", &self.tls_sni_certificates)
@@ -371,6 +374,7 @@ impl Default for Config {
             tls_cert_file: None,
             tls_key_file: None,
             tls_client_ca_file: None,
+            tls_client_crl_file: None,
             tls_client_cert_users: BTreeMap::new(),
             tls_reload_trigger: None,
             tls_sni_certificates: Vec::new(),
@@ -469,11 +473,17 @@ impl Config {
                 && (self.tls_cert_file.is_some()
                     || self.tls_key_file.is_some()
                     || self.tls_client_ca_file.is_some()
+                    || self.tls_client_crl_file.is_some()
                     || !self.tls_client_cert_users.is_empty()
                     || self.tls_reload_trigger.is_some()
                     || !self.tls_sni_certificates.is_empty()))
             || self
                 .tls_reload_trigger
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || (self.tls_client_crl_file.is_some() && self.tls_client_ca_file.is_none())
+            || self
+                .tls_client_crl_file
                 .as_ref()
                 .is_some_and(|path| path.as_os_str().is_empty())
             || (!self.tls_client_cert_users.is_empty() && self.tls_client_ca_file.is_none())
@@ -728,6 +738,7 @@ impl Server {
                         .expect("validated certificate"),
                     key_file: config.tls_key_file.as_deref().expect("validated key"),
                     client_ca_file: config.tls_client_ca_file.as_deref(),
+                    client_crl_file: config.tls_client_crl_file.as_deref(),
                     sni_certificates: &config.tls_sni_certificates,
                     reload_trigger: config.tls_reload_trigger.as_deref(),
                     client_cert_users: &config.tls_client_cert_users,

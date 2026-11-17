@@ -401,8 +401,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   rejection, atomic certificate rotation and invalid-replacement retention,
   fingerprint-based verified client-certificate-to-ACL mapping, rejection of
   unmapped certificates and reset identity retention, and invalid configuration.
-  Documentation shall retain the absence of OCSP/CRL, replication TLS and any
-  durability/HA claim.
+  Documentation shall retain the absence of server-certificate OCSP validation,
+  replication TLS and any durability/HA claim.
+
+## Fail-closed mTLS client-certificate CRLs (S118)
+
+- **R426 (event-driven):** When `--tls-client-crl-file PATH` is configured with a
+  client CA, the server shall parse one bounded DER CRL and reject mTLS clients
+  whose certificate is revoked, whose chain has no applicable CRL, or whose CRL
+  has passed `nextUpdate`. CRL distribution points shall not be fetched.
+- **R427 (unwanted behavior):** A CRL without a client CA, missing/empty/malformed
+  or oversized CRL, revoked certificate, unknown revocation status or expired CRL
+  shall not silently fall back to CA-only verification. TLS reload shall publish
+  a replacement CRL only with the complete valid certificate/CA generation; failed
+  reload shall retain the last valid generation.
+- **R428 (ubiquitous):** Tests shall cover valid, revoked and expired client CRLs,
+  fail-closed CRL loading and configuration failure, alongside atomic TLS reload
+  retention. Documentation shall state
+  that native CRL checks cover only mTLS clients, do not fetch distribution points,
+  and do not revoke the server certificate. Server-certificate OCSP freshness and
+  signature validation remain an external TLS-terminator boundary.
 
 ## Remaining subcommand categories for administration and pub/sub (S117)
 
