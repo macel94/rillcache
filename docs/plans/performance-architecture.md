@@ -16,7 +16,7 @@ shared-structure implementation map is section 2.38, 4.38 has an order-statistic
 decision (section 2.42), 4.50 has a seek decision (section 2.43), and 4.51 has a
 borrowed-source decision (section 2.44), and 4.54 has an in-place edit decision
 (section 2.45), and 4.48 has an in-place group decision (section 2.46), and 4.43 has a neighbor-cell decision (section 2.47), and 4.42 has an in-place append decision
-(section 2.48), and 4.41 has a chunk-seek decision (section 2.49); every other
+(section 2.48), and 4.41 has a chunk-seek decision (section 2.49), and 4.49 has an index-pop decision (section 2.50); every other
 runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
@@ -1327,9 +1327,9 @@ rest are still true even though every row now leads:
 28. **Sorted-set pops.** Every `ZPOPMIN`/`ZPOPMAX`/`ZMPOP` cloned and sorted the
     whole set before removing one member: at 100k they cost **146–160 ms** versus
     0.16–0.42 ms (373–974×), the largest measured ratio, while the 100-member
-    control is at the floor (section 3.35, candidate 4.49). 4.49 now selects and
-    removes in place: **1.08–1.65 ms** (4.8–6.0 in the tie-heavy case); the
-    ordered-index target remains open.
+    control is at the floor (section 3.35, 4.49 decided in 2.50). 4.49 now selects
+    and removes in place: **1.08–1.65 ms** (4.8–6.0 in the tie-heavy case);
+    the ordered-index target remains open.
 29. **MONITOR feed under bursts.** The monitor queue is the pub/sub 1,024 queue
     with a 64-line tick drain, so a 2,000-command burst delivers exactly **1,024
     lines** to every monitor in every sample while Redis/Valkey deliver 2,000;
@@ -1580,7 +1580,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` pre-fix 201.6 ms vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; `BITPOS 0 0 -1` 209.4 vs 4.79/5.96, post-fix 2.23; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
 | Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, in-place decided (2.46) | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
-| Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 → 1.082 ms vs 0.664/0.232, `ZPOPMAX` 159.9 → 1.245, `ZPOPMIN 10` 146.6 → 1.542, `ZMPOP` 155.8 → 1.648; tie-heavy (all scores 0) 4.8–6.0; 100-member control at the floor | 4.49, implemented without the ordered index | AC51 missed (1.08–1.65 vs ≤0.3) | ordered `(score, member)` index |
+| Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 → 1.082 ms vs 0.664/0.232, `ZPOPMAX` 159.9 → 1.245, `ZPOPMIN 10` 146.6 → 1.542, `ZMPOP` 155.8 → 1.648; tie-heavy (all scores 0) 4.8–6.0; 100-member control at the floor | 4.49, index-pop decided (2.50); scan path implemented | AC51 missed (1.08–1.65 vs ≤0.3) | ordered `(score, member)` index |
 | Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, seek decided (2.43) | AC52 | none |
 | Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31 keyspace stage decided (2.27); large HSCAN staged | AC33/AC59 | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, packed-node decided (2.41) | AC34 on the implemented change | none |
@@ -3032,6 +3032,77 @@ counting in the scan direction, head-relative positions, chunk boundaries,
 obligations. Rejected: a maintained node index just for `LINDEX` (the walk is
 already O(nodes)); keeping the full reference vector; and a list representation
 change (4.32 covers memory independently). AC43 remains the measurable
+criterion.
+
+### 2.50 2026-11-17 checkpoint: pops no longer sort, but still scan the whole score map
+
+The protected gate has no sorted-set pop row. The retained cohorts (section 3.35)
+measure a 100,000-member sorted set at:
+
+- Before the in-place change, `ZPOPMIN` **156.7 ms** and `ZPOPMAX` **159.9**
+  versus Redis 0.42/0.21 and Valkey 0.34/0.29 (373–761×); `ZPOPMIN COUNT 10` and
+  `ZMPOP` were 146.6/155.8 (419–974×).
+- After the in-place change (varied scores), `ZPOPMIN` **1.082/3.373 ms
+  p50/p99**, `ZPOPMAX` 1.245/4.308, `ZPOPMIN COUNT 10` 1.542/4.378 and `ZMPOP`
+  1.648/4.406, versus Redis 0.664/1.416 and Valkey 0.232/0.802 for the single
+  forms. Single pops are within ~1.6× of Redis.
+- A tie-heavy set (all scores 0) costs **4.8–6.0 ms** because every comparison
+  falls through to the member name. AC51's ≤0.3 ms target is still missed.
+
+Current source audit:
+
+- `zset_pop` selects through `pop_candidates`, which calls `collection.zset_items()`
+  and therefore allocates one reference per member before scanning. Small counts
+  keep a sorted window; large counts partition and sort the selected slice.
+- Removal is already in place (`remove_zset_members`, exact member-byte delta),
+  so the clone/sort/re-encode path is gone. The residual cost is the O(n) walk
+  over the `HashMap` and its cache misses, plus the tie-heavy comparisons.
+- The ordered index decided in 4.30/4.38 already stores `(score, member)` order
+  with block counts; min/max and the first/last `COUNT` entries are the ends of
+  that order, so no scan is needed once it exists.
+
+The C servers pop from the ordered structure directly:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Min/max | scan the whole map, keep a window | take the skiplist head/tail, remove node + dict entry ([`t_zset.c#L4227`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4227), [`#L4393`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4393)) | same ([`t_zset.c#L3894`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3894), [`#L4037`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L4037)) | **adapt** first/last index entry |
+| `COUNT n` | scan, then partition | repeat the head/tail pop | same | drain the end block(s) |
+| Tie order | `member_order` per comparison | skiplist `(score, member)` order | same | index order, no comparisons |
+| `ZMPOP`/`BZPOP*` | same scan per key | same pop primitive | same | reuse one primitive |
+| `ZSetPack` | small linear path | listpack scan | same | keep |
+| Dependencies | std only | C/skiplist | C/skiplist | existing 4.30/4.38 index, no crate |
+
+**Decision.** When the 4.30/4.38 ordered index is present, pop from its ends:
+
+- `ZPOPMIN`/`ZPOPMAX` take the first/last `(score, member)` entry, remove that
+  member from the score map and the index, update `payload_len`/`payload_bytes`
+  by the member bytes and delete the key when empty.
+- `ZPOPMIN/MAX COUNT n` drains up to `n` entries from the same end, walking at
+  most the affected block(s) rather than re-searching per element; block removal
+  updates the prefix counts and splits/merges only at the configured bound.
+- `ZMPOP`/`BZMPOP`/`BZPOPMIN`/`BZPOPMAX` reuse the same primitive across keys
+  and wake path. The small `ZSetPack` keeps its direct linear min/max removal.
+- Keep score formatting, tie order, positive/negative/zero count handling,
+  empty-key deletion, reply shapes, blocking timeouts, one `touch` per command,
+  journal/rewrite/replay and exact accounting.
+- The current scan-based in-place pop remains the staging implementation until
+  the index lands; this decision replaces its `zset_items` scan, not its
+  removal/accounting code.
+- No new structure beyond 4.30/4.38, no dependency, no `unsafe` and no
+  persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+the existing ordered block index and Fenwick prefix counts, the score map and
+`remove_zset_members`. The index is derived state, rebuilt on replay/rewrite and
+counted by payload/eviction accounting; pops add no storage.
+
+**Risks and rejected options.** Block-boundary removal and prefix-count updates,
+split/merge, `COUNT` spanning blocks, tie-heavy order, the `ZSetPack` path,
+empty-key deletion, blocking variants, one-touch journal/WATCH semantics and
+exact accounting are the obligations. Rejected: keeping the scan as the final
+path (4–6× the target and 4.8–6.0 ms when tie-heavy); a separate min/max heap or
+cached extrema (stale after every `ZADD`/`ZREM` and a second structure to
+maintain); and the original clone/sort/re-encode. AC51 remains the measurable
 criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
@@ -4927,7 +4998,8 @@ from the map and the index in place, update `payload_len` by the delta, and
 repeat for `COUNT`. No clone, sort, re-encode or replace. `ZMPOP`/`BZPOP*` reuse
 the same primitive; keep score formatting, tie order, empty-key deletion and
 journal/rewrite/accounting semantics. Implemented as a scan/in-place pop; the
-≤0.3 ms target needs a maintained ordered index and remains open.
+≤0.3 ms target is tied to the maintained ordered index in 4.49's decision
+(section 2.50).
 
 ### 3.36 Multi-command transactions (MULTI/EXEC)
 
@@ -8213,7 +8285,7 @@ the faster C server); the 10-entry control shall be unchanged;
 and TTL shall pass; no dependency shall be added; and both protected gates shall
 pass on the exact head.
 
-### 4.49 Ordered sorted-set pops (candidate; scan-based pops implemented, index target missed)
+### 4.49 Ordered sorted-set pops (candidate; index-pop decision)
 
 **Mechanism.** Reuse 4.30/4.38's ordered `(score, member)` index: `ZPOPMIN`/
 `ZPOPMAX` take its first/last element (tie order `(score, member)`), remove the
@@ -8239,6 +8311,17 @@ missing key returns the empty reply.
 **Rejected options.** A linear min/max scan without the sort (O(n) per pop, still
 far from O(log n)), a separately cached min/max (stale on updates), and keeping
 the full sort.
+
+**Decision (2026-11-17, section 2.50).** Once the 4.30/4.38 ordered index exists,
+take `ZPOPMIN`/`ZPOPMAX` from its first/last `(score, member)` entry, remove the
+member from the score map and index, and move payload by the member bytes. Drain
+`COUNT n` from the same end through the affected block(s), updating prefix
+counts and splitting/merging only at the block bound; `ZMPOP`/`BZPOP*` reuse the
+primitive and the small `ZSetPack` keeps its linear path. Keep one `touch` per
+command, tie order, score formatting, count/empty/blocking semantics,
+journal/rewrite/replay and exact accounting. Replace the staging
+`zset_items`/`pop_candidates` scan; no new structure, dependency, unsafe or
+persistent-format change.
 
 **Rejection condition.** Any pop order, score, empty/blocking or accounting
 result differs, the controls regress, or no gain above the spread.
@@ -10268,7 +10351,9 @@ separate roadmap.
   22–27 ms 100-member `GEOPOS` rows unimplemented. The 4.42 in-place append
   decision (section 2.48) leaves the 1.36 ms `XADD` row unimplemented. The 4.41
   chunk-seek decision (section 2.49) leaves the 1.26–1.47 ms list random-access
-  rows unimplemented. The 4.23 bounded rewrite
+  rows unimplemented. The 4.49 index-pop decision (section 2.50) leaves the
+  1.08–1.65 ms pops and 4.8–6.0 ms tie-heavy rows unimplemented. The 4.23 bounded
+  rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
