@@ -16,8 +16,8 @@ shared-structure implementation map is section 2.38, 4.38 has an order-statistic
 decision (section 2.42), 4.50 has a seek decision (section 2.43), and 4.51 has a
 borrowed-source decision (section 2.44), and 4.54 has an in-place edit decision
 (section 2.45), and 4.48 has an in-place group decision (section 2.46), and 4.43 has a neighbor-cell decision (section 2.47), and 4.42 has an in-place append decision
-(section 2.48), and 4.41 has a chunk-seek decision (section 2.49), and 4.49 has an index-pop decision (section 2.50), and 4.31 has a large-hash stage decision (section 2.51); every
-other runtime item here is historical or
+(section 2.48), and 4.41 has a chunk-seek decision (section 2.49), and 4.49 has an index-pop decision (section 2.50), and 4.31 has a large-hash stage decision (section 2.51), and 4.52 has a maintained-counter decision (section 2.52);
+every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1361,8 +1361,8 @@ rest are still true even though every row now leads:
     **2.79 ms at 100k keys and 10.0 ms at 500k** versus 0.13–0.30 ms for the C
     servers (16–40×), and plain `INFO` pays the same walk, while `INFO stats`,
     `DBSIZE` and `PING` stay at the floor because the keyspace section counts
-    every entry instead of reading maintained sizes (section 3.42, candidate
-    4.52).
+    every entry instead of reading maintained sizes (section 3.42, 4.52 decided
+    in 2.52).
 35. **Two-key moves.** `SMOVE` on a 100k set costs **25.5 ms versus 0.40/0.28**
     (64–91×) and `LMOVE`/`RPOPLPUSH` on a 200k list **39.2/41.2 versus
     0.08–0.34** (79–489×), while a same-key rotate still costs 20.5 ms, because
@@ -1593,7 +1593,7 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Skewed-cardinality algebra | replies, latency | source sets sorted by cardinality; smallest iterated, rest probed | same | every source materialised via `owned_set`/`owned_zset` before intersecting | **Adapt:** 4.51 smallest-source probe; measured 100k + 10 `SINTER` 33.8 vs 0.19/0.19 ms (178×), `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k 33–78×; `SDIFF`/`SUNION` lead (3.48, AC53) |
 | Range store forms | replies, latency | range handler seeks the bounds and emits only the selected entries into the destination | same | store routes through `select_zset`/`ordered_zset` (full sort) then a `HashMap` and re-encode | **Adapt:** 4.50 seek-based store; measured 100k `ZRANGESTORE` 0–9 51.3 vs 0.28/0.12 ms (177–428×), 0–999 54.6 vs 1.41/0.70, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 138.7 vs 89.8/74.1 (3.49, AC52) |
 | Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, borrowed-source decided (2.44) | AC53 | none |
-| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, no-deadline fast path implemented; counters remain | AC54 (no-deadline rows met) | none |
+| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, maintained-counter decided (2.52); fast path implemented | AC54 (no-deadline rows met) | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k pre-fix 25.5 ms vs 0.40/0.28 (64–91×), post-fix 0.27–0.63 vs 0.08–0.24; `LMOVE`/`RPOPLPUSH` 200k pre-fix 35.3/33.6, post-fix 0.31/0.24 vs 0.20–0.64; same-key rotate 16.9 → 0.11; 10-element controls at the floor | 4.53, implemented | AC55 met | none |
 | Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended, decided (2.44) | AC53 | none |
 | List element edits | latency, storage | **measured**: 200k `LSET` index 100k pre-fix 16.5, post-fix 0.805 vs 0.061/0.641; `LINSERT` head pre-fix 19.1, post-fix 0.069 vs 0.071/0.102; middle pre-fix 21.0, post-fix 1.66 vs 3.475/4.01; `LREM` tail 21.1 vs 6.97/7.28 and `LPOS RANK -1` 1.59 vs 0.16/0.27 remain; 10-element controls at the floor | 4.54, in-place edits decided (2.45); `LSET`/`LINSERT` implemented | AC56 (`LSET`/`LINSERT` met) | none |
@@ -3175,6 +3175,77 @@ the `HashMap` (duplicate field storage and two structures to keep consistent);
 a reverse-binary cursor over `std::HashMap` (no stable bucket API without
 unsafe/unstable internals); and an unsafe `RawTable` or dependency. AC33 remains
 the measurable criterion for this stage.
+
+### 2.52 2026-11-17 checkpoint: mixed-deadline INFO still walks every entry
+
+The protected gate has no `INFO` keyspace row. The retained cohort (section 3.42)
+measures a no-TTL keyspace at **10.00–10.93 ms** for 500k keys (10.0 plain
+`INFO`) versus Redis 0.13–0.48 and Valkey 0.13–0.38; 100k is 2.70–2.94 versus
+0.11–0.22. The implemented no-deadline fast path brings the same rows to
+**0.160 ms** (`INFO keyspace`) and 0.357 ms (plain `INFO`) at 500k and 0.172 at
+100k. A keyspace with any key or field deadline still executes the original
+per-entry loop, which is the same measured walk plus TTL arithmetic; there is no
+separate mixed-TTL cohort yet.
+
+Current source audit:
+
+- `info` takes the fast path only when `data.expirations.is_empty()` **and**
+  `data.field_ttls == 0`. Otherwise it iterates `data.entries.values()`, filters
+  `alive(now)`, counts live/expiring/subexpiry keys and sums the remaining TTLs.
+- The loop is O(keyspace) and runs for a plain `INFO`, `INFO keyspace` or
+  `INFO all`; `INFO stats`, `DBSIZE` and `PING` do not pay it.
+- The expiration index is already ordered by `(deadline, key)`, so a reply can
+  correct the live counts for already-due entries without scanning all entries
+  and without reaping them.
+- Individual counters (`entries.len()`, `expirations.len()`, `field_ttls`) are
+  already O(1); only their live/deadline-sum semantics need maintenance.
+
+The C servers answer from maintained structures, with a sampled average:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| `keys`/`expires` | walk entries unless no deadlines | dict/expires sizes ([`server.c#L7073`](https://github.com/redis/redis/blob/8.10.2/src/server.c#L7073)) | same | **adapt** maintained counters |
+| `subexpiry` | count during the walk | subexpires store size | keys with volatile items | maintained count |
+| `avg_ttl` | exact sum during the walk | sampled average updated by active expiry ([`expire.c#L402`](https://github.com/redis/redis/blob/8.10.2/src/expire.c#L402), [`#L456`](https://github.com/redis/redis/blob/8.10.2/src/expire.c#L456)) | same ([`expire.c#L312`](https://github.com/valkey-io/valkey/blob/9.1.2/src/expire.c#L312)) | **adapt** an exact deadline sum |
+| Already-due entries | excluded by `alive(now)` | dict size can include not-yet-reaped keys | same | correct from the due prefix |
+| Cost | O(entries) when any deadline exists | O(databases) | same | O(1) + O(due) |
+| Dependencies | std only | C/dict/expires | C/dict/expires | std counters, no crate |
+
+**Decision.** Maintain the keyspace fields and reconcile only due entries:
+
+- Add to `Data` an `expiring_keys`, `subexpiry_keys` and a signed absolute
+  `ttl_deadline_sum` (i128), updated by delta in the central mutation helpers:
+  insert/overwrite, `EXPIRE`/`PERSIST`/`GETEX`, key removal, lazy expiry, the
+  maintenance reap, eviction, `FLUSH*`, `RENAME`/`RENAMENX`/`COPY`, field-TTL
+  add/remove and replay/rewrite load. `entries.len()` supplies the physical key
+  count.
+- At `INFO`, derive `live = entries.len() - due_live` and subtract the same due
+  keys from `expiring_keys`/`subexpiry_keys`, walking only the
+  `expirations.range(..)` prefix with `deadline <= now`; do not reap or mutate.
+  `avg_ttl` is `(ttl_deadline_sum - now * live_expiring) / live_expiring`, with
+  saturating arithmetic and 0 for an empty set.
+- Keep the no-deadline fast path as a cheap guard; the counters make the mixed
+  path O(1) plus the un-reaped due prefix, which is normally bounded by the
+  maintenance batch.
+- `INFO stats`, `DBSIZE`, `PING`, section selection and reply formatting stay
+  unchanged; no reaping side effect is added. Exactness is defined against the
+  current `alive(now)` scan after mixed TTL/field-TTL churn.
+- No new container beyond integer counters, no dependency, no `unsafe` and no
+  persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+three integer fields and the existing `BTreeSet` expiration index. Memory is a
+constant per `Data`, not per key; replay/rewrite rebuilds the counters from the
+loaded entries, and `payload_bytes`/eviction accounting is untouched.
+
+**Risks and rejected options.** Every mutation path must update the counters
+exactly (a drift is invisible in the reply); due-prefix correction must not
+double-count or reap; field-TTL deletion, rename/copy, eviction, flush and
+replay are the risky paths; `avg_ttl` must stay non-negative and handle an empty
+set; section selection and `INFO all` must not change. Rejected: caching the
+formatted reply; sampling `keys`; counting keys from the expiration set only;
+Redis's sampled `avg_ttl` (it would change the exact value AC54 requires); and
+reaping inside `INFO`. AC54 remains the measurable criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -5419,7 +5490,7 @@ subexpiry key counts and a TTL sum updated on every mutation (insert, overwrite,
 expire, persist, remove, reap, eviction, flush, rename/copy, replay), or read the
 container sizes plus a Redis-style maintained/sampled average, and answer the
 section in O(1). The no-deadline fast path above lands the common case; the
-counters close the mixed-TTL case.
+counters close the mixed-TTL case; 4.52 decided in 2.52.
 
 ### 3.43 Two-key moves (SMOVE/LMOVE/RPOPLPUSH)
 
@@ -8608,7 +8679,7 @@ SUM`, NaN/infinite scores, missing/empty keys, destination-as-source, TTL/
 WATCH/journal/rewrite and accounting tests shall pass; no dependency shall be
 added; and both protected gates shall pass on the exact head.
 
-### 4.52 O(1) INFO keyspace accounting (candidate; no-deadline fast path implemented)
+### 4.52 O(1) INFO keyspace accounting (candidate; maintained-counter decision)
 
 **Mechanism.** Stop walking the keyspace to answer `INFO keyspace`/`INFO`/
 `INFO all`. Maintain in `Data` the four values the section reports — live keys,
@@ -8648,6 +8719,19 @@ other counters remain untouched.
 mutation and still O(n) to build on the first call); sampling the keyspace and
 extrapolating `keys` (reports a wrong count); iterating only the expiration set
 for `keys` (misses non-expiring keys and dead-entry semantics).
+
+**Decision (2026-11-17, section 2.52).** Maintain `expiring_keys`,
+`subexpiry_keys` and a signed absolute `ttl_deadline_sum` in `Data`, updated by
+delta in the central insert/remove/expiry/field-TTL/evict/flush/rename/copy/
+replay helpers. At `INFO`, derive live keys from `entries.len()` and subtract
+the already-due entries read from the `expirations` prefix (`deadline <= now`)
+without reaping; subtract the same due keys from the expiring/subexpiry counts
+and from the deadline sum. `avg_ttl` becomes
+`(ttl_deadline_sum - now * expiring) / expiring`, saturating and 0 when empty.
+Keep the no-deadline fast path as a guard; `INFO stats`/`DBSIZE`/`PING`,
+section selection and reply formatting stay unchanged. Use exact counters, not
+Redis's sampled `avg_ttl`, and add no new container, dependency, unsafe or
+persistent-format change.
 
 **Rejection condition.** Any counter differs from a full scan after insert/
 expire/persist/remove/reap/evict/flush/rename/copy/replay churn; `INFO` gains a
@@ -10437,7 +10521,9 @@ separate roadmap.
   rows unimplemented. The 4.49 index-pop decision (section 2.50) leaves the
   1.08–1.65 ms pops and 4.8–6.0 ms tie-heavy rows unimplemented. The 4.31
   large-hash stage decision (section 2.51) leaves the 5.05 s `HSCAN` traversal
-  and the clone/sort listing rows unimplemented. The 4.23 bounded rewrite
+  and the clone/sort listing rows unimplemented. The 4.52 maintained-counter
+  decision (section 2.52) leaves the mixed-deadline `INFO` walk unimplemented.
+  The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented
