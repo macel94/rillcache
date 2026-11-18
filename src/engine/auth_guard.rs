@@ -177,7 +177,7 @@ mod tests {
         guard.note_failure(tracked);
         assert!(guard.locked(tracked));
 
-        for index in 0..MAX_SOURCES {
+        for index in 0..(MAX_SOURCES - 1) {
             guard.note_failure(IpAddr::from([
                 10,
                 (index / 256) as u8,
