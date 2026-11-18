@@ -528,7 +528,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   1 MiB) checks mTLS client chains and fails closed for revoked, unknown or expired
   status; distribution points are not fetched. Native server-certificate OCSP
   stapling accepts bounded operator-provisioned response bytes per SNI/default
-  identity and rotates them atomically with that identity; rustls 0.23.46 treats
+  identity and rotates them atomically with that identity. A bounded client-certificate
+  mapping file can now rotate with the TLS generation; invalid/unknown ACL mappings
+  retain the last good generation, and established sessions preserve their captured
+  identity. Inline maps remain startup-only. rustls 0.23.46 treats
   response content as opaque, so the server does not validate response signature,
   status, certificate identity or freshness. Require an independently
   operated TLS terminator that validates and refreshes OCSP responses, fails closed

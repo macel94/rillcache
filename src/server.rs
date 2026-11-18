@@ -266,6 +266,8 @@ pub struct Config {
     pub tls_client_crl_file: Option<PathBuf>,
     /// SHA-256 fingerprints of verified client leaf certificates mapped to ACL usernames.
     pub tls_client_cert_users: BTreeMap<[u8; 32], Vec<u8>>,
+    /// Optional bounded, reloadable fingerprint-to-user mapping file (requires mTLS and reload trigger).
+    pub tls_client_cert_users_file: Option<PathBuf>,
     /// Optional operator-controlled generation file; changing its bounded token reloads TLS files.
     pub tls_reload_trigger: Option<PathBuf>,
     /// Additional exact DNS-name certificates selected from ClientHello SNI.
@@ -334,6 +336,10 @@ impl std::fmt::Debug for Config {
             .field("tls_client_ca_file", &self.tls_client_ca_file)
             .field("tls_client_crl_file", &self.tls_client_crl_file)
             .field("tls_client_cert_users", &self.tls_client_cert_users)
+            .field(
+                "tls_client_cert_users_file",
+                &self.tls_client_cert_users_file,
+            )
             .field("tls_reload_trigger", &self.tls_reload_trigger)
             .field("tls_sni_certificates", &self.tls_sni_certificates)
             .field("tls_handshake_timeout", &self.tls_handshake_timeout)
@@ -382,6 +388,7 @@ impl Default for Config {
             tls_client_ca_file: None,
             tls_client_crl_file: None,
             tls_client_cert_users: BTreeMap::new(),
+            tls_client_cert_users_file: None,
             tls_reload_trigger: None,
             tls_sni_certificates: Vec::new(),
             tls_handshake_timeout: Duration::from_secs(5),
@@ -490,6 +497,7 @@ impl Config {
                     || self.tls_client_ca_file.is_some()
                     || self.tls_client_crl_file.is_some()
                     || !self.tls_client_cert_users.is_empty()
+                    || self.tls_client_cert_users_file.is_some()
                     || self.tls_reload_trigger.is_some()
                     || !self.tls_sni_certificates.is_empty()))
             || self
@@ -502,6 +510,14 @@ impl Config {
                 .as_ref()
                 .is_some_and(|path| path.as_os_str().is_empty())
             || (!self.tls_client_cert_users.is_empty() && self.tls_client_ca_file.is_none())
+            || (self.tls_client_cert_users_file.is_some()
+                && (self.tls_client_ca_file.is_none()
+                    || self.tls_reload_trigger.is_none()
+                    || !self.tls_client_cert_users.is_empty()))
+            || self
+                .tls_client_cert_users_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
             || self.tls_client_cert_users.values().any(|name| {
                 name.is_empty()
                     || name.len() > 128
@@ -522,7 +538,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, client-certificate ACL mappings require an mTLS CA and valid enabled ACL users, SNI names must be unique valid DNS names with at most 128 identities, and the journal needs a basename without path separators in a nonempty directory",
+                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, client-certificate ACL mappings require an mTLS CA and valid enabled ACL users, a mapping file requires the mTLS CA and reload trigger and cannot be combined with inline mappings, SNI names must be unique valid DNS names with at most 128 identities, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         if self.secure_secret_files {
@@ -556,6 +572,7 @@ impl Config {
                 &self.aof_hmac_key_file,
                 &self.tls_key_file,
                 &self.tls_reload_trigger,
+                &self.tls_client_cert_users_file,
             ]
             .into_iter()
             .flatten()
@@ -695,15 +712,22 @@ impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
         config.validate()?;
         let auth = config.load_auth()?;
-        if config
-            .tls_client_cert_users
-            .values()
-            .any(|username| !auth.has_enabled_user(username))
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "TLS client certificate mapping must reference enabled ACL users",
-            ));
+        let mut tls_client_cert_users = if let Some(path) = &config.tls_client_cert_users_file {
+            Some(tls::read_client_cert_users_file(path)?)
+        } else if config.tls_client_cert_users.is_empty() {
+            None
+        } else {
+            Some(config.tls_client_cert_users.clone())
+        };
+        if let Some(users) = &mut tls_client_cert_users {
+            for username in users.values_mut() {
+                *username = auth.verify_client_certificate_user(username).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "TLS client certificate mapping must reference enabled ACL users",
+                    )
+                })?;
+            }
         }
         let audit_hmac_key = config.load_audit_hmac_key()?;
         let aof_hmac_key = config.load_aof_hmac_key()?;
@@ -757,7 +781,9 @@ impl Server {
                     client_crl_file: config.tls_client_crl_file.as_deref(),
                     sni_certificates: &config.tls_sni_certificates,
                     reload_trigger: config.tls_reload_trigger.as_deref(),
-                    client_cert_users: &config.tls_client_cert_users,
+                    client_cert_users: tls_client_cert_users.as_ref(),
+                    client_cert_users_file: config.tls_client_cert_users_file.as_deref(),
+                    services: store.services_handle(),
                     handshake_timeout: config.tls_handshake_timeout,
                     idle_timeout: config.idle_timeout,
                 })?;
