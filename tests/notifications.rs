@@ -1831,6 +1831,47 @@ fn new_key_events_fire_once_per_created_key() {
 }
 
 #[test]
+fn getex_reports_misses_without_changing_ttl_validation_order() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let expect_miss = |subscriber: &mut _, key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key,
+            ])
+        );
+    };
+    let key = b"key\0\xff";
+    send(&mut writer, &[b"GETEX", key, b"PERSIST"], b"$-1\r\n");
+    expect_miss(&mut subscriber, key);
+    send(&mut writer, &[b"GETEX", key, b"EX", b"invalid"], b"$-1\r\n");
+    expect_miss(&mut subscriber, key);
+    send(
+        &mut writer,
+        &[b"GETEX", key, b"bogus"],
+        b"-ERR syntax error\r\n",
+    );
+    send(&mut writer, &[b"SET", key, b"v", b"EX", b"60"], b"+OK\r\n");
+    send(&mut writer, &[b"GETEX", key, b"PERSIST"], b"$1\r\nv\r\n");
+    send(&mut writer, &[b"TTL", key], b":-1\r\n");
+    send(&mut writer, &[b"SADD", b"set", b"m"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"GETEX", b"set", b"PERSIST"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    expect_miss(&mut subscriber, b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn set_get_and_getset_report_the_old_value_lookup_before_creation() {
     let server = start(NotifyFlags::parse(b"Emn$").unwrap());
     let mut subscriber = connect(&server);

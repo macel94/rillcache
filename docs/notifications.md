@@ -34,7 +34,7 @@ CONFIG GET notify-keyspace-events
 | `n` | new-key events for first creation |
 | `A` | alias for `g$lshztxe` (deliberately excludes `m` and `n`) |
 
-`m` reports a lookup that found no live key: `GET`, `GETDEL`, `DIGEST`, the old-value
+`m` reports a lookup that found no live key: `GET`, `GETDEL`, `GETEX`, `DIGEST`, the old-value
 lookup in `SET ... GET` and `GETSET`, conditional
 `DELEX` (not plain `DELEX` or `DELIFEQ`), each missing `MGET` occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
 `EXPIRETIME`/`PEXPIRETIME`, `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
@@ -178,7 +178,7 @@ relative to other connections is therefore not a global happens-before guarantee
 ## Limits
 
 - No module events; no `FLUSH*` keyless event. Key-miss covers only
-  documented read commands, including `GET`, `MGET` and `DIGEST`; new-key covers
+  documented read commands, including `GET`, `GETEX`, `MGET` and `DIGEST`; new-key covers
   supported creation paths.
 - Expired/evicted records use bounded in-memory queues, so lifecycle events may be
   lost under queue pressure and are not a complete historical audit.

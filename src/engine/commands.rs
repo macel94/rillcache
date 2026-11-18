@@ -349,6 +349,7 @@ impl ShardExecutor {
         };
         data.expire_key(key, now);
         let Some(entry) = data.entries.get(key) else {
+            data.record_key_miss(key);
             encode_bulk(None, output);
             return;
         };
