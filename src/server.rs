@@ -1110,7 +1110,7 @@ fn serve_tls(
                         }
                     };
                     if let Some(username) = mapped_user {
-                        match store.authenticate_client_certificate_user(&username) {
+                        match store.authenticate_client_certificate_user(client_id, &username) {
                             Ok(canonical) => session.set_tls_client_user(canonical),
                             Err(_) => {
                                 store.pubsub_remove_client(client_id);

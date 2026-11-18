@@ -623,7 +623,8 @@ fn acl_users_restrict_commands_keys_and_whoami() {
                 b"&events:*",
                 b"-@all",
                 b"+@read",
-                b"+@write"
+                b"+@write",
+                b"maxconnections=2"
             ]
         ),
         b"+OK\r\n"
@@ -640,7 +641,12 @@ fn acl_users_restrict_commands_keys_and_whoami() {
             .any(|window| window == b"get")
     );
     let details = call(&mut admin, &store, &[b"ACL", b"GETUSER", b"alice"]);
-    assert!(details.starts_with(b"*12\r\n"));
+    assert!(details.starts_with(b"*14\r\n"));
+    assert!(
+        details
+            .windows(14)
+            .any(|window| window == b"maxconnections")
+    );
     assert!(details.windows(7).any(|window| window == b"flags\r\n"));
     assert!(details.windows(6).any(|window| window == b"~app:*"));
     assert_eq!(
