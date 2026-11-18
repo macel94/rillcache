@@ -34,8 +34,9 @@ CONFIG GET notify-keyspace-events
 | `n` | new-key events for first creation |
 | `A` | alias for `g$lshztxe` (deliberately excludes `m` and `n`) |
 
-`m` reports a lookup that found no live key: `GET`, `GETDEL`, `DIGEST`, each
-missing `MGET` occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
+`m` reports a lookup that found no live key: `GET`, `GETDEL`, `DIGEST`, the old-value
+lookup in `SET ... GET` and `GETSET`, conditional
+`DELEX` (not plain `DELEX` or `DELIFEQ`), each missing `MGET` occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
 `EXPIRETIME`/`PEXPIRETIME`, `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
 `HVALS`/`HSTRLEN`, `STRLEN`, `GETRANGE`, `GETBIT`, `LLEN`/`LINDEX`/`LRANGE`/
 `LPOS`, `SCARD`/`SISMEMBER`/`SMISMEMBER`/`SMEMBERS`, `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/
@@ -177,7 +178,8 @@ relative to other connections is therefore not a global happens-before guarantee
 ## Limits
 
 - No module events; no `FLUSH*` keyless event. Key-miss covers only
-  `GET`/`MGET`; new-key covers supported creation paths.
+  documented read commands, including `GET`, `MGET` and `DIGEST`; new-key covers
+  supported creation paths.
 - Expired/evicted records use bounded in-memory queues, so lifecycle events may be
   lost under queue pressure and are not a complete historical audit.
 - No retry, acknowledgment, durable queue, replay, replication, cluster routing or
@@ -202,7 +204,7 @@ keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
 and rejected writes, hash/list/set/zset/stream/HLL events, hash field
 `hexpire`/`hpersist` with no-op condition checks, `HDEL`/`HGETDEL` deletion
-pairs, `GET`/`MGET`/`EXISTS`/`TYPE`/`TTL`/hash/list/set/zset/stream `keymiss` with
+pairs, `DIGEST`/`GET`/`MGET`/`EXISTS`/`TYPE`/`TTL`/hash/list/set/zset/stream `keymiss` with
 hit/non-string exclusions, first-creation `new` events including overwrite and second-entry
 exclusions, expire, rename,
 eviction/`expired` classes, blocking-pop events, binary channels and

@@ -598,8 +598,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   case is reproducible from its seed. A configurable monotonic per-incomplete-
   plaintext-frame assembly deadline (60-second default, zero disables) now
   complements socket inactivity timeouts across synchronous workers, readiness,
-  Tokio and TLS plaintext parsing. It does not bound TLS records that produce no
-  plaintext. Slow-client length/rate thresholds, global/user budgets, CPU quotas
+  Tokio and TLS plaintext parsing. **Partial (2026-11-18):** complete requests no
+  longer arm phantom assembly timers on their empty parser suffixes; direct
+  owner/worker tests and idle-past-frame-budget wire cases cover owner/shared
+  reactors, fixed workers and Tokio. Partial suffixes retain their original
+  deadline. It does not bound TLS records that produce no plaintext.
+  Slow-client length/rate thresholds, global/user budgets, CPU quotas
   and a general overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
