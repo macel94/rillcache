@@ -206,7 +206,13 @@ impl ShardExecutor {
             }
         };
         data.expire_key(key, now);
-        let existing = data.entries.get(key);
+        let existing = match data.entries.get(key) {
+            None if options.get => {
+                data.record_key_miss(key);
+                None
+            }
+            entry => entry,
+        };
         if (options.get
             || matches!(
                 options.condition,
