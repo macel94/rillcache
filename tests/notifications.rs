@@ -1831,6 +1831,62 @@ fn new_key_events_fire_once_per_created_key() {
 }
 
 #[test]
+fn zrangestore_reports_only_missing_source_lookups() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let expect_miss = |subscriber: &mut _, key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key
+            ]),
+        );
+    };
+    let source = b"source\0\xff";
+    send(&mut writer, &[b"SET", b"dest", b"old"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"dest", source, b"0", b"-1"],
+        b":0\r\n",
+    );
+    expect_miss(&mut subscriber, source);
+    send(&mut writer, &[b"TYPE", b"dest"], b"+none\r\n");
+    expect_miss(&mut subscriber, b"dest");
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"absent-dest", source, b"0", b"-1"],
+        b":0\r\n",
+    );
+    expect_miss(&mut subscriber, source);
+    send(&mut writer, &[b"ZADD", source, b"1", b"member"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"dest", source, b"0", b"-1"],
+        b":1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"other", source, b"1", b"2"],
+        b":0\r\n",
+    );
+    send(&mut writer, &[b"SET", source, b"not-a-set"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"dest", source, b"0", b"-1"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"ZCARD", b"dest"], b":1\r\n");
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    expect_miss(&mut subscriber, b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn getdel_reports_only_a_missing_key_as_keymiss() {
     let server = start(NotifyFlags::parse(b"Emg").unwrap());
     let mut subscriber = connect(&server);
