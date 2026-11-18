@@ -417,6 +417,36 @@ fn ruleset_access(
             return Access::DeniedChannel(channel.to_vec());
         }
     }
+    if command.eq_ignore_ascii_case(b"PUBSUB") {
+        match arguments.get(1).copied() {
+            Some(subcommand)
+                if subcommand.eq_ignore_ascii_case(b"NUMSUB")
+                    || subcommand.eq_ignore_ascii_case(b"SHARDNUMSUB") =>
+            {
+                for channel in arguments.iter().skip(2) {
+                    if !patterns_allow(channels, channel) {
+                        return Access::DeniedChannel(channel.to_vec());
+                    }
+                }
+            }
+            Some(subcommand) if subcommand.eq_ignore_ascii_case(b"NUMPAT") => {
+                if !channels.iter().any(|pattern| pattern == b"*") {
+                    return Access::DeniedChannel(Vec::new());
+                }
+            }
+            // The extra argument is an internal per-result authorization probe;
+            // the optional pattern in the real CHANNELS request is not a channel.
+            Some(subcommand)
+                if (subcommand.eq_ignore_ascii_case(b"CHANNELS")
+                    || subcommand.eq_ignore_ascii_case(b"SHARDCHANNELS"))
+                    && arguments.len() == 4
+                    && !patterns_allow(channels, arguments[3]) =>
+            {
+                return Access::DeniedChannel(arguments[3].to_vec());
+            }
+            _ => {}
+        }
+    }
     Access::Allowed
 }
 
@@ -1493,8 +1523,17 @@ mod tests {
             &[b"PUBSUB".as_slice(), b"SHARDCHANNELS"],
             &[b"PUBSUB".as_slice(), b"SHARDNUMSUB", b"a"],
         ] {
-            assert_eq!(access(b"pubsub", command), Access::Allowed);
-            assert_eq!(access(b"slow", command), Access::Allowed);
+            let expected = if command[1].eq_ignore_ascii_case(b"NUMSUB")
+                || command[1].eq_ignore_ascii_case(b"SHARDNUMSUB")
+            {
+                Access::DeniedChannel(b"a".to_vec())
+            } else if command[1].eq_ignore_ascii_case(b"NUMPAT") {
+                Access::DeniedChannel(Vec::new())
+            } else {
+                Access::Allowed
+            };
+            assert_eq!(access(b"pubsub", command), expected);
+            assert_eq!(access(b"slow", command), expected);
             assert_eq!(access(b"fast", command), Access::DeniedCommand);
             assert_eq!(access(b"admin", command), Access::DeniedCommand);
             assert_eq!(access(b"danger", command), Access::DeniedCommand);
