@@ -1831,6 +1831,56 @@ fn new_key_events_fire_once_per_created_key() {
 }
 
 #[test]
+fn set_get_and_getset_report_the_old_value_lookup_before_creation() {
+    let server = start(NotifyFlags::parse(b"Emn$").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+    let event =
+        |channel: &[u8], key: &[u8]| frame(&[b"pmessage", b"__keyevent@0__:*", channel, key]);
+    let key = b"old\0\xff";
+    send(&mut writer, &[b"SET", key, b"v", b"XX", b"GET"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        event(b"__keyevent@0__:keymiss", key)
+    );
+    for (args, key) in [
+        (
+            [b"SET".as_slice(), key, b"v", b"GET"].as_slice(),
+            key.as_slice(),
+        ),
+        (
+            [b"GETSET".as_slice(), b"alias", b"v"].as_slice(),
+            b"alias".as_slice(),
+        ),
+    ] {
+        send(&mut writer, args, b"$-1\r\n");
+        for channel in [
+            b"__keyevent@0__:keymiss".as_slice(),
+            b"__keyevent@0__:new",
+            b"__keyevent@0__:set",
+        ] {
+            assert_eq!(read_frame(&mut subscriber), event(channel, key));
+        }
+    }
+    send(&mut writer, &[b"SET", key, b"next", b"GET"], b"$1\r\nv\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        event(b"__keyevent@0__:set", key)
+    );
+    send(&mut writer, &[b"SET", b"plain", b"v"], b"+OK\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        event(b"__keyevent@0__:new", b"plain")
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        event(b"__keyevent@0__:set", b"plain")
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn only_conditional_delex_reports_a_missing_key() {
     let server = start(NotifyFlags::parse(b"Em").unwrap());
     let mut subscriber = connect(&server);

@@ -1548,6 +1548,10 @@ impl ShardExecutor {
         for key in lifecycle.deleted {
             self.notify_event("del", &key, NotifyCategory::Generic);
         }
+        // Read misses precede any keys created in response to those lookups.
+        for key in lifecycle.key_miss {
+            self.notify_event("keymiss", &key, NotifyCategory::KeyMiss);
+        }
         for key in lifecycle.new_keys {
             self.notify_event("new", &key, NotifyCategory::NewKey);
         }
@@ -1561,9 +1565,6 @@ impl ShardExecutor {
                 _ => continue,
             };
             self.notify_event(name, &key, category);
-        }
-        for key in lifecycle.key_miss {
-            self.notify_event("keymiss", &key, NotifyCategory::KeyMiss);
         }
     }
 
