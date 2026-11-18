@@ -1831,6 +1831,40 @@ fn new_key_events_fire_once_per_created_key() {
 }
 
 #[test]
+fn digest_reports_one_keymiss_only_for_an_absent_key() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let event = |key: &[u8]| {
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            key,
+        ])
+    };
+    let key = b"digest\0\xff";
+    send(&mut writer, &[b"DIGEST", key], b"$-1\r\n");
+    assert_eq!(read_frame(&mut subscriber), event(key));
+    send(&mut writer, &[b"SET", key, b""], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"DIGEST", key],
+        b"$16\r\n2d06800538d394c2\r\n",
+    );
+    send(&mut writer, &[b"SADD", b"set", b"m"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"DIGEST", b"set"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    assert_eq!(read_frame(&mut subscriber), event(b"marker"));
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn zrangestore_reports_only_missing_source_lookups() {
     let server = start(NotifyFlags::parse(b"Em").unwrap());
     let mut subscriber = connect(&server);

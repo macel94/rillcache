@@ -84,6 +84,7 @@ impl ShardExecutor {
             let hash = super::xxh3::xxh3_64(&entry.value);
             write!(output, "$16\r\n{hash:016x}\r\n").expect("Vec write");
         } else {
+            data.record_key_miss(key);
             output.extend_from_slice(b"$-1\r\n");
         }
     }
