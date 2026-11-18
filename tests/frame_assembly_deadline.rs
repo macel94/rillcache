@@ -150,6 +150,44 @@ fn complete_buffered_command_survives_pause_longer_than_assembly_deadline() {
 }
 
 #[test]
+fn completed_requests_can_idle_past_the_frame_budget() {
+    for (workers, tokio, sockets) in [
+        (None, false, None),
+        (None, false, Some(4)),
+        (None, true, None),
+        (Some(1), false, None),
+        (Some(4), false, None),
+    ] {
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            worker_threads: workers,
+            socket_workers: sockets,
+            io_mode: if tokio {
+                rillcache::server::IoMode::Tokio
+            } else {
+                rillcache::server::IoMode::Mio
+            },
+            idle_timeout: Duration::from_secs(2),
+            frame_assembly_timeout: Some(Duration::from_millis(250)),
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut peer = connect(&server);
+        ping(&mut peer);
+        // This delay tests the timer contract, not server readiness: the PONG
+        // above acknowledges a complete request before the idle interval.
+        thread::sleep(Duration::from_millis(600));
+        peer.write_all(b"PING\r\n").unwrap();
+        let mut reply = [0; 7];
+        peer.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"+PONG\r\n");
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn complete_and_valid_fragmented_frames_are_not_rejected() {
     for (workers, tokio) in MODES {
         let server = start(workers, tokio, 8);
