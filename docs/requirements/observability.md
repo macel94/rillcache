@@ -110,7 +110,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   publication shall follow command execution order and remain at-most-once and
   non-persistent. All-mode tests shall cover keyspace/keyevent frames, category and
   runtime toggles, binary channels, rename/expire, MULTI, blocking pops, HLL
-  mutations, `BITOP`/`PFCOUNT` missing-source, `PFMERGE` destination/source,
+  mutations, `BITOP`/`PFCOUNT`/`TOUCH` missing-key lookups, `PFMERGE`
+  destination/source,
   geospatial source key-miss events, expired/evicted classes
   and `CONFIG`/`INFO` exposure. When `HGETEX` sets an
   already-due field deadline, the command shall return selected pre-expiry values
