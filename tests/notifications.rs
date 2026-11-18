@@ -479,6 +479,137 @@ fn geo_mutations_emit_zset_store_and_deletion_events() {
 }
 
 #[test]
+fn geo_read_misses_emit_keymiss_for_source_keys_only() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+
+    let expect_miss = |subscriber: &mut TcpStream, key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key,
+            ])
+        );
+    };
+
+    send(
+        &mut writer,
+        &[b"GEODIST", b"dist-miss", b"a", b"b"],
+        b"$-1\r\n",
+    );
+    expect_miss(&mut subscriber, b"dist-miss");
+    send(
+        &mut writer,
+        &[b"GEOHASH", b"hash-miss", b"a"],
+        b"*1\r\n$-1\r\n",
+    );
+    expect_miss(&mut subscriber, b"hash-miss");
+    send(
+        &mut writer,
+        &[b"GEOPOS", b"pos-miss", b"a"],
+        b"*1\r\n*-1\r\n",
+    );
+    expect_miss(&mut subscriber, b"pos-miss");
+    send(
+        &mut writer,
+        &[
+            b"GEOSEARCH",
+            b"search-miss",
+            b"FROMLONLAT",
+            b"0",
+            b"0",
+            b"BYRADIUS",
+            b"1",
+            b"km",
+        ],
+        b"*0\r\n",
+    );
+    expect_miss(&mut subscriber, b"search-miss");
+    send(
+        &mut writer,
+        &[
+            b"GEOSEARCHSTORE",
+            b"store-dest",
+            b"store-source-miss",
+            b"FROMLONLAT",
+            b"0",
+            b"0",
+            b"BYRADIUS",
+            b"1",
+            b"km",
+        ],
+        b":0\r\n",
+    );
+    expect_miss(&mut subscriber, b"store-source-miss");
+    send(
+        &mut writer,
+        &[b"GEORADIUS", b"radius-miss", b"0", b"0", b"1", b"km"],
+        b"*0\r\n",
+    );
+    expect_miss(&mut subscriber, b"radius-miss");
+    send(
+        &mut writer,
+        &[
+            b"GEORADIUSBYMEMBER",
+            b"member-radius-miss",
+            b"home",
+            b"1",
+            b"km",
+        ],
+        b"*0\r\n",
+    );
+    expect_miss(&mut subscriber, b"member-radius-miss");
+
+    send(&mut writer, &[b"LPUSH", b"wrong-type", b"value"], b":1\r\n");
+    send(
+        &mut writer,
+        &[
+            b"GEOSEARCH",
+            b"wrong-type",
+            b"FROMLONLAT",
+            b"0",
+            b"0",
+            b"BYRADIUS",
+            b"1",
+            b"km",
+        ],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEOADD", b"existing", b"0", b"0", b"home"],
+        b":1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEODIST", b"existing", b"home", b"absent-member"],
+        b"$-1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEOPOS", b"existing", b"absent-member"],
+        b"*1\r\n*-1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEOHASH", b"existing", b"absent-member"],
+        b"*1\r\n$-1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEODIST", b"marker", b"a", b"b"],
+        b"$-1\r\n",
+    );
+    expect_miss(&mut subscriber, b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn stream_claim_mutations_emit_claim_events() {
     let server = start(NotifyFlags::parse(b"KEA").unwrap());
     let mut subscriber = connect(&server);
