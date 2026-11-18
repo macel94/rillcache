@@ -2230,12 +2230,13 @@ fn bit_algorithm_read_misses_emit_keymiss() {
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
     );
     assert!(receiver.try_recv().is_err(), "wrong type is not a key miss");
-    // A wrong-type first operand fails before Redis reads the second key.
+    // Both operands are read before the type check.
     assert_eq!(
         run(&store, &[b"LCS", b"l", b"missing2", b"LEN"]),
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
     );
-    assert!(receiver.try_recv().is_err(), "second operand is not read");
+    expect_miss(b"missing2");
+    assert!(receiver.try_recv().is_err(), "wrong type is not a key miss");
     // A missing first operand is reported before the second operand's type error.
     assert_eq!(
         run(&store, &[b"LCS", b"missing3", b"l", b"LEN"]),

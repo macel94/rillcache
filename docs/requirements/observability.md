@@ -111,8 +111,8 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   non-persistent. All-mode tests shall cover keyspace/keyevent frames, category and
   runtime toggles, binary channels, rename/expire, MULTI, blocking pops, HLL
   mutations, `SMISMEMBER`/`BITOP`/`PFCOUNT`/`TOUCH` missing-key lookups, `PFMERGE`
-  destination/source,
-  geospatial source key-miss events, expired/evicted classes
+  destination/source, both `LCS` operands (including when one has the wrong
+  type), geospatial source key-miss events, expired/evicted classes
   and `CONFIG`/`INFO` exposure. When `HGETEX` sets an
   already-due field deadline, the command shall return selected pre-expiry values
   and publish `hexpired`, followed by `del` only if the hash becomes empty; it

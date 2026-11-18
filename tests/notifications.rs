@@ -1831,6 +1831,46 @@ fn new_key_events_fire_once_per_created_key() {
 }
 
 #[test]
+fn lcs_reports_both_operand_lookups_before_wrong_type() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let assert_miss = |subscriber: &mut _, key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key,
+            ])
+        );
+    };
+    let missing = b"missing\0\xff";
+    send(&mut writer, &[b"SADD", b"set", b"member"], b":1\r\n");
+    for keys in [[b"set".as_slice(), missing], [missing, b"set"]] {
+        send(
+            &mut writer,
+            &[b"LCS", keys[0], keys[1]],
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        );
+        assert_miss(&mut subscriber, missing);
+        send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+        assert_miss(&mut subscriber, b"marker");
+    }
+    send(&mut writer, &[b"LCS", missing, b"other"], b"$0\r\n\r\n");
+    assert_miss(&mut subscriber, missing);
+    assert_miss(&mut subscriber, b"other");
+    send(&mut writer, &[b"LCS", missing, missing, b"LEN"], b":0\r\n");
+    assert_miss(&mut subscriber, missing);
+    assert_miss(&mut subscriber, missing);
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    assert_miss(&mut subscriber, b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn smismember_emits_one_keymiss_for_a_missing_set_only() {
     let server = start(NotifyFlags::parse(b"Em").unwrap());
     let mut subscriber = connect(&server);
