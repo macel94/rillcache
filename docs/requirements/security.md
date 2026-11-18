@@ -88,8 +88,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   when the root rules or any selector permits the command, its declared keys and
   its channel arguments as one set; a selector that permits the command but not
   its keys or channels shall not grant it. Dynamic `SORT` BY/GET keys shall
-  require all-keys in the matching set, and denials shall report command, key or
-  channel consistently.
+  require all-keys in the matching set when their pattern contains `*`; `BY`
+  without a wildcard and `GET #` do not access a derived key and shall remain
+  usable with scoped grants. `SORT`/`SORT_RO` source keys and the effective
+  `SORT STORE` destination shall still be checked with read/write key access
+  respectively before execution. This deliberately denies wildcard-derived
+  references for scoped users instead of matching an ACL pattern against keys
+  discovered only while executing SORT; Redis/Valkey 9.1.2 `ACL DRYRUN` does
+  not enforce those dynamic references. Denials shall happen before a STORE
+  mutation or GET disclosure.
 - **R330 (event-driven):** `ACL LIST` shall render selectors as parenthesized
   groups and `ACL GETUSER` shall expose a `selectors` array of commands/keys/
   channels maps. `ACL SAVE`/`LOAD` shall round-trip selector groups with spaces
