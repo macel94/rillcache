@@ -403,6 +403,7 @@ impl ShardExecutor {
             let key = args[1];
             match inspect_shape(&mut data, key, now) {
                 Shape::Missing => {
+                    data.record_key_miss(key);
                     integer(0, out);
                     return;
                 }
@@ -444,7 +445,7 @@ impl ShardExecutor {
         let mut merged = Hll::empty();
         for key in &args[1..] {
             match inspect(&mut data, key, now) {
-                KeyState::Missing => {}
+                KeyState::Missing => data.record_key_miss(key),
                 KeyState::Hll { hll, .. } => merged.merge(&hll),
                 KeyState::WrongType => {
                     wrong_type(out);
@@ -471,7 +472,10 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         let (mut merged, expires, previous, created) = match inspect(&mut data, destination, now) {
-            KeyState::Missing => (Hll::empty(), None, None, true),
+            KeyState::Missing => {
+                data.record_key_miss(destination);
+                (Hll::empty(), None, None, true)
+            }
             KeyState::Hll {
                 hll,
                 expires,
@@ -488,7 +492,7 @@ impl ShardExecutor {
         };
         for source in &args[2..] {
             match inspect(&mut data, source, now) {
-                KeyState::Missing => {}
+                KeyState::Missing => data.record_key_miss(source),
                 KeyState::Hll { hll, .. } => merged.merge(&hll),
                 KeyState::WrongType => {
                     wrong_type(out);

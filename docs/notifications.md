@@ -34,21 +34,28 @@ CONFIG GET notify-keyspace-events
 | `n` | new-key events for first creation |
 | `A` | alias for `g$lshztxe` (deliberately excludes `m` and `n`) |
 
-`m` reports a lookup that found no live key: `GET`, each missing `MGET`
-occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
+`m` reports a lookup that found no live key: `GET`, `GETDEL`, `GETEX`, `DIGEST`, the old-value
+lookup in `SET ... GET` and `GETSET`, conditional
+`DELEX` (not plain `DELEX` or `DELIFEQ`), each missing `MGET` occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
 `EXPIRETIME`/`PEXPIRETIME`, `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
 `HVALS`/`HSTRLEN`, `STRLEN`, `GETRANGE`, `GETBIT`, `LLEN`/`LINDEX`/`LRANGE`/
-`LPOS`, `SCARD`/`SISMEMBER`/`SMEMBERS`, `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/
+`LPOS`, `SCARD`/`SISMEMBER`/`SMISMEMBER`/`SMEMBERS`, `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/
 `ZRANK`/`ZREVRANK`/`ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/`ZREVRANGEBYSCORE`/
-`ZLEXCOUNT`, `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD`, `XLEN`/`XRANGE`/
+`ZLEXCOUNT`, the `ZRANGESTORE` source, `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD`, `XLEN`/`XRANGE`/
 `XREVRANGE`, `HSCAN`/`SSCAN`/`ZSCAN`, `SINTER`/`SUNION`/`SDIFF`/`SINTERCARD`
 and the set store variants, `ZUNION`/`ZINTER`/`ZDIFF`/`ZINTERCARD` and the
 sorted-set store variants, `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`,
 `XINFO STREAM|GROUPS|CONSUMERS`, and `SORT`/`SORT_RO` sources (including
 `STORE`), `SORT` `BY`/`GET` pattern-derived key lookups,
 `XREAD`/`XREADGROUP` initial stream lookups, `BITCOUNT`/`BITPOS`/`BITFIELD_RO`
-(and read-only `BITFIELD` blocks), `LCS` operands, `OBJECT ENCODING|REFCOUNT`,
-`MEMORY USAGE`, and `HTTL`/`HPTTL`/`HEXPIRETIME`/`HPEXPIRETIME` missing-key
+(and read-only `BITFIELD` blocks), each missing `BITOP` source occurrence, each
+missing `PFCOUNT` source occurrence,
+`PFMERGE` destination-first and source lookups (one event per missing occurrence),
+`GEODIST`/`GEOHASH`/`GEOPOS` and `GEOSEARCH`/`GEOSEARCHSTORE`/legacy
+`GEORADIUS*` source lookups, each missing `LCS` operand (even if the other
+operand has the wrong type), each missing `TOUCH` operand, the `COPY` source
+lookup, `OBJECT ENCODING|REFCOUNT`, `MEMORY USAGE`, and
+`HTTL`/`HPTTL`/`HEXPIRETIME`/`HPEXPIRETIME` missing-key
 lookups emit `keymiss` on the normal keyspace/keyevent channels (once per
 missing source key for algebra and per missing stream or operand where Redis
 looks them up). Hits, missing fields/elements/members in an existing key,
@@ -171,7 +178,8 @@ relative to other connections is therefore not a global happens-before guarantee
 ## Limits
 
 - No module events; no `FLUSH*` keyless event. Key-miss covers only
-  `GET`/`MGET`; new-key covers supported creation paths.
+  documented read commands, including `GET`, `GETEX`, `MGET` and `DIGEST`; new-key covers
+  supported creation paths.
 - Expired/evicted records use bounded in-memory queues, so lifecycle events may be
   lost under queue pressure and are not a complete historical audit.
 - No retry, acknowledgment, durable queue, replay, replication, cluster routing or
@@ -196,7 +204,7 @@ keyspace/keyevent frames, category filtering, runtime enable/disable,
 `MSET`/`MULTI`, ordered MSETEX set/expire pairs, duplicate/binary keys, KEEPTTL
 and rejected writes, hash/list/set/zset/stream/HLL events, hash field
 `hexpire`/`hpersist` with no-op condition checks, `HDEL`/`HGETDEL` deletion
-pairs, `GET`/`MGET`/`EXISTS`/`TYPE`/`TTL`/hash/list/set/zset/stream `keymiss` with
+pairs, `DIGEST`/`GET`/`MGET`/`EXISTS`/`TYPE`/`TTL`/hash/list/set/zset/stream `keymiss` with
 hit/non-string exclusions, first-creation `new` events including overwrite and second-entry
 exclusions, expire, rename,
 eviction/`expired` classes, blocking-pop events, binary channels and

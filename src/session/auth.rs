@@ -34,7 +34,7 @@ impl Session {
             output.extend_from_slice(AUTH_THROTTLED);
             return;
         }
-        match store.authenticate_user(username, password) {
+        match store.authenticate_client_user(self.id, username, password) {
             Ok(name) => {
                 self.authenticated_user = Some(name);
                 self.failed_auth = 0;
@@ -55,6 +55,9 @@ impl Session {
                     store.note_auth_source_failure(source);
                 }
                 self.note_auth_failure(store);
+            }
+            Err(AuthError::ConnectionLimit) => {
+                output.extend_from_slice(b"-ERR max connections reached for user\r\n")
             }
             Err(AuthError::Internal) => {
                 output.extend_from_slice(b"-ERR internal authentication error\r\n")
@@ -138,7 +141,7 @@ impl Session {
             if arguments.len() != 2 {
                 arity("acl|getuser", output);
             } else if let Some(details) = store.acl_details(arguments[1]) {
-                write!(output, "*12\r\n").expect("Vec write");
+                write!(output, "*14\r\n").expect("Vec write");
                 encode_bulk(Some(b"flags"), output);
                 write!(output, "*{}\r\n", details.flags.len()).expect("Vec write");
                 for flag in details.flags {
@@ -166,6 +169,8 @@ impl Session {
                     encode_bulk(Some(b"channels"), output);
                     encode_bulk(Some(channels.as_bytes()), output);
                 }
+                encode_bulk(Some(b"maxconnections"), output);
+                let _ = write!(output, ":{}\r\n", details.max_connections);
             } else {
                 output.extend_from_slice(b"$-1\r\n");
             }
@@ -236,6 +241,9 @@ impl Session {
                     ),
                     Some(Access::DeniedChannel(_)) => output.extend_from_slice(
                         b"-NOPERM this user has no permissions to access one of the channels used as arguments\r\n",
+                    ),
+                    Some(Access::DeniedKeyspace(_)) => output.extend_from_slice(
+                        b"-NOPERM keyspace-wide commands require an all-key ACL grant with the required access\r\n",
                     ),
                     Some(Access::NoAuth) => {
                         output.extend_from_slice(b"-NOAUTH Authentication required.\r\n")

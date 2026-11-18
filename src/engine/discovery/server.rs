@@ -19,7 +19,14 @@ pub(super) const COMMANDS: &[Command] = &[
     cmd("failover", -1, &["admin", "noscript", "stale"], 0, 0, 0),
     cmd("function", -2, &["write", "admin"], 0, 0, 0),
     cmd("info", -1, &["loading", "stale"], 0, 0, 0),
-    cmd("lastsave", 1, &["loading", "stale", "fast"], 0, 0, 0),
+    cmd(
+        "lastsave",
+        1,
+        &["admin", "loading", "stale", "fast"],
+        0,
+        0,
+        0,
+    ),
     cmd(
         "latency",
         -2,

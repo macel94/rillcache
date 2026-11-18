@@ -245,20 +245,17 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         data.expire_key(args[2], now);
-        // Redis looks each operand up in order, so a wrong-type first operand
-        // fails before the second key is ever read.
+        // Redis and Valkey perform both read lookups before checking types.
+        let mut has_wrong_type = false;
         for key in [args[1], args[2]] {
-            if data
-                .entries
-                .get(key)
-                .is_some_and(|entry| !entry.is_string())
-            {
-                wrong_type(out);
-                return;
+            match data.entries.get(key) {
+                Some(entry) => has_wrong_type |= !entry.is_string(),
+                None => data.record_key_miss(key),
             }
-            if !data.entries.contains_key(key) {
-                data.record_key_miss(key);
-            }
+        }
+        if has_wrong_type {
+            wrong_type(out);
+            return;
         }
         let a = data
             .entries
@@ -716,17 +713,24 @@ impl ShardExecutor {
         for source in sources {
             data.expire_key(source, now);
         }
-        let mut values = Vec::with_capacity(sources.len());
         for source in sources {
             match data.entries.get(*source) {
-                None => values.push(None),
-                Some(entry) if entry.is_string() => values.push(Some(entry.value.as_slice())),
+                None => data.record_key_miss(source),
+                Some(entry) if entry.is_string() => {}
                 Some(_) => {
                     wrong_type(out);
                     return;
                 }
             }
         }
+        let values: Vec<_> = sources
+            .iter()
+            .map(|source| {
+                data.entries
+                    .get(*source)
+                    .map(|entry| entry.value.as_slice())
+            })
+            .collect();
         let result = if not {
             let source = values[0].unwrap_or(&[]);
             source.iter().map(|byte| !byte).collect::<Vec<u8>>()
