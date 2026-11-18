@@ -18,6 +18,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(arguments[1], now);
         let Some(entry) = data.entries.get(arguments[1]) else {
+            // Only conditional DELEX uses a read lookup upstream.
+            if !delifeq && arguments.len() == 4 {
+                data.record_key_miss(arguments[1]);
+            }
             integer(0, output);
             return;
         };

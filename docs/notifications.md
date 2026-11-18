@@ -34,8 +34,8 @@ CONFIG GET notify-keyspace-events
 | `n` | new-key events for first creation |
 | `A` | alias for `g$lshztxe` (deliberately excludes `m` and `n`) |
 
-`m` reports a lookup that found no live key: `GET`, `GETDEL`, each missing `MGET`
-occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
+`m` reports a lookup that found no live key: `GET`, `GETDEL`, conditional
+`DELEX` (not plain `DELEX` or `DELIFEQ`), each missing `MGET` occurrence, each missing `EXISTS` argument, and `TYPE`/`TTL`/`PTTL`/
 `EXPIRETIME`/`PEXPIRETIME`, `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
 `HVALS`/`HSTRLEN`, `STRLEN`, `GETRANGE`, `GETBIT`, `LLEN`/`LINDEX`/`LRANGE`/
 `LPOS`, `SCARD`/`SISMEMBER`/`SMISMEMBER`/`SMEMBERS`, `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/
