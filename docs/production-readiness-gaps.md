@@ -743,10 +743,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   these commands within the SLO.
 
 - [ ] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
-  Client count, payload, frame and argument limits exist; there is no per-user
-  command/connection/memory quota, CPU fairness guarantee or slow-client share.
-  **Closes when:** the supported admission policy is explicit, observable and
-  tested under overload and multi-tenant use.
+  Client count, payload, frame and argument limits exist. Authenticated ACL users
+  now have an optional `maxconnections` cap, but there is no per-user command or
+  memory quota, CPU fairness guarantee, slow-client share, or cap for unauthenticated
+  sessions using an implicit no-password default. **Partial:** S122 implements
+  atomic authenticated-session admission and release; it does not isolate shared
+  resource use. **Closes when:** the supported admission policy is explicit,
+  observable and tested under overload and multi-tenant use, including the remaining
+  resource and unauthenticated-session boundaries.
 
 - [ ] **R6. Persistence serializes the whole command path.** [P1]
   With persistence enabled, commands execute through the exclusive transaction

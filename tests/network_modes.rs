@@ -2,6 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use rillcache::protocol::encode_request;
@@ -49,10 +50,51 @@ fn send(stream: &mut TcpStream, args: &[&[u8]]) {
     stream.write_all(&request).unwrap();
 }
 
+#[track_caller]
 fn expect(stream: &mut TcpStream, expected: &[u8]) {
     let mut actual = vec![0; expected.len()];
     stream.read_exact(&mut actual).unwrap();
     assert_eq!(actual, expected);
+}
+
+fn read_line(stream: &mut TcpStream) -> Vec<u8> {
+    let mut line = Vec::new();
+    loop {
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        line.push(byte[0]);
+        if byte[0] == b'\n' {
+            return line;
+        }
+    }
+}
+
+fn read_resp_frame(stream: &mut TcpStream) -> Vec<u8> {
+    let mut prefix = [0];
+    stream.read_exact(&mut prefix).unwrap();
+    let mut frame = vec![prefix[0]];
+    match prefix[0] {
+        b'+' | b'-' | b':' => frame.extend(read_line(stream)),
+        b'$' | b'*' => {
+            let header = read_line(stream);
+            let length = std::str::from_utf8(&header[..header.len() - 2])
+                .unwrap()
+                .parse::<i64>()
+                .unwrap();
+            frame.extend_from_slice(&header);
+            if length >= 0 && prefix[0] == b'$' {
+                let mut body = vec![0; length as usize + 2];
+                stream.read_exact(&mut body).unwrap();
+                frame.extend(body);
+            } else if length > 0 {
+                for _ in 0..length {
+                    frame.extend(read_resp_frame(stream));
+                }
+            }
+        }
+        other => panic!("unsupported RESP frame prefix: {other:?}"),
+    }
+    frame
 }
 
 #[test]
@@ -122,6 +164,189 @@ fn blocked_and_pubsub_sessions_progress_and_join_on_shutdown_in_every_mode() {
         assert!(start.elapsed() < Duration::from_secs(3));
         assert_eq!(subscriber.read(&mut [0]).unwrap(), 0);
         assert_eq!(blocked.read(&mut [0]).unwrap(), 0);
+    }
+}
+
+#[test]
+fn per_user_connection_caps_are_atomic_and_release_slots_in_every_mode() {
+    for (workers, async_io) in MODES {
+        let path = std::env::temp_dir().join(format!(
+            "rillcache-user-cap-{}-{workers:?}-{async_io}.acl",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"user default on nopass ~* &* +@all\n").unwrap();
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            worker_threads: workers,
+            io_mode: if async_io {
+                rillcache::server::IoMode::Tokio
+            } else {
+                rillcache::server::IoMode::Mio
+            },
+            aclfile: Some(path.clone()),
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+        let mut admin = connect(&server);
+        send(
+            &mut admin,
+            &[
+                b"ACL",
+                b"SETUSER",
+                b"alice",
+                b"on",
+                b">pw",
+                b"+@all",
+                b"maxconnections=1",
+            ],
+        );
+        expect(&mut admin, b"+OK\r\n");
+        send(
+            &mut admin,
+            &[
+                b"ACL",
+                b"SETUSER",
+                b"bob",
+                b"on",
+                b">pw",
+                b"+@all",
+                b"maxconnections=1",
+            ],
+        );
+        expect(&mut admin, b"+OK\r\n");
+        send(&mut admin, &[b"ACL", b"LIST"]);
+        let acl_list = String::from_utf8(read_resp_frame(&mut admin)).unwrap();
+        assert!(acl_list.contains("user alice"), "{acl_list}");
+        assert!(acl_list.contains("maxconnections=1"), "{acl_list}");
+        send(&mut admin, &[b"ACL", b"GETUSER", b"alice"]);
+        let details = String::from_utf8(read_resp_frame(&mut admin)).unwrap();
+        assert!(details.contains("maxconnections"), "{details}");
+
+        let mut left = connect(&server);
+        let mut right = connect(&server);
+        let barrier = Arc::new(Barrier::new(2));
+        let left_barrier = Arc::clone(&barrier);
+        let left_thread = std::thread::spawn(move || {
+            left_barrier.wait();
+            send(&mut left, &[b"AUTH", b"alice", b"pw"]);
+            let reply = read_line(&mut left);
+            (left, reply)
+        });
+        let right_barrier = Arc::clone(&barrier);
+        let right_thread = std::thread::spawn(move || {
+            right_barrier.wait();
+            send(&mut right, &[b"AUTH", b"alice", b"pw"]);
+            let reply = read_line(&mut right);
+            (right, reply)
+        });
+        let (left, left_reply) = left_thread.join().unwrap();
+        let (right, right_reply) = right_thread.join().unwrap();
+        assert_ne!(
+            left_reply, right_reply,
+            "both simultaneous AUTHs: {left_reply:?}"
+        );
+        assert!(
+            [left_reply.as_slice(), right_reply.as_slice()].contains(&b"+OK\r\n".as_slice()),
+            "{left_reply:?} {right_reply:?}"
+        );
+        assert!(
+            [left_reply.as_slice(), right_reply.as_slice()]
+                .contains(&b"-ERR max connections reached for user\r\n".as_slice()),
+            "{left_reply:?} {right_reply:?}"
+        );
+        let (mut winner, mut loser) = if left_reply == b"+OK\r\n" {
+            (left, right)
+        } else {
+            (right, left)
+        };
+
+        send(&mut winner, &[b"AUTH", b"alice", b"pw"]);
+        expect(&mut winner, b"+OK\r\n");
+        send(
+            &mut admin,
+            &[b"ACL", b"SETUSER", b"alice", b"maxconnections=0"],
+        );
+        expect(&mut admin, b"+OK\r\n");
+        send(&mut loser, &[b"AUTH", b"alice", b"pw"]);
+        expect(&mut loser, b"+OK\r\n");
+        send(
+            &mut admin,
+            &[b"ACL", b"SETUSER", b"alice", b"maxconnections=1"],
+        );
+        expect(&mut admin, b"+OK\r\n");
+        send(&mut winner, &[b"PING"]);
+        expect(&mut winner, b"+PONG\r\n");
+        send(&mut loser, &[b"PING"]);
+        expect(&mut loser, b"+PONG\r\n");
+
+        let mut third = connect(&server);
+        send(&mut third, &[b"AUTH", b"alice", b"pw"]);
+        expect(&mut third, b"-ERR max connections reached for user\r\n");
+        send(&mut third, &[b"AUTH", b"bob", b"pw"]);
+        expect(&mut third, b"+OK\r\n");
+        send(&mut winner, &[b"AUTH", b"bob", b"pw"]);
+        expect(&mut winner, b"-ERR max connections reached for user\r\n");
+        send(&mut winner, &[b"PING"]);
+        expect(&mut winner, b"+PONG\r\n");
+
+        send(&mut third, &[b"QUIT"]);
+        expect(&mut third, b"+OK\r\n");
+        drop(third);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            send(&mut winner, &[b"AUTH", b"bob", b"pw"]);
+            let reply = read_line(&mut winner);
+            if reply == b"+OK\r\n" {
+                break;
+            }
+            assert_eq!(reply, b"-ERR max connections reached for user\r\n");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "switch did not release old identity"
+            );
+            std::thread::yield_now();
+        }
+
+        let mut fourth = connect(&server);
+        send(&mut fourth, &[b"AUTH", b"bob", b"pw"]);
+        expect(&mut fourth, b"-ERR max connections reached for user\r\n");
+        send(&mut fourth, &[b"HELLO", b"3", b"AUTH", b"bob", b"pw"]);
+        expect(&mut fourth, b"-ERR max connections reached for user\r\n");
+        send(&mut fourth, &[b"HELLO"]);
+        let hello = read_resp_frame(&mut fourth);
+        assert!(
+            hello.starts_with(b"*10\r\n"),
+            "HELLO unexpectedly changed protocol: {hello:?}"
+        );
+
+        send(&mut winner, &[b"RESET"]);
+        expect(&mut winner, b"+RESET\r\n");
+        send(&mut fourth, &[b"AUTH", b"bob", b"pw"]);
+        expect(&mut fourth, b"+OK\r\n");
+
+        send(&mut loser, &[b"QUIT"]);
+        expect(&mut loser, b"+OK\r\n");
+        drop(loser);
+        let mut released = connect(&server);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            send(&mut released, &[b"AUTH", b"alice", b"pw"]);
+            let reply = read_line(&mut released);
+            if reply == b"+OK\r\n" {
+                break;
+            }
+            assert_eq!(reply, b"-ERR max connections reached for user\r\n");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "disconnect did not release quota"
+            );
+            std::thread::yield_now();
+        }
+
+        server.shutdown().unwrap();
+        let _ = std::fs::remove_file(path);
     }
 }
 

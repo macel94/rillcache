@@ -518,3 +518,25 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   selector overrides, root-vs-selector alternatives and isolated key scopes.
   Documentation shall identify profile aliases, unsupported categories and the
   bounded subcommand/fallback boundary without claiming full Redis ACL parity.
+
+## Per-user authenticated connection admission (S122)
+
+- **R438 (event-driven):** `ACL SETUSER <user> maxconnections=<N>` shall accept
+  values from 0 through 1,000,000, where zero means unlimited. `ACL GETUSER` and
+  `ACL LIST` shall report configured limits, and ACL SAVE/LOAD shall preserve
+  them. Invalid values shall reject the whole user update atomically.
+- **R439 (state-driven):** Before AUTH, HELLO AUTH or verified client-certificate
+  mapping changes a registered session's identity, the server shall atomically
+  reserve a slot against that ACL user's current limit. At capacity, valid
+  credentials shall fail without replacing the old identity or counting as a
+  failed-password attempt. Reauthentication as the same user shall not consume a
+  second slot; changing users, CLIENT RESET and disconnect shall release the old
+  slot. If RESET would restore a certificate identity whose lowered cap is full,
+  RESET shall fail atomically and retain the current identity. Lowering a cap
+  shall not evict existing sessions but shall deny later admissions until the
+  count falls below the new limit.
+- **R440 (ubiquitous):** Tests shall cover simultaneous authentication at a
+  one-session limit, identity changes, RESET/disconnect release, TLS certificate
+  mapping, ACL persistence and every worker mode. The documented scope is
+  authenticated ACL sessions only: unauthenticated sessions using an implicit
+  no-password default user remain governed by global `maxclients`.

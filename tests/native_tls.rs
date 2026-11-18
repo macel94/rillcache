@@ -249,6 +249,18 @@ fn ping(stream: &mut StreamOwned<ClientConnection, TcpStream>) {
     assert_eq!(&reply, b"+PONG\r\n");
 }
 
+fn read_resp_line(stream: &mut impl Read) -> Vec<u8> {
+    let mut line = Vec::new();
+    loop {
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        line.push(byte[0]);
+        if byte[0] == b'\n' {
+            return line;
+        }
+    }
+}
+
 #[test]
 fn ocsp_staples_follow_the_selected_default_or_sni_identity_and_absence_is_compatible() {
     let directory = std::env::temp_dir().join(format!(
@@ -944,6 +956,175 @@ fn verified_client_certificate_maps_to_acl_user_without_password_and_survives_re
 
     server.shutdown().unwrap();
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn mapped_client_certificate_obeys_per_user_connection_caps_and_disconnect_releases_slot() {
+    let fingerprint = [
+        0xc2, 0x51, 0x50, 0xac, 0x12, 0x67, 0xbf, 0x09, 0xe7, 0x54, 0xf1, 0xc1, 0xcc, 0xbd, 0x78,
+        0x3c, 0x6a, 0x49, 0xaa, 0xaa, 0xb4, 0xc6, 0x6f, 0xe1, 0xf0, 0xb2, 0xe2, 0x17, 0x8b, 0xdd,
+        0x8e, 0x0c,
+    ];
+    for workers in [None, Some(1), Some(4)] {
+        let acl = std::env::temp_dir().join(format!(
+            "rillcache-tls-user-cap-{}-{workers:?}.acl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &acl,
+            b"user default on -@all\nuser cert-reader on nopass ~* &* +@all maxconnections=1\n",
+        )
+        .unwrap();
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+            tls_cert_file: Some(fixture("server.crt")),
+            tls_key_file: Some(fixture("server.key")),
+            tls_client_ca_file: Some(fixture("ca.crt")),
+            tls_client_cert_users: std::collections::BTreeMap::from([(
+                fingerprint,
+                b"cert-reader".to_vec(),
+            )]),
+            aclfile: Some(acl.clone()),
+            worker_threads: workers,
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+
+        let mut first = connect(&server, true);
+        ping(&mut first);
+        let mut rejected = connect(&server, true);
+        let rejected_result = rejected.write_all(b"*1\r\n$4\r\nPING\r\n").and_then(|()| {
+            let mut reply = [0; 7];
+            rejected.read_exact(&mut reply)
+        });
+        assert!(rejected_result.is_err(), "second mTLS session exceeded cap");
+        drop(rejected);
+        drop(first);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut replacement = connect(&server, true);
+            let result = replacement
+                .write_all(b"*1\r\n$4\r\nPING\r\n")
+                .and_then(|()| {
+                    let mut reply = [0; 7];
+                    replacement.read_exact(&mut reply)?;
+                    if reply == *b"+PONG\r\n" {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::other("unexpected TLS PING reply"))
+                    }
+                });
+            if result.is_ok() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "disconnect did not release mTLS slot: {result:?}"
+            );
+            drop(replacement);
+            std::thread::yield_now();
+        }
+        server.shutdown().unwrap();
+        std::fs::remove_file(acl).unwrap();
+    }
+}
+
+#[test]
+fn tls_reset_cannot_overbook_a_full_certificate_user_cap() {
+    let fingerprint = [
+        0xc2, 0x51, 0x50, 0xac, 0x12, 0x67, 0xbf, 0x09, 0xe7, 0x54, 0xf1, 0xc1, 0xcc, 0xbd, 0x78,
+        0x3c, 0x6a, 0x49, 0xaa, 0xaa, 0xb4, 0xc6, 0x6f, 0xe1, 0xf0, 0xb2, 0xe2, 0x17, 0x8b, 0xdd,
+        0x8e, 0x0c,
+    ];
+    for workers in [None, Some(1), Some(4)] {
+        let acl = std::env::temp_dir().join(format!(
+            "rillcache-tls-reset-cap-{}-{workers:?}.acl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &acl,
+            b"user default on nopass ~* &* +@all\nuser cert-reader on nopass ~* &* +@all maxconnections=1\nuser bob on nopass ~* &* +@all\n",
+        )
+        .unwrap();
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+            tls_cert_file: Some(fixture("server.crt")),
+            tls_key_file: Some(fixture("server.key")),
+            tls_client_ca_file: Some(fixture("ca.crt")),
+            tls_client_cert_users: std::collections::BTreeMap::from([(
+                fingerprint,
+                b"cert-reader".to_vec(),
+            )]),
+            aclfile: Some(acl.clone()),
+            worker_threads: workers,
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+
+        let mut mapped = connect(&server, true);
+        ping(&mut mapped);
+        mapped
+            .write_all(b"*3\r\n$4\r\nAUTH\r\n$3\r\nbob\r\n$0\r\n\r\n")
+            .unwrap();
+        let mut ok = [0; 5];
+        mapped.read_exact(&mut ok).unwrap();
+        assert_eq!(&ok, b"+OK\r\n");
+
+        let mut plain = TcpStream::connect(server.local_addr()).unwrap();
+        plain
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        plain
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        plain
+            .write_all(b"*3\r\n$4\r\nAUTH\r\n$11\r\ncert-reader\r\n$0\r\n\r\n")
+            .unwrap();
+        plain.read_exact(&mut ok).unwrap();
+        assert_eq!(&ok, b"+OK\r\n");
+
+        mapped.write_all(b"*1\r\n$5\r\nRESET\r\n").unwrap();
+        let reply = read_resp_line(&mut mapped);
+        assert_eq!(reply, b"-ERR max connections reached for user\r\n");
+        mapped
+            .write_all(b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n")
+            .unwrap();
+        let mut identity = [0; 9];
+        mapped.read_exact(&mut identity).unwrap();
+        assert_eq!(&identity, b"$3\r\nbob\r\n");
+
+        drop(plain);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            mapped.write_all(b"*1\r\n$5\r\nRESET\r\n").unwrap();
+            let reset = read_resp_line(&mut mapped);
+            if reset == b"+RESET\r\n" {
+                break;
+            }
+            assert_eq!(reset, b"-ERR max connections reached for user\r\n");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "disconnected user kept its slot"
+            );
+            std::thread::yield_now();
+        }
+        mapped
+            .write_all(b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n")
+            .unwrap();
+        let mut identity = [0; 18];
+        mapped.read_exact(&mut identity).unwrap();
+        assert_eq!(&identity, b"$11\r\ncert-reader\r\n");
+
+        server.shutdown().unwrap();
+        std::fs::remove_file(acl).unwrap();
+    }
 }
 
 #[test]
