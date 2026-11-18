@@ -507,6 +507,16 @@ impl ServerServices {
         Ok(name)
     }
 
+    pub(crate) fn validate_client_certificate_user(
+        &self,
+        username: &[u8],
+    ) -> Result<Vec<u8>, AuthError> {
+        self.auth
+            .read()
+            .map_err(|_| AuthError::Internal)?
+            .verify_client_certificate_user(username)
+    }
+
     pub(crate) fn authenticate_client_certificate_user(
         &self,
         client_id: u64,

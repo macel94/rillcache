@@ -540,3 +540,26 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   mapping, ACL persistence and every worker mode. The documented scope is
   authenticated ACL sessions only: unauthenticated sessions using an implicit
   no-password default user remain governed by global `maxclients`.
+
+## Atomic TLS client-certificate ACL mapping reload (S123)
+
+- **R441 (event-driven):** When a bounded client-certificate mapping file and
+  operator reload trigger are configured with a client CA, each accepted TLS
+  connection may request a new generation. The file shall map verified leaf
+  SHA-256 fingerprints to enabled ACL usernames; the mapping table shall be
+  validated and published atomically with the certificate, CA/CRL, SNI and OCSP
+  TLS configuration. Inline startup mappings and the mapping file shall not be
+  configured together.
+- **R442 (unwanted behavior):** Missing, unreadable, oversized, non-UTF-8,
+  malformed, duplicate or over-capacity mapping files, and mappings to missing
+  or disabled ACL users, shall reject the entire candidate generation and retain
+  the previous valid TLS-and-mapping generation. The file shall be bounded to
+  1 MiB and 4096 records. A handshake shall use one immutable generation; an
+  established session's authenticated certificate identity, including after
+  RESET, shall not change on reload. An empty valid file shall map no certificate.
+- **R443 (ubiquitous):** Tests shall cover parser bounds and invalid records,
+  startup validation, mapping-only reload, simultaneous mapping/TLS-generation
+  updates, rejected-generation retention and recovery, new-handshake mapping
+  changes, and existing-session/RESET identity retention. Documentation shall
+  state secure file-mode requirements, trigger sequencing, inline-map
+  startup-only scope, and the limits of process-local reload.
