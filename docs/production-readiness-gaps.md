@@ -186,7 +186,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   key; stream `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`/`XINFO` metadata reads;
   `SORT`/`SORT_RO` sources including `STORE` and `BY`/`GET` pattern lookups,
   and `XREAD`/`XREADGROUP` initial stream lookups. **Partial (2026-11-18):**
-  `PFCOUNT` now emits one key-miss event for each missing HLL source lookup,
+  `BITOP` emits one key-miss event for each missing source occurrence; existing
+  strings and wrong-type source keys do not create false misses. `PFCOUNT` now
+  emits one key-miss event for each missing HLL source lookup,
   including repeated sources. `PFMERGE` also reports the missing destination read
   and each missing source occurrence; existing HLL and wrong-type keys do not
   create false misses. **Partial (2026-11-18):** Geospatial read commands now

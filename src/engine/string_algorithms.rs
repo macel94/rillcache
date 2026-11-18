@@ -716,17 +716,24 @@ impl ShardExecutor {
         for source in sources {
             data.expire_key(source, now);
         }
-        let mut values = Vec::with_capacity(sources.len());
         for source in sources {
             match data.entries.get(*source) {
-                None => values.push(None),
-                Some(entry) if entry.is_string() => values.push(Some(entry.value.as_slice())),
+                None => data.record_key_miss(source),
+                Some(entry) if entry.is_string() => {}
                 Some(_) => {
                     wrong_type(out);
                     return;
                 }
             }
         }
+        let values: Vec<_> = sources
+            .iter()
+            .map(|source| {
+                data.entries
+                    .get(*source)
+                    .map(|entry| entry.value.as_slice())
+            })
+            .collect();
         let result = if not {
             let source = values[0].unwrap_or(&[]);
             source.iter().map(|byte| !byte).collect::<Vec<u8>>()
