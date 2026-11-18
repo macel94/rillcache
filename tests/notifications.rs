@@ -1508,6 +1508,57 @@ fn get_and_mget_misses_emit_keymiss_only_for_missing_keys() {
 }
 
 #[test]
+fn touch_read_misses_emit_once_per_missing_operand() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+
+    send(&mut writer, &[b"TOUCH", b"missing", b"missing"], b":0\r\n");
+    for _ in 0..2 {
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                b"missing"
+            ])
+        );
+    }
+
+    send(&mut writer, &[b"SET", b"present", b"value"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"TOUCH", b"present", b"absent", b"present"],
+        b":2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"absent"
+        ])
+    );
+
+    send(&mut writer, &[b"LPUSH", b"wrong", b"type"], b":1\r\n");
+    send(&mut writer, &[b"TOUCH", b"wrong"], b":1\r\n");
+    send(&mut writer, &[b"GET", b"after-hit-marker"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"after-hit-marker"
+        ])
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn pfcount_read_misses_emit_keymiss_per_missing_source_lookup() {
     let server = start(NotifyFlags::parse(b"Em").unwrap());
     let mut subscriber = connect(&server);
