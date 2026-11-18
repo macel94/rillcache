@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::time::Instant;
 
-use crate::engine::{Action, Store, WatchState};
+use crate::engine::{Action, AuthError, Store, WatchState};
 
 use blocking::Blocked;
 use command::arity;
@@ -333,6 +333,17 @@ impl Session {
     ) -> Action {
         if arguments.len() != 1 {
             arity("reset", output);
+            return Action::Continue;
+        }
+        if let Some(tls_user) = self.tls_client_user.as_deref()
+            && let Err(error) = store.restore_tls_client_identity(self.id, tls_user)
+        {
+            match error {
+                AuthError::ConnectionLimit => {
+                    output.extend_from_slice(b"-ERR max connections reached for user\r\n")
+                }
+                _ => output.extend_from_slice(b"-ERR internal authentication error\r\n"),
+            }
             return Action::Continue;
         }
         self.multi = None;

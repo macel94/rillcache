@@ -125,7 +125,19 @@ patterns. A read-only all-key grant can inspect but cannot flush; a write-only
 all-key grant can flush but cannot inspect. Root/all-key users retain normal
 behavior.
 
-`ACL SETUSER` is atomic: a bad rule leaves the previous user untouched. A
+`ACL SETUSER` is atomic: a bad rule leaves the previous user untouched. The
+Rillcache extension `maxconnections=N` sets a concurrent authenticated-session
+cap for that user (`0` through `1,000,000`; zero means unlimited). `ACL GETUSER`
+reports the value and `ACL LIST`/`ACL SAVE`/`ACL LOAD` preserve it. AUTH, HELLO
+AUTH and verified certificate-mapped TLS identities reserve a slot atomically;
+when full, a valid login receives `-ERR max connections reached for user` and
+retains any previous identity. Reauthenticating as the same user does not consume
+another slot; switching users, `RESET` and disconnect release capacity. A TLS
+`RESET` that would restore a certificate identity over its lowered cap fails
+atomically and keeps the current identity. Lowering a cap does not evict existing
+sessions, but blocks later admissions until the active count falls below the new value. Only authenticated ACL sessions count:
+unauthenticated sessions using the implicit no-password default user are bounded
+by global `maxclients` only. This is not a memory, CPU or per-command quota. A
 parenthesized rule group, such as `(+set %W~app:*)`, defines a Redis 7 selector.
 Selectors are alternatives to the root rules: a command is allowed when the root
 rules or any selector permits it, and its keys/channels must be permitted by that
@@ -232,6 +244,9 @@ describes current behavior, not a second checklist.
   authentication/TLS/federation, full-chain signing/key-ID/hot rotation,
   global/cross-process rate limiting and server-certificate OCSP validation are
   absent. Native mTLS client CRL checking is opt-in and fail-closed; see [TLS](tls.md).
+  The per-user `maxconnections` extension limits authenticated sessions only; it
+  does not isolate the shared keyspace, memory, CPU or unauthenticated default-user
+  connections.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
   commands not present in that table remain unsupported. This is not full upstream

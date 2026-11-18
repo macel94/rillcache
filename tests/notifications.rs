@@ -479,6 +479,137 @@ fn geo_mutations_emit_zset_store_and_deletion_events() {
 }
 
 #[test]
+fn geo_read_misses_emit_keymiss_for_source_keys_only() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+
+    let expect_miss = |subscriber: &mut TcpStream, key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key,
+            ])
+        );
+    };
+
+    send(
+        &mut writer,
+        &[b"GEODIST", b"dist-miss", b"a", b"b"],
+        b"$-1\r\n",
+    );
+    expect_miss(&mut subscriber, b"dist-miss");
+    send(
+        &mut writer,
+        &[b"GEOHASH", b"hash-miss", b"a"],
+        b"*1\r\n$-1\r\n",
+    );
+    expect_miss(&mut subscriber, b"hash-miss");
+    send(
+        &mut writer,
+        &[b"GEOPOS", b"pos-miss", b"a"],
+        b"*1\r\n*-1\r\n",
+    );
+    expect_miss(&mut subscriber, b"pos-miss");
+    send(
+        &mut writer,
+        &[
+            b"GEOSEARCH",
+            b"search-miss",
+            b"FROMLONLAT",
+            b"0",
+            b"0",
+            b"BYRADIUS",
+            b"1",
+            b"km",
+        ],
+        b"*0\r\n",
+    );
+    expect_miss(&mut subscriber, b"search-miss");
+    send(
+        &mut writer,
+        &[
+            b"GEOSEARCHSTORE",
+            b"store-dest",
+            b"store-source-miss",
+            b"FROMLONLAT",
+            b"0",
+            b"0",
+            b"BYRADIUS",
+            b"1",
+            b"km",
+        ],
+        b":0\r\n",
+    );
+    expect_miss(&mut subscriber, b"store-source-miss");
+    send(
+        &mut writer,
+        &[b"GEORADIUS", b"radius-miss", b"0", b"0", b"1", b"km"],
+        b"*0\r\n",
+    );
+    expect_miss(&mut subscriber, b"radius-miss");
+    send(
+        &mut writer,
+        &[
+            b"GEORADIUSBYMEMBER",
+            b"member-radius-miss",
+            b"home",
+            b"1",
+            b"km",
+        ],
+        b"*0\r\n",
+    );
+    expect_miss(&mut subscriber, b"member-radius-miss");
+
+    send(&mut writer, &[b"LPUSH", b"wrong-type", b"value"], b":1\r\n");
+    send(
+        &mut writer,
+        &[
+            b"GEOSEARCH",
+            b"wrong-type",
+            b"FROMLONLAT",
+            b"0",
+            b"0",
+            b"BYRADIUS",
+            b"1",
+            b"km",
+        ],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEOADD", b"existing", b"0", b"0", b"home"],
+        b":1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEODIST", b"existing", b"home", b"absent-member"],
+        b"$-1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEOPOS", b"existing", b"absent-member"],
+        b"*1\r\n*-1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEOHASH", b"existing", b"absent-member"],
+        b"*1\r\n$-1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GEODIST", b"marker", b"a", b"b"],
+        b"$-1\r\n",
+    );
+    expect_miss(&mut subscriber, b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn stream_claim_mutations_emit_claim_events() {
     let server = start(NotifyFlags::parse(b"KEA").unwrap());
     let mut subscriber = connect(&server);
@@ -1377,6 +1508,279 @@ fn get_and_mget_misses_emit_keymiss_only_for_missing_keys() {
 }
 
 #[test]
+fn touch_read_misses_emit_once_per_missing_operand() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+
+    send(&mut writer, &[b"TOUCH", b"missing", b"missing"], b":0\r\n");
+    for _ in 0..2 {
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                b"missing"
+            ])
+        );
+    }
+
+    send(&mut writer, &[b"SET", b"present", b"value"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"TOUCH", b"present", b"absent", b"present"],
+        b":2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"absent"
+        ])
+    );
+
+    send(&mut writer, &[b"LPUSH", b"wrong", b"type"], b":1\r\n");
+    send(&mut writer, &[b"TOUCH", b"wrong"], b":1\r\n");
+    send(&mut writer, &[b"GET", b"after-hit-marker"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"after-hit-marker"
+        ])
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn pfcount_read_misses_emit_keymiss_per_missing_source_lookup() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+
+    send(&mut writer, &[b"PFADD", b"seen", b"value"], b":1\r\n");
+    send(&mut writer, &[b"PFCOUNT", b"seen"], b":1\r\n");
+    send(&mut writer, &[b"LPUSH", b"wrong", b"type"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"PFCOUNT", b"wrong"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+
+    send(&mut writer, &[b"PFCOUNT", b"missing"], b":0\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"missing"
+        ])
+    );
+
+    send(
+        &mut writer,
+        &[b"PFCOUNT", b"seen", b"missing", b"missing"],
+        b":1\r\n",
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                b"missing"
+            ])
+        );
+    }
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn pfmerge_read_misses_emit_destination_then_each_missing_source() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+
+    send(
+        &mut writer,
+        &[b"PFMERGE", b"dest", b"missing", b"missing"],
+        b"+OK\r\n",
+    );
+    for key in [b"dest".as_slice(), b"missing", b"missing"] {
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key
+            ])
+        );
+    }
+
+    send(
+        &mut writer,
+        &[b"PFADD", b"existing-dest", b"value"],
+        b":1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"PFADD", b"existing-source", b"value"],
+        b":1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"PFMERGE", b"existing-dest", b"existing-source"],
+        b"+OK\r\n",
+    );
+    send(&mut writer, &[b"PFMERGE", b"marker"], b"+OK\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"marker"
+        ])
+    );
+
+    send(&mut writer, &[b"LPUSH", b"wrong", b"type"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"PFMERGE", b"wrong", b"missing"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"PFMERGE", b"error-dest", b"missing-before-error", b"wrong"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    for key in [b"error-dest".as_slice(), b"missing-before-error"] {
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key
+            ])
+        );
+    }
+    send(&mut writer, &[b"PFMERGE", b"after-error"], b"+OK\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"after-error"
+        ])
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn bitop_read_misses_emit_once_per_missing_source_occurrence() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+
+    send(
+        &mut writer,
+        &[b"BITOP", b"OR", b"dest", b"missing", b"missing"],
+        b":0\r\n",
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                b"missing"
+            ])
+        );
+    }
+
+    send(&mut writer, &[b"SET", b"present", b"\x01"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"BITOP", b"XOR", b"result", b"present", b"absent"],
+        b":1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"absent"
+        ])
+    );
+
+    send(&mut writer, &[b"LPUSH", b"wrong", b"type"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"BITOP", b"OR", b"wrong-dest", b"wrong"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"GET", b"wrong-type-marker"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"wrong-type-marker"
+        ])
+    );
+
+    send(
+        &mut writer,
+        &[
+            b"BITOP",
+            b"OR",
+            b"error-dest",
+            b"miss-before-error",
+            b"wrong",
+        ],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"miss-before-error"
+        ])
+    );
+    send(&mut writer, &[b"GET", b"after-error-marker"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"after-error-marker"
+        ])
+    );
+
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn new_key_events_fire_once_per_created_key() {
     let server = start(NotifyFlags::parse(b"En").unwrap());
     let mut subscriber = connect(&server);
@@ -1422,6 +1826,424 @@ fn new_key_events_fire_once_per_created_key() {
         &mut writer,
         &[b"XADD", b"s", b"2-0", b"f", b"v"],
         b"$3\r\n2-0\r\n",
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn getex_reports_misses_without_changing_ttl_validation_order() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let expect_miss = |subscriber: &mut _, key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key,
+            ])
+        );
+    };
+    let key = b"key\0\xff";
+    send(&mut writer, &[b"GETEX", key, b"PERSIST"], b"$-1\r\n");
+    expect_miss(&mut subscriber, key);
+    send(&mut writer, &[b"GETEX", key, b"EX", b"invalid"], b"$-1\r\n");
+    expect_miss(&mut subscriber, key);
+    send(
+        &mut writer,
+        &[b"GETEX", key, b"bogus"],
+        b"-ERR syntax error\r\n",
+    );
+    send(&mut writer, &[b"SET", key, b"v", b"EX", b"60"], b"+OK\r\n");
+    send(&mut writer, &[b"GETEX", key, b"PERSIST"], b"$1\r\nv\r\n");
+    send(&mut writer, &[b"TTL", key], b":-1\r\n");
+    send(&mut writer, &[b"SADD", b"set", b"m"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"GETEX", b"set", b"PERSIST"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    expect_miss(&mut subscriber, b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn set_get_and_getset_report_the_old_value_lookup_before_creation() {
+    let server = start(NotifyFlags::parse(b"Emn$").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+    let event =
+        |channel: &[u8], key: &[u8]| frame(&[b"pmessage", b"__keyevent@0__:*", channel, key]);
+    let key = b"old\0\xff";
+    send(&mut writer, &[b"SET", key, b"v", b"XX", b"GET"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        event(b"__keyevent@0__:keymiss", key)
+    );
+    for (args, key) in [
+        (
+            [b"SET".as_slice(), key, b"v", b"GET"].as_slice(),
+            key.as_slice(),
+        ),
+        (
+            [b"GETSET".as_slice(), b"alias", b"v"].as_slice(),
+            b"alias".as_slice(),
+        ),
+    ] {
+        send(&mut writer, args, b"$-1\r\n");
+        for channel in [
+            b"__keyevent@0__:keymiss".as_slice(),
+            b"__keyevent@0__:new",
+            b"__keyevent@0__:set",
+        ] {
+            assert_eq!(read_frame(&mut subscriber), event(channel, key));
+        }
+    }
+    send(&mut writer, &[b"SET", key, b"next", b"GET"], b"$1\r\nv\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        event(b"__keyevent@0__:set", key)
+    );
+    send(&mut writer, &[b"SET", b"plain", b"v"], b"+OK\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        event(b"__keyevent@0__:new", b"plain")
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        event(b"__keyevent@0__:set", b"plain")
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn only_conditional_delex_reports_a_missing_key() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let event = |key: &[u8]| {
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            key,
+        ])
+    };
+    let key = b"delex\0\xff";
+    send(&mut writer, &[b"DELEX", key, b"IFEQ", b"value"], b":0\r\n");
+    assert_eq!(read_frame(&mut subscriber), event(key));
+    send(&mut writer, &[b"DELEX", key], b":0\r\n");
+    send(&mut writer, &[b"DELIFEQ", key, b"value"], b":0\r\n");
+    send(&mut writer, &[b"SET", key, b"value"], b"+OK\r\n");
+    send(&mut writer, &[b"DELEX", key, b"IFEQ", b"other"], b":0\r\n");
+    send(&mut writer, &[b"DELEX", key, b"IFEQ", b"value"], b":1\r\n");
+    send(&mut writer, &[b"SADD", b"set", b"m"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"DELEX", b"set", b"IFEQ", b"value"],
+        b"-ERR Key should be of string type if conditions are specified\r\n",
+    );
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    assert_eq!(read_frame(&mut subscriber), event(b"marker"));
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn digest_reports_one_keymiss_only_for_an_absent_key() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let event = |key: &[u8]| {
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            key,
+        ])
+    };
+    let key = b"digest\0\xff";
+    send(&mut writer, &[b"DIGEST", key], b"$-1\r\n");
+    assert_eq!(read_frame(&mut subscriber), event(key));
+    send(&mut writer, &[b"SET", key, b""], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"DIGEST", key],
+        b"$16\r\n2d06800538d394c2\r\n",
+    );
+    send(&mut writer, &[b"SADD", b"set", b"m"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"DIGEST", b"set"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    assert_eq!(read_frame(&mut subscriber), event(b"marker"));
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn zrangestore_reports_only_missing_source_lookups() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let expect_miss = |subscriber: &mut _, key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key
+            ]),
+        );
+    };
+    let source = b"source\0\xff";
+    send(&mut writer, &[b"SET", b"dest", b"old"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"dest", source, b"0", b"-1"],
+        b":0\r\n",
+    );
+    expect_miss(&mut subscriber, source);
+    send(&mut writer, &[b"TYPE", b"dest"], b"+none\r\n");
+    expect_miss(&mut subscriber, b"dest");
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"absent-dest", source, b"0", b"-1"],
+        b":0\r\n",
+    );
+    expect_miss(&mut subscriber, source);
+    send(&mut writer, &[b"ZADD", source, b"1", b"member"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"dest", source, b"0", b"-1"],
+        b":1\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"other", source, b"1", b"2"],
+        b":0\r\n",
+    );
+    send(&mut writer, &[b"SET", source, b"not-a-set"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"ZRANGESTORE", b"dest", source, b"0", b"-1"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"ZCARD", b"dest"], b":1\r\n");
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    expect_miss(&mut subscriber, b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn getdel_reports_only_a_missing_key_as_keymiss() {
+    let server = start(NotifyFlags::parse(b"Emg").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+    let expect = |subscriber: &mut _, channel: &[u8], key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[b"pmessage", b"__keyevent@0__:*", channel, key])
+        );
+    };
+    let key = b"key\0\xff";
+    send(&mut writer, &[b"GETDEL", key], b"$-1\r\n");
+    expect(&mut subscriber, b"__keyevent@0__:keymiss", key);
+    send(&mut writer, &[b"SET", key, b"v"], b"+OK\r\n");
+    send(&mut writer, &[b"GETDEL", key], b"$1\r\nv\r\n");
+    expect(&mut subscriber, b"__keyevent@0__:del", key);
+    send(&mut writer, &[b"SADD", key, b"m"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"GETDEL", key],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"SISMEMBER", key, b"m"], b":1\r\n");
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    expect(&mut subscriber, b"__keyevent@0__:keymiss", b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn lcs_reports_both_operand_lookups_before_wrong_type() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let assert_miss = |subscriber: &mut _, key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                key,
+            ])
+        );
+    };
+    let missing = b"missing\0\xff";
+    send(&mut writer, &[b"SADD", b"set", b"member"], b":1\r\n");
+    for keys in [[b"set".as_slice(), missing], [missing, b"set"]] {
+        send(
+            &mut writer,
+            &[b"LCS", keys[0], keys[1]],
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+        );
+        assert_miss(&mut subscriber, missing);
+        send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+        assert_miss(&mut subscriber, b"marker");
+    }
+    send(&mut writer, &[b"LCS", missing, b"other"], b"$0\r\n\r\n");
+    assert_miss(&mut subscriber, missing);
+    assert_miss(&mut subscriber, b"other");
+    send(&mut writer, &[b"LCS", missing, missing, b"LEN"], b":0\r\n");
+    assert_miss(&mut subscriber, missing);
+    assert_miss(&mut subscriber, missing);
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    assert_miss(&mut subscriber, b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn smismember_emits_one_keymiss_for_a_missing_set_only() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let binary_missing = b"missing\0\xff";
+
+    send(
+        &mut writer,
+        &[b"SMISMEMBER", binary_missing, b"a", b"b"],
+        b"*2\r\n:0\r\n:0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            binary_missing
+        ])
+    );
+
+    send(&mut writer, &[b"SADD", b"existing", b"member"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"SMISMEMBER", b"existing", b"member", b"absent-member"],
+        b"*2\r\n:1\r\n:0\r\n",
+    );
+    send(&mut writer, &[b"GET", b"marker-after-hit"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"marker-after-hit"
+        ])
+    );
+
+    send(&mut writer, &[b"SET", b"wrong", b"type"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"SMISMEMBER", b"wrong", b"member"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GET", b"marker-after-wrong-type"],
+        b"$-1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"marker-after-wrong-type"
+        ])
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn copy_source_miss_emits_keymiss_but_existing_sources_do_not() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let binary_missing = b"missing\0\xff";
+
+    send(
+        &mut writer,
+        &[b"COPY", binary_missing, b"destination"],
+        b":0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            binary_missing
+        ])
+    );
+
+    send(&mut writer, &[b"SET", b"source", b"value"], b"+OK\r\n");
+    send(&mut writer, &[b"COPY", b"source", b"copy"], b":1\r\n");
+    send(&mut writer, &[b"GET", b"copy"], b"$5\r\nvalue\r\n");
+    send(&mut writer, &[b"GET", b"marker-after-copy"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"marker-after-copy"
+        ])
+    );
+
+    send(&mut writer, &[b"SET", b"occupied", b"old"], b"+OK\r\n");
+    send(&mut writer, &[b"COPY", b"source", b"occupied"], b":0\r\n");
+    send(
+        &mut writer,
+        &[b"GET", b"marker-after-no-replace"],
+        b"$-1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"marker-after-no-replace"
+        ])
+    );
+
+    send(
+        &mut writer,
+        &[b"COPY", binary_missing, b"occupied"],
+        b":0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            binary_missing
+        ])
     );
     server.shutdown().unwrap();
 }

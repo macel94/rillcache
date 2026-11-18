@@ -669,6 +669,47 @@ fn hgetex_reports_its_ttl_events_without_a_write_event() {
 }
 
 #[test]
+fn first_get_after_expiry_emits_expired_then_keymiss() {
+    use crate::engine::{Clock, NotifyFlags};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    struct TestClock(AtomicI64);
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let clock = Arc::new(TestClock(AtomicI64::new(100)));
+    let store = Store::with_clock(64, clock.clone());
+    store.set_notify_flags(NotifyFlags::parse(b"Exm").unwrap());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(Store::pubsub_queue_capacity());
+    assert!(store.pubsub_subscribe(true, b"__keyevent@0__:*", 1, sender, false));
+    let key = b"expiry\0\xff";
+    let expect_event = |channel: &[u8]| {
+        let mut frame = Vec::new();
+        crate::protocol::encode_request(
+            &[b"pmessage", b"__keyevent@0__:*", channel, key],
+            &mut frame,
+        );
+        assert_eq!(receiver.try_recv().unwrap(), frame);
+    };
+
+    assert_eq!(run(&store, &[b"SET", key, b"v", b"PX", b"2"]), b"+OK\r\n");
+    // The absolute deadline itself is still live.
+    clock.0.store(102, Ordering::SeqCst);
+    assert_eq!(run(&store, &[b"GET", key]), b"$1\r\nv\r\n");
+    assert!(receiver.try_recv().is_err());
+    clock.0.store(103, Ordering::SeqCst);
+    assert_eq!(run(&store, &[b"GET", key]), b"$-1\r\n");
+    expect_event(b"__keyevent@0__:expired");
+    expect_event(b"__keyevent@0__:keymiss");
+    assert_eq!(run(&store, &[b"GET", key]), b"$-1\r\n");
+    expect_event(b"__keyevent@0__:keymiss");
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn read_misses_emit_keymiss_only_for_missing_keys() {
     use crate::engine::NotifyFlags;
     let store = Store::new(12);
@@ -2230,12 +2271,13 @@ fn bit_algorithm_read_misses_emit_keymiss() {
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
     );
     assert!(receiver.try_recv().is_err(), "wrong type is not a key miss");
-    // A wrong-type first operand fails before Redis reads the second key.
+    // Both operands are read before the type check.
     assert_eq!(
         run(&store, &[b"LCS", b"l", b"missing2", b"LEN"]),
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
     );
-    assert!(receiver.try_recv().is_err(), "second operand is not read");
+    expect_miss(b"missing2");
+    assert!(receiver.try_recv().is_err(), "wrong type is not a key miss");
     // A missing first operand is reported before the second operand's type error.
     assert_eq!(
         run(&store, &[b"LCS", b"missing3", b"l", b"LEN"]),

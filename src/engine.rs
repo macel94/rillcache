@@ -494,7 +494,20 @@ impl ServerServices {
             .verify_user(username, password)
     }
 
-    pub(crate) fn authenticate_client_certificate_user(
+    pub fn authenticate_client_user(
+        &self,
+        client_id: u64,
+        username: Option<&[u8]>,
+        password: &[u8],
+    ) -> Result<Vec<u8>, AuthError> {
+        let auth = self.auth.read().map_err(|_| AuthError::Internal)?;
+        let name = auth.verify_user(username, password)?;
+        let limit = auth.max_connections(&name).ok_or(AuthError::Internal)?;
+        self.reserve_authenticated_client(client_id, &name, limit)?;
+        Ok(name)
+    }
+
+    pub(crate) fn validate_client_certificate_user(
         &self,
         username: &[u8],
     ) -> Result<Vec<u8>, AuthError> {
@@ -502,6 +515,61 @@ impl ServerServices {
             .read()
             .map_err(|_| AuthError::Internal)?
             .verify_client_certificate_user(username)
+    }
+
+    pub(crate) fn authenticate_client_certificate_user(
+        &self,
+        client_id: u64,
+        username: &[u8],
+    ) -> Result<Vec<u8>, AuthError> {
+        let auth = self.auth.read().map_err(|_| AuthError::Internal)?;
+        let name = auth.verify_client_certificate_user(username)?;
+        let limit = auth.max_connections(&name).ok_or(AuthError::Internal)?;
+        self.reserve_authenticated_client(client_id, &name, limit)?;
+        Ok(name)
+    }
+
+    /// Restore a previously verified certificate identity during CLIENT RESET.
+    /// Certificate proof remains attached to the connection for its lifetime.
+    pub(crate) fn restore_tls_client_identity(
+        &self,
+        client_id: u64,
+        name: &[u8],
+    ) -> Result<(), AuthError> {
+        let auth = self.auth.read().map_err(|_| AuthError::Internal)?;
+        let limit = auth.max_connections(name).unwrap_or(0);
+        self.reserve_authenticated_client(client_id, name, limit)
+    }
+
+    /// Atomically bind a registered session to its authenticated ACL identity.
+    /// The caller holds the ACL read lock through this reservation, so concurrent
+    /// SETUSER cap changes and authentication admissions have a clear order.
+    fn reserve_authenticated_client(
+        &self,
+        client_id: u64,
+        name: &[u8],
+        limit: usize,
+    ) -> Result<(), AuthError> {
+        let mut clients = self.clients.write().map_err(|_| AuthError::Internal)?;
+        let Some(current) = clients.get(&client_id) else {
+            // Direct Session unit tests are not registered network connections.
+            return Ok(());
+        };
+        if current.user.as_deref() == Some(name) {
+            return Ok(());
+        }
+        let count = clients
+            .values()
+            .filter(|client| client.user.as_deref() == Some(name))
+            .count();
+        if limit > 0 && count >= limit {
+            return Err(AuthError::ConnectionLimit);
+        }
+        let client = clients
+            .get_mut(&client_id)
+            .expect("registered client remains under write lock");
+        client.user = Some(name.to_vec());
+        Ok(())
     }
 
     /// True when any user/rule/key restriction exists, so command authorization

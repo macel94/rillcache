@@ -33,8 +33,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   an incomplete RESP/inline request, the server shall enforce one configurable
   monotonic frame-assembly deadline independent of socket activity; additional
   fragments shall not extend it. Consuming the frame shall clear the deadline for
-  the next request. Expiry shall close only that connection and release its
-  admission resources. Complete buffered commands shall not expire while queued,
+  the next request. An empty parser buffer after a complete request shall not arm
+  an assembly deadline: the connection may idle until its socket inactivity limit.
+  Expiry shall close only that connection and release its admission resources.
+  Complete buffered commands shall not expire while queued,
   paused, blocked behind command execution or backpressured. The deadline begins
   when parsing identifies an incomplete request; it does not bound encrypted TLS
   records that have not yielded RESP plaintext.

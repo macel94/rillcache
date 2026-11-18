@@ -37,7 +37,8 @@ remains `unsafe_code = "forbid"`.
 | `--tls-ocsp-file PATH` | Optional DER OCSP response stapled with the default identity |
 | `--tls-client-ca-file PATH` | Optional client CA; enables required mTLS |
 | `--tls-client-crl-file PATH` | Optional DER CRL; requires the client CA and rejects revoked, unknown or expired client status |
-| `--tls-client-cert-user SHA256=USER` | Repeatable SHA-256 leaf-certificate fingerprint to ACL username mapping; requires the client CA |
+| `--tls-client-cert-user SHA256=USER` | Repeatable startup-only SHA-256 leaf-certificate fingerprint to ACL username mapping; requires the client CA |
+| `--tls-client-cert-users-file PATH` | Bounded UTF-8 `SHA256=ACL-USERNAME` map reloaded atomically with TLS files; requires client CA and reload trigger; mutually exclusive with inline mappings |
 | `--tls-reload-trigger PATH` | Optional operator-controlled reload token file |
 | `--tls-sni-cert-file NAME=PATH` | Repeatable exact SNI DNS name and PEM certificate chain |
 | `--tls-sni-key-file NAME=PATH` | Repeatable matching SNI DNS name and PEM private key |
@@ -107,10 +108,23 @@ RESP commands are served. The mapped user is authenticated for the connection,
 and all its ACL command/key/channel restrictions still apply. `RESET` returns
 to the certificate-mapped identity; `AUTH` may explicitly switch users.
 
-Fingerprint mappings are startup configuration and are not changed by the TLS
-file reload trigger. When replacing a client certificate, update its mapping
-and restart the process; the reload trigger rotates server identities and the
-client-CA verifier only.
+Inline fingerprint mappings are startup-only. For rotation without restart,
+configure `--tls-client-cert-users-file PATH` with both the client CA and
+`--tls-reload-trigger PATH`; do not combine it with inline mappings. The file is
+at most 1 MiB, contains up to 4096 UTF-8 records of `SHA256=ACL-USERNAME`, and
+allows blank lines and full-line `#` comments. Fingerprints are SHA-256 over
+verified leaf DER. Duplicate/invalid fingerprints, malformed records and users
+that are missing or disabled reject the whole candidate generation. An empty
+file intentionally maps no certificate and rejects every mTLS identity. With
+`--secure-secret-files`, the file must be regular and owner-only.
+
+After staging server/client certificate, CA/CRL, OCSP/SNI and mapping files,
+atomically publish a new trigger token. The TLS configuration and mapping table
+are validated and published together; every handshake uses one immutable
+snapshot. Established sessions keep the ACL identity captured at handshake,
+including after RESET; new handshakes use the new mapping. A failed candidate
+retains the previous TLS and mapping generation. Inline mappings remain
+supported for deployments that do not need mapping reload.
 
 ## Development certificate
 
@@ -138,23 +152,26 @@ test keys.
   unknown SNI names abort the handshake; the default identity is used only when
   the ClientHello has no SNI. If no mappings are configured, the single default
   certificate preserves existing behavior for any SNI name.
-- Optional certificate and client-CA/CRL rotation uses `--tls-reload-trigger PATH`. The trigger
-  must exist at startup and contain a unique 1..=64-byte visible-ASCII token.
-  Stage replacement PEM files (each at most 1 MiB) by atomic rename, then
-  atomically replace the trigger with a new token. The next accepted TLS
-  connection attempts one bounded reload of the default and every configured
-  SNI identity, their associated OCSP response files, and the optional client CA and CRL.
-  Each response follows only its configured certificate/key identity; existing connections
-  retain their established rustls configuration snapshot.
-- If reload parsing, CA validation or a certificate/key match fails, the last
-  valid generation remains active and the error is written to stderr. That token
-  is not retried; after fixing files, publish a different token. New handshakes
-  continue using the last valid identities and stapled bytes while a bad generation is present.
-  Verify the served identities after rotating. Reload is process-local, not a
-  distributed rollout or readiness guarantee. With `--secure-secret-files`, the
-  trigger must also be owner-only (for example, mode 0600). CRL updates are
-  included in the new verifier generation; certificate-to-ACL mappings require
-  explicit leaf fingerprints and are startup-only.
+- Optional certificate, client-CA/CRL and mapping rotation uses
+  `--tls-reload-trigger PATH`. The trigger must exist at startup and contain a
+  unique 1..=64-byte visible-ASCII token. Stage replacement files (each at most
+  1 MiB) by atomic rename, then atomically replace the trigger with a new token.
+  The next accepted TLS connection attempts one bounded reload of the default
+  and every configured SNI identity, associated OCSP response files, the
+  optional client CA and CRL, and (when configured) the client-certificate ACL
+  mapping file. The TLS verifier, identities and map publish as one generation;
+  each handshake uses one snapshot, while established sessions keep their
+  handshake-time ACL identity. Each OCSP response follows only its configured
+  certificate/key identity.
+- If reload parsing, CA/CRL validation, mapped-user validation or a certificate/key
+  match fails, the last valid TLS-and-mapping generation remains active and the
+  error is written to stderr. That token is not retried; after fixing files,
+  publish a different token. New handshakes continue using the last valid
+  identities and stapled bytes while a bad generation is present. Verify the
+  served identities after rotating. Reload is process-local, not a distributed
+  rollout or readiness guarantee. With `--secure-secret-files`, the trigger
+  and configured mapping file must also be owner-only (for example, mode 0600).
+  Inline certificate mappings remain startup-only.
 - OCSP files must be nonempty, no larger than 1 MiB, and have one bounded DER
   SEQUENCE envelope. This is framing validation only: the server does not parse
   OCSP status, verify signatures/responders, check `thisUpdate`/`nextUpdate`, or
@@ -181,7 +198,7 @@ verify stderr reports rejection, the old fingerprint remains served, and an
 existing connection still exchanges RESP. Restore a valid pair, advance the token
 again, and verify recovery. The automated `tls_reload_trigger_rotates_new_handshakes_and_keeps_last_valid_config_on_failure` and client-CRL handshake tests cover the repeatable parts; this drill is not a production certification.
 
-- OCSP stapling is not configured. rustls 0.23.46 can transmit opaque OCSP bytes attached to a server identity, but does not validate the response signature, certificate status or freshness for this server's acceptance policy. Revocation of the server certificate therefore depends on clients validating OCSP (which this server cannot enforce) or an independently operated TLS terminator that validates/staples current responses and fails closed. The native CRL option applies only to client certificates during mTLS; it does not revoke the server's own certificate.
+- OCSP stapling can attach operator-provisioned opaque bytes to a server identity. rustls 0.23.46 does not validate their signature, certificate status, certificate identity or freshness for this server's acceptance policy. Revocation of the server certificate therefore depends on clients validating OCSP (which this server cannot enforce) or an independently operated TLS terminator that validates/staples current responses and fails closed. The native CRL option applies only to client certificates during mTLS; it does not revoke the server's own certificate.
 - There is no ALPN or PROXY protocol.
 - TLS connections use the per-client blocking worker path. The fixed
   worker-pool setting continues to govern plaintext connections; TLS connections
@@ -201,5 +218,6 @@ The tests cover TLS 1.3 RESP in all execution modes, plaintext coexistence, TLS
 certificate selection with and without mTLS, unknown-name handshake rejection,
 atomic certificate rotation and invalid certificate-replacement retention,
 valid/revoked/unknown/expired client CRLs, and verified client-certificate-to-ACL mapping with
-unmapped-certificate rejection. Server-certificate OCSP validation remains an
+unmapped-certificate rejection, atomic mapping reload, established-session identity
+retention and failed-generation rollback. Server-certificate OCSP validation remains an
 explicit deployment boundary, not an implemented control.

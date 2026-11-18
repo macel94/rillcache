@@ -112,7 +112,10 @@ impl ServerCertVerifier for OcspCaptureVerifier {
     }
 }
 
-fn client_config_with_ocsp_capture(responses: Arc<Mutex<Vec<Vec<u8>>>>) -> Arc<ClientConfig> {
+fn client_config_with_ocsp_capture(
+    responses: Arc<Mutex<Vec<Vec<u8>>>>,
+    with_client_cert: bool,
+) -> Arc<ClientConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier =
         WebPkiServerVerifier::builder_with_provider(Arc::new(roots()), Arc::clone(&provider))
@@ -122,14 +125,27 @@ fn client_config_with_ocsp_capture(responses: Arc<Mutex<Vec<Vec<u8>>>>) -> Arc<C
         inner: verifier,
         responses,
     });
-    Arc::new(
-        ClientConfig::builder_with_provider(provider)
-            .with_protocol_versions(&[&rustls::version::TLS13])
+    let builder = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier);
+    let config = if with_client_cert {
+        let mut cert_reader =
+            std::io::BufReader::new(std::fs::File::open(fixture("client.crt")).unwrap());
+        let certs = rustls_pemfile::certs(&mut cert_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let mut key_reader =
+            std::io::BufReader::new(std::fs::File::open(fixture("client.key")).unwrap());
+        let key = rustls_pemfile::private_key(&mut key_reader)
             .unwrap()
-            .dangerous()
-            .with_custom_certificate_verifier(verifier)
-            .with_no_client_auth(),
-    )
+            .unwrap();
+        builder.with_client_auth_cert(certs, key).unwrap()
+    } else {
+        builder.with_no_client_auth()
+    };
+    Arc::new(config)
 }
 
 fn client_config(with_client_cert: bool, tls12: bool) -> Arc<ClientConfig> {
@@ -216,11 +232,20 @@ fn connect_capturing_ocsp(
     server_name: &str,
     responses: Arc<Mutex<Vec<Vec<u8>>>>,
 ) -> StreamOwned<ClientConnection, TcpStream> {
+    connect_capturing_ocsp_with_client_cert(server, server_name, responses, false)
+}
+
+fn connect_capturing_ocsp_with_client_cert(
+    server: &ServerHandle,
+    server_name: &str,
+    responses: Arc<Mutex<Vec<Vec<u8>>>>,
+    with_client_cert: bool,
+) -> StreamOwned<ClientConnection, TcpStream> {
     let tcp = TcpStream::connect(server.tls_local_addr().unwrap()).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
     let connection = ClientConnection::new(
-        client_config_with_ocsp_capture(responses),
+        client_config_with_ocsp_capture(responses, with_client_cert),
         ServerName::try_from(server_name.to_owned()).unwrap(),
     )
     .unwrap();
@@ -235,7 +260,7 @@ fn connect_without_sni_capturing_ocsp(
     tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
     let connection = ClientConnection::new(
-        client_config_with_ocsp_capture(responses),
+        client_config_with_ocsp_capture(responses, false),
         ServerName::IpAddress("127.0.0.1".parse::<std::net::IpAddr>().unwrap().into()),
     )
     .unwrap();
@@ -247,6 +272,30 @@ fn ping(stream: &mut StreamOwned<ClientConnection, TcpStream>) {
     let mut reply = [0u8; 7];
     stream.read_exact(&mut reply).unwrap();
     assert_eq!(&reply, b"+PONG\r\n");
+}
+
+fn assert_tls_acl_user(stream: &mut StreamOwned<ClientConnection, TcpStream>, username: &[u8]) {
+    stream
+        .write_all(b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n")
+        .unwrap();
+    let mut expected = format!("${}\r\n", username.len()).into_bytes();
+    expected.extend_from_slice(username);
+    expected.extend_from_slice(b"\r\n");
+    let mut actual = vec![0; expected.len()];
+    stream.read_exact(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+}
+
+fn read_resp_line(stream: &mut impl Read) -> Vec<u8> {
+    let mut line = Vec::new();
+    loop {
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        line.push(byte[0]);
+        if byte[0] == b'\n' {
+            return line;
+        }
+    }
 }
 
 #[test]
@@ -947,6 +996,175 @@ fn verified_client_certificate_maps_to_acl_user_without_password_and_survives_re
 }
 
 #[test]
+fn mapped_client_certificate_obeys_per_user_connection_caps_and_disconnect_releases_slot() {
+    let fingerprint = [
+        0xc2, 0x51, 0x50, 0xac, 0x12, 0x67, 0xbf, 0x09, 0xe7, 0x54, 0xf1, 0xc1, 0xcc, 0xbd, 0x78,
+        0x3c, 0x6a, 0x49, 0xaa, 0xaa, 0xb4, 0xc6, 0x6f, 0xe1, 0xf0, 0xb2, 0xe2, 0x17, 0x8b, 0xdd,
+        0x8e, 0x0c,
+    ];
+    for workers in [None, Some(1), Some(4)] {
+        let acl = std::env::temp_dir().join(format!(
+            "rillcache-tls-user-cap-{}-{workers:?}.acl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &acl,
+            b"user default on -@all\nuser cert-reader on nopass ~* &* +@all maxconnections=1\n",
+        )
+        .unwrap();
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+            tls_cert_file: Some(fixture("server.crt")),
+            tls_key_file: Some(fixture("server.key")),
+            tls_client_ca_file: Some(fixture("ca.crt")),
+            tls_client_cert_users: std::collections::BTreeMap::from([(
+                fingerprint,
+                b"cert-reader".to_vec(),
+            )]),
+            aclfile: Some(acl.clone()),
+            worker_threads: workers,
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+
+        let mut first = connect(&server, true);
+        ping(&mut first);
+        let mut rejected = connect(&server, true);
+        let rejected_result = rejected.write_all(b"*1\r\n$4\r\nPING\r\n").and_then(|()| {
+            let mut reply = [0; 7];
+            rejected.read_exact(&mut reply)
+        });
+        assert!(rejected_result.is_err(), "second mTLS session exceeded cap");
+        drop(rejected);
+        drop(first);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut replacement = connect(&server, true);
+            let result = replacement
+                .write_all(b"*1\r\n$4\r\nPING\r\n")
+                .and_then(|()| {
+                    let mut reply = [0; 7];
+                    replacement.read_exact(&mut reply)?;
+                    if reply == *b"+PONG\r\n" {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::other("unexpected TLS PING reply"))
+                    }
+                });
+            if result.is_ok() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "disconnect did not release mTLS slot: {result:?}"
+            );
+            drop(replacement);
+            std::thread::yield_now();
+        }
+        server.shutdown().unwrap();
+        std::fs::remove_file(acl).unwrap();
+    }
+}
+
+#[test]
+fn tls_reset_cannot_overbook_a_full_certificate_user_cap() {
+    let fingerprint = [
+        0xc2, 0x51, 0x50, 0xac, 0x12, 0x67, 0xbf, 0x09, 0xe7, 0x54, 0xf1, 0xc1, 0xcc, 0xbd, 0x78,
+        0x3c, 0x6a, 0x49, 0xaa, 0xaa, 0xb4, 0xc6, 0x6f, 0xe1, 0xf0, 0xb2, 0xe2, 0x17, 0x8b, 0xdd,
+        0x8e, 0x0c,
+    ];
+    for workers in [None, Some(1), Some(4)] {
+        let acl = std::env::temp_dir().join(format!(
+            "rillcache-tls-reset-cap-{}-{workers:?}.acl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &acl,
+            b"user default on nopass ~* &* +@all\nuser cert-reader on nopass ~* &* +@all maxconnections=1\nuser bob on nopass ~* &* +@all\n",
+        )
+        .unwrap();
+        let server = Server::bind(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+            tls_cert_file: Some(fixture("server.crt")),
+            tls_key_file: Some(fixture("server.key")),
+            tls_client_ca_file: Some(fixture("ca.crt")),
+            tls_client_cert_users: std::collections::BTreeMap::from([(
+                fingerprint,
+                b"cert-reader".to_vec(),
+            )]),
+            aclfile: Some(acl.clone()),
+            worker_threads: workers,
+            ..Config::default()
+        })
+        .unwrap()
+        .spawn()
+        .unwrap();
+
+        let mut mapped = connect(&server, true);
+        ping(&mut mapped);
+        mapped
+            .write_all(b"*3\r\n$4\r\nAUTH\r\n$3\r\nbob\r\n$0\r\n\r\n")
+            .unwrap();
+        let mut ok = [0; 5];
+        mapped.read_exact(&mut ok).unwrap();
+        assert_eq!(&ok, b"+OK\r\n");
+
+        let mut plain = TcpStream::connect(server.local_addr()).unwrap();
+        plain
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        plain
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        plain
+            .write_all(b"*3\r\n$4\r\nAUTH\r\n$11\r\ncert-reader\r\n$0\r\n\r\n")
+            .unwrap();
+        plain.read_exact(&mut ok).unwrap();
+        assert_eq!(&ok, b"+OK\r\n");
+
+        mapped.write_all(b"*1\r\n$5\r\nRESET\r\n").unwrap();
+        let reply = read_resp_line(&mut mapped);
+        assert_eq!(reply, b"-ERR max connections reached for user\r\n");
+        mapped
+            .write_all(b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n")
+            .unwrap();
+        let mut identity = [0; 9];
+        mapped.read_exact(&mut identity).unwrap();
+        assert_eq!(&identity, b"$3\r\nbob\r\n");
+
+        drop(plain);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            mapped.write_all(b"*1\r\n$5\r\nRESET\r\n").unwrap();
+            let reset = read_resp_line(&mut mapped);
+            if reset == b"+RESET\r\n" {
+                break;
+            }
+            assert_eq!(reset, b"-ERR max connections reached for user\r\n");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "disconnected user kept its slot"
+            );
+            std::thread::yield_now();
+        }
+        mapped
+            .write_all(b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n")
+            .unwrap();
+        let mut identity = [0; 18];
+        mapped.read_exact(&mut identity).unwrap();
+        assert_eq!(&identity, b"$11\r\ncert-reader\r\n");
+
+        server.shutdown().unwrap();
+        std::fs::remove_file(acl).unwrap();
+    }
+}
+
+#[test]
 fn valid_but_unmapped_client_certificate_is_rejected_and_mapping_requires_mtls_and_enabled_user() {
     let acl = std::env::temp_dir().join(format!(
         "rillcache-tls-acl-map-invalid-{}-{:?}.acl",
@@ -984,6 +1202,140 @@ fn valid_but_unmapped_client_certificate_is_rejected_and_mapping_requires_mtls_a
         std::collections::BTreeMap::from([([0u8; 32], b"missing-user".to_vec())]);
     assert!(Server::bind(missing_user).is_err());
     std::fs::remove_file(acl).unwrap();
+}
+
+#[test]
+fn client_certificate_mapping_reload_publishes_atomic_generation_and_preserves_sessions() {
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-tls-acl-map-reload-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let acl = directory.join("users.acl");
+    let mapping = directory.join("client-users.map");
+    let ocsp = directory.join("server.ocsp.der");
+    let trigger = directory.join("generation");
+    let response_one = [0x30, 0x03, 0x0a, 0x01, 0x00];
+    let response_two = [0x30, 0x03, 0x0a, 0x01, 0x01];
+    let response_three = [0x30, 0x03, 0x0a, 0x01, 0x02];
+    let fingerprint = "c25150ac1267bf09e754f1c1ccbd783c6a49aaaab4c66fe1f0b2e2178bdd8e0c";
+    std::fs::write(
+        &acl,
+        b"user default on nopass ~* &* +@all\nuser reader on nopass ~* &* +@all\nuser writer on nopass ~* &* +@all\n",
+    )
+    .unwrap();
+    std::fs::write(&mapping, format!("{fingerprint}=reader\n")).unwrap();
+    std::fs::write(&ocsp, response_one).unwrap();
+    std::fs::write(&trigger, b"generation-1").unwrap();
+    let config = Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        tls_bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        tls_cert_file: Some(fixture("server.crt")),
+        tls_key_file: Some(fixture("server.key")),
+        tls_client_ca_file: Some(fixture("ca.crt")),
+        tls_ocsp_file: Some(ocsp.clone()),
+        tls_client_cert_users_file: Some(mapping.clone()),
+        tls_reload_trigger: Some(trigger.clone()),
+        aclfile: Some(acl),
+        ..Config::default()
+    };
+    let server = Server::bind(config.clone()).unwrap().spawn().unwrap();
+    let reader_responses = Arc::new(Mutex::new(Vec::new()));
+    let mut established_reader = connect_capturing_ocsp_with_client_cert(
+        &server,
+        "localhost",
+        Arc::clone(&reader_responses),
+        true,
+    );
+    assert_tls_acl_user(&mut established_reader, b"reader");
+    assert_eq!(reader_responses.lock().unwrap().as_slice(), &[response_one]);
+
+    let replace = |path: &std::path::Path, bytes: &[u8], suffix: &str| {
+        let staged = path.with_extension(format!("stage-{suffix}"));
+        std::fs::write(&staged, bytes).unwrap();
+        std::fs::rename(staged, path).unwrap();
+    };
+    replace(
+        &mapping,
+        format!("{fingerprint}=writer\n").as_bytes(),
+        "valid",
+    );
+    replace(&ocsp, &response_two, "valid");
+    replace(&trigger, b"generation-2", "valid");
+    let writer_responses = Arc::new(Mutex::new(Vec::new()));
+    let mut established_writer = connect_capturing_ocsp_with_client_cert(
+        &server,
+        "localhost",
+        Arc::clone(&writer_responses),
+        true,
+    );
+    assert_tls_acl_user(&mut established_writer, b"writer");
+    assert_eq!(writer_responses.lock().unwrap().as_slice(), &[response_two]);
+    assert_tls_acl_user(&mut established_reader, b"reader");
+    established_reader
+        .write_all(b"*1\r\n$5\r\nRESET\r\n")
+        .unwrap();
+    assert_eq!(read_resp_line(&mut established_reader), b"+RESET\r\n");
+    assert_tls_acl_user(&mut established_reader, b"reader");
+
+    replace(
+        &mapping,
+        format!("{fingerprint}=missing-user\n").as_bytes(),
+        "invalid",
+    );
+    replace(&ocsp, &response_three, "invalid");
+    replace(&trigger, b"generation-3", "invalid");
+    let rejected_responses = Arc::new(Mutex::new(Vec::new()));
+    let mut after_rejected_generation = connect_capturing_ocsp_with_client_cert(
+        &server,
+        "localhost",
+        Arc::clone(&rejected_responses),
+        true,
+    );
+    assert_tls_acl_user(&mut after_rejected_generation, b"writer");
+    assert_eq!(
+        rejected_responses.lock().unwrap().as_slice(),
+        &[response_two]
+    );
+    assert_tls_acl_user(&mut established_writer, b"writer");
+
+    replace(
+        &mapping,
+        format!("{fingerprint}=reader\n").as_bytes(),
+        "recovered",
+    );
+    replace(&ocsp, &response_three, "recovered");
+    replace(&trigger, b"generation-4", "recovered");
+    let recovered_responses = Arc::new(Mutex::new(Vec::new()));
+    let mut recovered = connect_capturing_ocsp_with_client_cert(
+        &server,
+        "localhost",
+        Arc::clone(&recovered_responses),
+        true,
+    );
+    assert_tls_acl_user(&mut recovered, b"reader");
+    assert_eq!(
+        recovered_responses.lock().unwrap().as_slice(),
+        &[response_three]
+    );
+
+    drop(recovered);
+    drop(after_rejected_generation);
+    drop(established_writer);
+    drop(established_reader);
+    server.shutdown().unwrap();
+
+    replace(
+        &mapping,
+        format!("{fingerprint}=missing-user\n").as_bytes(),
+        "startup-invalid",
+    );
+    assert!(
+        Server::bind(config).is_err(),
+        "unknown mapped ACL user must fail startup"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

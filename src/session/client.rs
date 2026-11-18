@@ -74,7 +74,7 @@ impl Session {
                 output.extend_from_slice(AUTH_THROTTLED);
                 return;
             }
-            match store.authenticate_user(Some(username), password) {
+            match store.authenticate_client_user(self.id, Some(username), password) {
                 Ok(name) => {
                     self.authenticated_user = Some(name);
                     self.failed_auth = 0;
@@ -97,6 +97,10 @@ impl Session {
                         store.note_auth_source_failure(source);
                     }
                     self.note_auth_failure(store);
+                    return;
+                }
+                Err(AuthError::ConnectionLimit) => {
+                    output.extend_from_slice(b"-ERR max connections reached for user\r\n");
                     return;
                 }
                 Err(AuthError::Internal) => {

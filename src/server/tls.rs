@@ -8,7 +8,7 @@ use rustls::pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKey
 use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
 use rustls::sign::CertifiedKey;
 use rustls::{RootCertStore, ServerConfig, ServerConnection, StreamOwned};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
@@ -34,7 +34,15 @@ impl ResolvesServerCert for SniResolver {
 }
 
 const MAX_TLS_FILE_BYTES: usize = 1024 * 1024;
+const MAX_CLIENT_CERT_USERS: usize = 4096;
 const MAX_RELOAD_TOKEN_BYTES: usize = 64;
+
+pub(crate) type ClientCertUsers = BTreeMap<[u8; 32], Vec<u8>>;
+
+struct TlsGeneration {
+    config: Arc<ServerConfig>,
+    client_cert_users: Option<ClientCertUsers>,
+}
 
 pub(crate) struct TlsSettings<'a> {
     pub(crate) cert_file: &'a Path,
@@ -44,20 +52,24 @@ pub(crate) struct TlsSettings<'a> {
     pub(crate) client_crl_file: Option<&'a Path>,
     pub(crate) sni_certificates: &'a [crate::server::TlsSniCertificate],
     pub(crate) reload_trigger: Option<&'a Path>,
-    pub(crate) client_cert_users: &'a std::collections::BTreeMap<[u8; 32], Vec<u8>>,
+    pub(crate) client_cert_users: Option<&'a ClientCertUsers>,
+    pub(crate) client_cert_users_file: Option<&'a Path>,
+    pub(crate) services: Arc<crate::engine::ServerServices>,
     pub(crate) handshake_timeout: Duration,
     pub(crate) idle_timeout: Duration,
 }
 
 pub(crate) struct TlsAcceptor {
-    config: RwLock<Arc<ServerConfig>>,
+    generation: RwLock<Arc<TlsGeneration>>,
     cert_file: PathBuf,
     key_file: PathBuf,
     ocsp_file: Option<PathBuf>,
     client_ca_file: Option<PathBuf>,
     client_crl_file: Option<PathBuf>,
     sni_certificates: Vec<crate::server::TlsSniCertificate>,
-    client_cert_users: std::collections::BTreeMap<[u8; 32], Vec<u8>>,
+    static_client_cert_users: Option<ClientCertUsers>,
+    client_cert_users_file: Option<PathBuf>,
+    services: Arc<crate::engine::ServerServices>,
     reload_trigger: Option<PathBuf>,
     reload_token: Mutex<Option<Vec<u8>>>,
     reload_error_logged: AtomicBool,
@@ -77,14 +89,19 @@ impl TlsAcceptor {
         )?;
         let reload_token = settings.reload_trigger.map(read_reload_token).transpose()?;
         Ok(Self {
-            config: RwLock::new(config),
+            generation: RwLock::new(Arc::new(TlsGeneration {
+                config,
+                client_cert_users: settings.client_cert_users.cloned(),
+            })),
             cert_file: settings.cert_file.to_owned(),
             key_file: settings.key_file.to_owned(),
             ocsp_file: settings.ocsp_file.map(Path::to_owned),
             client_ca_file: settings.client_ca_file.map(Path::to_owned),
             client_crl_file: settings.client_crl_file.map(Path::to_owned),
             sni_certificates: settings.sni_certificates.to_vec(),
-            client_cert_users: settings.client_cert_users.clone(),
+            static_client_cert_users: settings.client_cert_users.cloned(),
+            client_cert_users_file: settings.client_cert_users_file.map(Path::to_owned),
+            services: settings.services,
             reload_trigger: settings.reload_trigger.map(Path::to_owned),
             reload_token: Mutex::new(reload_token),
             reload_error_logged: AtomicBool::new(false),
@@ -179,12 +196,50 @@ impl TlsAcceptor {
         ))))
     }
 
+    fn build_generation(&self) -> io::Result<TlsGeneration> {
+        let client_cert_users = if let Some(path) = &self.client_cert_users_file {
+            Some(read_client_cert_users_file(path)?)
+        } else {
+            self.static_client_cert_users.clone()
+        };
+        let client_cert_users = client_cert_users
+            .map(|users| self.validate_client_cert_users(users))
+            .transpose()?;
+        let config = Self::build_config(
+            &self.cert_file,
+            &self.key_file,
+            self.ocsp_file.as_deref(),
+            self.client_ca_file.as_deref(),
+            self.client_crl_file.as_deref(),
+            &self.sni_certificates,
+        )?;
+        Ok(TlsGeneration {
+            config,
+            client_cert_users,
+        })
+    }
+
+    fn validate_client_cert_users(&self, users: ClientCertUsers) -> io::Result<ClientCertUsers> {
+        users
+            .into_iter()
+            .map(|(fingerprint, username)| {
+                let canonical = self
+                    .services
+                    .validate_client_certificate_user(&username)
+                    .map_err(|_| {
+                        invalid("TLS client certificate mapping must reference enabled ACL users")
+                    })?;
+                Ok((fingerprint, canonical))
+            })
+            .collect()
+    }
+
     fn refresh_if_requested(&self) {
         let Some(trigger) = &self.reload_trigger else {
             return;
         };
         let Ok(mut previous_token) = self.reload_token.lock() else {
-            eprintln!("rillcache: TLS reload state is unavailable; retaining active certificates");
+            eprintln!("rillcache: TLS reload state is unavailable; retaining active generation");
             return;
         };
         let token = match read_reload_token(trigger) {
@@ -200,28 +255,23 @@ impl TlsAcceptor {
         if previous_token.as_ref() == Some(&token) {
             return;
         }
-        match Self::build_config(
-            &self.cert_file,
-            &self.key_file,
-            self.ocsp_file.as_deref(),
-            self.client_ca_file.as_deref(),
-            self.client_crl_file.as_deref(),
-            &self.sni_certificates,
-        ) {
-            Ok(config) => match self.config.write() {
+        match self.build_generation() {
+            Ok(generation) => match self.generation.write() {
                 Ok(mut active) => {
-                    *active = config;
+                    *active = Arc::new(generation);
                     *previous_token = Some(token);
-                    eprintln!("rillcache: TLS certificate generation reloaded");
+                    eprintln!("rillcache: TLS identity and client ACL mapping generation reloaded");
                 }
                 Err(_) => {
-                    eprintln!("rillcache: TLS config lock poisoned; retaining active certificates")
+                    eprintln!(
+                        "rillcache: TLS generation lock poisoned; retaining active generation"
+                    )
                 }
             },
             Err(error) => {
                 *previous_token = Some(token);
                 eprintln!(
-                    "rillcache: TLS certificate reload rejected; retaining active certificates: {error}"
+                    "rillcache: TLS generation reload rejected; retaining active generation: {error}"
                 );
             }
         }
@@ -242,12 +292,12 @@ impl TlsAcceptor {
             plaintext_idle_timeout: None,
             plaintext_idle_deadline: None,
         };
-        let config = self
-            .config
+        let generation = self
+            .generation
             .read()
-            .map_err(|_| io::Error::other("TLS config lock poisoned"))?
+            .map_err(|_| io::Error::other("TLS generation lock poisoned"))?
             .clone();
-        let mut conn = ServerConnection::new(config)
+        let mut conn = ServerConnection::new(Arc::clone(&generation.config))
             .map_err(|error| invalid(format!("TLS connection setup: {error}")))?;
         while conn.is_handshaking() {
             conn.complete_io(&mut sock)?;
@@ -255,25 +305,21 @@ impl TlsAcceptor {
         // rustls can finish processing buffered handshake bytes without another
         // socket operation, so completion itself must still be inside budget.
         sock.ensure_handshake_time()?;
-        let client_user = if self.client_cert_users.is_empty() {
-            None
-        } else {
-            let certificate = conn
-                .peer_certificates()
-                .and_then(|chain| chain.first())
-                .ok_or_else(|| invalid("TLS client certificate is required for ACL mapping"))?;
-            let fingerprint = crate::engine::tls_certificate_fingerprint(certificate.as_ref());
-            Some(
-                self.client_cert_users
-                    .get(&fingerprint)
-                    .cloned()
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            "TLS client certificate has no ACL user mapping",
-                        )
-                    })?,
-            )
+        let client_user = match &generation.client_cert_users {
+            None => None,
+            Some(users) => {
+                let certificate = conn
+                    .peer_certificates()
+                    .and_then(|chain| chain.first())
+                    .ok_or_else(|| invalid("TLS client certificate is required for ACL mapping"))?;
+                let fingerprint = crate::engine::tls_certificate_fingerprint(certificate.as_ref());
+                Some(users.get(&fingerprint).cloned().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "TLS client certificate has no ACL user mapping",
+                    )
+                })?)
+            }
         };
         sock.baseline_read_timeout = Some(self.idle_timeout);
         sock.baseline_write_timeout = Some(self.idle_timeout);
@@ -287,6 +333,70 @@ impl TlsAcceptor {
             client_user,
         ))
     }
+}
+
+pub(crate) fn read_client_cert_users_file(path: &Path) -> io::Result<ClientCertUsers> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take((MAX_TLS_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    parse_client_cert_users(&bytes)
+}
+
+fn parse_client_cert_users(bytes: &[u8]) -> io::Result<ClientCertUsers> {
+    if bytes.len() > MAX_TLS_FILE_BYTES {
+        return Err(invalid("TLS client certificate mapping file exceeds 1 MiB"));
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| invalid("TLS client certificate mapping file is not UTF-8"))?;
+    let mut users = ClientCertUsers::new();
+    for (line_index, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (fingerprint, username) = parse_client_cert_user(line).map_err(|_| {
+            invalid(format!(
+                "invalid TLS client certificate mapping at line {}",
+                line_index + 1
+            ))
+        })?;
+        if users.contains_key(&fingerprint) {
+            return Err(invalid(format!(
+                "duplicate TLS client certificate fingerprint at line {}",
+                line_index + 1
+            )));
+        }
+        if users.len() == MAX_CLIENT_CERT_USERS {
+            return Err(invalid(
+                "TLS client certificate mapping exceeds 4096 entries",
+            ));
+        }
+        users.insert(fingerprint, username);
+    }
+    Ok(users)
+}
+
+fn parse_client_cert_user(value: &str) -> io::Result<([u8; 32], Vec<u8>)> {
+    let (fingerprint, username) = value
+        .split_once('=')
+        .ok_or_else(|| invalid("expected SHA256=ACL-USERNAME"))?;
+    if fingerprint.len() != 64
+        || username.is_empty()
+        || username.len() > 128
+        || !username
+            .bytes()
+            .all(|byte| (b'!'..=b'~').contains(&byte) && byte != b'|')
+    {
+        return Err(invalid("invalid TLS client certificate mapping"));
+    }
+    let mut digest = [0u8; 32];
+    for (index, chunk) in fingerprint.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let pair = std::str::from_utf8(chunk).map_err(|_| invalid("invalid fingerprint"))?;
+        digest[index] = u8::from_str_radix(pair, 16)
+            .map_err(|_| invalid("TLS client certificate fingerprint must be hexadecimal"))?;
+    }
+    Ok((digest, username.as_bytes().to_vec()))
 }
 
 /// Plain or TLS RESP transport. The default per-client worker path can use
@@ -640,6 +750,37 @@ mod tests {
         std::fs::write(&path, vec![b'x'; MAX_RELOAD_TOKEN_BYTES + 1]).unwrap();
         assert!(read_reload_token(&path).is_err());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn client_certificate_mapping_file_parses_comments_and_case_insensitive_hex() {
+        let parsed = parse_client_cert_users(
+            b" # operators may comment\n\nC25150AC1267BF09E754F1C1CCBD783C6A49AAAAB4C66FE1F0B2E2178BDD8E0C=reader\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.values().next().unwrap(), b"reader");
+        assert!(parse_client_cert_users(b"").unwrap().is_empty());
+    }
+
+    #[test]
+    fn client_certificate_mapping_file_rejects_malformed_duplicate_and_unbounded_records() {
+        assert!(parse_client_cert_users(b"not-a-mapping\n").is_err());
+        assert!(
+            parse_client_cert_users(
+                b"0000000000000000000000000000000000000000000000000000000000000000=\n"
+            )
+            .is_err()
+        );
+        assert!(parse_client_cert_users(b"0000000000000000000000000000000000000000000000000000000000000000=one\n0000000000000000000000000000000000000000000000000000000000000000=two\n").is_err());
+        assert!(parse_client_cert_users(&[0xff]).is_err());
+        assert!(parse_client_cert_users(&vec![b'x'; MAX_TLS_FILE_BYTES + 1]).is_err());
+
+        let mut too_many = String::new();
+        for index in 0..=MAX_CLIENT_CERT_USERS {
+            too_many.push_str(&format!("{index:064x}=reader\n"));
+        }
+        assert!(parse_client_cert_users(too_many.as_bytes()).is_err());
     }
 
     #[test]

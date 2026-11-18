@@ -263,13 +263,16 @@ impl Client {
                     }
                 }
                 Ok(None) => {
-                    let now = Instant::now();
-                    self.frame_deadline.observe_incomplete(true, now);
-                    if self
-                        .frame_deadline
-                        .expired_at(config.frame_assembly_timeout, now)
-                    {
-                        return Ok(None);
+                    // An empty suffix needs another read, not a frame timer.
+                    if consumed < self.input.len() {
+                        let now = Instant::now();
+                        self.frame_deadline.observe_incomplete(true, now);
+                        if self
+                            .frame_deadline
+                            .expired_at(config.frame_assembly_timeout, now)
+                        {
+                            return Ok(None);
+                        }
                     }
                     need_input = true;
                     break;
@@ -388,13 +391,16 @@ impl Client {
                     }
                 }
                 Ok(None) => {
-                    let now = Instant::now();
-                    self.frame_deadline.observe_incomplete(true, now);
-                    if self
-                        .frame_deadline
-                        .expired_at(config.frame_assembly_timeout, now)
-                    {
-                        return Ok(LocalPoll::Closed);
+                    // An empty suffix needs another read, not a frame timer.
+                    if consumed < self.input.len() {
+                        let now = Instant::now();
+                        self.frame_deadline.observe_incomplete(true, now);
+                        if self
+                            .frame_deadline
+                            .expired_at(config.frame_assembly_timeout, now)
+                        {
+                            return Ok(LocalPoll::Closed);
+                        }
                     }
                     need_input = true;
                     break;
@@ -745,6 +751,84 @@ mod tests {
             },
             peer,
         )
+    }
+
+    #[test]
+    fn complete_frames_leave_no_assembly_deadline() {
+        let ping = b"*1\r\n$4\r\nPING\r\n";
+        for worker in [false, true] {
+            for input in [ping.to_vec(), b"PING\r\n".to_vec(), ping.repeat(16)] {
+                let replies = if input == b"PING\r\n" {
+                    1
+                } else {
+                    input.len() / ping.len()
+                };
+                let (mut client, mut peer) = test_client(input);
+                let store = Store::new(1024);
+                let config = Config::default();
+                if worker {
+                    assert!(matches!(
+                        client.poll_local(&store, &config, &mut [0; 1024]).unwrap(),
+                        LocalPoll::Progress(true)
+                    ));
+                } else {
+                    assert_eq!(
+                        client.poll(&store, &config, &mut [0; 1024]).unwrap(),
+                        Some(true)
+                    );
+                }
+                assert!(client.input.is_empty());
+                assert!(
+                    client
+                        .frame_deadline
+                        .deadline(config.frame_assembly_timeout)
+                        .is_none(),
+                    "a fully consumed request is not an incomplete frame (worker={worker})"
+                );
+                let mut reply = vec![0; replies * 7];
+                peer.read_exact(&mut reply).unwrap();
+                assert_eq!(reply, b"+PONG\r\n".repeat(replies));
+            }
+        }
+    }
+
+    #[test]
+    fn completed_prefix_keeps_the_partial_suffix_deadline() {
+        for worker in [false, true] {
+            let (mut client, mut peer) =
+                test_client(b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPI".to_vec());
+            let store = Store::new(1024);
+            let config = Config::default();
+            let mut original_deadline = None;
+            for pass in 0..2 {
+                if worker {
+                    assert!(matches!(
+                        client.poll_local(&store, &config, &mut [0; 1024]).unwrap(),
+                        LocalPoll::Progress(_)
+                    ));
+                } else {
+                    assert!(
+                        client
+                            .poll(&store, &config, &mut [0; 1024])
+                            .unwrap()
+                            .is_some()
+                    );
+                }
+                assert_eq!(client.input, b"*1\r\n$4\r\nPI");
+                let deadline = client
+                    .frame_deadline
+                    .deadline(config.frame_assembly_timeout);
+                assert!(deadline.is_some());
+                if pass == 0 {
+                    let mut reply = [0; 7];
+                    peer.read_exact(&mut reply).unwrap();
+                    assert_eq!(&reply, b"+PONG\r\n");
+                    original_deadline = deadline;
+                } else {
+                    assert_eq!(deadline, original_deadline);
+                }
+            }
+        }
     }
 
     #[test]
