@@ -1686,6 +1686,42 @@ mod tests {
             vec![b"dest".as_slice(), b"a".as_slice(), b"b".as_slice()]
         );
         assert_eq!(
+            key_arguments(b"SDIFFSTORE", &[b"SDIFFSTORE", b"dest", b"a", b"b"]),
+            vec![b"dest".as_slice(), b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"SUNIONSTORE", &[b"SUNIONSTORE", b"dest", b"a", b"b"]),
+            vec![b"dest".as_slice(), b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"ZDIFFSTORE", &[b"ZDIFFSTORE", b"dest", b"2", b"a", b"b"]),
+            vec![b"dest".as_slice(), b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"GEOSEARCHSTORE",
+                &[
+                    b"GEOSEARCHSTORE",
+                    b"dest",
+                    b"source",
+                    b"FROMLONLAT",
+                    b"0",
+                    b"0",
+                    b"BYRADIUS",
+                    b"1",
+                    b"KM",
+                ]
+            ),
+            vec![b"dest".as_slice(), b"source".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"ZRANGESTORE",
+                &[b"ZRANGESTORE", b"dest", b"source", b"0", b"-1"]
+            ),
+            vec![b"dest".as_slice(), b"source".as_slice()]
+        );
+        assert_eq!(
             key_arguments(
                 b"ZINTERCARD",
                 &[b"ZINTERCARD", b"2", b"a", b"b", b"LIMIT", b"1"]

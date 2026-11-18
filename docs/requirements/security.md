@@ -118,9 +118,13 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   require read on the source and write on the effective last-wins destination;
   counted `LMPOP`/`BLMPOP` key lists shall contain only the declared keys,
   excluding direction and optional `COUNT` tokens; `XREAD`/`XREADGROUP` shall
-  check each key in the dynamic `STREAMS` block, and
-  `PFCOUNT` shall require both accesses per Redis 7's RW key spec. `SET` with
-  `GET` and mutating `BITFIELD` operations shall require both accesses.
+  check each key in the dynamic `STREAMS` block, and `PFCOUNT` shall require
+  both accesses per Redis 7's RW key spec. The key registry's actual key
+  positions shall drive ACL checks for `SDIFFSTORE`, `SINTERSTORE`,
+  `SUNIONSTORE`, counted `ZDIFFSTORE`/`ZINTERSTORE`/`ZUNIONSTORE`,
+  `ZRANGESTORE` and `GEOSEARCHSTORE`, excluding option/count operands from
+  source-key checks. `SET` with `GET` and mutating `BITFIELD` operations shall
+  require both accesses.
 - **R337 (event-driven):** `ACL LIST` and `ACL GETUSER` shall render read-only
   patterns as `%R~`, write-only patterns as `%W~` and read-write patterns as `~`.
   Adding read and write grants for the same pattern shall merge into `~`. `ACL
