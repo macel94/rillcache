@@ -297,11 +297,14 @@ describes current behavior, not a second checklist.
   disabled) counts failures by peer IP within `--auth-source-window-ms W` (default
   60000). Once a source reaches `N`, further `AUTH`/`HELLO AUTH` credential
   attempts receive `ERR too many authentication attempts, try later` until the
-  window expires; a successful authentication resets that source. The table is
-  process-local and bounded, so shared NAT addresses can throttle each other and
-  an attacker can exhaust the table; there is no delay, username lockout,
-  cross-process or global rate limit. Use network policy/firewalling and strong,
-  unique passwords; do not expose the port directly to untrusted clients.
+  window expires; a successful authentication resets that tracked source. The
+  table is process-local and bounded. When full, new/untracked sources share a
+  separate overflow budget instead of evicting tracked peer state; a successful
+  authentication from an overflow source cannot individually reset that shared
+  budget, which expires with its window. Shared NAT addresses and overflow peers
+  can throttle each other. There is no delay, username lockout, cross-process or
+  global rate limit. Use network policy/firewalling and strong, unique passwords;
+  do not expose the port directly to untrusted clients.
 - **Live revocation is explicit.** Rotating or disabling the password affects new
   authentication decisions; a connection that already authenticated remains
   authenticated, as in Redis. The supported revocation procedure is

@@ -80,8 +80,9 @@ or network filesystems are unsupported.
 ## Security contract
 
 Authentication and ACL files, TLS 1.3, audit logs and the existing denial
-throttles are implemented, but the profile remains **partial**: there is no
-independent security review, no full Redis ACL surface, no global/cross-process
+throttles are implemented, but the profile remains **partial**: the bounded
+per-IP throttle uses a shared overflow budget under table pressure, but there is
+no independent security review, no full Redis ACL surface, no global/cross-process
 rate limiting, no tenant isolation, no live session revocation beyond the
 existing connection controls, and no audited collector federation. Secrets are
 operator-managed files or arguments; `requirepass` on the command line is
