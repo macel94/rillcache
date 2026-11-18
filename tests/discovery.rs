@@ -489,6 +489,15 @@ fn command_getkeys_reuses_acl_key_specs() {
             request(
                 &mut client,
                 &[
+                    b"COMMAND", b"GETKEYS", b"MSETEX", b"2", b"a", b"1", b"b", b"2", b"EX", b"60",
+                ]
+            ),
+            b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+        );
+        assert_eq!(
+            request(
+                &mut client,
+                &[
                     b"COMMAND", b"GETKEYS", b"SORT", b"src", b"LIMIT", b"0", b"1", b"STORE",
                     b"out",
                 ]
