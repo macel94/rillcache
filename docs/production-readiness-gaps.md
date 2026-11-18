@@ -189,7 +189,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `PFCOUNT` now emits one key-miss event for each missing HLL source lookup,
   including repeated sources. `PFMERGE` also reports the missing destination read
   and each missing source occurrence; existing HLL and wrong-type keys do not
-  create false misses.
+  create false misses. **Partial (2026-11-18):** Geospatial read commands now
+  report missing sorted-set source lookups for `GEODIST`, `GEOHASH`, `GEOPOS`,
+  `GEOSEARCH`/`GEOSEARCHSTORE` and legacy `GEORADIUS*` variants. Missing members
+  in existing sets and existing wrong-type keys remain non-misses.
   These events use the normal keyspace/keyevent channels. Hits, absent
   fields/elements/members and existing wrong-type keys do not. Other read
   commands remain open. `A` intentionally
