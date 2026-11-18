@@ -2230,5 +2230,20 @@ fn copy_source_miss_emits_keymiss_but_existing_sources_do_not() {
             b"marker-after-no-replace"
         ])
     );
+
+    send(
+        &mut writer,
+        &[b"COPY", binary_missing, b"occupied"],
+        b":0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            binary_missing
+        ])
+    );
     server.shutdown().unwrap();
 }
