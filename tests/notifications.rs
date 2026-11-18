@@ -1829,3 +1829,66 @@ fn new_key_events_fire_once_per_created_key() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn smismember_emits_one_keymiss_for_a_missing_set_only() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let binary_missing = b"missing\0\xff";
+
+    send(
+        &mut writer,
+        &[b"SMISMEMBER", binary_missing, b"a", b"b"],
+        b"*2\r\n:0\r\n:0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            binary_missing
+        ])
+    );
+
+    send(&mut writer, &[b"SADD", b"existing", b"member"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"SMISMEMBER", b"existing", b"member", b"absent-member"],
+        b"*2\r\n:1\r\n:0\r\n",
+    );
+    send(&mut writer, &[b"GET", b"marker-after-hit"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"marker-after-hit"
+        ])
+    );
+
+    send(&mut writer, &[b"SET", b"wrong", b"type"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"SMISMEMBER", b"wrong", b"member"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(
+        &mut writer,
+        &[b"GET", b"marker-after-wrong-type"],
+        b"$-1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"marker-after-wrong-type"
+        ])
+    );
+    server.shutdown().unwrap();
+}
