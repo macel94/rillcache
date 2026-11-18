@@ -263,13 +263,16 @@ impl Client {
                     }
                 }
                 Ok(None) => {
-                    let now = Instant::now();
-                    self.frame_deadline.observe_incomplete(true, now);
-                    if self
-                        .frame_deadline
-                        .expired_at(config.frame_assembly_timeout, now)
-                    {
-                        return Ok(None);
+                    // An empty suffix needs another read, not a frame timer.
+                    if consumed < self.input.len() {
+                        let now = Instant::now();
+                        self.frame_deadline.observe_incomplete(true, now);
+                        if self
+                            .frame_deadline
+                            .expired_at(config.frame_assembly_timeout, now)
+                        {
+                            return Ok(None);
+                        }
                     }
                     need_input = true;
                     break;
@@ -388,13 +391,16 @@ impl Client {
                     }
                 }
                 Ok(None) => {
-                    let now = Instant::now();
-                    self.frame_deadline.observe_incomplete(true, now);
-                    if self
-                        .frame_deadline
-                        .expired_at(config.frame_assembly_timeout, now)
-                    {
-                        return Ok(LocalPoll::Closed);
+                    // An empty suffix needs another read, not a frame timer.
+                    if consumed < self.input.len() {
+                        let now = Instant::now();
+                        self.frame_deadline.observe_incomplete(true, now);
+                        if self
+                            .frame_deadline
+                            .expired_at(config.frame_assembly_timeout, now)
+                        {
+                            return Ok(LocalPoll::Closed);
+                        }
                     }
                     need_input = true;
                     break;
