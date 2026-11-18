@@ -155,6 +155,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(source, now);
         let Some(source_payload) = data.entries.get(source).map(Entry::payload_len) else {
+            data.record_key_miss(source);
             output.extend_from_slice(b":0\r\n");
             return;
         };

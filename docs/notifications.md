@@ -52,7 +52,7 @@ missing `PFCOUNT` source occurrence,
 `PFMERGE` destination-first and source lookups (one event per missing occurrence),
 `GEODIST`/`GEOHASH`/`GEOPOS` and `GEOSEARCH`/`GEOSEARCHSTORE`/legacy
 `GEORADIUS*` source lookups, `LCS` operands, each missing `TOUCH` operand,
-`OBJECT ENCODING|REFCOUNT`, `MEMORY USAGE`, and
+the `COPY` source lookup, `OBJECT ENCODING|REFCOUNT`, `MEMORY USAGE`, and
 `HTTL`/`HPTTL`/`HEXPIRETIME`/`HPEXPIRETIME` missing-key
 lookups emit `keymiss` on the normal keyspace/keyevent channels (once per
 missing source key for algebra and per missing stream or operand where Redis
