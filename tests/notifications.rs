@@ -1831,6 +1831,36 @@ fn new_key_events_fire_once_per_created_key() {
 }
 
 #[test]
+fn getdel_reports_only_a_missing_key_as_keymiss() {
+    let server = start(NotifyFlags::parse(b"Emg").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+    let expect = |subscriber: &mut _, channel: &[u8], key: &[u8]| {
+        assert_eq!(
+            read_frame(subscriber),
+            frame(&[b"pmessage", b"__keyevent@0__:*", channel, key])
+        );
+    };
+    let key = b"key\0\xff";
+    send(&mut writer, &[b"GETDEL", key], b"$-1\r\n");
+    expect(&mut subscriber, b"__keyevent@0__:keymiss", key);
+    send(&mut writer, &[b"SET", key, b"v"], b"+OK\r\n");
+    send(&mut writer, &[b"GETDEL", key], b"$1\r\nv\r\n");
+    expect(&mut subscriber, b"__keyevent@0__:del", key);
+    send(&mut writer, &[b"SADD", key, b"m"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"GETDEL", key],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"SISMEMBER", key, b"m"], b":1\r\n");
+    send(&mut writer, &[b"GET", b"marker"], b"$-1\r\n");
+    expect(&mut subscriber, b"__keyevent@0__:keymiss", b"marker");
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn lcs_reports_both_operand_lookups_before_wrong_type() {
     let server = start(NotifyFlags::parse(b"Em").unwrap());
     let mut subscriber = connect(&server);

@@ -306,13 +306,17 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        if data
-            .entries
-            .get(key)
-            .is_some_and(|entry| !entry.is_string())
-        {
-            wrong_type(output);
-            return;
+        match data.entries.get(key) {
+            None => {
+                data.record_key_miss(key);
+                encode_bulk(None, output);
+                return;
+            }
+            Some(entry) if !entry.is_string() => {
+                wrong_type(output);
+                return;
+            }
+            Some(_) => {}
         }
         encode_bulk(
             data.remove(key)
