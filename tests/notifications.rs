@@ -1639,6 +1639,97 @@ fn pfmerge_read_misses_emit_destination_then_each_missing_source() {
 }
 
 #[test]
+fn bitop_read_misses_emit_once_per_missing_source_occurrence() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+
+    send(
+        &mut writer,
+        &[b"BITOP", b"OR", b"dest", b"missing", b"missing"],
+        b":0\r\n",
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            read_frame(&mut subscriber),
+            frame(&[
+                b"pmessage",
+                b"__keyevent@0__:keymiss",
+                b"__keyevent@0__:keymiss",
+                b"missing"
+            ])
+        );
+    }
+
+    send(&mut writer, &[b"SET", b"present", b"\x01"], b"+OK\r\n");
+    send(
+        &mut writer,
+        &[b"BITOP", b"XOR", b"result", b"present", b"absent"],
+        b":1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"absent"
+        ])
+    );
+
+    send(&mut writer, &[b"LPUSH", b"wrong", b"type"], b":1\r\n");
+    send(
+        &mut writer,
+        &[b"BITOP", b"OR", b"wrong-dest", b"wrong"],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    send(&mut writer, &[b"GET", b"wrong-type-marker"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"wrong-type-marker"
+        ])
+    );
+
+    send(
+        &mut writer,
+        &[
+            b"BITOP",
+            b"OR",
+            b"error-dest",
+            b"miss-before-error",
+            b"wrong",
+        ],
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"miss-before-error"
+        ])
+    );
+    send(&mut writer, &[b"GET", b"after-error-marker"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"after-error-marker"
+        ])
+    );
+
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn new_key_events_fire_once_per_created_key() {
     let server = start(NotifyFlags::parse(b"En").unwrap());
     let mut subscriber = connect(&server);

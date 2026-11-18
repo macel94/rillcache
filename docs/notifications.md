@@ -47,7 +47,8 @@ sorted-set store variants, `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`,
 `XINFO STREAM|GROUPS|CONSUMERS`, and `SORT`/`SORT_RO` sources (including
 `STORE`), `SORT` `BY`/`GET` pattern-derived key lookups,
 `XREAD`/`XREADGROUP` initial stream lookups, `BITCOUNT`/`BITPOS`/`BITFIELD_RO`
-(and read-only `BITFIELD` blocks), each missing `PFCOUNT` source occurrence,
+(and read-only `BITFIELD` blocks), each missing `BITOP` source occurrence, each
+missing `PFCOUNT` source occurrence,
 `PFMERGE` destination-first and source lookups (one event per missing occurrence),
 `GEODIST`/`GEOHASH`/`GEOPOS` and `GEOSEARCH`/`GEOSEARCHSTORE`/legacy
 `GEORADIUS*` source lookups, `LCS` operands, `OBJECT ENCODING|REFCOUNT`, `MEMORY USAGE`, and
