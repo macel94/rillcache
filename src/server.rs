@@ -1,5 +1,6 @@
 //! Default Unix Tokio networking, portable managed-client fallback and fixed workers.
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
@@ -257,9 +258,31 @@ pub struct Config {
     pub tls_bind_addr: Option<SocketAddr>,
     pub tls_cert_file: Option<PathBuf>,
     pub tls_key_file: Option<PathBuf>,
+    /// Optional DER-encoded OCSP response stapled with the default server identity.
+    pub tls_ocsp_file: Option<PathBuf>,
     /// Optional client CA. Setting it requires client certificates.
     pub tls_client_ca_file: Option<PathBuf>,
+    /// Optional DER CRL bundle; requires a client CA and rejects unknown/expired status.
+    pub tls_client_crl_file: Option<PathBuf>,
+    /// SHA-256 fingerprints of verified client leaf certificates mapped to ACL usernames.
+    pub tls_client_cert_users: BTreeMap<[u8; 32], Vec<u8>>,
+    /// Optional bounded, reloadable fingerprint-to-user mapping file (requires mTLS and reload trigger).
+    pub tls_client_cert_users_file: Option<PathBuf>,
+    /// Optional operator-controlled generation file; changing its bounded token reloads TLS files.
+    pub tls_reload_trigger: Option<PathBuf>,
+    /// Additional exact DNS-name certificates selected from ClientHello SNI.
+    pub tls_sni_certificates: Vec<TlsSniCertificate>,
     pub tls_handshake_timeout: Duration,
+}
+
+/// Startup-only certificate identity selected for one exact SNI DNS name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TlsSniCertificate {
+    pub server_name: String,
+    pub cert_file: PathBuf,
+    pub key_file: PathBuf,
+    /// Optional DER-encoded OCSP response for this exact SNI identity.
+    pub ocsp_file: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Config {
@@ -309,7 +332,16 @@ impl std::fmt::Debug for Config {
             .field("tls_bind_addr", &self.tls_bind_addr)
             .field("tls_cert_file", &self.tls_cert_file)
             .field("tls_key_file", &self.tls_key_file)
+            .field("tls_ocsp_file", &self.tls_ocsp_file)
             .field("tls_client_ca_file", &self.tls_client_ca_file)
+            .field("tls_client_crl_file", &self.tls_client_crl_file)
+            .field("tls_client_cert_users", &self.tls_client_cert_users)
+            .field(
+                "tls_client_cert_users_file",
+                &self.tls_client_cert_users_file,
+            )
+            .field("tls_reload_trigger", &self.tls_reload_trigger)
+            .field("tls_sni_certificates", &self.tls_sni_certificates)
             .field("tls_handshake_timeout", &self.tls_handshake_timeout)
             .finish()
     }
@@ -352,10 +384,31 @@ impl Default for Config {
             tls_bind_addr: None,
             tls_cert_file: None,
             tls_key_file: None,
+            tls_ocsp_file: None,
             tls_client_ca_file: None,
+            tls_client_crl_file: None,
+            tls_client_cert_users: BTreeMap::new(),
+            tls_client_cert_users_file: None,
+            tls_reload_trigger: None,
+            tls_sni_certificates: Vec::new(),
             tls_handshake_timeout: Duration::from_secs(5),
         }
     }
+}
+
+fn valid_tls_server_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 253 || !name.is_ascii() {
+        return false;
+    }
+    name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.as_bytes()[0].is_ascii_alphanumeric()
+            && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
 }
 
 impl Config {
@@ -412,10 +465,66 @@ impl Config {
                 .storage_owners
                 .is_some_and(|count| !(1..=64).contains(&count))
             || self.tls_handshake_timeout.is_zero()
+            || self.tls_sni_certificates.len() > 128
+            || self.tls_sni_certificates.iter().any(|identity| {
+                !valid_tls_server_name(&identity.server_name)
+                    || identity.cert_file.as_os_str().is_empty()
+                    || identity.key_file.as_os_str().is_empty()
+                    || identity
+                        .ocsp_file
+                        .as_ref()
+                        .is_some_and(|path| path.as_os_str().is_empty())
+            })
+            || self
+                .tls_sni_certificates
+                .iter()
+                .enumerate()
+                .any(|(index, identity)| {
+                    self.tls_sni_certificates[..index].iter().any(|previous| {
+                        previous
+                            .server_name
+                            .eq_ignore_ascii_case(&identity.server_name)
+                    })
+                })
+            || self
+                .tls_ocsp_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
             || (self.tls_bind_addr.is_none()
                 && (self.tls_cert_file.is_some()
                     || self.tls_key_file.is_some()
-                    || self.tls_client_ca_file.is_some()))
+                    || self.tls_ocsp_file.is_some()
+                    || self.tls_client_ca_file.is_some()
+                    || self.tls_client_crl_file.is_some()
+                    || !self.tls_client_cert_users.is_empty()
+                    || self.tls_client_cert_users_file.is_some()
+                    || self.tls_reload_trigger.is_some()
+                    || !self.tls_sni_certificates.is_empty()))
+            || self
+                .tls_reload_trigger
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || (self.tls_client_crl_file.is_some() && self.tls_client_ca_file.is_none())
+            || self
+                .tls_client_crl_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || (!self.tls_client_cert_users.is_empty() && self.tls_client_ca_file.is_none())
+            || (self.tls_client_cert_users_file.is_some()
+                && (self.tls_client_ca_file.is_none()
+                    || self.tls_reload_trigger.is_none()
+                    || !self.tls_client_cert_users.is_empty()))
+            || self
+                .tls_client_cert_users_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || self.tls_client_cert_users.values().any(|name| {
+                name.is_empty()
+                    || name.len() > 128
+                    || !name
+                        .iter()
+                        .all(|byte| (b'!'..=b'~').contains(byte) && *byte != b'|')
+            })
             || (self.tls_bind_addr.is_some()
                 && (self.tls_cert_file.is_none() || self.tls_key_file.is_none()))
             || self
@@ -429,7 +538,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
+                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, client-certificate ACL mappings require an mTLS CA and valid enabled ACL users, a mapping file requires the mTLS CA and reload trigger and cannot be combined with inline mappings, SNI names must be unique valid DNS names with at most 128 identities, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         if self.secure_secret_files {
@@ -462,10 +571,16 @@ impl Config {
                 &self.audit_hmac_keyring_file,
                 &self.aof_hmac_key_file,
                 &self.tls_key_file,
+                &self.tls_reload_trigger,
+                &self.tls_client_cert_users_file,
             ]
             .into_iter()
             .flatten()
-            {
+            .chain(
+                self.tls_sni_certificates
+                    .iter()
+                    .map(|identity| &identity.key_file),
+            ) {
                 let metadata = std::fs::metadata(path).map_err(|error| {
                     io::Error::new(
                         error.kind(),
@@ -597,6 +712,23 @@ impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
         config.validate()?;
         let auth = config.load_auth()?;
+        let mut tls_client_cert_users = if let Some(path) = &config.tls_client_cert_users_file {
+            Some(tls::read_client_cert_users_file(path)?)
+        } else if config.tls_client_cert_users.is_empty() {
+            None
+        } else {
+            Some(config.tls_client_cert_users.clone())
+        };
+        if let Some(users) = &mut tls_client_cert_users {
+            for username in users.values_mut() {
+                *username = auth.verify_client_certificate_user(username).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "TLS client certificate mapping must reference enabled ACL users",
+                    )
+                })?;
+            }
+        }
         let audit_hmac_key = config.load_audit_hmac_key()?;
         let aof_hmac_key = config.load_aof_hmac_key()?;
         let mut store = if config.appendonly {
@@ -638,16 +770,23 @@ impl Server {
         listener.set_nonblocking(true)?;
         let (tls_listener, tls_acceptor) = match config.tls_bind_addr {
             Some(addr) => {
-                let acceptor = tls::TlsAcceptor::from_files(
-                    config
+                let acceptor = tls::TlsAcceptor::from_files(tls::TlsSettings {
+                    cert_file: config
                         .tls_cert_file
                         .as_deref()
                         .expect("validated certificate"),
-                    config.tls_key_file.as_deref().expect("validated key"),
-                    config.tls_client_ca_file.as_deref(),
-                    config.tls_handshake_timeout,
-                    config.idle_timeout,
-                )?;
+                    key_file: config.tls_key_file.as_deref().expect("validated key"),
+                    ocsp_file: config.tls_ocsp_file.as_deref(),
+                    client_ca_file: config.tls_client_ca_file.as_deref(),
+                    client_crl_file: config.tls_client_crl_file.as_deref(),
+                    sni_certificates: &config.tls_sni_certificates,
+                    reload_trigger: config.tls_reload_trigger.as_deref(),
+                    client_cert_users: tls_client_cert_users.as_ref(),
+                    client_cert_users_file: config.tls_client_cert_users_file.as_deref(),
+                    services: store.services_handle(),
+                    handshake_timeout: config.tls_handshake_timeout,
+                    idle_timeout: config.idle_timeout,
+                })?;
                 let listener = TcpListener::bind(addr)?;
                 listener.set_nonblocking(true)?;
                 (Some(listener), Some(Arc::new(acceptor)))
@@ -988,7 +1127,7 @@ fn serve_tls(
                 .name("rillcache-tls-client".into())
                 .stack_size(256 * 1024)
                 .spawn(move || {
-                    let mut connection = match acceptor.accept(stream) {
+                    let (mut connection, mapped_user) = match acceptor.accept(stream) {
                         Ok(connection) => connection,
                         Err(_) => {
                             store.pubsub_remove_client(client_id);
@@ -996,6 +1135,16 @@ fn serve_tls(
                             return;
                         }
                     };
+                    if let Some(username) = mapped_user {
+                        match store.authenticate_client_certificate_user(client_id, &username) {
+                            Ok(canonical) => session.set_tls_client_user(canonical),
+                            Err(_) => {
+                                store.pubsub_remove_client(client_id);
+                                store.unregister_client(client_id);
+                                return;
+                            }
+                        }
+                    }
                     let context = ClientContext {
                         limits,
                         idle_timeout,
@@ -1774,6 +1923,28 @@ mod tests {
         );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(config.validate().is_ok());
+        let sni_key = path.with_extension("sni-key");
+        std::fs::write(&sni_key, b"test key").unwrap();
+        std::fs::set_permissions(&sni_key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let sni_config = Config {
+            tls_bind_addr: Some("127.0.0.1:6380".parse().unwrap()),
+            tls_cert_file: Some(path.clone()),
+            tls_key_file: Some(path.clone()),
+            tls_sni_certificates: vec![TlsSniCertificate {
+                server_name: "example.test".into(),
+                cert_file: path.clone(),
+                key_file: sni_key.clone(),
+                ocsp_file: None,
+            }],
+            secure_secret_files: true,
+            ..Config::default()
+        };
+        assert_eq!(
+            sni_config.validate().err().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        std::fs::set_permissions(&sni_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(sni_config.validate().is_ok());
         config.secure_secret_files = false;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(config.validate().is_ok(), "default stays permissive");
@@ -1793,6 +1964,7 @@ mod tests {
             ..Config::default()
         };
         assert!(long.validate().is_ok());
+        let _ = std::fs::remove_file(sni_key);
         let _ = std::fs::remove_file(path);
     }
 }

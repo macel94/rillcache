@@ -12,8 +12,12 @@ has an ordered-index decision (section 2.33), and 4.23 has a bounded-
 materialisation decision (section 2.34), and 4.27 has a single-pass replay
 decision (section 2.35), and 4.24/4.39 have a push-ready decision (section
 2.36), and 4.35 has a hash/list in-place decision (section 2.37), but all remain gated; the
-shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), and 4.32 has a packed-node
-decision (section 2.41); every other runtime item here is historical or
+shared-structure implementation map is section 2.38, 4.38 has an order-statistic decision (section 2.40), 4.32 has a packed-node decision (section 2.41), 4.36 has a dense-index
+decision (section 2.42), 4.50 has a seek decision (section 2.43), and 4.51 has a
+borrowed-source decision (section 2.44), and 4.54 has an in-place edit decision
+(section 2.45), and 4.48 has an in-place group decision (section 2.46), and 4.43 has a neighbor-cell decision (section 2.47), and 4.42 has an in-place append decision
+(section 2.48), and 4.41 has a chunk-seek decision (section 2.49), and 4.49 has an index-pop decision (section 2.50), and 4.31 has a large-hash stage decision (section 2.51), and 4.52 has a maintained-counter decision (section 2.52);
+every other runtime item here is historical or
 explicitly gated (4.15, 4.20–4.27, 4.29–4.33, 4.35–4.55).**
 It records where
 Rillcache lost to Redis and Valkey, what those projects actually do on the same
@@ -1274,17 +1278,18 @@ rest are still true even though every row now leads:
     200k list cost **1.26–1.47 ms** versus 0.07–0.14 ms (9–22×) because both
     flatten every element reference; a missing `LPOS` leads because the C
     servers walk every node, and the 10-element controls are at the floor
-    (section 3.25, candidate 4.41).
+    (section 3.25, 4.41 decided in 2.49).
 19. **Stream append.** Every `XADD` clones the whole `Stream` and folds its
     payload twice, so at 5,000 entries it costs **1.36 ms** versus
     0.08–0.10 ms (13–18×) and grows with stream length, while `XLEN`/`XRANGE`/
     `XREVRANGE` and the 10-entry control are at the floor (section 3.26,
-    candidate 4.42).
+    4.42 decided in 2.48).
 20. **Geospatial search and point lookups.** `GEOSEARCH` scans every member, so
     a 1 km search over 50k members costs **4.34 ms** versus 0.16–0.17 ms
     (25–28×) and a 2×2 km box 4.49 versus 0.19–0.21; `GEOPOS` is 2.0 ms for one
     member and 24.9 ms for 100 (41–53×), and `GEODIST` ~19×, while a search that
-    returns all 50k is reply-bound at parity (section 3.27, candidate 4.43).
+    returns all 50k is reply-bound at parity (section 3.27, 4.43 decided in
+    2.47).
 21. **Multi-member point lookups.** `SMISMEMBER` clones and sorts the set and then
     scans it per member (**7.9–11.8 ms** versus 0.08–0.39), and `ZMSCORE` scans
     all members once per requested member (**8.0/33.4/273 ms** for 1/10/100
@@ -1318,13 +1323,13 @@ rest are still true even though every row now leads:
     on a 5k-entry stream it costs **8.26 ms** versus 0.08–0.09 ms (88–99×) and
     scales with length (~165 ms at 100k by extrapolation); the other XGROUP
     subcommands already mutate in place and are at parity (section 3.34,
-    candidate 4.48).
+    4.48 decided in 2.46).
 28. **Sorted-set pops.** Every `ZPOPMIN`/`ZPOPMAX`/`ZMPOP` cloned and sorted the
     whole set before removing one member: at 100k they cost **146–160 ms** versus
     0.16–0.42 ms (373–974×), the largest measured ratio, while the 100-member
-    control is at the floor (section 3.35, candidate 4.49). 4.49 now selects and
-    removes in place: **1.08–1.65 ms** (4.8–6.0 in the tie-heavy case); the
-    ordered-index target remains open.
+    control is at the floor (section 3.35, 4.49 decided in 2.50). 4.49 now selects
+    and removes in place: **1.08–1.65 ms** (4.8–6.0 in the tie-heavy case);
+    the ordered-index target remains open.
 29. **MONITOR feed under bursts.** The monitor queue is the pub/sub 1,024 queue
     with a 64-line tick drain, so a 2,000-command burst delivers exactly **1,024
     lines** to every monitor in every sample while Redis/Valkey deliver 2,000;
@@ -1335,7 +1340,7 @@ rest are still true even though every row now leads:
     costs **56.0–69.8 ms versus 0.18–0.74** because `select_zset` sorts the whole
     set before filtering, and `ZLEXCOUNT`/`ZCOUNT` scan every member
     (**1.25–15.0 ms versus 0.13–0.39**, including an empty `ZCOUNT`); section
-    3.38, candidate 4.50 on 4.30/4.38's ordered index.
+    3.38, 4.50 seek decided (2.43) on 4.30/4.38's ordered index.
 31. **Stream consumer-group reads.** `XREADGROUP` history/new, `XPENDING`,
     `XCLAIM` and `XAUTOCLAIM` on a 10k-entry stream with a 10k-entry PEL stay
     within **1.3–2.1×** of Redis/Valkey (largest forms: new-read 1000 8.99 vs
@@ -1351,13 +1356,13 @@ rest are still true even though every row now leads:
     **220.6 ms versus 40.4/17.1** (5.5–12.9×) and `ZINTERSTORE`/`ZDIFFSTORE`
     306.6/331.3 versus 102–111/61–62 (2.8–5.4×), because every source is copied
     into an owned map and the result is re-sorted; `ZUNIONSTORE` is 1.3–1.7×
-    behind and set-store variants already lead (section 3.41, candidate 4.51).
+    behind and set-store variants already lead (section 3.41, 4.51 decided in 2.44).
 34. **INFO keyspace over a large keyspace.** With no TTLs, `INFO keyspace` costs
     **2.79 ms at 100k keys and 10.0 ms at 500k** versus 0.13–0.30 ms for the C
     servers (16–40×), and plain `INFO` pays the same walk, while `INFO stats`,
     `DBSIZE` and `PING` stay at the floor because the keyspace section counts
-    every entry instead of reading maintained sizes (section 3.42, candidate
-    4.52).
+    every entry instead of reading maintained sizes (section 3.42, 4.52 decided
+    in 2.52).
 35. **Two-key moves.** `SMOVE` on a 100k set costs **25.5 ms versus 0.40/0.28**
     (64–91×) and `LMOVE`/`RPOPLPUSH` on a 200k list **39.2/41.2 versus
     0.08–0.34** (79–489×), while a same-key rotate still costs 20.5 ms, because
@@ -1367,12 +1372,12 @@ rest are still true even though every row now leads:
     100k-member containers still cost **50.7/267.2 ms versus 0.20–0.25** because
     the limit is applied after the full intersection (205–1,377×), while
     `LIMIT 0` costs the same as no limit and 10-member controls are at the floor;
-    section 3.44, extending 4.51.
+    section 3.44, 4.51 decided in 2.44.
 37. **List element edits.** `LINSERT` at the head of a 200k list costs **19.1 ms
     versus 0.09/0.24** (79–212×), `LSET` at index 100k 16.5 versus 0.14/0.28
     (59–118×), while the scan-bound middle insert and tail removal are 4.9–6.0×
     and 2.9–3.0×; every form flattens the whole list first; 10-element controls
-    are at the floor (section 3.45, candidate 4.54).
+    are at the floor (section 3.45, 4.54 decided in 2.45).
 38. **Set membership reply.** `SMEMBERS` on sets of 1k/10k/100k 8-byte members
     is at parity or **leads** (100k 84.75 ms versus 88.71/86.37; 10k 9.95 versus
     9.33/9.58), despite the same collect+sort+encode shape as the hash listings,
@@ -1387,12 +1392,12 @@ rest are still true even though every row now leads:
     **33.8 ms for `SINTER` and 163.4 ms for `ZINTER` versus 0.13–0.76** (178–778×)
     because every source is materialised, while a 1,000-member filter is 33–78×;
     `SDIFF`/`SUNION` already lead and `ZDIFF`/`ZUNION` are 1.4–2.5× (section
-    3.48, extending 4.51).
+    3.48, 4.51 decided in 2.44).
 41. **Range store forms.** `ZRANGESTORE` of 10 entries from a 100k zset costs
     **51.3–59.6 ms versus 0.12–0.35** (177–428×) and a 1,000-entry store 54.6
     versus 0.7–1.4 (39–78×); the lex/score `LIMIT 10` stores are 259–310×,
     because the store routes through the full `ordered_zset` sort; the full-range
-    store is 1.5–1.9× (section 3.49, extending 4.50).
+    store is 1.5–1.9× (section 3.49, 4.50 seek/store decided in 2.43).
 
 ### 2.21 Large-value screen: first attempt failed, retry measured
 
@@ -1561,9 +1566,9 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | Sorted-set rank, score and point reads | replies, storage | **measured**: at 100k, `ZRANK` 58.6–72.5 ms vs 0.07–0.16, `ZRANGEBYSCORE LIMIT 10` 62.4 vs 0.08–0.12, `ZRANGE 0 9` 57.4 vs 0.07–0.10 (378–927×), `ZSCORE` 3.27 vs 0.07–0.10; 10k 2.4–3.1 ms; controls at the floor | 4.30 ordered-index decided (2.33); 4.38 order-statistic decided (2.40) | AC32/AC40 | none |
 | Pub/sub bursts and channel scale | replies, latency, reliability | **measured**: 2,000-message burst delivers 1,024/2,000 and silently removes the subscription vs 2,000/2,000 and alive for both C servers; `PUBLISH` among 10,000 channels 0.38–0.89 ms vs 0.12–0.31; 1/1,000 channels at parity | 4.39, push-ready decided (2.36, with 4.24) | AC41 | none |
 | Cardinality and membership | latency | **measured**: 100k `SISMEMBER` 8.04/8.67 ms vs 0.17–0.22, `SCARD` 8.08 vs 0.15–0.20, `HLEN` 2.24 vs 0.15–0.19, `ZCARD` 1.57 vs 0.12–0.16, `LLEN` 200k 1.55 → **0.33** vs 0.08–0.35 (parity with Redis); `HEXISTS`/`STRLEN` and controls at the floor | 4.40, admitted | AC42 | none |
-| List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, admitted | AC43 | none |
-| Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, admitted | AC44 | none |
-| Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, admitted | AC45 | none |
+| List random access | latency | **measured**: 200k `LINDEX` 0/mid/last 1.29–1.47 ms vs 0.07–0.14, `LPOS` hit-first 1.26 vs 0.10–0.13 (9–22×); `LPOS` missing 1.81 vs 5.0–5.9 (Rill leads); controls at the floor | 4.41, chunk-seek decided (2.49) | AC43 | none |
+| Stream append | latency, storage | **measured**: `XADD` at 5k 1.36 ms p50 (p99 11.6) vs 0.104/0.077, at 1k 0.263 vs 0.148/0.077; `XLEN`/`XRANGE`/`XREVRANGE` and 10-entry controls at the floor | 4.42, in-place append decided (2.48) | AC44 | none |
+| Geospatial search and lookups | latency, storage | **measured**: 50k 1 km `GEOSEARCH` 4.34 ms vs 0.157/0.170, 2×2 km box 4.49 vs 0.211/0.186; `GEOPOS` 1/100 1.99/24.86 vs 0.14–0.19/0.47–0.61; `GEODIST` 3.12 vs 0.168; all-member search and controls at the floor | 4.43, neighbor-cell decided (2.47) | AC45 | none |
 | Multi-member point lookups | latency | **measured**: 100k `SMISMEMBER` 1/10/100 7.90/8.25/11.75 → 0.151/0.115/0.282 ms vs 0.07–0.19; `ZMSCORE` 8.02/33.37/273.2 → 0.113/0.118/0.253 vs 0.09–0.23; `SISMEMBER`/`ZSCORE`/`SCARD`/`ZCARD` 0.080–0.180; `HMGET` 100 at the floor | 4.44, implemented | AC46 met | none |
 | Mass expiry on command paths | latency | **measured**: after 30k keys expire, `MGET` 36.3 → 0.230 ms vs 0.200/0.244, `KEYS` 43.6 → 0.297 vs 0.215/0.205, `RANDOMKEY` 45.5 → 0.297 vs 0.209/0.217, `DBSIZE` 41.2 → 0.298 vs 0.151/0.247; lazy `GET` 0.254 vs 0.160/0.207 | 4.45, implemented | AC47 met | none |
 | SORT `BY nosort` | latency | **measured**: 100k `SORT ... BY nosort LIMIT 0 10` pre-fix 7.96 ms (p99 17.2) vs 0.12/0.16, post-fix 0.188/0.506 vs 0.192/0.708 and 0.136/0.315; sorted/ALPHA/DESC/BY-weight/GET rows 0.9–1.5×; 100-element controls at the floor | 4.46, implemented | AC48 met | none |
@@ -1573,29 +1578,29 @@ admit a change. It repeats no new evidence; the linked sections are authoritativ
 | MONITOR feed bursts | replies, latency, reliability | **measured**: 2,000-command burst delivers 1,024/2,000 lines per monitor (all six samples) vs 2,000/2,000; publisher fan-out at parity/cheaper while truncated | 4.39, extended | AC41 | none |
 | HyperLogLog add/count | latency, CPU | **measured**: 100k pipelined `PFADD` 1.70 s (16.96 µs/add) → 0.957 s (9.57) vs 3.17/3.61 µs; 10k `PFCOUNT` 2.66 s (265 µs/call) → 0.0234 s (2.34) vs 2.29/2.92; single p50 and controls at the floor | 4.47, implemented | AC49 (count met; add 1.77× but above 6 µs) | none |
 | BITPOS large bitmap | latency | **measured**: 16 MB `BITPOS 0` pre-fix 201.6 ms vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; `BITPOS 0 0 -1` 209.4 vs 4.79/5.96, post-fix 2.23; first-bit hit and 64 B control at the floor; `BITCOUNT` control 23.5 vs 4.0–4.8 | 4.37, extended | AC39 | none |
-| Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, admitted | AC50 | none |
+| Stream group creation | latency | **measured**: 5k `XGROUP CREATE` 8.26 ms vs 0.083/0.094 (88–99×); 10-entry control 0.338 vs 0.12/0.097; `CREATECONSUMER`/`SETID`/`DESTROY` at parity | 4.48, in-place decided (2.46) | AC50 | none |
 | Stream consumer-group reads | replies, latency | **measured null**: 10k stream/PEL, 20 repetitions; history 100 at parity but new 100 0.92 vs 0.57/0.69, new 1000 8.99 vs 5.19/6.43, `XPENDING` 1000 3.57 vs 2.93/3.72, `XAUTOCLAIM` 1000 9.84 vs 4.67/7.50, `XCLAIM` 100 at parity (1.3–2.1×, largest batches only) | no candidate; per-entry clone + consumer-name copy below threshold | re-measure after 4.42 or a multi-field/100k-PEL cohort | none |
-| Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 → 1.082 ms vs 0.664/0.232, `ZPOPMAX` 159.9 → 1.245, `ZPOPMIN 10` 146.6 → 1.542, `ZMPOP` 155.8 → 1.648; tie-heavy (all scores 0) 4.8–6.0; 100-member control at the floor | 4.49, implemented without the ordered index | AC51 missed (1.08–1.65 vs ≤0.3) | ordered `(score, member)` index |
-| Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, admitted (extends 4.30/4.38) | AC52 | none |
-| Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31 keyspace stage decided (2.27); large HSCAN staged | AC33/AC59 | none |
+| Sorted-set pops | latency | **measured**: 100k `ZPOPMIN` 156.7 → 1.082 ms vs 0.664/0.232, `ZPOPMAX` 159.9 → 1.245, `ZPOPMIN 10` 146.6 → 1.542, `ZMPOP` 155.8 → 1.648; tie-heavy (all scores 0) 4.8–6.0; 100-member control at the floor | 4.49, index-pop decided (2.50); scan path implemented | AC51 missed (1.08–1.65 vs ≤0.3) | ordered `(score, member)` index |
+| Lex ranges and count-only queries | replies, latency | **measured**: 100k `ZRANGEBYLEX LIMIT 10` 56.0–69.8 ms vs 0.18–0.74 (163–371×), `ZREVRANGEBYLEX` 60.1 vs 0.18–0.74, `ZLEXCOUNT` narrow 15.0 vs 0.21–0.22, `ZCOUNT` 1.25–1.75 vs 0.21–0.39 including an empty range, full 100k lex reply 144.8 vs 87.2–100.2; 10-member controls at the floor | 4.50, seek decided (2.43) | AC52 | none |
+| Cursor iteration (SCAN/HSCAN/SSCAN/ZSCAN) | replies, storage, latency | **measured**: 100k-key `SCAN COUNT 10` 42.6 ms p50 vs 0.256/0.164 (167–260×); full traversal 4.81 s vs 0.239/0.167; 10k-field `HSCAN` 5.05 s vs 0.257/0.247 | 4.31 keyspace stage decided (2.27); large HSCAN decided (2.51) | AC33/AC59 | none |
 | List element packing and RSS | storage (memory), latency | **measured**: 200k 8-byte list 142–143 B/elem vs 7.5 (RSS); `DEL` 7.28 ms vs 0.166/0.130 | 4.32, packed-node decided (2.41) | AC34 on the implemented change | none |
 | UNLINK and FLUSH* ASYNC | latency, storage | **measured**: `UNLINK` 200k list 6.21 ms vs 0.316/0.235; `FLUSHALL ASYNC` 20k keys 9.20 vs 0.886/0.568 and no faster than `SYNC` | 4.33, admitted | AC35 on the implemented change | none |
 | In-place string mutation | latency, storage | **measured**: pre-fix `APPEND` 64 B to 32 MB 7.35 ms and `SETRANGE` 7.19; post-fix (#258) 0.131/0.185 vs 0.142/0.222 and 0.219/0.289; 64 B controls and `GETRANGE` at the floor | 4.34, implemented | AC36 met; retained as regression | none |
 | In-place collection writes | latency, storage | **measured**: `HSET` 10k 6.45, `ZADD` 4.21, `SADD` 1.23; 200k `RPUSH`/`LPOP` 18.3/17.8; at 100k `HSET`/`HDEL` 92.7–99.4, `ZADD`/`ZREM` 61.4–63.9, `SADD`/`SREM` 11.2/10.7 → **0.125/0.210** vs 0.12–0.24; list/hash/zset writes remain | 4.35 hash/list stage decided (2.37); zset staged behind 4.30 | AC37 set rows met | hash/list; zset after 4.30 |
-| Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, admitted | AC38 on the implemented change | none |
+| Random-member commands | latency, storage | **measured**: at 100k, `SRANDMEMBER` 11.54 ms vs 0.199/0.326, `HRANDFIELD` 33.66 vs 0.343/0.113, `ZRANDMEMBER` 21.32 vs 0.250/0.164, `SPOP` 11.11 vs 0.304/0.126; 10-element controls at the floor | 4.36, dense-index decided (2.42) | AC38 on the implemented change | none |
 | Bitmap mutation and popcount | latency, storage | **measured**: 16 MB `SETBIT` pre-fix 5.32 ms vs 0.349/0.312, post-fix 0.172; `BITCOUNT` pre-fix 23.01 vs 3.37/4.56, post-fix 5.35 vs 2.74/3.43; `BITPOS 0` pre-fix 201.6 vs 5.08/5.14, post-fix 2.19 vs 3.84/4.89; 16 MB `BITFIELD` write pre-fix 4.39–4.68 vs 0.087–0.12, post-fix 0.12–0.30; 1 MB/64 B controls at the floor | 4.37, implemented (`BITFIELD`/`SETBIT`/`BITCOUNT`/`BITPOS`) | AC39 met | none |
 | Set algebra (SINTER/SUNION/SDIFF/SINTERCARD) | replies, storage | **measured**: 100k non-LIMIT SINTERCARD 53.3 vs 40.1/30.0 ms and the store variants lead; `SINTERCARD ... LIMIT 10` is 50.7 vs 0.198/0.247 (205–256×) because the limit is applied after the full intersection | keep the non-LIMIT forms; extend 4.51 to the set path and early exit | AC53 for `LIMIT` | none |
 | Skewed-cardinality algebra | replies, latency | source sets sorted by cardinality; smallest iterated, rest probed | same | every source materialised via `owned_set`/`owned_zset` before intersecting | **Adapt:** 4.51 smallest-source probe; measured 100k + 10 `SINTER` 33.8 vs 0.19/0.19 ms (178×), `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k 33–78×; `SDIFF`/`SUNION` lead (3.48, AC53) |
 | Range store forms | replies, latency | range handler seeks the bounds and emits only the selected entries into the destination | same | store routes through `select_zset`/`ordered_zset` (full sort) then a `HashMap` and re-encode | **Adapt:** 4.50 seek-based store; measured 100k `ZRANGESTORE` 0–9 51.3 vs 0.28/0.12 ms (177–428×), 0–999 54.6 vs 1.41/0.70, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 138.7 vs 89.8/74.1 (3.49, AC52) |
-| Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, admitted | AC53 | none |
-| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed TTL/field-TTL keyspaces still walk | 4.52, no-deadline fast path implemented; counters remain | AC54 (no-deadline rows met) | none |
+| Zset algebra and cardinality | replies, latency | **measured**: 100k `ZINTERCARD` 220.6 ms vs 40.4/17.1 (5.5–12.9×), `ZINTERSTORE` 306.6 vs 110.5/61.6, `ZDIFFSTORE` 331.3 vs 102.0/61.4, `ZUNIONSTORE` 477.6 vs 366.6/280.4; store variants copy every source and re-sort the result; 10-member controls at parity | 4.51, borrowed-source decided (2.44) | AC53 | none |
+| INFO keyspace accounting | replies, latency | **measured**: no-TTL keyspace; `INFO keyspace` pre-fix 2.79 ms at 100k and 10.0 ms at 500k vs 0.13–0.30, post-fix 0.172/0.160 ms at parity, plain `INFO` 0.237/0.357; mixed-TTL 100k 4.57/4.42 ms vs 0.105–0.648 (~10–14×) | 4.52, maintained-counter decided (2.52); fast path implemented | AC54 (no-deadline met; mixed 4.57/4.42 measured) | none |
 | Two-key moves (SMOVE/LMOVE/RPOPLPUSH) | latency, storage | **measured**: `SMOVE` 100k pre-fix 25.5 ms vs 0.40/0.28 (64–91×), post-fix 0.27–0.63 vs 0.08–0.24; `LMOVE`/`RPOPLPUSH` 200k pre-fix 35.3/33.6, post-fix 0.31/0.24 vs 0.20–0.64; same-key rotate 16.9 → 0.11; 10-element controls at the floor | 4.53, implemented | AC55 met | none |
-| Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended (set path + early exit) | AC53 | none |
-| List element edits | latency, storage | **measured**: 200k `LSET` index 100k pre-fix 16.5, post-fix 0.805 vs 0.061/0.641; `LINSERT` head pre-fix 19.1, post-fix 0.069 vs 0.071/0.102; middle pre-fix 21.0, post-fix 1.66 vs 3.475/4.01; `LREM` tail 21.1 vs 6.97/7.28 and `LPOS RANK -1` 1.59 vs 0.16/0.27 remain; 10-element controls at the floor | 4.54, `LSET`/`LINSERT` implemented; `LREM` remains | AC56 (`LSET`/`LINSERT` met) | none |
+| Cardinality `LIMIT` | replies, latency | **measured**: 100k `SINTERCARD ... LIMIT 10` 50.7 ms vs 0.198/0.247 (205–256×), `ZINTERCARD ... LIMIT 10` 267.2 vs 0.217/0.194 (1,231–1,377×); `LIMIT 0` equals no-limit cost; 10-member controls at the floor | 4.51, extended, decided (2.44) | AC53 | none |
+| List element edits | latency, storage | **measured**: 200k `LSET` index 100k pre-fix 16.5, post-fix 0.805 vs 0.061/0.641; `LINSERT` head pre-fix 19.1, post-fix 0.069 vs 0.071/0.102; middle pre-fix 21.0, post-fix 1.66 vs 3.475/4.01; `LREM` tail 21.1 vs 6.97/7.28 and `LPOS RANK -1` 1.59 vs 0.16/0.27 remain; 10-element controls at the floor | 4.54, in-place edits decided (2.45); `LSET`/`LINSERT` implemented | AC56 (`LSET`/`LINSERT` met) | none |
 | Set membership reply | replies | **measured lead/null**: `SMEMBERS` 100k 84.75 ms vs 88.71/86.37, 10k 9.95 vs 9.33/9.58, 1k 0.97 vs 1.11/1.24, 10-member control at the floor; the 1.5 MB reply hides the collect+sort | no candidate; keep 4.29 scoped to hashes | n/a | none |
 | Multi-key argument cap | parsing, compatibility | **measured boundary**: 1,024 total args accepted, 1,025 rejected; Redis/Valkey execute `MGET` 10,000, `MSET` 600 pairs and `DEL` 2,000; 1,000-key latency is at parity or leads (`MGET` 1.74 vs 2.23/2.34) | 4.55, admitted | AC57 | none |
-| Skewed-cardinality algebra | replies, latency | **measured**: 100k + 10 `SINTER` 33.8 ms vs 0.19/0.19 (178×), `SINTERCARD` 35.9 vs 0.24/0.34, `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k is 33–78×; `SDIFF`/`SUNION` lead; 10-member controls at the floor | 4.51, extended | AC53 | none |
-| Range store forms | replies, latency | **measured**: 100k `ZRANGESTORE` 0–9 51.3 ms vs 0.28/0.12 (177–428×), 50000–50009 51.4, 0–999 54.6 vs 1.41/0.70, `REV` 56.8, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 0–-1 138.7 vs 89.8/74.1; 10-member control at the floor | 4.50, extended (store forms) | AC52 | none |
+| Skewed-cardinality algebra | replies, latency | **measured**: 100k + 10 `SINTER` 33.8 ms vs 0.19/0.19 (178×), `SINTERCARD` 35.9 vs 0.24/0.34, `ZINTER` 163.4 vs 0.76/0.21 (215–778×), `ZINTERCARD` 167.0 vs 0.89/0.13; 100k + 1k is 33–78×; `SDIFF`/`SUNION` lead; 10-member controls at the floor | 4.51, extended, decided (2.44) | AC53 | none |
+| Range store forms | replies, latency | **measured**: 100k `ZRANGESTORE` 0–9 51.3 ms vs 0.28/0.12 (177–428×), 50000–50009 51.4, 0–999 54.6 vs 1.41/0.70, `REV` 56.8, `BYLEX`/`BYSCORE LIMIT 10` 55.7/59.6 (259–310×), full 0–-1 138.7 vs 89.8/74.1; 10-member control at the floor | 4.50, seek/store decided (2.43) | AC52 | none |
 | Large-frame input growth | parsing | **measured**: 1 MiB SET −28% to −32%, p99 9.8 vs 7.4/7.8 ms; reply copy cannot explain a SET | 4.25, reservation decided (2.31) | AC28 on the implemented change | none at 64 B |
 | Idle WATCH version bookkeeping | storage | source; ~40–100 ns bound | 4.20, conditional | 4.19 isolates a mutation tail | none |
 | One journal write per command | persistence | **measured**: AOF-on SET P1 −66.5%, P16 −90.2% (39.9k vs 406.5k), p99 15.1 vs 3.1 ms; C servers −8.5% to −33.5%; `always` source-only (local cohort failed) | 4.21, per-turn coalescing decided (2.28) | AC23 implementation + A/B | none (persistence off) |
@@ -1758,8 +1763,8 @@ cursor over `std::HashMap` (no stable bucket API), a 40-bit hash-prefix cursor
 (collisions can skip keys), and an unbounded expiry reap inside SCAN.
 
 **Acceptance.** AC59 covers the keyspace stage and existing AC33 remains the
-large-collection stage criterion. The keyspace stage is independently
-implementable without waiting for the large-hash field-index decision.
+large-collection stage criterion, now that the large-hash stage is decided in
+section 2.51. The keyspace stage remains independently implementable.
 
 ### 2.28 2026-11-16 checkpoint: AOF-on is still one write per command
 
@@ -2490,6 +2495,764 @@ push/pop and FIFO ordering, `LRANGE`/`LSET`/`LINSERT`/`LREM`/`LPOS`, TTL/WATCH/
 journal/rewrite and exact accounting are the obligations. Rejected: the current
 one-buffer-per-element layout, an external list/arena crate, unsafe custom
 allocators, and changing `LRANGE` order. AC34 remains the measurable criterion.
+
+### 2.42 2026-11-16 checkpoint: random-member commands still materialise the collection
+
+The protected gate has no random-member command. The retained cohort (section
+3.20) measures 100k `SRANDMEMBER` at **11.54–11.68 ms**, `HRANDFIELD` 30.8–34.3,
+`ZRANDMEMBER` 20.6–22.8 and `SPOP` 11.11, versus 0.10–0.41 ms for Redis and
+Valkey; 10k rows are 1.0–2.6 ms and controls are at the command floor. The
+current path collects the entire collection before indexing or running partial
+Fisher–Yates.
+
+The C servers sample the stored representation directly:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Single random pick | collect + random index | dict/listpack direct pick ([`t_set.c#L419`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L419)) | same ([`t_set.c#L408`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L408)) | **adapt** a dense member index |
+| COUNT unique | collect + partial shuffle | bounded sampling/swap | same | reservoir / partial Fisher–Yates |
+| SPOP | collect + remove | listpack/dict removal by index | same | swap-remove from the index |
+| Small packs | collect small vector | listpack iteration | same | keep |
+| Dependencies | std only | C/dict/listpack | C/dict/listpack | std `Vec`/`HashMap` |
+
+**Decision.** Add a dense member index beside each large set/hash/zset:
+`Vec<Arc<[u8]>>` plus a map from member to slot (or a per-entry slot) with
+swap-remove. Single picks become O(1), unique COUNT sampling uses reservoir or
+partial Fisher–Yates over the index, and `SPOP` removes by slot. Share member
+bytes with the existing map/ordered index via `Arc`; keep pack/listpack paths
+unchanged and convert atomically at the threshold. Zset random access uses the
+same member bytes but not the ordered range index; 4.30/4.38 remain the ordered
+structure. Negative COUNT with repetition and duplicate-free semantics stay
+explicit tests. The index is counted in payload/eviction accounting and rebuilt
+by replay/rewrite; ordering is documented as unspecified, matching Redis.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::vec::Vec`, `std::collections::HashMap`, `std::sync::Arc` and the existing
+in-repo random-index helper. No persistent format change.
+
+**Risks and rejected options.** Uniformity, duplicate/negative-count semantics,
+swap-remove slot repair, pack↔large conversion, empty-set deletion, field TTL,
+memory accounting, `SMEMBERS`/`HKEYS`/`ZSCAN` ordering and WATCH/journal/rewrite
+must stay exact. Rejected: collecting the whole collection, sorting, rescanning
+for every pick, an external RNG crate and a second copy of each member. AC38 is
+the criterion.
+
+### 2.43 2026-11-16 checkpoint: lex ranges still sort the whole set and counts still scan
+
+The protected gate has no `BYLEX`, `ZLEXCOUNT` or `ZCOUNT` row. The retained
+cohorts (section 3.38, extended by the store cohort in 3.49) measure a 100k
+equal-score zset at **56.0–69.8 ms** for `ZRANGEBYLEX ... LIMIT 10` (unbounded,
+mid-range and reverse) versus 0.18–0.74 ms for Redis and Valkey; a narrow
+`ZLEXCOUNT` is **15.0 vs 0.21–0.22 ms**, `ZCOUNT` is 1.25–1.75 ms even for an
+empty range, the full 100k lex reply is 144.8 versus 87.2–100.2, a ten-entry
+`ZRANGESTORE` is 51.3–59.6 versus 0.12–0.35, and a 1,000-entry store is 54.6
+versus 0.70–1.41. Ten-member controls are at the command floor.
+
+Current source audit:
+
+- `zset_range` reads `zset_items` and calls `select_zset`, which first calls
+  `ordered_zset`: it clones every `(member, score)` into a `Vec<Vec<u8>>` and
+  sorts all 100k entries. `BYLEX`/`BYSCORE` then filter that vector and `LIMIT`
+  is applied last, so a ten-entry reply pays the full clone, sort and filter.
+- The store branch builds a `HashMap` from the selected entries and re-encodes
+  it; the full sort happens before ten entries are copied.
+- `zset_count` and `zset_lex_count` iterate `zset_items` and test every member,
+  so an empty score range still scans the whole set.
+- The decided 4.30/4.38 ordered index is not used yet. Once it exists, both the
+  bound seek and the rank subtraction are available from the same structure.
+
+The C servers seek the stored order and subtract spans:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Bounded `BYLEX` reply | clone + sort + filter + LIMIT | seek nth in lex range, walk `offset + count`, stop at the bound ([`t_zset.c#L3799`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3799)) | same ([`t_zset.c#L3488`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3488)) | **adapt** seek on the shared ordered index |
+| Reverse and `LIMIT` | reverse-sort, then filter | negative nth in lex range, walk `backward` (`zslNthInLexRange`, [`t_zset.c#L866`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L866)) | same ([`t_zset.c#L768`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L768)) | last-block seek + reverse walk |
+| `ZLEXCOUNT` | scan every member | first/last nth in range, subtract ranks ([`t_zset.c#L3721`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3721)) | same ([`t_zset.c#L3410`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3410)) | rank subtraction |
+| `ZCOUNT` | scan every member | same with a score range ([`t_zset.c#L3646`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3646)) | same ([`t_zset.c#L3336`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3336)) | rank subtraction |
+| Range store | full sort, then a ten-entry map and re-encode | the result handler emits only the selected range | same | copy only the selected range |
+| Small packs | small vector | listpack first-in-range and walk | same | keep the direct small path |
+| Dependencies | std only | C/listpack | C/listpack | std `Vec`/binary search/Fenwick, no crate |
+
+**Decision.** Answer lex and score ranges from the shared ordered index decided
+in 2.33/2.40 rather than from `ordered_zset`:
+
+- binary-search the first/last block by `(score, member)` for `BYSCORE` and the
+  rank paths; for `BYLEX` seek the member inside the equal-score run (locating
+  the score group first) and preserve today's result for mixed scores;
+- start at the seeked entry and walk at most `offset + count` entries, keeping
+  the existing negative/zero/overflow `LIMIT` rules and exclusive/infinite bound
+  semantics;
+- `ZCOUNT`/`ZLEXCOUNT` compute `rank(last) − rank(first) + 1` from the 4.38
+  prefix counts, return 0 when either bound seek fails, and return the zset
+  length for a fully unbounded range without touching entries;
+- the reply and store forms share that iterator; a store builds the destination
+  from only the selected entries, clears the destination TTL and accounts its
+  payload exactly, while the source is read before the destination write;
+- packs answer directly below the threshold; conversion at the existing
+  threshold preserves order, and the index is rebuilt by replay/rewrite;
+- no new structure beyond 4.30/4.38, no dependency, no `unsafe`.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::vec::Vec` binary search, `std::sync::Arc` and the small Fenwick prefix
+counts from 4.38. The index stays derived state, is never persisted and is
+counted by payload/eviction accounting. No persistent-format or configuration
+change.
+
+**Risks and rejected options.** Bound parsing (`(`, `[`, `-`, `+`, NaN);
+exclusive, infinite and reversed bounds; `LIMIT` offset arithmetic; mixed
+score/member order; empty results and destination removal; pack conversion;
+store TTL/accounting; WATCH version, journal and rewrite snapshots are the
+obligations. Rejected: sorting and breaking early (still O(n log n)), caching a
+sorted vector per key (invalidated by every write and unbounded), a second
+lex-only index (duplicate storage and another invariant), and keeping the
+per-count scan. AC52 remains the measurable criterion.
+
+### 2.44 2026-11-17 checkpoint: algebra copies every source and sorts stores
+
+The protected gate has no set/zset algebra row. The retained cohorts (sections
+3.41, 3.44 and 3.48) measure two 100,000-member collections at:
+
+- `ZINTERCARD` **220.6 ms** versus Redis 40.4 and Valkey 17.1 (5.5–12.9×);
+  `ZINTERSTORE` 306.6 versus 110.5/61.6 and `ZDIFFSTORE` 331.3 versus
+  102.0/61.4; `ZUNIONSTORE` 477.6 versus 366.6/280.4; `SINTERSTORE` 42.0–50.5
+  versus 57.2–67.3/29.4–39.4, already ahead of Redis and 1.1–1.7× behind Valkey.
+- `SINTERCARD ... LIMIT 10` **49.5–59.1 ms** versus 0.15–0.28 and `ZINTERCARD
+  ... LIMIT 10` **259.5–313.8** versus 0.08–0.49; `LIMIT 0` costs the same as
+  the unlimited form, and 10-member controls are at the command floor.
+- A 10-member filter against a 100,000-member source costs **28.5–40.5 ms** for
+  `SINTER`, 28.0–36.8 for `SINTERCARD`, 162.3–206.3 for `ZINTER` and
+  160.7–204.3 for `ZINTERCARD`, versus 0.10–1.30 ms; the 1,000-member filter
+  is 33–78× behind. `SDIFF`/`SUNION` already lead.
+
+Current source audit:
+
+- `owned_set` clones every source into a fresh `BTreeSet<Vec<u8>>`;
+  `owned_zset` clones every source into a `HashMap<Vec<u8>, f64>`. Every
+  command pays an O(sum of sources) allocation and copy before any work.
+- `set_algebra` starts from the first key's cloned set and retains against the
+  rest; it does not order sources by length. `set_intercard` clones all sources,
+  computes the whole intersection, and only then applies `LIMIT` with `min`.
+- `zset_algebra` clones all sources, starts the intersection from the first
+  key, builds a result `HashMap`, then calls `ordered_zset`, which clones and
+  sorts every result member. The store branch discards that order, builds a
+  second `HashMap` and re-encodes it.
+- `zset_intercard` clones all zsets, builds a `BTreeSet` of the first key's
+  members, retains against the rest, and applies `min(limit)` afterwards.
+- The stored forms already expose `set_len`/`zset_len`, `contains_member`
+  (set/pack/intset) and `zset_score` (map, linear only for the small pack), so
+  borrowing needs no new container.
+
+The C servers borrow the stored objects and keep only the result:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Source access | clone each into an owned set/map | borrow `zsetopsrc`/`setopsrc` subjects | same | **adapt** borrowed probes |
+| Intersection order | first key, then retain | sort by cardinality ascending and iterate the smallest ([`t_zset.c#L3012`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3012), [`t_set.c#L1450`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L1450)) | same ([`t_zset.c#L2722`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L2722), [`t_set.c#L1304`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L1304)) | smallest-source iteration |
+| Membership | cloned-map/container lookup | direct dict/listpack/intset probe (`zuiFind`, [`t_zset.c#L2597`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L2597); `setTypeIsMemberAux`, [`t_set.c#L303`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L303)) | same ([`t_zset.c#L2338`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L2338), [`t_set.c#L292`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L292)) | existing `contains_member`/`zset_score` |
+| Cardinality `LIMIT` | materialise, then `min` | count matches, stop at the limit, no destination ([`t_zset.c#L3056`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L3056), [`t_set.c#L1501`](https://github.com/redis/redis/blob/8.10.2/src/t_set.c#L1501)) | same ([`t_zset.c#L2766`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L2766), [`t_set.c#L1353`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_set.c#L1353)) | early exit |
+| Store | sort the result, rebuild a map, re-encode | build the destination directly (dict+skiplist or listpack) | same | encode the result once |
+| Reply order | clone and sort the full result | reply from the destination's ordered structure | same | move the result into a `Vec` and sort once |
+| Dependencies | std only | C/dict/listpack | C/dict/listpack | std `Vec`/`BTreeSet`/`HashMap`, no crate |
+
+**Decision.** Borrow the stored sources and build at most one result:
+
+- Collect borrowed `&Collection` sources after expiry and validate every type
+  before any mutation; a missing key is an empty source. Keep each source's
+  weight beside it, then sort the non-diff sources by ascending cardinality to
+  match Redis/Valkey aggregation order.
+- `ZINTER`/`SINTER` iterate the smallest source and probe every other source
+  with `zset_score`/`contains_member`, aggregating the weighted score in that
+  sorted order and inserting only survivors into one result map. `ZUNION`
+  iterates the borrowed sources in the same order and inserts each member once.
+  `ZDIFF` keeps first-minus-rest order.
+- `ZINTERCARD`/`SINTERCARD` build no result: count matches and stop after
+  `LIMIT` hits, with `LIMIT 0` unlimited. Add a borrowed set-member iterator
+  covering `Set`, `SetPack` and `SetInt` (stack-formatting integers), and use
+  the map/pack iterators for zsets.
+- The reply forms move the result map into a `Vec`, sort once by
+  `(score, member)` and encode. The store forms skip that sort and pass the
+  result map straight to `encode_zset`/`encode_set`, which already choose the
+  compact form.
+- Read the destination before `reserve` when it is also a source; clear its TTL,
+  account the new payload exactly and remove it for an empty result. Weights,
+  per-occurrence duplicate keys, `AGGREGATE MIN/MAX/SUM`, NaN/±0 and the
+  existing pack/intset thresholds stay exact.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::{BTreeSet, HashMap}`, `std::vec::Vec`, `HashMap::into_iter`
+and the existing collection accessors plus one borrowed-iteration helper. The
+result map is transient; nothing new is persisted or counted beyond the
+destination's existing payload accounting.
+
+**Risks and rejected options.** Source-order-dependent floating `SUM`, ±0/NaN
+and infinity, per-occurrence weights and duplicate keys, missing/empty and
+wrong-type sources, destination-as-source, reply ordering, `LIMIT 0` versus a
+positive limit, TTL clearing, accounting, WATCH/journal/rewrite and the
+`SetInt`/`SetPack`/`ZSetPack` conversions are the obligations. Rejected:
+keeping the owned copies and optimising only downstream; a temporary borrowed
+`HashSet` of the smaller source (another allocation for the same probe);
+parallelising the intersection; sorting the result for stores that never use
+the order; and per-source destination maps. AC53 remains the measurable
+criterion.
+
+### 2.45 2026-11-17 checkpoint: tail removal and reverse LPOS still traverse a flattened copy
+
+The protected gate has no list-edit row. The retained cohort (section 3.45)
+measures a 200,000-element list of distinct 8-byte values at:
+
+- `LREM 1` near the tail **19.90–22.88 ms** versus Redis 6.29–7.12 and Valkey
+  6.57–8.15 (2.9–3.0×); the head/middle forms were fixed by the earlier
+  `LSET`/`LINSERT` work.
+- `LPOS ... RANK -1` **1.31–1.87 ms** versus 0.09–0.30/0.08–0.36 (5.9–9.9×);
+  the forward `RANK 1` path and 10-element controls are at the command floor.
+
+Current source audit:
+
+- `list_remove` calls `Collection::list_values`, which clones every element into
+  a fresh `VecDeque` (`ListPack` clones it; `ListQuick` flattens every node), then
+  builds a second `VecDeque` while filtering, and finally re-encodes and replaces
+  the whole list. A one-element tail removal pays two full copies plus an encode.
+- `list_position` uses `list_items`, which borrows elements but still allocates
+  a `Vec` of all 200,000 references before a reverse scan. The work therefore
+  grows with list length even though the match is near the tail.
+- The earlier `LSET`/`LINSERT` paths already walk chunks and mutate one element;
+  `LREM` and reverse `LPOS` are the two remaining consumers of the flatten.
+
+The C servers remove and position through a directional list iterator:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| `LREM` direction | clone, filter forward or reverse, rebuild | iterator starts at head or tail by the sign of count; `listTypeDelete` unlinks each match ([`t_list.c#L1115`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L1115)) | same ([`t_list.c#L1028`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L1028)) | **adapt** chunk-local removal |
+| `LREM` storage | new `VecDeque` plus re-encode | delete inside the quicklist node, convert/shrink at the end | same | remove in place, split/merge at bounds |
+| Reverse `LPOS` | materialise all references, index backwards | iterator from the tail, index computed from list length ([`t_list.c#L1015`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L1015)) | same ([`t_list.c#L937`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L937)) | **adapt** a backward chunk walk |
+| `RANK`/`COUNT`/`MAXLEN` | materialised positions | counted during the directional scan | same | count while scanning, no position table |
+| Dependencies | std only | C/quicklist/listpack | C/quicklist/listpack | std `VecDeque`/chunk walk, no crate |
+
+**Decision.** Complete the in-place list-edit path for the two remaining forms:
+
+- `LREM` walks the existing chunk deque from the head for a positive count and
+  from the tail for a negative one, scanning each chunk in the requested
+  direction, deleting matches within the chunk and stopping at the count. For a
+  negative count, collect matching indices in the chunk and drain them in
+  descending order so shifts stay inside one bounded chunk; `count == 0`
+  removes every match. Drop emptied chunks, split/merge only at the configured
+  bound, update `payload_len`/`payload_bytes` by the removed bytes, delete the
+  key when the list is empty, and never flatten or rebuild the list; only the
+  affected chunks change, with threshold conversion when a representation
+  boundary is crossed.
+- Reverse `LPOS` walks nodes and elements from the tail without building the
+  reference vector, counts scanned elements for `MAXLEN` and matches for
+  `RANK`/`COUNT`, and reports the head-relative index (`len - 1 - offset`). The
+  forward path keeps the same scan shape.
+- Both paths reuse 4.41's chunk traversal and 4.35's delta accounting, keep the
+  `ListPack`/`ListQuick` threshold conversion exact, and work unchanged when
+  4.32's packed nodes replace per-element buffers.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::VecDeque`, slice indexing and the existing list encoders.
+The removed bytes are subtracted from the existing payload counters; no new
+index or persistent state is introduced.
+
+**Risks and rejected options.** Positive/negative/zero count semantics, order
+after removal, `MAXLEN` counting in the scan direction, head-relative positions,
+empty-key deletion, chunk split/merge and node bounds, `ListPack` conversion,
+TTL/WATCH/journal/rewrite and exact accounting are the obligations. Rejected:
+keeping the flatten but skipping the re-encode (still an O(n) copy and
+allocation); a second value-to-position index (invalidated by every edit and
+unbounded); locating by index only (does not cover value-based removal); and
+converting the list to another structure for edits. AC56 remains the measurable
+criterion.
+
+### 2.46 2026-11-17 checkpoint: group creation still clones the whole stream
+
+The protected gate has no stream-group row. The retained cohort (section 3.34)
+measures a 5,000-entry stream at **7.47–13.1 ms** for `XGROUP CREATE` (8.26
+representative) versus Redis 0.07–0.10 and Valkey 0.09–0.13 (88–99×); the
+10-entry control is 0.338 versus 0.120/0.097, while `CREATECONSUMER`, `SETID`
+and `DESTROY` on the same stream are at parity (0.099–0.169 ms). The cost grows
+linearly with stream length and extrapolates to ~165 ms at 100k entries.
+
+Current source audit:
+
+- The `CREATE` branch clones `e.stream` through `e.stream.clone()`, inserts the
+  group into that clone, folds `stream.payload_bytes()` over every entry, calls
+  `data.reserve`, and replaces the key with `put_stream`.
+- The group maps are independent of the entries: creating a group changes no
+  entry, no field and no entry byte count. The clone, the fold and the replace
+  are therefore pure overhead proportional to the stream length.
+- The other `XGROUP` subcommands already borrow `Entry.stream` mutably, mutate
+  one map and call `data.touch`; they are at parity and provide the shape to
+  copy.
+
+The C servers insert one group and leave the entries alone:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Group insert | clone the stream, insert, replace | insert one group in the stream dictionary ([`t_stream.c#L3553`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L3553), [`#L3667`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L3667)) | same ([`t_stream.c#L2582`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L2582)) | **adapt** an in-place insert |
+| Entry bytes | fold every entry | untouched | untouched | leave `payload_len` unchanged |
+| Accounting | reserve the folded total, replace | no entry accounting change | same | no reserve on an existing key |
+| `MKSTREAM` | build a stream, then replace | create an empty stream and group | same | reserve and insert the new key once |
+| Other subcommands | already mutate in place | dict mutation | same | keep |
+| Dependencies | std only | C/dict/rax | C/dict/rax | std maps, no crate |
+
+**Decision.** Split `XGROUP CREATE` into two paths:
+
+- If the key exists, validate the type, reject an existing group with
+  `BUSYGROUP` before mutation, derive `entries_read`/`last_delivered` from the
+  borrowed stream (`$` uses `entries_added`; an explicit ID keeps today's
+  retained-entry count), insert the `ConsumerGroup` into `stream.groups` in
+  place, refresh the key's access stamp so LRU/eviction ordering matches the
+  previous replace, and call `data.touch`. Do not clone the stream, fold
+  `payload_bytes`, call `reserve` or replace the entry.
+- If the key is missing and `MKSTREAM` is set, build the empty `Stream` and its
+  group locally, `reserve` the new key once, and insert it; without `MKSTREAM`
+  keep the existing error. A wrong-type key and a missing key fail before any
+  mutation.
+- Group maps remain outside the entry-byte payload, as today, so
+  `payload_len`/`payload_bytes` do not change for an existing stream. TTL,
+  field TTLs (streams have none), PEL/consumer state, `BUSYGROUP`, `ENTRIESREAD`,
+  journal/rewrite snapshots, WATCH versions and notification order stay exact.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::BTreeMap` inside the existing `Stream`, the existing `touch`
+path and a small access-stamp helper on `Data`. No new index, no persistent
+state and no change to the journal's stream encoding.
+
+**Risks and rejected options.** `BUSYGROUP`, explicit-ID versus `$`, the
+documented retained-entry approximation for `entries_read`, `last_delivered`,
+`MKSTREAM`, OOM before a new key is inserted, PEL/consumer state, LRU access
+stamps, payload accounting, TTL/WATCH/journal/rewrite and notification order are
+the obligations. Rejected: keeping the clone and only skipping the fold (still
+O(n) copies); a separate group registry outside the stream (breaks read, range
+and rewrite consistency); and moving the group maps out of the stream value.
+AC50 remains the measurable criterion.
+
+### 2.47 2026-11-17 checkpoint: geo search scans every member and point lookups rebuild the index
+
+The protected gate has no geospatial row. The retained cohort (section 3.27)
+measures a 50,000-member grid over ~0.5° at:
+
+- 1 km `GEOSEARCH` **4.34 ms** (3.85–4.40) versus Redis 0.12–0.16 and Valkey
+  0.14–0.23 (25–28×); a 2×2 km `BYBOX` 4.49 versus 0.19–0.21.
+- `GEOPOS` for one member 1.32–3.03 ms versus 0.14–0.19, and for 100 members
+  **22.33–26.86 ms** versus 0.47–0.61 (41–53×).
+- `GEODIST` 0.86–3.77 (3.12 representative) versus 0.167/0.168 (~19×).
+- A 5 km search returning all 50,000 members is 10.38 versus 10.09/10.91,
+  reply-bound at parity; 10-member controls are 0.139–0.149 and at the floor.
+
+Current source audit:
+
+- `run_search` calls `zset_items()` to collect every member reference, decodes
+  and haversines all of them, and only then filters, sorts and truncates. A
+  small-radius search therefore pays the whole 50,000-member index.
+- `GEOPOS` and `GEODIST` also materialise `zset_items()` and linearly scan it
+  once per requested member; 100 `GEOPOS` names pay 100 scans.
+- `geo.rs` already has the 52-bit interleave/decode and WGS-84 haversine
+  helpers, but no step estimate, cell-range or neighbour enumeration.
+
+The C servers query only the cells that can contain a hit:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Search candidates | decode and test every member | estimate a geohash step, enumerate nine cells, range-read only those scores ([`geo.c#L524`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L524), [`geohash_helper.c#L62`](https://github.com/redis/redis/blob/8.10.2/src/geohash_helper.c#L62)) | same ([`geo.c#L533`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L533)) | **adapt** nine-cell search |
+| Cell to score range | none | align the cell prefix to 52 bits, half-open min/max ([`scoresOfGeoHashBox`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L326)) | same | half-open ranges on 4.30/4.38 |
+| Neighbour duplicates | none | skip an identical previously processed neighbour ([`geo.c#L418`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L418)) | same | skip identical ranges |
+| `GEOPOS`/`GEODIST`/`GEOHASH` | materialise, linear find per member | one zset dict lookup per member ([`geo.c#L941`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L941), [`#L974`](https://github.com/redis/redis/blob/8.10.2/src/geo.c#L974)) | same ([`#L960`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L960), [`#L993`](https://github.com/valkey-io/valkey/blob/9.1.2/src/geo.c#L993)) | direct `zset_score` probes |
+| All-member search | linear, reply-bound | cell ranges still cover it | same | unchanged latency class |
+| Dependencies | std only | C/geohash/zset | C/geohash/zset | existing helpers, std maps, no crate |
+
+**Decision.** Keep the geo index as the existing sorted set of 52-bit geohash
+scores and query it by cell:
+
+- Estimate the cell step from the search radius with the radius-doubling rule
+  (1–26, latitude >66/80 adjustment), using half the box diagonal for `BYBOX`;
+  verify the nine cells cover the requested bounds and reduce the step once when
+  a neighbour edge falls short, as Redis does.
+- Encode the centre at that step, enumerate `x-1..=x+1` and `y-1..=y+1`, wrap
+  `x` across the dateline, skip rows outside the poles, and mask the 26-bit
+  latitude/longitude offsets to the step before interleaving.
+- Map each cell to a half-open 52-bit score range
+  `[cell << 2*(26-step), (cell + 1) << 2*(26-step))`, skip duplicate ranges,
+  range-read through the 4.30/4.38 ordered index, decode and apply the exact
+  haversine or box test, then sort (`ASC`/`DESC`/hash) and apply `COUNT`.
+- `GEOPOS`, `GEODIST` and `GEOHASH` probe `zset_score` once per requested member;
+  `FROMMEMBER` resolves its centre with one probe. No all-member vector.
+- Keep the WGS-84 formulas, units, `WITHCOORD`/`WITHDIST`/`WITHHASH`, `STORE`,
+  result and payload bounds, TTL/type errors and the existing zset
+  representation. Scores that are not valid geohashes remain skipped, as today.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+the existing `interleave_geohash`/`decode_geohash`/`haversine` helpers, integer
+masking/shifting, a fixed nine-slot array for duplicate-range suppression and
+the ordered index's range read. No new index and no persistent-format change.
+
+**Risks and rejected options.** Step estimation and the coverage check, dateline
+wrap and pole clamping, half-open range edges, duplicate cells, `BYBOX`
+width/height versus radius, `FROMMEMBER` near an edge, `ASC`/`DESC`/`COUNT`
+ordering, exact equality with the linear reference on a boundary fixture,
+all-member reply-bound parity, `STORE` and accounting are the obligations.
+Rejected: keeping the linear scan (measured 25–53×); caching per-member
+distances (stale after every `ZADD` and O(n) memory per query); fixing the step
+at 26 and enumerating low-level cells (far too many ranges); and an R-tree/S2
+dependency (outside policy and unnecessary for nine 52-bit ranges). AC45
+remains the measurable criterion.
+
+### 2.48 2026-11-17 checkpoint: every XADD clones and folds the whole stream
+
+The protected gate has no stream-append row. The retained cohort (section 3.26)
+measures a 5,000-entry stream of one 8-byte field pair at **1.22–1.53 ms** for
+`XADD` (1.36 representative, p99 11.6) versus Redis 0.07–0.30 (p99 1.87) and
+Valkey 0.06–0.14 (p99 1.58); at 1,000 entries it is 0.25–0.43 versus
+0.08–0.15/0.10–0.71. The 1k→5k p50 ratio is **5.2×** while the C servers stay
+flat, and `XLEN`, `XRANGE`/`XREVRANGE` and the 10-entry control are at the command
+floor.
+
+Current source audit:
+
+- `xadd` clones the entire `Stream` through `e.stream.clone()`, deep-cloning
+  every entry, field and value, then inserts the new entry and updates
+  `last_generated`/`entries_added` on the clone.
+- It folds `stream.payload_bytes()` over every entry to admit the result, then
+  calls `put_stream`, which folds `payload_bytes()` **again** before replacing
+  the entry and dropping the old stream.
+- `reserve` runs after the clone, so a full copy exists even when the append is
+  rejected for OOM. Reads already use the `BTreeMap` directly and are flat.
+
+The C servers append into the existing stream structure:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Append | clone the stream, insert, replace | append one entry to the rax/listpack ([`t_stream.c#L505`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L505)) | same ([`t_stream.c#L425`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L425)) | **adapt** an in-place insert |
+| Length/accounting | two full payload folds | increment length and memory by the delta | same | delta-only update |
+| Trimming | mutate the clone | remove from the same structure ([`#L2621`](https://github.com/redis/redis/blob/8.10.2/src/t_stream.c#L2621)) | same ([`#L2041`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_stream.c#L2041)) | trim in place, report removed bytes |
+| Groups/PEL | cloned with the stream | untouched by append | same | keep on the existing value |
+| Reads | already flat | flat | flat | unchanged |
+| Dependencies | std only | C/rax/listpack | C/rax/listpack | std `BTreeMap`, no crate |
+
+**Decision.** Append one entry into the existing stream:
+
+- Parse options, resolve the explicit/automatic ID and validate monotonicity
+  before touching the stream.
+- For an existing key, compute the incoming field/value byte delta and reserve
+  net growth before mutation, subtracting any entries an exact MAXLEN/MINID
+  strategy will remove (read them from the `BTreeMap` without mutating); for
+  approximate `~` trimming reserve the gross entry bytes and reconcile after
+  trim. `reserve` may evict the key being appended, so re-look it up and fall
+  back to the fresh-stream path if it is gone.
+- Borrow `Entry.stream` mutably, insert one `StreamEntry`, update
+  `last_generated`/`entries_added` and apply the trim strategy in place. Have
+  the trim path report the bytes it removes (or accumulate them from the
+  removed entries) so `payload_len` and the global payload counter move by
+  exactly `added - removed` without folding the stream.
+- A missing key (`XADD` without `NOMKSTREAM`, or one evicted by the admission)
+  builds a fresh stream locally, reserves once and inserts it; groups/PEL are
+  absent by definition. `NOMKSTREAM` keeps returning nil.
+- No clone, no `payload_bytes` fold and no `put_stream` replacement on the
+  existing path. TTL, groups/PEL, `max_deleted`, trim semantics, the reply ID,
+  WATCH/journal/rewrite and the read paths stay exact; an OOM or ID error leaves
+  the old stream unchanged.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::BTreeMap`, the existing `StreamEntry`/`Stream` fields and a
+trim helper that returns removed bytes. No new index, no persistent-format
+change and no change to the journal's stream encoding.
+
+**Risks and rejected options.** Monotonic/automatic IDs, `NOMKSTREAM`, MAXLEN/
+MINID and approximate `LIMIT` trimming, `max_deleted`, groups/PEL, exact payload
+accounting, re-look after eviction, TTL/WATCH/journal/rewrite, the reply ID and
+the read/trim semantics are the obligations. Rejected: keeping the clone and
+only removing the second fold (still O(n) copies); a cached length that can
+drift from the map; and an append-only log outside the stream (breaks the
+existing range/read paths). AC44 remains the measurable criterion.
+
+### 2.49 2026-11-17 checkpoint: LINDEX and forward LPOS still flatten every element reference
+
+The protected gate has no list-random-access row. The retained cohort (section
+3.25) measures a 200,000-element list of 8-byte values at:
+
+- `LINDEX 0` **1.47 ms**, index 100,000 **1.40** and `-1` **1.29** versus Redis
+  0.102–0.107 and Valkey 0.068–0.142 (9–22×).
+- A hit-first `LPOS` **1.26 ms** versus 0.095/0.127 (10–13×); a missing `LPOS`
+  is 1.81 versus 5.02/5.85, already leading because the C servers walk the whole
+  list.
+- 10-element `LINDEX`/`LPOS` controls are 0.10 and at the floor; `LLEN` was
+  fixed by 4.40 and is O(1).
+
+Current source audit:
+
+- `list_index` calls `Collection::list_items`, which flattens every element
+  reference of `ListPack`/`ListQuick` into a `Vec`, then normalizes the index and
+  returns one entry. The allocation is O(elements) for an O(nodes) walk.
+- `list_position` uses the same `list_items` vector before scanning in either
+  direction. The forward scan often stops early, but it has already built the
+  full reference vector.
+- The chunk lengths are already available (`quick_list_len`, `VecDeque::len`),
+  and 4.54's decision covers the reverse `LPOS` walk; only the shared seek shape
+  and the forward hit path remain.
+
+The C servers seek the quicklist by node:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| `LINDEX` | flatten all references, index | walk nodes by cached counts, touch one listpack ([`t_list.c#L621`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L621)) | same ([`t_list.c#L571`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L571)) | **adapt** a chunk walk |
+| Forward `LPOS` | flatten all references, scan | scan from the rank, stop at the match or `MAXLEN` ([`t_list.c#L1015`](https://github.com/redis/redis/blob/8.10.2/src/t_list.c#L1015)) | same ([`t_list.c#L937`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_list.c#L937)) | scan chunks, early stop |
+| Negative `LPOS` | flatten, index backwards | scan from the tail | same | reuse 4.54's backward walk |
+| Missing/empty | flatten then none | walk, no match | same | no allocation |
+| Dependencies | std only | C/quicklist/listpack | C/quicklist/listpack | std `VecDeque`, no crate |
+
+**Decision.** Add chunk-aware seeks and stop flattening:
+
+- `Collection::list_get(index)` normalizes the signed index against the known
+  length, returns directly for `ListPack`, and for `ListQuick` walks nodes from
+  the nearer end, subtracting node lengths until the target node, then indexes
+  within that node. No reference vector is built.
+- Forward `LPOS` scans chunks in order with an absolute position counter,
+  applying `RANK`, `COUNT` (`0` means all) and `MAXLEN` as it goes and stopping
+  at the first required match or the scan bound. Negative rank delegates to
+  4.54's backward chunk walk and reports the same head-relative index.
+- Keep `LRANGE`, `LLEN`, replies and the missing/empty/wrong-type returns
+  unchanged. The walk works for the current `ListPack`/`ListQuick` forms and for
+  4.32's packed nodes.
+- No new structure, dependency, `unsafe` or persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::VecDeque`, slice indexing and the existing length helpers.
+Reads are immutable, so there is no payload or journal change; no new index and
+no persistent-format change.
+
+**Risks and rejected options.** Negative-index normalization, out-of-range nil,
+empty/missing keys and wrong type, `RANK` sign and zero, `COUNT 0`, `MAXLEN`
+counting in the scan direction, head-relative positions, chunk boundaries,
+`ListPack`/`ListQuick` thresholds and unchanged reply formats are the
+obligations. Rejected: a maintained node index just for `LINDEX` (the walk is
+already O(nodes)); keeping the full reference vector; and a list representation
+change (4.32 covers memory independently). AC43 remains the measurable
+criterion.
+
+### 2.50 2026-11-17 checkpoint: pops no longer sort, but still scan the whole score map
+
+The protected gate has no sorted-set pop row. The retained cohorts (section 3.35)
+measure a 100,000-member sorted set at:
+
+- Before the in-place change, `ZPOPMIN` **156.7 ms** and `ZPOPMAX` **159.9**
+  versus Redis 0.42/0.21 and Valkey 0.34/0.29 (373–761×); `ZPOPMIN COUNT 10` and
+  `ZMPOP` were 146.6/155.8 (419–974×).
+- After the in-place change (varied scores), `ZPOPMIN` **1.082/3.373 ms
+  p50/p99**, `ZPOPMAX` 1.245/4.308, `ZPOPMIN COUNT 10` 1.542/4.378 and `ZMPOP`
+  1.648/4.406, versus Redis 0.664/1.416 and Valkey 0.232/0.802 for the single
+  forms. Single pops are within ~1.6× of Redis.
+- A tie-heavy set (all scores 0) costs **4.8–6.0 ms** because every comparison
+  falls through to the member name. AC51's ≤0.3 ms target is still missed.
+
+Current source audit:
+
+- `zset_pop` selects through `pop_candidates`, which calls `collection.zset_items()`
+  and therefore allocates one reference per member before scanning. Small counts
+  keep a sorted window; large counts partition and sort the selected slice.
+- Removal is already in place (`remove_zset_members`, exact member-byte delta),
+  so the clone/sort/re-encode path is gone. The residual cost is the O(n) walk
+  over the `HashMap` and its cache misses, plus the tie-heavy comparisons.
+- The ordered index decided in 4.30/4.38 already stores `(score, member)` order
+  with block counts; min/max and the first/last `COUNT` entries are the ends of
+  that order, so no scan is needed once it exists.
+
+The C servers pop from the ordered structure directly:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Min/max | scan the whole map, keep a window | take the skiplist head/tail, remove node + dict entry ([`t_zset.c#L4227`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4227), [`#L4393`](https://github.com/redis/redis/blob/8.10.2/src/t_zset.c#L4393)) | same ([`t_zset.c#L3894`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L3894), [`#L4037`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_zset.c#L4037)) | **adapt** first/last index entry |
+| `COUNT n` | scan, then partition | repeat the head/tail pop | same | drain the end block(s) |
+| Tie order | `member_order` per comparison | skiplist `(score, member)` order | same | index order, no comparisons |
+| `ZMPOP`/`BZPOP*` | same scan per key | same pop primitive | same | reuse one primitive |
+| `ZSetPack` | small linear path | listpack scan | same | keep |
+| Dependencies | std only | C/skiplist | C/skiplist | existing 4.30/4.38 index, no crate |
+
+**Decision.** When the 4.30/4.38 ordered index is present, pop from its ends:
+
+- `ZPOPMIN`/`ZPOPMAX` take the first/last `(score, member)` entry, remove that
+  member from the score map and the index, update `payload_len`/`payload_bytes`
+  by the member bytes and delete the key when empty.
+- `ZPOPMIN/MAX COUNT n` drains up to `n` entries from the same end, walking at
+  most the affected block(s) rather than re-searching per element; block removal
+  updates the prefix counts and splits/merges only at the configured bound.
+- `ZMPOP`/`BZMPOP`/`BZPOPMIN`/`BZPOPMAX` reuse the same primitive across keys
+  and wake path. The small `ZSetPack` keeps its direct linear min/max removal.
+- Keep score formatting, tie order, positive/negative/zero count handling,
+  empty-key deletion, reply shapes, blocking timeouts, one `touch` per command,
+  journal/rewrite/replay and exact accounting.
+- The current scan-based in-place pop remains the staging implementation until
+  the index lands; this decision replaces its `zset_items` scan, not its
+  removal/accounting code.
+- No new structure beyond 4.30/4.38, no dependency, no `unsafe` and no
+  persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+the existing ordered block index and Fenwick prefix counts, the score map and
+`remove_zset_members`. The index is derived state, rebuilt on replay/rewrite and
+counted by payload/eviction accounting; pops add no storage.
+
+**Risks and rejected options.** Block-boundary removal and prefix-count updates,
+split/merge, `COUNT` spanning blocks, tie-heavy order, the `ZSetPack` path,
+empty-key deletion, blocking variants, one-touch journal/WATCH semantics and
+exact accounting are the obligations. Rejected: keeping the scan as the final
+path (4–6× the target and 4.8–6.0 ms when tie-heavy); a separate min/max heap or
+cached extrema (stale after every `ZADD`/`ZREM` and a second structure to
+maintain); and the original clone/sort/re-encode. AC51 remains the measurable
+criterion.
+
+### 2.51 2026-11-17 checkpoint: large HSCAN rebuilds and sorts the whole hash per call
+
+The protected gate has no hash-cursor row. The retained cohort (section 3.16)
+measures a 10,000-field hash at a full `HSCAN COUNT 10` traversal of **5.05 s
+over 1,000 calls** versus Redis 0.257 s (~944 calls) and Valkey 0.247 s (~800),
+a **19–20×** loss. The listing cohort (section 3.31) also measures 100k
+`HKEYS` 98.5 ms versus 15.8 and `HVALS` 101.6 versus 17.9, with 10k `HGETALL`
+43% behind Redis; the 10-element controls are at the floor.
+
+Current source audit:
+
+- Large hashes are `Collection::Hash(HashMap<Vec<u8>, Vec<u8>>)`. `HSCAN` calls
+  `hash_items()`, clones every field and value into a new vector, sorts it by
+  field, and slices that snapshot with a numeric index cursor.
+- Every one of the 1,000 `COUNT 10` calls therefore pays O(n log n) and an
+  O(n) allocation; the snapshot also cannot resume cheaply because
+  `std::HashMap` exposes no stable bucket order.
+- Small `HashPack` is already ordered and can return all fields in one call; the
+  keyspace cursor stage (4.31/2.27) already decided the opaque last-element
+  token and `COUNT*10` visited bound, which large hashes can reuse.
+- `HGET`/`HEXISTS`/`HLEN` already probe the map directly; the reply path is
+  covered by 4.29's direct-iteration decision.
+
+The C servers keep a dictionary/listpack hash and scan buckets:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| Large-hash storage | `HashMap<Vec<u8>, Vec<u8>>` | dict/listpack | same | **adapt** an ordered map |
+| `HSCAN` cursor | per-call snapshot + numeric index | reverse-binary dict cursor, bounded buckets ([`t_hash.c#L5474`](https://github.com/redis/redis/blob/8.10.2/src/t_hash.c#L5474)) | same ([`t_hash.c#L1831`](https://github.com/valkey-io/valkey/blob/9.1.2/src/t_hash.c#L1831)) | last-field token + range |
+| Per-call work | O(n log n) + O(n) clone | O(COUNT) buckets | same | O(COUNT*10) |
+| `HGET`/`HSET` | O(1) map | O(1) dict | same | O(log n) BTreeMap |
+| `HGETALL`/`HKEYS`/`HVALS` | clone + sort per reply | direct dict iteration | same | direct map iteration |
+| Dependencies | std only | C/dict/listpack | C/dict/listpack | std `BTreeMap`, no crate |
+
+**Decision.** Make the large-hash stage an ordered map:
+
+- At the existing pack threshold, encode a large hash as
+  `Collection::Hash(BTreeMap<Vec<u8>, Vec<u8>>)`; keep `HashPack` unchanged and
+  convert atomically on growth. `HGET`/`HEXISTS`/`HLEN` use the map directly and
+  `HSET`/`HDEL` mutate it in place with the 4.35 delta accounting.
+- `HSCAN` resumes from the last emitted field with the opaque token already
+  decided for 4.31 (binary-safe hex), ranges from that field (exclusive on
+  resume, inclusive at cursor 0), visits at most `COUNT*10` fields, applies
+  `MATCH`/`NOVALUES` while visiting and returns at most `COUNT` fields. A cursor
+  of `0` starts; an exhausted range returns `0`.
+- `HGETALL`/`HKEYS`/`HVALS` iterate the map directly, removing the clone and
+  sort; field order becomes lexicographic, which is allowed because Redis
+  leaves it unspecified and matches today's sorted `HSCAN` pages.
+- Keep the pack thresholds, conversion, field TTL, reply shapes, payload
+  accounting (field+value bytes, unchanged) and WATCH/journal/rewrite
+  semantics. The larger BTree node overhead is allocator overhead like the
+  HashMap control bytes, not logical payload.
+- No new structure beyond the representation change, no dependency, no `unsafe`
+  and no persistent-format change (journal/rewrite encode logical fields).
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+`std::collections::BTreeMap`, the existing pack encoder and the 4.31 cursor hex
+helper. The map is the collection itself, not a second index; it is rebuilt by
+replay/rewrite and counted by the existing payload accounting.
+
+**Risks and rejected options.** Cursor coverage across concurrent inserts and
+removals (Redis permits duplicates/skips under mutation), `MATCH`/`COUNT`/
+`NOVALUES`, binary fields, the pack↔large conversion, `HSET`/`HDEL` and `HGET`
+latency at the new O(log n), memory/RSS of BTree nodes, field TTL, old numeric
+cursor behavior and WATCH/journal/rewrite are the obligations. Rejected: the
+measured per-call snapshot/sort; a separate `BTreeSet<Arc<[u8]>>` index beside
+the `HashMap` (duplicate field storage and two structures to keep consistent);
+a reverse-binary cursor over `std::HashMap` (no stable bucket API without
+unsafe/unstable internals); and an unsafe `RawTable` or dependency. AC33 remains
+the measurable criterion for this stage.
+
+### 2.52 2026-11-17 checkpoint: mixed-deadline INFO still walks every entry
+
+The protected gate has no `INFO` keyspace row. The retained cohort (section 3.42)
+measures a no-TTL keyspace at **10.00–10.93 ms** for 500k keys (10.0 plain
+`INFO`) versus Redis 0.13–0.48 and Valkey 0.13–0.38; 100k is 2.70–2.94 versus
+0.11–0.22. The implemented no-deadline fast path brings the same rows to
+**0.160 ms** (`INFO keyspace`) and 0.357 ms (plain `INFO`) at 500k and 0.172 at
+100k. A keyspace with any key or field deadline still executes the original
+per-entry loop. A 2026-11-17 mixed-TTL cohort now measures it: 100,000 keys with
+a one-hour `PX`, 30 repetitions, three rotations, `INFO keyspace`
+**4.538/4.693/4.569 ms** and plain `INFO` 4.981/4.206/4.417 ms versus Redis
+0.556/0.323/0.105 and 0.648/0.346/0.174, and Valkey 0.642/0.128/0.407 and
+0.432/0.165/0.461. Worst p99 was 15.74/13.39 ms versus ≤3.17. A same-host
+100k no-TTL control on the same build measured 0.554/0.660 ms p50 (p99
+3.01/3.91), so the deadline path is **~8×** the fast path and the cross-server
+gap is not host attribution. The mixed path is **~10–14×** the faster C server
+and does not use the no-deadline fast path.
+
+Current source audit:
+
+- `info` takes the fast path only when `data.expirations.is_empty()` **and**
+  `data.field_ttls == 0`. Otherwise it iterates `data.entries.values()`, filters
+  `alive(now)`, counts live/expiring/subexpiry keys and sums the remaining TTLs.
+- The loop is O(keyspace) and runs for a plain `INFO`, `INFO keyspace` or
+  `INFO all`; `INFO stats`, `DBSIZE` and `PING` do not pay it.
+- The expiration index is already ordered by `(deadline, key)`, so a reply can
+  correct the live counts for already-due entries without scanning all entries
+  and without reaping them.
+- Individual counters (`entries.len()`, `expirations.len()`, `field_ttls`) are
+  already O(1); only their live/deadline-sum semantics need maintenance.
+
+The C servers answer from maintained structures, with a sampled average:
+
+| Concern | Rillcache | Redis 8.10.2 | Valkey 9.1.2 | Decision |
+| --- | --- | --- | --- | --- |
+| `keys`/`expires` | walk entries unless no deadlines | dict/expires sizes ([`server.c#L7073`](https://github.com/redis/redis/blob/8.10.2/src/server.c#L7073)) | same | **adapt** maintained counters |
+| `subexpiry` | count during the walk | subexpires store size | keys with volatile items | maintained count |
+| `avg_ttl` | exact sum during the walk | sampled average updated by active expiry ([`expire.c#L402`](https://github.com/redis/redis/blob/8.10.2/src/expire.c#L402), [`#L456`](https://github.com/redis/redis/blob/8.10.2/src/expire.c#L456)) | same ([`expire.c#L312`](https://github.com/valkey-io/valkey/blob/9.1.2/src/expire.c#L312)) | **adapt** an exact deadline sum |
+| Already-due entries | excluded by `alive(now)` | dict size can include not-yet-reaped keys | same | correct from the due prefix |
+| Cost | O(entries) when any deadline exists | O(databases) | same | O(1) + O(due) |
+| Dependencies | std only | C/dict/expires | C/dict/expires | std counters, no crate |
+
+**Decision.** Maintain the keyspace fields and reconcile only due entries:
+
+- Add to `Data` an `expiring_keys`, `subexpiry_keys` and a signed absolute
+  `ttl_deadline_sum` (i128), updated by delta in the central mutation helpers:
+  insert/overwrite, `EXPIRE`/`PERSIST`/`GETEX`, key removal, lazy expiry, the
+  maintenance reap, eviction, `FLUSH*`, `RENAME`/`RENAMENX`/`COPY`, field-TTL
+  add/remove and replay/rewrite load. `entries.len()` supplies the physical key
+  count.
+- At `INFO`, derive `live = entries.len() - due_live` and subtract the same due
+  keys from `expiring_keys`/`subexpiry_keys`, walking only the
+  `expirations.range(..)` prefix with `deadline <= now`; do not reap or mutate.
+  `avg_ttl` is `(ttl_deadline_sum - now * live_expiring) / live_expiring`, with
+  saturating arithmetic and 0 for an empty set.
+- Keep the no-deadline fast path as a cheap guard; the counters make the mixed
+  path O(1) plus the un-reaped due prefix, which is normally bounded by the
+  maintenance batch.
+- `INFO stats`, `DBSIZE`, `PING`, section selection and reply formatting stay
+  unchanged; no reaping side effect is added. Exactness is defined against the
+  current `alive(now)` scan after mixed TTL/field-TTL churn.
+- No new container beyond integer counters, no dependency, no `unsafe` and no
+  persistent-format change.
+
+**Dependencies and policy impact.** No crate, unsafe/FFI or allocator change:
+three integer fields and the existing `BTreeSet` expiration index. Memory is a
+constant per `Data`, not per key; replay/rewrite rebuilds the counters from the
+loaded entries, and `payload_bytes`/eviction accounting is untouched.
+
+**Risks and rejected options.** Every mutation path must update the counters
+exactly (a drift is invisible in the reply); due-prefix correction must not
+double-count or reap; field-TTL deletion, rename/copy, eviction, flush and
+replay are the risky paths; `avg_ttl` must stay non-negative and handle an empty
+set; section selection and `INFO all` must not change. Rejected: caching the
+formatted reply; sampling `keys`; counting keys from the expiration set only;
+Redis's sampled `avg_ttl` (it would change the exact value AC54 requires); and
+reaping inside `INFO`. AC54 remains the measurable criterion.
 
 ## 3. Per-component comparison with Redis and Valkey
 
@@ -3388,7 +4151,7 @@ state.
   full traversal is 20–29× slower. Extrapolating the measured per-call p50 to
   10,000 calls, a full 100k traversal at `COUNT 10` costs Rillcache ~426 s versus
   ~2.6 s for Redis. The cost is keyspace-sized per call, not per requested
-  element. Candidate 4.31.
+  element. 4.31 decided in 2.27, with its large-hash stage in 2.51.
 
 **Verdict: adapt an incremental cursor (4.31).** Keep the cursor opaque,
 resume from the last emitted element in an ordered structure, and bound each call
@@ -3900,7 +4663,8 @@ the `SetInt`/`SetPack`/`HashPack` semantics including non-integer probes.
   `LINDEX` is **9–22×** slower and a hit-first `LPOS` 10–13×, while a missing
   `LPOS` **leads** (1.81 vs 5.02/5.85) because Redis walks every node. The
   control is at the floor. `LLEN` is the same `list_items()` pattern and is
-  covered by 4.40; `LINDEX`/`LPOS` need in-place seeking. Candidate 4.41.
+  covered by 4.40; `LINDEX`/`LPOS` need in-place seeking. 4.41 decided in
+  2.49.
 
 **Verdict: adapt in-place list seeking (4.41).** Add `Collection::list_get`
 (normalize the index, walk `ListQuick` chunks by their lengths without
@@ -3943,7 +4707,7 @@ reply formats unchanged.
 
   `XADD` is **13–18×** slower at 5k and grows 5.2× for 5× the entries
   (0.263 → 1.36 ms) while the C servers stay flat; every read and the 10-entry
-  control are at the command floor. Candidate 4.42.
+  control are at the command floor. 4.42 decided in 2.48.
 
 **Verdict: adapt in-place append (4.42).** Admit the entry, then borrow
 `Entry.stream` mutably and insert one `StreamEntry`, updating `payload_len` and
@@ -3991,7 +4755,7 @@ read paths unchanged.
   A small-radius search is **25–28×** slower and a box 21–24×;
   `GEOPOS` is 10–15× for one member and **41–53×** for 100, and `GEODIST` ~19×,
   while the all-members 5 km search is reply-bound at parity and the 10-member
-  controls are at the floor. Candidate 4.43.
+  controls are at the floor. 4.43 decided in 2.47.
 
 **Verdict: adapt neighbor-cell search and direct point lookup (4.43).** Reuse
 the 4.30/4.38 ordered `(score, member)` index: compute the geohash cell ranges
@@ -4322,7 +5086,7 @@ BYTE/BIT range rules and the not-found return values. This is the same safe
 
   `XGROUP CREATE` is **88–99×** slower and grows linearly with stream length
   (~165 ms at 100k by extrapolation), while every other XGROUP subcommand is at
-  parity because it already mutates in place. Candidate 4.48.
+  parity because it already mutates in place. 4.48 decided in 2.46.
 
 **Verdict: adapt an in-place group insert (4.48).** Borrow `Entry.stream`
 mutably, insert the group (or create an empty stream for `MKSTREAM`), call
@@ -4383,7 +5147,8 @@ from the map and the index in place, update `payload_len` by the delta, and
 repeat for `COUNT`. No clone, sort, re-encode or replace. `ZMPOP`/`BZPOP*` reuse
 the same primitive; keep score formatting, tie order, empty-key deletion and
 journal/rewrite/accounting semantics. Implemented as a scan/in-place pop; the
-≤0.3 ms target needs a maintained ordered index and remains open.
+≤0.3 ms target is tied to the maintained ordered index in 4.49's decision
+(section 2.50).
 
 ### 3.36 Multi-command transactions (MULTI/EXEC)
 
@@ -4677,7 +5442,7 @@ read path borrowed and unmodified.
   set-store variants already lead because the destination set is encoded once
   without a map-then-sort pass. Preloading the four 100k collections took 16.0 s
   in Rill versus 1.5–1.7 s, the admitted 4.35 clone-per-write path, not this
-  read. Candidate 4.51.
+  read. 4.51 decided in 2.44.
 
 **Verdict: adapt borrowed-source algebra (4.51).** Iterate the smallest borrowed
 source, probe the others in place, count with an early `LIMIT` exit, and for the
@@ -4727,12 +5492,26 @@ materialised result). Keep the set-store paths as they are.
   still take the existing exact walk, so the maintained-counter work in 4.52
   remains for mixed TTL churn.
 
+- **Mixed-TTL validation (2026-11-17).** 100,000 keys with a 3,600,000 ms `PX`,
+  preloaded in 500-command pipelines, 30 repetitions per server, three rotations
+  on the shared k3s host. `INFO keyspace` p50 4.538/4.693/4.569 ms versus Redis
+  0.556/0.323/0.105 and Valkey 0.642/0.128/0.407; plain `INFO`
+  4.981/4.206/4.417 versus 0.648/0.346/0.174 and 0.432/0.165/0.461. Worst p99
+  was 15.74/13.39 ms versus ≤3.17. A same-host 100k no-TTL control on the same
+  build measured 0.554/0.660 ms p50 (p99 3.01/3.91), so the deadline path is
+  **~8×** the fast path and the cross-server gap is not host attribution. The
+  mixed path is **~10–14×** the faster C server, confirming that any key or
+  field deadline bypasses the fast path and pays the per-entry walk. Raw JSON
+  retained at `/tmp/perf-arch-info-ttl.json` and
+  `/tmp/perf-arch-info-nottl-control.json` (untracked). AC54's 100k target
+  remains 0.25 ms.
+
 **Verdict: adapt maintained keyspace accounting (4.52).** Keep live/expiring/
 subexpiry key counts and a TTL sum updated on every mutation (insert, overwrite,
 expire, persist, remove, reap, eviction, flush, rename/copy, replay), or read the
 container sizes plus a Redis-style maintained/sampled average, and answer the
 section in O(1). The no-deadline fast path above lands the common case; the
-counters close the mixed-TTL case.
+counters close the mixed-TTL case; 4.52 decided in 2.52.
 
 ### 3.43 Two-key moves (SMOVE/LMOVE/RPOPLPUSH)
 
@@ -4830,7 +5609,7 @@ rotates within one container. This reuses 4.35's in-place set mutation and
   because the limit does not reduce the work at all; `LIMIT 0` (unlimited) has
   the same cost as no limit, as the contract requires. The 10-member controls are
   at the floor. Preloading the four 100k keys took 16.0 s versus 1.5–1.6 s, the
-  4.35 write path. Candidate 4.51, extended.
+  4.35 write path. 4.51, extended, decided in 2.44.
 
 **Verdict: extend 4.51 to set cardinality and make `LIMIT` an early exit.** Probe
 the smallest borrowed source, count matches, and stop at `LIMIT`; materialising
@@ -4872,7 +5651,7 @@ the intersection is only needed for the store/reply forms.
   2.9–3.0× (tail removal) because the C servers also walk 100k–200k entries, so
   the rebuild is only part of their cost. `LPOS` with a reverse rank is 5.9–9.9×.
   The 10-element controls are at the floor. Preloading the list took 3.9 s versus
-  0.3–0.5 s, the 4.35 write path. Candidate 4.54.
+  0.3–0.5 s, the 4.35 write path. 4.54 decided in 2.45.
 
 - **Post-fix (2026-11-14, `LSET` and `LINSERT` paths).** When the replacement
   is no longer than the element at the resolved index, `LSET` walks the chunk
@@ -4884,7 +5663,8 @@ the intersection is only needed for the store/reply forms.
   head, 10 repetitions: 200k `LSET` at index 100,000 **0.805 ms** versus Redis
   0.061 and Valkey 0.641 (from 16.5 ms); index 0 0.254; `LINSERT` at the head
   **0.069** versus 0.071/0.102 (from 19.1) and before the middle element **1.66**
-  versus 3.475/4.01 (from 21.0). `LREM` remains for the follow-up.
+  versus 3.475/4.01 (from 21.0). `LREM` and reverse `LPOS` remain, decided in
+  section 2.45.
 
 **Verdict: adapt in-place list edits (4.54).** Walk the chunk deque to the pivot or
 index, edit one element or node, and split/merge only at chunk bounds; reuse
@@ -5016,7 +5796,7 @@ frame; keep the frame and bulk limits as the request budget.
   already lead (their result is the big set and Rill's builder is efficient),
   and `ZDIFF`/`ZUNION` are 1.4–2.5×, so only the intersections need the
   smallest-source rule. The 10-member controls are at the floor. Candidate
-  4.51, extended.
+  4.51, extended, decided in 2.44.
 
 **Verdict: extend 4.51 to skewed intersections.** Sort the sources by length,
 probe from the smallest, and materialise only the result; do not change the
@@ -5055,8 +5835,9 @@ already-leading union/diff set paths.
   Ten-entry stores are **177–428×** behind; the 1,000-entry store is 39–78× and
   the lex/score three-argument forms are 259–310×. The full-range store is only
   1.5–1.9× because writing 100k destination entries dominates all three servers.
-  The 10-member control is at the floor. Candidate 4.50, extended (the rank seek
-  is 4.30's index; the store obligation was already named in 4.50).
+  The 10-member control is at the floor. 4.50, extended (the rank seek is 4.30's
+  index; the store obligation was already named in 4.50 and is decided in
+  section 2.43).
 
 **Verdict: extend 4.50 to the store forms.** Seek the selected range and build only
 the destination zset; do not sort the source or route a store through the reply
@@ -6311,7 +7092,7 @@ starts from source. Approximate diff sizes are relative scope, not estimates.
 | 4.22/4.24 async wake | reactor `asynchronous` (`reactor.rs#L91`, `#L467`), `poll_blocked_on` (`blocking.rs#L436`), pub/sub and monitor flags | FIFO; timeout gaps; `CLIENT UNBLOCK`; ordering; shutdown; multi-owner | wake latency, idle CPU, fanout | large |
 | 4.23 rewrite start | `begin_rewrite` (`journal.rs#L1131`), maintenance tick (`reactor.rs#L443`) | atomic rename; replay; reconciliation | 20k/200k pause, kill/replay | medium |
 | 4.30 zset index | `zset_read` (`collections.rs`), `zset_add`, `zset_items`/`ZSet` (`data.rs`), accounting | total score order with member tie-break; ±0/NaN; rank/score/lex ranges; `ZSetPack` ≤128 unchanged; memory accounting; rewrite/replay | 10k `ZRANGE 0 9` / full-range A/B, ZADD regression, zset semantics | large |
-| 4.31 cursor scan | `scan_keys`/`scan_collection` (`scan.rs`), `KEYS`/`RANDOMKEY` (`keyspace.rs`), router `locked_scan`, `Data` keyspace index, `ZSet`/`Hash`/`Set` order, expiry reap | opaque cursor resume; full coverage on a stable keyspace; MATCH/COUNT/TYPE/NOVALUES; pack one-call behavior; bounded work; KEYS/RANDOMKEY order; memory accounting | 100k `SCAN COUNT 10`, full scan, 10k `HSCAN`, 100k `KEYS`/`RANDOMKEY`, SET/GET regression | keyspace stage decided; large HSCAN staged |
+| 4.31 cursor scan | `scan_keys`/`scan_collection` (`scan.rs`), `KEYS`/`RANDOMKEY` (`keyspace.rs`), router `locked_scan`, `Data` keyspace index, `ZSet`/`Hash`/`Set` order, expiry reap | opaque cursor resume; full coverage on a stable keyspace; MATCH/COUNT/TYPE/NOVALUES; pack one-call behavior; bounded work; KEYS/RANDOMKEY order; memory accounting | 100k `SCAN COUNT 10`, full scan, 10k `HSCAN`, 100k `KEYS`/`RANDOMKEY`, SET/GET regression | keyspace stage decided (2.27); large HSCAN decided (2.51) |
 | 4.32 packed list nodes | `Collection::ListPack`/`ListQuick` (`data.rs`), list commands (`collections.rs`), `payload_len`, rewrite encoding | node index arithmetic; split/merge; binary safety; max element size; accounting; iteration order; blocking pop | 200k-list RSS and `DEL` A/B, RPUSH/LRANGE/LINSERT/blocking | large |
 | 4.33 deferred drop | `DEL`/`UNLINK` (`dispatch/keyspace.rs`), `FLUSH*` (`administration.rs`), `Data::flush`/`remove`, maintenance tick (`reactor.rs`), accounting | queue bound; pending bytes counted; key recreation; notification/journal order; shutdown drain; SYNC unchanged | `UNLINK`/`FLUSH ASYNC` A/B, DBSIZE/EXISTS/SCAN, drain-on-shutdown | small |
 | 4.34 in-place strings (implemented, #258) | `append`/`setrange` (`string_ranges.rs`), `Data::mutate_string`/`reserve`/`put` (`data.rs`), `touch`/accounting | admit before mutate; capacity growth amortized; OOM leaves the old value; zero-fill growth; 512 MiB limit; TTL/WATCH/journal | 32 MB `APPEND`/`SETRANGE` A/B, small control, bytes/copies | small, landed |
@@ -6576,7 +7357,7 @@ control and all gate commands unchanged; `ZRANK`/`ZREVRANK`/deep-start `ZRANGE`
 are explicitly out of scope here (4.38/AC40); no new dependency; both protected
 gates green on the exact head.
 
-### 4.31 Incremental cursor iteration (candidate; keyspace stage decided)
+### 4.31 Incremental cursor iteration (candidate; keyspace and large-hash stages decided)
 
 **Mechanism.** Make each `SCAN`-family call bounded by `COUNT` and index depth.
 For the keyspace, maintain a per-owner ordered key index beside `entries`
@@ -6645,6 +7426,18 @@ can join it because those representations are already ordered. Large
 stage so it does not force a `BTreeMap` into 4.29's direct-reply decision.
 Reject the per-call snapshot, reverse-binary over `std::HashMap`, hash-prefix
 numeric cursors and unbounded expiry reaps. No dependency is added.
+
+**Decision (2026-11-17, section 2.51): large-hash stage.** Replace large
+`Collection::Hash(HashMap<...>)` with `BTreeMap<Vec<u8>, Vec<u8>>` at the
+existing pack threshold; keep `HashPack` and convert atomically. `HSCAN` resumes
+from the last field with the same opaque hex token and `COUNT*10` bound, ranges
+from that field and applies `MATCH`/`NOVALUES` while visiting; `HGETALL`/
+`HKEYS`/`HVALS` iterate the map directly. `HGET`/`HSET`/`HDEL`/`HLEN` use the
+map with the 4.35 in-place delta accounting, and field TTL, reply shapes,
+payload accounting and WATCH/journal/rewrite stay exact. Reject a second field
+index beside the `HashMap`, the per-call snapshot, reverse-binary over
+`std::HashMap` and an unsafe table. No dependency or persistent-format change;
+AC33 remains the large-collection criterion.
 
 **Rejection condition.** `SET`/`GET` or `HSET` loses more than 10% in a matched
 cohort, any gate row loses, a coverage test can miss a stable key or fail to
@@ -6909,7 +7702,7 @@ protected gates shall pass on the exact head. Evidence so far: 100k `SADD`
 hash/zset/list rows remain open. New coverage asserts exact payload accounting
 across in-place add/remove, pack→hashtable promotion on growth and key deletion.
 
-### 4.36 Constant-time random-member selection (candidate; admission measured)
+### 4.36 Constant-time random-member selection (candidate; dense-index decision)
 
 **Mechanism.** Two slices. First, stop materializing: single-member commands use
 reservoir sampling over the existing iteration, and count commands use a bounded
@@ -7215,7 +8008,7 @@ within ~2× the faster C server); `HLEN` and `ZCARD` p50 ≤0.1 ms; `LLEN` on a
 non-integer probes), missing keys and type errors shall pass; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
-### 4.41 In-place list seek (candidate; admission measured)
+### 4.41 In-place list seek (candidate; chunk-seek decision)
 
 **Mechanism.** Add `Collection::list_get(index)` (normalize the negative index;
 `ListPack` indexes directly, `ListQuick` walks chunk lengths without allocating,
@@ -7243,6 +8036,16 @@ accounting change.
 is already O(nodes)), keeping the full materialization (the measured path), and a
 list representation change (4.32 covers memory independently).
 
+**Decision (2026-11-17, section 2.49).** Add `Collection::list_get(index)` that
+normalizes the signed index, returns directly for `ListPack`, and for
+`ListQuick` walks nodes from the nearer end by their lengths before indexing the
+target node. Forward `LPOS` scans chunks with an absolute position counter,
+applying `RANK`/`COUNT`/`MAXLEN` and stopping at the first required match;
+negative rank reuses 4.54's backward walk. Remove the all-reference `Vec` from
+both paths, keep replies, `LRANGE`/`LLEN` and missing/empty/wrong-type returns
+unchanged, and make the walk work for 4.32's packed nodes. No new structure,
+dependency, unsafe or persistent-format change.
+
 **Rejection condition.** Any index or `LPOS` semantics test differs, the controls
 or `LRANGE`/`LLEN` regress, or no gain above the spread.
 
@@ -7254,7 +8057,7 @@ negative indices, `RANK`/`COUNT`/`MAXLEN`, missing keys and wrong-type errors sh
 pass; no dependency shall be added; and both protected gates shall pass on the
 exact head.
 
-### 4.42 In-place stream append (candidate; admission measured)
+### 4.42 In-place stream append (candidate; in-place append decision)
 
 **Mechanism.** Admit the new entry's bytes, then borrow `Entry.stream` mutably
 and insert one `StreamEntry` into the existing `BTreeMap`, updating `payload_len`
@@ -7283,6 +8086,17 @@ reply ID must stay exact; the append must not change read or trim semantics.
 fold, a separately cached length that can drift from the map, and an
 append-only log outside the stream (breaks the existing range/read paths).
 
+**Decision (2026-11-17, section 2.48).** Parse and validate the ID first, reserve
+the net field/value growth (minus exact-trim removals; gross bytes for
+approximate trimming), re-look the key in case admission evicted it, then borrow `Entry.stream` mutably and insert one `StreamEntry` with the
+counter and trim updates in place. Have trimming report the bytes it removes so
+`payload_len` and the payload counter move by `added - removed` without a fold.
+Use the fresh-stream reserve/insert path only when the key is missing or was
+evicted; keep `NOMKSTREAM` nil. No clone, no double `payload_bytes` fold and no
+`put_stream` replacement on the existing path. TTL, groups/PEL, `max_deleted`,
+trim/ID semantics, journal/rewrite and reads stay exact. No new structure,
+dependency, unsafe or persistent-format change.
+
 **Rejection condition.** Any stream, group/PEL, trim, rewrite or accounting test
 differs, an OOM leaves a partial entry, the controls or reads regress, or the
 1k→5k ratio is not flat.
@@ -7294,7 +8108,7 @@ differs, an OOM leaves a partial entry, the controls or reads regress, or the
 shall be unchanged; the 10-entry control shall be unchanged; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
-### 4.43 Geospatial neighbor-cell search (candidate; admission measured)
+### 4.43 Geospatial neighbor-cell search (candidate; neighbor-cell decision)
 
 **Mechanism.** Reuse 4.30/4.38's ordered `(score, member)` index. For
 `GEOSEARCH`/`BYRADIUS`/`BYBOX`, compute the geohash cell size for the shape,
@@ -7328,6 +8142,18 @@ unchanged; the search must remain bounded by the result and payload limits.
 per-member distances (stale on zset updates and O(n) memory per query), and an
 R-tree/S2 dependency (outside the policy and unnecessary for 52-bit geohash
 ranges).
+
+**Decision (2026-11-17, section 2.47).** Query only the geohash cells that can
+contain a hit. Estimate the step from the radius (1–26 with the latitude
+adjustment and the nine-cell coverage check), encode the centre, enumerate the
+nine neighbours with dateline wrap and pole skips, and map each cell to a
+half-open 52-bit score range. Range-read through the 4.30/4.38 ordered index,
+skip duplicate ranges, decode and apply the exact haversine/box test, then sort
+and apply `COUNT`. `GEOPOS`/`GEODIST`/`GEOHASH`/`FROMMEMBER` use
+`zset_score`/the member map directly, never an all-member vector. Keep the
+WGS-84 formulas, units, `WITH*`, `STORE`, result/payload bounds and the existing
+zset representation; invalid geohash scores stay skipped. No new structure,
+dependency, unsafe or persistent-format change.
 
 **Rejection condition.** Any result member, order, distance, hash or coordinate
 differs from the linear reference on the boundary fixture, the controls or the
@@ -7586,7 +8412,7 @@ target is missed because the remaining cost is per-command dispatch and socket
 work, not the sketch); caches invalidated on add; round-trip/accounting tests
 pass. The serialized payload has a versioned trailer and accepts old payloads.
 
-### 4.48 In-place stream group creation (candidate; admission measured)
+### 4.48 In-place stream group creation (candidate; in-place decision)
 
 **Mechanism.** For `XGROUP CREATE`, borrow `Entry.stream` mutably, insert the
 `ConsumerGroup` (or create an empty stream for `MKSTREAM`), and call `touch`;
@@ -7614,6 +8440,16 @@ group maps are small and the borrow is already admitted).
 (still O(n) copies), and a separate group registry outside the stream (breaks
 range/read/rewrite consistency).
 
+**Decision (2026-11-17, section 2.46).** Borrow `Entry.stream` mutably and insert
+the group in place for an existing key: check the type and `BUSYGROUP` first,
+derive `entries_read`/`last_delivered` from the borrowed stream, insert into
+`stream.groups`, refresh the access stamp and call `data.touch`; skip the clone,
+the `payload_bytes` fold, `reserve` and `put_stream`. For a missing key with
+`MKSTREAM`, build the empty stream and group locally, reserve the new key once
+and insert it; without `MKSTREAM` keep the existing error. Entry payload and TTL
+accounting do not change because groups are not entry bytes. No new structure,
+dependency, unsafe or persistent-format change.
+
 **Rejection condition.** Any group, PEL, `MKSTREAM` or `BUSYGROUP` semantics
 differ, the controls regress, or no gain above the spread.
 
@@ -7624,7 +8460,7 @@ the faster C server); the 10-entry control shall be unchanged;
 and TTL shall pass; no dependency shall be added; and both protected gates shall
 pass on the exact head.
 
-### 4.49 Ordered sorted-set pops (candidate; scan-based pops implemented, index target missed)
+### 4.49 Ordered sorted-set pops (candidate; index-pop decision)
 
 **Mechanism.** Reuse 4.30/4.38's ordered `(score, member)` index: `ZPOPMIN`/
 `ZPOPMAX` take its first/last element (tie order `(score, member)`), remove the
@@ -7651,6 +8487,17 @@ missing key returns the empty reply.
 far from O(log n)), a separately cached min/max (stale on updates), and keeping
 the full sort.
 
+**Decision (2026-11-17, section 2.50).** Once the 4.30/4.38 ordered index exists,
+take `ZPOPMIN`/`ZPOPMAX` from its first/last `(score, member)` entry, remove the
+member from the score map and index, and move payload by the member bytes. Drain
+`COUNT n` from the same end through the affected block(s), updating prefix
+counts and splitting/merging only at the block bound; `ZMPOP`/`BZPOP*` reuse the
+primitive and the small `ZSetPack` keeps its linear path. Keep one `touch` per
+command, tie order, score formatting, count/empty/blocking semantics,
+journal/rewrite/replay and exact accounting. Replace the staging
+`zset_items`/`pop_candidates` scan; no new structure, dependency, unsafe or
+persistent-format change.
+
 **Rejection condition.** Any pop order, score, empty/blocking or accounting
 result differs, the controls regress, or no gain above the spread.
 
@@ -7662,7 +8509,7 @@ order, score formatting, key deletion, blocking variants, journal/rewrite/replay
 and accounting tests shall pass; no dependency shall be added; and both protected
 gates shall pass on the exact head.
 
-### 4.50 Seek-based lex ranges and span counts (candidate; admission measured)
+### 4.50 Seek-based lex ranges and span counts (candidate; seek decision)
 
 **Mechanism.** Extend the admitted ordered `(score, member)` index (4.30/4.38) so
 a bounded range is answered by seeking, not by sorting:
@@ -7719,6 +8566,17 @@ caching the sorted vector per key (invalidated by every write and unbounded
 memory); a second lex-only index (duplicate storage and more invariants to keep
 consistent on every add/remove/score change).
 
+**Decision (2026-11-16, section 2.43).** Seek the 4.30/4.38 ordered index instead
+of building `ordered_zset`: binary-search blocks by `(score, member)` for
+`BYSCORE`, seek the member inside the equal-score run for `BYLEX`, walk at most
+`offset + count` from the seek, and compute `ZCOUNT`/`ZLEXCOUNT` by subtracting
+the 4.38 prefix ranks of the first and last in-range entries (0 when a bound
+seek fails, the zset length when fully unbounded). Route reply and store forms
+through the same iterator; a store copies only the selected entries, clears the
+destination TTL and accounts the destination payload. Keep the direct pack path
+below the threshold; rebuild the derived index on replay/rewrite. No new
+structure, dependency, unsafe or persistent format change.
+
 **Rejection condition.** Any range, count, order, LIMIT, store, pack or
 mixed-score result differs; the 10-member controls regress; a store form changes
 accounting or expiry; or no gain above the spread.
@@ -7738,7 +8596,7 @@ mixed-score, exclusive and infinite bounds, LIMIT edge cases, store forms
 TTL/WATCH/journal/rewrite and accounting tests shall pass; no dependency shall
 be added; and both protected gates shall pass on the exact head.
 
-### 4.51 Borrowed-source set/zset algebra and cardinality (candidate; admission measured)
+### 4.51 Borrowed-source set/zset algebra and cardinality (candidate; borrowed-source decision)
 
 **Mechanism.** Stop materialising owned copies of every source. Borrow each
 source collection (the set container, `Collection::ZSet`'s map or `ZSetPack`'s
@@ -7803,6 +8661,19 @@ change result membership or order for skewed inputs.
 allocation and hash pass); parallelising the intersection (thread coordination
 for a sub-500 ms operation, outside the one-owner model).
 
+**Decision (2026-11-17, section 2.44).** Borrow the stored collections instead of
+calling `owned_set`/`owned_zset` per source: validate types, order the non-diff
+sources by ascending cardinality, iterate the smallest, and probe the rest with
+`contains_member`/`zset_score`. Build one result map for the reply/store forms,
+moving it into a sorted `Vec` only for replies; stores pass the map directly to
+`encode_zset`/`encode_set`. `ZINTERCARD`/`SINTERCARD` count probes and stop at a
+positive `LIMIT` without a destination (`LIMIT 0` unlimited), using a borrowed
+set-member iterator that covers `Set`, `SetPack` and `SetInt`. Read a
+destination that is also a source before `reserve`, clear its TTL, account the
+result exactly and remove it when empty. Keep weights, per-occurrence duplicate
+keys, aggregate/NaN semantics and the existing thresholds. No new structure,
+dependency, unsafe or persistent-format change.
+
 **Rejection condition.** Any score, weight, aggregate, order, `LIMIT`, empty,
 store or destination-as-source result differs; the 10-member controls or
 set-store paths regress; a store form changes TTL or accounting; or no gain above
@@ -7829,7 +8700,7 @@ SUM`, NaN/infinite scores, missing/empty keys, destination-as-source, TTL/
 WATCH/journal/rewrite and accounting tests shall pass; no dependency shall be
 added; and both protected gates shall pass on the exact head.
 
-### 4.52 O(1) INFO keyspace accounting (candidate; no-deadline fast path implemented)
+### 4.52 O(1) INFO keyspace accounting (candidate; maintained-counter decision)
 
 **Mechanism.** Stop walking the keyspace to answer `INFO keyspace`/`INFO`/
 `INFO all`. Maintain in `Data` the four values the section reports — live keys,
@@ -7855,7 +8726,11 @@ versus 0.19/0.10/0.22 and 0.53/0.14/0.09; 2.94/2.79/2.70 at 100k versus
 0.11/0.17/0.19 and 0.13/0.12/0.22; 10.93/10.00/9.14 at 500k versus
 0.13/0.25/0.28 and 0.13/0.30/0.38; plain `INFO` 10.19/10.15/9.40 at 500k versus
 0.35/0.36/0.48 and 0.22/0.37/0.26; `INFO stats` 0.11–0.30 and `DBSIZE`
-0.10–0.43 at 500k, both at the floor.
+0.10–0.43 at 500k, both at the floor. **Mixed-TTL validation (2026-11-17,
+section 3.42).** 100,000 keys with a one-hour `PX`: `INFO keyspace`
+4.538/4.693/4.569 ms and plain `INFO` 4.981/4.206/4.417 ms versus 0.105–0.648
+for the C servers (~10–14×), worst p99 15.74/13.39 ms; the no-deadline fast path
+does not apply once any key or field deadline exists.
 
 **Risks and obligations.** A drifting counter is invisible and wrong: every
 mutation, expiry, eviction, flush, rename/copy, field-TTL add/remove, rewrite and
@@ -7869,6 +8744,19 @@ other counters remain untouched.
 mutation and still O(n) to build on the first call); sampling the keyspace and
 extrapolating `keys` (reports a wrong count); iterating only the expiration set
 for `keys` (misses non-expiring keys and dead-entry semantics).
+
+**Decision (2026-11-17, section 2.52).** Maintain `expiring_keys`,
+`subexpiry_keys` and a signed absolute `ttl_deadline_sum` in `Data`, updated by
+delta in the central insert/remove/expiry/field-TTL/evict/flush/rename/copy/
+replay helpers. At `INFO`, derive live keys from `entries.len()` and subtract
+the already-due entries read from the `expirations` prefix (`deadline <= now`)
+without reaping; subtract the same due keys from the expiring/subexpiry counts
+and from the deadline sum. `avg_ttl` becomes
+`(ttl_deadline_sum - now * expiring) / expiring`, saturating and 0 when empty.
+Keep the no-deadline fast path as a guard; `INFO stats`/`DBSIZE`/`PING`,
+section selection and reply formatting stay unchanged. Use exact counters, not
+Redis's sampled `avg_ttl`, and add no new container, dependency, unsafe or
+persistent-format change.
 
 **Rejection condition.** Any counter differs from a full scan after insert/
 expire/persist/remove/reap/evict/flush/rename/copy/replay churn; `INFO` gains a
@@ -7942,7 +8830,7 @@ non-member, empty-source deletion, TTLs, blocking `BLMOVE`/`BRPOPLPUSH`,
 WATCH/journal/notification/rewrite and accounting tests shall pass; no dependency
 shall be added; and both protected gates shall pass on the exact head.
 
-### 4.54 In-place list element edits (candidate; LSET/LINSERT implemented)
+### 4.54 In-place list element edits (candidate; in-place edits decision)
 
 **Mechanism.** Edit a list's chunk deque directly instead of flattening it. For
 `LINSERT`, walk chunks to the pivot (front or back half, whichever is nearer),
@@ -7952,6 +8840,18 @@ For `LREM`, walk and unlink matching elements in place, merging or dropping empt
 chunks, with the positive/negative/zero count semantics. `LPOS` with a negative
 rank walks from the tail and needs no flatten. Reuse 4.41's chunk traversal and
 4.35's delta accounting; no new container, no dependency.
+
+**Decision (2026-11-17, section 2.45).** Finish the in-place path: `LREM` walks
+chunks from the head or tail according to the count sign, removes matches inside
+the chunk (draining descending indices for a negative count), stops at the
+count, drops empty chunks, updates payload by the removed bytes, deletes an
+emptied key and never flattens or rebuilds the list; only affected chunks
+change, with threshold conversion at a representation boundary. Reverse `LPOS` walks nodes and
+elements from the tail, counts `MAXLEN`/`RANK`/`COUNT` during the scan and
+reports head-relative positions without materialising the reference vector.
+Keep the existing `LSET`/`LINSERT` paths, chunk bounds and `ListPack`/`ListQuick`
+conversion; the same code applies to 4.32's packed nodes. No new structure,
+dependency, unsafe or persistent-format change.
 
 **Prediction.** At 200k elements, `LINSERT` at the head falls from **19.1 ms to
 ≤0.3 ms** (≥60×), `LSET` at index 100k from 16.5 to ≤0.5 ms (≥30×), `LINSERT` at
@@ -9632,7 +10532,24 @@ separate roadmap.
   is implemented. The 4.24/4.39 push-ready
   decision (section 2.36) leaves the measured 4.2–26.6% idle async CPU and
   1.05/3.60 ms pub/sub delivery unimplemented. The 4.35 hash/list in-place
-  decision (section 2.37) leaves the 92–99/18 ms write rows unimplemented. The 4.23 bounded rewrite
+  decision (section 2.37) leaves the 92–99/18 ms write rows unimplemented. The
+  4.50 seek decision (section 2.43) leaves the 56–70 ms lex and 1.25–15 ms count
+  rows unimplemented. The 4.51 borrowed-source decision (section 2.44) leaves the
+  220/306/331/477 ms algebra rows and the 50.7/267.2 ms LIMIT rows unimplemented.
+  The 4.54 in-place edit decision (section 2.45) leaves the 21 ms tail-`LREM`
+  and 1.6 ms reverse-`LPOS` rows unimplemented. The 4.48 in-place group decision
+  (section 2.46) leaves the 8.26 ms `XGROUP CREATE` row unimplemented. The 4.43
+  neighbor-cell decision (section 2.47) leaves the 4.34/4.49 ms searches and
+  22–27 ms 100-member `GEOPOS` rows unimplemented. The 4.42 in-place append
+  decision (section 2.48) leaves the 1.36 ms `XADD` row unimplemented. The 4.41
+  chunk-seek decision (section 2.49) leaves the 1.26–1.47 ms list random-access
+  rows unimplemented. The 4.49 index-pop decision (section 2.50) leaves the
+  1.08–1.65 ms pops and 4.8–6.0 ms tie-heavy rows unimplemented. The 4.31
+  large-hash stage decision (section 2.51) leaves the 5.05 s `HSCAN` traversal
+  and the clone/sort listing rows unimplemented. The 4.52 maintained-counter
+  decision (section 2.52) leaves the mixed-deadline `INFO` walk unimplemented;
+  the new 100k mixed-TTL cohort measures 4.57/4.42 ms versus 0.105–0.648.
+  The 4.23 bounded rewrite
   materialisation decision (section 2.34) removes the measured 91–107 ms start
   pause in principle but is not implemented. Replay remains 1.10–1.24 s at 200k
   versus 0.03–0.06; 4.27 has a single-pass decision but is unimplemented

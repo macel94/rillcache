@@ -84,30 +84,41 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 - **R157 (event-driven):** When `--notify-keyspace-events` or `CONFIG SET
   notify-keyspace-events` receives supported flags (`K`, `E`, `g`, `$`, `l`, `s`,
-  `h`, `z`, `t`, `x`, `e`, `A`), the server shall atomically update the live classes;
-  unsupported/unknown classes and malformed flags shall fail without changing
+  `h`, `z`, `t`, `x`, `e`, `m`, `n`, `A`), the server shall atomically update
+  the live classes. Unsupported/unknown classes and malformed flags shall fail
+  without changing
   configuration.
 - **R158 (event-driven):** When a supported mutating command changes keys, the
   server shall publish one `__keyspace@0__:<key>` message with the event name if
   `K` and the category are enabled and one `__keyevent@0__:<event>` message with
-  the key if `E` and the category are enabled. Non-mutating/rejected commands shall
-  publish nothing; MULTI shall publish per queued command and blocking pops shall
+  the key if `E` and the category are enabled. Non-mutating commands shall emit no mutation-category events except supported
+  key-miss observations described by R159; rejected commands shall publish
+  nothing. MULTI shall publish
+  per queued command and blocking pops shall
   publish on success. Successful MSETEX writes shall publish `set` followed by
   `expire` for explicit expiry in supplied pair order, including duplicate keys;
   KEEPTTL shall publish no new `expire`, and rejected/OOM writes shall publish no
   write events even if unrelated expired keys are reaped.
 - **R159 (unwanted behavior):** If notifications are disabled, a category is not
-  selected, a subscriber lacks ACL channel permission, or a command is unknown/
-  non-mutating, then no notification event shall be emitted or delivered to that
-  subscriber. Keymiss/new-key/module and `FLUSH*` keyless events shall not be
-  claimed; their flags shall be rejected.
+  selected, a subscriber lacks ACL channel permission, or an operation has no
+  supported event, then no notification shall be emitted or delivered. The `m`
+  and `n` classes shall emit only for the documented key-miss and first-creation
+  subsets; unlisted operations shall not be inferred. Module classes remain
+  unsupported and their flags shall be rejected. Keyless `FLUSH*` events are not
+  claimed.
 - **R160 (state-driven):** While notifications are enabled, mutation capture and
   publication shall follow command execution order and remain at-most-once and
   non-persistent. All-mode tests shall cover keyspace/keyevent frames, category and
-  runtime toggles, binary channels, rename/expire, MULTI, blocking pops, HLL,
-  expired/evicted classes and `CONFIG`/`INFO` exposure. Documentation shall retain
-  the missing event classes, durable/replicated delivery, global happens-before
-  and exhaustive-audit limits.
+  runtime toggles, binary channels, rename/expire, MULTI, blocking pops, HLL
+  mutations, `SMISMEMBER`/`BITOP`/`PFCOUNT`/`TOUCH`/`COPY` missing-key lookups,
+  `PFMERGE` destination/source, both `LCS` operands (including when one has the
+  wrong type), geospatial source key-miss events, expired/evicted classes
+  and `CONFIG`/`INFO` exposure. When `HGETEX` sets an
+  already-due field deadline, the command shall return selected pre-expiry values
+  and publish `hexpired`, followed by `del` only if the hash becomes empty; it
+  shall not synthesize a write event. Documentation shall retain the missing event
+  classes, durable/replicated delivery, global happens-before and exhaustive-audit
+  limits.
 
 ## Sharded publish/subscribe (S47)
 
@@ -139,7 +150,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R193 (event-driven):** When `notify-keyspace-events` receives `x` or `e`, the
   server shall enable `expired` and `evicted` event classes respectively; `A`
   shall include both, and the canonical string shall round-trip them. Unknown
-  flags and still-unsupported keymiss/new-key/module flags shall fail without
+  flags and unsupported module-class flags shall fail without
   changing configuration.
 - **R194 (event-driven):** When a key is logically removed by lazy lookup
   expiration or by bounded background reclamation, the server shall publish

@@ -4817,9 +4817,7 @@ impl ShardExecutor {
         data.expire_key(source, now);
         let items = match data.entries.get(source) {
             None => {
-                if !store {
-                    data.record_key_miss(source);
-                }
+                data.record_key_miss(source);
                 if store {
                     data.expire_key(key, now);
                     data.remove(key);

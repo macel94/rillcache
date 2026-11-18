@@ -6,7 +6,7 @@ command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
 design. It adds per-connection and per-peer-IP failed-`AUTH` budgets but not
 global/cross-process rate limiting, delayed responses or username lockout, TLS
-hardening (SNI/hot reload/OCSP), collector sender authentication/TLS/federation,
+server-certificate OCSP validation, collector sender authentication/TLS/federation,
 full-chain audit signing, key IDs or hot-rotation custody, or credential encryption at rest.
 
 ## What is implemented
@@ -69,15 +69,21 @@ does not grant the bare command, and the first argument has no wildcard form.
 The `|` rule is supported in root rules and selector groups, is rendered by
 `ACL LIST`/`ACL GETUSER`, round-trips through `ACL SAVE`/`LOAD`, and is evaluated
 by `ACL DRYRUN` without executing the command.
-Supported categories are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
-`@list`, `@set`, `@hash`, `@zset`, `@stream`, `@bitmap`, `@connection`,
-`@transaction`, `@admin`, `@fast`, `@slow` and `@dangerous`. Category membership
-is an approximation over the published command table, not a byte-for-byte copy of
-a specific Redis release. Bounded subcommand overrides refine `CLIENT`, `MEMORY`,
+Supported category rules are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
+`@list`, `@set`, `@hash`, `@sortedset` (and the compatible `@zset` alias),
+`@hyperloglog`, `@stream`, `@bitmap`, `@geo`, `@pubsub`, `@connection`,
+`@transaction`, `@blocking`, `@admin`, `@fast`, `@slow` and `@dangerous`. The
+`@generic` grouping and `@all` listing are Rillcache profile extensions;
+`@scripting` is not accepted because scripting is unsupported. `ACL CAT` exposes
+all accepted names, including the local `@zset`/`@generic` aliases. Category
+membership is an approximation over the published command table, not a
+byte-for-byte copy of a specific Redis release. Bounded subcommand overrides refine `CLIENT`, `MEMORY`,
 `OBJECT`, `ACL`, `COMMAND`, `XGROUP` and `XINFO`: `@admin`/`@dangerous` match only
-the administrative `CLIENT` and `ACL` subcommands, `MEMORY USAGE` is `@read` while
-statistics are `@admin`, all `OBJECT` subcommands are `@keyspace` with data
-inspection also `@read`, `COMMAND` subcommands are `@connection`, `XGROUP` write
+the administrative `CLIENT` and `ACL` subcommands, `MEMORY USAGE` is `@read`
+while other implemented memory subcommands are `@slow` (not `@admin`), all
+`OBJECT` subcommands are `@keyspace` with data
+inspection also `@read`, keyspace and collection families are listed by `ACL CAT`,
+`COMMAND` subcommands are `@connection`, `XGROUP` write
 subcommands exclude `HELP`, and `XINFO` read subcommands exclude `HELP`. `ACL CAT` and
 `COMMAND LIST FILTERBY ACLCAT` enumerate these implemented subcommand entries;
 commands outside the table keep parent entries.
@@ -92,14 +98,46 @@ source versus destination, `RENAME` source versus destination, and `SORT`,
 mutating `BITFIELD` operations require read and write. `PFCOUNT` is read-write
 because Redis may promote a compact representation even though the command is
 otherwise read-only. `XREAD`/`XREADGROUP` keys are extracted from the `STREAMS`
-key/ID block; malformed/unbalanced blocks do not produce partial key lists. The
-last `STORE`/`STOREDIST` destination is checked for last-wins commands.
+key/ID block; malformed/unbalanced blocks do not produce partial key lists.
+Counted list-pop `LMPOP` and `BLMPOP` specifications authorize only the declared
+`numkeys` keys, excluding direction and optional `COUNT` arguments. Rillcache's
+`MSETEX` extension likewise checks only the keys in its counted key/value pairs,
+excluding trailing SET options; its command implementation defines this layout,
+and `COMMAND GETKEYS` is tested against it (this is not a Redis/Valkey command
+compatibility claim). The pinned
+Valkey 9.1.2 reference (`valkey/valkey:9.1.2`, reporting Redis compatibility
+7.2.4) returns exactly those keys from `COMMAND GETKEYS LMPOP`, including with
+`RIGHT COUNT n` and binary key bytes. The last `STORE`/`STOREDIST` destination is
+checked for last-wins commands.
 A read-write key needs both a read and a write grant, which may come from
 different patterns. Patterns are cumulative and `resetkeys` clears all modes;
 `%RW~x` is listed canonically as `~x`, and adding read and write grants for the
 same pattern merges them into `~x`.
 
-`ACL SETUSER` is atomic: a bad rule leaves the previous user untouched. A
+Keyless keyspace-wide commands receive an additional ACL scope check:
+`KEYS`, `SCAN`, `RANDOMKEY` and `DBSIZE` need an all-key read grant; `FLUSHDB`
+and `FLUSHALL` need an all-key write grant. Without it, the server returns
+`NOPERM keyspace-wide commands require an all-key ACL grant with the required
+access`; `ACL DRYRUN` returns the same result. This deliberately differs from
+Redis/Valkey, where these keyless commands are not filtered by key patterns.
+Rillcache denies them rather than expose or flush keys outside a scoped user's
+patterns. A read-only all-key grant can inspect but cannot flush; a write-only
+all-key grant can flush but cannot inspect. Root/all-key users retain normal
+behavior.
+
+`ACL SETUSER` is atomic: a bad rule leaves the previous user untouched. The
+Rillcache extension `maxconnections=N` sets a concurrent authenticated-session
+cap for that user (`0` through `1,000,000`; zero means unlimited). `ACL GETUSER`
+reports the value and `ACL LIST`/`ACL SAVE`/`ACL LOAD` preserve it. AUTH, HELLO
+AUTH and verified certificate-mapped TLS identities reserve a slot atomically;
+when full, a valid login receives `-ERR max connections reached for user` and
+retains any previous identity. Reauthenticating as the same user does not consume
+another slot; switching users, `RESET` and disconnect release capacity. A TLS
+`RESET` that would restore a certificate identity over its lowered cap fails
+atomically and keeps the current identity. Lowering a cap does not evict existing
+sessions, but blocks later admissions until the active count falls below the new value. Only authenticated ACL sessions count:
+unauthenticated sessions using the implicit no-password default user are bounded
+by global `maxclients` only. This is not a memory, CPU or per-command quota. A
 parenthesized rule group, such as `(+set %W~app:*)`, defines a Redis 7 selector.
 Selectors are alternatives to the root rules: a command is allowed when the root
 rules or any selector permits it, and its keys/channels must be permitted by that
@@ -204,32 +242,39 @@ describes current behavior, not a second checklist.
   `LATENCY`/`SLOWLOG`/`PUBSUB` overrides,
   nested selectors, dynamic key-sandbox rules, collector sender
   authentication/TLS/federation, full-chain signing/key-ID/hot rotation,
-  global/cross-process rate limiting and TLS hardening (SNI/hot reload/OCSP) are
-  absent.
+  global/cross-process rate limiting and server-certificate OCSP validation are
+  absent. Native mTLS client CRL checking is opt-in and fail-closed; see [TLS](tls.md).
+  The per-user `maxconnections` extension limits authenticated sessions only; it
+  does not isolate the shared keyspace, memory, CPU or unauthenticated default-user
+  connections.
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
-  commands not present in that table remain unsupported.
+  commands not present in that table remain unsupported. This is not full upstream
+  category parity: the profile has local `@generic`/`@zset` aliases, does not accept
+  `@scripting`, and retains bounded subcommand overrides plus parent-category
+  fallback for families outside the published override table.
   Channel patterns gate PUBLISH/SPUBLISH, SUBSCRIBE/UNSUBSCRIBE,
-  PSUBSCRIBE/PUNSUBSCRIBE and SSUBSCRIBE/SUNSUBSCRIBE.
-  `PUBSUB CHANNELS` and `SHARDCHANNELS` return only names permitted by the
-  caller's channel patterns (including selector-scoped grants). `NUMSUB` and
-  `SHARDNUMSUB` reject the whole request if any supplied channel is unauthorized,
-  avoiding partial counts. `NUMPAT` is denied unless a ruleset granting that
-  subcommand also grants all channels, because its global count cannot be safely
-  filtered. These introspection checks intentionally strengthen the pinned
-  Valkey 9.1.2 behavior: upstream's PUBSUB handlers return global data and its
-  generic ACL channel checks cover only channel-bearing command metadata. Other
-  unsupported PUBSUB subcommands continue to return their existing unsupported
-  errors. Sharded pub/sub is a separate standalone namespace and keyspace
-  notifications are process-local and at-most-once; neither is cluster-routed or
-  durable. `CLIENT LIST`/`KILL` reveal connection
+  PSUBSCRIBE/PUNSUBSCRIBE and SSUBSCRIBE/SUNSUBSCRIBE. `PUBSUB CHANNELS` and
+  `SHARDCHANNELS` return only names permitted by the caller's channel patterns
+  (including selector-scoped grants). `NUMSUB` and `SHARDNUMSUB` reject the whole
+  request if any supplied channel is unauthorized, avoiding partial counts.
+  `NUMPAT` is denied unless a ruleset granting that subcommand also grants all
+  channels, because its global count cannot be safely filtered. These introspection
+  checks intentionally strengthen the pinned Valkey 9.1.2 behavior: upstream's
+  PUBSUB handlers return global data and its generic ACL channel checks cover only
+  channel-bearing command metadata. Other unsupported PUBSUB subcommands continue
+  to return their existing unsupported errors. Sharded pub/sub is a separate
+  standalone namespace and keyspace notifications are process-local and at-most-once;
+  neither is cluster-routed or durable. `CLIENT LIST`/`KILL` reveal connection
   addresses/names/users and terminate sessions; grant the CLIENT command only to
-  trusted administrators. Key patterns apply only to commands with declared key
-  positions:
-  `KEYS`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB/FLUSHALL` and similar commands are not
-  a per-key sandbox. `XREAD` and `XREADGROUP` key lists are extracted from their
-  `STREAMS` block, but dynamic `SORT BY/GET` lookups remain all-key-only. Do not grant these commands to tenants who must not
-  see or clear the whole keyspace.
+  trusted administrators. Key patterns apply to declared key positions; the
+  keyless `KEYS`, `SCAN`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB` and `FLUSHALL` commands
+  instead require the corresponding all-key read/write grant described above.
+  Dynamic key lists are handled only for explicitly supported command specs,
+  including counted `LMPOP`/`BLMPOP` keys and the `XREAD`/`XREADGROUP` `STREAMS`
+  block; dynamic `SORT BY/GET` lookups remain all-key-only. This is not full Redis
+  ACL/key-spec coverage, and commands outside the published registry remain
+  unsupported.
 - **Hashes are unsalted SHA-256.** This mirrors Redis ACL hash compatibility but
   is fast to brute-force offline; use long random passwords and protect the ACL
   file. File permissions, backups and secret distribution are operator duties.
@@ -312,7 +357,8 @@ describes current behavior, not a second checklist.
 
 Unit tests cover known SHA-256 vectors, constant-time digest equality, disabled and
 rotated credentials, ordered category/command overrides, key-pattern denials,
-atomic failed `SETUSER`, ACL-file hash/rule round-trips, exact Redis-compatible
+keyspace-wide all-key restrictions and selector scope, atomic failed `SETUSER`,
+ACL-file hash/rule round-trips, exact Redis-compatible
 errors, `HELLO` atomicity, `NOAUTH` before data/admin access, unauthenticated
 `QUIT`, and `CONFIG` redaction/rotation. Wire tests run in thread-per-client,
 one-worker and four-worker modes, including ACL-file startup failures, restricted

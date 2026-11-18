@@ -169,22 +169,37 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
   deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
   `hexpire`/`hpersist` for future deadlines and successful persists, never a
-  synthetic write; its past-deadline deletion events remain open.
+  synthetic write. With an already-due `PXAT`/`EXAT` deadline, it returns selected
+  pre-expiry values and publishes `hexpired`, followed by `del` only when the hash
+  becomes empty; all three worker modes now have a regression test for this
+  Valkey-verified ordering.
   **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`,
   each missing `MGET` occurrence and missing `EXISTS` arguments; `TYPE`/`TTL`
   family misses; missing `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
   `HVALS`/`HSTRLEN` hashes; `STRLEN`/`GETRANGE`/`GETBIT` strings; missing
-  `LLEN`/`LINDEX`/`LRANGE`/`LPOS` lists; missing `SCARD`/`SISMEMBER`/`SMEMBERS`
-  sets; missing `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/`ZRANK`/`ZREVRANK`/
+  `LLEN`/`LINDEX`/`LRANGE`/`LPOS` lists; missing `SCARD`/`SISMEMBER`/
+  `SMISMEMBER`/`SMEMBERS` sets; missing `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/`ZRANK`/`ZREVRANK`/
   `ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/`ZREVRANGEBYSCORE`/`ZLEXCOUNT` sorted
   sets; `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD` random reads; `XLEN`/`XRANGE`/
   `XREVRANGE` streams; `HSCAN`/`SSCAN`/`ZSCAN` collection scans; set/sorted-set
   algebra sources including store variants, with one miss per missing source
   key; stream `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`/`XINFO` metadata reads;
   `SORT`/`SORT_RO` sources including `STORE` and `BY`/`GET` pattern lookups,
-  and `XREAD`/`XREADGROUP` initial stream lookups on the normal
-  keyspace/keyevent channels. Hits, absent fields/elements/members and existing
-  wrong-type keys do not. Other read commands remain open. `A` intentionally
+  and `XREAD`/`XREADGROUP` initial stream lookups. **Partial (2026-11-18):**
+  `BITOP` emits one key-miss event for each missing source occurrence; existing
+  strings and wrong-type source keys do not create false misses. `TOUCH` reports
+  each missing operand while hits, including wrong-type keys, remain non-misses.
+  `COPY` reports a missing source lookup but not a hit, including when the
+  destination already exists and the command returns zero.
+  `PFCOUNT` reports each missing HLL source lookup, including repeated sources. `PFMERGE` also reports the missing destination read
+  and each missing source occurrence; existing HLL and wrong-type keys do not
+  create false misses. **Partial (2026-11-18):** Geospatial read commands now
+  report missing sorted-set source lookups for `GEODIST`, `GEOHASH`, `GEOPOS`,
+  `GEOSEARCH`/`GEOSEARCHSTORE` and legacy `GEORADIUS*` variants. Missing members
+  in existing sets and existing wrong-type keys remain non-misses.
+  These events use the normal keyspace/keyevent channels. Hits, absent
+  fields/elements/members and existing wrong-type keys do not. Other read
+  commands remain open. `A` intentionally
   excludes `m`, as in Redis.
   **Partial (2026-11-14): new-key notifications.** The `n` class reports the
   first creation of a key by supported mutation paths, including absent
@@ -492,8 +507,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **S2. ACL support is not full Redis ACL.** [P0]
   Remaining subcommand-specific categories beyond the bounded overrides,
-  dynamic key sandbox rules, complete channel filtering for `PUBSUB`
-  introspection and commands outside the published table are absent. `KEYS`,
+  dynamic key sandbox rules beyond the explicitly implemented command specs,
+  complete channel filtering for `PUBSUB` introspection and commands outside the
+  published table are absent. `KEYS`,
   `RANDOMKEY`, `DBSIZE`, `FLUSH*` and similar commands are not a per-key sandbox.
   **Closes when:** the supported ACL subset is explicitly versioned and
   differentially tested, or full category/subcommand/key/channel semantics are
@@ -517,11 +533,27 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   deployment requires an external control plane with documented behavior.
 
 - [ ] **S5. TLS hardening is incomplete.** [P0]
-  TLS 1.3 is available, but SNI certificate selection, hot reload, OCSP/CRL,
-  client-certificate-to-ACL mapping, rotation drills and independent TLS
-  interoperability/security review are absent.
-  **Closes when:** those controls are implemented or explicitly replaced by a
-  reviewed external terminator, with rotation and failure tests.
+  TLS 1.3 is available with exact-name SNI selection, bounded operator-triggered
+  atomic certificate/OCSP/CA/CRL rotation, and verified client-certificate mapping to
+  enabled ACL users. Failed identity/CRL parsing retains the last valid generation;
+  live connections keep their handshake-time snapshot. A configured DER CRL (up to
+  1 MiB) checks mTLS client chains and fails closed for revoked, unknown or expired
+  status; distribution points are not fetched. Native server-certificate OCSP
+  stapling accepts bounded operator-provisioned response bytes per SNI/default
+  identity and rotates them atomically with that identity. A bounded client-certificate
+  mapping file can now rotate with the TLS generation; invalid/unknown ACL mappings
+  retain the last good generation, and established sessions preserve their captured
+  identity. Inline maps remain startup-only. rustls 0.23.46 treats
+  response content as opaque, so the server does not validate response signature,
+  status, certificate identity or freshness. Require an independently
+  operated TLS terminator that validates and refreshes OCSP responses, fails closed
+  when missing/stale, and prevents backend bypass for server-certificate revocation.
+  Exact-name SNI, CRL parsing/revocation and atomic replacement have focused tests;
+  independent TLS interoperability/security review remains open. No production-
+  readiness claim is made. **Closes when:** server-certificate OCSP response
+  validation and tested stale/missing failure policy are implemented or supplied
+  by the reviewed external terminator boundary, and the configured human security
+  review is complete.
 
 - [x] **S6. Live deauthentication/session revocation is missing.** [P1]
   **Complete (2026-11-14): documented and tested administrative revocation.**
@@ -568,8 +600,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   case is reproducible from its seed. A configurable monotonic per-incomplete-
   plaintext-frame assembly deadline (60-second default, zero disables) now
   complements socket inactivity timeouts across synchronous workers, readiness,
-  Tokio and TLS plaintext parsing. It does not bound TLS records that produce no
-  plaintext. Slow-client length/rate thresholds, global/user budgets, CPU quotas
+  Tokio and TLS plaintext parsing. **Partial (2026-11-18):** complete requests no
+  longer arm phantom assembly timers on their empty parser suffixes; direct
+  owner/worker tests and idle-past-frame-budget wire cases cover owner/shared
+  reactors, fixed workers and Tokio. Partial suffixes retain their original
+  deadline. It does not bound TLS records that produce no plaintext.
+  Slow-client length/rate thresholds, global/user budgets, CPU quotas
   and a general overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
@@ -726,10 +762,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   these commands within the SLO.
 
 - [ ] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
-  Client count, payload, frame and argument limits exist; there is no per-user
-  command/connection/memory quota, CPU fairness guarantee or slow-client share.
-  **Closes when:** the supported admission policy is explicit, observable and
-  tested under overload and multi-tenant use.
+  Client count, payload, frame and argument limits exist. Authenticated ACL users
+  now have an optional `maxconnections` cap, but there is no per-user command or
+  memory quota, CPU fairness guarantee, slow-client share, or cap for unauthenticated
+  sessions using an implicit no-password default. **Partial:** S122 implements
+  atomic authenticated-session admission and release; it does not isolate shared
+  resource use. **Closes when:** the supported admission policy is explicit,
+  observable and tested under overload and multi-tenant use, including the remaining
+  resource and unauthenticated-session boundaries.
 
 - [ ] **R6. Persistence serializes the whole command path.** [P1]
   With persistence enabled, commands execute through the exclusive transaction
@@ -892,9 +932,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
   adds seeded binary-frame fragmentation, random bytes under tight limits,
   random inline input and pipeline consumption properties; it runs in ordinary
-  CI and every failure is reproducible from its printed seed. State-machine
-  model checking, command-level differential properties and sustained
-  adversarial corpora remain absent.
+  CI and every failure is reproducible from its printed seed.
+  **Partial (2026-11-14): hash-field expiry state model.** A fixed-seed command
+  sequence compares HSET, HPEXPIRE, HGET, HPTTL and HDEL against an independent
+  map oracle under an injected clock; failures identify the seed and step.
+  Broader state-machine model checking, command-level differential properties
+  and sustained adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
 - [ ] **V5. Public documentation can still drift from executable behavior.** [P1]
