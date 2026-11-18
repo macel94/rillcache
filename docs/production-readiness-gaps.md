@@ -187,7 +187,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `SORT`/`SORT_RO` sources including `STORE` and `BY`/`GET` pattern lookups,
   and `XREAD`/`XREADGROUP` initial stream lookups. **Partial (2026-11-18):**
   `PFCOUNT` now emits one key-miss event for each missing HLL source lookup,
-  including repeated sources. Hits and existing wrong-type keys do not emit.
+  including repeated sources. `PFMERGE` also reports the missing destination read
+  and each missing source occurrence; existing HLL and wrong-type keys do not
+  create false misses.
   These events use the normal keyspace/keyevent channels. Hits, absent
   fields/elements/members and existing wrong-type keys do not. Other read
   commands remain open. `A` intentionally
