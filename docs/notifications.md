@@ -47,8 +47,9 @@ sorted-set store variants, `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`,
 `XINFO STREAM|GROUPS|CONSUMERS`, and `SORT`/`SORT_RO` sources (including
 `STORE`), `SORT` `BY`/`GET` pattern-derived key lookups,
 `XREAD`/`XREADGROUP` initial stream lookups, `BITCOUNT`/`BITPOS`/`BITFIELD_RO`
-(and read-only `BITFIELD` blocks), `LCS` operands, `OBJECT ENCODING|REFCOUNT`,
-`MEMORY USAGE`, and `HTTL`/`HPTTL`/`HEXPIRETIME`/`HPEXPIRETIME` missing-key
+(and read-only `BITFIELD` blocks), each missing `PFCOUNT` source occurrence, `LCS`
+operands, `OBJECT ENCODING|REFCOUNT`, `MEMORY USAGE`, and
+`HTTL`/`HPTTL`/`HEXPIRETIME`/`HPEXPIRETIME` missing-key
 lookups emit `keymiss` on the normal keyspace/keyevent channels (once per
 missing source key for algebra and per missing stream or operand where Redis
 looks them up). Hits, missing fields/elements/members in an existing key,
