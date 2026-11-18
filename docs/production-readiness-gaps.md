@@ -909,9 +909,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
   adds seeded binary-frame fragmentation, random bytes under tight limits,
   random inline input and pipeline consumption properties; it runs in ordinary
-  CI and every failure is reproducible from its printed seed. State-machine
-  model checking, command-level differential properties and sustained
-  adversarial corpora remain absent.
+  CI and every failure is reproducible from its printed seed.
+  **Partial (2026-11-14): hash-field expiry state model.** A fixed-seed command
+  sequence compares HSET, HPEXPIRE, HGET, HPTTL and HDEL against an independent
+  map oracle under an injected clock; failures identify the seed and step.
+  Broader state-machine model checking, command-level differential properties
+  and sustained adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
 - [ ] **V5. Public documentation can still drift from executable behavior.** [P1]
