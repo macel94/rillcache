@@ -69,15 +69,21 @@ does not grant the bare command, and the first argument has no wildcard form.
 The `|` rule is supported in root rules and selector groups, is rendered by
 `ACL LIST`/`ACL GETUSER`, round-trips through `ACL SAVE`/`LOAD`, and is evaluated
 by `ACL DRYRUN` without executing the command.
-Supported categories are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
-`@list`, `@set`, `@hash`, `@zset`, `@stream`, `@bitmap`, `@connection`,
-`@transaction`, `@admin`, `@fast`, `@slow` and `@dangerous`. Category membership
-is an approximation over the published command table, not a byte-for-byte copy of
-a specific Redis release. Bounded subcommand overrides refine `CLIENT`, `MEMORY`,
+Supported category rules are `@all`, `@read`, `@write`, `@keyspace`, `@string`,
+`@list`, `@set`, `@hash`, `@sortedset` (and the compatible `@zset` alias),
+`@hyperloglog`, `@stream`, `@bitmap`, `@geo`, `@pubsub`, `@connection`,
+`@transaction`, `@blocking`, `@admin`, `@fast`, `@slow` and `@dangerous`. The
+`@generic` grouping and `@all` listing are Rillcache profile extensions;
+`@scripting` is not accepted because scripting is unsupported. `ACL CAT` exposes
+all accepted names, including the local `@zset`/`@generic` aliases. Category
+membership is an approximation over the published command table, not a
+byte-for-byte copy of a specific Redis release. Bounded subcommand overrides refine `CLIENT`, `MEMORY`,
 `OBJECT`, `ACL`, `COMMAND`, `XGROUP` and `XINFO`: `@admin`/`@dangerous` match only
-the administrative `CLIENT` and `ACL` subcommands, `MEMORY USAGE` is `@read` while
-statistics are `@admin`, all `OBJECT` subcommands are `@keyspace` with data
-inspection also `@read`, `COMMAND` subcommands are `@connection`, `XGROUP` write
+the administrative `CLIENT` and `ACL` subcommands, `MEMORY USAGE` is `@read`
+while other implemented memory subcommands are `@slow` (not `@admin`), all
+`OBJECT` subcommands are `@keyspace` with data
+inspection also `@read`, keyspace and collection families are listed by `ACL CAT`,
+`COMMAND` subcommands are `@connection`, `XGROUP` write
 subcommands exclude `HELP`, and `XINFO` read subcommands exclude `HELP`. `ACL CAT` and
 `COMMAND LIST FILTERBY ACLCAT` enumerate these implemented subcommand entries;
 commands outside the table keep parent entries.
@@ -92,8 +98,13 @@ source versus destination, `RENAME` source versus destination, and `SORT`,
 mutating `BITFIELD` operations require read and write. `PFCOUNT` is read-write
 because Redis may promote a compact representation even though the command is
 otherwise read-only. `XREAD`/`XREADGROUP` keys are extracted from the `STREAMS`
-key/ID block; malformed/unbalanced blocks do not produce partial key lists. The
-last `STORE`/`STOREDIST` destination is checked for last-wins commands.
+key/ID block; malformed/unbalanced blocks do not produce partial key lists.
+Counted list-pop `LMPOP` and `BLMPOP` specifications authorize only the declared
+`numkeys` keys, excluding direction and optional `COUNT` arguments. The pinned
+Valkey 9.1.2 reference (`valkey/valkey:9.1.2`, reporting Redis compatibility
+7.2.4) returns exactly those keys from `COMMAND GETKEYS LMPOP`, including with
+`RIGHT COUNT n` and binary key bytes. The last `STORE`/`STOREDIST` destination is
+checked for last-wins commands.
 A read-write key needs both a read and a write grant, which may come from
 different patterns. Patterns are cumulative and `resetkeys` clears all modes;
 `%RW~x` is listed canonically as `~x`, and adding read and write grants for the
@@ -219,7 +230,10 @@ describes current behavior, not a second checklist.
   absent. Native mTLS client CRL checking is opt-in and fail-closed; see [TLS](tls.md).
   Selectors, first-argument command rules, `ACL LOG`, `ACL DRYRUN`, `ACL GENPASS`
   and the optional local denial audit are implemented for the published command table;
-  commands not present in that table remain unsupported.
+  commands not present in that table remain unsupported. This is not full upstream
+  category parity: the profile has local `@generic`/`@zset` aliases, does not accept
+  `@scripting`, and retains bounded subcommand overrides plus parent-category
+  fallback for families outside the published override table.
   Channel patterns gate PUBLISH/SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE.
   Sharded pub/sub is a separate standalone namespace and keyspace notifications
   are process-local and at-most-once; neither is cluster-routed or durable.
@@ -230,8 +244,11 @@ describes current behavior, not a second checklist.
   trusted administrators. Key patterns apply to declared key positions; the
   keyless `KEYS`, `SCAN`, `RANDOMKEY`, `DBSIZE`, `FLUSHDB` and `FLUSHALL` commands
   instead require the corresponding all-key read/write grant described above.
-  `XREAD` and `XREADGROUP` key lists are extracted from their `STREAMS` block,
-  but dynamic `SORT BY/GET` lookups remain all-key-only.
+  Dynamic key lists are handled only for explicitly supported command specs,
+  including counted `LMPOP`/`BLMPOP` keys and the `XREAD`/`XREADGROUP` `STREAMS`
+  block; dynamic `SORT BY/GET` lookups remain all-key-only. This is not full Redis
+  ACL/key-spec coverage, and commands outside the published registry remain
+  unsupported.
 - **Hashes are unsalted SHA-256.** This mirrors Redis ACL hash compatibility but
   is fast to brute-force offline; use long random passwords and protect the ACL
   file. File permissions, backups and secret distribution are operator duties.

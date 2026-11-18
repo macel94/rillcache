@@ -229,6 +229,11 @@ def server(name, directory, *, port=None, affinity=None, compatibility=False, er
             save(directory / "server.json", identity)
 
 
+def probe(argv, *, timeout, **kwargs):
+    """Run a bounded environment probe; subprocess.run kills and reaps on timeout."""
+    return subprocess.run(argv, timeout=timeout, **kwargs)
+
+
 def environment():
     metadata = {key: os.environ.get(key) for key in (
         "GITHUB_SHA", "GITHUB_HEAD_REF", "GITHUB_REF", "GITHUB_BASE_REF", "GITHUB_RUN_ID",
@@ -240,7 +245,10 @@ def environment():
         "cc": ["cc", "--version"], "linker": ["ld", "--version"], "libc": ["ldd", "--version"],
         "tcl": ["tclsh", "-c", ""], "cpu": ["lscpu"], "os": ["uname", "-a"],
     }.items():
-        result = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, timeout=30, check=False)
+        # rustc may be slow during runner/toolchain startup, but a compiler that
+        # remains unresponsive must still fail this infrastructure check closed.
+        timeout = 120 if label == "rust" else 30
+        result = probe(argv, cwd=ROOT, capture_output=True, text=True, timeout=timeout, check=False)
         metadata[label] = {"exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
     metadata["os_release"] = Path("/etc/os-release").read_text()
     for name in ("meminfo", "loadavg"):

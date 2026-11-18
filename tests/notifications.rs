@@ -1154,6 +1154,92 @@ fn hgetdel_emits_hash_and_deletion_events() {
 }
 
 #[test]
+fn hgetex_due_deadline_emits_expiry_and_empty_hash_deletion_events() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let server = start(NotifyFlags::parse(b"KEA").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:*");
+    let mut writer = connect(&server);
+    send(
+        &mut writer,
+        &[b"HSET", b"h", b"a", b"1", b"b", b"2"],
+        b":2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hset",
+            b"h"
+        ])
+    );
+
+    let past = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .saturating_sub(1_000)
+        .to_string();
+    send(
+        &mut writer,
+        &[
+            b"HGETEX",
+            b"h",
+            b"PXAT",
+            past.as_bytes(),
+            b"FIELDS",
+            b"1",
+            b"a",
+        ],
+        b"*1\r\n$1\r\n1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hexpired",
+            b"h"
+        ])
+    );
+
+    send(
+        &mut writer,
+        &[
+            b"HGETEX",
+            b"h",
+            b"PXAT",
+            past.as_bytes(),
+            b"FIELDS",
+            b"1",
+            b"b",
+        ],
+        b"*1\r\n$1\r\n2\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:hexpired",
+            b"h"
+        ])
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:*",
+            b"__keyevent@0__:del",
+            b"h"
+        ])
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn hexpire_and_hpersist_emit_only_changed_field_ttls() {
     let server = start(NotifyFlags::parse(b"KEA").unwrap());
     let mut subscriber = connect(&server);

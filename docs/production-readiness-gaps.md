@@ -169,7 +169,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
   deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
   `hexpire`/`hpersist` for future deadlines and successful persists, never a
-  synthetic write; its past-deadline deletion events remain open.
+  synthetic write. With an already-due `PXAT`/`EXAT` deadline, it returns selected
+  pre-expiry values and publishes `hexpired`, followed by `del` only when the hash
+  becomes empty; all three worker modes now have a regression test for this
+  Valkey-verified ordering.
   **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`,
   each missing `MGET` occurrence and missing `EXISTS` arguments; `TYPE`/`TTL`
   family misses; missing `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
@@ -492,8 +495,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **S2. ACL support is not full Redis ACL.** [P0]
   Remaining subcommand-specific categories beyond the bounded overrides,
-  dynamic key sandbox rules, complete channel filtering for `PUBSUB`
-  introspection and commands outside the published table are absent. `KEYS`,
+  dynamic key sandbox rules beyond the explicitly implemented command specs,
+  complete channel filtering for `PUBSUB` introspection and commands outside the
+  published table are absent. `KEYS`,
   `RANDOMKEY`, `DBSIZE`, `FLUSH*` and similar commands are not a per-key sandbox.
   **Closes when:** the supported ACL subset is explicitly versioned and
   differentially tested, or full category/subcommand/key/channel semantics are
@@ -518,20 +522,23 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **S5. TLS hardening is incomplete.** [P0]
   TLS 1.3 is available with exact-name SNI selection, bounded operator-triggered
-  atomic certificate/CA/CRL rotation, and verified client-certificate mapping to
+  atomic certificate/OCSP/CA/CRL rotation, and verified client-certificate mapping to
   enabled ACL users. Failed identity/CRL parsing retains the last valid generation;
   live connections keep their handshake-time snapshot. A configured DER CRL (up to
   1 MiB) checks mTLS client chains and fails closed for revoked, unknown or expired
-  status; distribution points are not fetched. Server-certificate OCSP validation
-  is not implemented: rustls 0.23.46 can staple opaque response bytes but the
-  server does not validate response signature/freshness. Require an independently
+  status; distribution points are not fetched. Native server-certificate OCSP
+  stapling accepts bounded operator-provisioned response bytes per SNI/default
+  identity and rotates them atomically with that identity; rustls 0.23.46 treats
+  response content as opaque, so the server does not validate response signature,
+  status, certificate identity or freshness. Require an independently
   operated TLS terminator that validates and refreshes OCSP responses, fails closed
   when missing/stale, and prevents backend bypass for server-certificate revocation.
   Exact-name SNI, CRL parsing/revocation and atomic replacement have focused tests;
   independent TLS interoperability/security review remains open. No production-
-  readiness claim is made. **Closes when:** server-certificate OCSP is implemented
-  with tested freshness/failure policy or replaced by the reviewed external
-  terminator boundary, and the configured human security review is complete.
+  readiness claim is made. **Closes when:** server-certificate OCSP response
+  validation and tested stale/missing failure policy are implemented or supplied
+  by the reviewed external terminator boundary, and the configured human security
+  review is complete.
 
 - [x] **S6. Live deauthentication/session revocation is missing.** [P1]
   **Complete (2026-11-14): documented and tested administrative revocation.**

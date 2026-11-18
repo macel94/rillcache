@@ -116,13 +116,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `RENAME` source versus destination, and store destinations of `SORT`,
   `GEORADIUS*` and `*STORE`). `SORT ... STORE` and `GEORADIUS ... STORE` shall
   require read on the source and write on the effective last-wins destination;
-  `XREAD`/`XREADGROUP` shall check each key in the dynamic `STREAMS` block, and
-  `PFCOUNT` shall require both accesses per Redis 7's RW key spec. The key
-  registry's actual key positions shall drive ACL checks for `SDIFFSTORE`,
-  `SINTERSTORE`, `SUNIONSTORE`, counted `ZDIFFSTORE`/`ZINTERSTORE`/
-  `ZUNIONSTORE`, `ZRANGESTORE` and `GEOSEARCHSTORE`, excluding option/count
-  operands from source-key checks. `SET` with `GET` and mutating `BITFIELD`
-  operations shall require both accesses.
+  counted `LMPOP`/`BLMPOP` key lists shall contain only the declared keys,
+  excluding direction and optional `COUNT` tokens; `XREAD`/`XREADGROUP` shall
+  check each key in the dynamic `STREAMS` block, and `PFCOUNT` shall require
+  both accesses per Redis 7's RW key spec. The key registry's actual key
+  positions shall drive ACL checks for `SDIFFSTORE`, `SINTERSTORE`,
+  `SUNIONSTORE`, counted `ZDIFFSTORE`/`ZINTERSTORE`/`ZUNIONSTORE`,
+  `ZRANGESTORE` and `GEOSEARCHSTORE`, excluding option/count operands from
+  source-key checks. `SET` with `GET` and mutating `BITFIELD` operations shall
+  require both accesses.
 - **R337 (event-driven):** `ACL LIST` and `ACL GETUSER` shall render read-only
   patterns as `%R~`, write-only patterns as `%W~` and read-write patterns as `~`.
   Adding read and write grants for the same pattern shall merge into `~`. `ACL
@@ -131,7 +133,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R338 (ubiquitous):** Tests shall cover read-only, write-only and read-write
   grants, per-key mixed commands, read denial for a write-only credential, write
   denial for a read-only credential, listing, `ACL DRYRUN`, ACL-file restart
-  round-trips and every worker mode. Documentation shall retain the
+  round-trips and every worker mode. For `LMPOP`, tests shall cover counted keys,
+  direction/COUNT exclusion, binary keys, selector grants versus root command
+  precedence, denied multi-key no-pop behavior and non-executing DRYRUN.
+  Documentation shall retain the
   subcommand-category, dynamic-key-sandbox, centralized-audit, rate-limiting and
   TLS-hardening boundaries.
 
@@ -248,9 +253,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   subcommands such as `SETNAME`, `GETNAME`, `ID`, `INFO`, `SETINFO`, `TRACKING`,
   `CACHING`, `REPLY`, `GETREDIR`, `TRACKINGINFO` and `HELP` shall remain governed
   by `+@connection`/`+@slow` and shall be denied by an `@admin`-only grant.
-- **R397 (state-driven):** For `MEMORY`, `USAGE` shall match `@read`, while
-  `STATS`, `DOCTOR`, `PURGE` and `MALLOC-STATS` shall match `@admin` and not
-  `@read`; `@dangerous` shall not grant memory subcommands. For `OBJECT`,
+- **R397 (state-driven):** For `MEMORY`, `USAGE` shall match `@read`; all
+  implemented subcommands shall match `@slow`, but none shall be granted by
+  `@admin` or `@dangerous`. `STATS`, `DOCTOR`, `PURGE` and `MALLOC-STATS` shall
+  not match `@read`. For `OBJECT`,
   `ENCODING`, `REFCOUNT`, `IDLETIME`, `FREQ` and `HELP` shall match `@keyspace`;
   the data-inspection subcommands shall match `@read`, while `HELP` shall not;
   `@admin` and `@dangerous` shall not grant object subcommands.
@@ -423,8 +429,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   fail-closed CRL loading and configuration failure, alongside atomic TLS reload
   retention. Documentation shall state
   that native CRL checks cover only mTLS clients, do not fetch distribution points,
-  and do not revoke the server certificate. Server-certificate OCSP freshness and
-  signature validation remain an external TLS-terminator boundary.
+  and do not revoke the server certificate. Native TLS may staple operator-provisioned
+  server OCSP bytes, but signature/freshness validation and server-certificate CRL
+  checking remain outside this increment; external terminators still require security review.
 
 ## Remaining subcommand categories for administration and pub/sub (S117)
 
@@ -447,7 +454,32 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   for `admin`, `dangerous`, `slow` and `pubsub`. Documentation shall retain the
   bounded family table and command-level fallback for other families.
 
-## Keyspace-wide ACL isolation (S118)
+## Native TLS server-certificate OCSP stapling (S121)
+
+- **R435 (event-driven):** When an OCSP response file is configured for the
+  default certificate or an exact SNI identity, TLS 1.3 handshakes requesting
+  status shall staple those exact response bytes with that certificate. An
+  omitted response shall preserve existing handshakes. Unknown SNI names shall
+  not receive another identity's response; ClientHello without SNI shall use
+  the default identity and its configured response.
+- **R436 (state-driven):** OCSP response files shall be bounded to 1 MiB and
+  require one nonempty DER SEQUENCE envelope. The response shall be stored in
+  the same resolved `CertifiedKey` and atomically reloaded with its matching
+  certificate/key; established connections shall retain their existing
+  handshake snapshot. Missing, unreadable, malformed or oversized material
+  shall fail startup or reject the complete reload, preserving the last valid
+  generation. This validation does not validate response semantics, signature,
+  status, freshness or certificate identity.
+- **R437 (ubiquitous):** TLS clients requesting status shall verify exact default,
+  SNI, no-SNI and no-response behavior, unknown-SNI rejection, reload generation
+  and failure retention in supported worker modes. Existing mTLS/CRL and TLS
+  deadline tests shall continue to pass. Documentation shall require operators
+  to renew response files with their matching certificate identity, state that
+  clients must independently validate status and may ignore missing/invalid
+  staples, and preserve the limits around server-certificate CRLs, external
+  terminators and security review.
+
+## Keyspace-wide ACL isolation (S120)
 
 - **R429 (state-driven):** When a user or selector lacks an all-key read grant,
   `KEYS`, `SCAN`, `RANDOMKEY` and `DBSIZE` shall fail before revealing key names
@@ -467,3 +499,22 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Redis/Valkey compatibility restriction: upstream keyless ACL commands are not
   filtered by key patterns, so scoped Rillcache users are denied rather than
   exposed to cross-pattern enumeration or flush.
+
+## ACL category and selector audit (S119)
+
+- **R432 (event-driven):** `ACL CAT` shall enumerate every accepted ACL
+  category and return the registry entries matching each category. Category
+  grants shall include the implemented keyspace, hyperloglog, blocking and
+  sorted-set families; `@sortedset` shall match the same commands as the
+  compatibility alias `@zset`. `ACL DRYRUN` shall agree with the listed category
+  membership for every published command and bounded subcommand entry.
+- **R433 (state-driven):** When root rules deny a command, each selector shall
+  evaluate its own ordered command/category rules and key/channel patterns as
+  one alternative; grants from different selectors shall not be combined.
+  Within one rule set, the last matching category/command rule shall decide.
+  Runtime dispatch and `ACL DRYRUN` shall apply the same selector result.
+- **R434 (ubiquitous):** Tests shall cover every accepted category through
+  `ACL CAT`, `ACL DRYRUN` and runtime dispatch in every worker mode, plus ordered
+  selector overrides, root-vs-selector alternatives and isolated key scopes.
+  Documentation shall identify profile aliases, unsupported categories and the
+  bounded subcommand/fallback boundary without claiming full Redis ACL parity.
