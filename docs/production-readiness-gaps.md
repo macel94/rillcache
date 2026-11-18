@@ -189,6 +189,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `BITOP` emits one key-miss event for each missing source occurrence; existing
   strings and wrong-type source keys do not create false misses. `TOUCH` reports
   each missing operand while hits, including wrong-type keys, remain non-misses.
+  `COPY` reports a missing source lookup but not a hit, including when the
+  destination already exists and the command returns zero.
   `PFCOUNT` reports each missing HLL source lookup, including repeated sources. `PFMERGE` also reports the missing destination read
   and each missing source occurrence; existing HLL and wrong-type keys do not
   create false misses. **Partial (2026-11-18):** Geospatial read commands now

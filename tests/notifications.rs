@@ -2176,3 +2176,74 @@ fn smismember_emits_one_keymiss_for_a_missing_set_only() {
     );
     server.shutdown().unwrap();
 }
+
+#[test]
+fn copy_source_miss_emits_keymiss_but_existing_sources_do_not() {
+    let server = start(NotifyFlags::parse(b"Em").unwrap());
+    let mut subscriber = connect(&server);
+    subscribe(&mut subscriber, b"psubscribe", b"__keyevent@0__:keymiss");
+    let mut writer = connect(&server);
+    let binary_missing = b"missing\0\xff";
+
+    send(
+        &mut writer,
+        &[b"COPY", binary_missing, b"destination"],
+        b":0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            binary_missing
+        ])
+    );
+
+    send(&mut writer, &[b"SET", b"source", b"value"], b"+OK\r\n");
+    send(&mut writer, &[b"COPY", b"source", b"copy"], b":1\r\n");
+    send(&mut writer, &[b"GET", b"copy"], b"$5\r\nvalue\r\n");
+    send(&mut writer, &[b"GET", b"marker-after-copy"], b"$-1\r\n");
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"marker-after-copy"
+        ])
+    );
+
+    send(&mut writer, &[b"SET", b"occupied", b"old"], b"+OK\r\n");
+    send(&mut writer, &[b"COPY", b"source", b"occupied"], b":0\r\n");
+    send(
+        &mut writer,
+        &[b"GET", b"marker-after-no-replace"],
+        b"$-1\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            b"marker-after-no-replace"
+        ])
+    );
+
+    send(
+        &mut writer,
+        &[b"COPY", binary_missing, b"occupied"],
+        b":0\r\n",
+    );
+    assert_eq!(
+        read_frame(&mut subscriber),
+        frame(&[
+            b"pmessage",
+            b"__keyevent@0__:keymiss",
+            b"__keyevent@0__:keymiss",
+            binary_missing
+        ])
+    );
+    server.shutdown().unwrap();
+}
