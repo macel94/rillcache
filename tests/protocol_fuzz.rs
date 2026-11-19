@@ -237,7 +237,7 @@ fn pipelined_frames_consume_exactly_one_command_at_a_time() {
 
 #[test]
 fn fragmented_binary_pipelines_match_incremental_dispatch_model() {
-    const SEED: u64 = 0x6d6f_6465_6c_7265;
+    const SEED: u64 = 0x006d_6f64_656c_7265;
     let mut rng = Rng(SEED);
     for case in 0..160 {
         let command_count = 1 + rng.below(5);
