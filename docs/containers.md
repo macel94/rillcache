@@ -244,12 +244,17 @@ status 1. Set the supervisor grace period to at least 30 seconds; the Kubernetes
 example does so. Docker's `--init` / Compose `init: true` forwards SIGTERM to the
 application as a normal child. Use Docker `--stop-timeout 30` or Compose
 `stop_grace_period: 30s` so the supervisor does not kill it before its 25-second
-deadline. This is not a full client drain: active sockets are closed during worker
-shutdown and an in-flight reply may be lost. With
-`--appendfsync always`, acknowledged records are already synced; with `everysec`
-or `no`, a successful signal shutdown flushes the journal before exit, but a
-forced termination may lose the unsynced tail. The signal/shutdown path is still
-partial and does not close the full durability or graceful-drain production gates.
+deadline. This is not a full client drain: replies for commands already dispatched are
+written before their read-side-closed connections finish, but idle/incomplete
+clients, subscriptions, blocked commands and replies that exceed a bounded
+transport write timeout or the shutdown deadline may be abandoned. Server lanes
+allow one second total for reply draining, then close remaining sockets; Tokio
+individual writes are also capped at the smaller of one second and the configured
+idle timeout. With `--appendfsync always`, acknowledged records are already
+synced; with `everysec` or `no`, a successful signal shutdown flushes the journal
+before exit, but forced termination may lose the unsynced tail. The
+signal/shutdown path is still partial and does not close the full durability or
+graceful-drain production gates.
 
 ## Publication and verification
 

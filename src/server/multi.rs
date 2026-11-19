@@ -174,6 +174,9 @@ struct Reactor {
     store: Arc<MultiOwner>,
     admitted: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
+    draining: bool,
+    drain_deadline: Option<Instant>,
+    forced: bool,
 }
 
 impl Drop for Reactor {
@@ -262,6 +265,7 @@ impl Reactor {
                     sent: 0,
                     closing: false,
                     eof: false,
+                    shutdown_drain: false,
                     retry_io: false,
                     activity: Instant::now(),
                     frame_deadline: crate::frame_deadline::FrameDeadline::default(),
@@ -717,7 +721,72 @@ impl Reactor {
         let mut maintenance = Instant::now();
         let mut asynchronous = maintenance;
         let mut deferred = maintenance;
-        while !self.stopping.load(Ordering::Acquire) && !self.store.shutdown_requested() {
+        loop {
+            if self.stopping.load(Ordering::Acquire) && !self.draining {
+                self.draining = true;
+                self.drain_deadline = Some(Instant::now() + CLIENT_DRAIN_TIMEOUT);
+                let fd = self.listener.as_raw_fd();
+                let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
+                self.accept_ready = false;
+                let keys: Vec<_> = self
+                    .clients
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, connection)| {
+                        connection.as_ref().map(|connection| ReadyKey {
+                            slot,
+                            token: connection.token,
+                        })
+                    })
+                    .collect();
+                for key in &keys {
+                    if let Some(connection) = self
+                        .clients
+                        .get_mut(key.slot)
+                        .and_then(Option::as_mut)
+                        .filter(|connection| connection.token == key.token)
+                    {
+                        connection.client.shutdown_drain = true;
+                        let _ = connection.client.stream.shutdown(Shutdown::Read);
+                    }
+                    self.enqueue(*key);
+                }
+            }
+            if self.store.shutdown_requested() {
+                break;
+            }
+            if !self.forced
+                && self
+                    .drain_deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.forced = true;
+                let keys: Vec<_> = self
+                    .clients
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, connection)| {
+                        connection.as_ref().map(|connection| ReadyKey {
+                            slot,
+                            token: connection.token,
+                        })
+                    })
+                    .collect();
+                for key in keys {
+                    if let Some(connection) = self
+                        .clients
+                        .get(key.slot)
+                        .and_then(Option::as_ref)
+                        .filter(|connection| connection.token == key.token)
+                    {
+                        let _ = connection.client.stream.shutdown(Shutdown::Both);
+                    }
+                    self.enqueue(key);
+                }
+            }
+            if self.draining && self.admitted.load(Ordering::Acquire) == 0 {
+                break;
+            }
             let now = Instant::now();
             if now.duration_since(maintenance) >= MAINTENANCE_TICK {
                 let _ = self.store.journal_sync();
@@ -777,7 +846,7 @@ impl Reactor {
                 Err(error) => return Err(error),
             }
             self.ingest(&events);
-            if self.accept_ready {
+            if self.accept_ready && !self.draining {
                 self.accept()?;
             }
             let mut serviced = 0usize;
@@ -827,6 +896,9 @@ pub(super) fn serve(
         store,
         admitted: Arc::new(AtomicUsize::new(0)),
         stopping,
+        draining: false,
+        drain_deadline: None,
+        forced: false,
     }
     .run()
 }

@@ -52,6 +52,9 @@ pub const FIXED_WORKER_RUN_QUANTUM_US: u64 = 100;
 /// v2 starts a fresh run interval after a voluntary yield/park returns.
 pub const FIXED_WORKER_RUN_POLICY_VERSION: u64 = 2;
 
+/// Maximum time each transport spends draining replies before forcing sockets closed.
+pub(super) const CLIENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Plain-TCP engine selected at bind time. The proven readiness reactor is the
 /// default; async Tokio is an explicit opt-in with a documented P1 trade-off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1063,6 +1066,7 @@ fn serve_plain(
                 stream.local_addr()?,
                 control.try_clone()?,
             );
+            let client_stopping = Arc::clone(&stopping);
             let thread = thread::Builder::new()
                 .name("rillcache-client".into())
                 .stack_size(256 * 1024)
@@ -1073,6 +1077,7 @@ fn serve_plain(
                         idle_timeout,
                         frame_assembly_timeout,
                         policy,
+                        stopping: client_stopping,
                         permit: &permit,
                         sharing: sharing.as_deref(),
                     };
@@ -1083,9 +1088,7 @@ fn serve_plain(
         }
         Ok(())
     })();
-    for worker in &workers {
-        let _ = worker.control.shutdown(Shutdown::Both);
-    }
+    stop_workers(&workers, stopping.load(Ordering::Acquire));
     let mut result = result;
     for worker in workers {
         if let Err(error) = join(worker.thread) {
@@ -1149,6 +1152,7 @@ fn serve_tls(
             session.set_pubsub_sender(sender);
             let client_id = session.id();
             store.register_client(client_id, peer, local_addr, control.try_clone()?);
+            let client_stopping = Arc::clone(&stopping);
             let thread = thread::Builder::new()
                 .name("rillcache-tls-client".into())
                 .stack_size(256 * 1024)
@@ -1176,6 +1180,7 @@ fn serve_tls(
                         idle_timeout,
                         frame_assembly_timeout,
                         policy,
+                        stopping: client_stopping,
                         permit: &permit,
                         sharing: None,
                     };
@@ -1186,9 +1191,7 @@ fn serve_tls(
         }
         Ok(())
     })();
-    for worker in &workers {
-        let _ = worker.control.shutdown(Shutdown::Both);
-    }
+    stop_workers(&workers, stopping.load(Ordering::Acquire));
     let mut result = result;
     for worker in workers {
         if let Err(error) = join(worker.thread) {
@@ -1197,6 +1200,28 @@ fn serve_tls(
     }
     result
 }
+
+fn stop_workers(workers: &[Worker], drain: bool) {
+    let mode = if drain {
+        Shutdown::Read
+    } else {
+        Shutdown::Both
+    };
+    for worker in workers {
+        let _ = worker.control.shutdown(mode);
+    }
+    if drain {
+        let deadline = Instant::now() + CLIENT_DRAIN_TIMEOUT;
+        while workers.iter().any(|worker| !worker.thread.is_finished()) && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        for worker in workers.iter().filter(|worker| !worker.thread.is_finished()) {
+            let _ = worker.control.shutdown(Shutdown::Both);
+        }
+    }
+}
+
 struct Worker {
     control: TcpStream,
     thread: JoinHandle<()>,
@@ -1271,6 +1296,7 @@ struct ClientContext<'a> {
     idle_timeout: Duration,
     frame_assembly_timeout: Option<Duration>,
     policy: SchedulingPolicy,
+    stopping: Arc<AtomicBool>,
     permit: &'a Permit,
     sharing: Option<&'a handoff::Sharing>,
 }
@@ -1506,7 +1532,7 @@ fn serve_client(
             }
             match stream.read(&mut chunk[..room]) {
                 Ok(0) => {
-                    if !input.is_empty() {
+                    if !input.is_empty() && !context.stopping.load(Ordering::Acquire) {
                         stream.write_all(b"-ERR Protocol error: unexpected end of stream\r\n")?;
                     }
                     return Ok(());

@@ -474,7 +474,11 @@ fn shutdown_interrupts_idle_and_partial_clients_without_waiting_for_timeout() {
     let start = Instant::now();
     server.shutdown().unwrap();
     assert!(start.elapsed() < Duration::from_secs(3));
-    assert_eq!(idle.read(&mut [0]).unwrap(), 0);
+    match idle.read(&mut [0]) {
+        Ok(0) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        result => panic!("incomplete client was not closed cleanly: {result:?}"),
+    }
 }
 
 #[test]

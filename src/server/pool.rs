@@ -52,6 +52,7 @@ pub(super) struct Client {
     pub(super) sent: usize,
     pub(super) closing: bool,
     pub(super) eof: bool,
+    pub(super) shutdown_drain: bool,
     /// EINTR is not WouldBlock: readiness owners must retain their runnable token.
     pub(super) retry_io: bool,
     pub(super) activity: Instant,
@@ -154,6 +155,9 @@ impl Client {
             return Ok(None);
         }
         let mut progress = self.flush()?;
+        if self.eof && self.input.is_empty() && self.output.is_empty() {
+            return Ok(None);
+        }
         if self.closing {
             return Ok(if self.output.is_empty() {
                 None
@@ -233,7 +237,11 @@ impl Client {
         if read_first {
             progress |= self.receive(config.limits, chunk)?;
             if self.input.is_empty() || self.closing {
-                return Ok(self.open(progress, config.idle_timeout));
+                return Ok(if self.eof && self.output.is_empty() {
+                    None
+                } else {
+                    self.open(progress, config.idle_timeout)
+                });
             }
         }
         let mut consumed = 0;
@@ -295,7 +303,8 @@ impl Client {
             return Ok(self.open(progress, config.idle_timeout));
         }
         if self.eof {
-            if self.input.is_empty() {
+            if self.input.is_empty() || self.shutdown_drain {
+                self.input.clear();
                 return Ok(None);
             }
             self.output
@@ -437,7 +446,8 @@ impl Client {
             return Ok(LocalPoll::Progress(progress));
         }
         if self.eof {
-            if self.input.is_empty() {
+            if self.input.is_empty() || self.shutdown_drain {
+                self.input.clear();
                 return Ok(LocalPoll::Closed);
             }
             self.output
@@ -566,6 +576,7 @@ pub(super) fn serve(
                 sent: 0,
                 closing: false,
                 eof: false,
+                shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
                 frame_deadline: crate::frame_deadline::FrameDeadline::default(),
@@ -614,7 +625,30 @@ fn run_lane<E: Execution>(
     let mut chunk = [0; 16 * 1024];
     let mut maintenance = Instant::now();
     let mut polling = PollWindow::new(maintenance);
-    while !stop.load(Ordering::Acquire) && !store.shutdown_requested() {
+    let mut draining = false;
+    let mut drain_deadline = None;
+    let mut forced = false;
+    loop {
+        if stop.load(Ordering::Acquire) && !draining {
+            draining = true;
+            drain_deadline = Some(Instant::now() + CLIENT_DRAIN_TIMEOUT);
+            for client in &mut clients {
+                client.shutdown_drain = true;
+                let _ = client.stream.shutdown(Shutdown::Read);
+            }
+        }
+        if store.shutdown_requested() {
+            break;
+        }
+        if !forced && drain_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            forced = true;
+            for client in &clients {
+                let _ = client.stream.shutdown(Shutdown::Both);
+            }
+        }
+        if draining && admitted.load(Ordering::Acquire) == 0 {
+            break;
+        }
         if let Some(inbox) = &inbox {
             inbox.drain(&store);
         }
@@ -625,7 +659,16 @@ fn run_lane<E: Execution>(
             maintenance = Instant::now();
         }
         let mut progress = false;
-        while let Ok(client) = receiver.try_recv() {
+        while let Ok(mut client) = receiver.try_recv() {
+            if draining {
+                client.shutdown_drain = true;
+                let mode = if forced {
+                    Shutdown::Both
+                } else {
+                    Shutdown::Read
+                };
+                let _ = client.stream.shutdown(mode);
+            }
             clients.push(client);
             progress = true;
         }
@@ -643,6 +686,15 @@ fn run_lane<E: Execution>(
                     clients.swap_remove(index);
                 }
             }
+        }
+        if !forced && drain_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            forced = true;
+            for client in &clients {
+                let _ = client.stream.shutdown(Shutdown::Both);
+            }
+        }
+        if draining && admitted.load(Ordering::Acquire) == 0 {
+            break;
         }
         // Replies in flight are not an idle connection. Give the
         // next client request a short bounded window to arrive,
@@ -742,6 +794,7 @@ mod tests {
                 sent: 0,
                 closing: false,
                 eof: false,
+                shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
                 frame_deadline: crate::frame_deadline::FrameDeadline::default(),
@@ -911,6 +964,7 @@ mod tests {
             sent: 0,
             closing: false,
             eof: false,
+            shutdown_drain: false,
             retry_io: false,
             activity: Instant::now() - Duration::from_secs(2),
             frame_deadline: crate::frame_deadline::FrameDeadline::default(),

@@ -108,9 +108,17 @@ impl Context {
         self.stopping.load(Ordering::Acquire) || self.store.shutdown_requested()
     }
 
+    fn reply_timeout(&self) -> Duration {
+        if self.stopped() {
+            self.config.idle_timeout.min(CLIENT_DRAIN_TIMEOUT)
+        } else {
+            self.config.idle_timeout
+        }
+    }
+
     fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
-        close_controls(&self.controls);
+        shutdown_read_controls(&self.controls);
     }
 
     fn spawn(
@@ -144,6 +152,14 @@ fn close_controls(controls: &Controls) {
     }
 }
 
+fn shutdown_read_controls(controls: &Controls) {
+    if let Ok(controls) = controls.lock() {
+        for control in controls.values() {
+            let _ = control.shutdown(Shutdown::Read);
+        }
+    }
+}
+
 // One cold executor, not Tokio's unbounded blocking-task queue. Its single
 // permit is acquired BEFORE copying a request or moving session/output state,
 // and is owned by the job until completion even if its receiver disappears.
@@ -173,7 +189,7 @@ impl ColdExecutor {
             .acquire_owned()
             .await
             .map_err(|_| io::Error::other("cold executor stopped"))?;
-        if context.stopped() {
+        if context.stopped() && !matches!(&operation, ColdOperation::Command(_)) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "server stopping",
@@ -369,6 +385,30 @@ async fn join_tasks(tasks: &mut Tasks) -> io::Result<()> {
     result
 }
 
+async fn join_tasks_bounded(context: &Context, tasks: &mut Tasks) -> io::Result<()> {
+    let deadline = Instant::now() + CLIENT_DRAIN_TIMEOUT;
+    let mut result = Ok(());
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, tasks.join_next()).await {
+            Ok(Some(Err(error))) => {
+                result = result.and(Err(io::Error::other(format!(
+                    "Tokio client task failed: {error}"
+                ))));
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(None) => return result,
+            Err(_) => break,
+        }
+    }
+    // Do not let an unread/slow client keep a network lane alive indefinitely.
+    close_controls(&context.controls);
+    result.and(join_tasks(tasks).await)
+}
+
 async fn accept_with_storage(
     listener: TcpListener,
     context: Arc<Context>,
@@ -554,7 +594,7 @@ async fn accept_loop(
     context.stop();
     drop(pending);
     drop(listener);
-    result.and(join_tasks(&mut tasks).await)
+    result.and(join_tasks_bounded(&context, &mut tasks).await)
 }
 
 async fn worker(mut receiver: mpsc::Receiver<Accepted>, context: Arc<Context>) -> io::Result<()> {
@@ -581,7 +621,7 @@ async fn worker(mut receiver: mpsc::Receiver<Accepted>, context: Arc<Context>) -
     .await;
     context.stop();
     drop(receiver); // drop queued registrations before joining active tasks
-    result.and(join_tasks(&mut tasks).await)
+    result.and(join_tasks_bounded(&context, &mut tasks).await)
 }
 
 async fn write_reply(stream: &mut TokioStream, reply: &[u8], timeout: Duration) -> io::Result<()> {
@@ -644,7 +684,7 @@ async fn serve_connection(
     let mut activity = Instant::now();
     let mut frame_deadline = crate::frame_deadline::FrameDeadline::default();
     loop {
-        if context.stopped() {
+        if context.stopped() && input.is_empty() && output.is_empty() {
             return Ok(());
         }
         let mut pushed = 0;
@@ -675,14 +715,14 @@ async fn serve_connection(
                 .run(&mut session, &mut output, context, ColdOperation::Paused)
                 .await?
         {
-            write_reply(&mut stream, &output, config.idle_timeout).await?;
+            write_reply(&mut stream, &output, context.reply_timeout()).await?;
             return Ok(());
         }
         if !output.is_empty() {
-            write_reply(&mut stream, &output, config.idle_timeout).await?;
+            write_reply(&mut stream, &output, context.reply_timeout()).await?;
             output.clear();
             activity = Instant::now();
-            if context.stopped() {
+            if context.stopped() && input.is_empty() {
                 return Ok(());
             }
         }
@@ -716,13 +756,10 @@ async fn serve_connection(
                                 )
                                 .await?
                                 .expect("complete cold command");
-                            if context.stopped() {
-                                return Ok(());
-                            }
                         }
                         consumed += used;
                         if action == Action::Close {
-                            write_reply(&mut stream, &output, config.idle_timeout).await?;
+                            write_reply(&mut stream, &output, context.reply_timeout()).await?;
                             return Ok(());
                         }
                         if session.is_blocked()
@@ -738,7 +775,7 @@ async fn serve_connection(
                     }
                     Err(error) => {
                         write!(output, "-ERR Protocol error: {error}\r\n")?;
-                        close_after_reply(&mut stream, &output, config.idle_timeout).await?;
+                        close_after_reply(&mut stream, &output, context.reply_timeout()).await?;
                         return Ok(());
                     }
                 }
@@ -759,9 +796,12 @@ async fn serve_connection(
             // 64 KiB batch bound can be exceeded by ONE existing atomic reply;
             // it is not a dishonest hard maximum or a change to wire semantics.
             if !output.is_empty() {
-                write_reply(&mut stream, &output, config.idle_timeout).await?;
+                write_reply(&mut stream, &output, context.reply_timeout()).await?;
                 output.clear();
                 activity = Instant::now();
+            }
+            if context.stopped() && input.is_empty() {
+                return Ok(());
             }
             if !need_input && !input.is_empty() && !session.is_blocked() && !session.is_paused() {
                 tokio::task::yield_now().await;
@@ -778,7 +818,7 @@ async fn serve_connection(
             close_after_reply(
                 &mut stream,
                 b"-ERR Protocol error: request frame limit exceeded\r\n",
-                config.idle_timeout,
+                context.reply_timeout(),
             )
             .await?;
             return Ok(());
@@ -808,11 +848,11 @@ async fn serve_connection(
             Err(_) if asynchronous => continue,
             Err(_) => return Ok(()),
             Ok(Ok(0)) => {
-                if !input.is_empty() {
+                if !input.is_empty() && !context.stopped() {
                     write_reply(
                         &mut stream,
                         b"-ERR Protocol error: unexpected end of stream\r\n",
-                        config.idle_timeout,
+                        context.reply_timeout(),
                     )
                     .await?;
                 }

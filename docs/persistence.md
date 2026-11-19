@@ -139,10 +139,13 @@ for client compatibility but neither writes an RDB file; both flush the journal
 when append-only persistence is enabled. `NOW`/`FORCE` are no-ops because shutdown
 is already immediate, and `ABORT` returns `No shutdown in progress.` because no
 delayed shutdown state exists. The standalone binary handles SIGINT/SIGTERM with
-worker joins and an explicit journal flush under a 25-second deadline; active
-client sockets are not fully drained, and forced termination can still lose the
-unsynced tail. `always` is the only policy that does not depend on a clean process
-exit for recent acknowledged writes unless a client sends `SHUTDOWN`.
+worker joins and an explicit journal flush under a 25-second deadline. Signal
+shutdown stops listener admission and drains replies for commands already
+dispatched, but it is not a full client drain: idle/incomplete clients,
+subscriptions, blocked commands and replies that exceed the deadline may be
+abandoned. Forced termination can still lose the unsynced tail. `always` is the
+only policy that does not depend on a clean process exit for recent acknowledged
+writes unless a client sends `SHUTDOWN`.
 
 If an append or fsync fails, the command reply is replaced with
 `ERR append-only write failed: ...`, the journal enters a failed state and later

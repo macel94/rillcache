@@ -258,9 +258,16 @@ platforms retain timeout-based fallback admission.
   forced termination and exit nonzero; it shall not claim successful durability.
 - **R446 (ubiquitous):** A subprocess test shall write with append-only fsync
   disabled, receive SIGTERM, exit successfully, restart from the journal and
-  return the acknowledged value in every fixed-worker mode. Documentation shall
-  retain that currently active client sockets are closed during stop rather than
-  fully drained, so an in-flight reply can be lost.
+  return the acknowledged value in every fixed-worker mode.
+- **R447 (event-driven):** When signal shutdown begins, the server shall stop
+  listener admission and attempt to finish writing replies for commands already
+  dispatched, subject to the R445 deadline and bounded transport write timeouts.
+  Slow readers whose replies cannot be written within those bounds may be closed;
+  idle clients, incomplete frames, subscriptions and blocked commands may be
+  cancelled. This is not a guarantee that clients received or acknowledged
+  replies. A subprocess test shall hold a large dispatched reply unread, signal
+  the server, verify the full reply and journal recovery, and cover each
+  fixed-worker transport mode.
 
 ## Client registry and administrative kill (S38)
 
