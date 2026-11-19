@@ -5,18 +5,23 @@ mod unix {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::process::{Child, Command, Stdio};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     struct ServerProcess {
         child: Child,
-        _stderr: BufReader<std::process::ChildStderr>,
+        stderr_lines: mpsc::Receiver<std::io::Result<String>>,
+        stderr_reader: Option<thread::JoinHandle<()>>,
     }
 
     impl Drop for ServerProcess {
         fn drop(&mut self) {
             let _ = self.child.kill();
             let _ = self.child.wait();
+            if let Some(reader) = self.stderr_reader.take() {
+                let _ = reader.join();
+            }
         }
     }
 
@@ -50,17 +55,38 @@ mod unix {
         }
         command.args(extra);
         let mut child = command.spawn().unwrap();
-        let mut stderr = BufReader::new(child.stderr.take().unwrap());
-        let mut ready = String::new();
-        stderr.read_line(&mut ready).unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (stderr_sender, stderr_lines) = mpsc::channel();
+        let stderr_reader = thread::spawn(move || {
+            let mut stderr = BufReader::new(stderr);
+            loop {
+                let mut line = String::new();
+                match stderr.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if stderr_sender.send(Ok(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = stderr_sender.send(Err(error));
+                        break;
+                    }
+                }
+            }
+        });
+        let server = ServerProcess {
+            child,
+            stderr_lines,
+            stderr_reader: Some(stderr_reader),
+        };
+        let ready = server
+            .stderr_lines
+            .recv_timeout(Duration::from_secs(10))
+            .expect("server did not announce readiness")
+            .expect("server stderr read failed");
         assert!(ready.contains(" listening on "), "{ready}");
-        (
-            ServerProcess {
-                child,
-                _stderr: stderr,
-            },
-            address,
-        )
+        (server, address)
     }
 
     fn wait_for_success(server: &mut ServerProcess) {
@@ -76,6 +102,28 @@ mod unix {
             }
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn wait_for_forced_exit(server: &mut ServerProcess) -> std::process::ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = server.child.try_wait().unwrap() {
+                return status;
+            }
+            if Instant::now() >= deadline {
+                let _ = server.child.kill();
+                panic!("server did not force shutdown within 5 seconds");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn read_shutdown_log(server: &mut ServerProcess) -> String {
+        server
+            .stderr_lines
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server did not emit shutdown log")
+            .expect("server stderr read failed")
     }
 
     fn request(address: SocketAddr, bytes: &[u8], expected: &[u8]) {
@@ -211,6 +259,84 @@ mod unix {
         assert_eq!(read_bulk(&mut recovery), value);
         sigterm(&mut restarted);
         drop(restarted);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "rillcache-signal-forced-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let (mut server, address) = start_with(
+            &directory,
+            &[
+                "--max-frame-bytes",
+                "16777216",
+                "--max-bulk-bytes",
+                "8388608",
+            ],
+        );
+        request(
+            address,
+            b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
+            b"+OK\r\n",
+        );
+        let value = vec![b'x'; 8 * 1024 * 1024];
+        let mut set = format!("*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n${}\r\n", value.len()).into_bytes();
+        set.extend_from_slice(&value);
+        set.extend_from_slice(b"\r\n");
+        request(address, &set, b"+OK\r\n");
+
+        let mut pending = TcpStream::connect(address).unwrap();
+        pending
+            .write_all(b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n")
+            .unwrap();
+        let mut admin = TcpStream::connect(address).unwrap();
+        admin
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            admin
+                .write_all(b"*2\r\n$4\r\nINFO\r\n$12\r\ncommandstats\r\n")
+                .unwrap();
+            let stats = read_bulk(&mut admin);
+            if stats
+                .windows(b"cmdstat_get:calls=1".len())
+                .any(|window| window == b"cmdstat_get:calls=1")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "GET was not dispatched before SIGTERM"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        send_sigterm(&server);
+        let stopping = read_shutdown_log(&mut server);
+        assert!(
+            stopping.contains("received SIGTERM; stopping admission"),
+            "unexpected shutdown log: {stopping:?}"
+        );
+        send_sigterm(&server);
+        let forced = read_shutdown_log(&mut server);
+        assert!(
+            forced.contains("forced termination: SIGTERM"),
+            "unexpected forced-shutdown log: {forced:?}"
+        );
+        let status = wait_for_forced_exit(&mut server);
+        assert!(!status.success(), "forced shutdown exited successfully");
+
+        drop(pending);
+        drop(server);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

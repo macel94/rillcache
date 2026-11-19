@@ -413,13 +413,18 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   half-closes client read sides; replies for already-dispatched commands are
   written before those connections close, within the existing deadline. A
   subprocess test withholds an 8 MiB reply until SIGTERM and verifies both the
-  full response and journal recovery. **Retained gap:** this is not a full client
-  drain: idle/incomplete clients, subscriptions, blocked commands and replies
-  that exceed a bounded transport write timeout or the shutdown deadline may be
-  abandoned; client receipt is not acknowledged, and a forced timeout cannot
-  guarantee the final journal flush. **Closes when:** all supported transports have verified command-drain,
-  cancellation, join and forced-timeout behavior within the supervisor grace
-  contract.
+  full response and journal recovery. **Partial (2026-11-19):** a subprocess
+  regression now sends a second SIGTERM only after observing the first-signal
+  shutdown log while an admitted 8 MiB reply remains unread, and requires the
+  forced-termination log plus nonzero exit. The 25-second timeout outcome is
+  separately unit-tested; the subprocess does not claim journal recovery after
+  forced exit. **Retained gap:** this is not a full client drain: idle/incomplete
+  clients, subscriptions, blocked commands and replies that exceed a bounded
+  transport write timeout or the shutdown deadline may be abandoned; client
+  receipt is not acknowledged, and a forced timeout cannot guarantee the final
+  journal flush. **Closes when:** all supported transports have verified
+  command-drain, cancellation, join and forced-timeout behavior within the
+  supervisor grace contract.
 
 - [x] **D8. Multi-process journal ownership is unguarded.** [P1]
   **Complete (2026-11-14): local ownership plus explicit profile exclusion.**
