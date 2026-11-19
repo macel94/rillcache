@@ -1,7 +1,12 @@
 #![forbid(unsafe_code)]
 
 #[cfg(unix)]
+#[path = "support/signal_cancellation.rs"]
+mod signal_cancellation;
+
+#[cfg(unix)]
 mod unix {
+    use super::signal_cancellation;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::process::{Child, Command, Stdio};
@@ -263,8 +268,9 @@ mod unix {
         verify_sigterm_drains_an_admitted_reply_and_flushes_aof(&["--io-mode", "tokio"]);
     }
 
-    #[test]
-    fn second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending() {
+    fn verify_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending(
+        server_mode: &[&str],
+    ) {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -274,15 +280,14 @@ mod unix {
             std::process::id()
         ));
         std::fs::create_dir(&directory).unwrap();
-        let (mut server, address) = start_with(
-            &directory,
-            &[
-                "--max-frame-bytes",
-                "16777216",
-                "--max-bulk-bytes",
-                "8388608",
-            ],
-        );
+        let mut server_args = vec![
+            "--max-frame-bytes",
+            "16777216",
+            "--max-bulk-bytes",
+            "8388608",
+        ];
+        server_args.extend_from_slice(server_mode);
+        let (mut server, address) = start_with(&directory, &server_args);
         request(
             address,
             b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
@@ -339,6 +344,54 @@ mod unix {
         drop(pending);
         drop(server);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending() {
+        verify_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending(&[]);
+    }
+
+    #[test]
+    fn tokio_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending() {
+        verify_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending(&[
+            "--io-mode",
+            "tokio",
+        ]);
+    }
+
+    fn verify_sigterm_cancels_pending_clients(server_mode: &[&str]) {
+        let directory = signal_cancellation::TestDirectory::new();
+        let (mut server, address) = start_with(&directory.0, server_mode);
+        let connect = |address| {
+            let stream = TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+        };
+        signal_cancellation::with_pending_clients(
+            || connect(address),
+            read_bulk,
+            || sigterm(&mut server),
+        );
+        drop(server);
+
+        let (mut restarted, address) = start_with(&directory.0, server_mode);
+        signal_cancellation::verify_cancelled_mutations_were_not_replayed(connect(address));
+        sigterm(&mut restarted);
+    }
+
+    #[test]
+    fn sigterm_cancels_pending_clients_without_replaying_their_mutations() {
+        verify_sigterm_cancels_pending_clients(&[]);
+    }
+
+    #[test]
+    fn tokio_sigterm_cancels_pending_clients_without_replaying_their_mutations() {
+        verify_sigterm_cancels_pending_clients(&["--io-mode", "tokio"]);
     }
 
     #[test]

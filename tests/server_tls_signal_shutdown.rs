@@ -1,7 +1,12 @@
 #![forbid(unsafe_code)]
 
 #[cfg(unix)]
+#[path = "support/signal_cancellation.rs"]
+mod signal_cancellation;
+
+#[cfg(unix)]
 mod unix {
+    use super::signal_cancellation;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
@@ -222,6 +227,22 @@ mod unix {
             }
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn tls_sigterm_cancels_pending_clients_without_replaying_their_mutations() {
+        let directory = signal_cancellation::TestDirectory::new();
+        let (mut server, address) = start(&directory.0);
+        signal_cancellation::with_pending_clients(
+            || connect(address),
+            read_bulk,
+            || sigterm(&mut server),
+        );
+        drop(server);
+
+        let (mut restarted, address) = start(&directory.0);
+        signal_cancellation::verify_cancelled_mutations_were_not_replayed(connect(address));
+        sigterm(&mut restarted);
     }
 
     #[test]
