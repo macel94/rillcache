@@ -20,7 +20,6 @@ const OUTPUT_QUANTUM: usize = 64 * 1024;
 const MAX_READ: usize = 16 * 1024;
 const POLL_TICK: Duration = Duration::from_millis(10);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
-const DRAIN_REPLY_TIMEOUT: Duration = Duration::from_secs(1);
 
 type Controls = Arc<Mutex<HashMap<u64, TcpStream>>>;
 type Tasks = JoinSet<io::Result<()>>;
@@ -111,7 +110,7 @@ impl Context {
 
     fn reply_timeout(&self) -> Duration {
         if self.stopped() {
-            self.config.idle_timeout.min(DRAIN_REPLY_TIMEOUT)
+            self.config.idle_timeout.min(CLIENT_DRAIN_TIMEOUT)
         } else {
             self.config.idle_timeout
         }
@@ -387,7 +386,7 @@ async fn join_tasks(tasks: &mut Tasks) -> io::Result<()> {
 }
 
 async fn join_tasks_bounded(context: &Context, tasks: &mut Tasks) -> io::Result<()> {
-    let deadline = Instant::now() + DRAIN_REPLY_TIMEOUT;
+    let deadline = Instant::now() + CLIENT_DRAIN_TIMEOUT;
     let mut result = Ok(());
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());

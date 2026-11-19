@@ -98,6 +98,8 @@ struct Reactor<E: Execution> {
     admitted: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
     draining: bool,
+    drain_deadline: Option<Instant>,
+    forced: bool,
     /// Only the owner/first reactor runs journal/expiry/rewrite maintenance.
     maintenance: bool,
     /// Worker reactors stop before data commands and send the connection here.
@@ -365,7 +367,12 @@ impl<E: Execution> Reactor<E> {
 
     fn attach(&mut self, client: Client) -> io::Result<()> {
         if self.draining {
-            let _ = client.stream.shutdown(Shutdown::Read);
+            let mode = if self.forced {
+                Shutdown::Both
+            } else {
+                Shutdown::Read
+            };
+            let _ = client.stream.shutdown(mode);
         }
         let token = Token(self.next_token);
         self.next_token = self
@@ -438,6 +445,7 @@ impl<E: Execution> Reactor<E> {
         loop {
             if self.stopping.load(Ordering::Acquire) && !self.draining {
                 self.draining = true;
+                self.drain_deadline = Some(Instant::now() + CLIENT_DRAIN_TIMEOUT);
                 let fd = self.listener.as_raw_fd();
                 let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
                 self.accept_ready = false;
@@ -466,6 +474,35 @@ impl<E: Execution> Reactor<E> {
             }
             if self.store.shutdown_requested() {
                 break;
+            }
+            if !self.forced
+                && self
+                    .drain_deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.forced = true;
+                let keys: Vec<_> = self
+                    .clients
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, connection)| {
+                        connection.as_ref().map(|connection| ReadyKey {
+                            slot,
+                            token: connection.token,
+                        })
+                    })
+                    .collect();
+                for key in keys {
+                    if let Some(connection) = self
+                        .clients
+                        .get(key.slot)
+                        .and_then(Option::as_ref)
+                        .filter(|connection| connection.token == key.token)
+                    {
+                        let _ = connection.client().stream.shutdown(Shutdown::Both);
+                    }
+                    self.enqueue(key);
+                }
             }
             if self.draining && self.admitted.load(Ordering::Acquire) == 0 {
                 break;
@@ -667,6 +704,8 @@ pub(super) fn serve_shared(
         admitted,
         stopping: Arc::clone(&stopping),
         draining: false,
+        drain_deadline: None,
+        forced: false,
         maintenance: true,
         worker: false,
         migrate: None,
@@ -719,6 +758,8 @@ fn serve_worker(
         admitted,
         stopping,
         draining: false,
+        drain_deadline: None,
+        forced: false,
         maintenance: false,
         worker: true,
         migrate: Some(migrate),
@@ -757,6 +798,8 @@ fn serve_with<E: Execution>(
         admitted,
         stopping,
         draining: false,
+        drain_deadline: None,
+        forced: false,
         maintenance,
         worker: false,
         migrate: None,
@@ -792,6 +835,8 @@ mod tests {
             admitted: Arc::new(AtomicUsize::new(0)),
             stopping: Arc::new(AtomicBool::new(false)),
             draining: false,
+            drain_deadline: None,
+            forced: false,
             maintenance: true,
             worker: false,
             migrate: None,

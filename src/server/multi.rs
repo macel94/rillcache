@@ -175,6 +175,8 @@ struct Reactor {
     admitted: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
     draining: bool,
+    drain_deadline: Option<Instant>,
+    forced: bool,
 }
 
 impl Drop for Reactor {
@@ -721,6 +723,7 @@ impl Reactor {
         loop {
             if self.stopping.load(Ordering::Acquire) && !self.draining {
                 self.draining = true;
+                self.drain_deadline = Some(Instant::now() + CLIENT_DRAIN_TIMEOUT);
                 let fd = self.listener.as_raw_fd();
                 let _ = self.poll.registry().deregister(&mut SourceFd(&fd));
                 self.accept_ready = false;
@@ -749,6 +752,35 @@ impl Reactor {
             }
             if self.store.shutdown_requested() {
                 break;
+            }
+            if !self.forced
+                && self
+                    .drain_deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.forced = true;
+                let keys: Vec<_> = self
+                    .clients
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, connection)| {
+                        connection.as_ref().map(|connection| ReadyKey {
+                            slot,
+                            token: connection.token,
+                        })
+                    })
+                    .collect();
+                for key in keys {
+                    if let Some(connection) = self
+                        .clients
+                        .get(key.slot)
+                        .and_then(Option::as_ref)
+                        .filter(|connection| connection.token == key.token)
+                    {
+                        let _ = connection.client.stream.shutdown(Shutdown::Both);
+                    }
+                    self.enqueue(key);
+                }
             }
             if self.draining && self.admitted.load(Ordering::Acquire) == 0 {
                 break;
@@ -863,6 +895,8 @@ pub(super) fn serve(
         admitted: Arc::new(AtomicUsize::new(0)),
         stopping,
         draining: false,
+        drain_deadline: None,
+        forced: false,
     }
     .run()
 }

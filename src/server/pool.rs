@@ -622,15 +622,24 @@ fn run_lane<E: Execution>(
     let mut maintenance = Instant::now();
     let mut polling = PollWindow::new(maintenance);
     let mut draining = false;
+    let mut drain_deadline = None;
+    let mut forced = false;
     loop {
         if stop.load(Ordering::Acquire) && !draining {
             draining = true;
+            drain_deadline = Some(Instant::now() + CLIENT_DRAIN_TIMEOUT);
             for client in &clients {
                 let _ = client.stream.shutdown(Shutdown::Read);
             }
         }
         if store.shutdown_requested() {
             break;
+        }
+        if !forced && drain_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            forced = true;
+            for client in &clients {
+                let _ = client.stream.shutdown(Shutdown::Both);
+            }
         }
         if draining && admitted.load(Ordering::Acquire) == 0 {
             break;
@@ -647,7 +656,12 @@ fn run_lane<E: Execution>(
         let mut progress = false;
         while let Ok(client) = receiver.try_recv() {
             if draining {
-                let _ = client.stream.shutdown(Shutdown::Read);
+                let mode = if forced {
+                    Shutdown::Both
+                } else {
+                    Shutdown::Read
+                };
+                let _ = client.stream.shutdown(mode);
             }
             clients.push(client);
             progress = true;
@@ -665,6 +679,12 @@ fn run_lane<E: Execution>(
                     store.unregister_client(id);
                     clients.swap_remove(index);
                 }
+            }
+        }
+        if !forced && drain_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            forced = true;
+            for client in &clients {
+                let _ = client.stream.shutdown(Shutdown::Both);
             }
         }
         if draining && admitted.load(Ordering::Acquire) == 0 {
