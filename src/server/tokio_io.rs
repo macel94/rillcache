@@ -386,6 +386,30 @@ async fn join_tasks(tasks: &mut Tasks) -> io::Result<()> {
     result
 }
 
+async fn join_tasks_bounded(context: &Context, tasks: &mut Tasks) -> io::Result<()> {
+    let deadline = Instant::now() + DRAIN_REPLY_TIMEOUT;
+    let mut result = Ok(());
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, tasks.join_next()).await {
+            Ok(Some(Err(error))) => {
+                result = result.and(Err(io::Error::other(format!(
+                    "Tokio client task failed: {error}"
+                ))));
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(None) => return result,
+            Err(_) => break,
+        }
+    }
+    // Do not let an unread/slow client keep a network lane alive indefinitely.
+    close_controls(&context.controls);
+    result.and(join_tasks(tasks).await)
+}
+
 async fn accept_with_storage(
     listener: TcpListener,
     context: Arc<Context>,
@@ -571,7 +595,7 @@ async fn accept_loop(
     context.stop();
     drop(pending);
     drop(listener);
-    result.and(join_tasks(&mut tasks).await)
+    result.and(join_tasks_bounded(&context, &mut tasks).await)
 }
 
 async fn worker(mut receiver: mpsc::Receiver<Accepted>, context: Arc<Context>) -> io::Result<()> {
@@ -598,7 +622,7 @@ async fn worker(mut receiver: mpsc::Receiver<Accepted>, context: Arc<Context>) -
     .await;
     context.stop();
     drop(receiver); // drop queued registrations before joining active tasks
-    result.and(join_tasks(&mut tasks).await)
+    result.and(join_tasks_bounded(&context, &mut tasks).await)
 }
 
 async fn write_reply(stream: &mut TokioStream, reply: &[u8], timeout: Duration) -> io::Result<()> {
