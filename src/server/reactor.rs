@@ -468,11 +468,10 @@ impl<E: Execution> Reactor<E> {
                         .get_mut(key.slot)
                         .and_then(Option::as_mut)
                         .filter(|connection| connection.token == key.token)
+                        && let Some(client) = connection.client.as_mut()
                     {
-                        if let Some(client) = connection.client.as_mut() {
-                            client.shutdown_drain = true;
-                            let _ = client.stream.shutdown(Shutdown::Read);
-                        }
+                        client.shutdown_drain = true;
+                        let _ = client.stream.shutdown(Shutdown::Read);
                     }
                     self.enqueue(*key);
                 }

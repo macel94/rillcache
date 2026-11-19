@@ -73,6 +73,7 @@ fn one_command_reply_can_join_an_active_small_multicore_epoch() {
                     idle_timeout: Duration::from_secs(3),
                     frame_assembly_timeout: Some(Duration::from_secs(60)),
                     policy: SchedulingPolicy::new(None, Some(capacity)),
+                    stopping: Arc::new(AtomicBool::new(false)),
                     permit: &permit,
                     sharing: Some(&sharing),
                 };
