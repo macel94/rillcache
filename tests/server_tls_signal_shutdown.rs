@@ -106,6 +106,12 @@ mod unix {
             .expect("TLS server did not announce readiness")
             .expect("TLS server stderr read failed");
         assert!(ready.contains(" listening on "), "{ready}");
+        let tls_ready = server
+            .stderr_lines
+            .recv_timeout(Duration::from_secs(10))
+            .expect("TLS listener did not announce readiness")
+            .expect("TLS server stderr read failed");
+        assert!(tls_ready.contains("TLS 1.3 listening on "), "{tls_ready}");
         (server, tls_address)
     }
 
@@ -194,6 +200,91 @@ mod unix {
     fn sigterm(server: &mut ServerProcess) {
         send_sigterm(server);
         wait_for_success(server);
+    }
+
+    fn read_shutdown_log(server: &mut ServerProcess) -> String {
+        server
+            .stderr_lines
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server did not emit shutdown log")
+            .expect("server stderr read failed")
+    }
+
+    fn wait_for_forced_exit(server: &mut ServerProcess) -> std::process::ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = server.child.try_wait().unwrap() {
+                return status;
+            }
+            if Instant::now() >= deadline {
+                let _ = server.child.kill();
+                panic!("server did not force shutdown within 5 seconds");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn tls_second_sigterm_forces_nonzero_exit_with_reply_unread() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "rillcache-tls-signal-forced-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let (mut server, address) = start(&directory);
+
+        expect_ok(
+            &mut connect(address),
+            b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
+        );
+        let value = vec![b'x'; 8 * 1024 * 1024];
+        let mut set = format!("*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n${}\r\n", value.len()).into_bytes();
+        set.extend_from_slice(&value);
+        set.extend_from_slice(b"\r\n");
+        expect_ok(&mut connect(address), &set);
+
+        let mut pending = connect(address);
+        pending
+            .write_all(b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n")
+            .unwrap();
+        let mut admin = connect(address);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let stats = command(&mut admin, b"*2\r\n$4\r\nINFO\r\n$12\r\ncommandstats\r\n");
+            if stats
+                .windows(b"cmdstat_get:calls=1".len())
+                .any(|window| window == b"cmdstat_get:calls=1")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "TLS GET was not dispatched before SIGTERM"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        send_sigterm(&server);
+        let stopping = read_shutdown_log(&mut server);
+        assert!(
+            stopping.contains("received SIGTERM; stopping admission and joining workers"),
+            "unexpected first-signal log: {stopping:?}"
+        );
+        send_sigterm(&server);
+        let forced = read_shutdown_log(&mut server);
+        assert!(
+            forced.contains("forced termination: SIGTERM"),
+            "unexpected forced-shutdown log: {forced:?}"
+        );
+        let status = wait_for_forced_exit(&mut server);
+        assert!(!status.success(), "forced TLS shutdown exited successfully");
+        drop(pending);
+        drop(server);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
