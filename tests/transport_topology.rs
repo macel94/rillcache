@@ -215,8 +215,9 @@ fn mixed_tls_compatibility_workers_preserve_launch_cpuset_and_are_counted() {
         }
         tasks += 1;
     }
-    // N network runtimes + bounded cold service + shared data owner + TLS accept.
-    assert_eq!(tasks, budget + 3);
+    // N network runtimes + bounded cold service + shared data owner + TLS
+    // accept + one joined signal supervisor.
+    assert_eq!(tasks, budget + 4);
     process.shutdown(&mut stream);
 }
 
@@ -233,8 +234,8 @@ fn one_effective_cpu_runs_one_network_runtime_plus_one_joined_cold_service() {
         "{affinity}"
     );
 
-    // The cold-service thread is spawned just before the affinity line is
-    // emitted; its comm name can lag the parent name for a few scheduler ticks.
+    // The cold-service and signal-supervisor threads are spawned just before
+    // the affinity line is emitted; their comm names can lag for a few ticks.
     // Wait for the expected names instead of sampling once, without weakening
     // the exact assertion.
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -250,12 +251,14 @@ fn one_effective_cpu_runs_one_network_runtime_plus_one_joined_cold_service() {
                 })
                 .collect();
         names.sort();
-        if names == ["rillcache", "rillcache-cold-"] || Instant::now() >= deadline {
+        if names == ["rillcache", "rillcache-cold-", "rillcache-signa"]
+            || Instant::now() >= deadline
+        {
             break names;
         }
         thread::sleep(Duration::from_millis(10));
     };
-    assert_eq!(names, ["rillcache", "rillcache-cold-"]);
+    assert_eq!(names, ["rillcache", "rillcache-cold-", "rillcache-signa"]);
 
     // Exercise mixed-case ACL dispatch and ordered continuation on runtime zero.
     stream

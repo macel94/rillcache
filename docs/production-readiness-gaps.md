@@ -404,13 +404,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   tombstone removes it per missing-entry semantics; historical state for deleted
   or renamed consumers is not retained.
 
-- [ ] **D7. Signal-driven graceful drain is missing.** [P0]
-  Managed shutdown joins workers and protocol `SHUTDOWN` flushes the journal, but
-  the standalone process has no portable SIGTERM/SIGINT handler. Container
-  termination can lose in-flight replies and unsynced journal tails.
-  **Closes when:** a reviewed, safe drain path stops admission, flushes within a
-  deadline, joins workers and reports forced termination; or the profile states
-  the supervisor contract and accepted loss window.
+- [ ] **D7. Signal-driven shutdown is partial.** [P0]
+  **Partial (2026-11-19):** the standalone binary handles Unix SIGINT/SIGTERM
+  and Windows Ctrl-C, stops admission, joins workers and explicitly flushes the
+  journal within a 25-second deadline; a second signal or expired deadline logs
+  forced termination and exits nonzero. Kubernetes now allows a 30-second grace
+  period. **Retained gap:** active client sockets are closed rather than drained,
+  so in-flight replies can be lost; a forced timeout cannot guarantee the final
+  journal flush. **Closes when:** a reviewed drain lets admitted commands finish
+  within a bounded deadline, flushes and joins, reports forced termination, and
+  the supervisor grace period matches the tested contract.
 
 - [x] **D8. Multi-process journal ownership is unguarded.** [P1]
   **Complete (2026-11-14): local ownership plus explicit profile exclusion.**

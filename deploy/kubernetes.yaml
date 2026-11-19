@@ -20,7 +20,7 @@ spec:
         app: rillcache
     spec:
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 5
+      terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

@@ -23,7 +23,7 @@ COPY --from=build /build/target/release/rillcache /rillcache
 COPY container/notices/ /usr/share/licenses/rillcache-runtime/
 USER 65532:65532
 EXPOSE 6379/tcp
-# Data is volatile. There is no safe-std portable signal handler or graceful SIGTERM path yet.
+# Data is volatile; the standalone binary handles SIGTERM with a bounded journal flush, not a full client drain.
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=2s --start-period=5s --retries=3 CMD ["/rillcache", "--healthcheck", "127.0.0.1:6379"]
 # Keep defaults in ENTRYPOINT: `docker run IMAGE --threads 4` still binds correctly.

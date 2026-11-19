@@ -28,9 +28,10 @@ To try expiration, use `redis-cli -2 SET greeting hello EX 60` and then
 `redis-cli -2 TTL greeting`.
 
 Stop the example with `docker stop rillcache`. The default cache is in memory:
-its contents disappear when the process exits. Protocol `SHUTDOWN` can join
-workers and flush an enabled journal; container signals do not provide that same
-graceful drain. See [container lifecycle and persistence](containers.md).
+its contents disappear when the process exits. The standalone binary handles
+container termination by joining workers and flushing an enabled journal, but it
+does not fully drain active clients and may lose in-flight replies. See
+[container lifecycle and persistence](containers.md).
 
 Already using port 6379? Publish `127.0.0.1:6380:6379` instead, and add `-p 6380`
 to the `redis-cli` commands. Don't run the Docker and native examples on the same

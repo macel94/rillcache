@@ -138,9 +138,11 @@ can request a durable stop over the protocol. `NOSAVE` and `SAVE` are accepted
 for client compatibility but neither writes an RDB file; both flush the journal
 when append-only persistence is enabled. `NOW`/`FORCE` are no-ops because shutdown
 is already immediate, and `ABORT` returns `No shutdown in progress.` because no
-delayed shutdown state exists. The safe-std server still has no portable SIGTERM
-handler; `always` is the only policy that does not depend on a clean process exit
-for recent acknowledged writes unless a client sends `SHUTDOWN`.
+delayed shutdown state exists. The standalone binary handles SIGINT/SIGTERM with
+worker joins and an explicit journal flush under a 25-second deadline; active
+client sockets are not fully drained, and forced termination can still lose the
+unsynced tail. `always` is the only policy that does not depend on a clean process
+exit for recent acknowledged writes unless a client sends `SHUTDOWN`.
 
 If an append or fsync fails, the command reply is replaced with
 `ERR append-only write failed: ...`, the journal enters a failed state and later
@@ -393,7 +395,9 @@ activity (for consumers that were deleted or renamed) is not retained.
   `BGREWRITEAOF` is cooperative and incremental, but it is not Redis's fork-based
   rewrite: the key list is materialised in memory and the
   rewrite runs on the owner thread between maintenance ticks.
-- No graceful signal-driven drain; see [container delivery](containers.md).
+- No full client-draining signal shutdown; the standalone signal path joins
+  workers and flushes the journal but may lose in-flight replies. See
+  [container delivery](containers.md).
 - No shared-filesystem coordination: ownership is a local advisory lock
   (`<journal>.lock`), not a distributed lease. Crash-consistency of append and
   rewrite is covered by `tests/durability_crash.rs`.

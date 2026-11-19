@@ -1,8 +1,16 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::task::{Context, Poll};
+use std::thread;
 use std::time::Duration;
 
 use rillcache::protocol::Limits;
@@ -496,6 +504,228 @@ fn positive(option: &str, value: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("{option} requires a positive integer"))
 }
 
+const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(25);
+
+#[cfg(unix)]
+struct ShutdownSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+}
+
+#[cfg(windows)]
+struct ShutdownSignals {
+    ctrl_c: tokio::signal::windows::CtrlC,
+}
+
+#[cfg(not(any(unix, windows)))]
+struct ShutdownSignals;
+
+impl ShutdownSignals {
+    fn install(runtime: &tokio::runtime::Runtime) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            runtime.block_on(async {
+                Ok(Self {
+                    interrupt: tokio::signal::unix::signal(
+                        tokio::signal::unix::SignalKind::interrupt(),
+                    )?,
+                    terminate: tokio::signal::unix::signal(
+                        tokio::signal::unix::SignalKind::terminate(),
+                    )?,
+                })
+            })
+        }
+        #[cfg(windows)]
+        {
+            runtime.block_on(async {
+                Ok(Self {
+                    ctrl_c: tokio::signal::windows::ctrl_c()?,
+                })
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = runtime;
+            Ok(Self)
+        }
+    }
+
+    fn poll(&mut self, context: &mut Context<'_>) -> Poll<&'static str> {
+        #[cfg(unix)]
+        {
+            if self.interrupt.poll_recv(context).is_ready() {
+                return Poll::Ready("SIGINT");
+            }
+            if self.terminate.poll_recv(context).is_ready() {
+                return Poll::Ready("SIGTERM");
+            }
+        }
+        #[cfg(windows)]
+        if self.ctrl_c.poll_recv(context).is_ready() {
+            return Poll::Ready("CTRL_C");
+        }
+        #[cfg(not(any(unix, windows)))]
+        let _ = context;
+        Poll::Pending
+    }
+}
+
+enum ShutdownTrigger {
+    Signal(&'static str),
+    Cancelled,
+}
+
+enum ShutdownOutcome {
+    Complete,
+    Forced(&'static str),
+}
+
+fn wait_for_shutdown_trigger(
+    runtime: &tokio::runtime::Runtime,
+    signals: &mut ShutdownSignals,
+    cancel: tokio::sync::oneshot::Receiver<()>,
+) -> ShutdownTrigger {
+    runtime.block_on(async {
+        let mut cancel = cancel;
+        std::future::poll_fn(|context| {
+            if let Poll::Ready(signal) = signals.poll(context) {
+                return Poll::Ready(ShutdownTrigger::Signal(signal));
+            }
+            if Pin::new(&mut cancel).poll(context).is_ready() {
+                return Poll::Ready(ShutdownTrigger::Cancelled);
+            }
+            Poll::Pending
+        })
+        .await
+    })
+}
+
+fn wait_for_shutdown_completion(
+    runtime: &tokio::runtime::Runtime,
+    signals: &mut ShutdownSignals,
+    completion: tokio::sync::oneshot::Receiver<()>,
+    timeout: Duration,
+) -> ShutdownOutcome {
+    runtime.block_on(async {
+        let mut deadline = std::pin::pin!(tokio::time::sleep(timeout));
+        let mut completion = completion;
+        std::future::poll_fn(|context| {
+            if Pin::new(&mut completion).poll(context).is_ready() {
+                return Poll::Ready(ShutdownOutcome::Complete);
+            }
+            if let Poll::Ready(signal) = signals.poll(context) {
+                return Poll::Ready(ShutdownOutcome::Forced(signal));
+            }
+            if deadline.as_mut().poll(context).is_ready() {
+                return Poll::Ready(ShutdownOutcome::Forced("shutdown deadline exceeded"));
+            }
+            Poll::Pending
+        })
+        .await
+    })
+}
+
+fn supervise_shutdown(
+    stopping: Arc<AtomicBool>,
+    cancel: tokio::sync::oneshot::Receiver<()>,
+    completion: tokio::sync::oneshot::Receiver<()>,
+    ready: mpsc::SyncSender<io::Result<()>>,
+) -> io::Result<Option<&'static str>> {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = ready.send(Err(io::Error::new(error.kind(), error.to_string())));
+            return Err(error);
+        }
+    };
+    let mut signals = match ShutdownSignals::install(&runtime) {
+        Ok(signals) => signals,
+        Err(error) => {
+            let _ = ready.send(Err(io::Error::new(error.kind(), error.to_string())));
+            return Err(error);
+        }
+    };
+    if ready.send(Ok(())).is_err() {
+        return Ok(None);
+    }
+
+    match wait_for_shutdown_trigger(&runtime, &mut signals, cancel) {
+        ShutdownTrigger::Cancelled => Ok(None),
+        ShutdownTrigger::Signal(signal) => {
+            eprintln!("rillcache: received {signal}; stopping admission and joining workers");
+            stopping.store(true, Ordering::Release);
+            match wait_for_shutdown_completion(
+                &runtime,
+                &mut signals,
+                completion,
+                SHUTDOWN_DEADLINE,
+            ) {
+                ShutdownOutcome::Complete => Ok(Some(signal)),
+                ShutdownOutcome::Forced(reason) => {
+                    eprintln!("rillcache: forced termination: {reason}");
+                    std::process::exit(1)
+                }
+            }
+        }
+    }
+}
+
+fn run_server(config: Config) -> io::Result<()> {
+    let server = Server::bind(config)?;
+    let local_addr = server.local_addr()?;
+    let tls_addr = server.tls_local_addr()?;
+    let stopping = Arc::new(AtomicBool::new(false));
+    let supervisor_stopping = Arc::clone(&stopping);
+    let (cancel_sender, cancel_receiver) = tokio::sync::oneshot::channel();
+    let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
+    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+    let supervisor = thread::Builder::new()
+        .name("rillcache-signal-supervisor".into())
+        .spawn(move || {
+            supervise_shutdown(
+                supervisor_stopping,
+                cancel_receiver,
+                completion_receiver,
+                ready_sender,
+            )
+        })?;
+
+    match ready_receiver.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let _ = supervisor.join();
+            return Err(error);
+        }
+        Err(_) => {
+            let _ = supervisor.join();
+            return Err(io::Error::other("signal supervisor exited during startup"));
+        }
+    }
+
+    eprintln!(
+        "rillcache {} listening on {local_addr}",
+        env!("CARGO_PKG_VERSION")
+    );
+    if let Some(addr) = tls_addr {
+        eprintln!("rillcache TLS 1.3 listening on {addr}");
+    }
+    let server_result = server.run_until(stopping);
+    let _ = completion_sender.send(());
+    let _ = cancel_sender.send(());
+    let signal = supervisor
+        .join()
+        .map_err(|_| io::Error::other("signal supervisor panicked"))??;
+    if server_result.is_ok() && signal.is_some() {
+        eprintln!(
+            "rillcache: graceful shutdown completed; workers joined and enabled journal flushed"
+        );
+    }
+    server_result
+}
+
 fn main() -> ExitCode {
     match options(std::env::args().skip(1)) {
         Ok(Options::Help) => {
@@ -527,17 +757,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Ok(Options::Run(config)) => match Server::bind(config).and_then(|server| {
-            eprintln!(
-                "rillcache {} listening on {}",
-                env!("CARGO_PKG_VERSION"),
-                server.local_addr()?
-            );
-            if let Some(addr) = server.tls_local_addr()? {
-                eprintln!("rillcache TLS 1.3 listening on {addr}");
-            }
-            server.run()
-        }) {
+        Ok(Options::Run(config)) => match run_server(config) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("rillcache: {error}");
@@ -554,6 +774,25 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shutdown_deadline_reports_forced_termination_if_join_has_not_finished() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut signals = ShutdownSignals::install(&runtime).unwrap();
+        let (_sender, completion) = tokio::sync::oneshot::channel();
+        assert!(matches!(
+            wait_for_shutdown_completion(
+                &runtime,
+                &mut signals,
+                completion,
+                Duration::from_millis(1),
+            ),
+            ShutdownOutcome::Forced("shutdown deadline exceeded")
+        ));
+    }
 
     #[test]
     fn tls_client_certificate_mapping_parses_sha256_and_rejects_invalid_values() {

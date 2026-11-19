@@ -634,7 +634,7 @@ pub struct Server {
     tls_acceptor: Option<Arc<tls::TlsAcceptor>>,
     config: Config,
     policy: SchedulingPolicy,
-    store: Store,
+    store: Arc<Store>,
 }
 
 impl Config {
@@ -853,7 +853,7 @@ impl Server {
             tls_acceptor,
             config,
             policy,
-            store,
+            store: Arc::new(store),
         })
     }
 
@@ -868,10 +868,23 @@ impl Server {
         }
     }
 
-    /// Run until an OS-level process termination or an unrecoverable server error.
-    /// The standard library has no portable signal-handler API.
+    /// Run synchronously until protocol shutdown or an unrecoverable server error.
     pub fn run(self) -> io::Result<()> {
-        self.serve(Arc::new(AtomicBool::new(false)))
+        self.run_until(Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Run synchronously until protocol shutdown, an unrecoverable error, or the
+    /// caller sets `stopping`. An enabled journal is explicitly flushed on exit.
+    pub fn run_until(self, stopping: Arc<AtomicBool>) -> io::Result<()> {
+        let flush_journal = self.config.appendonly;
+        let store = Arc::clone(&self.store);
+        let server_result = self.serve(stopping);
+        let flush_result = if flush_journal {
+            store.journal_flush()
+        } else {
+            Ok(())
+        };
+        server_result.and(flush_result)
     }
 
     /// Run in a managed background thread, useful for tests and local benchmarks.
@@ -881,6 +894,8 @@ impl Server {
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
         let policy = self.policy;
+        let flush_journal = self.config.appendonly;
+        let shutdown_store = Arc::clone(&self.store);
         let thread = thread::Builder::new()
             .name("rillcache-accept".into())
             .spawn(move || self.serve(stop))?;
@@ -889,6 +904,8 @@ impl Server {
             tls_addr,
             stopping,
             policy,
+            store: shutdown_store,
+            flush_journal,
             thread: Some(thread),
         })
     }
@@ -902,7 +919,6 @@ impl Server {
             policy,
             store,
         } = self;
-        let store = Arc::new(store);
         // A local reactor may exit before TLS users finish. Mixed transports
         // therefore share the joined external owner, never a reactor-owned inbox.
         if tls_listener.is_some() {
@@ -1203,6 +1219,8 @@ pub struct ServerHandle {
     tls_addr: Option<SocketAddr>,
     stopping: Arc<AtomicBool>,
     policy: SchedulingPolicy,
+    store: Arc<Store>,
+    flush_journal: bool,
     thread: Option<JoinHandle<io::Result<()>>>,
 }
 
@@ -1225,13 +1243,20 @@ impl ServerHandle {
     }
 
     fn stop(&mut self) -> io::Result<()> {
+        let Some(thread) = self.thread.take() else {
+            return Ok(());
+        };
         self.stopping.store(true, Ordering::Release);
-        match self.thread.take() {
-            Some(thread) => thread
-                .join()
-                .map_err(|_| io::Error::other("accept worker panicked"))?,
-            None => Ok(()),
-        }
+        let server_result = match thread.join() {
+            Ok(result) => result,
+            Err(_) => Err(io::Error::other("accept worker panicked")),
+        };
+        let flush_result = if self.flush_journal {
+            self.store.journal_flush()
+        } else {
+            Ok(())
+        };
+        server_result.and(flush_result)
     }
 }
 

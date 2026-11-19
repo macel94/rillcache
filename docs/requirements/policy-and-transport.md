@@ -245,8 +245,22 @@ platforms retain timeout-based fallback admission.
   from the server loop in thread-per-client and fixed-worker modes. `SHUTDOWN`
   shall be rejected inside `MULTI` with dirty-transaction semantics.
 - **R299 (ubiquitous):** Tests shall cover flag validation, `ABORT`, MULTI
-  rejection, caller close, all worker modes, journal durability across restart,
-  and documentation of the remaining absence of a portable SIGTERM handler.
+  rejection, caller close, all worker modes and journal durability across restart.
+
+## Standalone signal shutdown (S124)
+
+- **R444 (event-driven):** When the standalone binary receives SIGINT/SIGTERM
+  on Unix or Ctrl-C on Windows, it shall stop listener admission, join server and
+  client workers, and request an explicit journal flush before a successful exit.
+  The library's synchronous `Server::run()` remains signal-agnostic.
+- **R445 (state-driven):** Signal-triggered shutdown shall enforce a bounded
+  25-second deadline. A second termination signal or deadline expiry shall report
+  forced termination and exit nonzero; it shall not claim successful durability.
+- **R446 (ubiquitous):** A subprocess test shall write with append-only fsync
+  disabled, receive SIGTERM, exit successfully, restart from the journal and
+  return the acknowledged value in every fixed-worker mode. Documentation shall
+  retain that currently active client sockets are closed during stop rather than
+  fully drained, so an in-flight reply can be lost.
 
 ## Client registry and administrative kill (S38)
 
