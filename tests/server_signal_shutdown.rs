@@ -263,8 +263,9 @@ mod unix {
         verify_sigterm_drains_an_admitted_reply_and_flushes_aof(&["--io-mode", "tokio"]);
     }
 
-    #[test]
-    fn second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending() {
+    fn verify_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending(
+        server_mode: &[&str],
+    ) {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -274,15 +275,14 @@ mod unix {
             std::process::id()
         ));
         std::fs::create_dir(&directory).unwrap();
-        let (mut server, address) = start_with(
-            &directory,
-            &[
-                "--max-frame-bytes",
-                "16777216",
-                "--max-bulk-bytes",
-                "8388608",
-            ],
-        );
+        let mut server_args = vec![
+            "--max-frame-bytes",
+            "16777216",
+            "--max-bulk-bytes",
+            "8388608",
+        ];
+        server_args.extend_from_slice(server_mode);
+        let (mut server, address) = start_with(&directory, &server_args);
         request(
             address,
             b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
@@ -339,6 +339,19 @@ mod unix {
         drop(pending);
         drop(server);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending() {
+        verify_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending(&[]);
+    }
+
+    #[test]
+    fn tokio_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending() {
+        verify_second_sigterm_forces_nonzero_exit_with_an_admitted_reply_pending(&[
+            "--io-mode",
+            "tokio",
+        ]);
     }
 
     #[test]

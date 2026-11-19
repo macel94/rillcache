@@ -411,13 +411,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   forced termination and exits nonzero. Kubernetes now allows a 30-second grace
   period. **Partial (2026-11-19):** shutdown stops listener admission and
   half-closes client read sides; replies for already-dispatched commands are
-  written before those connections close, within the existing deadline. A
-  subprocess tests withhold an 8 MiB reply until SIGTERM and verify both the
-  full response and journal recovery in default and opt-in Tokio plain-TCP modes;
-  TLS signal-drain behavior remains unverified. **Partial (2026-11-19):** a subprocess
-  regression now sends a second SIGTERM only after observing the first-signal
-  shutdown log while an admitted 8 MiB reply remains unread, and requires the
-  forced-termination log plus nonzero exit. The 25-second timeout outcome is
+  written before those connections close, within the existing deadline.
+  Subprocess tests withhold an 8 MiB reply until SIGTERM and verify both the full
+  response and journal recovery in default and opt-in Tokio plain-TCP modes;
+  TLS signal-drain behavior remains unverified. **Partial (2026-11-19):** separate
+  subprocess regressions observe the first-signal shutdown log, then send a
+  second SIGTERM while an admitted 8 MiB reply remains unread and require the
+  forced-termination log plus nonzero exit in default and Tokio plain-TCP modes.
+  The 25-second timeout outcome is
   separately unit-tested; the subprocess does not claim journal recovery after
   forced exit. **Retained gap:** this is not a full client drain: idle/incomplete
   clients, subscriptions, blocked commands and replies that exceed a bounded
