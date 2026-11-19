@@ -552,9 +552,49 @@ fn run_lpos_rank_corpus(address: SocketAddr, suffix: &[u8]) {
     assert_command(&mut client, &[b"DEL", &list], Resp::Integer(1));
 }
 
+fn run_lrem_count_corpus(address: SocketAddr, suffix: &[u8]) {
+    let mut client = Client::connect(address).unwrap();
+    let list = key(b"rillcache:baseline:list-remove:", suffix);
+    let missing = key(b"rillcache:baseline:list-remove-missing:", suffix);
+    let value = b"\0\xff";
+    assert_command(
+        &mut client,
+        &[b"RPUSH", &list, value, b"keep", value],
+        Resp::Integer(3),
+    );
+    for key in [&list, &missing] {
+        assert_command(
+            &mut client,
+            &[b"LREM", key, b"-9223372036854775808", value],
+            Resp::Error(b"ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807".to_vec()),
+        );
+    }
+    assert_command(
+        &mut client,
+        &[b"LRANGE", &list, b"0", b"-1"],
+        Resp::Array(Some(
+            [value.as_slice(), b"keep", value]
+                .map(|item| Resp::Bulk(Some(item.to_vec())))
+                .into(),
+        )),
+    );
+    assert_command(
+        &mut client,
+        &[b"LREM", &list, b"-9223372036854775807", value],
+        Resp::Integer(2),
+    );
+    assert_command(
+        &mut client,
+        &[b"LINDEX", &list, b"0"],
+        Resp::Bulk(Some(b"keep".to_vec())),
+    );
+    assert_command(&mut client, &[b"DEL", &list], Resp::Integer(1));
+}
+
 fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     run_pubsub_pattern_corpus(address, suffix);
     run_lpos_rank_corpus(address, suffix);
+    run_lrem_count_corpus(address, suffix);
     let binary_key = key(b"rillcache:baseline:binary:", suffix);
     let empty_key = key(b"rillcache:baseline:empty:", suffix);
     let condition_key = key(b"rillcache:baseline:condition:", suffix);

@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_ELEMENTS: usize = 1_000_000;
+const SIGNED_LIST_RANGE_ERROR: &[u8] =
+    b"-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n";
 const MAX_HGETEX_REPLY_BYTES: usize = 2 * 1024 * 1024;
 // Redis's HFE_MAX_ABS_TIME_MSEC = EB_EXPIRE_TIME_MAX >> 2.
 const MAX_HASH_FIELD_DEADLINE_MS: i64 = ((1i64 << 48) - 1) >> 2;
@@ -2584,7 +2586,7 @@ impl ShardExecutor {
                     return;
                 }
                 if value == i64::MIN {
-                    out.extend_from_slice(b"-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n");
+                    out.extend_from_slice(SIGNED_LIST_RANGE_ERROR);
                     return;
                 }
                 rank = value;
@@ -3144,6 +3146,10 @@ impl ShardExecutor {
             out.extend_from_slice(NOT_INTEGER);
             return;
         };
+        if count == i64::MIN {
+            out.extend_from_slice(SIGNED_LIST_RANGE_ERROR);
+            return;
+        }
         let key = args[1];
         let Ok(mut data) = self.data.try_borrow_mut() else {
             internal_error(out);
