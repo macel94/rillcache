@@ -24,6 +24,7 @@ pub(super) fn pair(input: Vec<u8>) -> (Client, TcpStream) {
             sent: 0,
             closing: false,
             eof: false,
+            shutdown_drain: false,
             retry_io: false,
             activity: Instant::now(),
             frame_deadline: crate::frame_deadline::FrameDeadline::default(),

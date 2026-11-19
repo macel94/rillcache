@@ -52,6 +52,7 @@ pub(super) struct Client {
     pub(super) sent: usize,
     pub(super) closing: bool,
     pub(super) eof: bool,
+    pub(super) shutdown_drain: bool,
     /// EINTR is not WouldBlock: readiness owners must retain their runnable token.
     pub(super) retry_io: bool,
     pub(super) activity: Instant,
@@ -302,7 +303,8 @@ impl Client {
             return Ok(self.open(progress, config.idle_timeout));
         }
         if self.eof {
-            if self.input.is_empty() {
+            if self.input.is_empty() || self.shutdown_drain {
+                self.input.clear();
                 return Ok(None);
             }
             self.output
@@ -444,7 +446,8 @@ impl Client {
             return Ok(LocalPoll::Progress(progress));
         }
         if self.eof {
-            if self.input.is_empty() {
+            if self.input.is_empty() || self.shutdown_drain {
+                self.input.clear();
                 return Ok(LocalPoll::Closed);
             }
             self.output
@@ -573,6 +576,7 @@ pub(super) fn serve(
                 sent: 0,
                 closing: false,
                 eof: false,
+                shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
                 frame_deadline: crate::frame_deadline::FrameDeadline::default(),
@@ -628,7 +632,8 @@ fn run_lane<E: Execution>(
         if stop.load(Ordering::Acquire) && !draining {
             draining = true;
             drain_deadline = Some(Instant::now() + CLIENT_DRAIN_TIMEOUT);
-            for client in &clients {
+            for client in &mut clients {
+                client.shutdown_drain = true;
                 let _ = client.stream.shutdown(Shutdown::Read);
             }
         }
@@ -654,8 +659,9 @@ fn run_lane<E: Execution>(
             maintenance = Instant::now();
         }
         let mut progress = false;
-        while let Ok(client) = receiver.try_recv() {
+        while let Ok(mut client) = receiver.try_recv() {
             if draining {
+                client.shutdown_drain = true;
                 let mode = if forced {
                     Shutdown::Both
                 } else {
@@ -788,6 +794,7 @@ mod tests {
                 sent: 0,
                 closing: false,
                 eof: false,
+                shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
                 frame_deadline: crate::frame_deadline::FrameDeadline::default(),
@@ -957,6 +964,7 @@ mod tests {
             sent: 0,
             closing: false,
             eof: false,
+            shutdown_drain: false,
             retry_io: false,
             activity: Instant::now() - Duration::from_secs(2),
             frame_deadline: crate::frame_deadline::FrameDeadline::default(),

@@ -1066,6 +1066,7 @@ fn serve_plain(
                 stream.local_addr()?,
                 control.try_clone()?,
             );
+            let client_stopping = Arc::clone(&stopping);
             let thread = thread::Builder::new()
                 .name("rillcache-client".into())
                 .stack_size(256 * 1024)
@@ -1076,6 +1077,7 @@ fn serve_plain(
                         idle_timeout,
                         frame_assembly_timeout,
                         policy,
+                        stopping: client_stopping,
                         permit: &permit,
                         sharing: sharing.as_deref(),
                     };
@@ -1150,6 +1152,7 @@ fn serve_tls(
             session.set_pubsub_sender(sender);
             let client_id = session.id();
             store.register_client(client_id, peer, local_addr, control.try_clone()?);
+            let client_stopping = Arc::clone(&stopping);
             let thread = thread::Builder::new()
                 .name("rillcache-tls-client".into())
                 .stack_size(256 * 1024)
@@ -1177,6 +1180,7 @@ fn serve_tls(
                         idle_timeout,
                         frame_assembly_timeout,
                         policy,
+                        stopping: client_stopping,
                         permit: &permit,
                         sharing: None,
                     };
@@ -1292,6 +1296,7 @@ struct ClientContext<'a> {
     idle_timeout: Duration,
     frame_assembly_timeout: Option<Duration>,
     policy: SchedulingPolicy,
+    stopping: Arc<AtomicBool>,
     permit: &'a Permit,
     sharing: Option<&'a handoff::Sharing>,
 }
@@ -1527,7 +1532,7 @@ fn serve_client(
             }
             match stream.read(&mut chunk[..room]) {
                 Ok(0) => {
-                    if !input.is_empty() {
+                    if !input.is_empty() && !context.stopping.load(Ordering::Acquire) {
                         stream.write_all(b"-ERR Protocol error: unexpected end of stream\r\n")?;
                     }
                     return Ok(());

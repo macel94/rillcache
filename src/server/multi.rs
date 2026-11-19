@@ -265,6 +265,7 @@ impl Reactor {
                     sent: 0,
                     closing: false,
                     eof: false,
+                    shutdown_drain: false,
                     retry_io: false,
                     activity: Instant::now(),
                     frame_deadline: crate::frame_deadline::FrameDeadline::default(),
@@ -741,10 +742,11 @@ impl Reactor {
                 for key in &keys {
                     if let Some(connection) = self
                         .clients
-                        .get(key.slot)
-                        .and_then(Option::as_ref)
+                        .get_mut(key.slot)
+                        .and_then(Option::as_mut)
                         .filter(|connection| connection.token == key.token)
                     {
+                        connection.client.shutdown_drain = true;
                         let _ = connection.client.stream.shutdown(Shutdown::Read);
                     }
                     self.enqueue(*key);

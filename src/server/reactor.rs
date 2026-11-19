@@ -196,6 +196,7 @@ impl<E: Execution> Reactor<E> {
                     sent: 0,
                     closing: false,
                     eof: false,
+                    shutdown_drain: false,
                     retry_io: false,
                     activity: Instant::now(),
                     frame_deadline: crate::frame_deadline::FrameDeadline::default(),
@@ -365,8 +366,9 @@ impl<E: Execution> Reactor<E> {
         }
     }
 
-    fn attach(&mut self, client: Client) -> io::Result<()> {
+    fn attach(&mut self, mut client: Client) -> io::Result<()> {
         if self.draining {
+            client.shutdown_drain = true;
             let mode = if self.forced {
                 Shutdown::Both
             } else {
@@ -463,11 +465,14 @@ impl<E: Execution> Reactor<E> {
                 for key in &keys {
                     if let Some(connection) = self
                         .clients
-                        .get(key.slot)
-                        .and_then(Option::as_ref)
+                        .get_mut(key.slot)
+                        .and_then(Option::as_mut)
                         .filter(|connection| connection.token == key.token)
                     {
-                        let _ = connection.client().stream.shutdown(Shutdown::Read);
+                        if let Some(client) = connection.client.as_mut() {
+                            client.shutdown_drain = true;
+                            let _ = client.stream.shutdown(Shutdown::Read);
+                        }
                     }
                     self.enqueue(*key);
                 }

@@ -848,7 +848,7 @@ async fn serve_connection(
             Err(_) if asynchronous => continue,
             Err(_) => return Ok(()),
             Ok(Ok(0)) => {
-                if !input.is_empty() {
+                if !input.is_empty() && !context.stopped() {
                     write_reply(
                         &mut stream,
                         b"-ERR Protocol error: unexpected end of stream\r\n",
