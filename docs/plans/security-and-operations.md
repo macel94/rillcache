@@ -118,7 +118,7 @@ Potential future file ownership (all proposed, not existing APIs):
 | Auth/config | `src/security.rs`, `src/security/credentials.rs`, `src/main.rs` | Secret-source decision; session identity/lifecycle |
 | ACL metadata | `src/security/acl.rs`, `src/engine/metadata.rs`, `src/engine/commands.rs` | Auth identity, canonical command/key metadata; typed-store command extractors |
 | TLS boundary | `docs/tls.md`, `docs/containers.md`, `compose.yaml`, `deploy/kubernetes.yaml` | Native TLS 1.3 via rustls; SNI/hot reload/OCSP, plaintext-listener isolation and independent security review remain required |
-| Graceful shutdown | `src/server.rs`, `src/server/pool.rs`, `src/main.rs`, `docs/containers.md` | Signal path partial; full client drain, forced-path testing and platform review remain |
+| Graceful shutdown | `src/server.rs`, `src/server/pool.rs`, `src/main.rs`, `docs/containers.md` | Signal path partial; full client drain and platform review remain. The second-signal forced-exit path has subprocess coverage; the 25-second deadline outcome has unit coverage. |
 | Config/reload | `src/config.rs`, `src/main.rs`, `src/server.rs` | Config schema + secret source; session generation for mutable security state |
 | Metrics/resource tests | `src/server.rs`, `src/engine/data.rs`, module tests, docs | Metric definitions; typed-store owner for exact payload/expiry invariants |
 
