@@ -520,8 +520,41 @@ fn run_pubsub_pattern_corpus(address: SocketAddr, suffix: &[u8]) {
     assert_pattern_count(&mut observer, 0);
 }
 
+fn run_lpos_rank_corpus(address: SocketAddr, suffix: &[u8]) {
+    let mut client = Client::connect(address).unwrap();
+    let list = key(b"rillcache:baseline:list-rank:", suffix);
+    let missing = key(b"rillcache:baseline:list-missing:", suffix);
+    let value = b"\0\xff";
+    assert_command(
+        &mut client,
+        &[b"RPUSH", &list, value, b"gap", value],
+        Resp::Integer(3),
+    );
+    for key in [&list, &missing] {
+        assert_command(
+            &mut client,
+            &[b"LPOS", key, value, b"RANK", b"-9223372036854775808"],
+            Resp::Error(b"ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807".to_vec()),
+        );
+    }
+    for rank in [b"-9223372036854775807".as_slice(), b"9223372036854775807"] {
+        assert_command(
+            &mut client,
+            &[b"LPOS", &list, value, b"RANK", rank],
+            Resp::Bulk(None),
+        );
+    }
+    assert_command(
+        &mut client,
+        &[b"LPOS", &list, value, b"RANK", b"-1"],
+        Resp::Integer(2),
+    );
+    assert_command(&mut client, &[b"DEL", &list], Resp::Integer(1));
+}
+
 fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     run_pubsub_pattern_corpus(address, suffix);
+    run_lpos_rank_corpus(address, suffix);
     let binary_key = key(b"rillcache:baseline:binary:", suffix);
     let empty_key = key(b"rillcache:baseline:empty:", suffix);
     let condition_key = key(b"rillcache:baseline:condition:", suffix);
