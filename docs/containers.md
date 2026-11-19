@@ -3,7 +3,7 @@
 Rillcache's image is ready for local evaluation, with optional passwords/ACLs,
 native TLS 1.3 and an append-only journal. Full production compatibility is still
 in progress: there is no RDB format, background/incremental rewrite, replication
-or graceful signal-driven drain. Keep the plaintext listener private even when
+or full client-draining shutdown. Keep the plaintext listener private even when
 TLS is enabled. [Production readiness](production-readiness.md) tracks the
 remaining work; the [canonical gap checklist](production-readiness-gaps.md) is the
 authoritative list.
@@ -11,10 +11,11 @@ Publishing an image does not deploy a service.
 
 ## Run it
 
-Once the GHCR package is public, no login, configuration file or extra command is needed:
+Once the GHCR package is public, no login or configuration file is needed. The
+30-second stop timeout accommodates the standalone shutdown deadline:
 
 ```sh
-docker run --rm --init -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest
+docker run --rm --init --stop-timeout 30 -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest
 ```
 
 The image already runs `/rillcache --bind 0.0.0.0:6379`; the binary's standalone
@@ -235,17 +236,20 @@ digest-pinned image for repeatable deployments:
 use the `ghcr.io/macel94/rillcache@sha256:...` reference printed by the workflow
 in place of `:latest`. `latest` is a convenience main-build tag, not a stable release.
 
-**Termination:** the current safe-std server has no portable signal-handler API.
-A client can request a protocol-level graceful stop with `SHUTDOWN`, which flushes
-the journal and joins workers, but that is not a signal handler and cannot run
-once the process receives SIGTERM. Docker's `--init` / Compose `init: true`
-forwards termination to the application as a normal child; this ends the process
-but is not a graceful drain. With
+**Termination:** the standalone binary handles SIGINT/SIGTERM on Unix and
+Ctrl-C on Windows. It stops admission, joins the server/client workers, then
+forces a journal flush. The shutdown deadline is 25 seconds; a second termination
+signal or an exceeded deadline is logged as forced termination and exits with
+status 1. Set the supervisor grace period to at least 30 seconds; the Kubernetes
+example does so. Docker's `--init` / Compose `init: true` forwards SIGTERM to the
+application as a normal child. Use Docker `--stop-timeout 30` or Compose
+`stop_grace_period: 30s` so the supervisor does not kill it before its 25-second
+deadline. This is not a full client drain: active sockets are closed during worker
+shutdown and an in-flight reply may be lost. With
 `--appendfsync always`, acknowledged records are already synced; with `everysec`
-or `no`, termination can lose the unsynced tail. As Kubernetes
-PID 1 the default SIGTERM may be ignored; the example allows five seconds before
-forced termination. In-flight replies may be lost. This distribution increment
-does not close the graceful-shutdown or full durability production gates.
+or `no`, a successful signal shutdown flushes the journal before exit, but a
+forced termination may lose the unsynced tail. The signal/shutdown path is still
+partial and does not close the full durability or graceful-drain production gates.
 
 ## Publication and verification
 

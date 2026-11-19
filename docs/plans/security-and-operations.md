@@ -1,15 +1,15 @@
-# Security and operational prerequisites — plan only
+# Security and operational prerequisites — plan and current status
 
-**Status: MIXED — SEC-1's single-password baseline (S27) and a Redis-style multi-user ACL/file subset (S28) are implemented; the remaining stories are design only.** The server now has password and ACL-file authentication, ordered command/category rules, read/write key patterns, Redis 7 selectors, channel enforcement, live `NOAUTH`/`NOPERM` denial, an `ACL` management/save/load/`LOG`/`DRYRUN`/`GENPASS` surface and authenticated `CONFIG SET requirepass`, but still lacks remaining subcommand-specific categories, collector sender authentication/TLS/federation, cross-process/distributed rate limiting (a process-local opt-in aggregate exists), config reload, signal-driven graceful shutdown and a complete production observability contract. Nothing here is an approved security design or a production-readiness claim. Keep the standalone/library loopback default and the documented private-network/container restrictions unchanged; use a password and a TLS terminator before exposing this beyond a trusted network. See [security](../security.md).
+**Status: MIXED — SEC-1's single-password baseline (S27), a Redis-style multi-user ACL/file subset (S28), and partial signal shutdown (S124) are implemented; the remaining security and operations gaps are not complete.** The server now has password and ACL-file authentication, ordered command/category rules, read/write key patterns, Redis 7 selectors, channel enforcement, live `NOAUTH`/`NOPERM` denial, an `ACL` management/save/load/`LOG`/`DRYRUN`/`GENPASS` surface and authenticated `CONFIG SET requirepass`, but still lacks remaining subcommand-specific categories, collector sender authentication/TLS/federation, cross-process/distributed rate limiting (a process-local opt-in aggregate exists), config reload, full client-draining shutdown and a complete production observability contract. Nothing here is an approved security design or a production-readiness claim. Keep the standalone/library loopback default and the documented private-network/container restrictions unchanged; use a password and a TLS terminator before exposing this beyond a trusted network. See [security](../security.md).
 
-This plan decomposes the security and operations prerequisites into small stories. Names below are proposed ownership boundaries for future implementation PRs, not files changed by this plan. Preserve safe Rust, the vendored rustls-only dependency exception, binary safety, bounded I/O, atomic errors and joined shutdown. Security changes require human security review; do not treat passing compatibility tests as a security sign-off.
+This plan decomposes the security and operations prerequisites into small stories. Names below are proposed ownership boundaries for future implementation PRs, not files changed by this plan. Preserve safe Rust, the reviewed rustls/Tokio/CPU-affinity dependency exceptions and vendored transitives, binary safety, bounded I/O, atomic errors and joined shutdown. Security changes require human security review; do not treat passing compatibility tests as a security sign-off.
 
 ## Current implementation facts and boundaries
 
 - `src/server.rs` owns `Config`, TCP accept, client admission, per-client workers and managed `ServerHandle::shutdown`/`Drop`; these paths join managed workers. `src/server/pool.rs` owns fixed-worker connections. A socket is TCP, not encrypted.
 - `src/main.rs` exposes bind/client/worker/payload/idle-timeout and `--requirepass`/`--requirepass-file` options. Bind defaults to `127.0.0.1`; container entrypoint explicitly binds `0.0.0.0`. There is a startup secret file/argument loader but no general config-file reload; runtime credential rotation uses authenticated `CONFIG SET requirepass`.
 - `src/engine/auth.rs` owns users, hashed credentials, ordered command rules, read/write key patterns and selectors; `src/engine.rs` exposes atomic ACL checks and ACL-file save/load; `src/session.rs` holds the per-connection user identity and rejects `NOAUTH`/`NOPERM` before dispatch. Channel patterns are enforced for pub/sub. `src/protocol.rs` parses bounded RESP2 frames.
-- Library-managed shutdown is available, but `Server::run` has no portable signal-handling path. `docs/containers.md` already states that process termination is not graceful draining and in-flight replies can be lost.
+- Library-managed shutdown is available. The standalone binary handles Unix SIGINT/SIGTERM and Windows Ctrl-C with a 25-second deadline, joins workers and flushes enabled journaling; it closes active sockets rather than fully draining clients, so in-flight replies can be lost.
 - `max_data_bytes` accounts key/value payload only, not allocator/map capacity, expiry index, thread stacks, connection buffers, kernel socket buffers or process RSS. Existing profiling reports Linux RSS samples but does not enforce a memory limit or eviction policy.
 
 ## Proposed INVEST stories and EARS acceptance
@@ -51,7 +51,7 @@ This plan decomposes the security and operations prerequisites into small storie
 
 ### SEC-4 — Explicit TLS termination boundary (XS documentation/deployment, independent)
 
-**Value:** users can protect transport without an invented cryptographic implementation. Rust `std::net` provides TCP primitives; the standard library does not provide a TLS client/server API or portable signal-handler API. This project permits only the vendored rustls exception and still forbids arbitrary external Rust dependencies, FFI and native extensions. Native TLS 1.3 is provided by rustls; do not add hand-rolled crypto or forward plaintext from an untrusted ingress to an exposed backend.
+**Value:** users can protect transport without an invented cryptographic implementation. Rust `std::net` provides TCP primitives; the standard library does not provide a TLS client/server API or portable signal-handler API. This project permits the reviewed vendored rustls, Tokio and CPU-affinity dependencies and their required transitives, while still forbidding arbitrary dependencies, FFI and native extensions. Native TLS 1.3 is provided by rustls; do not add hand-rolled crypto or forward plaintext from an untrusted ingress to an exposed backend.
 
 - **When** deployments require network confidentiality, **then** documentation/examples shall require an independently operated, maintained TLS terminator with certificate issuance/renewal, peer/hostname validation at its client-facing side, restricted backend reachability and an explicit trust boundary.
 - **If** the proxy-to-server leg is plaintext, **then** it shall remain on a same-host/private isolated network with network policy/firewall and must be described as plaintext; credentials are not protected on that leg. A terminator that merely encrypts client-to-proxy does not establish end-to-end encryption.
@@ -59,16 +59,17 @@ This plan decomposes the security and operations prerequisites into small storie
 
 **Ownership/prerequisite:** independent docs work may begin immediately in `docs/containers.md` and deployment examples (`compose.yaml`, `deploy/kubernetes.yaml`) only in a separate authorized change. No Rillcache TLS code or cryptography. Review actual proxy manifests and network policy; never broaden server bind defaults or image policy to simplify proxying.
 
-### OPS-1 — Termination and bounded graceful drain (S, standard-library constraint)
+### OPS-1 — Termination and bounded graceful drain (S, partial)
 
-**Value:** operators know exactly what termination guarantees exist and can improve managed shutdown without claiming portable OS signal capture. The library's explicit `ServerHandle` path already joins workers; the standalone process has no portable `std` signal subscription. `TcpStream::shutdown` can wake socket I/O, but it does not implement a process signal handler or persistence guarantee.
+**Value:** operators know exactly what termination guarantees exist and can improve managed shutdown without claiming a full client drain. The library's explicit `ServerHandle` path joins workers. The standalone binary uses Tokio's platform signal support, joins workers and explicitly flushes enabled journaling under a 25-second deadline; sockets are closed during stop and an in-flight reply may be lost.
 
 - **When** a managed embedding calls shutdown, **then** stop accepting, prevent new work, close/wake active sockets, and join every started worker in per-client, 1-worker and 4-worker modes within the documented bound; partial startup and worker failure shall also join all started threads.
-- **When** an operator terminates the standalone process, **then** docs shall state current behavior and possible lost in-flight reply/data. Until an approved portable/dependency-free design exists, rely on a supervisor's configured timeout/forced kill and do not describe that as graceful draining.
-- **If** a future signal/control mechanism is proposed, **then** it shall be reviewed for async-signal safety, platform support, shutdown idempotency, deadline/forced-stop behavior, accept-loop wakeup and joined client workers. No unsafe FFI, detached helper thread or unbounded drain. A control socket/pipe is not signal handling and needs its own threat model.
+- **When** an operator sends SIGINT/SIGTERM on Unix or Ctrl-C on Windows, **then** the standalone binary shall stop admission, join workers and flush enabled journaling within 25 seconds; a second signal or timeout shall be logged as forced termination and exit nonzero.
+- **If** a future signal/control mechanism changes, **then** it shall be reviewed for platform support, shutdown idempotency, deadline/forced-stop behavior, accept-loop wakeup and joined client workers. No unsafe FFI, detached helper thread or unbounded drain. A control socket/pipe is not signal handling and needs its own threat model.
+- **When** active commands or replies overlap shutdown, **then** current behavior may close their sockets and lose in-flight replies; a future full drain must be bounded and preserve the accepted journal guarantee.
 - Test admission racing shutdown, idle and blocked writers, slow readers, partial requests/replies, worker panic/start failure, repeated shutdown/drop and bounded termination using managed handles and no readiness sleeps.
 
-**Ownership/prerequisite:** `src/server.rs`, `src/server/pool.rs`, `src/main.rs`, and `docs/containers.md`; independent managed-handle tests can begin now. Process signal integration is blocked on an explicit portability/dependency policy decision and security/code-owner review; no dependency exception is presumed.
+**Ownership/prerequisite:** `src/server.rs`, `src/server/pool.rs`, `src/main.rs`, and `docs/containers.md`; signal shutdown is partially implemented and tested. Full client drain, broader platform review and security/code-owner review remain before any production claim.
 
 ### OPS-2 — Memory, resource bounds and eviction semantics (M, typed-store dependency)
 
@@ -117,7 +118,7 @@ Potential future file ownership (all proposed, not existing APIs):
 | Auth/config | `src/security.rs`, `src/security/credentials.rs`, `src/main.rs` | Secret-source decision; session identity/lifecycle |
 | ACL metadata | `src/security/acl.rs`, `src/engine/metadata.rs`, `src/engine/commands.rs` | Auth identity, canonical command/key metadata; typed-store command extractors |
 | TLS boundary | `docs/tls.md`, `docs/containers.md`, `compose.yaml`, `deploy/kubernetes.yaml` | Native TLS 1.3 via rustls; SNI/hot reload/OCSP, plaintext-listener isolation and independent security review remain required |
-| Graceful shutdown | `src/server.rs`, `src/server/pool.rs`, `src/main.rs`, `docs/containers.md` | Managed tests independent; signal path requires policy/portability review |
+| Graceful shutdown | `src/server.rs`, `src/server/pool.rs`, `src/main.rs`, `docs/containers.md` | Signal path partial; full client drain, forced-path testing and platform review remain |
 | Config/reload | `src/config.rs`, `src/main.rs`, `src/server.rs` | Config schema + secret source; session generation for mutable security state |
 | Metrics/resource tests | `src/server.rs`, `src/engine/data.rs`, module tests, docs | Metric definitions; typed-store owner for exact payload/expiry invariants |
 
@@ -142,7 +143,7 @@ make ci
 - **Rotation can strand sessions or retain revoked access.** Specify revocation semantics and test old/new connections before implementation.
 - **Secret loading can leak or race.** Review file permissions, symlink handling, error redaction, memory lifetime and reload atomicity; do not place secrets in CLI args, logs, benchmark artifacts or images.
 - **TLS terminator is an operational dependency.** Verify certificate validation/renewal, backend-only reachability, proxy health and bypass resistance. A plaintext backend is still plaintext.
-- **Signal behavior is platform-specific.** Do not assert std has signal registration; avoid unsafe FFI or dependencies without a separately reviewed policy change. Existing managed library shutdown is not proof the executable drains on SIGTERM.
+- **Signal behavior is platform-specific.** Tokio signal support is used by the standalone binary; do not confuse worker joins and journal flush with a full client drain. Existing managed library shutdown remains a separate contract.
 - **Payload is not RSS; process RSS is not an exact admission counter.** Resource limits/eviction need distinct semantics and tests; OOM kills can still lose the in-memory cache.
 - **No production readiness claim follows.** Persistence, backups, replication/failover, high availability, realistic SLOs and independent security review remain open.
 
