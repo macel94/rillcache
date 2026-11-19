@@ -957,7 +957,12 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
   adds seeded binary-frame fragmentation, random bytes under tight limits,
   random inline input and pipeline consumption properties; it runs in ordinary
-  CI and every failure is reproducible from its printed seed.
+  CI and every failure is reproducible from its printed seed. **Partial
+  (2026-11-19):** a second seeded property now feeds multi-command binary
+  pipelines through one-byte and varied-size read chunks, retaining incomplete
+  suffixes and asserting exact-once dispatch, frame consumption and command
+  order against an independent decoded-command model. This models parser buffer
+  behavior, not OS/TLS record boundaries or sustained adversarial input.
   **Partial (2026-11-14): hash-field expiry state model.** A fixed-seed command
   sequence compares HSET, HPEXPIRE, HGET, HPTTL and HDEL against an independent
   map oracle under an injected clock; failures identify the seed and step.
