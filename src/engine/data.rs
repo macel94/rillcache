@@ -379,11 +379,12 @@ impl Entry {
     }
 }
 
-/// Bounded per-key mutation versions for `WATCH`. A full table or `FLUSHDB`
-/// advances `epoch`, conservatively aborting every outstanding watch rather than
-/// silently forgetting a mutation. The bound keeps memory independent of the
-/// number of historical keys.
+/// Bounded per-key mutation versions for `WATCH`. A full table, retained-key
+/// byte budget, or `FLUSHDB` advances `epoch`, conservatively aborting every
+/// outstanding watch rather than silently forgetting a mutation.
 pub(super) const MAX_TRACKED_VERSIONS: usize = 65_536;
+/// Logical key bytes retained by one persistent owner's WATCH history.
+pub(super) const MAX_TRACKED_VERSION_KEY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_JOURNAL_EVENTS: usize = 65_536;
 
 #[derive(Default)]
@@ -393,6 +394,10 @@ pub(crate) struct Data {
     peak_payload_bytes: usize,
     pub expirations: BTreeSet<(i64, Vec<u8>)>,
     pub(super) versions: HashMap<Vec<u8>, u64>,
+    tracked_version_key_bytes: usize,
+    /// Transaction scratch versions live only for one bounded request and are
+    /// also used as the exact changed-key set, so they retain request keys.
+    scratch_versions: bool,
     version_seq: u64,
     epoch: u64,
     flush_seq: u64,
@@ -451,6 +456,7 @@ impl Data {
     pub(super) fn from_entries(entries: Vec<(Vec<u8>, Entry)>, eviction: EvictionPolicy) -> Self {
         let mut data = Self {
             eviction,
+            scratch_versions: true,
             ..Self::default()
         };
         for (key, entry) in entries {
@@ -564,11 +570,20 @@ impl Data {
         if let Some(version) = self.versions.get_mut(key) {
             *version = self.version_seq;
         } else {
-            if self.versions.len() >= MAX_TRACKED_VERSIONS {
+            let exceeds_key_bytes = !self.scratch_versions
+                && (key.len() > MAX_TRACKED_VERSION_KEY_BYTES
+                    || self.tracked_version_key_bytes
+                        > MAX_TRACKED_VERSION_KEY_BYTES.saturating_sub(key.len()));
+            if self.versions.len() >= MAX_TRACKED_VERSIONS || exceeds_key_bytes {
                 self.versions.clear();
+                self.tracked_version_key_bytes = 0;
                 self.epoch = self.epoch.wrapping_add(1);
             }
-            self.versions.insert(key.to_vec(), self.version_seq);
+            if self.scratch_versions || key.len() <= MAX_TRACKED_VERSION_KEY_BYTES {
+                self.tracked_version_key_bytes =
+                    self.tracked_version_key_bytes.saturating_add(key.len());
+                self.versions.insert(key.to_vec(), self.version_seq);
+            }
         }
         if self.rewrite_active {
             if self.rewrite_events.len() >= MAX_JOURNAL_EVENTS {
@@ -678,6 +693,7 @@ impl Data {
         self.expirations.clear();
         self.payload_bytes = 0;
         self.versions.clear();
+        self.tracked_version_key_bytes = 0;
         self.epoch = self.epoch.wrapping_add(1);
         self.flush_seq = self.flush_seq.wrapping_add(1);
         self.journal_events.clear();
@@ -1210,6 +1226,61 @@ mod tests {
     }
 
     #[test]
+    fn version_key_byte_budget_invalidates_watches_and_omits_oversized_keys() {
+        let mut data = Data::default();
+        let half_budget = MAX_TRACKED_VERSION_KEY_BYTES / 2;
+        let mut first = vec![b'a'; half_budget];
+        let mut second = vec![b'b'; half_budget];
+        first[0] = b'c';
+        second[0] = b'd';
+
+        data.touch(&first);
+        let watched_epoch = data.epoch();
+        data.touch(&first);
+        assert_eq!(data.tracked_version_key_bytes, half_budget);
+        data.touch(&second);
+        assert_eq!(
+            data.tracked_version_key_bytes,
+            MAX_TRACKED_VERSION_KEY_BYTES
+        );
+
+        data.touch(b"next");
+        assert_eq!(data.epoch(), watched_epoch + 1);
+        assert_eq!(data.versions.len(), 1);
+        assert_eq!(data.version(&first), None);
+        assert_eq!(data.version(b"next"), Some(data.journal_seq()));
+        assert_eq!(data.tracked_version_key_bytes, b"next".len());
+
+        let oversized = vec![b'z'; MAX_TRACKED_VERSION_KEY_BYTES + 1];
+        let epoch = data.epoch();
+        data.touch(&oversized);
+        assert_eq!(data.epoch(), epoch + 1);
+        assert!(data.versions.is_empty());
+        assert_eq!(data.version(&oversized), None);
+        assert_eq!(data.tracked_version_key_bytes, 0);
+
+        data.touch(b"flush");
+        assert_eq!(data.tracked_version_key_bytes, b"flush".len());
+        data.flush();
+        assert_eq!(data.tracked_version_key_bytes, 0);
+    }
+
+    #[test]
+    fn scratch_versions_retain_changed_keys_beyond_the_persistent_byte_budget() {
+        let mut data = Data::from_entries(Vec::new(), EvictionPolicy::NoEviction);
+        let key_bytes = MAX_TRACKED_VERSION_KEY_BYTES / 2;
+        let first = vec![b'a'; key_bytes];
+        let second = vec![b'b'; key_bytes];
+        data.touch(&first);
+        data.touch(&second);
+        data.touch(b"extra");
+        assert_eq!(data.epoch(), 0);
+        assert_eq!(data.versions.len(), 3);
+        assert_eq!(data.touched_keys().len(), 3);
+        assert!(data.tracked_version_key_bytes > MAX_TRACKED_VERSION_KEY_BYTES);
+    }
+
+    #[test]
     fn existing_version_at_capacity_updates_without_invalidating_other_watches() {
         let mut data = Data::default();
         for index in 0..MAX_TRACKED_VERSIONS {
@@ -1227,6 +1298,7 @@ mod tests {
         data.touch(b"a genuinely new key");
         assert_eq!(data.epoch(), epoch + 1);
         assert_eq!(data.versions.len(), 1);
+        assert_eq!(data.tracked_version_key_bytes, b"a genuinely new key".len());
     }
 
     #[test]
