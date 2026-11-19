@@ -85,8 +85,9 @@ Single-password and multi-user ACL-file authentication are supported with
 `AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors,
 read/write key modes, first-argument command rules, `ACL LOG`/`DRYRUN`/`GENPASS`
 and pub/sub channel enforcement are implemented. Subcommand-specific categories,
-collector sender authentication/TLS/federation and global/cross-process rate limiting remain absent. See
-[security](../security.md).
+collector sender authentication/TLS/federation and cross-process/distributed rate
+limiting remain absent. An optional process-local global failed-auth budget
+exists; see [security](../security.md).
 Connection-local commands are rejected rather than queued inside MULTI. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-

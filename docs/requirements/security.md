@@ -24,7 +24,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R112 (ubiquitous):** Authentication tests shall run offline in all execution
   modes, cover pipelined rejection/order, runtime rotation, `QUIT`, RESP2/RESP3
   HELLO, secret redaction and disabled/rotated credentials. Documentation shall
-  retain the missing global/cross-process rate limiting, centralized-audit, TLS-hardening, durability and
+  retain the missing cross-process rate limiting, centralized-audit, TLS-hardening, durability and
   live-deauthentication boundaries; a single password is not full Redis security.
 
 ## Multi-user ACLs (S28)
@@ -50,7 +50,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
   Documentation shall retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO/CONFIG/LATENCY/SLOWLOG/PUBSUB overrides,
-  centralized audit shipping, global/cross-process rate limiting, TLS hardening, key-spec-blind
+  centralized audit shipping, cross-process rate limiting, TLS hardening, key-spec-blind
   commands and process-level tenant-isolation boundaries.
 
 ## ACL credentials, dry-run and denial log (S41)
@@ -73,7 +73,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   permission and all-mode tests shall cover random output length/hex, invalid bits,
   allowed/denied dry runs, unknown users, no-log DRYRUN behavior, key/channel/
   command/noauth aggregation, reset and bounded counts. Documentation shall retain
-  the absence of replicated/centralized audit shipping, global/cross-process rate limiting, token/
+  the absence of replicated/centralized audit shipping, cross-process rate limiting, token/
   timeout metadata and exhaustive security-event coverage.
 
 ## ACL selectors (S86)
@@ -105,7 +105,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   writes with broad reads, `clearselectors`/`reset`, atomic rejection, LIST/
   GETUSER exposure, ACL-file restart round-trips and every worker mode.
   Documentation shall retain the absence of nested selectors, subcommand
-  categories, global/cross-process rate limiting, centralized audit shipping and native TLS.
+  categories, cross-process rate limiting, centralized audit shipping and native TLS.
 
 ## ACL read/write key modes (S88)
 
@@ -193,7 +193,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Tests shall cover line shape, hex/binary safety, truncation bounds, one-generation
   rotation, restart appends, startup failure, write-failure accounting and every
   worker mode. Documentation shall retain the absence of fsync-per-line,
-  full-chain signing/key-ID/hot rotation, global/cross-process rate limiting and
+  full-chain signing/key-ID/hot rotation, cross-process rate limiting and
   centralized aggregation.
 
 ## Per-connection failed-auth budget (S105)
@@ -204,17 +204,17 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   standard bounded `WRONGPASS` reply and then close that connection. A successful
   authentication or `RESET` shall clear the counter; arity errors, `NoPassword`
   configuration errors and internal errors shall not consume the budget.
-- **R388 (state-driven):** A zero limit shall disable the budget. The counter
-  shall be connection-local, so exhausting one connection shall not close or
-  throttle another. The server shall not claim a global or cross-process rate limit,
-  delay, username lockout or credential-attempt audit beyond the optional local
-  denial trail.
-- **R389 (ubiquitous):** Tests shall cover the exact limit, reset-on-success,
-  `RESET` clearing, `HELLO` sharing the same counter, zero disabling, connection
-  isolation, no secret reflection and every worker mode. Documentation shall
-  retain the absence of global/cross-process rate limiting, delayed responses,
-  account lockout, centralized audit shipping and a complete brute-force
-  deployment boundary.
+- **R388 (state-driven):** A zero per-connection limit shall disable that budget.
+  Its counter shall be connection-local, so exhausting one connection shall not
+  close or throttle another. This option alone is not a global or cross-process
+  rate limit, delay, username lockout or credential-attempt audit beyond the
+  optional local denial trail.
+- **R389 (ubiquitous):** Tests shall cover the exact per-connection limit,
+  reset-on-success, `RESET` clearing, `HELLO` sharing the same counter, zero
+  disabling, connection isolation, no secret reflection and every worker mode.
+  Documentation shall retain the absence of delay, username lockout, centralized
+  audit shipping and a complete brute-force deployment boundary. Any separate
+  global throttle shall have its own explicit scope and tests.
 
 ## Per-source failed-auth throttling (S106)
 
@@ -227,15 +227,21 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   that source's counter.
 - **R391 (state-driven):** The source table shall be process-local, bounded to a
   fixed maximum number of peer addresses, and shall prune expired entries. A zero
-  limit shall disable the feature. The key shall be the peer IP, not the username
-  or connection; shared NAT addresses can therefore throttle each other, and the
-  feature shall not claim a global, cross-process or username lockout.
+  source limit shall disable the per-IP feature. The key shall be the peer IP,
+  not the username or connection; shared NAT addresses can therefore throttle
+  each other. Table saturation shall preserve tracked state and use a separate
+  bounded overflow budget. This per-IP feature shall not claim cross-process or
+  username lockout.
 - **R392 (ubiquitous):** Tests shall cover same-source lockout across connections,
   lockout expiry, zero disabling, success reset, `HELLO AUTH` sharing the counter,
   distinct-source state in unit tests, bounded table behavior, no secret
-  reflection and every worker mode. Documentation shall retain the absence of
-  global/cross-process rate limiting, delayed responses, username lockout,
-  centralized audit shipping and a complete brute-force deployment boundary.
+  reflection and every worker mode. The optional process-global budget shall
+  count failed credentials across peers, use the configured failure window,
+  reject all credential attempts after threshold, remain locked despite a
+  successful-source reset, and be disabled at zero. It shall be documented as
+  process-local and potentially availability-impacting; cross-process limiting,
+  delayed responses, username lockout, centralized audit shipping and a complete
+  brute-force deployment boundary remain absent.
 
 ## Off-host audit shipping (S107)
 

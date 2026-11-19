@@ -310,6 +310,7 @@ pub struct ServerServices {
     max_clients: std::sync::atomic::AtomicUsize,
     auth_failure_limit: std::sync::atomic::AtomicUsize,
     auth_source_limit: std::sync::atomic::AtomicUsize,
+    auth_global_limit: std::sync::atomic::AtomicUsize,
     auth_guard: std::sync::Mutex<auth_guard::AuthGuard>,
     latency_monitor_threshold_ms: std::sync::atomic::AtomicU64,
     latency: std::sync::RwLock<latency::State>,
@@ -426,7 +427,8 @@ impl ServerServices {
             max_clients: std::sync::atomic::AtomicUsize::new(128),
             auth_failure_limit: std::sync::atomic::AtomicUsize::new(10),
             auth_source_limit: std::sync::atomic::AtomicUsize::new(0),
-            auth_guard: std::sync::Mutex::new(auth_guard::AuthGuard::new(0, 60_000)),
+            auth_global_limit: std::sync::atomic::AtomicUsize::new(0),
+            auth_guard: std::sync::Mutex::new(auth_guard::AuthGuard::new(0, 0, 60_000)),
             latency_monitor_threshold_ms: std::sync::atomic::AtomicU64::new(
                 latency::DEFAULT_THRESHOLD_MS,
             ),
@@ -896,15 +898,21 @@ impl ServerServices {
         self.auth_failure_limit.store(limit, Ordering::Release);
     }
 
-    pub fn set_auth_source_limit(&self, limit: usize, window_ms: u64) {
+    pub fn set_auth_source_limit(&self, limit: usize, global_limit: usize, window_ms: u64) {
         self.auth_source_limit.store(limit, Ordering::Release);
+        self.auth_global_limit
+            .store(global_limit, Ordering::Release);
         if let Ok(mut guard) = self.auth_guard.lock() {
-            guard.configure(limit, window_ms);
+            guard.configure(limit, global_limit, window_ms);
         }
     }
 
     pub fn auth_source_limit(&self) -> usize {
         self.auth_source_limit.load(Ordering::Acquire)
+    }
+
+    pub fn auth_global_limit(&self) -> usize {
+        self.auth_global_limit.load(Ordering::Acquire)
     }
 
     pub fn auth_source_locked(&self, source: std::net::IpAddr) -> bool {

@@ -127,6 +127,31 @@ fn success_resets_the_source_budget() {
 }
 
 #[test]
+fn global_budget_counts_auth_failures_across_distinct_peers() {
+    let server = start(Config {
+        requirepass: Some(b"secret".to_vec()),
+        auth_failure_limit: 0,
+        auth_source_limit: 0,
+        auth_global_limit: 2,
+        auth_source_window_ms: 60_000,
+        ..Config::default()
+    });
+    let mut first = connect(&server, Ipv4Addr::new(127, 0, 0, 1));
+    send(&mut first, &[b"AUTH", b"wrong"], WRONGPASS);
+
+    let mut second = connect(&server, Ipv4Addr::new(127, 0, 0, 2));
+    send(
+        &mut second,
+        &[b"HELLO", b"2", b"AUTH", b"default", b"wrong"],
+        WRONGPASS,
+    );
+
+    let mut third = connect(&server, Ipv4Addr::new(127, 0, 0, 3));
+    send(&mut third, &[b"AUTH", b"secret"], THROTTLED);
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn hello_auth_failures_contribute_to_the_source_budget() {
     let server = start(Config {
         requirepass: Some(b"secret".to_vec()),

@@ -4,8 +4,9 @@ Rillcache supports either one operator-configured password for the implicit Redi
 `default` user or a Redis-style ACL file with multiple users, password hashes,
 command categories/commands, key patterns and channel patterns. This is a real
 access-control boundary for a private deployment, not a complete Redis security
-design. It adds per-connection and per-peer-IP failed-`AUTH` budgets but not
-global/cross-process rate limiting, delayed responses or username lockout, TLS
+design. It adds per-connection and per-peer-IP failed-`AUTH` budgets plus an
+optional process-wide aggregate budget, but not cross-process rate limiting,
+delayed responses or username lockout, TLS
 server-certificate OCSP validation, collector sender authentication/TLS/federation,
 full-chain audit signing, key IDs or hot-rotation custody, or credential encryption at rest.
 
@@ -242,8 +243,8 @@ describes current behavior, not a second checklist.
   `LATENCY`/`SLOWLOG`/`PUBSUB` overrides,
   nested selectors, dynamic key-sandbox rules, collector sender
   authentication/TLS/federation, full-chain signing/key-ID/hot rotation,
-  global/cross-process rate limiting and server-certificate OCSP validation are
-  absent. Native mTLS client CRL checking is opt-in and fail-closed; see [TLS](tls.md).
+  cross-process/distributed rate limiting and server-certificate OCSP validation
+  are absent. Native mTLS client CRL checking is opt-in and fail-closed; see [TLS](tls.md).
   The per-user `maxconnections` extension limits authenticated sessions only; it
   does not isolate the shared keyspace, memory, CPU or unauthenticated default-user
   connections.
@@ -292,7 +293,7 @@ describes current behavior, not a second checklist.
   `0` disables) closes a connection after `N` consecutive failed `AUTH` or
   `HELLO ... AUTH` attempts; a successful authentication or `RESET` clears the
   counter. The standard `WRONGPASS` reply is sent before the close. A client can
-  reconnect, so this is not a per-source or global lockout.
+  reconnect, so this setting by itself is not a per-source or global lockout.
 - **Per-peer-IP failed-auth throttle.** `--auth-source-limit N` (default `0`,
   disabled) counts failures by peer IP within `--auth-source-window-ms W` (default
   60000). Once a source reaches `N`, further `AUTH`/`HELLO AUTH` credential
@@ -302,9 +303,14 @@ describes current behavior, not a second checklist.
   separate overflow budget instead of evicting tracked peer state; a successful
   authentication from an overflow source cannot individually reset that shared
   budget, which expires with its window. Shared NAT addresses and overflow peers
-  can throttle each other. There is no delay, username lockout, cross-process or
-  global rate limit. Use network policy/firewalling and strong, unique passwords;
-  do not expose the port directly to untrusted clients.
+  can throttle each other. `--auth-global-limit N` (default `0`, disabled)
+  additionally counts failed credentials across all peers in this process and
+  locks all new credential attempts for the same window when `N` is reached.
+  Successful authentication does not reset this shared budget. It is a
+  process-local aggregate, not a cross-process/distributed limit; it can deny
+  legitimate users after an attacker exhausts it. There is no delay or username
+  lockout. Use network policy/firewalling and strong, unique passwords; do not
+  expose the port directly to untrusted clients.
 - **Live revocation is explicit.** Rotating or disabling the password affects new
   authentication decisions; a connection that already authenticated remains
   authenticated, as in Redis. The supported revocation procedure is

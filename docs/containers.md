@@ -220,8 +220,10 @@ kubectl patch deployment rillcache --type=json -p='[
 For multi-user ACLs, create the secret from an ACL file and use
 `--aclfile /run/secrets/users.acl` instead. This keeps the root filesystem
 read-only and credentials out of the image and process arguments. It does not add
-global/cross-process rate limiting, collector sender authentication/TLS/federation or durable backup guarantees; TLS requires
-explicit certificate configuration.
+cross-process/distributed rate limiting, collector sender authentication/TLS/
+federation or durable backup guarantees. The optional process-local auth-failure
+budget is not shared across replicas. TLS requires explicit certificate
+configuration.
 
 Use one replica and `Recreate`: independent replicas do not share data, and a
 Service over several would randomly route keys to unrelated caches. With

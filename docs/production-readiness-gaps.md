@@ -62,7 +62,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Compatibility and command surface | Partial | Scripting, RDB, replication, cluster, multiple databases, bounded command and protocol coverage |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
-| Security and transport | Partial | No independent review, full ACLs, global rate limiting, TLS hardening or audited collector federation |
+| Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
@@ -525,15 +525,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   implemented and tested; or the audit path is explicitly best-effort with a
   documented compensating control.
 
-- [ ] **S4. Global/cross-process rate limiting is missing.** [P0]
-  Failed-auth budgets are process-local and per-connection/per-IP. Shared NAT
-  addresses can throttle each other; there is no username lockout, global budget
-  or distributed policy. **Partial (2026-11-18):** when the bounded per-IP table
-  fills, new sources share an overflow budget instead of evicting tracked source
-  state. This limits table-pressure lockout bypass but intentionally lets overflow
-  peers throttle one another; it does not provide a global or cross-process
-  budget. **Closes when:** a bounded, shared rate-limit design is implemented or
-  the deployment requires an external control plane with documented behavior.
+- [ ] **S4. Cross-process rate limiting is missing.** [P0]
+  Failed-auth budgets remain process-local. Shared NAT addresses can throttle
+  each other; there is no cross-process/distributed policy or username lockout.
+  **Partial (2026-11-18):** when the bounded per-IP table fills, new sources
+  share an overflow budget instead of evicting tracked source state. **Partial
+  (2026-11-19):** opt-in `--auth-global-limit` counts failures across peers in
+  one process and locks credential attempts for the configured source window;
+  it defaults off and can itself deny legitimate users. Neither control is
+  shared between server processes. **Closes when:** a bounded shared/distributed
+  rate-limit design is implemented or the deployment requires an external
+  control plane with documented behavior.
 
 - [ ] **S5. TLS hardening is incomplete.** [P0]
   TLS 1.3 is available with exact-name SNI selection, bounded operator-triggered

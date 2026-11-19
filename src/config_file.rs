@@ -20,6 +20,7 @@ const SUPPORTED: &[&str] = &[
     "max-clients",
     "auth-failure-limit",
     "auth-source-limit",
+    "auth-global-limit",
     "auth-source-window-ms",
     "threads",
     "io-mode",

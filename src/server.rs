@@ -194,7 +194,10 @@ pub struct Config {
     /// Failed authentication attempts per peer IP before a temporary lockout.
     /// Zero disables the per-source budget.
     pub auth_source_limit: usize,
-    /// Per-source failure window and lockout duration in milliseconds.
+    /// Failed authentication attempts across all clients in this process before
+    /// a temporary global lockout. Zero disables the process-local budget.
+    pub auth_global_limit: usize,
+    /// Per-source and process-global failure window/lockout duration in milliseconds.
     pub auth_source_window_ms: u64,
     /// None: Unix readiness plain-TCP engine (Mio by default, Tokio when
     /// `io_mode` is `Tokio`); cold configurations and non-Unix retain managed
@@ -293,6 +296,7 @@ impl std::fmt::Debug for Config {
             .field("max_clients", &self.max_clients)
             .field("auth_failure_limit", &self.auth_failure_limit)
             .field("auth_source_limit", &self.auth_source_limit)
+            .field("auth_global_limit", &self.auth_global_limit)
             .field("auth_source_window_ms", &self.auth_source_window_ms)
             .field("worker_threads", &self.worker_threads)
             .field("io_mode", &self.io_mode)
@@ -354,6 +358,7 @@ impl Default for Config {
             max_clients: 128,
             auth_failure_limit: 10,
             auth_source_limit: 0,
+            auth_global_limit: 0,
             auth_source_window_ms: 60_000,
             worker_threads: None,
             io_mode: IoMode::default(),
@@ -422,6 +427,7 @@ impl Config {
             || self.max_clients == 0
             || self.auth_failure_limit > 10_000
             || self.auth_source_limit > 10_000
+            || self.auth_global_limit > 10_000
             || self.auth_source_window_ms == 0
             || self.max_data_bytes == 0
             || self.limits.max_arguments == 0
@@ -763,7 +769,11 @@ impl Server {
         );
         store.set_max_clients(config.max_clients);
         store.set_auth_failure_limit(config.auth_failure_limit);
-        store.set_auth_source_limit(config.auth_source_limit, config.auth_source_window_ms);
+        store.set_auth_source_limit(
+            config.auth_source_limit,
+            config.auth_global_limit,
+            config.auth_source_window_ms,
+        );
         store.set_eviction_policy(config.maxmemory_policy);
         store.set_notify_flags(config.notify_keyspace_events);
         let listener = TcpListener::bind(config.bind_addr)?;
@@ -1879,6 +1889,10 @@ mod tests {
             },
             Config {
                 requirepass: Some(vec![b'x'; 1025]),
+                ..Config::default()
+            },
+            Config {
+                auth_global_limit: 10_001,
                 ..Config::default()
             },
             Config {
