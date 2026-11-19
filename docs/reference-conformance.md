@@ -48,6 +48,11 @@ ignored by default and requires `RILLCACHE_REFERENCE_ADDR` plus
   expiry shall return null; **when** it uses Valkey, the native error is expected.
   Rillcache follows Redis for this documented divergence.
 
+- **When** several clients subscribe to the same binary pattern, or one client
+  repeats that subscription, **then** `PUBSUB NUMPAT` and `INFO STATS` shall
+  count the pattern once and keep counting it until its last subscriber leaves.
+  Per-client subscription acknowledgements shall still report per-client counts.
+
 ## Reader and scope
 
 The response reader recognizes RESP2 simple strings, errors, integers, bulk

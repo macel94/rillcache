@@ -228,7 +228,7 @@ impl PubSub {
     }
 
     pub(super) fn numpat(&self) -> usize {
-        self.patterns.values().map(Vec::len).sum()
+        self.patterns.len()
     }
 
     pub(super) fn counts_for(&self, id: u64) -> (usize, usize) {
