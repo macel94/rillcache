@@ -2583,6 +2583,10 @@ impl ShardExecutor {
                     );
                     return;
                 }
+                if value == i64::MIN {
+                    out.extend_from_slice(b"-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n");
+                    return;
+                }
                 rank = value;
                 index += 2;
             } else if args[index].eq_ignore_ascii_case(b"COUNT") && index + 1 < args.len() {
