@@ -409,11 +409,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   and Windows Ctrl-C, stops admission, joins workers and explicitly flushes the
   journal within a 25-second deadline; a second signal or expired deadline logs
   forced termination and exits nonzero. Kubernetes now allows a 30-second grace
-  period. **Retained gap:** active client sockets are closed rather than drained,
-  so in-flight replies can be lost; a forced timeout cannot guarantee the final
-  journal flush. **Closes when:** a reviewed drain lets admitted commands finish
-  within a bounded deadline, flushes and joins, reports forced termination, and
-  the supervisor grace period matches the tested contract.
+  period. **Partial (2026-11-19):** shutdown stops listener admission and
+  half-closes client read sides; replies for already-dispatched commands are
+  written before those connections close, within the existing deadline. A
+  subprocess test withholds an 8 MiB reply until SIGTERM and verifies both the
+  full response and journal recovery. **Retained gap:** this is not a full client
+  drain: idle/incomplete clients, subscriptions, blocked commands and replies
+  that cannot be written before the deadline may be abandoned; client receipt is
+  not acknowledged, and a forced timeout cannot guarantee the final journal
+  flush. **Closes when:** all supported transports have verified command-drain,
+  cancellation, join and forced-timeout behavior within the supervisor grace
+  contract.
 
 - [x] **D8. Multi-process journal ownership is unguarded.** [P1]
   **Complete (2026-11-14): local ownership plus explicit profile exclusion.**

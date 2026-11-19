@@ -21,6 +21,10 @@ mod unix {
     }
 
     fn start(directory: &std::path::Path) -> (ServerProcess, SocketAddr) {
+        start_with(directory, &[])
+    }
+
+    fn start_with(directory: &std::path::Path, extra: &[&str]) -> (ServerProcess, SocketAddr) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
@@ -44,6 +48,7 @@ mod unix {
         {
             command.args(["--threads", &mode]);
         }
+        command.args(extra);
         let mut child = command.spawn().unwrap();
         let mut stderr = BufReader::new(child.stderr.take().unwrap());
         let mut ready = String::new();
@@ -84,13 +89,129 @@ mod unix {
         assert_eq!(actual, expected);
     }
 
-    fn sigterm(server: &mut ServerProcess) {
+    fn send_sigterm(server: &ServerProcess) {
         let status = Command::new("/bin/kill")
             .args(["-TERM", &server.child.id().to_string()])
             .status()
             .unwrap();
         assert!(status.success(), "kill command exited with {status}");
+    }
+
+    fn sigterm(server: &mut ServerProcess) {
+        send_sigterm(server);
         wait_for_success(server);
+    }
+
+    fn read_bulk(stream: &mut TcpStream) -> Vec<u8> {
+        let mut header = Vec::new();
+        loop {
+            let mut byte = [0; 1];
+            stream.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+            if header.ends_with(b"\r\n") {
+                break;
+            }
+        }
+        assert_eq!(header.first(), Some(&b'$'));
+        let size: usize = std::str::from_utf8(&header[1..header.len() - 2])
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut value = vec![0; size];
+        stream.read_exact(&mut value).unwrap();
+        let mut crlf = [0; 2];
+        stream.read_exact(&mut crlf).unwrap();
+        assert_eq!(&crlf, b"\r\n");
+        value
+    }
+
+    #[test]
+    fn sigterm_drains_an_admitted_reply_and_flushes_aof_before_success_exit() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "rillcache-signal-drain-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let (mut server, address) = start_with(
+            &directory,
+            &[
+                "--max-frame-bytes",
+                "16777216",
+                "--max-bulk-bytes",
+                "8388608",
+            ],
+        );
+        request(
+            address,
+            b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
+            b"+OK\r\n",
+        );
+
+        let value = vec![b'x'; 8 * 1024 * 1024];
+        let mut set = format!("*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n${}\r\n", value.len()).into_bytes();
+        set.extend_from_slice(&value);
+        set.extend_from_slice(b"\r\n");
+        request(address, &set, b"+OK\r\n");
+
+        let mut pending = TcpStream::connect(address).unwrap();
+        pending
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        pending
+            .write_all(b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n")
+            .unwrap();
+        let mut admin = TcpStream::connect(address).unwrap();
+        admin
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            admin
+                .write_all(b"*2\r\n$4\r\nINFO\r\n$12\r\ncommandstats\r\n")
+                .unwrap();
+            let stats = read_bulk(&mut admin);
+            if stats
+                .windows(b"cmdstat_get:calls=1".len())
+                .any(|window| window == b"cmdstat_get:calls=1")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "GET was not dispatched before SIGTERM"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        send_sigterm(&server);
+        assert_eq!(read_bulk(&mut pending), value);
+        wait_for_success(&mut server);
+        drop(server);
+
+        let (mut restarted, restarted_address) = start_with(
+            &directory,
+            &[
+                "--max-frame-bytes",
+                "16777216",
+                "--max-bulk-bytes",
+                "8388608",
+            ],
+        );
+        let mut recovery = TcpStream::connect(restarted_address).unwrap();
+        recovery
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        recovery
+            .write_all(b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n")
+            .unwrap();
+        assert_eq!(read_bulk(&mut recovery), value);
+        sigterm(&mut restarted);
+        drop(restarted);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

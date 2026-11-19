@@ -1083,8 +1083,13 @@ fn serve_plain(
         }
         Ok(())
     })();
+    let shutdown_mode = if stopping.load(Ordering::Acquire) {
+        Shutdown::Read
+    } else {
+        Shutdown::Both
+    };
     for worker in &workers {
-        let _ = worker.control.shutdown(Shutdown::Both);
+        let _ = worker.control.shutdown(shutdown_mode);
     }
     let mut result = result;
     for worker in workers {
@@ -1186,8 +1191,13 @@ fn serve_tls(
         }
         Ok(())
     })();
+    let shutdown_mode = if stopping.load(Ordering::Acquire) {
+        Shutdown::Read
+    } else {
+        Shutdown::Both
+    };
     for worker in &workers {
-        let _ = worker.control.shutdown(Shutdown::Both);
+        let _ = worker.control.shutdown(shutdown_mode);
     }
     let mut result = result;
     for worker in workers {

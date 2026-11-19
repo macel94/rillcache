@@ -110,7 +110,7 @@ impl Context {
 
     fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
-        close_controls(&self.controls);
+        shutdown_read_controls(&self.controls);
     }
 
     fn spawn(
@@ -144,6 +144,14 @@ fn close_controls(controls: &Controls) {
     }
 }
 
+fn shutdown_read_controls(controls: &Controls) {
+    if let Ok(controls) = controls.lock() {
+        for control in controls.values() {
+            let _ = control.shutdown(Shutdown::Read);
+        }
+    }
+}
+
 // One cold executor, not Tokio's unbounded blocking-task queue. Its single
 // permit is acquired BEFORE copying a request or moving session/output state,
 // and is owned by the job until completion even if its receiver disappears.
@@ -173,7 +181,7 @@ impl ColdExecutor {
             .acquire_owned()
             .await
             .map_err(|_| io::Error::other("cold executor stopped"))?;
-        if context.stopped() {
+        if context.stopped() && !matches!(&operation, ColdOperation::Command(_)) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "server stopping",
@@ -644,7 +652,7 @@ async fn serve_connection(
     let mut activity = Instant::now();
     let mut frame_deadline = crate::frame_deadline::FrameDeadline::default();
     loop {
-        if context.stopped() {
+        if context.stopped() && input.is_empty() && output.is_empty() {
             return Ok(());
         }
         let mut pushed = 0;
@@ -682,7 +690,7 @@ async fn serve_connection(
             write_reply(&mut stream, &output, config.idle_timeout).await?;
             output.clear();
             activity = Instant::now();
-            if context.stopped() {
+            if context.stopped() && input.is_empty() {
                 return Ok(());
             }
         }
@@ -716,9 +724,6 @@ async fn serve_connection(
                                 )
                                 .await?
                                 .expect("complete cold command");
-                            if context.stopped() {
-                                return Ok(());
-                            }
                         }
                         consumed += used;
                         if action == Action::Close {
@@ -762,6 +767,9 @@ async fn serve_connection(
                 write_reply(&mut stream, &output, config.idle_timeout).await?;
                 output.clear();
                 activity = Instant::now();
+            }
+            if context.stopped() && input.is_empty() {
+                return Ok(());
             }
             if !need_input && !input.is_empty() && !session.is_blocked() && !session.is_paused() {
                 tokio::task::yield_now().await;

@@ -154,6 +154,9 @@ impl Client {
             return Ok(None);
         }
         let mut progress = self.flush()?;
+        if self.eof && self.input.is_empty() && self.output.is_empty() {
+            return Ok(None);
+        }
         if self.closing {
             return Ok(if self.output.is_empty() {
                 None
@@ -233,7 +236,11 @@ impl Client {
         if read_first {
             progress |= self.receive(config.limits, chunk)?;
             if self.input.is_empty() || self.closing {
-                return Ok(self.open(progress, config.idle_timeout));
+                return Ok(if self.eof && self.output.is_empty() {
+                    None
+                } else {
+                    self.open(progress, config.idle_timeout)
+                });
             }
         }
         let mut consumed = 0;
@@ -614,7 +621,20 @@ fn run_lane<E: Execution>(
     let mut chunk = [0; 16 * 1024];
     let mut maintenance = Instant::now();
     let mut polling = PollWindow::new(maintenance);
-    while !stop.load(Ordering::Acquire) && !store.shutdown_requested() {
+    let mut draining = false;
+    loop {
+        if stop.load(Ordering::Acquire) && !draining {
+            draining = true;
+            for client in &clients {
+                let _ = client.stream.shutdown(Shutdown::Read);
+            }
+        }
+        if store.shutdown_requested() {
+            break;
+        }
+        if draining && admitted.load(Ordering::Acquire) == 0 {
+            break;
+        }
         if let Some(inbox) = &inbox {
             inbox.drain(&store);
         }
@@ -626,6 +646,9 @@ fn run_lane<E: Execution>(
         }
         let mut progress = false;
         while let Ok(client) = receiver.try_recv() {
+            if draining {
+                let _ = client.stream.shutdown(Shutdown::Read);
+            }
             clients.push(client);
             progress = true;
         }
@@ -643,6 +666,9 @@ fn run_lane<E: Execution>(
                     clients.swap_remove(index);
                 }
             }
+        }
+        if draining && admitted.load(Ordering::Acquire) == 0 {
+            break;
         }
         // Replies in flight are not an idle connection. Give the
         // next client request a short bounded window to arrive,

@@ -228,8 +228,9 @@ unique; no shared service or concurrently destructive suite uses an endpoint.
 SIGINT/SIGTERM runs cleanup where the OS permits. The standalone binary now
 handles those signals with bounded worker joins and journal flush; the dedicated
 subprocess shutdown test verifies exit and journal recovery separately from the
-upstream compatibility harness. A signal stop still closes active sockets rather
-than providing a full client drain.
+upstream compatibility harness. A signal stop drains replies for commands
+already dispatched, but it is not a full client drain: idle/incomplete clients,
+subscriptions, blocked commands and deadline-expired replies may be abandoned.
 
 When a run fails, inspect in order: build prerequisites/checksums and command
 status; server startup log/readiness and process status; prerequisite JSON; native
