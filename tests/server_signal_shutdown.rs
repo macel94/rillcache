@@ -48,7 +48,8 @@ mod unix {
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        if let Ok(mode) = std::env::var("RILLCACHE_TEST_THREADS")
+        if !extra.contains(&"--io-mode")
+            && let Ok(mode) = std::env::var("RILLCACHE_TEST_THREADS")
             && mode != "0"
         {
             command.args(["--threads", &mode]);
@@ -173,8 +174,7 @@ mod unix {
         value
     }
 
-    #[test]
-    fn sigterm_drains_an_admitted_reply_and_flushes_aof_before_success_exit() {
+    fn verify_sigterm_drains_an_admitted_reply_and_flushes_aof(server_mode: &[&str]) {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -184,15 +184,14 @@ mod unix {
             std::process::id()
         ));
         std::fs::create_dir(&directory).unwrap();
-        let (mut server, address) = start_with(
-            &directory,
-            &[
-                "--max-frame-bytes",
-                "16777216",
-                "--max-bulk-bytes",
-                "8388608",
-            ],
-        );
+        let mut server_args = vec![
+            "--max-frame-bytes",
+            "16777216",
+            "--max-bulk-bytes",
+            "8388608",
+        ];
+        server_args.extend_from_slice(server_mode);
+        let (mut server, address) = start_with(&directory, &server_args);
         request(
             address,
             b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
@@ -240,15 +239,7 @@ mod unix {
         wait_for_success(&mut server);
         drop(server);
 
-        let (mut restarted, restarted_address) = start_with(
-            &directory,
-            &[
-                "--max-frame-bytes",
-                "16777216",
-                "--max-bulk-bytes",
-                "8388608",
-            ],
-        );
+        let (mut restarted, restarted_address) = start_with(&directory, &server_args);
         let mut recovery = TcpStream::connect(restarted_address).unwrap();
         recovery
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -260,6 +251,16 @@ mod unix {
         sigterm(&mut restarted);
         drop(restarted);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn sigterm_drains_an_admitted_reply_and_flushes_aof_before_success_exit() {
+        verify_sigterm_drains_an_admitted_reply_and_flushes_aof(&[]);
+    }
+
+    #[test]
+    fn tokio_sigterm_drains_an_admitted_reply_and_flushes_aof_before_success_exit() {
+        verify_sigterm_drains_an_admitted_reply_and_flushes_aof(&["--io-mode", "tokio"]);
     }
 
     #[test]
