@@ -3,9 +3,9 @@
 //! The default user keeps the single-password behavior from S27. Additional users
 //! add Redis-shaped `on/off`, password, command-category/command, read/write key,
 //! channel and Redis 7 selector rules. This is not a complete Redis ACL
-//! implementation: first-argument command rules, subcommand-specific categories,
-//! persistent audit and rate limiting are absent and documented in
-//! `docs/security.md`.
+//! implementation: first-argument command rules and subcommand-specific
+//! categories are absent; authentication throttles are process-local and not
+//! distributed. Limits are documented in `docs/security.md`.
 
 use super::{discovery, sha256};
 use std::collections::BTreeMap;

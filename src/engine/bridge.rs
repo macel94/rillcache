@@ -887,11 +887,15 @@ impl Store {
     pub fn set_auth_failure_limit(&mut self, limit: usize) {
         self.services.set_auth_failure_limit(limit)
     }
-    pub fn set_auth_source_limit(&mut self, limit: usize, window_ms: u64) {
-        self.services.set_auth_source_limit(limit, window_ms)
+    pub fn set_auth_source_limit(&mut self, limit: usize, global_limit: usize, window_ms: u64) {
+        self.services
+            .set_auth_source_limit(limit, global_limit, window_ms)
     }
     pub fn auth_source_limit(&self) -> usize {
         self.services.auth_source_limit()
+    }
+    pub fn auth_global_limit(&self) -> usize {
+        self.services.auth_global_limit()
     }
     pub fn auth_source_locked(&self, source: std::net::IpAddr) -> bool {
         self.services.auth_source_locked(source)

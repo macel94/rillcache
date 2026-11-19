@@ -17,7 +17,7 @@ type SniFiles = (
     Option<std::path::PathBuf>,
 );
 
-const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
+const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-global-limit N   Failed AUTH attempts process-wide before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source/global failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
   --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC, TLS key, reload-trigger and client-certificate mapping files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-ocsp-file PATH     Optional DER OCSP response stapled with the default identity\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-client-crl-file PATH  DER client CRL; unknown or expired status fails closed (requires CA)\n  --tls-client-cert-user SHA256=USER  Map a verified leaf fingerprint to an ACL user (repeatable)\n  --tls-client-cert-users-file PATH  Bounded SHA256=ACL-user mapping file, atomically reloaded with TLS generation\n  --tls-reload-trigger PATH  Reload TLS files when this file's token changes\n  --tls-sni-cert-file NAME=PATH  Additional exact SNI certificate chain (repeatable)\n  --tls-sni-key-file NAME=PATH   Private key for the matching SNI name (repeatable)\n  --tls-sni-ocsp-file NAME=PATH  Optional DER OCSP response for that SNI identity (repeatable)\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
@@ -159,6 +159,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--max-clients"
             | "--auth-failure-limit"
             | "--auth-source-limit"
+            | "--auth-global-limit"
             | "--auth-source-window-ms"
             | "--threads"
             | "--io-mode"
@@ -249,6 +250,13 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                             .ok()
                             .filter(|limit| *limit <= 10_000)
                             .ok_or("--auth-source-limit requires 0..=10000")?;
+                    }
+                    "--auth-global-limit" => {
+                        config.auth_global_limit = value
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|limit| *limit <= 10_000)
+                            .ok_or("--auth-global-limit requires 0..=10000")?;
                     }
                     "--auth-source-window-ms" => {
                         config.auth_source_window_ms = value
@@ -887,7 +895,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "# local startup\nbind 127.0.0.1:26379\nmaxclients 12\nrequirepass \"file secret\"\n",
+            "# local startup\nbind 127.0.0.1:26379\nmaxclients 12\nauth-global-limit 20\nrequirepass \"file secret\"\n",
         )
         .unwrap();
         let path = path.to_str().unwrap();
@@ -898,6 +906,7 @@ mod tests {
         };
         assert_eq!(from_file.bind_addr, "127.0.0.1:26379".parse().unwrap());
         assert_eq!(from_file.max_clients, 12);
+        assert_eq!(from_file.auth_global_limit, 20);
         assert_eq!(
             from_file.requirepass.as_deref(),
             Some(b"file secret".as_slice())
@@ -957,6 +966,9 @@ mod tests {
             vec!["--auth-source-limit", "10001"],
             vec!["--auth-source-limit", "-1"],
             vec!["--auth-source-limit", "x"],
+            vec!["--auth-global-limit", "10001"],
+            vec!["--auth-global-limit", "-1"],
+            vec!["--auth-global-limit", "x"],
             vec!["--auth-source-window-ms", "0"],
             vec!["--auth-source-window-ms", "-1"],
             vec!["--threads", "0"],
@@ -1051,6 +1063,8 @@ mod tests {
                 "3",
                 "--auth-source-limit",
                 "5",
+                "--auth-global-limit",
+                "20",
                 "--auth-source-window-ms",
                 "250",
                 "--max-data-bytes",
@@ -1076,6 +1090,7 @@ mod tests {
         assert_eq!(config.max_clients, 4);
         assert_eq!(config.auth_failure_limit, 3);
         assert_eq!(config.auth_source_limit, 5);
+        assert_eq!(config.auth_global_limit, 20);
         assert_eq!(config.auth_source_window_ms, 250);
         assert_eq!(config.worker_threads, Some(4));
         assert_eq!(config.socket_workers, Some(3));

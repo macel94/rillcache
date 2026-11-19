@@ -12,6 +12,7 @@ fn start(workers: Option<usize>, max_clients: usize) -> ServerHandle {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         worker_threads: workers,
         max_clients,
+        auth_global_limit: 13,
         ..Config::default()
     })
     .unwrap()
@@ -103,6 +104,7 @@ fn info_clients_reports_the_configured_maxclients_in_all_modes() {
         stream.write_all(&request).unwrap();
         let text = bulk_text(&read_frame(&mut stream, 0));
         assert!(text.contains("maxclients:7\r\n"), "{text}");
+        assert!(text.contains("auth_global_limit:13\r\n"), "{text}");
         assert!(text.contains("connected_clients:1\r\n"), "{text}");
 
         let mut request = Vec::new();
@@ -110,6 +112,7 @@ fn info_clients_reports_the_configured_maxclients_in_all_modes() {
         stream.write_all(&request).unwrap();
         let all = bulk_text(&read_frame(&mut stream, 0));
         assert!(all.contains("maxclients:7\r\n"), "{all}");
+        assert!(all.contains("auth_global_limit:13\r\n"), "{all}");
         server.shutdown().unwrap();
     }
 }

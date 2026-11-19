@@ -21,6 +21,10 @@ allowed.
   setting.
 - `maxmemory` is an alias for `max-data-bytes`, and `maxclients` is an alias for
   `max-clients`.
+- `auth-failure-limit`, `auth-source-limit`, `auth-global-limit` and
+  `auth-source-window-ms` configure the bounded authentication budgets described
+  in [security](security.md); the global budget is process-local and disabled by
+  default.
 - Values may be unquoted (one token), double-quoted with `\"`, `\\`, `\n`, `\r`
   and `\t` escapes, or single-quoted literally.
 - `aof-hmac-migrate` is the one boolean directive and accepts `yes` or `no`.
