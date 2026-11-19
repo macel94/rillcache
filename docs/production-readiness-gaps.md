@@ -412,8 +412,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   period. **Partial (2026-11-19):** shutdown stops listener admission and
   half-closes client read sides; replies for already-dispatched commands are
   written before those connections close, within the existing deadline. A
-  subprocess test withholds an 8 MiB reply until SIGTERM and verifies both the
-  full response and journal recovery. **Partial (2026-11-19):** a subprocess
+  subprocess tests withhold an 8 MiB reply until SIGTERM and verify both the
+  full response and journal recovery in default and opt-in Tokio plain-TCP modes;
+  TLS signal-drain behavior remains unverified. **Partial (2026-11-19):** a subprocess
   regression now sends a second SIGTERM only after observing the first-signal
   shutdown log while an admitted 8 MiB reply remains unread, and requires the
   forced-termination log plus nonzero exit. The 25-second timeout outcome is
