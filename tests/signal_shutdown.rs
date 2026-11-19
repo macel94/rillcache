@@ -284,7 +284,7 @@ mod unix {
         );
         request(
             address,
-            b"*3\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
+            b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$20\r\ncommandstats-enabled\r\n$3\r\nyes\r\n",
             b"+OK\r\n",
         );
         let value = vec![b'x'; 8 * 1024 * 1024];
