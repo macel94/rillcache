@@ -234,3 +234,73 @@ fn pipelined_frames_consume_exactly_one_command_at_a_time() {
         assert_eq!(offset, wire.len(), "case {case}");
     }
 }
+
+#[test]
+fn fragmented_binary_pipelines_match_incremental_dispatch_model() {
+    const SEED: u64 = 0x006d_6f64_656c_7265;
+    let mut rng = Rng(SEED);
+    for case in 0..160 {
+        let command_count = 1 + rng.below(5);
+        let mut expected = Vec::with_capacity(command_count);
+        let mut wire = Vec::new();
+        for _ in 0..command_count {
+            let argument_count = 1 + rng.below(5);
+            let mut arguments = Vec::with_capacity(argument_count);
+            for index in 0..argument_count {
+                let length = if index == 0 {
+                    1 + rng.below(12)
+                } else {
+                    rng.below(24)
+                };
+                arguments.push(rng.bytes(length));
+            }
+            let slices: Vec<&[u8]> = arguments.iter().map(Vec::as_slice).collect();
+            encode_request(&slices, &mut wire);
+            expected.push(arguments);
+        }
+
+        let mut buffered = Vec::new();
+        let mut observed: Vec<Vec<Vec<u8>>> = Vec::with_capacity(command_count);
+        let mut offset = 0;
+        while offset < wire.len() {
+            let remaining = wire.len() - offset;
+            let chunk_len = if case % 4 == 0 {
+                1
+            } else {
+                1 + rng.below(remaining.min(37))
+            };
+            let end = offset + chunk_len.min(remaining);
+            buffered.extend_from_slice(&wire[offset..end]);
+            offset = end;
+
+            loop {
+                let before = observed.len();
+                let result = dispatch_request(&buffered, Limits::default(), |arguments| {
+                    observed.push(arguments.iter().map(|argument| argument.to_vec()).collect());
+                })
+                .unwrap_or_else(|error| panic!("seed {SEED:#x} case {case}: {error}"));
+                match result {
+                    Some(((), consumed)) => {
+                        assert!(consumed > 0 && consumed <= buffered.len());
+                        assert_eq!(observed.len(), before + 1, "seed {SEED:#x} case {case}");
+                        assert_eq!(
+                            observed[before], expected[before],
+                            "seed {SEED:#x} case {case}: command order/content"
+                        );
+                        buffered.drain(..consumed);
+                    }
+                    None => {
+                        assert_eq!(observed.len(), before, "partial command was dispatched");
+                        break;
+                    }
+                }
+            }
+        }
+
+        assert!(buffered.is_empty(), "seed {SEED:#x} case {case}");
+        assert_eq!(
+            observed, expected,
+            "seed {SEED:#x} case {case}: incremental pipeline result"
+        );
+    }
+}
