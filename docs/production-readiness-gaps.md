@@ -415,9 +415,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   subprocess test withholds an 8 MiB reply until SIGTERM and verifies both the
   full response and journal recovery. **Retained gap:** this is not a full client
   drain: idle/incomplete clients, subscriptions, blocked commands and replies
-  that cannot be written before the deadline may be abandoned; client receipt is
-  not acknowledged, and a forced timeout cannot guarantee the final journal
-  flush. **Closes when:** all supported transports have verified command-drain,
+  that exceed a bounded transport write timeout or the shutdown deadline may be
+  abandoned; client receipt is not acknowledged, and a forced timeout cannot
+  guarantee the final journal flush. **Closes when:** all supported transports have verified command-drain,
   cancellation, join and forced-timeout behavior within the supervisor grace
   contract.
 

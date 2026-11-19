@@ -20,6 +20,7 @@ const OUTPUT_QUANTUM: usize = 64 * 1024;
 const MAX_READ: usize = 16 * 1024;
 const POLL_TICK: Duration = Duration::from_millis(10);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(100);
+const DRAIN_REPLY_TIMEOUT: Duration = Duration::from_secs(1);
 
 type Controls = Arc<Mutex<HashMap<u64, TcpStream>>>;
 type Tasks = JoinSet<io::Result<()>>;
@@ -106,6 +107,14 @@ impl Context {
 
     fn stopped(&self) -> bool {
         self.stopping.load(Ordering::Acquire) || self.store.shutdown_requested()
+    }
+
+    fn reply_timeout(&self) -> Duration {
+        if self.stopped() {
+            self.config.idle_timeout.min(DRAIN_REPLY_TIMEOUT)
+        } else {
+            self.config.idle_timeout
+        }
     }
 
     fn stop(&self) {
@@ -683,11 +692,11 @@ async fn serve_connection(
                 .run(&mut session, &mut output, context, ColdOperation::Paused)
                 .await?
         {
-            write_reply(&mut stream, &output, config.idle_timeout).await?;
+            write_reply(&mut stream, &output, context.reply_timeout()).await?;
             return Ok(());
         }
         if !output.is_empty() {
-            write_reply(&mut stream, &output, config.idle_timeout).await?;
+            write_reply(&mut stream, &output, context.reply_timeout()).await?;
             output.clear();
             activity = Instant::now();
             if context.stopped() && input.is_empty() {
@@ -727,7 +736,7 @@ async fn serve_connection(
                         }
                         consumed += used;
                         if action == Action::Close {
-                            write_reply(&mut stream, &output, config.idle_timeout).await?;
+                            write_reply(&mut stream, &output, context.reply_timeout()).await?;
                             return Ok(());
                         }
                         if session.is_blocked()
@@ -743,7 +752,7 @@ async fn serve_connection(
                     }
                     Err(error) => {
                         write!(output, "-ERR Protocol error: {error}\r\n")?;
-                        close_after_reply(&mut stream, &output, config.idle_timeout).await?;
+                        close_after_reply(&mut stream, &output, context.reply_timeout()).await?;
                         return Ok(());
                     }
                 }
@@ -764,7 +773,7 @@ async fn serve_connection(
             // 64 KiB batch bound can be exceeded by ONE existing atomic reply;
             // it is not a dishonest hard maximum or a change to wire semantics.
             if !output.is_empty() {
-                write_reply(&mut stream, &output, config.idle_timeout).await?;
+                write_reply(&mut stream, &output, context.reply_timeout()).await?;
                 output.clear();
                 activity = Instant::now();
             }
@@ -786,7 +795,7 @@ async fn serve_connection(
             close_after_reply(
                 &mut stream,
                 b"-ERR Protocol error: request frame limit exceeded\r\n",
-                config.idle_timeout,
+                context.reply_timeout(),
             )
             .await?;
             return Ok(());
@@ -820,7 +829,7 @@ async fn serve_connection(
                     write_reply(
                         &mut stream,
                         b"-ERR Protocol error: unexpected end of stream\r\n",
-                        config.idle_timeout,
+                        context.reply_timeout(),
                     )
                     .await?;
                 }
