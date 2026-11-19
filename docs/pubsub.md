@@ -22,7 +22,9 @@ cluster hash-slot routing, keyspace notification integration or durable queue.
   delivered frame count. Normal and sharded channels with the same bytes are
   independent.
 - `PUBSUB CHANNELS [pattern]`, `PUBSUB NUMSUB [channel ...]` and `PUBSUB NUMPAT`
-  expose normal channel names, counts and patterns. `PUBSUB SHARDCHANNELS
+  expose normal channel names, subscriber counts and the number of distinct
+  active patterns. A pattern shared by several clients counts once in `NUMPAT`
+  and `INFO STATS` (`pubsub_patterns`). `PUBSUB SHARDCHANNELS
   [pattern]` and `PUBSUB SHARDNUMSUB [channel ...]` expose the sharded namespace.
 
 Messages are RESP2 arrays or RESP3 push frames:
