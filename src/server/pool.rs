@@ -158,6 +158,12 @@ impl Client {
         if self.eof && self.input.is_empty() && self.output.is_empty() {
             return Ok(None);
         }
+        // A deferred command can have following pipeline bytes buffered and
+        // therefore never read the local half-close. Stop polling it during
+        // shutdown, but keep flushing replies produced before cancellation.
+        if self.shutdown_drain && (self.session.is_blocked() || self.session.is_paused()) {
+            self.closing = true;
+        }
         if self.closing {
             return Ok(if self.output.is_empty() {
                 None

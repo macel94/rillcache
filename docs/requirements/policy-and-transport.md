@@ -264,8 +264,11 @@ platforms retain timeout-based fallback admission.
   dispatched, subject to the R445 deadline and bounded transport write timeouts.
   Slow readers whose replies cannot be written within those bounds may be closed;
   idle clients, incomplete frames, subscriptions and blocked commands may be
-  cancelled. This is not a guarantee that clients received or acknowledged
-  replies. A subprocess test shall hold a large dispatched reply unread, signal
+  cancelled. When shutdown cancels a blocked command, commands pipelined behind
+  it shall not execute. A subprocess test shall leave the blocked connection open
+  and verify after journal replay that a write behind it did not take effect.
+  This is not a guarantee that clients received or acknowledged replies.
+  A subprocess test shall hold a large dispatched reply unread, signal
   the server, verify the full reply and journal recovery, and cover each
   fixed-worker transport mode.
 

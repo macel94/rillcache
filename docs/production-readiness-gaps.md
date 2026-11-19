@@ -413,17 +413,18 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   half-closes client read sides; replies for already-dispatched commands are
   written before those connections close, within the existing deadline.
   Subprocess tests withhold an 8 MiB reply until SIGTERM and verify both the full
-  response and journal recovery in default and opt-in Tokio plain-TCP modes; a
-  TLS-listener subprocess test also covers graceful drain and AOF recovery.
-  **Partial (2026-11-19):** default plain-TCP and TLS subprocess regressions send
-  a second SIGTERM only after observing the first-signal log while an admitted
-  8 MiB reply remains unread, then require the forced-termination log and
-  nonzero exit. Forced-exit tests do not claim journal recovery. The 25-second
-  timeout outcome is separately unit-tested. **Retained gap:** this is not a full client drain: idle/incomplete
-  clients, subscriptions, blocked commands and replies that exceed a bounded
-  transport write timeout or the shutdown deadline may be abandoned; client
-  receipt is not acknowledged, and a forced timeout cannot guarantee the final
-  journal flush. **Closes when:** all supported transports have verified
+  response and journal recovery in default and opt-in Tokio plain-TCP modes and
+  over TLS. All three transports also have a second-SIGTERM test that requires
+  a forced-termination log and nonzero exit while an admitted reply is unread.
+  Forced-exit tests do not claim journal recovery. The 25-second deadline outcome
+  is separately unit-tested, not timed end-to-end for each transport.
+  Subprocess cancellation tests leave idle, incomplete-frame, subscribed and
+  blocked clients connected through successful exit, then verify after restart
+  that neither an incomplete SET nor a SET queued behind BLPOP was replayed.
+  **Retained gap:** this is not a full client drain; replies that exceed a
+  bounded transport write timeout or the shutdown deadline may be abandoned.
+  Client receipt is not acknowledged, and forced timeout cannot guarantee the
+  final journal flush. **Closes when:** all supported transports have verified
   command-drain, cancellation, join and forced-timeout behavior within the
   supervisor grace contract.
 
