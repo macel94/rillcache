@@ -370,6 +370,54 @@ fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
                 );
             }
         }
+        if enabled {
+            let writable = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+                .args([
+                    "--healthcheck",
+                    &address,
+                    "--healthcheck-require-aof",
+                    "--healthcheck-aof-write-probe",
+                ])
+                .arg(&directory)
+                .output()
+                .unwrap();
+            assert!(writable.status.success(), "{:?}", writable.stderr);
+            assert!(writable.stdout.is_empty());
+            assert!(writable.stderr.is_empty());
+            assert!(
+                !std::fs::read_dir(&directory).unwrap().any(|entry| entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".rillcache-aof-healthcheck-")),
+                "health probe left a temporary file"
+            );
+
+            let not_a_directory = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+                .args([
+                    "--healthcheck",
+                    &address,
+                    "--healthcheck-require-aof",
+                    "--healthcheck-aof-write-probe",
+                ])
+                .arg(&password)
+                .output()
+                .unwrap();
+            assert_eq!(not_a_directory.status.code(), Some(1));
+            assert!(not_a_directory.stdout.is_empty());
+            assert!(
+                !String::from_utf8_lossy(&not_a_directory.stderr)
+                    .contains("test-only-journal-secret")
+            );
+        }
+
+        let invalid_without_aof = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--healthcheck", &address, "--healthcheck-aof-write-probe"])
+            .arg(&directory)
+            .output()
+            .unwrap();
+        assert_eq!(invalid_without_aof.status.code(), Some(2));
+
         let plain = Command::new(env!("CARGO_BIN_EXE_rillcache"))
             .args(["--healthcheck", &address, "--healthcheck-require-aof"])
             .output()
@@ -450,6 +498,41 @@ fn tls_healthcheck_verifies_identity_and_supports_acl_and_journal_checks() {
             assert!(output.stderr.is_empty());
         }
     }
+    let writable_tls_probe = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+        .args([
+            "--healthcheck",
+            &address,
+            "--healthcheck-user",
+            "probe",
+            "--healthcheck-password-file",
+        ])
+        .arg(&password)
+        .args([
+            "--healthcheck-tls-ca-file",
+            fixture("ca.crt").to_str().unwrap(),
+            "--healthcheck-server-name",
+            "localhost",
+            "--healthcheck-require-aof",
+            "--healthcheck-aof-write-probe",
+        ])
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        writable_tls_probe.status.success(),
+        "{:?}",
+        writable_tls_probe.stderr
+    );
+    assert!(writable_tls_probe.stdout.is_empty());
+    assert!(writable_tls_probe.stderr.is_empty());
+    assert!(
+        !std::fs::read_dir(&directory).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".rillcache-aof-healthcheck-")),
+        "TLS health probe left a temporary file"
+    );
     for output in [
         probe(&address, &fixture("ca.crt"), Some("wrong.example"), false),
         probe(&address, &fixture("client.crt"), None, false),
