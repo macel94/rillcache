@@ -420,7 +420,9 @@ fn valid_tls_server_name(name: &str) -> bool {
 }
 
 impl Config {
-    fn validate(&self) -> io::Result<()> {
+    /// Check startup option constraints and, when enabled, secret-file metadata.
+    /// This does not bind sockets or check whether server resources can be opened.
+    pub fn validate(&self) -> io::Result<()> {
         if self
             .worker_threads
             .is_some_and(|count| !(1..=64).contains(&count))
