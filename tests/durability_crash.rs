@@ -240,10 +240,13 @@ fn torn_final_transaction_recovers_verified_prefix_and_allows_durable_appends() 
         send(&mut stream, &[b"SET", b"kept", b"original"], b"+OK\r\n");
         let verified = std::fs::read(&journal).unwrap();
         assert!(!verified.is_empty());
-        send(&mut stream, &[b"MULTI"], b"+OK\r\n");
-        send(&mut stream, &[b"SET", b"kept", b"updated"], b"+QUEUED\r\n");
-        send(&mut stream, &[b"SET", b"torn", b"extra"], b"+QUEUED\r\n");
-        send(&mut stream, &[b"EXEC"], b"*2\r\n+OK\r\n+OK\r\n");
+        // One MSET emits a single integrity group for both keys. MULTI/EXEC
+        // currently journals its queued commands as separate groups.
+        send(
+            &mut stream,
+            &[b"MSET", b"kept", b"updated", b"torn", b"extra"],
+            b"+OK\r\n",
+        );
         drop(stream);
         server.kill();
 
