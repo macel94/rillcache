@@ -272,3 +272,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   length and CRC are valid. Neither command shall change the input archive;
   `restore` shall not publish a recovered prefix as a successful restore.
   Server startup's torn-tail recovery policy shall remain unchanged.
+
+- **R452 (ubiquitous):** When an offline checkpoint is restored to an empty
+  directory with the same binary and settings, the rollback drill shall
+  verify the checkpoint's binary value, absolute expiration, key count and
+  logical payload bytes, and confirm that a post-checkpoint write is absent.
+  Restoring over the newer journal shall fail; the isolated restore shall not
+  alter that journal or the checkpoint archive.

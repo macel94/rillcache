@@ -274,6 +274,83 @@ fn offline_backup_restore_preserves_strings_ttl_and_stream_pel() {
 }
 
 #[test]
+fn offline_rollback_recovers_checkpoint_without_overwriting_newer_journal() {
+    let source = temp_dir("rollback-source");
+    let rollback = temp_dir("rollback-target");
+    let archive = source.join("checkpoint.rcb");
+    let source_journal = source.join("appendonly.aof");
+    let key = b"key\0";
+    let before = b"old\xff";
+
+    let server = start(&source);
+    let mut stream = connect(&server);
+    assert_eq!(call(&mut stream, &[b"SET", key, before]), b"+OK\r\n");
+    assert_eq!(call(&mut stream, &[b"PEXPIRE", key, b"600000"]), b":1\r\n");
+    let deadline = call(&mut stream, &[b"PEXPIRETIME", key]);
+    let expires_at = std::str::from_utf8(&deadline[1..deadline.len() - 2])
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    assert!(expires_at > 0);
+    server.shutdown().unwrap();
+
+    let created = create(&source, &archive);
+    assert!(created.status.success(), "{created:?}");
+    let archive_bytes = std::fs::read(&archive).unwrap();
+    let verified = command(&["verify", "--input", archive.to_str().unwrap()]);
+    assert!(verified.status.success(), "{verified:?}");
+
+    let server = start(&source);
+    let mut stream = connect(&server);
+    assert_eq!(call(&mut stream, &[b"SET", key, b"new"]), b"+OK\r\n");
+    assert_eq!(
+        call(&mut stream, &[b"SET", b"new-key", b"new-only"]),
+        b"+OK\r\n"
+    );
+    server.shutdown().unwrap();
+    let newer_journal = std::fs::read(&source_journal).unwrap();
+
+    let restore = |target: &Path| {
+        command(&[
+            "restore",
+            "--input",
+            archive.to_str().unwrap(),
+            "--dir",
+            target.to_str().unwrap(),
+        ])
+    };
+    let in_place = restore(&source);
+    assert!(
+        !in_place.status.success(),
+        "rollback must not overwrite a journal"
+    );
+    assert!(String::from_utf8_lossy(&in_place.stderr).contains("refusing to overwrite"));
+    let restored = restore(&rollback);
+    assert!(restored.status.success(), "{restored:?}");
+
+    let server = start(&rollback);
+    let mut stream = connect(&server);
+    assert_eq!(call(&mut stream, &[b"GET", key]), b"$4\r\nold\xff\r\n");
+    assert_eq!(call(&mut stream, &[b"GET", b"new-key"]), b"$-1\r\n");
+    assert_eq!(call(&mut stream, &[b"DBSIZE"]), b":1\r\n");
+    assert_eq!(call(&mut stream, &[b"PEXPIRETIME", key]), deadline);
+    let memory = call(&mut stream, &[b"INFO", b"memory"]);
+    let memory = std::str::from_utf8(&memory).unwrap();
+    assert!(
+        memory
+            .lines()
+            .any(|line| line == "rillcache_payload_bytes:8"),
+        "{memory}"
+    );
+    server.shutdown().unwrap();
+
+    assert_eq!(std::fs::read(&source_journal).unwrap(), newer_journal);
+    assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
+    std::fs::remove_dir_all(source).unwrap();
+    std::fs::remove_dir_all(rollback).unwrap();
+}
+
+#[test]
 fn empty_journals_can_be_backed_up_verified_and_restored() {
     let source = temp_dir("empty-source");
     let archive_dir = temp_dir("empty-archive");
