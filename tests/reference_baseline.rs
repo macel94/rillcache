@@ -591,6 +591,68 @@ fn run_lrem_count_corpus(address: SocketAddr, suffix: &[u8]) {
     assert_command(&mut client, &[b"DEL", &list], Resp::Integer(1));
 }
 
+fn run_conditional_write_corpus(client: &mut Client, suffix: &[u8]) {
+    let existing = key(b"rillcache:baseline:nx-existing:\0", suffix);
+    let absent = key(b"rillcache:baseline:nx-absent:", suffix);
+    let hash = key(b"rillcache:baseline:nx-hash:", suffix);
+    let field = b"\0field\xff";
+    let value = b"a\0\xff";
+    let bulk = || Resp::Bulk(Some(value.to_vec()));
+    let deadline = 4_102_444_800_123;
+
+    assert_command(
+        client,
+        &[b"SET", &existing, value, b"PXAT", b"4102444800123"],
+        Resp::Simple(b"OK".to_vec()),
+    );
+    // Put the absent key first to catch a partial insertion before rejection.
+    assert_command(
+        client,
+        &[b"MSETNX", &absent, b"new", &existing, b"overwrite"],
+        Resp::Integer(0),
+    );
+    assert_command(client, &[b"GET", &absent], Resp::Bulk(None));
+    assert_command(client, &[b"GET", &existing], bulk());
+    assert_deadline(client, &existing, deadline);
+
+    assert_command(
+        client,
+        &[b"HSETNX", &existing, field, b"wrong"],
+        Resp::Error(b"WRONGTYPE Operation against a key holding the wrong kind of value".to_vec()),
+    );
+    assert_command(client, &[b"GET", &existing], bulk());
+    assert_deadline(client, &existing, deadline);
+    assert_command(client, &[b"HSETNX", &hash, field, value], Resp::Integer(1));
+    assert_command(
+        client,
+        &[b"PEXPIREAT", &hash, b"4102444800123"],
+        Resp::Integer(1),
+    );
+    assert_command(
+        client,
+        &[b"HSETNX", &hash, field, b"overwrite"],
+        Resp::Integer(0),
+    );
+    assert_command(client, &[b"HGET", &hash, field], bulk());
+    assert_deadline(client, &hash, deadline);
+    assert_command(client, &[b"HLEN", &hash], Resp::Integer(1));
+
+    assert_command(client, &[b"DEL", &existing, &hash], Resp::Integer(2));
+    assert_command(
+        client,
+        &[b"MSETNX", &existing, value, &absent, b""],
+        Resp::Integer(1),
+    );
+    assert_command(
+        client,
+        &[b"MGET", &existing, &absent],
+        Resp::Array(Some(vec![bulk(), Resp::Bulk(Some(Vec::new()))])),
+    );
+    assert_deadline(client, &existing, -1);
+    assert_deadline(client, &absent, -1);
+    assert_command(client, &[b"DEL", &existing, &absent], Resp::Integer(2));
+}
+
 fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     run_pubsub_pattern_corpus(address, suffix);
     run_lpos_rank_corpus(address, suffix);
@@ -605,6 +667,7 @@ fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
     let binary = b"\0$-1\r\n\xff";
     let mut client = Client::connect(address).unwrap();
     run_expiry_corpus(&mut client, suffix);
+    run_conditional_write_corpus(&mut client, suffix);
     run_transaction_corpus(address, suffix);
 
     assert_command(

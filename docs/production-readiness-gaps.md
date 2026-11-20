@@ -974,8 +974,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   DISCARD, queue-time EXECABORT, WATCH conflicts (including missing-key creation)
   and watch reset after abort against those pinned versions. A binary Pub/Sub
   corpus checks distinct active pattern counts in `NUMPAT` and `INFO STATS`
-  across duplicate subscriptions, shared patterns and last unsubscribe. Broader
-  Pub/Sub behavior, ACL, TLS, persistence, exhaustive transaction/error cases
+  across duplicate subscriptions, shared patterns and last unsubscribe. The
+  corpus also checks `MSETNX` and `HSETNX` with binary data, rejected writes,
+  wrong types and preserved absolute deadlines. Broader Pub/Sub behavior,
+  ACL, TLS, persistence, exhaustive transaction/error cases
   and full command coverage remain open.
   **Closes when:** every supported command/type/edge has a differential test
   against the pinned versions, including binary, expiry, wrong-type, OOM and
