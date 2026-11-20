@@ -153,6 +153,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "docs/client-sessions.md",
         "tests/server*.rs",
         "tests/protocol*.rs",
+        "tests/native_tls.rs",
     ),
     "tooling": (
         "scripts/**",
