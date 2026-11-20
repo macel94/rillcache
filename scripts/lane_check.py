@@ -106,9 +106,11 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "persistence": (
         "src/engine/journal.rs",
+        "src/bin/rillcache-backup.rs",
         "docs/persistence.md",
         "tests/journal*.rs",
         "tests/persistence*.rs",
+        "tests/aof_backup.rs",
     ),
     "observability-admin": (
         "src/main.rs",

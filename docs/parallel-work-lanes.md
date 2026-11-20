@@ -37,7 +37,7 @@ permanent code ownership. Pick one lane per task and record it in the PR.
 | `collections` | `src/engine/collections.rs`, `collection_commands.rs`, `collection_config.rs`, `sort.rs`, `geo.rs`, `bitfield.rs` | lists, sets, hashes, sorted sets, geo, sort, bitfields |
 | `strings-keyspace` | `src/engine/data.rs`, `keyspace.rs`, `multikey.rs`, `string_algorithms.rs`, `string_ranges.rs`, `scan.rs`, `eviction.rs` | strings, expiry, keyspace, scan, payload budget |
 | `security-clients` | `src/engine/auth.rs`, `acl_log.rs`, `clients.rs`, `src/session/client.rs`, `docs/security.md`, `docs/tls.md` | authentication, ACLs, client registry/commands and kills, transport security |
-| `persistence` | `src/engine/journal.rs`, `docs/persistence.md` | append-only journal, replay, rewrite and fsync |
+| `persistence` | `src/engine/journal.rs`, `src/bin/rillcache-backup.rs`, `tests/aof_backup.rs`, `docs/persistence.md` | append-only journal, replay, rewrite, fsync and offline backups |
 | `observability-admin` | `src/main.rs`, `src/healthcheck.rs`, `src/engine/slowlog.rs`, `latency.rs`, `monitor.rs`, `administration.rs`, `introspection.rs`, `unsupported.rs` | CLI health checks, INFO, stats, slowlog, latency, monitor, admin surfaces |
 | `pubsub` | `src/engine/pubsub.rs`, `docs/pubsub.md` | publish/subscribe, notifications delivery, sharded channels |
 | `io-server` | `src/server.rs`, `src/server/pool.rs`, `src/protocol.rs`, `src/bin/**` | listener, pool, worker handoff, protocol framing |
