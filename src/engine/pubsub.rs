@@ -231,11 +231,10 @@ impl PubSub {
         self.patterns.len()
     }
 
-    pub(super) fn counts_for(&self, id: u64) -> (usize, usize) {
+    pub(super) fn counts_for(&self, id: u64) -> (usize, usize, usize) {
         let channels = self
             .channels
             .values()
-            .chain(self.shard_channels.values())
             .filter(|subscribers| subscribers.iter().any(|subscriber| subscriber.id == id))
             .count();
         let patterns = self
@@ -243,7 +242,12 @@ impl PubSub {
             .values()
             .filter(|subscribers| subscribers.iter().any(|subscriber| subscriber.id == id))
             .count();
-        (channels, patterns)
+        let shard_channels = self
+            .shard_channels
+            .values()
+            .filter(|subscribers| subscribers.iter().any(|subscriber| subscriber.id == id))
+            .count();
+        (channels, patterns, shard_channels)
     }
 
     pub(super) fn is_empty(&self) -> bool {
