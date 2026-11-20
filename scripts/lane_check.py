@@ -110,6 +110,7 @@ LANE_PATTERNS: dict[str, tuple[str, ...]] = {
         "docs/persistence.md",
         "tests/journal*.rs",
         "tests/persistence*.rs",
+        "tests/durability_crash.rs",
         "tests/aof_backup.rs",
     ),
     "observability-admin": (
