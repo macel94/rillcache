@@ -271,6 +271,12 @@ platforms retain timeout-based fallback admission.
   A subprocess test shall hold a large dispatched reply unread, signal
   the server, verify the full reply and journal recovery, and cover each
   fixed-worker transport mode.
+- **R450 (ubiquitous):** On Linux, plain-TCP subprocess tests shall acknowledge a
+  write with `appendfsync always`, force shutdown with a second SIGTERM while a
+  dispatched reply remains unread, and verify the acknowledged value after
+  restarting in the same journal directory without manual lock removal. Cover
+  Mio in the worker-mode matrix and opt-in Tokio. This is process-exit evidence,
+  not a power-loss test or a guarantee about unsynced writes.
 
 ## Client registry and administrative kill (S38)
 
