@@ -113,6 +113,7 @@ impl Write for ProbeStream {
     }
 }
 
+#[cfg(test)]
 pub fn check(
     address: SocketAddr,
     username: Option<&[u8]>,
@@ -162,6 +163,7 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "health probe deadline exceeded"))
 }
 
+#[cfg(test)]
 fn check_with_timeout(
     address: SocketAddr,
     username: Option<&[u8]>,
