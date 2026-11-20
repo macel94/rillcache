@@ -383,6 +383,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   with `verify --temp-dir DIR`; it still requires scratch space for the payload.
   Verification and restore reject a torn journal that startup replay would
   otherwise shorten to a valid prefix, even if the outer CRC and length match.
+  The isolated offline rollback test checks exact binary data, absolute expiry,
+  key count and logical payload bytes while preserving the newer journal.
   **Closes when:** a documented backup/restore procedure has tested quiescent and
   supported online copies, restores exact data/TTL/accounting into an isolated
   instance, and states RPO/RTO and retention; or online backup/PITR are explicitly
@@ -758,8 +760,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   commands and ordering.
 
 - [ ] **O8. Upgrade, rollback and incident runbooks are missing.** [P1]
-  There is no tested procedure for version upgrade, format migration, rollback,
-  disk-full recovery, OOM, certificate rotation, ACL lockout or data corruption.
+  A [same-binary offline rollback drill](persistence.md#drill-a-rollback-to-an-offline-checkpoint)
+  now documents isolation, non-overwrite and state verification. Deployment
+  drills, version upgrade/downgrade, format migration, disk-full recovery, OOM,
+  certificate rotation, ACL lockout and data corruption remain open here.
   **Closes when:** runbooks are published and exercised in a staging drill, with
   expected data-loss and recovery bounds.
 
