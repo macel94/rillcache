@@ -404,6 +404,56 @@ fn tls13_resp_works_in_all_execution_modes_and_plaintext_is_unchanged() {
 }
 
 #[test]
+fn fragmented_tls_pipeline_keeps_reply_order_and_resumes_a_partial_frame() {
+    use rillcache::protocol::encode_request;
+
+    for workers in [None, Some(1), Some(4)] {
+        let server = start(workers, false);
+        for fragment_bytes in [1, 7, 31] {
+            let mut stream = connect(&server, false);
+            stream.sock.set_nodelay(true).unwrap();
+            ping(&mut stream);
+
+            let binary = b"\0\r\n\xff";
+            let mut pipeline = Vec::new();
+            for args in [
+                &[b"SET".as_slice(), b"tls:binary", binary][..],
+                &[b"SET".as_slice(), b"tls:counter", b"0"][..],
+                &[b"INCR".as_slice(), b"tls:counter"][..],
+                &[b"GET".as_slice(), b"tls:binary"][..],
+            ] {
+                encode_request(args, &mut pipeline);
+            }
+            let mut trailing = Vec::new();
+            encode_request(&[b"INCR", b"tls:counter"], &mut trailing);
+            let last = trailing.pop().unwrap();
+            pipeline.extend_from_slice(&trailing);
+            for fragment in pipeline.chunks(fragment_bytes) {
+                stream.write_all(fragment).unwrap();
+                stream.flush().unwrap();
+            }
+
+            // Complete replies must not wait for the next request's missing LF.
+            let expected = b"+OK\r\n+OK\r\n:1\r\n$4\r\n\0\r\n\xff\r\n";
+            let mut replies = vec![0; expected.len()];
+            stream.read_exact(&mut replies).unwrap();
+            assert_eq!(replies.as_slice(), expected);
+
+            // Complete the final INCR and bracket it with an independent GET.
+            let mut rest = vec![last];
+            encode_request(&[b"GET", b"tls:counter"], &mut rest);
+            stream.write_all(&rest).unwrap();
+            stream.flush().unwrap();
+            let mut replies = [0; 11];
+            stream.read_exact(&mut replies).unwrap();
+            assert_eq!(&replies, b":2\r\n$1\r\n2\r\n");
+            ping(&mut stream);
+        }
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn sni_selects_exact_certificate_and_preserves_required_mtls() {
     for client_ca in [false, true] {
         let server = start_with_sni(client_ca);

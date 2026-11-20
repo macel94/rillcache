@@ -430,6 +430,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   unmapped certificates and reset identity retention, and invalid configuration.
   Documentation shall retain the absence of server-certificate OCSP validation,
   replication TLS and any durability/HA claim.
+- **R454 (event-driven):** When valid binary RESP requests are fragmented over
+  native TLS and followed by an incomplete request, the server shall return
+  exactly one ordered reply per complete command without waiting for the
+  incomplete suffix. When the suffix completes, it shall execute that request
+  once and continue serving the connection. Test all three worker modes.
 
 ## Fail-closed mTLS client-certificate CRLs (S118)
 

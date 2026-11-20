@@ -650,6 +650,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   owner/worker tests and idle-past-frame-budget wire cases cover owner/shared
   reactors, fixed workers and Tokio. Partial suffixes retain their original
   deadline. It does not bound TLS records that produce no plaintext.
+  The native TLS pipeline case in V4 checks reply progress with an incomplete
+  request, not slow-client limits or overload shedding.
   Slow-client length/rate thresholds, global/user budgets, CPU quotas
   and a general overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
@@ -998,8 +1000,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   (2026-11-19):** a second seeded property now feeds multi-command binary
   pipelines through one-byte and varied-size read chunks, retaining incomplete
   suffixes and asserting exact-once dispatch, frame consumption and command
-  order against an independent decoded-command model. This models parser buffer
-  behavior, not OS/TLS record boundaries or sustained adversarial input.
+  order against an independent decoded-command model. That test models parser
+  buffer behavior. A separate test in `tests/native_tls.rs` flushes valid binary
+  request fragments over TLS and checks ordered replies before and after a
+  partial request completes. This does not cover arbitrary TCP segmentation
+  or sustained adversarial input.
   **Partial (2026-11-14): hash-field expiry state model.** A fixed-seed command
   sequence compares HSET, HPEXPIRE, HGET, HPTTL and HDEL against an independent
   map oracle under an injected clock; failures identify the seed and step.
