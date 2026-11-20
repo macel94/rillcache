@@ -20,7 +20,7 @@ const CHUNK: usize = 1024 * 1024;
 const DEFAULT_MAX_DATA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
-const HELP: &str = "rillcache-backup — offline AOF backup and restore\n\nUsage:\n  rillcache-backup create --dir DIR [--filename NAME] --output FILE [LIMITS]\n  rillcache-backup verify --input FILE [LIMITS]\n  rillcache-backup restore --input FILE --dir DIR [--filename NAME] [LIMITS]\n\nLIMITS: --max-data-bytes N --max-frame-bytes N --max-bulk-bytes N --max-arguments N\n       --aof-hmac-key-file PATH (authenticated journals)\n\nThe versioned archive stores a RESP AOF byte stream with its length and CRC32.\n`create` requires the source server to be stopped (the AOF lock enforces this).\n`restore` validates the archive and replays it in a temporary directory, then\ninstalls it only if the destination journal does not already exist. This is an\noffline, quiescent backup; it is not online backup or point-in-time recovery.\nCRC32 detects accidental corruption, not malicious modification.\n";
+const HELP: &str = "rillcache-backup — offline AOF backup and restore\n\nUsage:\n  rillcache-backup create --dir DIR [--filename NAME] --output FILE [LIMITS]\n  rillcache-backup verify --input FILE [--temp-dir DIR] [LIMITS]\n  rillcache-backup restore --input FILE --dir DIR [--filename NAME] [LIMITS]\n\nLIMITS: --max-data-bytes N --max-frame-bytes N --max-bulk-bytes N --max-arguments N\n       --aof-hmac-key-file PATH (authenticated journals)\n\nThe versioned archive stores a RESP AOF byte stream with its length and CRC32.\n`create` requires the source server to be stopped (the AOF lock enforces this).\n`restore` validates the archive and replays it in a temporary directory, then\ninstalls it only if the destination journal does not already exist. This is an\noffline, quiescent backup; it is not online backup or point-in-time recovery.\nCRC32 detects accidental corruption, not malicious modification.\n";
 
 #[derive(Debug)]
 struct Options {
@@ -28,6 +28,7 @@ struct Options {
     dir: Option<PathBuf>,
     input: Option<PathBuf>,
     output: Option<PathBuf>,
+    temp_dir: Option<PathBuf>,
     filename: String,
     max_data_bytes: usize,
     limits: Limits,
@@ -60,6 +61,7 @@ fn parse_args() -> Result<Option<Options>, String> {
         dir: None,
         input: None,
         output: None,
+        temp_dir: None,
         filename: "appendonly.aof".into(),
         max_data_bytes: DEFAULT_MAX_DATA_BYTES,
         limits: Limits::default(),
@@ -76,6 +78,16 @@ fn parse_args() -> Result<Option<Options>, String> {
             "--dir" => options.dir = Some(PathBuf::from(value)),
             "--input" => options.input = Some(PathBuf::from(value)),
             "--output" => options.output = Some(PathBuf::from(value)),
+            "--temp-dir" => {
+                if options.temp_dir.is_some() {
+                    return Err("--temp-dir may be supplied only once".into());
+                }
+                let path = PathBuf::from(value);
+                if path.as_os_str().is_empty() {
+                    return Err("--temp-dir requires a nonempty path".into());
+                }
+                options.temp_dir = Some(path);
+            }
             "--aof-hmac-key-file" => {
                 if value.is_empty() {
                     return Err("--aof-hmac-key-file requires a nonempty path".into());
@@ -114,6 +126,9 @@ fn parse_args() -> Result<Option<Options>, String> {
         return Err("limits must be positive; max-frame-bytes must be at least 8 and max-bulk-bytes cannot exceed it".into());
     }
     validate_filename(&options.filename)?;
+    if options.temp_dir.is_some() && options.action != "verify" {
+        return Err("--temp-dir is only valid with verify".into());
+    }
     match options.action.as_str() {
         "create" if options.dir.is_none() || options.output.is_none() => {
             return Err("create requires --dir and --output".into());
@@ -196,7 +211,8 @@ fn create_temp(destination: &Path, label: &str) -> io::Result<(TempPath, File)> 
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    Ok((TempPath(temporary.clone()), options.open(temporary)?))
+    let file = options.open(&temporary)?;
+    Ok((TempPath(temporary), file))
 }
 
 /// Atomically publishes a complete file without replacing an existing path.
@@ -355,6 +371,7 @@ fn validate_archive(
     max_data_bytes: usize,
     limits: Limits,
     auth: Option<JournalAuth>,
+    temp_directory: Option<&Path>,
 ) -> io::Result<u64> {
     let mut archive = File::open(path)?;
     let mut magic = vec![0u8; MAGIC.len()];
@@ -380,7 +397,10 @@ fn validate_archive(
     let stage_destination = if let Some(output) = output_journal {
         output.to_path_buf()
     } else {
-        std::env::temp_dir().join(format!(
+        let directory = temp_directory
+            .map(Path::to_path_buf)
+            .unwrap_or_else(std::env::temp_dir);
+        directory.join(format!(
             "rillcache-backup-verify-{}-{}.aof",
             std::process::id(),
             std::time::SystemTime::now()
@@ -445,18 +465,28 @@ fn restore_backup(options: &Options) -> io::Result<()> {
         options.max_data_bytes,
         options.limits,
         journal_auth(options)?,
+        None,
     )?;
     println!("restored validated AOF to {}", destination.display());
     Ok(())
 }
 
 fn verify_backup(options: &Options) -> io::Result<()> {
+    if let Some(directory) = options.temp_dir.as_deref()
+        && !directory.is_dir()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "verification temporary directory must already exist",
+        ));
+    }
     let length = validate_archive(
         options.input.as_deref().expect("validated --input"),
         None,
         options.max_data_bytes,
         options.limits,
         journal_auth(options)?,
+        options.temp_dir.as_deref(),
     )?;
     if options.aof_hmac_key_file.is_some() {
         println!(
@@ -495,11 +525,33 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAGIC, crc32_update};
+    use super::{MAGIC, crc32_update, create_temp};
+    use std::{env, fs, io, process, time};
 
     #[test]
     fn backup_crc32_uses_the_standard_check_vector() {
         assert_eq!(!crc32_update(!0, b"123456789"), 0xcbf4_3926);
         assert_eq!(MAGIC, b"RILLCACHE-AOF-BACKUP-V1\n");
+    }
+
+    #[test]
+    fn a_staging_collision_does_not_remove_the_existing_file() {
+        let nonce = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            env::temp_dir().join(format!("rillcache-stage-test-{}-{nonce}", process::id()));
+        fs::create_dir(&directory).unwrap();
+        let destination = directory.join("journal.aof");
+        let (stage, file) = create_temp(&destination, "restore").unwrap();
+        drop(file);
+        fs::write(&stage.0, b"staged data").unwrap();
+        assert!(
+            matches!(create_temp(&destination, "restore"), Err(error) if error.kind() == io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(fs::read(&stage.0).unwrap(), b"staged data");
+        drop(stage);
+        fs::remove_dir(directory).unwrap();
     }
 }

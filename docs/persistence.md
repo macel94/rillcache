@@ -260,7 +260,7 @@ hard links and directory fsync; shared/network filesystems are unsupported.
 
 ```text
 rillcache-backup create --dir /data --output /backups/rillcache-2026-11-07.rcb
-rillcache-backup verify --input /backups/rillcache-2026-11-07.rcb
+rillcache-backup verify --input /backups/rillcache-2026-11-07.rcb --temp-dir /verify-scratch
 rillcache-backup restore --input /backups/rillcache-2026-11-07.rcb --dir /restore
 ```
 
@@ -272,6 +272,14 @@ already exist and the restored AOF/lock must be absent. Restore verifies archive
 length/CRC and replays a temporary journal before atomically publishing it; it
 never overwrites an existing journal. Start a separate Rillcache instance on the
 restored directory to perform the operational restore drill.
+
+Verification stages a temporary copy of the journal payload. Use `verify --temp-dir DIR`
+with an existing, trusted writable local directory to select a volume with space
+for the payload (up to 16 GiB). Without the option, verify uses the platform
+temporary directory. The staged file is created exclusively with mode 0600 on
+Unix and is removed on normal success or error when the filesystem permits;
+interrupted verification can leave a partial file. The option is not accepted
+by `create` or `restore` and does not change restore's publication path.
 
 This is offline copy, not online backup, point-in-time recovery, rotation or
 retention. The archive contains only the AOF—not ACL files or server configuration.

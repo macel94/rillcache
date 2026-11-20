@@ -323,6 +323,107 @@ fn empty_journals_can_be_backed_up_verified_and_restored() {
 }
 
 #[test]
+fn verify_can_stage_on_an_explicit_volume_and_cleans_up() {
+    let source = temp_dir("verify-source");
+    let scratch = temp_dir("verify-scratch");
+    let archive = source.join("snapshot.rcb");
+    let server = start(&source);
+    let mut stream = connect(&server);
+    assert_eq!(call(&mut stream, &[b"SET", b"key", b"value"]), b"+OK\r\n");
+    server.shutdown().unwrap();
+    assert!(create(&source, &archive).status.success());
+    let missing = scratch.join("missing");
+    let verify = |directory: Option<&Path>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rillcache-backup"));
+        cmd.args(["verify", "--input"])
+            .arg(&archive)
+            .env("TMPDIR", &missing);
+        if let Some(directory) = directory {
+            cmd.arg("--temp-dir").arg(directory);
+        }
+        cmd.output().unwrap()
+    };
+    assert!(!verify(None).status.success());
+    for invalid in [&missing, &archive] {
+        let result = verify(Some(invalid));
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("verification temporary directory")
+        );
+    }
+    let verified = verify(Some(&scratch));
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+    let mut corrupt = std::fs::read(&archive).unwrap();
+    corrupt[MAGIC.len() + 8] ^= 1;
+    std::fs::write(&archive, corrupt).unwrap();
+    let rejected = verify(Some(&scratch));
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("CRC32 does not match"));
+    assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+    std::fs::remove_dir_all(source).unwrap();
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn verify_temp_dir_rejects_duplicate_empty_missing_and_other_actions() {
+    for (args, error) in [
+        (
+            &[
+                "verify",
+                "--input",
+                "unused",
+                "--temp-dir",
+                "a",
+                "--temp-dir",
+                "b",
+            ][..],
+            "only once",
+        ),
+        (
+            &["verify", "--input", "unused", "--temp-dir", ""][..],
+            "nonempty path",
+        ),
+        (
+            &["verify", "--input", "unused", "--temp-dir"][..],
+            "requires a value",
+        ),
+        (
+            &[
+                "create",
+                "--dir",
+                ".",
+                "--output",
+                "unused",
+                "--temp-dir",
+                ".",
+            ][..],
+            "only valid with verify",
+        ),
+        (
+            &[
+                "restore",
+                "--input",
+                "unused",
+                "--dir",
+                ".",
+                "--temp-dir",
+                ".",
+            ][..],
+            "only valid with verify",
+        ),
+    ] {
+        let rejected = command(args);
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains(error));
+    }
+}
+
+#[test]
 fn backup_requires_quiescent_source_and_corrupt_archives_never_restore() {
     let source = temp_dir("live");
     let archive_dir = temp_dir("bad-archive");
