@@ -517,6 +517,55 @@ fn an_inner_journal_corruption_is_rejected_even_with_a_valid_outer_archive_crc()
 }
 
 #[test]
+fn verify_and_restore_reject_a_torn_journal_even_with_a_valid_archive_crc() {
+    let source = temp_dir("torn-journal-source");
+    let scratch = temp_dir("torn-journal-scratch");
+    let destination = temp_dir("torn-journal-destination");
+    let archive = source.join("snapshot.rcb");
+    let server = start(&source);
+    let mut stream = connect(&server);
+    assert_eq!(call(&mut stream, &[b"SET", b"first", b"one"]), b"+OK\r\n");
+    assert_eq!(call(&mut stream, &[b"SET", b"second", b"two"]), b"+OK\r\n");
+    server.shutdown().unwrap();
+    assert!(create(&source, &archive).status.success());
+
+    let mut bytes = std::fs::read(&archive).unwrap();
+    let payload_start = MAGIC.len() + 8 + 4;
+    assert!(bytes.len() > payload_start + 1);
+    bytes.truncate(bytes.len() - 1); // Tear the final inner checksum frame.
+    let length = (bytes.len() - payload_start) as u64;
+    let crc = crc32(&bytes[payload_start..]);
+    bytes[MAGIC.len()..MAGIC.len() + 8].copy_from_slice(&length.to_le_bytes());
+    bytes[MAGIC.len() + 8..payload_start].copy_from_slice(&crc.to_le_bytes());
+    std::fs::write(&archive, &bytes).unwrap();
+
+    for (action, option, directory) in [
+        ("verify", "--temp-dir", &scratch),
+        ("restore", "--dir", &destination),
+    ] {
+        let result = command(&[
+            action,
+            "--input",
+            archive.to_str().unwrap(),
+            option,
+            directory.to_str().unwrap(),
+        ]);
+        assert!(
+            !result.status.success(),
+            "{action} accepted a recovered prefix"
+        );
+        assert!(result.stdout.is_empty());
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("changed length during replay"), "{error}");
+        assert_eq!(std::fs::read_dir(directory).unwrap().count(), 0);
+    }
+    assert_eq!(std::fs::read(&archive).unwrap(), bytes);
+    for directory in [source, scratch, destination] {
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
 fn authenticated_journals_back_up_and_restore_only_with_the_matching_key() {
     let source = temp_dir("auth-source");
     let archive_dir = temp_dir("auth-archive");

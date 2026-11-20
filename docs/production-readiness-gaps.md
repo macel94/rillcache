@@ -380,6 +380,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `--aof-hmac-key-file` to create/verify/restore for authenticated journals.
   Offline verification can stage the temporary journal on a chosen local volume
   with `verify --temp-dir DIR`; it still requires scratch space for the payload.
+  Verification and restore reject a torn journal that startup replay would
+  otherwise shorten to a valid prefix, even if the outer CRC and length match.
   **Closes when:** a documented backup/restore procedure has tested quiescent and
   supported online copies, restores exact data/TTL/accounting into an isolated
   instance, and states RPO/RTO and retention; or online backup/PITR are explicitly

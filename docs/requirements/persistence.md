@@ -266,3 +266,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   configured), and attempt to remove its staging file on success or error. It
   shall reject empty, missing or repeated option values, missing or non-directory
   paths, and use of the option with `create` or `restore`.
+
+- **R449 (unwanted behavior):** If replay changes the length of the staged
+  journal, then offline `verify` and `restore` shall fail even if the archive
+  length and CRC are valid. Neither command shall change the input archive;
+  `restore` shall not publish a recovered prefix as a successful restore.
+  Server startup's torn-tail recovery policy shall remain unchanged.
