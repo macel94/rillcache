@@ -368,8 +368,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   binary and asserts, after a `SIGKILL` and restart, that every client-acknowledged
   write survives with `appendfsync always` (so the reply cannot precede the
   durable append) and that `everysec` recovery yields a contiguous prefix with no
-  holes. ENOSPC, quota, permission loss, fsync failure, power loss and kill during
-  rewrite remain unverified.
+  holes. The Linux torn-tail drill explicitly truncates a disposable journal
+  after process exit, then verifies that restart discards the entire final
+  transaction and that new writes survive another restart. This models a torn
+  integrity marker; it is not a real disk write failure. ENOSPC, quota,
+  permission loss, fsync failure and power loss remain unverified.
   **Closes when:** a crash/fault harness injects each failure at every boundary,
   proves no applied-but-unlogged success reply, bounds the loss window, and
   verifies restart recovery and visible failure states.
@@ -475,9 +478,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   rewrite pause for each supported policy and workload, with an accepted SLO.
 
 - [ ] **D11. Recovery is not validated across platforms/filesystems/versions.** [P1]
-  Tests cover ordinary restart, truncated tails and mid-file corruption, but not
-  kill -9 at each boundary, power-loss simulation, filesystem matrices, mixed
-  versions or long-running recovery.
+  Tests cover ordinary restart, truncated tails and mid-file corruption. The
+  Linux same-binary torn-tail drill checks checksum and HMAC journals, including
+  exact retained bytes and replay after new appends. Kill -9 at each boundary,
+  power-loss simulation, filesystem matrices, mixed versions and long-running
+  recovery remain unverified.
   **Closes when:** a repeatable recovery matrix covers those cases and retains
   failure evidence.
 

@@ -279,3 +279,11 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   logical payload bytes, and confirm that a post-checkpoint write is absent.
   Restoring over the newer journal shall fail; the isolated restore shall not
   alter that journal or the checkpoint archive.
+
+## Torn journal restart drill
+
+- **R453 (ubiquitous):** If a Linux restart encounters a torn final checksum or
+  HMAC marker in a disposable journal, the drill shall verify that the binary
+  truncates to the exact previously verified prefix, applies none of the torn
+  transaction, and can append a write that survives another restart. Explicit
+  fixture truncation is not a real storage failure or a power-loss test.

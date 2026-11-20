@@ -44,7 +44,12 @@ struct Server {
 
 impl Server {
     fn start(dir: &Path, fsync: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+        Self::start_with_auth(dir, fsync, None)
+    }
+
+    fn start_with_auth(dir: &Path, fsync: &str, key_file: Option<&Path>) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+        command
             .args([
                 "--bind",
                 "127.0.0.1:0",
@@ -56,9 +61,11 @@ impl Server {
             ])
             .arg(dir)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::piped());
+        if let Some(path) = key_file {
+            command.arg("--aof-hmac-key-file").arg(path);
+        }
+        let mut child = command.spawn().unwrap();
         let mut stderr = BufReader::new(child.stderr.take().unwrap());
         let mut line = String::new();
         stderr.read_line(&mut line).unwrap();
@@ -211,6 +218,60 @@ fn fsync_always_keeps_every_acknowledged_write_across_sigkill() {
     send(&mut stream, &[b"SET", b"after:crash", b"ok"], b"+OK\r\n");
     restarted.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn torn_final_transaction_recovers_verified_prefix_and_allows_durable_appends() {
+    for authenticated in [false, true] {
+        let dir = temp_dir(if authenticated {
+            "torn-hmac"
+        } else {
+            "torn-crc"
+        });
+        let journal = dir.join("appendonly.aof");
+        let key_file = authenticated.then(|| {
+            let path = dir.join("test.key");
+            std::fs::write(&path, b"0123456789abcdef\n").unwrap();
+            path
+        });
+        let start = || Server::start_with_auth(&dir, "always", key_file.as_deref());
+        let server = start();
+        let mut stream = server.connect();
+        send(&mut stream, &[b"SET", b"kept", b"original"], b"+OK\r\n");
+        let verified = std::fs::read(&journal).unwrap();
+        assert!(!verified.is_empty());
+        send(&mut stream, &[b"MULTI"], b"+OK\r\n");
+        send(&mut stream, &[b"SET", b"kept", b"updated"], b"+QUEUED\r\n");
+        send(&mut stream, &[b"SET", b"torn", b"extra"], b"+QUEUED\r\n");
+        send(&mut stream, &[b"EXEC"], b"*2\r\n+OK\r\n+OK\r\n");
+        drop(stream);
+        server.kill();
+
+        // Model a torn final integrity marker, not a loss caused by SIGKILL:
+        // deliberately damage a disposable journal after its writer has exited.
+        let complete = std::fs::read(&journal).unwrap();
+        assert!(complete.starts_with(&verified));
+        assert!(complete.len() > verified.len() + 1);
+        std::fs::write(&journal, &complete[..complete.len() - 1]).unwrap();
+
+        let recovered = start();
+        assert_eq!(std::fs::read(&journal).unwrap(), verified);
+        let mut stream = recovered.connect();
+        send(&mut stream, &[b"GET", b"kept"], b"$8\r\noriginal\r\n");
+        send(&mut stream, &[b"EXISTS", b"torn"], b":0\r\n");
+        send(&mut stream, &[b"SET", b"after", b"durable"], b"+OK\r\n");
+        drop(stream);
+        recovered.shutdown();
+
+        let restarted = start();
+        let mut stream = restarted.connect();
+        send(&mut stream, &[b"GET", b"kept"], b"$8\r\noriginal\r\n");
+        send(&mut stream, &[b"EXISTS", b"torn"], b":0\r\n");
+        send(&mut stream, &[b"GET", b"after"], b"$7\r\ndurable\r\n");
+        drop(stream);
+        restarted.shutdown();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[test]
