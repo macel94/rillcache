@@ -37,7 +37,7 @@ Redis/Valkey compatibility, production readiness, or a universal performance cla
 
 ## Pins, build and cache
 
-`ci/upstream/pins.json` records Rust **1.99.1**, Redis **8.10.2**, Valkey **9.1.2**,
+`ci/upstream/pins.json` records Rust **1.100.0**, Redis **8.10.2**, Valkey **9.1.2**,
 archive SHA-256s and tag commit identities. Version/checksum pins are checked
 against `benchmarks/targets.mk`; Rust must match `rust-toolchain.toml`. The build
 is the existing `rillcache` Cargo binary with default features:

@@ -1,5 +1,5 @@
 # The builder is not part of the runtime image. Digest pins both native architectures.
-FROM rust:1.99.1-alpine3.23@sha256:2a941e16ec6e357ff7112e92336087772584122b6ae4b30eb36cb9adff5b5458 AS build
+FROM rust:1.100.0-alpine3.23@sha256:9577a4edf61be25721f5fa4006ad463b83ea52c0a17c6e6b673c72c794aee738 AS build
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY vendor-config.toml ./.cargo/config.toml

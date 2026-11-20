@@ -116,3 +116,23 @@ all six read-only required workflows on its head; no new stored token is needed.
 `pull_request_target` execution path. See [automatic reporting](docs/benchmark-reports.md).
 Do not commit credentials, benchmark build sources, generated target output or
 private environment files.
+
+## Dependency updates
+
+[Dependabot](.github/dependabot.yml) proposes weekly updates for Cargo, GitHub
+Actions and the Docker builder. Each ecosystem is limited to one open version
+update PR. Review updates through the same protected checks; a proposal is not
+approval to broaden the dependency allowlist or add a workflow credential.
+
+For a Cargo update, refresh `vendor/` from the exact updated `Cargo.lock` with
+`cargo vendor --locked vendor` from the repository root (do not pass
+`--respect-source-config`). Review the package sources, checksums and notices,
+remove obsolete vendor entries from the proposed diff, and include the reviewed
+vendor changes in the update before merging. Keep offline validation enabled.
+
+Keep the Rust toolchain file, `ci/upstream/pins.json`, the multi-architecture
+Docker builder tag and digest, and runtime notices aligned when bumping Rust.
+The protected Valkey gates deliberately use the base branch's compiler for
+matched timing on a toolchain-update PR; hosted correctness checks and native
+container builds exercise the candidate pin. After merge, that pin becomes the
+base compiler for future gates.

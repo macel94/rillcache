@@ -1,7 +1,7 @@
 Runtime-component notices for the statically linked Rillcache container binary.
 
-Rust-MIT.txt: Rust standard library/runtime, Rust 1.99.1 LICENSE-MIT:
-https://github.com/rust-lang/rust/blob/1.99.1/LICENSE-MIT
+Rust-MIT.txt: Rust standard library/runtime, Rust 1.100.0 LICENSE-MIT:
+https://github.com/rust-lang/rust/blob/1.100.0/LICENSE-MIT
 
 musl-COPYRIGHT.txt: musl libc v1.2.5 COPYRIGHT:
 https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT?h=v1.2.5
