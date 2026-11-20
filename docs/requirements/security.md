@@ -24,7 +24,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R112 (ubiquitous):** Authentication tests shall run offline in all execution
   modes, cover pipelined rejection/order, runtime rotation, `QUIT`, RESP2/RESP3
   HELLO, secret redaction and disabled/rotated credentials. Documentation shall
-  retain the missing global/cross-process rate limiting, centralized-audit, TLS-hardening, durability and
+  retain the missing cross-process rate limiting, centralized-audit, TLS-hardening, durability and
   live-deauthentication boundaries; a single password is not full Redis security.
 
 ## Multi-user ACLs (S28)
@@ -50,7 +50,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   password/category/command/key rules, live revocation, transaction dirtiness,
   startup failures, file hash/rule round-trips and secret-free diagnostics.
   Documentation shall retain the remaining subcommand-specific categories beyond the bounded CLIENT/MEMORY/OBJECT/ACL/COMMAND/XGROUP/XINFO/CONFIG/LATENCY/SLOWLOG/PUBSUB overrides,
-  centralized audit shipping, global/cross-process rate limiting, TLS hardening, key-spec-blind
+  centralized audit shipping, cross-process rate limiting, TLS hardening, key-spec-blind
   commands and process-level tenant-isolation boundaries.
 
 ## ACL credentials, dry-run and denial log (S41)
@@ -73,7 +73,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   permission and all-mode tests shall cover random output length/hex, invalid bits,
   allowed/denied dry runs, unknown users, no-log DRYRUN behavior, key/channel/
   command/noauth aggregation, reset and bounded counts. Documentation shall retain
-  the absence of replicated/centralized audit shipping, global/cross-process rate limiting, token/
+  the absence of replicated/centralized audit shipping, cross-process rate limiting, token/
   timeout metadata and exhaustive security-event coverage.
 
 ## ACL selectors (S86)
@@ -88,8 +88,15 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   when the root rules or any selector permits the command, its declared keys and
   its channel arguments as one set; a selector that permits the command but not
   its keys or channels shall not grant it. Dynamic `SORT` BY/GET keys shall
-  require all-keys in the matching set, and denials shall report command, key or
-  channel consistently.
+  require all-keys in the matching set when their pattern contains `*`; `BY`
+  without a wildcard and `GET #` do not access a derived key and shall remain
+  usable with scoped grants. `SORT`/`SORT_RO` source keys and the effective
+  `SORT STORE` destination shall still be checked with read/write key access
+  respectively before execution. This deliberately denies wildcard-derived
+  references for scoped users instead of matching an ACL pattern against keys
+  discovered only while executing SORT; Redis/Valkey 9.1.2 `ACL DRYRUN` does
+  not enforce those dynamic references. Denials shall happen before a STORE
+  mutation or GET disclosure.
 - **R330 (event-driven):** `ACL LIST` shall render selectors as parenthesized
   groups and `ACL GETUSER` shall expose a `selectors` array of commands/keys/
   channels maps. `ACL SAVE`/`LOAD` shall round-trip selector groups with spaces
@@ -98,7 +105,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   writes with broad reads, `clearselectors`/`reset`, atomic rejection, LIST/
   GETUSER exposure, ACL-file restart round-trips and every worker mode.
   Documentation shall retain the absence of nested selectors, subcommand
-  categories, global/cross-process rate limiting, centralized audit shipping and native TLS.
+  categories, cross-process rate limiting, centralized audit shipping and native TLS.
 
 ## ACL read/write key modes (S88)
 
@@ -116,9 +123,17 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `RENAME` source versus destination, and store destinations of `SORT`,
   `GEORADIUS*` and `*STORE`). `SORT ... STORE` and `GEORADIUS ... STORE` shall
   require read on the source and write on the effective last-wins destination;
-  `XREAD`/`XREADGROUP` shall check each key in the dynamic `STREAMS` block, and
-  `PFCOUNT` shall require both accesses per Redis 7's RW key spec. `SET` with
-  `GET` and mutating `BITFIELD` operations shall require both accesses.
+  counted `LMPOP`/`BLMPOP` key lists shall contain only the declared keys,
+  excluding direction and optional `COUNT` tokens; the Rillcache `MSETEX`
+  extension shall check only keys in its counted key/value pairs, excluding
+  trailing SET options; `XREAD`/`XREADGROUP` shall check each key in the dynamic
+  `STREAMS` block, and `PFCOUNT` shall require
+  both accesses per Redis 7's RW key spec. The key registry's actual key
+  positions shall drive ACL checks for `SDIFFSTORE`, `SINTERSTORE`,
+  `SUNIONSTORE`, counted `ZDIFFSTORE`/`ZINTERSTORE`/`ZUNIONSTORE`,
+  `ZRANGESTORE` and `GEOSEARCHSTORE`, excluding option/count operands from
+  source-key checks. `SET` with `GET` and mutating `BITFIELD` operations shall
+  require both accesses.
 - **R337 (event-driven):** `ACL LIST` and `ACL GETUSER` shall render read-only
   patterns as `%R~`, write-only patterns as `%W~` and read-write patterns as `~`.
   Adding read and write grants for the same pattern shall merge into `~`. `ACL
@@ -127,7 +142,12 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 - **R338 (ubiquitous):** Tests shall cover read-only, write-only and read-write
   grants, per-key mixed commands, read denial for a write-only credential, write
   denial for a read-only credential, listing, `ACL DRYRUN`, ACL-file restart
-  round-trips and every worker mode. Documentation shall retain the
+  round-trips and every worker mode. For `LMPOP`, tests shall cover counted keys,
+  direction/COUNT exclusion, binary keys, selector grants versus root command
+  precedence, denied multi-key no-pop behavior and non-executing DRYRUN. For the
+  `MSETEX` extension, tests shall cover counted key/option exclusion, binary keys,
+  selector grants versus root command precedence, denied multi-key atomicity and
+  non-executing DRYRUN. Documentation shall retain the
   subcommand-category, dynamic-key-sandbox, centralized-audit, rate-limiting and
   TLS-hardening boundaries.
 
@@ -173,7 +193,7 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   Tests shall cover line shape, hex/binary safety, truncation bounds, one-generation
   rotation, restart appends, startup failure, write-failure accounting and every
   worker mode. Documentation shall retain the absence of fsync-per-line,
-  full-chain signing/key-ID/hot rotation, global/cross-process rate limiting and
+  full-chain signing/key-ID/hot rotation, cross-process rate limiting and
   centralized aggregation.
 
 ## Per-connection failed-auth budget (S105)
@@ -184,17 +204,17 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   standard bounded `WRONGPASS` reply and then close that connection. A successful
   authentication or `RESET` shall clear the counter; arity errors, `NoPassword`
   configuration errors and internal errors shall not consume the budget.
-- **R388 (state-driven):** A zero limit shall disable the budget. The counter
-  shall be connection-local, so exhausting one connection shall not close or
-  throttle another. The server shall not claim a global or cross-process rate limit,
-  delay, username lockout or credential-attempt audit beyond the optional local
-  denial trail.
-- **R389 (ubiquitous):** Tests shall cover the exact limit, reset-on-success,
-  `RESET` clearing, `HELLO` sharing the same counter, zero disabling, connection
-  isolation, no secret reflection and every worker mode. Documentation shall
-  retain the absence of global/cross-process rate limiting, delayed responses,
-  account lockout, centralized audit shipping and a complete brute-force
-  deployment boundary.
+- **R388 (state-driven):** A zero per-connection limit shall disable that budget.
+  Its counter shall be connection-local, so exhausting one connection shall not
+  close or throttle another. This option alone is not a global or cross-process
+  rate limit, delay, username lockout or credential-attempt audit beyond the
+  optional local denial trail.
+- **R389 (ubiquitous):** Tests shall cover the exact per-connection limit,
+  reset-on-success, `RESET` clearing, `HELLO` sharing the same counter, zero
+  disabling, connection isolation, no secret reflection and every worker mode.
+  Documentation shall retain the absence of delay, username lockout, centralized
+  audit shipping and a complete brute-force deployment boundary. Any separate
+  global throttle shall have its own explicit scope and tests.
 
 ## Per-source failed-auth throttling (S106)
 
@@ -207,15 +227,21 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   that source's counter.
 - **R391 (state-driven):** The source table shall be process-local, bounded to a
   fixed maximum number of peer addresses, and shall prune expired entries. A zero
-  limit shall disable the feature. The key shall be the peer IP, not the username
-  or connection; shared NAT addresses can therefore throttle each other, and the
-  feature shall not claim a global, cross-process or username lockout.
+  source limit shall disable the per-IP feature. The key shall be the peer IP,
+  not the username or connection; shared NAT addresses can therefore throttle
+  each other. Table saturation shall preserve tracked state and use a separate
+  bounded overflow budget. This per-IP feature shall not claim cross-process or
+  username lockout.
 - **R392 (ubiquitous):** Tests shall cover same-source lockout across connections,
   lockout expiry, zero disabling, success reset, `HELLO AUTH` sharing the counter,
   distinct-source state in unit tests, bounded table behavior, no secret
-  reflection and every worker mode. Documentation shall retain the absence of
-  global/cross-process rate limiting, delayed responses, username lockout,
-  centralized audit shipping and a complete brute-force deployment boundary.
+  reflection and every worker mode. The optional process-global budget shall
+  count failed credentials across peers, use the configured failure window,
+  reject all credential attempts after threshold, remain locked despite a
+  successful-source reset, and be disabled at zero. It shall be documented as
+  process-local and potentially availability-impacting; cross-process limiting,
+  delayed responses, username lockout, centralized audit shipping and a complete
+  brute-force deployment boundary remain absent.
 
 ## Off-host audit shipping (S107)
 
@@ -244,9 +270,10 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   subcommands such as `SETNAME`, `GETNAME`, `ID`, `INFO`, `SETINFO`, `TRACKING`,
   `CACHING`, `REPLY`, `GETREDIR`, `TRACKINGINFO` and `HELP` shall remain governed
   by `+@connection`/`+@slow` and shall be denied by an `@admin`-only grant.
-- **R397 (state-driven):** For `MEMORY`, `USAGE` shall match `@read`, while
-  `STATS`, `DOCTOR`, `PURGE` and `MALLOC-STATS` shall match `@admin` and not
-  `@read`; `@dangerous` shall not grant memory subcommands. For `OBJECT`,
+- **R397 (state-driven):** For `MEMORY`, `USAGE` shall match `@read`; all
+  implemented subcommands shall match `@slow`, but none shall be granted by
+  `@admin` or `@dangerous`. `STATS`, `DOCTOR`, `PURGE` and `MALLOC-STATS` shall
+  not match `@read`. For `OBJECT`,
   `ENCODING`, `REFCOUNT`, `IDLETIME`, `FREQ` and `HELP` shall match `@keyspace`;
   the data-inspection subcommands shall match `@read`, while `HELP` shall not;
   `@admin` and `@dangerous` shall not grant object subcommands.
@@ -389,16 +416,39 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   and verify client certificates. It shall enforce positive handshake bounds and
   shared client admission, and join TLS workers on shutdown.
 - **R376 (unwanted behavior):** Missing/invalid certificate material, invalid CA
-  bundles, a TLS listener on the plaintext address, non-positive handshake
-  timeouts or TLS files without a listener shall fail startup with a bounded error.
+  bundles, client-certificate mappings without a CA or to a disabled/missing ACL
+  user, a TLS listener on the plaintext address, non-positive handshake timeouts
+  or TLS files without a listener shall fail startup with a bounded error.
   Only the reviewed rustls, Tokio and `core_affinity` dependency graphs, with
   required transitive crates, shall be allowed; project code remains unsafe-free
   and FFI-free. Mio is used transitively by Tokio for I/O readiness.
 - **R377 (ubiquitous):** Tests shall cover TLS 1.3 RESP in every execution mode,
   plaintext coexistence, TLS 1.2 rejection, absence of HTTP ALPN, required
-  client-certificate authentication and invalid configuration. Documentation shall
-  retain the absence of SNI/hot reload, OCSP/CRL, client-cert-to-ACL mapping,
+  client-certificate authentication, exact SNI selection and unknown-name
+  rejection, atomic certificate rotation and invalid-replacement retention,
+  fingerprint-based verified client-certificate-to-ACL mapping, rejection of
+  unmapped certificates and reset identity retention, and invalid configuration.
+  Documentation shall retain the absence of server-certificate OCSP validation,
   replication TLS and any durability/HA claim.
+
+## Fail-closed mTLS client-certificate CRLs (S118)
+
+- **R426 (event-driven):** When `--tls-client-crl-file PATH` is configured with a
+  client CA, the server shall parse one bounded DER CRL and reject mTLS clients
+  whose certificate is revoked, whose chain has no applicable CRL, or whose CRL
+  has passed `nextUpdate`. CRL distribution points shall not be fetched.
+- **R427 (unwanted behavior):** A CRL without a client CA, missing/empty/malformed
+  or oversized CRL, revoked certificate, unknown revocation status or expired CRL
+  shall not silently fall back to CA-only verification. TLS reload shall publish
+  a replacement CRL only with the complete valid certificate/CA generation; failed
+  reload shall retain the last valid generation.
+- **R428 (ubiquitous):** Tests shall cover valid, revoked and expired client CRLs,
+  fail-closed CRL loading and configuration failure, alongside atomic TLS reload
+  retention. Documentation shall state
+  that native CRL checks cover only mTLS clients, do not fetch distribution points,
+  and do not revoke the server certificate. Native TLS may staple operator-provisioned
+  server OCSP bytes, but signature/freshness validation and server-certificate CRL
+  checking remain outside this increment; external terminators still require security review.
 
 ## Remaining subcommand categories for administration and pub/sub (S117)
 
@@ -420,3 +470,113 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   `COMMAND LIST FILTERBY ACLCAT` shall list the same bounded subcommand entries
   for `admin`, `dangerous`, `slow` and `pubsub`. Documentation shall retain the
   bounded family table and command-level fallback for other families.
+
+## Native TLS server-certificate OCSP stapling (S121)
+
+- **R435 (event-driven):** When an OCSP response file is configured for the
+  default certificate or an exact SNI identity, TLS 1.3 handshakes requesting
+  status shall staple those exact response bytes with that certificate. An
+  omitted response shall preserve existing handshakes. Unknown SNI names shall
+  not receive another identity's response; ClientHello without SNI shall use
+  the default identity and its configured response.
+- **R436 (state-driven):** OCSP response files shall be bounded to 1 MiB and
+  require one nonempty DER SEQUENCE envelope. The response shall be stored in
+  the same resolved `CertifiedKey` and atomically reloaded with its matching
+  certificate/key; established connections shall retain their existing
+  handshake snapshot. Missing, unreadable, malformed or oversized material
+  shall fail startup or reject the complete reload, preserving the last valid
+  generation. This validation does not validate response semantics, signature,
+  status, freshness or certificate identity.
+- **R437 (ubiquitous):** TLS clients requesting status shall verify exact default,
+  SNI, no-SNI and no-response behavior, unknown-SNI rejection, reload generation
+  and failure retention in supported worker modes. Existing mTLS/CRL and TLS
+  deadline tests shall continue to pass. Documentation shall require operators
+  to renew response files with their matching certificate identity, state that
+  clients must independently validate status and may ignore missing/invalid
+  staples, and preserve the limits around server-certificate CRLs, external
+  terminators and security review.
+
+## Keyspace-wide ACL isolation (S120)
+
+- **R429 (state-driven):** When a user or selector lacks an all-key read grant,
+  `KEYS`, `SCAN`, `RANDOMKEY` and `DBSIZE` shall fail before revealing key names
+  or counts. When it lacks an all-key write grant, `FLUSHDB` and `FLUSHALL` shall
+  fail before changing any key. The server shall return the documented explicit
+  keyspace-wide `NOPERM`; `ACL DRYRUN` shall make the same decision. Read-all
+  grants permit introspection but not flush; write-all grants permit flush but
+  not introspection. Root/all-key grants preserve existing behavior.
+- **R430 (event-driven):** When a keyspace-wide command is denied, the server
+  shall leave all allowed and disallowed keys unchanged. Command/category
+  permission alone shall not bypass the key-pattern check, and a selector may
+  grant the operation only when that same selector also carries the required
+  all-key access.
+- **R431 (ubiquitous):** Tests shall cover all six commands, read/write grant
+  distinctions, DRYRUN, denied-flush atomicity, selectors, root/all-key controls
+  and every worker mode. Documentation shall explicitly note the stricter-than-
+  Redis/Valkey compatibility restriction: upstream keyless ACL commands are not
+  filtered by key patterns, so scoped Rillcache users are denied rather than
+  exposed to cross-pattern enumeration or flush.
+
+## ACL category and selector audit (S119)
+
+- **R432 (event-driven):** `ACL CAT` shall enumerate every accepted ACL
+  category and return the registry entries matching each category. Category
+  grants shall include the implemented keyspace, hyperloglog, blocking and
+  sorted-set families; `@sortedset` shall match the same commands as the
+  compatibility alias `@zset`. `ACL DRYRUN` shall agree with the listed category
+  membership for every published command and bounded subcommand entry.
+- **R433 (state-driven):** When root rules deny a command, each selector shall
+  evaluate its own ordered command/category rules and key/channel patterns as
+  one alternative; grants from different selectors shall not be combined.
+  Within one rule set, the last matching category/command rule shall decide.
+  Runtime dispatch and `ACL DRYRUN` shall apply the same selector result.
+- **R434 (ubiquitous):** Tests shall cover every accepted category through
+  `ACL CAT`, `ACL DRYRUN` and runtime dispatch in every worker mode, plus ordered
+  selector overrides, root-vs-selector alternatives and isolated key scopes.
+  Documentation shall identify profile aliases, unsupported categories and the
+  bounded subcommand/fallback boundary without claiming full Redis ACL parity.
+
+## Per-user authenticated connection admission (S122)
+
+- **R438 (event-driven):** `ACL SETUSER <user> maxconnections=<N>` shall accept
+  values from 0 through 1,000,000, where zero means unlimited. `ACL GETUSER` and
+  `ACL LIST` shall report configured limits, and ACL SAVE/LOAD shall preserve
+  them. Invalid values shall reject the whole user update atomically.
+- **R439 (state-driven):** Before AUTH, HELLO AUTH or verified client-certificate
+  mapping changes a registered session's identity, the server shall atomically
+  reserve a slot against that ACL user's current limit. At capacity, valid
+  credentials shall fail without replacing the old identity or counting as a
+  failed-password attempt. Reauthentication as the same user shall not consume a
+  second slot; changing users, CLIENT RESET and disconnect shall release the old
+  slot. If RESET would restore a certificate identity whose lowered cap is full,
+  RESET shall fail atomically and retain the current identity. Lowering a cap
+  shall not evict existing sessions but shall deny later admissions until the
+  count falls below the new limit.
+- **R440 (ubiquitous):** Tests shall cover simultaneous authentication at a
+  one-session limit, identity changes, RESET/disconnect release, TLS certificate
+  mapping, ACL persistence and every worker mode. The documented scope is
+  authenticated ACL sessions only: unauthenticated sessions using an implicit
+  no-password default user remain governed by global `maxclients`.
+
+## Atomic TLS client-certificate ACL mapping reload (S123)
+
+- **R441 (event-driven):** When a bounded client-certificate mapping file and
+  operator reload trigger are configured with a client CA, each accepted TLS
+  connection may request a new generation. The file shall map verified leaf
+  SHA-256 fingerprints to enabled ACL usernames; the mapping table shall be
+  validated and published atomically with the certificate, CA/CRL, SNI and OCSP
+  TLS configuration. Inline startup mappings and the mapping file shall not be
+  configured together.
+- **R442 (unwanted behavior):** Missing, unreadable, oversized, non-UTF-8,
+  malformed, duplicate or over-capacity mapping files, and mappings to missing
+  or disabled ACL users, shall reject the entire candidate generation and retain
+  the previous valid TLS-and-mapping generation. The file shall be bounded to
+  1 MiB and 4096 records. A handshake shall use one immutable generation; an
+  established session's authenticated certificate identity, including after
+  RESET, shall not change on reload. An empty valid file shall map no certificate.
+- **R443 (ubiquitous):** Tests shall cover parser bounds and invalid records,
+  startup validation, mapping-only reload, simultaneous mapping/TLS-generation
+  updates, rejected-generation retention and recovery, new-handshake mapping
+  changes, and existing-session/RESET identity retention. Documentation shall
+  state secure file-mode requirements, trigger sequencing, inline-map
+  startup-only scope, and the limits of process-local reload.

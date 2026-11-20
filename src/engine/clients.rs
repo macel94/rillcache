@@ -42,6 +42,7 @@ pub struct ClientSnapshot {
     pub blocked: bool,
     pub sub: usize,
     pub psub: usize,
+    pub ssub: usize,
 }
 
 const PAUSE_WRITE_ONLY: u64 = 1 << 63;
@@ -202,8 +203,8 @@ impl super::ServerServices {
         };
         let mut snapshots = Vec::with_capacity(clients.len());
         for record in clients.values() {
-            let (sub, psub) = self.pubsub_counts(record.id);
-            let pubsub = sub + psub > 0;
+            let (sub, psub, ssub) = self.pubsub_counts(record.id);
+            let pubsub = sub + psub + ssub > 0;
             if type_filter.is_some_and(|wanted| wanted != pubsub) {
                 continue;
             }
@@ -221,6 +222,7 @@ impl super::ServerServices {
                 blocked: record.blocked.load(std::sync::atomic::Ordering::Relaxed),
                 sub,
                 psub,
+                ssub,
             });
         }
         snapshots.sort_unstable_by_key(|snapshot| snapshot.id);
@@ -282,10 +284,10 @@ impl super::ServerServices {
         controls.len()
     }
 
-    pub(super) fn pubsub_counts(&self, id: u64) -> (usize, usize) {
+    pub(super) fn pubsub_counts(&self, id: u64) -> (usize, usize, usize) {
         self.pubsub
             .read()
-            .map_or((0, 0), |pubsub| pubsub.counts_for(id))
+            .map_or((0, 0, 0), |pubsub| pubsub.counts_for(id))
     }
 }
 

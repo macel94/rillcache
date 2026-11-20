@@ -50,7 +50,13 @@ XCLAIM/XAUTOCLAIM, XTRIM, XSETID, blocking group reads, and XINFO STREAM (with
 FULL)/GROUPS/CONSUMERS. See [stream limits](../streams.md). All types share expiry, payload
 accounting, TYPE, RENAME and deep same-database COPY; byte-oriented KEYS and
 RANDOMKEY inspect that same keyspace. See [keyspace limits](../keyspace.md).
-CONFIG GET/SET collection thresholds select actual collection representations;
+For ACL users without a literal all-key read grant, `KEYS`, `SCAN`, `RANDOMKEY`
+and `DBSIZE` return an explicit keyspace-wide `NOPERM`; `FLUSHDB` and `FLUSHALL`
+require an all-key write grant. Redis/Valkey 9.1.2 do not apply key patterns to
+these keyless commands (their ACL DRYRUN allows them), so this profile
+intentionally denies them rather than disclose or mutate keys outside a user's
+patterns. Root/all-key users retain the existing behavior. CONFIG GET/SET
+collection thresholds select actual collection representations;
 other runtime settings remain unsupported. FLUSHDB/FLUSHALL clear all types,
 CONFIG RESETSTAT retains its empty-statistics behavior, and MEMORY USAGE reports
 a deterministic logical estimate, not allocator/RSS measurements.
@@ -72,7 +78,8 @@ language clients and remaining redis-py coverage remain unverified in the
 
 Deliberately not supported: empty/null request arrays, RESP3 types beyond the
 current command subset, commands beyond the documented collection/stream subsets,
-nonzero SELECT indices, TLS hardening (SNI/hot reload/OCSP), RDB/AOF-rewrite
+nonzero SELECT indices, server-certificate OCSP validation and remaining mTLS
+identity-lifecycle hardening, RDB/AOF-rewrite
 interoperability, replication, clustering and scripts. Sharded pub/sub and
 keyspace notifications are implemented as standalone, at-most-once surfaces, not
 as cluster-routed or durable delivery. Cluster mode, multi-database and arbitrary
@@ -81,8 +88,9 @@ Single-password and multi-user ACL-file authentication are supported with
 `AUTH`, `HELLO ... AUTH`, `ACL` and `CONFIG SET requirepass`; ACL selectors,
 read/write key modes, first-argument command rules, `ACL LOG`/`DRYRUN`/`GENPASS`
 and pub/sub channel enforcement are implemented. Subcommand-specific categories,
-collector sender authentication/TLS/federation and global/cross-process rate limiting remain absent. See
-[security](../security.md).
+collector sender authentication/TLS/federation and cross-process/distributed rate
+limiting remain absent. An optional process-local global failed-auth budget
+exists; see [security](../security.md).
 Connection-local commands are rejected rather than queued inside MULTI. Unsupported SET options return
 `ERR syntax error` and do not write. Redis normally ignores empty request arrays;
 this strict initial subset rejects them. Unknown-command and unsupported-expire-

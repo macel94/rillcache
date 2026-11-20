@@ -15,7 +15,8 @@ when a fixed worker owns it or when the managed per-client socket lease is
 handed to another worker. Metadata is limited to 256 bytes for names and 128
 bytes per library field; values must be printable non-space ASCII. Empty names
 clear the name. `CLIENT INFO` exposes the retained ID, database zero, set
-metadata, `age`, the `b`/`P`/`N` flags, `sub`/`psub` counts and the WATCH count. It remains a bounded
+metadata, `age`, the `b`/`P`/`N` flags, separate `sub` (channel), `psub`
+(pattern), and `ssub` (shard-channel) counts, and the WATCH count. It remains a bounded
 subset of Redis's connection statistics: no fd, idle time, input/output buffer,
 allocator, network-byte or cross-process fields are fabricated.
 
@@ -32,7 +33,9 @@ ACL subcommands expose and enforce the current policy. See
 `CLIENT LIST [TYPE normal|pubsub|master|replica|slave] [ID id ...]` returns one newline-delimited
 key=value record per registered connection with `id`, peer `addr`, local
 `laddr`, `name`, `age`, `flags` (N/P plus `b` while blocked), `db=0`, live
-`sub`/`psub` counts, negotiated `resp`, `user`, `lib-name` and `lib-ver`. It
+`sub` (channel), `psub` (pattern) and `ssub` (shard-channel) counts, negotiated
+`resp`, `user`, `lib-name` and `lib-ver`. Shard-only subscribers have the
+`pubsub` type and `P` flag. It
 intentionally omits fields this server does not measure (fd, idle, command,
 buffers, memory, redirection, network totals) rather than inventing values.
 `CLIENT KILL` uses intersecting filters: `ID <id>`, `ADDR <ip:port>`,

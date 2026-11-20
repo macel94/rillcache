@@ -370,6 +370,54 @@ fn journal_status_healthcheck_requires_aof_and_info_permission_in_all_modes() {
                 );
             }
         }
+        if enabled {
+            let writable = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+                .args([
+                    "--healthcheck",
+                    &address,
+                    "--healthcheck-require-aof",
+                    "--healthcheck-aof-write-probe",
+                ])
+                .arg(&directory)
+                .output()
+                .unwrap();
+            assert!(writable.status.success(), "{:?}", writable.stderr);
+            assert!(writable.stdout.is_empty());
+            assert!(writable.stderr.is_empty());
+            assert!(
+                !std::fs::read_dir(&directory).unwrap().any(|entry| entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".rillcache-aof-healthcheck-")),
+                "health probe left a temporary file"
+            );
+
+            let not_a_directory = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+                .args([
+                    "--healthcheck",
+                    &address,
+                    "--healthcheck-require-aof",
+                    "--healthcheck-aof-write-probe",
+                ])
+                .arg(&password)
+                .output()
+                .unwrap();
+            assert_eq!(not_a_directory.status.code(), Some(1));
+            assert!(not_a_directory.stdout.is_empty());
+            assert!(
+                !String::from_utf8_lossy(&not_a_directory.stderr)
+                    .contains("test-only-journal-secret")
+            );
+        }
+
+        let invalid_without_aof = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args(["--healthcheck", &address, "--healthcheck-aof-write-probe"])
+            .arg(&directory)
+            .output()
+            .unwrap();
+        assert_eq!(invalid_without_aof.status.code(), Some(2));
+
         let plain = Command::new(env!("CARGO_BIN_EXE_rillcache"))
             .args(["--healthcheck", &address, "--healthcheck-require-aof"])
             .output()
@@ -450,6 +498,41 @@ fn tls_healthcheck_verifies_identity_and_supports_acl_and_journal_checks() {
             assert!(output.stderr.is_empty());
         }
     }
+    let writable_tls_probe = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+        .args([
+            "--healthcheck",
+            &address,
+            "--healthcheck-user",
+            "probe",
+            "--healthcheck-password-file",
+        ])
+        .arg(&password)
+        .args([
+            "--healthcheck-tls-ca-file",
+            fixture("ca.crt").to_str().unwrap(),
+            "--healthcheck-server-name",
+            "localhost",
+            "--healthcheck-require-aof",
+            "--healthcheck-aof-write-probe",
+        ])
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        writable_tls_probe.status.success(),
+        "{:?}",
+        writable_tls_probe.stderr
+    );
+    assert!(writable_tls_probe.stdout.is_empty());
+    assert!(writable_tls_probe.stderr.is_empty());
+    assert!(
+        !std::fs::read_dir(&directory).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".rillcache-aof-healthcheck-")),
+        "TLS health probe left a temporary file"
+    );
     for output in [
         probe(&address, &fixture("ca.crt"), Some("wrong.example"), false),
         probe(&address, &fixture("client.crt"), None, false),
@@ -570,6 +653,95 @@ fn healthcheck_is_quiet_on_success_and_fails_for_an_unavailable_endpoint() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("health check failed"));
+}
+
+#[test]
+fn config_preflight_validates_overrides_without_binding_or_creating_files() {
+    let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-config-check-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let config = directory.join("startup.conf");
+    std::fs::write(&config, "max-frame-bytes 4096\nmax-bulk-bytes 8192\n").unwrap();
+    let probe = |override_bulk: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+        cmd.args(["--check-config", "--config"])
+            .arg(&config)
+            .args([
+                "--bind",
+                &occupied.local_addr().unwrap().to_string(),
+                "--appendonly",
+                "yes",
+                "--dir",
+            ])
+            .arg(&directory)
+            .arg("--audit-log")
+            .arg(directory.join("audit.log"));
+        if override_bulk {
+            cmd.args(["--max-bulk-bytes", "2048"]);
+        }
+        cmd.output().unwrap()
+    };
+    let invalid = probe(false);
+    assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
+    let valid = probe(true);
+    assert!(valid.status.success(), "{valid:?}");
+    assert!(valid.stderr.is_empty());
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+    std::fs::remove_dir_all(directory).unwrap();
+
+    let invalid_option = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+        .args(["--check-config", "private-unknown-argument"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid_option.status.code(), Some(2));
+    assert!(invalid_option.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&invalid_option.stderr).contains("private-unknown-argument"));
+}
+
+#[test]
+#[cfg(unix)]
+fn config_preflight_rejects_lax_secret_permissions_without_echoing_paths_or_values() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-config-secret-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let secret = directory.join("private-path-marker");
+    std::fs::write(&secret, b"private-value-marker\n").unwrap();
+    let check = || {
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args([
+                "--check-config",
+                "--secure-secret-files",
+                "--requirepass-file",
+            ])
+            .arg(&secret)
+            .output()
+            .unwrap()
+    };
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let rejected = check();
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(rejected.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&rejected.stderr);
+    assert!(stderr.contains("PermissionDenied"));
+    assert!(!stderr.contains("private-"));
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(check().status.success());
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

@@ -29,6 +29,17 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   dropped, the server shall interrupt client I/O and join every worker.
 - **R19 (state-driven):** While a client performs no socket I/O for the configured
   inactivity timeout, the server shall release that connection.
+- **R-FRAME1 (state-driven):** While the request parser has buffered plaintext bytes for
+  an incomplete RESP/inline request, the server shall enforce one configurable
+  monotonic frame-assembly deadline independent of socket activity; additional
+  fragments shall not extend it. Consuming the frame shall clear the deadline for
+  the next request. An empty parser buffer after a complete request shall not arm
+  an assembly deadline: the connection may idle until its socket inactivity limit.
+  Expiry shall close only that connection and release its admission resources.
+  Complete buffered commands shall not expire while queued,
+  paused, blocked behind command execution or backpressured. The deadline begins
+  when parsing identifies an incomplete request; it does not bound encrypted TLS
+  records that have not yielded RESP plaintext.
 
 ## Default Unix Tokio plain-TCP execution (S-TOKIO-NET)
 
@@ -234,8 +245,48 @@ platforms retain timeout-based fallback admission.
   from the server loop in thread-per-client and fixed-worker modes. `SHUTDOWN`
   shall be rejected inside `MULTI` with dirty-transaction semantics.
 - **R299 (ubiquitous):** Tests shall cover flag validation, `ABORT`, MULTI
-  rejection, caller close, all worker modes, journal durability across restart,
-  and documentation of the remaining absence of a portable SIGTERM handler.
+  rejection, caller close, all worker modes and journal durability across restart.
+
+## Startup configuration preflight
+
+- **R451 (event-driven):** When the standalone binary is invoked with leading
+  `--check-config`, it shall use normal file/CLI startup precedence and validate
+  the resulting options and enabled secret-file permission checks without
+  binding listeners, starting workers, or opening journal or audit files.
+  Invalid startup options shall exit 2 with diagnostics that omit user-supplied
+  values and paths. Success shall not claim that listener or storage resources
+  can be opened or that ACL, TLS or HMAC files have valid contents.
+
+## Standalone signal shutdown (S124)
+
+- **R444 (event-driven):** When the standalone binary receives SIGINT/SIGTERM
+  on Unix or Ctrl-C on Windows, it shall stop listener admission, join server and
+  client workers, and request an explicit journal flush before a successful exit.
+  The library's synchronous `Server::run()` remains signal-agnostic.
+- **R445 (state-driven):** Signal-triggered shutdown shall enforce a bounded
+  25-second deadline. A second termination signal or deadline expiry shall report
+  forced termination and exit nonzero; it shall not claim successful durability.
+- **R446 (ubiquitous):** A subprocess test shall write with append-only fsync
+  disabled, receive SIGTERM, exit successfully, restart from the journal and
+  return the acknowledged value in every fixed-worker mode.
+- **R447 (event-driven):** When signal shutdown begins, the server shall stop
+  listener admission and attempt to finish writing replies for commands already
+  dispatched, subject to the R445 deadline and bounded transport write timeouts.
+  Slow readers whose replies cannot be written within those bounds may be closed;
+  idle clients, incomplete frames, subscriptions and blocked commands may be
+  cancelled. When shutdown cancels a blocked command, commands pipelined behind
+  it shall not execute. A subprocess test shall leave the blocked connection open
+  and verify after journal replay that a write behind it did not take effect.
+  This is not a guarantee that clients received or acknowledged replies.
+  A subprocess test shall hold a large dispatched reply unread, signal
+  the server, verify the full reply and journal recovery, and cover each
+  fixed-worker transport mode.
+- **R450 (ubiquitous):** On Linux, subprocess tests shall acknowledge a
+  write with `appendfsync always`, force shutdown with a second SIGTERM while a
+  dispatched reply remains unread, and verify the acknowledged value after
+  restarting in the same journal directory without manual lock removal. Cover
+  Mio and native TLS in the worker-mode matrix, and opt-in Tokio. This is
+  process-exit evidence, not a power-loss test or a guarantee about unsynced writes.
 
 ## Client registry and administrative kill (S38)
 
@@ -245,8 +296,10 @@ platforms retain timeout-based fallback admission.
   the record on close. The registry shall be bounded by `max_clients` and process-local.
 - **R150 (event-driven):** When `CLIENT LIST [TYPE normal|pubsub|master|replica|slave] [ID id ...]` is
   received, the server shall return newline-delimited records for matching
-  connections with ID, peer and local addresses, name, age, N/P flags, db, live channel/pattern
-  counts, RESP mode, user and library metadata, omitting fields it does not measure.
+  connections with ID, peer and local addresses, name, age, N/P flags, db, separate live
+  channel (`sub`), pattern (`psub`) and shard-channel (`ssub`) counts, RESP mode,
+  user and library metadata, omitting fields it does not measure. A connection
+  with only shard-channel subscriptions shall still have the pub/sub type and P flag.
 - **R151 (event-driven):** When `CLIENT KILL` receives intersecting `ID`, `ADDR`,
   `LADDR`, `TYPE normal|pubsub|master|replica|slave`, `USER` and `SKIPME yes|no`
   filters, the server shall shut down matching sockets and return the count,

@@ -155,6 +155,7 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(source, now);
         let Some(source_payload) = data.entries.get(source).map(Entry::payload_len) else {
+            data.record_key_miss(source);
             output.extend_from_slice(b":0\r\n");
             return;
         };
@@ -258,12 +259,15 @@ impl ShardExecutor {
         for key in keys {
             data.expire_key(key, now);
         }
-        integer(
-            keys.iter()
-                .filter(|key| data.entries.contains_key(**key))
-                .count() as i64,
-            output,
-        );
+        let mut touched = 0;
+        for key in keys {
+            if data.entries.contains_key(*key) {
+                touched += 1;
+            } else {
+                data.record_key_miss(key);
+            }
+        }
+        integer(touched, output);
     }
 
     fn dbsize(&self, output: &mut Vec<u8>) {

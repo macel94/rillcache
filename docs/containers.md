@@ -3,7 +3,7 @@
 Rillcache's image is ready for local evaluation, with optional passwords/ACLs,
 native TLS 1.3 and an append-only journal. Full production compatibility is still
 in progress: there is no RDB format, background/incremental rewrite, replication
-or graceful signal-driven drain. Keep the plaintext listener private even when
+or full client-draining shutdown. Keep the plaintext listener private even when
 TLS is enabled. [Production readiness](production-readiness.md) tracks the
 remaining work; the [canonical gap checklist](production-readiness-gaps.md) is the
 authoritative list.
@@ -11,10 +11,11 @@ Publishing an image does not deploy a service.
 
 ## Run it
 
-Once the GHCR package is public, no login, configuration file or extra command is needed:
+Once the GHCR package is public, no login or configuration file is needed. The
+30-second stop timeout accommodates the standalone shutdown deadline:
 
 ```sh
-docker run --rm --init -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest
+docker run --rm --init --stop-timeout 30 -p 127.0.0.1:6379:6379 ghcr.io/macel94/rillcache:latest
 ```
 
 The image already runs `/rillcache --bind 0.0.0.0:6379`; the binary's standalone
@@ -182,8 +183,27 @@ INFO, malformed/truncated/oversized replies and timeouts fail the probe without
 reflecting server payloads. Other INFO fields are permitted. A rewrite in
 progress is not itself a failure, but a reported failed last rewrite makes this
 conservative probe unhealthy even if the live journal can still accept writes. This is a conservative
-**reported-status** check only: it performs no write or fsync, cannot discover an
+**reported-status** check only: by itself it performs no write or fsync, cannot discover an
 unreported disk fault, and does not prove recovery, backup validity or an RPO/RTO.
+
+To opt in to a separate one-byte write test in the configured journal directory,
+append `--healthcheck-aof-write-probe DIR` as well as `--healthcheck-require-aof`:
+
+```sh
+/rillcache --healthcheck 127.0.0.1:6379 --healthcheck-require-aof --healthcheck-aof-write-probe /data
+```
+
+After authenticated PING and healthy INFO, the probe exclusively creates a
+process-unique temporary file in `DIR`, writes one byte, calls `sync_all`, and
+removes the file. The command fails if creation, write, sync or removal fails;
+its cleanup guard retries removal on an error path. This tests a small temporary
+write at that moment, not appending to the live journal, free capacity, future
+writability, directory-entry durability or replay/recovery. It may affect storage
+accounting/monitoring. Local filesystem operations are outside the one-second
+socket deadline and can block on a stalled filesystem. The option requires
+`--healthcheck-require-aof`; it is not enabled by the default container probe.
+Opt in only where this small filesystem side effect is acceptable.
+
 The default container probe does not require a journal; opt in explicitly only
 for deployments that expect persistence.
 
@@ -220,8 +240,10 @@ kubectl patch deployment rillcache --type=json -p='[
 For multi-user ACLs, create the secret from an ACL file and use
 `--aclfile /run/secrets/users.acl` instead. This keeps the root filesystem
 read-only and credentials out of the image and process arguments. It does not add
-global/cross-process rate limiting, collector sender authentication/TLS/federation or durable backup guarantees; TLS requires
-explicit certificate configuration.
+cross-process/distributed rate limiting, collector sender authentication/TLS/
+federation or durable backup guarantees. The optional process-local auth-failure
+budget is not shared across replicas. TLS requires explicit certificate
+configuration.
 
 Use one replica and `Recreate`: independent replicas do not share data, and a
 Service over several would randomly route keys to unrelated caches. With
@@ -233,17 +255,25 @@ digest-pinned image for repeatable deployments:
 use the `ghcr.io/macel94/rillcache@sha256:...` reference printed by the workflow
 in place of `:latest`. `latest` is a convenience main-build tag, not a stable release.
 
-**Termination:** the current safe-std server has no portable signal-handler API.
-A client can request a protocol-level graceful stop with `SHUTDOWN`, which flushes
-the journal and joins workers, but that is not a signal handler and cannot run
-once the process receives SIGTERM. Docker's `--init` / Compose `init: true`
-forwards termination to the application as a normal child; this ends the process
-but is not a graceful drain. With
-`--appendfsync always`, acknowledged records are already synced; with `everysec`
-or `no`, termination can lose the unsynced tail. As Kubernetes
-PID 1 the default SIGTERM may be ignored; the example allows five seconds before
-forced termination. In-flight replies may be lost. This distribution increment
-does not close the graceful-shutdown or full durability production gates.
+**Termination:** the standalone binary handles SIGINT/SIGTERM on Unix and
+Ctrl-C on Windows. It stops admission, joins the server/client workers, then
+forces a journal flush. The shutdown deadline is 25 seconds; a second termination
+signal or an exceeded deadline is logged as forced termination and exits with
+status 1. Set the supervisor grace period to at least 30 seconds; the Kubernetes
+example does so. Docker's `--init` / Compose `init: true` forwards SIGTERM to the
+application as a normal child. Use Docker `--stop-timeout 30` or Compose
+`stop_grace_period: 30s` so the supervisor does not kill it before its 25-second
+deadline. This is not a full client drain: replies for commands already dispatched are
+written before their read-side-closed connections finish, but idle/incomplete
+clients, subscriptions, blocked commands and replies that exceed a bounded
+transport write timeout or the shutdown deadline may be abandoned. Server lanes
+allow one second total for reply draining, then close remaining sockets; Tokio
+individual writes are also capped at the smaller of one second and the configured
+idle timeout. With `--appendfsync always`, acknowledged records are already
+synced; with `everysec` or `no`, a successful signal shutdown flushes the journal
+before exit, but forced termination may lose the unsynced tail. The
+signal/shutdown path is still partial and does not close the full durability or
+graceful-drain production gates.
 
 ## Publication and verification
 

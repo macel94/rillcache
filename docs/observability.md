@@ -28,7 +28,7 @@ errors are not command replies and are not counted.
 | `expired_subkeys` | Hash fields removed by lazy per-field TTL expiry (Redis 7.4 `expired_subkeys`) |
 | `evicted_keys` | Keys removed by an enabled payload-budget eviction policy |
 | `pubsub_channels` | Distinct channels with at least one live subscription |
-| `pubsub_patterns` | Total pattern subscriptions (not distinct patterns) |
+| `pubsub_patterns` | Number of distinct active subscription patterns |
 
 `INFO keyspace` reports `keys`, `expires`, `avg_ttl` (exact mean remaining
 milliseconds across live keys with a deadline, `0` when none) and `subexpiry`

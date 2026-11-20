@@ -159,6 +159,26 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
     else {
         return Vec::new();
     };
+    // MSETEX declares `numkeys` key/value pairs followed by optional SET
+    // options. The registry's open-ended static range would mistake an expiry
+    // option such as EX for a key.
+    if name.eq_ignore_ascii_case(b"MSETEX") {
+        let Some(count) = args
+            .get(1)
+            .and_then(|raw| super::options::parse_integer(raw))
+            .filter(|count| *count > 0 && *count <= i32::MAX as i64)
+            .map(|count| count as usize)
+        else {
+            return Vec::new();
+        };
+        let Some(pair_end) = count.checked_mul(2).and_then(|pairs| pairs.checked_add(2)) else {
+            return Vec::new();
+        };
+        if pair_end > args.len() {
+            return Vec::new();
+        }
+        return args[2..pair_end].iter().step_by(2).copied().collect();
+    }
     // BITOP's first argument is the operation, then the destination key and
     // source keys; the static first-key index would mistake the operation for a
     // key and misattribute the destination.
@@ -255,6 +275,20 @@ pub(super) fn key_arguments<'a>(name: &[u8], args: &'a [&'a [u8]]) -> Vec<&'a [u
         }
         keys.extend(destination);
         return keys;
+    }
+    // LMPOP takes a counted key list followed by LEFT/RIGHT and optional COUNT.
+    // Its registry key range would otherwise include these trailing options.
+    if name.eq_ignore_ascii_case(b"LMPOP") {
+        let Some(count) = args
+            .get(1)
+            .and_then(|raw| std::str::from_utf8(raw).ok())
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|count| *count > 0)
+        else {
+            return Vec::new();
+        };
+        let end = 2usize.saturating_add(count).min(args.len());
+        return args[2..end].to_vec();
     }
     if name.eq_ignore_ascii_case(b"BLMPOP") {
         let Some(count) = args
@@ -470,18 +504,21 @@ pub(super) const CATEGORIES: &[&str] = &[
     "admin",
     "all",
     "bitmap",
+    "blocking",
     "connection",
     "dangerous",
     "fast",
     "generic",
     "geo",
     "hash",
+    "hyperloglog",
     "keyspace",
     "list",
     "pubsub",
     "read",
     "set",
     "slow",
+    "sortedset",
     "stream",
     "string",
     "transaction",
@@ -511,7 +548,7 @@ pub(super) fn category_matches(name: &[u8], args: &[&[u8]], category: &[u8]) -> 
         return matched;
     }
     match category {
-        b"read" => has("readonly"),
+        b"read" => has("readonly") && name != "time",
         b"write" => has("write"),
         b"admin" => has("admin"),
         b"fast" => has("fast"),
@@ -522,6 +559,18 @@ pub(super) fn category_matches(name: &[u8], args: &[&[u8]], category: &[u8]) -> 
                 | "config"
                 | "flushall"
                 | "flushdb"
+                | "bgrewriteaof"
+                | "bgsave"
+                | "failover"
+                | "info"
+                | "lastsave"
+                | "psync"
+                | "replconf"
+                | "replicaof"
+                | "save"
+                | "slaveof"
+                | "swapdb"
+                | "sync"
                 | "function"
                 | "keys"
                 | "latency"
@@ -533,16 +582,22 @@ pub(super) fn category_matches(name: &[u8], args: &[&[u8]], category: &[u8]) -> 
                 | "sort"
                 | "sort_ro"
         ),
+        b"blocking" => has("blocking"),
         b"connection" => group == Some("connection"),
+        b"keyspace" => group == Some("keyspace"),
         b"pubsub" => group == Some("pubsub"),
         b"transaction" => group == Some("transaction"),
         b"generic" => group == Some("generic"),
         b"string" | b"hash" | b"stream" | b"bitmap" | b"hyperloglog" | b"geo" => {
             group == Some(std::str::from_utf8(category).unwrap_or(""))
         }
-        b"list" | b"set" | b"zset" => {
-            group == Some(std::str::from_utf8(category).unwrap_or(""))
-                || matches!(name, "sort" | "sort_ro")
+        b"list" | b"set" | b"sortedset" | b"zset" => {
+            let category_group = if category.eq_ignore_ascii_case(b"sortedset") {
+                "zset"
+            } else {
+                std::str::from_utf8(category).unwrap_or("")
+            };
+            group == Some(category_group) || matches!(name, "sort" | "sort_ro")
         }
         _ => false,
     }
@@ -560,14 +615,29 @@ fn subcommands(name: &str) -> Option<&'static [&'static str]> {
             "setuser", "users", "whoami",
         ],
         "client" => &[
-            "getname", "id", "info", "kill", "list", "pause", "setinfo", "setname", "unblock",
+            "caching",
+            "getname",
+            "getredir",
+            "help",
+            "id",
+            "info",
+            "kill",
+            "list",
+            "no-evict",
+            "pause",
+            "reply",
+            "setinfo",
+            "setname",
+            "tracking",
+            "trackinginfo",
+            "unblock",
             "unpause",
         ],
         "command" => &["count", "getkeys", "getkeysandflags", "info", "list"],
         "config" => &["get", "resetstat", "set"],
         "latency" => &["doctor", "help", "history", "latest", "reset"],
-        "memory" => &["doctor", "help", "stats", "usage"],
-        "object" => &["encoding", "help", "refcount"],
+        "memory" => &["doctor", "help", "malloc-stats", "purge", "stats", "usage"],
+        "object" => &["encoding", "freq", "help", "idletime", "refcount"],
         "pubsub" => &[
             "channels",
             "numpat",
@@ -642,9 +712,9 @@ fn subcommand_category(name: &str, subcommand: &[u8], category: &[u8]) -> Option
             }
             if category.eq_ignore_ascii_case(b"read") {
                 Some(usage)
-            } else if category.eq_ignore_ascii_case(b"admin") {
-                Some(admin)
-            } else if category.eq_ignore_ascii_case(b"dangerous") {
+            } else if category.eq_ignore_ascii_case(b"admin")
+                || category.eq_ignore_ascii_case(b"dangerous")
+            {
                 Some(false)
             } else {
                 None
@@ -877,29 +947,33 @@ fn command_group(name: &str) -> Option<&'static str> {
         | "geosearch"
         | "geosearchstore" => "geo",
         "pfadd" | "pfcount" | "pfmerge" => "hyperloglog",
-        "blmove" | "blpop" | "brpop" | "brpoplpush" | "lindex" | "linsert" | "llen" | "lmove"
-        | "lpop" | "lpush" | "lpushx" | "lrange" | "lrem" | "lset" | "ltrim" | "lmpop" | "lpos"
-        | "rpop" | "rpoplpush" | "rpush" | "rpushx" => "list",
+        "blmove" | "blmpop" | "blpop" | "brpop" | "brpoplpush" | "lindex" | "linsert" | "llen"
+        | "lmove" | "lpop" | "lpush" | "lpushx" | "lrange" | "lrem" | "lset" | "ltrim"
+        | "lmpop" | "lpos" | "rpop" | "rpoplpush" | "rpush" | "rpushx" => "list",
         "sadd" | "scard" | "sdiff" | "sdiffstore" | "sinter" | "sintercard" | "sinterstore"
         | "sismember" | "smembers" | "smismember" | "smove" | "spop" | "srandmember" | "srem"
         | "sscan" | "sunion" | "sunionstore" => "set",
         "hdel" | "hexists" | "hget" | "hgetall" | "hgetdel" | "hgetex" | "hincrby"
         | "hincrbyfloat" | "hkeys" | "hlen" | "hmget" | "hmset" | "hrandfield" | "hscan"
-        | "hset" | "hsetex" | "hsetnx" | "hstrlen" | "hvals" => "hash",
-        "bzmpop" | "bzpopmax" | "bzpopmin" | "zadd" | "zcard" | "zcount" | "zincrby"
+        | "hset" | "hsetex" | "hsetnx" | "hstrlen" | "hvals" | "hexpire" | "hexpireat"
+        | "hexpiretime" | "hpersist" | "hpexpire" | "hpexpireat" | "hpexpiretime" | "hpttl"
+        | "httl" => "hash",
+        "bzmpop" | "bzpopmax" | "bzpopmin" | "zmpop" | "zadd" | "zcard" | "zcount" | "zincrby"
         | "zlexcount" | "zmscore" | "zpopmax" | "zpopmin" | "zdiff" | "zdiffstore" | "zinter"
         | "zintercard" | "zinterstore" | "zrandmember" | "zrange" | "zrangebylex"
         | "zrangebyscore" | "zrangestore" | "zrank" | "zrem" | "zremrangebylex"
         | "zremrangebyrank" | "zremrangebyscore" | "zrevrange" | "zrevrangebylex"
         | "zrevrangebyscore" | "zrevrank" | "zscan" | "zscore" | "zunion" | "zunionstore" => "zset",
-        "xack" | "xadd" | "xdel" | "xgroup" | "xinfo" | "xlen" | "xpending" | "xrange"
-        | "xread" | "xreadgroup" | "xrevrange" | "xsetid" | "xtrim" => "stream",
-        "asking" | "auth" | "client" | "hello" | "quit" | "readonly" | "readwrite" | "reset"
-        | "select" => "connection",
+        "xack" | "xadd" | "xautoclaim" | "xclaim" | "xdel" | "xgroup" | "xinfo" | "xlen"
+        | "xpending" | "xrange" | "xread" | "xreadgroup" | "xrevrange" | "xsetid" | "xtrim" => {
+            "stream"
+        }
+        "asking" | "auth" | "client" | "echo" | "hello" | "ping" | "quit" | "readonly"
+        | "readwrite" | "reset" | "select" | "wait" | "waitaof" => "connection",
         "discard" | "exec" | "multi" | "unwatch" | "watch" => "transaction",
         "psubscribe" | "publish" | "pubsub" | "punsubscribe" | "spublish" | "ssubscribe"
         | "subscribe" | "sunsubscribe" | "unsubscribe" => "pubsub",
-        "object" | "time" | "sort" | "sort_ro" | "bgsave" | "failover" | "lastsave" | "psync"
+        "object" | "sort" | "sort_ro" | "bgsave" | "failover" | "lastsave" | "psync"
         | "replicaof" | "replconf" | "save" | "slaveof" | "sync" => "generic",
         "copy" | "dbsize" | "del" | "delex" | "delifeq" | "exists" | "expire" | "expireat"
         | "expiretime" | "flushall" | "flushdb" | "keys" | "persist" | "pexpire" | "pexpireat"
@@ -1105,11 +1179,12 @@ impl ShardExecutor {
             if matches!(section.as_slice(), b"clients" | b"default" | b"all") {
                 let _ = writeln!(
                     text,
-                    "# Clients\r\nconnected_clients:{}\r\ncluster_connections:0\r\nmaxclients:{}\r\nauth_failure_limit:{}\r\nauth_source_limit:{}\r\nblocked_clients:{}\r",
+                    "# Clients\r\nconnected_clients:{}\r\ncluster_connections:0\r\nmaxclients:{}\r\nauth_failure_limit:{}\r\nauth_source_limit:{}\r\nauth_global_limit:{}\r\nblocked_clients:{}\r",
                     self.connected_clients(),
                     self.max_clients(),
                     self.auth_failure_limit(),
                     self.auth_source_limit(),
+                    self.auth_global_limit(),
                     self.blocked_clients()
                 );
             }
@@ -1595,6 +1670,37 @@ mod tests {
         assert!(key_arguments(b"SINTERCARD", &[b"SINTERCARD", b"x", b"a"]).is_empty());
         assert_eq!(
             key_arguments(
+                b"MSETEX",
+                &[b"MSETEX", b"2", b"a", b"1", b"b", b"2", b"EX", b"60"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"MSETEX",
+                &[b"MSETEX", b"1", b"binary:\0key", b"v", b"PX", b"5"]
+            ),
+            vec![b"binary:\0key".as_slice()]
+        );
+        assert!(key_arguments(b"MSETEX", &[b"MSETEX", b"2", b"a", b"v"]).is_empty());
+        assert_eq!(
+            key_arguments(b"LMPOP", &[b"LMPOP", b"2", b"a", b"b", b"LEFT"]),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"LMPOP",
+                &[b"LMPOP", b"2", b"a", b"b", b"RIGHT", b"COUNT", b"1"]
+            ),
+            vec![b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"LMPOP", &[b"LMPOP", b"1", b"binary:\0key", b"LEFT"]),
+            vec![b"binary:\0key".as_slice()]
+        );
+        assert!(key_arguments(b"LMPOP", &[b"LMPOP", b"0", b"a", b"LEFT"]).is_empty());
+        assert_eq!(
+            key_arguments(
                 b"ZUNION",
                 &[b"ZUNION", b"2", b"a", b"b", b"WEIGHTS", b"1", b"2"]
             ),
@@ -1614,6 +1720,42 @@ mod tests {
                 ]
             ),
             vec![b"dest".as_slice(), b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"SDIFFSTORE", &[b"SDIFFSTORE", b"dest", b"a", b"b"]),
+            vec![b"dest".as_slice(), b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"SUNIONSTORE", &[b"SUNIONSTORE", b"dest", b"a", b"b"]),
+            vec![b"dest".as_slice(), b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(b"ZDIFFSTORE", &[b"ZDIFFSTORE", b"dest", b"2", b"a", b"b"]),
+            vec![b"dest".as_slice(), b"a".as_slice(), b"b".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"GEOSEARCHSTORE",
+                &[
+                    b"GEOSEARCHSTORE",
+                    b"dest",
+                    b"source",
+                    b"FROMLONLAT",
+                    b"0",
+                    b"0",
+                    b"BYRADIUS",
+                    b"1",
+                    b"KM",
+                ]
+            ),
+            vec![b"dest".as_slice(), b"source".as_slice()]
+        );
+        assert_eq!(
+            key_arguments(
+                b"ZRANGESTORE",
+                &[b"ZRANGESTORE", b"dest", b"source", b"0", b"-1"]
+            ),
+            vec![b"dest".as_slice(), b"source".as_slice()]
         );
         assert_eq!(
             key_arguments(

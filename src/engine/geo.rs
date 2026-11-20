@@ -208,7 +208,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let members = match data.entries.get(args[1]) {
-            None => None,
+            None => {
+                data.record_key_miss(args[1]);
+                None
+            }
             Some(entry)
                 if entry
                     .collection
@@ -260,6 +263,7 @@ impl ShardExecutor {
         data.expire_key(args[1], now);
         let members = match data.entries.get(args[1]) {
             None => {
+                data.record_key_miss(args[1]);
                 encode_bulk(None, out);
                 return;
             }
@@ -308,7 +312,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(args[1], now);
         let members = match data.entries.get(args[1]) {
-            None => None,
+            None => {
+                data.record_key_miss(args[1]);
+                None
+            }
             Some(entry)
                 if entry
                     .collection
@@ -361,7 +368,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(source, now);
         let members = match data.entries.get(source) {
-            None => None,
+            None => {
+                data.record_key_miss(source);
+                None
+            }
             Some(entry)
                 if entry
                     .collection

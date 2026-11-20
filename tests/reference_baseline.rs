@@ -452,7 +452,149 @@ fn run_transaction_corpus(address: SocketAddr, suffix: &[u8]) {
     assert_command(&mut observer, &[b"DEL", &key], Resp::Integer(1));
 }
 
+fn assert_pattern_count(client: &mut Client, count: i64) {
+    assert_command(client, &[b"PUBSUB", b"NUMPAT"], Resp::Integer(count));
+    let Resp::Bulk(Some(stats)) = client.command(&[b"INFO", b"STATS"]).unwrap() else {
+        panic!("INFO STATS did not return a bulk string");
+    };
+    let expected = format!("pubsub_patterns:{count}");
+    assert!(
+        stats
+            .split(|byte| *byte == b'\n')
+            .any(|line| { line.strip_suffix(b"\r") == Some(expected.as_bytes()) }),
+        "expected {expected} in INFO STATS"
+    );
+}
+
+fn run_pubsub_pattern_corpus(address: SocketAddr, suffix: &[u8]) {
+    let mut observer = Client::connect(address).unwrap();
+    let mut first = Client::connect(address).unwrap();
+    let mut second = Client::connect(address).unwrap();
+    let shared = key(b"rillcache:baseline:\0shared:*", suffix);
+    let other = key(b"rillcache:baseline:\xffother:*", suffix);
+    let ack = |verb: &[u8], pattern: &[u8], count| {
+        Resp::Array(Some(vec![
+            Resp::Bulk(Some(verb.to_vec())),
+            Resp::Bulk(Some(pattern.to_vec())),
+            Resp::Integer(count),
+        ]))
+    };
+
+    assert_pattern_count(&mut observer, 0);
+    assert_command(
+        &mut first,
+        &[b"PSUBSCRIBE", &shared],
+        ack(b"psubscribe", &shared, 1),
+    );
+    for _ in 0..2 {
+        assert_command(
+            &mut second,
+            &[b"PSUBSCRIBE", &shared],
+            ack(b"psubscribe", &shared, 1),
+        );
+    }
+    assert_pattern_count(&mut observer, 1);
+    assert_command(
+        &mut first,
+        &[b"PSUBSCRIBE", &other],
+        ack(b"psubscribe", &other, 2),
+    );
+    assert_pattern_count(&mut observer, 2);
+    assert_command(
+        &mut first,
+        &[b"PUNSUBSCRIBE", &shared],
+        ack(b"punsubscribe", &shared, 1),
+    );
+    assert_pattern_count(&mut observer, 2);
+    assert_command(
+        &mut second,
+        &[b"PUNSUBSCRIBE", &shared],
+        ack(b"punsubscribe", &shared, 0),
+    );
+    assert_pattern_count(&mut observer, 1);
+    assert_command(
+        &mut first,
+        &[b"PUNSUBSCRIBE", &other],
+        ack(b"punsubscribe", &other, 0),
+    );
+    assert_pattern_count(&mut observer, 0);
+}
+
+fn run_lpos_rank_corpus(address: SocketAddr, suffix: &[u8]) {
+    let mut client = Client::connect(address).unwrap();
+    let list = key(b"rillcache:baseline:list-rank:", suffix);
+    let missing = key(b"rillcache:baseline:list-missing:", suffix);
+    let value = b"\0\xff";
+    assert_command(
+        &mut client,
+        &[b"RPUSH", &list, value, b"gap", value],
+        Resp::Integer(3),
+    );
+    for key in [&list, &missing] {
+        assert_command(
+            &mut client,
+            &[b"LPOS", key, value, b"RANK", b"-9223372036854775808"],
+            Resp::Error(b"ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807".to_vec()),
+        );
+    }
+    for rank in [b"-9223372036854775807".as_slice(), b"9223372036854775807"] {
+        assert_command(
+            &mut client,
+            &[b"LPOS", &list, value, b"RANK", rank],
+            Resp::Bulk(None),
+        );
+    }
+    assert_command(
+        &mut client,
+        &[b"LPOS", &list, value, b"RANK", b"-1"],
+        Resp::Integer(2),
+    );
+    assert_command(&mut client, &[b"DEL", &list], Resp::Integer(1));
+}
+
+fn run_lrem_count_corpus(address: SocketAddr, suffix: &[u8]) {
+    let mut client = Client::connect(address).unwrap();
+    let list = key(b"rillcache:baseline:list-remove:", suffix);
+    let missing = key(b"rillcache:baseline:list-remove-missing:", suffix);
+    let value = b"\0\xff";
+    assert_command(
+        &mut client,
+        &[b"RPUSH", &list, value, b"keep", value],
+        Resp::Integer(3),
+    );
+    for key in [&list, &missing] {
+        assert_command(
+            &mut client,
+            &[b"LREM", key, b"-9223372036854775808", value],
+            Resp::Error(b"ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807".to_vec()),
+        );
+    }
+    assert_command(
+        &mut client,
+        &[b"LRANGE", &list, b"0", b"-1"],
+        Resp::Array(Some(
+            [value.as_slice(), b"keep", value]
+                .map(|item| Resp::Bulk(Some(item.to_vec())))
+                .into(),
+        )),
+    );
+    assert_command(
+        &mut client,
+        &[b"LREM", &list, b"-9223372036854775807", value],
+        Resp::Integer(2),
+    );
+    assert_command(
+        &mut client,
+        &[b"LINDEX", &list, b"0"],
+        Resp::Bulk(Some(b"keep".to_vec())),
+    );
+    assert_command(&mut client, &[b"DEL", &list], Resp::Integer(1));
+}
+
 fn run_supported_corpus(address: SocketAddr, suffix: &[u8], kind: &str) {
+    run_pubsub_pattern_corpus(address, suffix);
+    run_lpos_rank_corpus(address, suffix);
+    run_lrem_count_corpus(address, suffix);
     let binary_key = key(b"rillcache:baseline:binary:", suffix);
     let empty_key = key(b"rillcache:baseline:empty:", suffix);
     let condition_key = key(b"rillcache:baseline:condition:", suffix);

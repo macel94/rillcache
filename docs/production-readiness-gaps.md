@@ -62,7 +62,7 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 | Compatibility and command surface | Partial | Scripting, RDB, replication, cluster, multiple databases, bounded command and protocol coverage |
 | Durability and recovery | Partial / deferred | No RDB or interoperable AOF, no online backup/PITR/retention, no ENOSPC evidence |
 | Availability and topology | Missing | No replication, failover, Sentinel or cluster |
-| Security and transport | Partial | No independent review, full ACLs, global rate limiting, TLS hardening or audited collector federation |
+| Security and transport | Partial | No independent review, full ACLs, cross-process rate limiting, TLS hardening or audited collector federation |
 | Observability and operations | Partial | Payload-only memory reporting, no RSS/allocator accounting, no metrics/log/SLO contract |
 | Resource safety and scalability | Partial | One-owner default, opt-in multi-owner is slower in its own measurements, no RSS bound |
 | Performance evidence | Evidence gap | Narrow shared-CI microbenchmarks, no realistic workload, controlled hardware or SLOs |
@@ -174,22 +174,37 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   `HSETEX` now publishes `hset` plus `hexpire`, or `hdel`/`del` for past
   deadlines, with no-op conditions emitting nothing. `HGETEX` publishes
   `hexpire`/`hpersist` for future deadlines and successful persists, never a
-  synthetic write; its past-deadline deletion events remain open.
+  synthetic write. With an already-due `PXAT`/`EXAT` deadline, it returns selected
+  pre-expiry values and publishes `hexpired`, followed by `del` only when the hash
+  becomes empty; all three worker modes now have a regression test for this
+  Valkey-verified ordering.
   **Partial (2026-11-14): key-miss notifications.** The `m` class reports `GET`,
   each missing `MGET` occurrence and missing `EXISTS` arguments; `TYPE`/`TTL`
   family misses; missing `HGET`/`HGETALL`/`HLEN`/`HEXISTS`/`HMGET`/`HKEYS`/
   `HVALS`/`HSTRLEN` hashes; `STRLEN`/`GETRANGE`/`GETBIT` strings; missing
-  `LLEN`/`LINDEX`/`LRANGE`/`LPOS` lists; missing `SCARD`/`SISMEMBER`/`SMEMBERS`
-  sets; missing `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/`ZRANK`/`ZREVRANK`/
+  `LLEN`/`LINDEX`/`LRANGE`/`LPOS` lists; missing `SCARD`/`SISMEMBER`/
+  `SMISMEMBER`/`SMEMBERS` sets; missing `ZCARD`/`ZSCORE`/`ZMSCORE`/`ZRANGE`/`ZRANK`/`ZREVRANK`/
   `ZREVRANGE`/`ZCOUNT`/`ZRANGEBYSCORE`/`ZREVRANGEBYSCORE`/`ZLEXCOUNT` sorted
   sets; `SRANDMEMBER`/`ZRANDMEMBER`/`HRANDFIELD` random reads; `XLEN`/`XRANGE`/
   `XREVRANGE` streams; `HSCAN`/`SSCAN`/`ZSCAN` collection scans; set/sorted-set
   algebra sources including store variants, with one miss per missing source
   key; stream `XACK`/`XPENDING`/`XCLAIM`/`XAUTOCLAIM`/`XINFO` metadata reads;
   `SORT`/`SORT_RO` sources including `STORE` and `BY`/`GET` pattern lookups,
-  and `XREAD`/`XREADGROUP` initial stream lookups on the normal
-  keyspace/keyevent channels. Hits, absent fields/elements/members and existing
-  wrong-type keys do not. Other read commands remain open. `A` intentionally
+  and `XREAD`/`XREADGROUP` initial stream lookups. **Partial (2026-11-18):**
+  `BITOP` emits one key-miss event for each missing source occurrence; existing
+  strings and wrong-type source keys do not create false misses. `TOUCH` reports
+  each missing operand while hits, including wrong-type keys, remain non-misses.
+  `COPY` reports a missing source lookup but not a hit, including when the
+  destination already exists and the command returns zero.
+  `PFCOUNT` reports each missing HLL source lookup, including repeated sources. `PFMERGE` also reports the missing destination read
+  and each missing source occurrence; existing HLL and wrong-type keys do not
+  create false misses. **Partial (2026-11-18):** Geospatial read commands now
+  report missing sorted-set source lookups for `GEODIST`, `GEOHASH`, `GEOPOS`,
+  `GEOSEARCH`/`GEOSEARCHSTORE` and legacy `GEORADIUS*` variants. Missing members
+  in existing sets and existing wrong-type keys remain non-misses.
+  These events use the normal keyspace/keyevent channels. Hits, absent
+  fields/elements/members and existing wrong-type keys do not. Other read
+  commands remain open. `A` intentionally
   excludes `m`, as in Redis.
   **Partial (2026-11-14): new-key notifications.** The `n` class reports the
   first creation of a key by supported mutation paths, including absent
@@ -252,7 +267,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   flags. It is not a general `redis.conf`: includes, multi-value directives,
   `save`, replication, modules and other unsupported language fail closed before
   bind; later CLI options override earlier file values. See
-  [startup configuration](configuration.md).
+  [startup configuration](configuration.md). `--check-config` checks merged
+  startup options without starting the server; it does not test resource opening.
   **Remaining:** the full supported schema is not versioned, `CONFIG REWRITE`,
   live reload/rollback and the complete runtime-mutable surface are absent, and
   the upstream configuration language is not accepted.
@@ -368,6 +384,10 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   only the AOF; CRC32 is not authentication. Online copy, PITR, retention,
   configuration/ACL capture and deployment-specific RPO/RTO remain open. Pass
   `--aof-hmac-key-file` to create/verify/restore for authenticated journals.
+  Offline verification can stage the temporary journal on a chosen local volume
+  with `verify --temp-dir DIR`; it still requires scratch space for the payload.
+  Verification and restore reject a torn journal that startup replay would
+  otherwise shorten to a valid prefix, even if the outer CRC and length match.
   **Closes when:** a documented backup/restore procedure has tested quiescent and
   supported online copies, restores exact data/TTL/accounting into an isolated
   instance, and states RPO/RTO and retention; or online backup/PITR are explicitly
@@ -394,13 +414,32 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   tombstone removes it per missing-entry semantics; historical state for deleted
   or renamed consumers is not retained.
 
-- [ ] **D7. Signal-driven graceful drain is missing.** [P0]
-  Managed shutdown joins workers and protocol `SHUTDOWN` flushes the journal, but
-  the standalone process has no portable SIGTERM/SIGINT handler. Container
-  termination can lose in-flight replies and unsynced journal tails.
-  **Closes when:** a reviewed, safe drain path stops admission, flushes within a
-  deadline, joins workers and reports forced termination; or the profile states
-  the supervisor contract and accepted loss window.
+- [ ] **D7. Signal-driven shutdown is partial.** [P0]
+  **Partial (2026-11-19):** the standalone binary handles Unix SIGINT/SIGTERM
+  and Windows Ctrl-C, stops admission, joins workers and explicitly flushes the
+  journal within a 25-second deadline; a second signal or expired deadline logs
+  forced termination and exits nonzero. Kubernetes now allows a 30-second grace
+  period. **Partial (2026-11-19):** shutdown stops listener admission and
+  half-closes client read sides; replies for already-dispatched commands are
+  written before those connections close, within the existing deadline.
+  Subprocess tests withhold an 8 MiB reply until SIGTERM and verify both the full
+  response and journal recovery in default and opt-in Tokio plain-TCP modes and
+  over TLS. All three transports also have a second-SIGTERM test that requires
+  a forced-termination log and nonzero exit while an admitted reply is unread.
+  On Linux, the Mio, Tokio and TLS forced-exit tests also restart from the
+  unchanged AOF directory and verify an acknowledged write under `appendfsync
+  always`. This does not cover unsynced writes or power loss. The 25-second
+  deadline outcome is separately unit-tested, not timed end-to-end for each
+  transport.
+  Subprocess cancellation tests leave idle, incomplete-frame, subscribed and
+  blocked clients connected through successful exit, then verify after restart
+  that neither an incomplete SET nor a SET queued behind BLPOP was replayed.
+  **Retained gap:** this is not a full client drain; replies that exceed a
+  bounded transport write timeout or the shutdown deadline may be abandoned.
+  Client receipt is not acknowledged, and forced timeout cannot guarantee the
+  final journal flush. **Closes when:** all supported transports have verified
+  command-drain, cancellation, join and forced-timeout behavior within the
+  supervisor grace contract.
 
 - [x] **D8. Multi-process journal ownership is unguarded.** [P1]
   **Complete (2026-11-14): local ownership plus explicit profile exclusion.**
@@ -497,8 +536,9 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
 
 - [ ] **S2. ACL support is not full Redis ACL.** [P0]
   Remaining subcommand-specific categories beyond the bounded overrides,
-  dynamic key sandbox rules, complete channel filtering for `PUBSUB`
-  introspection and commands outside the published table are absent. `KEYS`,
+  dynamic key sandbox rules beyond the explicitly implemented command specs,
+  complete channel filtering for `PUBSUB` introspection and commands outside the
+  published table are absent. `KEYS`,
   `RANDOMKEY`, `DBSIZE`, `FLUSH*` and similar commands are not a per-key sandbox.
   **Closes when:** the supported ACL subset is explicitly versioned and
   differentially tested, or full category/subcommand/key/channel semantics are
@@ -514,19 +554,40 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   implemented and tested; or the audit path is explicitly best-effort with a
   documented compensating control.
 
-- [ ] **S4. Global/cross-process rate limiting is missing.** [P0]
-  Failed-auth budgets are process-local and per-connection/per-IP. Shared NAT
-  addresses can throttle each other; an attacker can exhaust the source table;
-  there is no username lockout, global budget or distributed policy.
-  **Closes when:** a bounded, shared rate-limit design is implemented or the
-  deployment requires an external control plane with documented behavior.
+- [ ] **S4. Cross-process rate limiting is missing.** [P0]
+  Failed-auth budgets remain process-local. Shared NAT addresses can throttle
+  each other; there is no cross-process/distributed policy or username lockout.
+  **Partial (2026-11-18):** when the bounded per-IP table fills, new sources
+  share an overflow budget instead of evicting tracked source state. **Partial
+  (2026-11-19):** opt-in `--auth-global-limit` counts failures across peers in
+  one process and locks credential attempts for the configured source window;
+  it defaults off and can itself deny legitimate users. Neither control is
+  shared between server processes. **Closes when:** a bounded shared/distributed
+  rate-limit design is implemented or the deployment requires an external
+  control plane with documented behavior.
 
 - [ ] **S5. TLS hardening is incomplete.** [P0]
-  TLS 1.3 is available, but SNI certificate selection, hot reload, OCSP/CRL,
-  client-certificate-to-ACL mapping, rotation drills and independent TLS
-  interoperability/security review are absent.
-  **Closes when:** those controls are implemented or explicitly replaced by a
-  reviewed external terminator, with rotation and failure tests.
+  TLS 1.3 is available with exact-name SNI selection, bounded operator-triggered
+  atomic certificate/OCSP/CA/CRL rotation, and verified client-certificate mapping to
+  enabled ACL users. Failed identity/CRL parsing retains the last valid generation;
+  live connections keep their handshake-time snapshot. A configured DER CRL (up to
+  1 MiB) checks mTLS client chains and fails closed for revoked, unknown or expired
+  status; distribution points are not fetched. Native server-certificate OCSP
+  stapling accepts bounded operator-provisioned response bytes per SNI/default
+  identity and rotates them atomically with that identity. A bounded client-certificate
+  mapping file can now rotate with the TLS generation; invalid/unknown ACL mappings
+  retain the last good generation, and established sessions preserve their captured
+  identity. Inline maps remain startup-only. rustls 0.23.46 treats
+  response content as opaque, so the server does not validate response signature,
+  status, certificate identity or freshness. Require an independently
+  operated TLS terminator that validates and refreshes OCSP responses, fails closed
+  when missing/stale, and prevents backend bypass for server-certificate revocation.
+  Exact-name SNI, CRL parsing/revocation and atomic replacement have focused tests;
+  independent TLS interoperability/security review remains open. No production-
+  readiness claim is made. **Closes when:** server-certificate OCSP response
+  validation and tested stale/missing failure policy are implemented or supplied
+  by the reviewed external terminator boundary, and the configured human security
+  review is complete.
 
 - [x] **S6. Live deauthentication/session revocation is missing.** [P1]
   **Complete (2026-11-14): documented and tested administrative revocation.**
@@ -555,6 +616,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   16-byte minimum password, and the security guide documents modes, a 256-bit
   random-secret requirement, process-argument risk and rotate-then-revoke. Unit
   tests cover loose/strict modes, short/long passwords and CLI parsing.
+  `--check-config --secure-secret-files` also checks Unix secret-file permissions
+  before startup, with redacted diagnostics suitable for preflight logs.
   Secret-manager integration, enforced entropy/length for `--requirepass`, and
   automatic audit of every deployment's permissions remain open.
   **Closes when:** the supported secret sources, permissions, rotation and
@@ -570,8 +633,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   fragmentation boundary, random byte streams under tight frame/bulk/argument
   limits, random inline input, and multi-command pipelines. It asserts bounded
   consumption, at-most-once execution, argument/limit bounds and no panic; every
-  case is reproducible from its seed. Slow-client thresholds, global/user
-  budgets, CPU quotas and a documented overload shedding contract remain open.
+  case is reproducible from its seed. A configurable monotonic per-incomplete-
+  plaintext-frame assembly deadline (60-second default, zero disables) now
+  complements socket inactivity timeouts across synchronous workers, readiness,
+  Tokio and TLS plaintext parsing. **Partial (2026-11-18):** complete requests no
+  longer arm phantom assembly timers on their empty parser suffixes; direct
+  owner/worker tests and idle-past-frame-budget wire cases cover owner/shared
+  reactors, fixed workers and Tokio. Partial suffixes retain their original
+  deadline. It does not bound TLS records that produce no plaintext.
+  Slow-client length/rate thresholds, global/user budgets, CPU quotas
+  and a general overload shedding contract remain open.
   **Closes when:** overload/slow-client policy is enforced and tested, fuzz/
   property tests cover framing and command parsing, and a documented load
   shedding behavior exists.
@@ -599,6 +670,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   v2/v1 current and limit bytes plus an explicit scope when readable. Both are observational only
   and are not used for admission, eviction or OOM handling. Allocator
   accounting, enforced cgroup/headroom contracts and OOM behavior remain absent.
+  **Partial (2026-11-19):** persistent per-owner `WATCH` history now caps logical
+  retained key bytes at 4 MiB (in addition to its entry-count cap), invalidating
+  outstanding watches conservatively on overflow. This excludes hash-table
+  allocation and all other process memory; transaction scratch has request-local
+  bounds and is not covered by this history budget. This does not close O1.
   **Closes when:** operators can observe and enforce a documented memory bound
   (cgroup/RSS/allocator) with headroom guidance, and OOM behavior is tested.
 
@@ -615,9 +691,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   per-client resource fields or a cross-process latency view. `LATENCY` exposes
   only command and expire-cycle series; `LATENCY GRAPH|HISTOGRAM` are
   unsupported.
-  **Partial (2026-11-14): bounded CLIENT INFO session state.** `CLIENT INFO`
-  now reports `age`, `b`/`P`/`N` flags, `sub`/`psub` and the WATCH count, using
-  state already held by the session. `INFO clients` already reports
+  **Partial (2026-11-20): bounded client subscription state.** `CLIENT INFO`
+  and `CLIENT LIST` report distinct live `sub` (channel), `psub` (pattern) and
+  `ssub` (shard-channel) counts; shard-only subscribers retain the `pubsub`
+  type and `P` flag. `CLIENT INFO` also reports `age`, `b`/`P`/`N` flags and the
+  WATCH count, using state already held by the session. `INFO clients` already reports
   `blocked_clients`. Per-client fd, idle time, last command, input/output buffer
   bytes, network bytes and allocator memory remain absent.
   **Partial (2026-11-14): bounded latency percentiles.** Enabling
@@ -639,11 +717,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   a bounded password file and an optional named ACL user (permitting PING-only
   probe credentials), validates AUTH and PING authorization under one socket
   deadline and keeps credentials/server error payloads out of diagnostics.
-  **Partial: opt-in journal-status probe.** `--healthcheck-require-aof` adds a
-  bounded INFO persistence check for loading=0, enabled journal and healthy last
-  write/rewrite statuses; missing/duplicate fields, reported errors, denied INFO
-  and malformed replies fail closed. Unit fault-response and all-mode CLI tests
-  cover this contract. It does not inject disk faults or prove fsync/recovery.
+  **Partial: opt-in journal-status and temporary-write probes.**
+  `--healthcheck-require-aof` adds a bounded INFO persistence check for
+  loading=0, enabled journal and healthy last write/rewrite statuses;
+  missing/duplicate fields, reported errors, denied INFO and malformed replies
+  fail closed. `--healthcheck-aof-write-probe DIR` additionally creates, writes,
+  syncs and removes a unique one-byte temporary file in the operator-selected
+  directory, after the status check. Unit fault-response and all-mode CLI tests
+  cover both contracts, including TLS. The write probe is point-in-time and may
+  block independently of the socket deadline; it does not test appending the
+  live journal, future capacity, directory-entry durability or recovery.
   **Partial: verified TLS request-service probe.** An explicit bounded PEM CA
   bundle enables TLS 1.3 with chain and DNS/IP identity verification before AUTH,
   under the shared socket deadline; there is no insecure or plaintext fallback.
@@ -651,7 +734,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   trust/name, malformed CA and client-certificate-required failures; a unit test
   checks the silent-handshake deadline.
   Client-certificate probes, full journal readiness and operational telemetry
-  remain open.
+  remain open. In particular, the temporary-write probe is not durability or
+  recovery validation.
   **Closes when:** a redacted, documented metrics/log/health contract exists and
   is tested for overload, persistence failure, auth failure and shutdown.
 
@@ -727,10 +811,14 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   these commands within the SLO.
 
 - [ ] **R5. Connection/worker admission and per-user quotas are incomplete.** [P1]
-  Client count, payload, frame and argument limits exist; there is no per-user
-  command/connection/memory quota, CPU fairness guarantee or slow-client share.
-  **Closes when:** the supported admission policy is explicit, observable and
-  tested under overload and multi-tenant use.
+  Client count, payload, frame and argument limits exist. Authenticated ACL users
+  now have an optional `maxconnections` cap, but there is no per-user command or
+  memory quota, CPU fairness guarantee, slow-client share, or cap for unauthenticated
+  sessions using an implicit no-password default. **Partial:** S122 implements
+  atomic authenticated-session admission and release; it does not isolate shared
+  resource use. **Closes when:** the supported admission policy is explicit,
+  observable and tested under overload and multi-tenant use, including the remaining
+  resource and unauthenticated-session boundaries.
 
 - [ ] **R6. Persistence serializes the whole command path.** [P1]
   With persistence enabled, commands execute through the exclusive transaction
@@ -873,9 +961,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   Redis 8.10.2 and Valkey 9.1.2 without timing sleeps. Two-client transaction
   cases also verify queue visibility, ordered EXEC results and runtime errors,
   DISCARD, queue-time EXECABORT, WATCH conflicts (including missing-key creation)
-  and watch reset after abort against those pinned versions. It does not cover
-  pub/sub, ACL, TLS, persistence, exhaustive transaction/error cases or all
-  supported commands.
+  and watch reset after abort against those pinned versions. A binary Pub/Sub
+  corpus checks distinct active pattern counts in `NUMPAT` and `INFO STATS`
+  across duplicate subscriptions, shared patterns and last unsubscribe. Broader
+  Pub/Sub behavior, ACL, TLS, persistence, exhaustive transaction/error cases
+  and full command coverage remain open.
   **Closes when:** every supported command/type/edge has a differential test
   against the pinned versions, including binary, expiry, wrong-type, OOM and
   transaction cases.
@@ -893,9 +983,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Partial (2026-11-14): deterministic RESP corpus.** `tests/protocol_fuzz.rs`
   adds seeded binary-frame fragmentation, random bytes under tight limits,
   random inline input and pipeline consumption properties; it runs in ordinary
-  CI and every failure is reproducible from its printed seed. State-machine
-  model checking, command-level differential properties and sustained
-  adversarial corpora remain absent.
+  CI and every failure is reproducible from its printed seed. **Partial
+  (2026-11-19):** a second seeded property now feeds multi-command binary
+  pipelines through one-byte and varied-size read chunks, retaining incomplete
+  suffixes and asserting exact-once dispatch, frame consumption and command
+  order against an independent decoded-command model. This models parser buffer
+  behavior, not OS/TLS record boundaries or sustained adversarial input.
+  **Partial (2026-11-14): hash-field expiry state model.** A fixed-seed command
+  sequence compares HSET, HPEXPIRE, HGET, HPTTL and HDEL against an independent
+  map oracle under an injected clock; failures identify the seed and step.
+  Broader state-machine model checking, command-level differential properties
+  and sustained adversarial corpora remain absent.
   **Closes when:** those suites run in CI or a scheduled job and retain failures.
 
 - [ ] **V5. Public documentation can still drift from executable behavior.** [P1]
@@ -903,14 +1001,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   notifications were described as absent after implementation; `BZMPOP`,
   `SUBSTR` and AOF compaction were described as unsupported; rustls was described
   as the sole dependency exception; and multi-owner execution was described as
-  unimplemented. There is still no automated check that README/area claims match
-  tests or that open gaps are listed only in this canonical file.
+  unimplemented. `scripts/production_readiness.py --check` verifies this
+  inventory and its README links. Broader claim-to-test validation and CI
+  integration remain open.
   **Closes when:** a documentation/link/claim check runs in CI and this canonical
   file is linked from the README and indexes.
 
 - [ ] **V6. There is no production acceptance runbook.** [P1]
-  No single checklist maps the declared profile to repeatable pre-production,
-  canary, load, failure, security and rollback gates with pass/fail evidence.
+  The [acceptance runbook](production-readiness/acceptance-runbook.md) and its
+  blocker preflight now define how to collect and record profile-specific
+  evidence. Independent review and execution against a release candidate are
+  still required.
   **Closes when:** a reviewed acceptance runbook exists and has been executed
   against a release candidate.
 

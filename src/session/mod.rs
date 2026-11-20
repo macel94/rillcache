@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::time::Instant;
 
-use crate::engine::{Action, Store, WatchState};
+use crate::engine::{Action, AuthError, Store, WatchState};
 
 use blocking::Blocked;
 use command::arity;
@@ -57,6 +57,7 @@ pub struct Session {
     multi: Option<Multi>,
     watched: WatchState,
     authenticated_user: Option<Vec<u8>>,
+    tls_client_user: Option<Vec<u8>>,
     peer_ip: Option<IpAddr>,
     failed_auth: usize,
     close_requested: bool,
@@ -104,6 +105,7 @@ impl Session {
             multi: None,
             watched: WatchState::default(),
             authenticated_user: None,
+            tls_client_user: None,
             peer_ip: None,
             failed_auth: 0,
             close_requested: false,
@@ -118,6 +120,12 @@ impl Session {
             deferred: None,
         }
     }
+    /// Install the ACL identity established by a verified and fingerprint-mapped TLS certificate.
+    pub(crate) fn set_tls_client_user(&mut self, username: Vec<u8>) {
+        self.authenticated_user = Some(username.clone());
+        self.tls_client_user = Some(username);
+    }
+
     /// Record the accepted peer's IP for per-source authentication throttling.
     pub fn set_peer(&mut self, peer: SocketAddr) {
         self.peer_ip = Some(peer.ip());
@@ -327,6 +335,17 @@ impl Session {
             arity("reset", output);
             return Action::Continue;
         }
+        if let Some(tls_user) = self.tls_client_user.as_deref()
+            && let Err(error) = store.restore_tls_client_identity(self.id, tls_user)
+        {
+            match error {
+                AuthError::ConnectionLimit => {
+                    output.extend_from_slice(b"-ERR max connections reached for user\r\n")
+                }
+                _ => output.extend_from_slice(b"-ERR internal authentication error\r\n"),
+            }
+            return Action::Continue;
+        }
         self.multi = None;
         self.watched = WatchState::default();
         self.blocked = None;
@@ -344,7 +363,7 @@ impl Session {
         }
         self.protocol = Protocol::Resp2;
         self.reply_mode = ReplyMode::On;
-        self.authenticated_user = None;
+        self.authenticated_user = self.tls_client_user.clone();
         self.failed_auth = 0;
         self.close_requested = false;
         self.sync_client_metadata(store);

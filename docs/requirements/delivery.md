@@ -133,7 +133,16 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   bound the RESP2 bulk to 16 KiB and its header to 32 bytes, share the same socket
   deadline and require INFO authorization. This checks reported journal status,
   not disk writability, fsync, recovery or replication readiness. Optional
-  `--healthcheck-tls-ca-file PATH` shall enable verified TLS 1.3 using at most
+  `--healthcheck-aof-write-probe DIR`, which shall require
+  `--healthcheck-require-aof`, shall exclusively create a unique one-byte
+  temporary file in the operator-selected directory after successful INFO,
+  write and sync it, then remove it; any create/write/sync/remove failure shall
+  fail the check without overwriting an existing file. Cleanup shall retry
+  removal on an error path. This is only a point-in-time temporary-write probe,
+  not proof of live-journal append, free capacity, directory-entry durability,
+  future writability or recovery; filesystem operations are outside the socket
+  deadline and may block. Optional `--healthcheck-tls-ca-file PATH` shall enable
+  verified TLS 1.3 using at most
   1 MiB/128 PEM CA certificates, with no insecure verification mode or plaintext
   fallback. The certificate shall match the numeric probe IP unless
   `--healthcheck-server-name NAME` selects a valid DNS/IP identity; this option

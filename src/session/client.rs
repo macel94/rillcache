@@ -74,7 +74,7 @@ impl Session {
                 output.extend_from_slice(AUTH_THROTTLED);
                 return;
             }
-            match store.authenticate_user(Some(username), password) {
+            match store.authenticate_client_user(self.id, Some(username), password) {
                 Ok(name) => {
                     self.authenticated_user = Some(name);
                     self.failed_auth = 0;
@@ -97,6 +97,10 @@ impl Session {
                         store.note_auth_source_failure(source);
                     }
                     self.note_auth_failure(store);
+                    return;
+                }
+                Err(AuthError::ConnectionLimit) => {
+                    output.extend_from_slice(b"-ERR max connections reached for user\r\n");
                     return;
                 }
                 Err(AuthError::Internal) => {
@@ -351,19 +355,20 @@ impl Session {
             append_info(&mut info, b"name", self.name.as_deref());
             append_info(&mut info, b"lib-name", self.library_name.as_deref());
             append_info(&mut info, b"lib-ver", self.library_version.as_deref());
-            let (age, blocked, sub, psub, addr, laddr, resp, user) =
+            let (age, blocked, sub, psub, ssub, addr, laddr, resp, user) =
                 match store.client_snapshot(self.id) {
                     Some(snapshot) => (
                         Some(snapshot.age_seconds),
                         snapshot.blocked,
                         snapshot.sub,
                         snapshot.psub,
+                        snapshot.ssub,
                         Some(snapshot.addr),
                         Some(snapshot.laddr),
                         if snapshot.resp3 { 3 } else { 2 },
                         Some(snapshot.user),
                     ),
-                    None => (None, false, 0, 0, None, None, 2, None),
+                    None => (None, false, 0, 0, 0, None, None, 2, None),
                 };
             if let Some(addr) = addr.as_deref() {
                 append_info(&mut info, b"addr", Some(addr.as_bytes()));
@@ -378,8 +383,8 @@ impl Session {
             if blocked {
                 flags.push('b');
             }
-            flags.push(if sub + psub > 0 { 'P' } else { 'N' });
-            let _ = write!(info, " flags={flags} sub={sub} psub={psub}");
+            flags.push(if sub + psub + ssub > 0 { 'P' } else { 'N' });
+            let _ = write!(info, " flags={flags} sub={sub} psub={psub} ssub={ssub}");
             let watch = self.watched.tokens().len();
             let _ = write!(info, " watch={watch}");
             append_info(&mut info, b"resp", Some(resp.to_string().as_bytes()));
@@ -470,7 +475,7 @@ impl Session {
             if snapshot.blocked {
                 flags.push('b');
             }
-            flags.push(if snapshot.sub + snapshot.psub > 0 {
+            flags.push(if snapshot.sub + snapshot.psub + snapshot.ssub > 0 {
                 'P'
             } else {
                 'N'
@@ -478,7 +483,7 @@ impl Session {
             use std::fmt::Write as _;
             let _ = writeln!(
                 text,
-                "id={} addr={} laddr={} name={} age={} flags={} db=0 sub={} psub={} resp={} user={} lib-name={} lib-ver={}",
+                "id={} addr={} laddr={} name={} age={} flags={} db=0 sub={} psub={} ssub={} resp={} user={} lib-name={} lib-ver={}",
                 snapshot.id,
                 snapshot.addr,
                 snapshot.laddr,
@@ -487,6 +492,7 @@ impl Session {
                 flags,
                 snapshot.sub,
                 snapshot.psub,
+                snapshot.ssub,
                 if snapshot.resp3 { 3 } else { 2 },
                 user,
                 lib_name,

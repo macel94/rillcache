@@ -138,9 +138,14 @@ can request a durable stop over the protocol. `NOSAVE` and `SAVE` are accepted
 for client compatibility but neither writes an RDB file; both flush the journal
 when append-only persistence is enabled. `NOW`/`FORCE` are no-ops because shutdown
 is already immediate, and `ABORT` returns `No shutdown in progress.` because no
-delayed shutdown state exists. The safe-std server still has no portable SIGTERM
-handler; `always` is the only policy that does not depend on a clean process exit
-for recent acknowledged writes unless a client sends `SHUTDOWN`.
+delayed shutdown state exists. The standalone binary handles SIGINT/SIGTERM with
+worker joins and an explicit journal flush under a 25-second deadline. Signal
+shutdown stops listener admission and drains replies for commands already
+dispatched, but it is not a full client drain: idle/incomplete clients,
+subscriptions, blocked commands and replies that exceed the deadline may be
+abandoned. Forced termination can still lose the unsynced tail. `always` is the
+only policy that does not depend on a clean process exit for recent acknowledged
+writes unless a client sends `SHUTDOWN`.
 
 If an append or fsync fails, the command reply is replaced with
 `ERR append-only write failed: ...`, the journal enters a failed state and later
@@ -255,7 +260,7 @@ hard links and directory fsync; shared/network filesystems are unsupported.
 
 ```text
 rillcache-backup create --dir /data --output /backups/rillcache-2026-11-07.rcb
-rillcache-backup verify --input /backups/rillcache-2026-11-07.rcb
+rillcache-backup verify --input /backups/rillcache-2026-11-07.rcb --temp-dir /verify-scratch
 rillcache-backup restore --input /backups/rillcache-2026-11-07.rcb --dir /restore
 ```
 
@@ -265,8 +270,19 @@ rillcache-backup restore --input /backups/rillcache-2026-11-07.rcb --dir /restor
 `--max-arguments` values to create/verify/restore. Destination directories must
 already exist and the restored AOF/lock must be absent. Restore verifies archive
 length/CRC and replays a temporary journal before atomically publishing it; it
-never overwrites an existing journal. Start a separate Rillcache instance on the
+never overwrites an existing journal. Both `verify` and `restore` reject an
+archive if replay truncates the staged journal, even when the archive's outer
+length and CRC match. This is stricter than server startup recovery, which can
+retain a valid prefix after a torn write. Start a separate Rillcache instance on the
 restored directory to perform the operational restore drill.
+
+Verification stages a temporary copy of the journal payload. Use `verify --temp-dir DIR`
+with an existing, trusted writable local directory to select a volume with space
+for the payload (up to 16 GiB). Without the option, verify uses the platform
+temporary directory. The staged file is created exclusively with mode 0600 on
+Unix and is removed on normal success or error when the filesystem permits;
+interrupted verification can leave a partial file. The option is not accepted
+by `create` or `restore` and does not change restore's publication path.
 
 This is offline copy, not online backup, point-in-time recovery, rotation or
 retention. The archive contains only the AOF—not ACL files or server configuration.
@@ -393,7 +409,9 @@ activity (for consumers that were deleted or renamed) is not retained.
   `BGREWRITEAOF` is cooperative and incremental, but it is not Redis's fork-based
   rewrite: the key list is materialised in memory and the
   rewrite runs on the owner thread between maintenance ticks.
-- No graceful signal-driven drain; see [container delivery](containers.md).
+- No full client-draining signal shutdown; the standalone signal path joins
+  workers and flushes the journal but may lose in-flight replies. See
+  [container delivery](containers.md).
 - No shared-filesystem coordination: ownership is a local advisory lock
   (`<journal>.lock`), not a distributed lease. Crash-consistency of append and
   rewrite is covered by `tests/durability_crash.rs`.

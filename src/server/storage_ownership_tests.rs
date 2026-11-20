@@ -46,7 +46,7 @@ fn plain_exit_cannot_destroy_owner_under_an_admitted_tls_request() {
             ..Config::default()
         };
         let mut server = Server::bind(config).unwrap();
-        server.store = Store::with_clock(1024, clock.clone());
+        server.store = Arc::new(Store::with_clock(1024, clock.clone()));
         let services = server.store.test_services();
         let handle = server.spawn().unwrap();
         if workers.is_none() {

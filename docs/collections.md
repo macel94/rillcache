@@ -16,6 +16,8 @@ Redis behavior.
 - Lists: `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LMOVE`,
   `RPOPLPUSH`, `LLEN`, `LRANGE`, `LINDEX`, `LINSERT`, `LREM`, `LSET`, `LTRIM`,
   `LPOS`, `LMPOP`, `BLPOP`, `BRPOP`, `BLMOVE`, `BRPOPLPUSH`, `BLMPOP`.
+  `LREM` rejects the signed 64-bit minimum count before key lookup or mutation;
+  negative counts within range still remove matches from the tail.
 - Sets: `SADD`, `SREM`, `SMEMBERS`, `SCARD`, `SISMEMBER`, `SMISMEMBER`,
   `SMOVE`, `SINTER`, `SUNION`, `SDIFF`, `SINTERCARD`, `SINTERSTORE`,
   `SUNIONSTORE`, `SDIFFSTORE`, `SPOP`, `SRANDMEMBER`.

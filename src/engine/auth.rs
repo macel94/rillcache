@@ -3,9 +3,9 @@
 //! The default user keeps the single-password behavior from S27. Additional users
 //! add Redis-shaped `on/off`, password, command-category/command, read/write key,
 //! channel and Redis 7 selector rules. This is not a complete Redis ACL
-//! implementation: first-argument command rules, subcommand-specific categories,
-//! persistent audit and rate limiting are absent and documented in
-//! `docs/security.md`.
+//! implementation: first-argument command rules and subcommand-specific
+//! categories are absent; authentication throttles are process-local and not
+//! distributed. Limits are documented in `docs/security.md`.
 
 use super::{discovery, sha256};
 use std::collections::BTreeMap;
@@ -18,6 +18,7 @@ const MAX_RULE_BYTES: usize = 4096;
 const MAX_ACL_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_USERS: usize = 10_000;
 const MAX_RULES: usize = 1024;
+const MAX_USER_CONNECTIONS: usize = 1_000_000;
 const MAX_PATTERNS: usize = 1024;
 const MAX_PATTERN_BYTES: usize = 1024;
 
@@ -62,6 +63,8 @@ struct User {
     keys: Vec<KeyPattern>,
     channels: Vec<Vec<u8>>,
     selectors: Vec<Selector>,
+    /// Zero disables this user's concurrent authenticated-connection cap.
+    max_connections: usize,
 }
 
 impl Default for User {
@@ -76,6 +79,7 @@ impl Default for User {
             keys: Vec::new(),
             channels: Vec::new(),
             selectors: Vec::new(),
+            max_connections: 0,
         }
     }
 }
@@ -288,6 +292,9 @@ impl User {
             },
             self.rules_string()
         );
+        if self.max_connections > 0 {
+            line.push_str(&format!(" maxconnections={}", self.max_connections));
+        }
         for selector in &self.selectors {
             line.push(' ');
             line.push_str(&selector_line(selector));
@@ -311,6 +318,8 @@ pub struct UserDetails {
     pub channels: String,
     /// `(commands, keys, channels)` text for each selector.
     pub selectors: Vec<(String, String, String)>,
+    /// Zero means that no per-user authenticated-connection cap is configured.
+    pub max_connections: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,8 +328,10 @@ pub enum AuthError {
     NoPassword,
     /// Unknown/disabled user or wrong password.
     WrongPassword,
-    /// A poisoned credential lock; fail closed rather than allow access.
+    /// A poisoned credential or client-registry lock; fail closed rather than allow access.
     Internal,
+    /// Valid credentials were supplied, but this user's concurrent connection cap is full.
+    ConnectionLimit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -329,6 +340,7 @@ pub enum Access {
     NoAuth,
     DeniedCommand,
     DeniedKey(Vec<u8>),
+    DeniedKeyspace(Vec<u8>),
     DeniedChannel(Vec<u8>),
 }
 
@@ -374,6 +386,13 @@ fn ruleset_access(
     {
         return Access::DeniedKey(b"BY/GET".to_vec());
     }
+    if let Some(required) = keyspace_wide_access(command)
+        && !keys
+            .iter()
+            .any(|entry| entry.pattern == b"*" && entry.access.grants(required))
+    {
+        return Access::DeniedKeyspace(command.to_vec());
+    }
     for (key, access) in discovery::key_accesses(command, arguments) {
         if !key_access_allow(keys, key, access) {
             return Access::DeniedKey(key.to_vec());
@@ -396,6 +415,36 @@ fn ruleset_access(
     for channel in channel_arguments {
         if !patterns_allow(channels, channel) {
             return Access::DeniedChannel(channel.to_vec());
+        }
+    }
+    if command.eq_ignore_ascii_case(b"PUBSUB") {
+        match arguments.get(1).copied() {
+            Some(subcommand)
+                if subcommand.eq_ignore_ascii_case(b"NUMSUB")
+                    || subcommand.eq_ignore_ascii_case(b"SHARDNUMSUB") =>
+            {
+                for channel in arguments.iter().skip(2) {
+                    if !patterns_allow(channels, channel) {
+                        return Access::DeniedChannel(channel.to_vec());
+                    }
+                }
+            }
+            Some(subcommand) if subcommand.eq_ignore_ascii_case(b"NUMPAT") => {
+                if !channels.iter().any(|pattern| pattern == b"*") {
+                    return Access::DeniedChannel(Vec::new());
+                }
+            }
+            // The extra argument is an internal per-result authorization probe;
+            // the optional pattern in the real CHANNELS request is not a channel.
+            Some(subcommand)
+                if (subcommand.eq_ignore_ascii_case(b"CHANNELS")
+                    || subcommand.eq_ignore_ascii_case(b"SHARDCHANNELS"))
+                    && arguments.len() == 4
+                    && !patterns_allow(channels, arguments[3]) =>
+            {
+                return Access::DeniedChannel(arguments[3].to_vec());
+            }
+            _ => {}
         }
     }
     Access::Allowed
@@ -524,6 +573,17 @@ impl Auth {
         })
     }
 
+    pub(crate) fn verify_client_certificate_user(&self, name: &[u8]) -> Result<Vec<u8>, AuthError> {
+        let Some(canonical) = self.lookup_name(name) else {
+            return Err(AuthError::WrongPassword);
+        };
+        self.users
+            .get(&canonical)
+            .filter(|user| user.enabled)
+            .map(|_| canonical)
+            .ok_or(AuthError::WrongPassword)
+    }
+
     fn lookup_name(&self, name: &[u8]) -> Option<Vec<u8>> {
         if let Some((key, _)) = self.users.get_key_value(name) {
             return Some(key.clone());
@@ -551,6 +611,11 @@ impl Auth {
     pub fn whoami(&self, authenticated: Option<&[u8]>) -> Option<Vec<u8>> {
         self.session_user(authenticated)
             .map(|(name, _)| name.to_vec())
+    }
+
+    pub(crate) fn max_connections(&self, name: &[u8]) -> Option<usize> {
+        let name = self.lookup_name(name)?;
+        self.users.get(&name).map(|user| user.max_connections)
     }
 
     pub fn authorize(&self, authenticated: Option<&[u8]>, arguments: &[&[u8]]) -> Access {
@@ -593,6 +658,10 @@ impl Auth {
             Access::DeniedChannel(channel) => Some(channel.clone()),
             _ => None,
         };
+        let mut keyspace_denial = match &root {
+            Access::DeniedKeyspace(command) => Some(command.clone()),
+            _ => None,
+        };
         for selector in &user.selectors {
             match ruleset_access(
                 &selector.rules,
@@ -610,6 +679,10 @@ impl Auth {
                     command_allowed = true;
                     channel_denial.get_or_insert(channel);
                 }
+                Access::DeniedKeyspace(command) => {
+                    command_allowed = true;
+                    keyspace_denial.get_or_insert(command);
+                }
             }
         }
         if !command_allowed {
@@ -618,6 +691,8 @@ impl Auth {
             Access::DeniedKey(key)
         } else if let Some(channel) = channel_denial {
             Access::DeniedChannel(channel)
+        } else if let Some(command) = keyspace_denial {
+            Access::DeniedKeyspace(command)
         } else {
             Access::DeniedCommand
         }
@@ -676,6 +751,7 @@ impl Auth {
                     )
                 })
                 .collect(),
+            max_connections: user.max_connections,
         })
     }
 
@@ -886,6 +962,16 @@ fn apply_rule(user: &mut User, rule: &[u8]) -> Result<(), AclError> {
         user.channels.clear();
     } else if rule.eq_ignore_ascii_case(b"reset") {
         *user = User::default();
+    } else if rule
+        .get(..b"maxconnections=".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"maxconnections="))
+    {
+        let value = std::str::from_utf8(&rule[b"maxconnections=".len()..])
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value <= MAX_USER_CONNECTIONS)
+            .ok_or(AclError::Syntax)?;
+        user.max_connections = value;
     } else if let Some(password) = rule.strip_prefix(b">") {
         if password.is_empty() || password.len() > MAX_PASSWORD_BYTES {
             return Err(AclError::InvalidPassword);
@@ -1060,15 +1146,29 @@ fn split_command(command: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), AclError>
     Ok((name.as_bytes().to_vec(), subcommand.map(<[u8]>::to_vec)))
 }
 
+fn keyspace_wide_access(command: &[u8]) -> Option<discovery::KeyAccess> {
+    if [b"KEYS".as_slice(), b"SCAN", b"RANDOMKEY", b"DBSIZE"]
+        .iter()
+        .any(|name| command.eq_ignore_ascii_case(name))
+    {
+        Some(discovery::KeyAccess::Read)
+    } else if command.eq_ignore_ascii_case(b"FLUSHDB") || command.eq_ignore_ascii_case(b"FLUSHALL")
+    {
+        Some(discovery::KeyAccess::Write)
+    } else {
+        None
+    }
+}
+
 fn sort_uses_dynamic_keys(arguments: &[&[u8]]) -> bool {
     let mut index = 2;
     while index < arguments.len() {
-        if arguments[index].eq_ignore_ascii_case(b"BY") {
-            return arguments
+        if (arguments[index].eq_ignore_ascii_case(b"BY")
+            || arguments[index].eq_ignore_ascii_case(b"GET"))
+            && arguments
                 .get(index + 1)
-                .is_some_and(|pattern| pattern.contains(&b'*'));
-        }
-        if arguments[index].eq_ignore_ascii_case(b"GET") {
+                .is_some_and(|pattern| pattern.contains(&b'*'))
+        {
             return true;
         }
         index += 1;
@@ -1233,6 +1333,7 @@ mod tests {
             (b"reader".as_slice(), b"+@read".as_slice()),
             (b"keyspace".as_slice(), b"+@keyspace".as_slice()),
             (b"danger".as_slice(), b"+@dangerous".as_slice()),
+            (b"slow".as_slice(), b"+@slow".as_slice()),
         ] {
             auth.setuser(name, &[b"on", b"nopass", b"allkeys", b"-@all", rule])
                 .unwrap();
@@ -1266,7 +1367,15 @@ mod tests {
             access(b"reader", &[b"MEMORY", b"STATS"]),
             Access::DeniedCommand
         );
-        assert_eq!(access(b"admin", &[b"MEMORY", b"STATS"]), Access::Allowed);
+        assert_eq!(
+            access(b"admin", &[b"MEMORY", b"STATS"]),
+            Access::DeniedCommand
+        );
+        assert_eq!(access(b"slow", &[b"MEMORY", b"STATS"]), Access::Allowed);
+        assert_eq!(
+            access(b"slow", &[b"MEMORY", b"USAGE", b"k"]),
+            Access::Allowed
+        );
         assert_eq!(
             access(b"admin", &[b"MEMORY", b"USAGE", b"k"]),
             Access::DeniedCommand
@@ -1414,8 +1523,17 @@ mod tests {
             &[b"PUBSUB".as_slice(), b"SHARDCHANNELS"],
             &[b"PUBSUB".as_slice(), b"SHARDNUMSUB", b"a"],
         ] {
-            assert_eq!(access(b"pubsub", command), Access::Allowed);
-            assert_eq!(access(b"slow", command), Access::Allowed);
+            let expected = if command[1].eq_ignore_ascii_case(b"NUMSUB")
+                || command[1].eq_ignore_ascii_case(b"SHARDNUMSUB")
+            {
+                Access::DeniedChannel(b"a".to_vec())
+            } else if command[1].eq_ignore_ascii_case(b"NUMPAT") {
+                Access::DeniedChannel(Vec::new())
+            } else {
+                Access::Allowed
+            };
+            assert_eq!(access(b"pubsub", command), expected);
+            assert_eq!(access(b"slow", command), expected);
             assert_eq!(access(b"fast", command), Access::DeniedCommand);
             assert_eq!(access(b"admin", command), Access::DeniedCommand);
             assert_eq!(access(b"danger", command), Access::DeniedCommand);
@@ -1445,11 +1563,48 @@ mod tests {
             Access::DeniedKey(b"BY/GET".to_vec())
         );
         assert_eq!(
-            auth.authorize(Some(b"restricted"), &[b"SORT_RO", b"src", b"GET", b"#"]),
+            auth.authorize(
+                Some(b"restricted"),
+                &[b"SORT_RO", b"src", b"GET", b"data_*"]
+            ),
             Access::DeniedKey(b"BY/GET".to_vec())
         );
         assert_eq!(
+            auth.authorize(Some(b"restricted"), &[b"SORT_RO", b"src", b"GET", b"#"]),
+            Access::Allowed
+        );
+        assert_eq!(
             auth.authorize(Some(b"restricted"), &[b"SORT", b"src", b"BY", b"nosort"]),
+            Access::Allowed
+        );
+        auth.setuser(
+            b"split-selectors",
+            &[
+                b"on",
+                b"nopass",
+                b"-@all",
+                b"(+sort_ro ~src)",
+                b"(-@all allkeys)",
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            auth.authorize(
+                Some(b"split-selectors"),
+                &[b"SORT_RO", b"src", b"GET", b"data_*"]
+            ),
+            Access::DeniedKey(b"BY/GET".to_vec())
+        );
+        auth.setuser(
+            b"selector-allkeys",
+            &[b"on", b"nopass", b"-@all", b"(+sort_ro allkeys)"],
+        )
+        .unwrap();
+        assert_eq!(
+            auth.authorize(
+                Some(b"selector-allkeys"),
+                &[b"SORT_RO", b"src", b"GET", b"data_*"]
+            ),
             Access::Allowed
         );
         auth.setuser(
@@ -1580,6 +1735,51 @@ mod tests {
                 .selectors
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn per_user_connection_caps_are_bounded_atomic_and_persisted() {
+        let mut auth = Auth::from_password(None);
+        auth.setuser(b"alice", &[b"on", b">pw", b"maxconnections=3"])
+            .unwrap();
+        assert_eq!(auth.details(b"alice").unwrap().max_connections, 3);
+        assert!(
+            auth.acl_line(b"alice")
+                .unwrap()
+                .contains("maxconnections=3")
+        );
+
+        for invalid in [
+            &b"maxconnections="[..],
+            b"maxconnections=-1",
+            b"maxconnections=1000001",
+            b"MAXCONNECTIONS=not-a-number",
+        ] {
+            assert_eq!(auth.setuser(b"alice", &[invalid]), Err(AclError::Syntax));
+            assert_eq!(auth.details(b"alice").unwrap().max_connections, 3);
+        }
+
+        auth.setuser(b"alice", &[b"maxconnections=1000000"])
+            .unwrap();
+        assert_eq!(auth.details(b"alice").unwrap().max_connections, 1_000_000);
+        auth.setuser(b"alice", &[b"maxconnections=0"]).unwrap();
+        assert_eq!(auth.details(b"alice").unwrap().max_connections, 0);
+        auth.setuser(b"alice", &[b"maxconnections=3"]).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "rillcache-acl-maxconnections-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        auth.save_file(&path).unwrap();
+        let loaded = Auth::from_acl_file(&path).unwrap();
+        assert_eq!(loaded.details(b"alice").unwrap().max_connections, 3);
+        assert!(
+            loaded
+                .acl_line(b"alice")
+                .unwrap()
+                .contains("maxconnections=3")
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -52,9 +52,11 @@ pub(super) struct Client {
     pub(super) sent: usize,
     pub(super) closing: bool,
     pub(super) eof: bool,
+    pub(super) shutdown_drain: bool,
     /// EINTR is not WouldBlock: readiness owners must retain their runnable token.
     pub(super) retry_io: bool,
     pub(super) activity: Instant,
+    pub(super) frame_deadline: crate::frame_deadline::FrameDeadline,
     pub(super) _permit: Option<Permit>,
     pub(super) shutdown_on_drop: bool,
     pub(super) pubsub: Receiver<Vec<u8>>,
@@ -144,10 +146,24 @@ impl Client {
         config: &Config,
         chunk: &mut [u8],
     ) -> io::Result<Option<bool>> {
-        // Like blocking I/O, service already-ready input/output before declaring
-        // inactivity; scheduler delay must not discard buffered commands.
+        // Already-complete buffered commands take precedence over deadlines.
         self.retry_io = false;
+        if self
+            .frame_deadline
+            .expired_now(config.frame_assembly_timeout)
+        {
+            return Ok(None);
+        }
         let mut progress = self.flush()?;
+        if self.eof && self.input.is_empty() && self.output.is_empty() {
+            return Ok(None);
+        }
+        // A deferred command can have following pipeline bytes buffered and
+        // therefore never read the local half-close. Stop polling it during
+        // shutdown, but keep flushing replies produced before cancellation.
+        if self.shutdown_drain && (self.session.is_blocked() || self.session.is_paused()) {
+            self.closing = true;
+        }
         if self.closing {
             return Ok(if self.output.is_empty() {
                 None
@@ -227,7 +243,11 @@ impl Client {
         if read_first {
             progress |= self.receive(config.limits, chunk)?;
             if self.input.is_empty() || self.closing {
-                return Ok(self.open(progress, config.idle_timeout));
+                return Ok(if self.eof && self.output.is_empty() {
+                    None
+                } else {
+                    self.open(progress, config.idle_timeout)
+                });
             }
         }
         let mut consumed = 0;
@@ -247,6 +267,7 @@ impl Client {
                         self.closing = true;
                         break;
                     }
+                    self.frame_deadline.clear();
                     if self.session.is_blocked() || self.session.is_paused() {
                         break;
                     }
@@ -256,6 +277,17 @@ impl Client {
                     }
                 }
                 Ok(None) => {
+                    // An empty suffix needs another read, not a frame timer.
+                    if consumed < self.input.len() {
+                        let now = Instant::now();
+                        self.frame_deadline.observe_incomplete(true, now);
+                        if self
+                            .frame_deadline
+                            .expired_at(config.frame_assembly_timeout, now)
+                        {
+                            return Ok(None);
+                        }
+                    }
                     need_input = true;
                     break;
                 }
@@ -277,7 +309,8 @@ impl Client {
             return Ok(self.open(progress, config.idle_timeout));
         }
         if self.eof {
-            if self.input.is_empty() {
+            if self.input.is_empty() || self.shutdown_drain {
+                self.input.clear();
                 return Ok(None);
             }
             self.output
@@ -302,6 +335,12 @@ impl Client {
         chunk: &mut [u8],
     ) -> io::Result<LocalPoll> {
         self.retry_io = false;
+        if self
+            .frame_deadline
+            .expired_now(config.frame_assembly_timeout)
+        {
+            return Ok(LocalPoll::Closed);
+        }
         let mut progress = self.flush()?;
         if self.closing {
             return Ok(if self.output.is_empty() {
@@ -355,6 +394,7 @@ impl Client {
                     if migrate {
                         break;
                     }
+                    self.frame_deadline.clear();
                     consumed += used;
                     progress = true;
                     if action == Action::Close {
@@ -366,6 +406,17 @@ impl Client {
                     }
                 }
                 Ok(None) => {
+                    // An empty suffix needs another read, not a frame timer.
+                    if consumed < self.input.len() {
+                        let now = Instant::now();
+                        self.frame_deadline.observe_incomplete(true, now);
+                        if self
+                            .frame_deadline
+                            .expired_at(config.frame_assembly_timeout, now)
+                        {
+                            return Ok(LocalPoll::Closed);
+                        }
+                    }
                     need_input = true;
                     break;
                 }
@@ -401,7 +452,8 @@ impl Client {
             return Ok(LocalPoll::Progress(progress));
         }
         if self.eof {
-            if self.input.is_empty() {
+            if self.input.is_empty() || self.shutdown_drain {
+                self.input.clear();
                 return Ok(LocalPoll::Closed);
             }
             self.output
@@ -530,8 +582,10 @@ pub(super) fn serve(
                 sent: 0,
                 closing: false,
                 eof: false,
+                shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
+                frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                 _permit: Some(Permit::acquire(&admitted)),
                 shutdown_on_drop: true,
                 pubsub: receiver,
@@ -577,7 +631,30 @@ fn run_lane<E: Execution>(
     let mut chunk = [0; 16 * 1024];
     let mut maintenance = Instant::now();
     let mut polling = PollWindow::new(maintenance);
-    while !stop.load(Ordering::Acquire) && !store.shutdown_requested() {
+    let mut draining = false;
+    let mut drain_deadline = None;
+    let mut forced = false;
+    loop {
+        if stop.load(Ordering::Acquire) && !draining {
+            draining = true;
+            drain_deadline = Some(Instant::now() + CLIENT_DRAIN_TIMEOUT);
+            for client in &mut clients {
+                client.shutdown_drain = true;
+                let _ = client.stream.shutdown(Shutdown::Read);
+            }
+        }
+        if store.shutdown_requested() {
+            break;
+        }
+        if !forced && drain_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            forced = true;
+            for client in &clients {
+                let _ = client.stream.shutdown(Shutdown::Both);
+            }
+        }
+        if draining && admitted.load(Ordering::Acquire) == 0 {
+            break;
+        }
         if let Some(inbox) = &inbox {
             inbox.drain(&store);
         }
@@ -588,7 +665,16 @@ fn run_lane<E: Execution>(
             maintenance = Instant::now();
         }
         let mut progress = false;
-        while let Ok(client) = receiver.try_recv() {
+        while let Ok(mut client) = receiver.try_recv() {
+            if draining {
+                client.shutdown_drain = true;
+                let mode = if forced {
+                    Shutdown::Both
+                } else {
+                    Shutdown::Read
+                };
+                let _ = client.stream.shutdown(mode);
+            }
             clients.push(client);
             progress = true;
         }
@@ -606,6 +692,15 @@ fn run_lane<E: Execution>(
                     clients.swap_remove(index);
                 }
             }
+        }
+        if !forced && drain_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            forced = true;
+            for client in &clients {
+                let _ = client.stream.shutdown(Shutdown::Both);
+            }
+        }
+        if draining && admitted.load(Ordering::Acquire) == 0 {
+            break;
         }
         // Replies in flight are not an idle connection. Give the
         // next client request a short bounded window to arrive,
@@ -705,14 +800,94 @@ mod tests {
                 sent: 0,
                 closing: false,
                 eof: false,
+                shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
+                frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                 _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
                 shutdown_on_drop: true,
                 pubsub: std::sync::mpsc::sync_channel(1).1,
             },
             peer,
         )
+    }
+
+    #[test]
+    fn complete_frames_leave_no_assembly_deadline() {
+        let ping = b"*1\r\n$4\r\nPING\r\n";
+        for worker in [false, true] {
+            for input in [ping.to_vec(), b"PING\r\n".to_vec(), ping.repeat(16)] {
+                let replies = if input == b"PING\r\n" {
+                    1
+                } else {
+                    input.len() / ping.len()
+                };
+                let (mut client, mut peer) = test_client(input);
+                let store = Store::new(1024);
+                let config = Config::default();
+                if worker {
+                    assert!(matches!(
+                        client.poll_local(&store, &config, &mut [0; 1024]).unwrap(),
+                        LocalPoll::Progress(true)
+                    ));
+                } else {
+                    assert_eq!(
+                        client.poll(&store, &config, &mut [0; 1024]).unwrap(),
+                        Some(true)
+                    );
+                }
+                assert!(client.input.is_empty());
+                assert!(
+                    client
+                        .frame_deadline
+                        .deadline(config.frame_assembly_timeout)
+                        .is_none(),
+                    "a fully consumed request is not an incomplete frame (worker={worker})"
+                );
+                let mut reply = vec![0; replies * 7];
+                peer.read_exact(&mut reply).unwrap();
+                assert_eq!(reply, b"+PONG\r\n".repeat(replies));
+            }
+        }
+    }
+
+    #[test]
+    fn completed_prefix_keeps_the_partial_suffix_deadline() {
+        for worker in [false, true] {
+            let (mut client, mut peer) =
+                test_client(b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPI".to_vec());
+            let store = Store::new(1024);
+            let config = Config::default();
+            let mut original_deadline = None;
+            for pass in 0..2 {
+                if worker {
+                    assert!(matches!(
+                        client.poll_local(&store, &config, &mut [0; 1024]).unwrap(),
+                        LocalPoll::Progress(_)
+                    ));
+                } else {
+                    assert!(
+                        client
+                            .poll(&store, &config, &mut [0; 1024])
+                            .unwrap()
+                            .is_some()
+                    );
+                }
+                assert_eq!(client.input, b"*1\r\n$4\r\nPI");
+                let deadline = client
+                    .frame_deadline
+                    .deadline(config.frame_assembly_timeout);
+                assert!(deadline.is_some());
+                if pass == 0 {
+                    let mut reply = [0; 7];
+                    peer.read_exact(&mut reply).unwrap();
+                    assert_eq!(&reply, b"+PONG\r\n");
+                    original_deadline = deadline;
+                } else {
+                    assert_eq!(deadline, original_deadline);
+                }
+            }
+        }
     }
 
     #[test]
@@ -795,8 +970,10 @@ mod tests {
             sent: 0,
             closing: false,
             eof: false,
+            shutdown_drain: false,
             retry_io: false,
             activity: Instant::now() - Duration::from_secs(2),
+            frame_deadline: crate::frame_deadline::FrameDeadline::default(),
             _permit: Some(Permit(Arc::new(AtomicUsize::new(1)))),
             shutdown_on_drop: true,
             pubsub: std::sync::mpsc::sync_channel(1).1,

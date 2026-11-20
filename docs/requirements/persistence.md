@@ -255,3 +255,20 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
   missing-target failure, and all execution modes. Documentation shall retain the
   no-expiry clock shortcut, tombstone-claim semantics and the absence of history
   for deleted/renamed consumers.
+
+## Offline backup verification staging (S126)
+
+- **R448 (event-driven):** When `rillcache-backup verify --temp-dir DIR` runs,
+  it shall stage the journal payload exclusively in that existing directory,
+  with mode 0600 on Unix and no fallback to system scratch. With no explicit
+  directory it shall keep using the platform temporary directory. Verification
+  shall retain archive length, checksum and replay checks (including HMAC when
+  configured), and attempt to remove its staging file on success or error. It
+  shall reject empty, missing or repeated option values, missing or non-directory
+  paths, and use of the option with `create` or `restore`.
+
+- **R449 (unwanted behavior):** If replay changes the length of the staged
+  journal, then offline `verify` and `restore` shall fail even if the archive
+  length and CRC are valid. Neither command shall change the input archive;
+  `restore` shall not publish a recovered prefix as a successful restore.
+  Server startup's torn-tail recovery policy shall remain unchanged.

@@ -20,6 +20,7 @@ const SUPPORTED: &[&str] = &[
     "max-clients",
     "auth-failure-limit",
     "auth-source-limit",
+    "auth-global-limit",
     "auth-source-window-ms",
     "threads",
     "io-mode",
@@ -29,6 +30,7 @@ const SUPPORTED: &[&str] = &[
     "max-bulk-bytes",
     "max-frame-bytes",
     "idle-timeout-ms",
+    "frame-assembly-timeout-ms",
     "requirepass",
     "requirepass-file",
     "aclfile",
@@ -49,7 +51,15 @@ const SUPPORTED: &[&str] = &[
     "tls-bind",
     "tls-cert-file",
     "tls-key-file",
+    "tls-ocsp-file",
     "tls-client-ca-file",
+    "tls-client-crl-file",
+    "tls-client-cert-user",
+    "tls-client-cert-users-file",
+    "tls-reload-trigger",
+    "tls-sni-cert-file",
+    "tls-sni-key-file",
+    "tls-sni-ocsp-file",
     "tls-handshake-timeout-ms",
 ];
 
@@ -256,6 +266,58 @@ aof-hmac-migrate no
                 "--appendonly",
                 "yes",
             ]
+        );
+    }
+
+    #[test]
+    fn repeated_sni_identity_directives_map_to_named_cli_options() {
+        assert_eq!(
+            parse_text(
+                "tls-sni-cert-file a.test=/etc/a-chain.pem\ntls-sni-key-file a.test=/etc/a-key.pem\n"
+            )
+            .unwrap(),
+            vec![
+                "--tls-sni-cert-file",
+                "a.test=/etc/a-chain.pem",
+                "--tls-sni-key-file",
+                "a.test=/etc/a-key.pem",
+            ]
+        );
+    }
+
+    #[test]
+    fn tls_client_certificate_mapping_directive_maps_to_cli_option() {
+        let mapping = format!("{}=reader", "ab".repeat(32));
+        assert_eq!(
+            parse_text(&format!("tls-client-cert-user {mapping}")).unwrap(),
+            vec!["--tls-client-cert-user", mapping.as_str()]
+        );
+    }
+
+    #[test]
+    fn tls_client_certificate_mapping_file_directive_maps_to_cli_option() {
+        assert_eq!(
+            parse_text("tls-client-cert-users-file /etc/rillcache/client-users.map").unwrap(),
+            vec![
+                "--tls-client-cert-users-file",
+                "/etc/rillcache/client-users.map"
+            ]
+        );
+    }
+
+    #[test]
+    fn tls_reload_trigger_directive_maps_to_cli_option() {
+        assert_eq!(
+            parse_text("tls-reload-trigger /run/rillcache/tls-generation").unwrap(),
+            vec!["--tls-reload-trigger", "/run/rillcache/tls-generation"]
+        );
+    }
+
+    #[test]
+    fn frame_assembly_timeout_directive_maps_to_cli_option() {
+        assert_eq!(
+            parse_text("frame-assembly-timeout-ms 0\n").unwrap(),
+            vec!["--frame-assembly-timeout-ms", "0"]
         );
     }
 

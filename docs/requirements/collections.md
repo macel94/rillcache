@@ -268,8 +268,9 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 - **R237 (event-driven):** `LPOS key element [RANK rank] [COUNT count]
   [MAXLEN maxlen]` shall search lists forward for positive ranks and backward for
-  negative ranks, reject rank zero and negative COUNT/MAXLEN, and limit examined
-  elements when MAXLEN is positive. Without COUNT it shall return the zero-based
+  negative ranks, reject rank zero, and reject negative COUNT/MAXLEN. If the
+  rank is below -9223372036854775807, then LPOS shall return a range error before
+  looking up the key. It shall limit examined elements when MAXLEN is positive. Without COUNT it shall return the zero-based
   index or a null bulk; with COUNT it shall return an index array, with COUNT 0
   meaning all matches.
 - **R238 (event-driven):** `LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT count]`

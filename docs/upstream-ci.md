@@ -225,9 +225,12 @@ wall deadline; Tcl also has an upstream no-progress timeout. Process groups are
 owned by the harness, terminated in `finally`, waited for, and forcibly killed
 only after bounded waits; no system-wide pkill. Temporary storage and ports are
 unique; no shared service or concurrently destructive suite uses an endpoint.
-SIGINT/SIGTERM runs cleanup where the OS permits. Rillcache's standalone binary
-has no portable signal-handler shutdown API; the harness records termination
-rather than claiming SIGTERM exercised its in-process joined-shutdown contract.
+SIGINT/SIGTERM runs cleanup where the OS permits. The standalone binary now
+handles those signals with bounded worker joins and journal flush; the dedicated
+subprocess shutdown test verifies exit and journal recovery separately from the
+upstream compatibility harness. A signal stop drains replies for commands
+already dispatched, but it is not a full client drain: idle/incomplete clients,
+subscriptions, blocked commands and deadline-expired replies may be abandoned.
 
 When a run fails, inspect in order: build prerequisites/checksums and command
 status; server startup log/readiness and process status; prerequisite JSON; native

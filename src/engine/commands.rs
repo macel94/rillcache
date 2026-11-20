@@ -18,6 +18,10 @@ impl ShardExecutor {
         let now = self.now(&data);
         data.expire_key(arguments[1], now);
         let Some(entry) = data.entries.get(arguments[1]) else {
+            // Only conditional DELEX uses a read lookup upstream.
+            if !delifeq && arguments.len() == 4 {
+                data.record_key_miss(arguments[1]);
+            }
             integer(0, output);
             return;
         };
@@ -84,6 +88,7 @@ impl ShardExecutor {
             let hash = super::xxh3::xxh3_64(&entry.value);
             write!(output, "$16\r\n{hash:016x}\r\n").expect("Vec write");
         } else {
+            data.record_key_miss(key);
             output.extend_from_slice(b"$-1\r\n");
         }
     }
@@ -202,7 +207,13 @@ impl ShardExecutor {
             }
         };
         data.expire_key(key, now);
-        let existing = data.entries.get(key);
+        let existing = match data.entries.get(key) {
+            None if options.get => {
+                data.record_key_miss(key);
+                None
+            }
+            entry => entry,
+        };
         if (options.get
             || matches!(
                 options.condition,
@@ -306,13 +317,17 @@ impl ShardExecutor {
         };
         let now = self.now(&data);
         data.expire_key(key, now);
-        if data
-            .entries
-            .get(key)
-            .is_some_and(|entry| !entry.is_string())
-        {
-            wrong_type(output);
-            return;
+        match data.entries.get(key) {
+            None => {
+                data.record_key_miss(key);
+                encode_bulk(None, output);
+                return;
+            }
+            Some(entry) if !entry.is_string() => {
+                wrong_type(output);
+                return;
+            }
+            Some(_) => {}
         }
         encode_bulk(
             data.remove(key)
@@ -334,6 +349,7 @@ impl ShardExecutor {
         };
         data.expire_key(key, now);
         let Some(entry) = data.entries.get(key) else {
+            data.record_key_miss(key);
             encode_bulk(None, output);
             return;
         };

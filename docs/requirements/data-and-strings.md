@@ -89,8 +89,9 @@ and the offline upstream harness tests.
   survive worker handoffs and be discarded by `DISCARD`/`QUIT`/close.
 - **R108 (unwanted behavior):** If a watched key is written, deleted, expires,
   changes TTL, or is cleared after `WATCH`, then `EXEC` shall return a null array
-  (RESP2 `*-1`, RESP3 `_`) without changing data; bounded version eviction and
-  flushes shall fail closed rather than miss a conflict. `UNWATCH` shall clear all
+  (RESP2 `*-1`, RESP3 `_`) without changing data; bounded version eviction by
+  entry count or retained-key-byte budget and flushes shall fail closed rather than
+  miss a conflict. `UNWATCH` shall clear all
   watches.
 
 ## Expiration and integer compatibility

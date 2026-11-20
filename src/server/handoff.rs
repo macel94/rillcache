@@ -263,8 +263,10 @@ impl Sharing {
                 sent: 0,
                 closing: false,
                 eof: false,
+                shutdown_drain: false,
                 retry_io: false,
                 activity: Instant::now(),
+                frame_deadline: crate::frame_deadline::FrameDeadline::default(),
                 _permit: None,
                 shutdown_on_drop: false,
                 pubsub: std::sync::mpsc::sync_channel(1).1,
@@ -274,6 +276,7 @@ impl Sharing {
         client.activity = Instant::now();
         client.closing = false;
         client.eof = false;
+        client.shutdown_drain = false;
         client.shutdown_on_drop = true;
         std::mem::swap(session, &mut client.session);
         std::mem::swap(input, &mut client.input);

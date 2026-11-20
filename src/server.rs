@@ -1,5 +1,6 @@
 //! Default Unix Tokio networking, portable managed-client fallback and fixed workers.
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
@@ -50,6 +51,9 @@ pub const FIXED_WORKER_ACTIVE_POLL_US: u64 = 50;
 pub const FIXED_WORKER_RUN_QUANTUM_US: u64 = 100;
 /// v2 starts a fresh run interval after a voluntary yield/park returns.
 pub const FIXED_WORKER_RUN_POLICY_VERSION: u64 = 2;
+
+/// Maximum time each transport spends draining replies before forcing sockets closed.
+pub(super) const CLIENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Plain-TCP engine selected at bind time. The proven readiness reactor is the
 /// default; async Tokio is an explicit opt-in with a documented P1 trade-off.
@@ -193,7 +197,10 @@ pub struct Config {
     /// Failed authentication attempts per peer IP before a temporary lockout.
     /// Zero disables the per-source budget.
     pub auth_source_limit: usize,
-    /// Per-source failure window and lockout duration in milliseconds.
+    /// Failed authentication attempts across all clients in this process before
+    /// a temporary global lockout. Zero disables the process-local budget.
+    pub auth_global_limit: usize,
+    /// Per-source and process-global failure window/lockout duration in milliseconds.
     pub auth_source_window_ms: u64,
     /// None: Unix readiness plain-TCP engine (Mio by default, Tokio when
     /// `io_mode` is `Tokio`); cold configurations and non-Unix retain managed
@@ -213,6 +220,8 @@ pub struct Config {
     pub max_data_bytes: usize,
     pub limits: Limits,
     pub idle_timeout: Duration,
+    /// Monotonic deadline for assembling an incomplete plaintext request; None disables it.
+    pub frame_assembly_timeout: Option<Duration>,
     /// Default-user password. `None` or empty disables authentication.
     /// Never include this value in Debug output or logs.
     pub requirepass: Option<Vec<u8>>,
@@ -255,9 +264,31 @@ pub struct Config {
     pub tls_bind_addr: Option<SocketAddr>,
     pub tls_cert_file: Option<PathBuf>,
     pub tls_key_file: Option<PathBuf>,
+    /// Optional DER-encoded OCSP response stapled with the default server identity.
+    pub tls_ocsp_file: Option<PathBuf>,
     /// Optional client CA. Setting it requires client certificates.
     pub tls_client_ca_file: Option<PathBuf>,
+    /// Optional DER CRL bundle; requires a client CA and rejects unknown/expired status.
+    pub tls_client_crl_file: Option<PathBuf>,
+    /// SHA-256 fingerprints of verified client leaf certificates mapped to ACL usernames.
+    pub tls_client_cert_users: BTreeMap<[u8; 32], Vec<u8>>,
+    /// Optional bounded, reloadable fingerprint-to-user mapping file (requires mTLS and reload trigger).
+    pub tls_client_cert_users_file: Option<PathBuf>,
+    /// Optional operator-controlled generation file; changing its bounded token reloads TLS files.
+    pub tls_reload_trigger: Option<PathBuf>,
+    /// Additional exact DNS-name certificates selected from ClientHello SNI.
+    pub tls_sni_certificates: Vec<TlsSniCertificate>,
     pub tls_handshake_timeout: Duration,
+}
+
+/// Startup-only certificate identity selected for one exact SNI DNS name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TlsSniCertificate {
+    pub server_name: String,
+    pub cert_file: PathBuf,
+    pub key_file: PathBuf,
+    /// Optional DER-encoded OCSP response for this exact SNI identity.
+    pub ocsp_file: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Config {
@@ -268,6 +299,7 @@ impl std::fmt::Debug for Config {
             .field("max_clients", &self.max_clients)
             .field("auth_failure_limit", &self.auth_failure_limit)
             .field("auth_source_limit", &self.auth_source_limit)
+            .field("auth_global_limit", &self.auth_global_limit)
             .field("auth_source_window_ms", &self.auth_source_window_ms)
             .field("worker_threads", &self.worker_threads)
             .field("io_mode", &self.io_mode)
@@ -276,6 +308,7 @@ impl std::fmt::Debug for Config {
             .field("max_data_bytes", &self.max_data_bytes)
             .field("limits", &self.limits)
             .field("idle_timeout", &self.idle_timeout)
+            .field("frame_assembly_timeout", &self.frame_assembly_timeout)
             .field(
                 "requirepass",
                 &self.requirepass.as_ref().map(|_| "<redacted>"),
@@ -306,7 +339,16 @@ impl std::fmt::Debug for Config {
             .field("tls_bind_addr", &self.tls_bind_addr)
             .field("tls_cert_file", &self.tls_cert_file)
             .field("tls_key_file", &self.tls_key_file)
+            .field("tls_ocsp_file", &self.tls_ocsp_file)
             .field("tls_client_ca_file", &self.tls_client_ca_file)
+            .field("tls_client_crl_file", &self.tls_client_crl_file)
+            .field("tls_client_cert_users", &self.tls_client_cert_users)
+            .field(
+                "tls_client_cert_users_file",
+                &self.tls_client_cert_users_file,
+            )
+            .field("tls_reload_trigger", &self.tls_reload_trigger)
+            .field("tls_sni_certificates", &self.tls_sni_certificates)
             .field("tls_handshake_timeout", &self.tls_handshake_timeout)
             .finish()
     }
@@ -319,6 +361,7 @@ impl Default for Config {
             max_clients: 128,
             auth_failure_limit: 10,
             auth_source_limit: 0,
+            auth_global_limit: 0,
             auth_source_window_ms: 60_000,
             worker_threads: None,
             io_mode: IoMode::default(),
@@ -327,6 +370,7 @@ impl Default for Config {
             max_data_bytes: 64 * 1024 * 1024,
             limits: Limits::default(),
             idle_timeout: Duration::from_secs(30),
+            frame_assembly_timeout: Some(Duration::from_secs(60)),
             requirepass: None,
             requirepass_file: None,
             secure_secret_files: false,
@@ -348,14 +392,37 @@ impl Default for Config {
             tls_bind_addr: None,
             tls_cert_file: None,
             tls_key_file: None,
+            tls_ocsp_file: None,
             tls_client_ca_file: None,
+            tls_client_crl_file: None,
+            tls_client_cert_users: BTreeMap::new(),
+            tls_client_cert_users_file: None,
+            tls_reload_trigger: None,
+            tls_sni_certificates: Vec::new(),
             tls_handshake_timeout: Duration::from_secs(5),
         }
     }
 }
 
+fn valid_tls_server_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 253 || !name.is_ascii() {
+        return false;
+    }
+    name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.as_bytes()[0].is_ascii_alphanumeric()
+            && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
 impl Config {
-    fn validate(&self) -> io::Result<()> {
+    /// Check startup option constraints and, when enabled, secret-file metadata.
+    /// This does not bind sockets or check whether server resources can be opened.
+    pub fn validate(&self) -> io::Result<()> {
         if self
             .worker_threads
             .is_some_and(|count| !(1..=64).contains(&count))
@@ -365,6 +432,7 @@ impl Config {
             || self.max_clients == 0
             || self.auth_failure_limit > 10_000
             || self.auth_source_limit > 10_000
+            || self.auth_global_limit > 10_000
             || self.auth_source_window_ms == 0
             || self.max_data_bytes == 0
             || self.limits.max_arguments == 0
@@ -373,6 +441,9 @@ impl Config {
             || self.limits.max_bulk_bytes > self.limits.max_frame_bytes
             || self.limits.max_frame_bytes > 512 * 1024 * 1024
             || self.idle_timeout.is_zero()
+            || self
+                .frame_assembly_timeout
+                .is_some_and(|timeout| timeout.is_zero() || timeout > Duration::from_secs(600))
             || self
                 .requirepass
                 .as_ref()
@@ -405,10 +476,66 @@ impl Config {
                 .storage_owners
                 .is_some_and(|count| !(1..=64).contains(&count))
             || self.tls_handshake_timeout.is_zero()
+            || self.tls_sni_certificates.len() > 128
+            || self.tls_sni_certificates.iter().any(|identity| {
+                !valid_tls_server_name(&identity.server_name)
+                    || identity.cert_file.as_os_str().is_empty()
+                    || identity.key_file.as_os_str().is_empty()
+                    || identity
+                        .ocsp_file
+                        .as_ref()
+                        .is_some_and(|path| path.as_os_str().is_empty())
+            })
+            || self
+                .tls_sni_certificates
+                .iter()
+                .enumerate()
+                .any(|(index, identity)| {
+                    self.tls_sni_certificates[..index].iter().any(|previous| {
+                        previous
+                            .server_name
+                            .eq_ignore_ascii_case(&identity.server_name)
+                    })
+                })
+            || self
+                .tls_ocsp_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
             || (self.tls_bind_addr.is_none()
                 && (self.tls_cert_file.is_some()
                     || self.tls_key_file.is_some()
-                    || self.tls_client_ca_file.is_some()))
+                    || self.tls_ocsp_file.is_some()
+                    || self.tls_client_ca_file.is_some()
+                    || self.tls_client_crl_file.is_some()
+                    || !self.tls_client_cert_users.is_empty()
+                    || self.tls_client_cert_users_file.is_some()
+                    || self.tls_reload_trigger.is_some()
+                    || !self.tls_sni_certificates.is_empty()))
+            || self
+                .tls_reload_trigger
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || (self.tls_client_crl_file.is_some() && self.tls_client_ca_file.is_none())
+            || self
+                .tls_client_crl_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || (!self.tls_client_cert_users.is_empty() && self.tls_client_ca_file.is_none())
+            || (self.tls_client_cert_users_file.is_some()
+                && (self.tls_client_ca_file.is_none()
+                    || self.tls_reload_trigger.is_none()
+                    || !self.tls_client_cert_users.is_empty()))
+            || self
+                .tls_client_cert_users_file
+                .as_ref()
+                .is_some_and(|path| path.as_os_str().is_empty())
+            || self.tls_client_cert_users.values().any(|name| {
+                name.is_empty()
+                    || name.len() > 128
+                    || !name
+                        .iter()
+                        .all(|byte| (b'!'..=b'~').contains(byte) && *byte != b'|')
+            })
             || (self.tls_bind_addr.is_some()
                 && (self.tls_cert_file.is_none() || self.tls_key_file.is_none()))
             || self
@@ -422,7 +549,7 @@ impl Config {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "limits and timeout must be positive; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, and the journal needs a basename without path separators in a nonempty directory",
+                "idle timeout must be positive and frame assembly timeout absent or 1 ms..=600 s; frame limit must be at most 512 MiB, bulk limit must fit within frame limit, requirepass must be 1..=1024 bytes, requirepass and aclfile are mutually exclusive, the audit log needs a nonempty path and a 1 KiB..=1 GiB bound, AOF authentication needs a nonempty key path, --appendonly yes and no migration flag without a key, TLS needs a distinct bind address plus certificate and key, client-certificate ACL mappings require an mTLS CA and valid enabled ACL users, a mapping file requires the mTLS CA and reload trigger and cannot be combined with inline mappings, SNI names must be unique valid DNS names with at most 128 identities, and the journal needs a basename without path separators in a nonempty directory",
             ));
         }
         if self.secure_secret_files {
@@ -455,10 +582,16 @@ impl Config {
                 &self.audit_hmac_keyring_file,
                 &self.aof_hmac_key_file,
                 &self.tls_key_file,
+                &self.tls_reload_trigger,
+                &self.tls_client_cert_users_file,
             ]
             .into_iter()
             .flatten()
-            {
+            .chain(
+                self.tls_sni_certificates
+                    .iter()
+                    .map(|identity| &identity.key_file),
+            ) {
                 let metadata = std::fs::metadata(path).map_err(|error| {
                     io::Error::new(
                         error.kind(),
@@ -506,7 +639,7 @@ pub struct Server {
     tls_acceptor: Option<Arc<tls::TlsAcceptor>>,
     config: Config,
     policy: SchedulingPolicy,
-    store: Store,
+    store: Arc<Store>,
 }
 
 impl Config {
@@ -590,6 +723,23 @@ impl Server {
     pub fn bind(config: Config) -> io::Result<Self> {
         config.validate()?;
         let auth = config.load_auth()?;
+        let mut tls_client_cert_users = if let Some(path) = &config.tls_client_cert_users_file {
+            Some(tls::read_client_cert_users_file(path)?)
+        } else if config.tls_client_cert_users.is_empty() {
+            None
+        } else {
+            Some(config.tls_client_cert_users.clone())
+        };
+        if let Some(users) = &mut tls_client_cert_users {
+            for username in users.values_mut() {
+                *username = auth.verify_client_certificate_user(username).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "TLS client certificate mapping must reference enabled ACL users",
+                    )
+                })?;
+            }
+        }
         let audit_hmac_key = config.load_audit_hmac_key()?;
         let aof_hmac_key = config.load_aof_hmac_key()?;
         let mut store = if config.appendonly {
@@ -624,23 +774,34 @@ impl Server {
         );
         store.set_max_clients(config.max_clients);
         store.set_auth_failure_limit(config.auth_failure_limit);
-        store.set_auth_source_limit(config.auth_source_limit, config.auth_source_window_ms);
+        store.set_auth_source_limit(
+            config.auth_source_limit,
+            config.auth_global_limit,
+            config.auth_source_window_ms,
+        );
         store.set_eviction_policy(config.maxmemory_policy);
         store.set_notify_flags(config.notify_keyspace_events);
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
         let (tls_listener, tls_acceptor) = match config.tls_bind_addr {
             Some(addr) => {
-                let acceptor = tls::TlsAcceptor::from_files(
-                    config
+                let acceptor = tls::TlsAcceptor::from_files(tls::TlsSettings {
+                    cert_file: config
                         .tls_cert_file
                         .as_deref()
                         .expect("validated certificate"),
-                    config.tls_key_file.as_deref().expect("validated key"),
-                    config.tls_client_ca_file.as_deref(),
-                    config.tls_handshake_timeout,
-                    config.idle_timeout,
-                )?;
+                    key_file: config.tls_key_file.as_deref().expect("validated key"),
+                    ocsp_file: config.tls_ocsp_file.as_deref(),
+                    client_ca_file: config.tls_client_ca_file.as_deref(),
+                    client_crl_file: config.tls_client_crl_file.as_deref(),
+                    sni_certificates: &config.tls_sni_certificates,
+                    reload_trigger: config.tls_reload_trigger.as_deref(),
+                    client_cert_users: tls_client_cert_users.as_ref(),
+                    client_cert_users_file: config.tls_client_cert_users_file.as_deref(),
+                    services: store.services_handle(),
+                    handshake_timeout: config.tls_handshake_timeout,
+                    idle_timeout: config.idle_timeout,
+                })?;
                 let listener = TcpListener::bind(addr)?;
                 listener.set_nonblocking(true)?;
                 (Some(listener), Some(Arc::new(acceptor)))
@@ -697,7 +858,7 @@ impl Server {
             tls_acceptor,
             config,
             policy,
-            store,
+            store: Arc::new(store),
         })
     }
 
@@ -712,10 +873,23 @@ impl Server {
         }
     }
 
-    /// Run until an OS-level process termination or an unrecoverable server error.
-    /// The standard library has no portable signal-handler API.
+    /// Run synchronously until protocol shutdown or an unrecoverable server error.
     pub fn run(self) -> io::Result<()> {
-        self.serve(Arc::new(AtomicBool::new(false)))
+        self.run_until(Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Run synchronously until protocol shutdown, an unrecoverable error, or the
+    /// caller sets `stopping`. An enabled journal is explicitly flushed on exit.
+    pub fn run_until(self, stopping: Arc<AtomicBool>) -> io::Result<()> {
+        let flush_journal = self.config.appendonly;
+        let store = Arc::clone(&self.store);
+        let server_result = self.serve(stopping);
+        let flush_result = if flush_journal {
+            store.journal_flush()
+        } else {
+            Ok(())
+        };
+        server_result.and(flush_result)
     }
 
     /// Run in a managed background thread, useful for tests and local benchmarks.
@@ -725,6 +899,8 @@ impl Server {
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
         let policy = self.policy;
+        let flush_journal = self.config.appendonly;
+        let shutdown_store = Arc::clone(&self.store);
         let thread = thread::Builder::new()
             .name("rillcache-accept".into())
             .spawn(move || self.serve(stop))?;
@@ -733,6 +909,8 @@ impl Server {
             tls_addr,
             stopping,
             policy,
+            store: shutdown_store,
+            flush_journal,
             thread: Some(thread),
         })
     }
@@ -746,7 +924,6 @@ impl Server {
             policy,
             store,
         } = self;
-        let store = Arc::new(store);
         // A local reactor may exit before TLS users finish. Mixed transports
         // therefore share the joined external owner, never a reactor-owned inbox.
         if tls_listener.is_some() {
@@ -878,6 +1055,7 @@ fn serve_plain(
             let store = Arc::clone(&store);
             let limits = config.limits;
             let idle_timeout = config.idle_timeout;
+            let frame_assembly_timeout = config.frame_assembly_timeout;
             let permit = Permit::acquire(&admitted);
             let sharing = sharing.assign();
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
@@ -890,6 +1068,7 @@ fn serve_plain(
                 stream.local_addr()?,
                 control.try_clone()?,
             );
+            let client_stopping = Arc::clone(&stopping);
             let thread = thread::Builder::new()
                 .name("rillcache-client".into())
                 .stack_size(256 * 1024)
@@ -898,7 +1077,9 @@ fn serve_plain(
                     let context = ClientContext {
                         limits,
                         idle_timeout,
+                        frame_assembly_timeout,
                         policy,
+                        stopping: client_stopping,
                         permit: &permit,
                         sharing: sharing.as_deref(),
                     };
@@ -909,9 +1090,7 @@ fn serve_plain(
         }
         Ok(())
     })();
-    for worker in &workers {
-        let _ = worker.control.shutdown(Shutdown::Both);
-    }
+    stop_workers(&workers, stopping.load(Ordering::Acquire));
     let mut result = result;
     for worker in workers {
         if let Err(error) = join(worker.thread) {
@@ -967,6 +1146,7 @@ fn serve_tls(
             let acceptor = Arc::clone(&acceptor);
             let limits = config.limits;
             let idle_timeout = config.idle_timeout;
+            let frame_assembly_timeout = config.frame_assembly_timeout;
             let permit = Permit::acquire(&admitted);
             let (sender, receiver) = sync_channel(Store::pubsub_queue_capacity());
             let mut session = Session::new();
@@ -974,11 +1154,12 @@ fn serve_tls(
             session.set_pubsub_sender(sender);
             let client_id = session.id();
             store.register_client(client_id, peer, local_addr, control.try_clone()?);
+            let client_stopping = Arc::clone(&stopping);
             let thread = thread::Builder::new()
                 .name("rillcache-tls-client".into())
                 .stack_size(256 * 1024)
                 .spawn(move || {
-                    let mut connection = match acceptor.accept(stream) {
+                    let (mut connection, mapped_user) = match acceptor.accept(stream) {
                         Ok(connection) => connection,
                         Err(_) => {
                             store.pubsub_remove_client(client_id);
@@ -986,10 +1167,22 @@ fn serve_tls(
                             return;
                         }
                     };
+                    if let Some(username) = mapped_user {
+                        match store.authenticate_client_certificate_user(client_id, &username) {
+                            Ok(canonical) => session.set_tls_client_user(canonical),
+                            Err(_) => {
+                                store.pubsub_remove_client(client_id);
+                                store.unregister_client(client_id);
+                                return;
+                            }
+                        }
+                    }
                     let context = ClientContext {
                         limits,
                         idle_timeout,
+                        frame_assembly_timeout,
                         policy,
+                        stopping: client_stopping,
                         permit: &permit,
                         sharing: None,
                     };
@@ -1000,9 +1193,7 @@ fn serve_tls(
         }
         Ok(())
     })();
-    for worker in &workers {
-        let _ = worker.control.shutdown(Shutdown::Both);
-    }
+    stop_workers(&workers, stopping.load(Ordering::Acquire));
     let mut result = result;
     for worker in workers {
         if let Err(error) = join(worker.thread) {
@@ -1011,6 +1202,28 @@ fn serve_tls(
     }
     result
 }
+
+fn stop_workers(workers: &[Worker], drain: bool) {
+    let mode = if drain {
+        Shutdown::Read
+    } else {
+        Shutdown::Both
+    };
+    for worker in workers {
+        let _ = worker.control.shutdown(mode);
+    }
+    if drain {
+        let deadline = Instant::now() + CLIENT_DRAIN_TIMEOUT;
+        while workers.iter().any(|worker| !worker.thread.is_finished()) && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        for worker in workers.iter().filter(|worker| !worker.thread.is_finished()) {
+            let _ = worker.control.shutdown(Shutdown::Both);
+        }
+    }
+}
+
 struct Worker {
     control: TcpStream,
     thread: JoinHandle<()>,
@@ -1033,6 +1246,8 @@ pub struct ServerHandle {
     tls_addr: Option<SocketAddr>,
     stopping: Arc<AtomicBool>,
     policy: SchedulingPolicy,
+    store: Arc<Store>,
+    flush_journal: bool,
     thread: Option<JoinHandle<io::Result<()>>>,
 }
 
@@ -1055,13 +1270,20 @@ impl ServerHandle {
     }
 
     fn stop(&mut self) -> io::Result<()> {
+        let Some(thread) = self.thread.take() else {
+            return Ok(());
+        };
         self.stopping.store(true, Ordering::Release);
-        match self.thread.take() {
-            Some(thread) => thread
-                .join()
-                .map_err(|_| io::Error::other("accept worker panicked"))?,
-            None => Ok(()),
-        }
+        let server_result = match thread.join() {
+            Ok(result) => result,
+            Err(_) => Err(io::Error::other("accept worker panicked")),
+        };
+        let flush_result = if self.flush_journal {
+            self.store.journal_flush()
+        } else {
+            Ok(())
+        };
+        server_result.and(flush_result)
     }
 }
 
@@ -1074,7 +1296,9 @@ impl Drop for ServerHandle {
 struct ClientContext<'a> {
     limits: Limits,
     idle_timeout: Duration,
+    frame_assembly_timeout: Option<Duration>,
     policy: SchedulingPolicy,
+    stopping: Arc<AtomicBool>,
     permit: &'a Permit,
     sharing: Option<&'a handoff::Sharing>,
 }
@@ -1092,6 +1316,7 @@ fn serve_client(
         policy,
         permit,
         sharing,
+        ..
     } = context;
     let limits = *limits;
     let idle_timeout = *idle_timeout;
@@ -1100,9 +1325,11 @@ fn serve_client(
     let mut input = Vec::with_capacity(8192.min(limits.max_frame_bytes));
     let mut output = Vec::with_capacity(8192);
     let mut chunk = [0u8; 16 * 1024];
+    let mut frame_deadline = crate::frame_deadline::FrameDeadline::default();
     let mut lease_channel = handoff::LeaseChannel::new();
     let result = (|| {
         let mut subscriber_timeout = false;
+        let mut installed_read_timeout = idle_timeout;
         loop {
             // Subscribers poll their bounded message queue and the socket. The short
             // read timeout is a delivery-latency bound, not a busy-poll guarantee.
@@ -1227,6 +1454,23 @@ fn serve_client(
             } else if consumed > 0 {
                 input.drain(..consumed);
             }
+            if input.is_empty() {
+                frame_deadline.clear();
+            } else {
+                let incomplete = matches!(dispatch_request(&input, limits, |_| ()), Ok(None));
+                if incomplete {
+                    let now = Instant::now();
+                    frame_deadline.observe_incomplete(true, now);
+                    if frame_deadline.expired_at(context.frame_assembly_timeout, now) {
+                        return Ok(());
+                    }
+                } else {
+                    frame_deadline.clear();
+                }
+            }
+            stream.set_frame_assembly_deadline(
+                frame_deadline.deadline(context.frame_assembly_timeout),
+            );
             if !output.is_empty() {
                 stream.write_all(&output)?;
                 output.clear();
@@ -1277,15 +1521,29 @@ fn serve_client(
                 stream.write_all(b"-ERR Protocol error: request frame limit exceeded\r\n")?;
                 return Ok(());
             }
+            let desired_read_timeout = if polling {
+                Duration::from_millis(10)
+            } else {
+                frame_deadline
+                    .remaining_now(context.frame_assembly_timeout)
+                    .map_or(idle_timeout, |remaining| idle_timeout.min(remaining))
+            };
+            if desired_read_timeout != installed_read_timeout {
+                stream.set_read_timeout(Some(desired_read_timeout))?;
+                installed_read_timeout = desired_read_timeout;
+            }
             match stream.read(&mut chunk[..room]) {
                 Ok(0) => {
-                    if !input.is_empty() {
+                    if !input.is_empty() && !context.stopping.load(Ordering::Acquire) {
                         stream.write_all(b"-ERR Protocol error: unexpected end of stream\r\n")?;
                     }
                     return Ok(());
                 }
                 Ok(size) => input.extend_from_slice(&chunk[..size]),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_error) if frame_deadline.expired_now(context.frame_assembly_timeout) => {
+                    return Ok(());
+                }
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -1642,6 +1900,14 @@ mod tests {
                 ..Config::default()
             },
             Config {
+                frame_assembly_timeout: Some(Duration::ZERO),
+                ..Config::default()
+            },
+            Config {
+                frame_assembly_timeout: Some(Duration::from_secs(601)),
+                ..Config::default()
+            },
+            Config {
                 limits: Limits {
                     max_arguments: 0,
                     ..Limits::default()
@@ -1676,6 +1942,10 @@ mod tests {
             },
             Config {
                 requirepass: Some(vec![b'x'; 1025]),
+                ..Config::default()
+            },
+            Config {
+                auth_global_limit: 10_001,
                 ..Config::default()
             },
             Config {
@@ -1720,6 +1990,28 @@ mod tests {
         );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(config.validate().is_ok());
+        let sni_key = path.with_extension("sni-key");
+        std::fs::write(&sni_key, b"test key").unwrap();
+        std::fs::set_permissions(&sni_key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let sni_config = Config {
+            tls_bind_addr: Some("127.0.0.1:6380".parse().unwrap()),
+            tls_cert_file: Some(path.clone()),
+            tls_key_file: Some(path.clone()),
+            tls_sni_certificates: vec![TlsSniCertificate {
+                server_name: "example.test".into(),
+                cert_file: path.clone(),
+                key_file: sni_key.clone(),
+                ocsp_file: None,
+            }],
+            secure_secret_files: true,
+            ..Config::default()
+        };
+        assert_eq!(
+            sni_config.validate().err().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        std::fs::set_permissions(&sni_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(sni_config.validate().is_ok());
         config.secure_secret_files = false;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(config.validate().is_ok(), "default stays permissive");
@@ -1739,6 +2031,7 @@ mod tests {
             ..Config::default()
         };
         assert!(long.validate().is_ok());
+        let _ = std::fs::remove_file(sni_key);
         let _ = std::fs::remove_file(path);
     }
 }

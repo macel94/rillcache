@@ -28,9 +28,10 @@ To try expiration, use `redis-cli -2 SET greeting hello EX 60` and then
 `redis-cli -2 TTL greeting`.
 
 Stop the example with `docker stop rillcache`. The default cache is in memory:
-its contents disappear when the process exits. Protocol `SHUTDOWN` can join
-workers and flush an enabled journal; container signals do not provide that same
-graceful drain. See [container lifecycle and persistence](containers.md).
+its contents disappear when the process exits. The standalone binary handles
+container termination by joining workers and flushing an enabled journal, but it
+does not fully drain active clients and may lose in-flight replies. See
+[container lifecycle and persistence](containers.md).
 
 Already using port 6379? Publish `127.0.0.1:6380:6379` instead, and add `-p 6380`
 to the `redis-cli` commands. Don't run the Docker and native examples on the same
@@ -69,7 +70,17 @@ and checksum are also available under **Artifacts** in successful
 | Key/value payload budget | 64 MiB | `--max-data-bytes` |
 | Request argument / frame bound | 1 MiB / 2 MiB | `--max-bulk-bytes` / `--max-frame-bytes` |
 | Socket inactivity timeout | 30 seconds | `--idle-timeout-ms` |
+| Incomplete plaintext request assembly deadline | 60 seconds (`0` disables) | `--frame-assembly-timeout-ms` |
 | Authentication / persistence | Off | [Security](security.md) / [persistence](persistence.md) |
+
+The assembly deadline is independent of the inactivity timeout: once parsing has
+identified an incomplete plaintext request, trickling more bytes does not restart
+its monotonic timer. It applies to RESP/inline plaintext delivered to the parser,
+including plaintext read through an established TLS connection; it does not bound
+a TLS peer that trickles encrypted records without producing plaintext. Complete
+buffered requests are not timed out while command work is paused or backpressured.
+Set the assembly deadline to `0` only when another layer supplies an equivalent
+bound.
 
 The payload budget is not a process-memory limit: metadata, indexes, buffers,
 threads and sockets also use memory. Start with the defaults, then measure your

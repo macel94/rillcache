@@ -1,18 +1,32 @@
 #![forbid(unsafe_code)]
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::task::{Context, Poll};
+use std::thread;
 use std::time::Duration;
 
 use rillcache::protocol::Limits;
-use rillcache::{Config, Server};
+use rillcache::{Config, Server, TlsSniCertificate};
 
 mod config_file;
 mod healthcheck;
 
-const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
-  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC and TLS key files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
+type SniFiles = (
+    Option<std::path::PathBuf>,
+    Option<std::path::PathBuf>,
+    Option<std::path::PathBuf>,
+);
+
+const HELP: &str = "rillcache — safe Rust Redis-compatible server\n\nUsage: rillcache [OPTIONS]\n\n  --bind ADDRESS           Plaintext socket address (default 127.0.0.1:6379)\n  --max-clients N          Maximum simultaneous clients (default 128)\n  --auth-failure-limit N  Failed AUTH attempts per connection before close (default 10; 0 off)\n  --auth-source-limit N   Failed AUTH attempts per peer IP before lockout (default 0; 0 off)\n  --auth-global-limit N   Failed AUTH attempts process-wide before lockout (default 0; 0 off)\n  --auth-source-window-ms N  Source/global failure window and lockout duration (default 60000)\n  --threads N              Fixed I/O/execution workers, 1..64 (default: Unix readiness; managed clients elsewhere)\n  --io-mode NAME           Plain-TCP engine: mio (default) or tokio (opt-in async)\n  --storage-owners N       Opt-in multi-owner data execution, 1..64 (default 1: one local owner)
+  --socket-workers N       Plain-TCP reactors, 1..16 (default: 1 owner-local reactor; 2..=16 spread connection-local commands and migrate data connections to the owner)\n  --max-data-bytes N       Key/value payload budget (default 67108864)\n  --max-bulk-bytes N       Maximum request argument bytes (default 1048576; max 536870912)\n  --max-frame-bytes N      Maximum request frame bytes (default 2097152; max 536870912); the argument cap follows frame/4, clamped to 1024..1048576\n  --idle-timeout-ms N      Socket inactivity timeout (default 30000)\n  --frame-assembly-timeout-ms N  Incomplete plaintext frame deadline (default 60000; 0 disables)\n  --requirepass PASSWORD   Default-user password; empty disables (visible in process args)\n  --requirepass-file PATH  Read the password from a file; one trailing newline is stripped\n  --secure-secret-files    Refuse group/other-accessible password, ACL, HMAC, TLS key, reload-trigger and client-certificate mapping files (Unix)\n  --aclfile PATH           Load users/rules from a Redis-style ACL file (instead of --requirepass)\n  --audit-log PATH         Append ACL denials to a bounded audit file (default off)\n  --audit-log-max-bytes N  One-generation audit rotation bound (default 8388608)\n  --audit-syslog ADDRESS   Best-effort UDP destination for denial lines (default off)\n  --audit-hmac-key-file PATH  Optional 16..=1024-byte key for per-line HMAC (default off)\n  --audit-hmac-keyring-file PATH  Hex keyring; first key signs, all verify (default off)\n  --appendonly yes|no      Append-only persistence (default no)\n  --appendfilename NAME    Journal basename inside --dir (default appendonly.aof)\n  --appendfsync POLICY     always, everysec or no (default everysec)\n  --aof-hmac-key-file PATH  HMAC-SHA256 authenticate journal transactions (default off)\n  --aof-hmac-migrate      One-time seal of an existing journal; requires the key\n  --dir PATH               Directory for the journal (default .)\n  --maxmemory-policy NAME  noeviction, allkeys-lru/random or volatile-lru/random/ttl\n  --notify-keyspace-events FLAGS  K/E/g/$/l/s/h/z/t/m/n/A notification classes\n  --error-dialect NAME     redis or valkey error wording (default valkey; MSETEX short pairs)\n  --tls-bind ADDRESS       Optional native TLS 1.3 listener (distinct from --bind)\n  --tls-cert-file PATH     PEM server certificate chain (required with --tls-bind)\n  --tls-key-file PATH      PEM server private key (required with --tls-bind)\n  --tls-ocsp-file PATH     Optional DER OCSP response stapled with the default identity\n  --tls-client-ca-file PATH  Optional PEM client CA; requires client certificates\n  --tls-client-crl-file PATH  DER client CRL; unknown or expired status fails closed (requires CA)\n  --tls-client-cert-user SHA256=USER  Map a verified leaf fingerprint to an ACL user (repeatable)\n  --tls-client-cert-users-file PATH  Bounded SHA256=ACL-user mapping file, atomically reloaded with TLS generation\n  --tls-reload-trigger PATH  Reload TLS files when this file's token changes\n  --tls-sni-cert-file NAME=PATH  Additional exact SNI certificate chain (repeatable)\n  --tls-sni-key-file NAME=PATH   Private key for the matching SNI name (repeatable)\n  --tls-sni-ocsp-file NAME=PATH  Optional DER OCSP response for that SNI identity (repeatable)\n  --tls-handshake-timeout-ms N  TLS handshake deadline (default 5000)\n  --healthcheck IP:PORT    Read-only PING probe, one-second deadline; exit 0/1\n  --healthcheck-password-file PATH  After --healthcheck: AUTH with password from this file\n  --healthcheck-user NAME  After --healthcheck: ACL user (requires password file)\n  --healthcheck-require-aof  After --healthcheck: require healthy reported journal status\n  --healthcheck-aof-write-probe DIR  With require-aof: test one-byte write/sync/remove in this directory\n  --healthcheck-tls-ca-file PATH  After --healthcheck: TLS 1.3 with explicit PEM trust roots\n  --healthcheck-server-name NAME  TLS certificate identity (default: probe IP)\n  --config PATH            Read startup directives from a bounded file; later CLI options override\n  --check-config           First argument only: validate startup options without binding\n  --help                   Show this help\n  --version                Show version\n\nExperimental: password/ACL-file AUTH, native TLS 1.3 via rustls, eviction and an\nappend-only journal; no RDB format, replication or HTTP protocol. The standalone\nbinary binds to loopback by default.";
 
 #[allow(clippy::large_enum_variant)]
 enum Options {
@@ -24,12 +38,40 @@ enum Options {
         username: Option<Vec<u8>>,
         password: Option<Vec<u8>>,
         require_aof: bool,
+        aof_write_probe_directory: Option<std::path::PathBuf>,
         tls: Option<healthcheck::TlsSettings>,
     },
 }
 
+fn parse_tls_client_cert_user(value: &str) -> Result<([u8; 32], Vec<u8>), String> {
+    let (fingerprint, username) = value
+        .split_once('=')
+        .ok_or("--tls-client-cert-user requires SHA256=ACL-USERNAME")?;
+    if fingerprint.len() != 64
+        || username.is_empty()
+        || username.len() > 128
+        || !username
+            .bytes()
+            .all(|byte| (b'!'..=b'~').contains(&byte) && byte != b'|')
+    {
+        return Err(
+            "--tls-client-cert-user requires a 64-digit SHA-256 fingerprint and valid ACL username"
+                .into(),
+        );
+    }
+    let mut digest = [0u8; 32];
+    for (index, chunk) in fingerprint.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let pair = std::str::from_utf8(chunk).map_err(|_| "invalid SHA-256 fingerprint")?;
+        digest[index] = u8::from_str_radix(pair, 16)
+            .map_err(|_| "TLS client certificate fingerprint must be hexadecimal")?;
+    }
+    Ok((digest, username.as_bytes().to_vec()))
+}
+
 fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut config = Config::default();
+    let mut sni_files: BTreeMap<String, SniFiles> = BTreeMap::new();
+    let mut tls_client_cert_users = BTreeMap::new();
     let mut arguments: VecDeque<String> = arguments.into_iter().collect();
     while let Some(option) = arguments.pop_front() {
         if option == "--config" || option == "-c" {
@@ -54,6 +96,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                 let mut password = None;
                 let mut username = None;
                 let mut require_aof = false;
+                let mut aof_write_probe_directory = None;
                 let mut ca_file = None;
                 let mut server_name = None;
                 while let Some(flag) = arguments.pop_front() {
@@ -73,6 +116,17 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                             );
                         }
                         "--healthcheck-require-aof" if !require_aof => require_aof = true,
+                        "--healthcheck-aof-write-probe" if aof_write_probe_directory.is_none() => {
+                            let path = arguments
+                                .pop_front()
+                                .ok_or("missing value for --healthcheck-aof-write-probe")?;
+                            if path.is_empty() {
+                                return Err(
+                                    "--healthcheck-aof-write-probe requires a directory".into()
+                                );
+                            }
+                            aof_write_probe_directory = Some(path.into());
+                        }
                         "--healthcheck-password-file" if password.is_none() => {
                             let path = arguments
                                 .pop_front()
@@ -104,6 +158,11 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                 if username.is_some() && password.is_none() {
                     return Err("--healthcheck-user requires --healthcheck-password-file".into());
                 }
+                if aof_write_probe_directory.is_some() && !require_aof {
+                    return Err(
+                        "--healthcheck-aof-write-probe requires --healthcheck-require-aof".into(),
+                    );
+                }
                 if server_name.is_some() && ca_file.is_none() {
                     return Err(
                         "--healthcheck-server-name requires --healthcheck-tls-ca-file".into(),
@@ -117,6 +176,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                     username,
                     password,
                     require_aof,
+                    aof_write_probe_directory,
                     tls,
                 });
             }
@@ -126,6 +186,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--max-clients"
             | "--auth-failure-limit"
             | "--auth-source-limit"
+            | "--auth-global-limit"
             | "--auth-source-window-ms"
             | "--threads"
             | "--io-mode"
@@ -135,6 +196,7 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--max-bulk-bytes"
             | "--max-frame-bytes"
             | "--idle-timeout-ms"
+            | "--frame-assembly-timeout-ms"
             | "--requirepass"
             | "--requirepass-file"
             | "--aclfile"
@@ -154,7 +216,15 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             | "--tls-bind"
             | "--tls-cert-file"
             | "--tls-key-file"
+            | "--tls-ocsp-file"
             | "--tls-client-ca-file"
+            | "--tls-client-crl-file"
+            | "--tls-client-cert-user"
+            | "--tls-client-cert-users-file"
+            | "--tls-reload-trigger"
+            | "--tls-sni-cert-file"
+            | "--tls-sni-key-file"
+            | "--tls-sni-ocsp-file"
             | "--tls-handshake-timeout-ms" => {
                 let value = arguments
                     .pop_front()
@@ -208,6 +278,13 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                             .filter(|limit| *limit <= 10_000)
                             .ok_or("--auth-source-limit requires 0..=10000")?;
                     }
+                    "--auth-global-limit" => {
+                        config.auth_global_limit = value
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|limit| *limit <= 10_000)
+                            .ok_or("--auth-global-limit requires 0..=10000")?;
+                    }
                     "--auth-source-window-ms" => {
                         config.auth_source_window_ms = value
                             .parse::<u64>()
@@ -232,6 +309,15 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                                 .filter(|&n| n > 0)
                                 .ok_or("--idle-timeout-ms requires a positive integer")?,
                         )
+                    }
+                    "--frame-assembly-timeout-ms" => {
+                        let millis = value
+                            .parse::<u64>()
+                            .ok()
+                            .filter(|millis| *millis == 0 || (1..=600_000).contains(millis))
+                            .ok_or("--frame-assembly-timeout-ms requires 0 or 1..=600000")?;
+                        config.frame_assembly_timeout =
+                            (millis != 0).then(|| Duration::from_millis(millis));
                     }
                     "--requirepass" => {
                         config.requirepass = (!value.is_empty()).then(|| value.into_bytes());
@@ -336,7 +422,39 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                     }
                     "--tls-cert-file" => config.tls_cert_file = Some(value.into()),
                     "--tls-key-file" => config.tls_key_file = Some(value.into()),
+                    "--tls-ocsp-file" => config.tls_ocsp_file = Some(value.into()),
                     "--tls-client-ca-file" => config.tls_client_ca_file = Some(value.into()),
+                    "--tls-client-crl-file" => config.tls_client_crl_file = Some(value.into()),
+                    "--tls-client-cert-users-file" => {
+                        config.tls_client_cert_users_file = Some(value.into());
+                    }
+                    "--tls-client-cert-user" => {
+                        let (fingerprint, username) = parse_tls_client_cert_user(&value)?;
+                        if tls_client_cert_users
+                            .insert(fingerprint, username)
+                            .is_some()
+                        {
+                            return Err("duplicate --tls-client-cert-user fingerprint".into());
+                        }
+                    }
+                    "--tls-reload-trigger" => config.tls_reload_trigger = Some(value.into()),
+                    "--tls-sni-cert-file" | "--tls-sni-key-file" | "--tls-sni-ocsp-file" => {
+                        let (name, path) = value
+                            .split_once('=')
+                            .ok_or_else(|| format!("{option} requires NAME=PATH"))?;
+                        if name.is_empty() || path.is_empty() {
+                            return Err(format!("{option} requires a nonempty NAME=PATH"));
+                        }
+                        let files = sni_files.entry(name.to_ascii_lowercase()).or_default();
+                        let target = match option.as_str() {
+                            "--tls-sni-cert-file" => &mut files.0,
+                            "--tls-sni-key-file" => &mut files.1,
+                            _ => &mut files.2,
+                        };
+                        if target.replace(path.into()).is_some() {
+                            return Err(format!("duplicate {option} for SNI name {name}"));
+                        }
+                    }
                     "--tls-handshake-timeout-ms" => {
                         config.tls_handshake_timeout =
                             Duration::from_millis(positive(&option, &value)? as u64)
@@ -346,6 +464,19 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
             }
             _ => return Err(format!("unknown option: {option}")),
         }
+    }
+    config.tls_client_cert_users = tls_client_cert_users;
+    for (server_name, (cert_file, key_file, ocsp_file)) in sni_files {
+        let cert_file = cert_file
+            .ok_or_else(|| format!("missing --tls-sni-cert-file for SNI name {server_name}"))?;
+        let key_file = key_file
+            .ok_or_else(|| format!("missing --tls-sni-key-file for SNI name {server_name}"))?;
+        config.tls_sni_certificates.push(TlsSniCertificate {
+            server_name,
+            cert_file,
+            key_file,
+            ocsp_file,
+        });
     }
     Ok(Options::Run(config))
 }
@@ -392,8 +523,252 @@ fn positive(option: &str, value: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("{option} requires a positive integer"))
 }
 
+const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(25);
+
+#[cfg(unix)]
+struct ShutdownSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+}
+
+#[cfg(windows)]
+struct ShutdownSignals {
+    ctrl_c: tokio::signal::windows::CtrlC,
+}
+
+#[cfg(not(any(unix, windows)))]
+struct ShutdownSignals;
+
+impl ShutdownSignals {
+    fn install(runtime: &tokio::runtime::Runtime) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            runtime.block_on(async {
+                Ok(Self {
+                    interrupt: tokio::signal::unix::signal(
+                        tokio::signal::unix::SignalKind::interrupt(),
+                    )?,
+                    terminate: tokio::signal::unix::signal(
+                        tokio::signal::unix::SignalKind::terminate(),
+                    )?,
+                })
+            })
+        }
+        #[cfg(windows)]
+        {
+            runtime.block_on(async {
+                Ok(Self {
+                    ctrl_c: tokio::signal::windows::ctrl_c()?,
+                })
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = runtime;
+            Ok(Self)
+        }
+    }
+
+    fn poll(&mut self, context: &mut Context<'_>) -> Poll<&'static str> {
+        #[cfg(unix)]
+        {
+            if self.interrupt.poll_recv(context).is_ready() {
+                return Poll::Ready("SIGINT");
+            }
+            if self.terminate.poll_recv(context).is_ready() {
+                return Poll::Ready("SIGTERM");
+            }
+        }
+        #[cfg(windows)]
+        if self.ctrl_c.poll_recv(context).is_ready() {
+            return Poll::Ready("CTRL_C");
+        }
+        #[cfg(not(any(unix, windows)))]
+        let _ = context;
+        Poll::Pending
+    }
+}
+
+enum ShutdownTrigger {
+    Signal(&'static str),
+    Cancelled,
+}
+
+enum ShutdownOutcome {
+    Complete,
+    Forced(&'static str),
+}
+
+fn wait_for_shutdown_trigger(
+    runtime: &tokio::runtime::Runtime,
+    signals: &mut ShutdownSignals,
+    cancel: tokio::sync::oneshot::Receiver<()>,
+) -> ShutdownTrigger {
+    runtime.block_on(async {
+        let mut cancel = cancel;
+        std::future::poll_fn(|context| {
+            if let Poll::Ready(signal) = signals.poll(context) {
+                return Poll::Ready(ShutdownTrigger::Signal(signal));
+            }
+            if Pin::new(&mut cancel).poll(context).is_ready() {
+                return Poll::Ready(ShutdownTrigger::Cancelled);
+            }
+            Poll::Pending
+        })
+        .await
+    })
+}
+
+fn wait_for_shutdown_completion(
+    runtime: &tokio::runtime::Runtime,
+    signals: &mut ShutdownSignals,
+    completion: tokio::sync::oneshot::Receiver<()>,
+    timeout: Duration,
+) -> ShutdownOutcome {
+    runtime.block_on(async {
+        let mut deadline = std::pin::pin!(tokio::time::sleep(timeout));
+        let mut completion = completion;
+        std::future::poll_fn(|context| {
+            if Pin::new(&mut completion).poll(context).is_ready() {
+                return Poll::Ready(ShutdownOutcome::Complete);
+            }
+            if let Poll::Ready(signal) = signals.poll(context) {
+                return Poll::Ready(ShutdownOutcome::Forced(signal));
+            }
+            if deadline.as_mut().poll(context).is_ready() {
+                return Poll::Ready(ShutdownOutcome::Forced("shutdown deadline exceeded"));
+            }
+            Poll::Pending
+        })
+        .await
+    })
+}
+
+fn supervise_shutdown(
+    stopping: Arc<AtomicBool>,
+    cancel: tokio::sync::oneshot::Receiver<()>,
+    completion: tokio::sync::oneshot::Receiver<()>,
+    ready: mpsc::SyncSender<io::Result<()>>,
+) -> io::Result<Option<&'static str>> {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = ready.send(Err(io::Error::new(error.kind(), error.to_string())));
+            return Err(error);
+        }
+    };
+    let mut signals = match ShutdownSignals::install(&runtime) {
+        Ok(signals) => signals,
+        Err(error) => {
+            let _ = ready.send(Err(io::Error::new(error.kind(), error.to_string())));
+            return Err(error);
+        }
+    };
+    if ready.send(Ok(())).is_err() {
+        return Ok(None);
+    }
+
+    match wait_for_shutdown_trigger(&runtime, &mut signals, cancel) {
+        ShutdownTrigger::Cancelled => Ok(None),
+        ShutdownTrigger::Signal(signal) => {
+            eprintln!("rillcache: received {signal}; stopping admission and joining workers");
+            stopping.store(true, Ordering::Release);
+            match wait_for_shutdown_completion(
+                &runtime,
+                &mut signals,
+                completion,
+                SHUTDOWN_DEADLINE,
+            ) {
+                ShutdownOutcome::Complete => Ok(Some(signal)),
+                ShutdownOutcome::Forced(reason) => {
+                    eprintln!("rillcache: forced termination: {reason}");
+                    std::process::exit(1)
+                }
+            }
+        }
+    }
+}
+
+fn run_server(config: Config) -> io::Result<()> {
+    let server = Server::bind(config)?;
+    let local_addr = server.local_addr()?;
+    let tls_addr = server.tls_local_addr()?;
+    let stopping = Arc::new(AtomicBool::new(false));
+    let supervisor_stopping = Arc::clone(&stopping);
+    let (cancel_sender, cancel_receiver) = tokio::sync::oneshot::channel();
+    let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
+    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+    let supervisor = thread::Builder::new()
+        .name("rillcache-signal-supervisor".into())
+        .spawn(move || {
+            supervise_shutdown(
+                supervisor_stopping,
+                cancel_receiver,
+                completion_receiver,
+                ready_sender,
+            )
+        })?;
+
+    match ready_receiver.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let _ = supervisor.join();
+            return Err(error);
+        }
+        Err(_) => {
+            let _ = supervisor.join();
+            return Err(io::Error::other("signal supervisor exited during startup"));
+        }
+    }
+
+    eprintln!(
+        "rillcache {} listening on {local_addr}",
+        env!("CARGO_PKG_VERSION")
+    );
+    if let Some(addr) = tls_addr {
+        eprintln!("rillcache TLS 1.3 listening on {addr}");
+    }
+    let server_result = server.run_until(stopping);
+    let _ = completion_sender.send(());
+    let _ = cancel_sender.send(());
+    let signal = supervisor
+        .join()
+        .map_err(|_| io::Error::other("signal supervisor panicked"))??;
+    if server_result.is_ok() && signal.is_some() {
+        eprintln!(
+            "rillcache: graceful shutdown completed; workers joined and enabled journal flushed"
+        );
+    }
+    server_result
+}
+
+fn check_config(arguments: impl IntoIterator<Item = String>) -> ExitCode {
+    // Parser diagnostics may contain user-controlled arguments. Do not echo them
+    // in the preflight output, which is intended for retained deployment logs.
+    let Ok(Options::Run(config)) = options(arguments) else {
+        eprintln!("rillcache: configuration check requires valid startup options");
+        return ExitCode::from(2);
+    };
+    if let Err(error) = config.validate() {
+        eprintln!("rillcache: configuration check failed ({:?})", error.kind());
+        return ExitCode::from(2);
+    }
+    println!("rillcache: startup options validated (server not started)");
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
-    match options(std::env::args().skip(1)) {
+    let mut arguments = std::env::args().skip(1).peekable();
+    if arguments
+        .next_if(|argument| argument == "--check-config")
+        .is_some()
+    {
+        return check_config(arguments);
+    }
+    match options(arguments) {
         Ok(Options::Help) => {
             println!("{HELP}");
             ExitCode::SUCCESS
@@ -407,13 +782,15 @@ fn main() -> ExitCode {
             username,
             password,
             require_aof,
+            aof_write_probe_directory,
             tls,
         }) => {
-            match healthcheck::check(
+            match healthcheck::check_with_aof_write_probe(
                 address,
                 username.as_deref(),
                 password.as_deref(),
                 require_aof,
+                aof_write_probe_directory.as_deref(),
                 tls,
             ) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -423,17 +800,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Ok(Options::Run(config)) => match Server::bind(config).and_then(|server| {
-            eprintln!(
-                "rillcache {} listening on {}",
-                env!("CARGO_PKG_VERSION"),
-                server.local_addr()?
-            );
-            if let Some(addr) = server.tls_local_addr()? {
-                eprintln!("rillcache TLS 1.3 listening on {addr}");
-            }
-            server.run()
-        }) {
+        Ok(Options::Run(config)) => match run_server(config) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("rillcache: {error}");
@@ -452,6 +819,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shutdown_deadline_reports_forced_termination_if_join_has_not_finished() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut signals = ShutdownSignals::install(&runtime).unwrap();
+        let (_sender, completion) = tokio::sync::oneshot::channel();
+        assert!(matches!(
+            wait_for_shutdown_completion(
+                &runtime,
+                &mut signals,
+                completion,
+                Duration::from_millis(1),
+            ),
+            ShutdownOutcome::Forced("shutdown deadline exceeded")
+        ));
+    }
+
+    #[test]
+    fn tls_client_certificate_mapping_parses_sha256_and_rejects_invalid_values() {
+        let (fingerprint, username) = parse_tls_client_cert_user(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef=reader",
+        )
+        .unwrap();
+        assert_eq!(fingerprint[0], 0x01);
+        assert_eq!(fingerprint[31], 0xef);
+        assert_eq!(username, b"reader");
+        assert!(parse_tls_client_cert_user("abc=reader").is_err());
+        assert!(parse_tls_client_cert_user(&format!("{}=reader", "gg".repeat(32))).is_err());
+        assert!(parse_tls_client_cert_user(&format!("{}=bad user", "00".repeat(32))).is_err());
+    }
+
+    #[test]
+    fn tls_client_certificate_mapping_file_option_is_parsed() {
+        let Options::Run(config) = options(
+            [
+                "--tls-client-cert-users-file",
+                "/etc/rillcache/client-users.map",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap() else {
+            panic!("expected TLS mapping config");
+        };
+        assert_eq!(
+            config.tls_client_cert_users_file.as_deref(),
+            Some(std::path::Path::new("/etc/rillcache/client-users.map"))
+        );
+    }
+
+    #[test]
     fn tls_options_parse_and_require_a_distinct_listener() {
         let Options::Run(config) = options(
             [
@@ -461,8 +879,22 @@ mod tests {
                 "server.pem",
                 "--tls-key-file",
                 "server.key",
+                "--tls-ocsp-file",
+                "server.ocsp.der",
                 "--tls-client-ca-file",
                 "ca.pem",
+                "--tls-client-crl-file",
+                "clients.crl.der",
+                "--tls-client-cert-user",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=cache-reader",
+                "--tls-reload-trigger",
+                "/run/rillcache/tls-generation",
+                "--tls-sni-cert-file",
+                "alt.test=alternate.pem",
+                "--tls-sni-key-file",
+                "alt.test=alternate.key",
+                "--tls-sni-ocsp-file",
+                "alt.test=alternate.ocsp.der",
                 "--tls-handshake-timeout-ms",
                 "2500",
             ]
@@ -484,8 +916,41 @@ mod tests {
             Some(std::path::Path::new("server.key"))
         );
         assert_eq!(
+            config.tls_ocsp_file.as_deref(),
+            Some(std::path::Path::new("server.ocsp.der"))
+        );
+        assert_eq!(
             config.tls_client_ca_file.as_deref(),
             Some(std::path::Path::new("ca.pem"))
+        );
+        assert_eq!(
+            config.tls_client_crl_file.as_deref(),
+            Some(std::path::Path::new("clients.crl.der"))
+        );
+        assert_eq!(
+            config
+                .tls_client_cert_users
+                .get(&[0xaa; 32])
+                .map(Vec::as_slice),
+            Some(b"cache-reader".as_slice())
+        );
+        assert_eq!(
+            config.tls_reload_trigger.as_deref(),
+            Some(std::path::Path::new("/run/rillcache/tls-generation"))
+        );
+        assert_eq!(config.tls_sni_certificates.len(), 1);
+        assert_eq!(config.tls_sni_certificates[0].server_name, "alt.test");
+        assert_eq!(
+            config.tls_sni_certificates[0].cert_file,
+            std::path::Path::new("alternate.pem")
+        );
+        assert_eq!(
+            config.tls_sni_certificates[0].key_file,
+            std::path::Path::new("alternate.key")
+        );
+        assert_eq!(
+            config.tls_sni_certificates[0].ocsp_file.as_deref(),
+            Some(std::path::Path::new("alternate.ocsp.der"))
         );
         assert_eq!(config.tls_handshake_timeout, Duration::from_millis(2500));
         assert!(
@@ -658,6 +1123,7 @@ mod tests {
             username,
             password,
             require_aof,
+            aof_write_probe_directory,
             tls,
         } = options(["--bind", "0.0.0.0:6379", "--healthcheck", "[::1]:6379"].map(str::to_owned))
             .unwrap()
@@ -668,6 +1134,7 @@ mod tests {
         assert!(password.is_none());
         assert!(username.is_none());
         assert!(!require_aof);
+        assert!(aof_write_probe_directory.is_none());
         assert!(tls.is_none());
     }
 
@@ -712,7 +1179,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "# local startup\nbind 127.0.0.1:26379\nmaxclients 12\nrequirepass \"file secret\"\n",
+            "# local startup\nbind 127.0.0.1:26379\nmaxclients 12\nauth-global-limit 20\nrequirepass \"file secret\"\n",
         )
         .unwrap();
         let path = path.to_str().unwrap();
@@ -723,6 +1190,7 @@ mod tests {
         };
         assert_eq!(from_file.bind_addr, "127.0.0.1:26379".parse().unwrap());
         assert_eq!(from_file.max_clients, 12);
+        assert_eq!(from_file.auth_global_limit, 20);
         assert_eq!(
             from_file.requirepass.as_deref(),
             Some(b"file secret".as_slice())
@@ -782,6 +1250,9 @@ mod tests {
             vec!["--auth-source-limit", "10001"],
             vec!["--auth-source-limit", "-1"],
             vec!["--auth-source-limit", "x"],
+            vec!["--auth-global-limit", "10001"],
+            vec!["--auth-global-limit", "-1"],
+            vec!["--auth-global-limit", "x"],
             vec!["--auth-source-window-ms", "0"],
             vec!["--auth-source-window-ms", "-1"],
             vec!["--threads", "0"],
@@ -793,6 +1264,9 @@ mod tests {
             vec!["--max-frame-bytes", "536870913"],
             vec!["--max-bulk-bytes", "536870913"],
             vec!["--idle-timeout-ms", "0"],
+            vec!["--frame-assembly-timeout-ms", "-1"],
+            vec!["--frame-assembly-timeout-ms", "600001"],
+            vec!["--frame-assembly-timeout-ms", "nonsense"],
             vec!["--healthcheck"],
             vec!["--healthcheck", "localhost:6379"],
             vec!["--healthcheck", "127.0.0.1:0"],
@@ -873,6 +1347,8 @@ mod tests {
                 "3",
                 "--auth-source-limit",
                 "5",
+                "--auth-global-limit",
+                "20",
                 "--auth-source-window-ms",
                 "250",
                 "--max-data-bytes",
@@ -883,6 +1359,8 @@ mod tests {
                 "16384",
                 "--idle-timeout-ms",
                 "250",
+                "--frame-assembly-timeout-ms",
+                "0",
                 "--socket-workers",
                 "3",
             ]
@@ -896,6 +1374,7 @@ mod tests {
         assert_eq!(config.max_clients, 4);
         assert_eq!(config.auth_failure_limit, 3);
         assert_eq!(config.auth_source_limit, 5);
+        assert_eq!(config.auth_global_limit, 20);
         assert_eq!(config.auth_source_window_ms, 250);
         assert_eq!(config.worker_threads, Some(4));
         assert_eq!(config.socket_workers, Some(3));
@@ -903,6 +1382,62 @@ mod tests {
         assert_eq!(config.limits.max_bulk_bytes, 8192);
         assert_eq!(config.limits.max_frame_bytes, 16384);
         assert_eq!(config.idle_timeout, Duration::from_millis(250));
+        assert_eq!(config.frame_assembly_timeout, None);
+        assert_eq!(
+            Config::default().frame_assembly_timeout,
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn healthcheck_aof_write_probe_requires_reported_journal_check() {
+        let directory = std::path::Path::new("/var/lib/rillcache");
+        let Options::Healthcheck {
+            require_aof,
+            aof_write_probe_directory,
+            ..
+        } = options(
+            [
+                "--healthcheck",
+                "127.0.0.1:6379",
+                "--healthcheck-aof-write-probe",
+                directory.to_str().unwrap(),
+                "--healthcheck-require-aof",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap()
+        else {
+            panic!("expected healthcheck");
+        };
+        assert!(require_aof);
+        assert_eq!(aof_write_probe_directory.as_deref(), Some(directory));
+        for arguments in [
+            vec![
+                "--healthcheck",
+                "127.0.0.1:6379",
+                "--healthcheck-aof-write-probe",
+                "/tmp",
+            ],
+            vec![
+                "--healthcheck",
+                "127.0.0.1:6379",
+                "--healthcheck-require-aof",
+                "--healthcheck-aof-write-probe",
+                "",
+            ],
+            vec![
+                "--healthcheck",
+                "127.0.0.1:6379",
+                "--healthcheck-require-aof",
+                "--healthcheck-aof-write-probe",
+                "/tmp",
+                "--healthcheck-aof-write-probe",
+                "/tmp",
+            ],
+        ] {
+            assert!(options(arguments.into_iter().map(str::to_owned)).is_err());
+        }
     }
 
     #[test]
