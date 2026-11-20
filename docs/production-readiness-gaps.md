@@ -262,7 +262,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   flags. It is not a general `redis.conf`: includes, multi-value directives,
   `save`, replication, modules and other unsupported language fail closed before
   bind; later CLI options override earlier file values. See
-  [startup configuration](configuration.md).
+  [startup configuration](configuration.md). `--check-config` checks merged
+  startup options without starting the server; it does not test resource opening.
   **Remaining:** the full supported schema is not versioned, `CONFIG REWRITE`,
   live reload/rollback and the complete runtime-mutable surface are absent, and
   the upstream configuration language is not accepted.
@@ -610,6 +611,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   16-byte minimum password, and the security guide documents modes, a 256-bit
   random-secret requirement, process-argument risk and rotate-then-revoke. Unit
   tests cover loose/strict modes, short/long passwords and CLI parsing.
+  `--check-config --secure-secret-files` also checks Unix secret-file permissions
+  before startup, with redacted diagnostics suitable for preflight logs.
   Secret-manager integration, enforced entropy/length for `--requirepass`, and
   automatic audit of every deployment's permissions remain open.
   **Closes when:** the supported secret sources, permissions, rotation and

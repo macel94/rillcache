@@ -656,6 +656,95 @@ fn healthcheck_is_quiet_on_success_and_fails_for_an_unavailable_endpoint() {
 }
 
 #[test]
+fn config_preflight_validates_overrides_without_binding_or_creating_files() {
+    let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-config-check-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let config = directory.join("startup.conf");
+    std::fs::write(&config, "max-frame-bytes 4096\nmax-bulk-bytes 8192\n").unwrap();
+    let probe = |override_bulk: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rillcache"));
+        cmd.args(["--check-config", "--config"])
+            .arg(&config)
+            .args([
+                "--bind",
+                &occupied.local_addr().unwrap().to_string(),
+                "--appendonly",
+                "yes",
+                "--dir",
+            ])
+            .arg(&directory)
+            .arg("--audit-log")
+            .arg(directory.join("audit.log"));
+        if override_bulk {
+            cmd.args(["--max-bulk-bytes", "2048"]);
+        }
+        cmd.output().unwrap()
+    };
+    let invalid = probe(false);
+    assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
+    let valid = probe(true);
+    assert!(valid.status.success(), "{valid:?}");
+    assert!(valid.stderr.is_empty());
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+    std::fs::remove_dir_all(directory).unwrap();
+
+    let invalid_option = Command::new(env!("CARGO_BIN_EXE_rillcache"))
+        .args(["--check-config", "private-unknown-argument"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid_option.status.code(), Some(2));
+    assert!(invalid_option.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&invalid_option.stderr).contains("private-unknown-argument"));
+}
+
+#[test]
+#[cfg(unix)]
+fn config_preflight_rejects_lax_secret_permissions_without_echoing_paths_or_values() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "rillcache-config-secret-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let secret = directory.join("private-path-marker");
+    std::fs::write(&secret, b"private-value-marker\n").unwrap();
+    let check = || {
+        Command::new(env!("CARGO_BIN_EXE_rillcache"))
+            .args([
+                "--check-config",
+                "--secure-secret-files",
+                "--requirepass-file",
+            ])
+            .arg(&secret)
+            .output()
+            .unwrap()
+    };
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let rejected = check();
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(rejected.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&rejected.stderr);
+    assert!(stderr.contains("PermissionDenied"));
+    assert!(!stderr.contains("private-"));
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(check().status.success());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn bind_failure_is_reported_with_a_nonzero_status() {
     let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_rillcache"))

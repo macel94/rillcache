@@ -247,6 +247,16 @@ platforms retain timeout-based fallback admission.
 - **R299 (ubiquitous):** Tests shall cover flag validation, `ABORT`, MULTI
   rejection, caller close, all worker modes and journal durability across restart.
 
+## Startup configuration preflight
+
+- **R451 (event-driven):** When the standalone binary is invoked with leading
+  `--check-config`, it shall use normal file/CLI startup precedence and validate
+  the resulting options and enabled secret-file permission checks without
+  binding listeners, starting workers, or opening journal or audit files.
+  Invalid startup options shall exit 2 with diagnostics that omit user-supplied
+  values and paths. Success shall not claim that listener or storage resources
+  can be opened or that ACL, TLS or HMAC files have valid contents.
+
 ## Standalone signal shutdown (S124)
 
 - **R444 (event-driven):** When the standalone binary receives SIGINT/SIGTERM

@@ -62,6 +62,22 @@ listener binds.
 file. `CONFIG REWRITE`, live file reload, includes, multi-value directives and
 the upstream `redis.conf` schema are not implemented.
 
+## Validate before startup
+
+```sh
+rillcache --check-config --config /etc/rillcache/rillcache.conf --max-clients 2048
+```
+
+Put `--check-config` first and then pass the same startup arguments you intend
+to use. It checks the merged options with the same startup option validator,
+including Unix secret-file permissions when `--secure-secret-files` is set.
+It reads the configuration and any configured password file but does not bind
+listeners, start workers or open journal or audit files. It does not validate
+ACL, TLS or HMAC file contents, port availability, or startup I/O. Exit 0 means
+the option check passed; exit 2 means invalid startup options. Failure output
+omits argument values and file paths so it can be retained without logging
+credentials. This does not change the configuration of a running server.
+
 ## Secrets
 
 `requirepass` stores the password in the file and in process arguments if used
