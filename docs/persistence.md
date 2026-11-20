@@ -290,6 +290,36 @@ RPO/RTO are deployment-specific and are not claimed here. CRC32 detects accident
 corruption but does not authenticate an archive or protect against malicious
 modification. Keep archives on trusted storage with separate access controls.
 
+### Drill a rollback to an offline checkpoint
+
+1. On an isolated standalone deployment, quiesce application writes. Before
+   stopping the server, record expected binary values, key count, absolute
+   expiry deadlines (`PEXPIRETIME`), and logical payload bytes (`INFO memory`,
+   `rillcache_payload_bytes`) for the drill's test data. Record the candidate
+   digest, shutdown time, and checkpoint boundary. After the server stops, use
+   `rillcache-backup create` and `verify` as above; retain the verified archive
+   separately from the working journal.
+2. Restart the working instance and make a distinct post-checkpoint write.
+   Simulate a rollback decision, stop that instance, and retain its journal,
+   configuration and credentials. Do not overwrite the newer journal: any
+   acknowledged writes made after the checkpoint are absent from the rollback.
+3. Restore the checkpoint into a **new, empty** directory. Start the same
+   binary with that directory and the matching limits, AOF basename and HMAC
+   settings, on an isolated loopback endpoint with no application traffic.
+   Check the recorded values, key count, absolute expiry deadlines and logical
+   payload bytes, and confirm the post-checkpoint write is absent. If keys
+   expired during the drill, check their expected absence instead. Stop and
+   investigate on a mismatch; do not switch traffic to an unverified restore.
+4. Record the interval of acknowledged writes that the checkpoint cannot
+   recover and the time from the rollback decision to verified readiness.
+   Preserve both journal generations, the archive and test output per the
+   deployment's retention policy, even on failure.
+
+`tests/aof_backup.rs` exercises the same-binary scenario, including refusal to
+restore over the newer journal and byte-for-byte preservation of that journal
+and the checkpoint archive. It does not measure a deployment's RPO/RTO or
+validate a downgrade across binary versions.
+
 ## Compaction with BGREWRITEAOF
 
 `BGREWRITEAOF` replaces the log with a compact snapshot of the current keyspace:
