@@ -70,8 +70,11 @@ The RESP3 reply subset covers the current commands' simple strings, errors,
 integers, bulk strings/arrays, nulls and the push frames used by pub/sub; other
 RESP3 types are not implemented. See [client sessions](../client-sessions.md) for
 limits and response details. Pinned `redis-cli` RESP2/RESP3/AUTH/metadata interop
-is covered; Python, Node.js and Go client libraries remain unverified in the
-[canonical gap list](../production-readiness-gaps.md).
+is covered. An optional real redis-py 5.2.1 harness covers a bounded
+handshake/AUTH, pipeline, Pub/Sub, binary-value and reconnect subset; other
+language clients and remaining redis-py coverage remain unverified in the
+[canonical gap list](../production-readiness-gaps.md). See
+[redis-py conformance](../redis-py-conformance.md).
 
 Deliberately not supported: empty/null request arrays, RESP3 types beyond the
 current command subset, commands beyond the documented collection/stream subsets,

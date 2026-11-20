@@ -144,13 +144,18 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   client matrix has a documented, tested behavior, including malformed and
   fragmented frames.
 
-- [ ] **C7. Real client-library compatibility is unverified.** [P0]
-  Pinned `redis-cli` RESP2/RESP3/AUTH and metadata interop is covered. Python,
-  Node.js and Go clients are not in CI, and arbitrary clients may issue
-  unsupported discovery commands.
-  **Closes when:** a versioned language-client matrix (for example redis-py,
-  node-redis and go-redis) runs handshake, AUTH/ACL, RESP2/RESP3, pipelines,
-  pub/sub, TLS, reconnect and error-path tests against the supported profile.
+- [ ] **C7. Real client-library compatibility is incomplete.** [P0]
+  Pinned `redis-cli` RESP2/RESP3/AUTH and metadata interop is covered.
+  **Partial (2026-11-14):** the optional standalone
+  [redis-py 5.2.1 harness](redis-py-conformance.md) exercises RESP2/RESP3,
+  named ACL authentication, binary strings, pipelines/transactions, Pub/Sub and
+  reconnect against managed candidate servers in three synchronous modes.
+  This bounded harness is not a CI gate. TLS identity, negative/error paths,
+  Redis-version coverage, node-redis, go-redis and broader client behavior remain
+  unverified; arbitrary clients may issue unsupported discovery commands.
+  **Closes when:** a versioned language-client matrix runs handshake, AUTH/ACL,
+  RESP2/RESP3, pipelines, pub/sub, TLS identity, reconnect and error-path tests
+  against the supported profile, including redis-py, node-redis and go-redis.
 
 - [ ] **C8. Keyspace notification coverage is incomplete.** [P1]
   `keymiss` and new-key events are implemented for the documented read/write
