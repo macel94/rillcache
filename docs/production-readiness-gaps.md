@@ -676,9 +676,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   per-client resource fields or a cross-process latency view. `LATENCY` exposes
   only command and expire-cycle series; `LATENCY GRAPH|HISTOGRAM` are
   unsupported.
-  **Partial (2026-11-14): bounded CLIENT INFO session state.** `CLIENT INFO`
-  now reports `age`, `b`/`P`/`N` flags, `sub`/`psub` and the WATCH count, using
-  state already held by the session. `INFO clients` already reports
+  **Partial (2026-11-20): bounded client subscription state.** `CLIENT INFO`
+  and `CLIENT LIST` report distinct live `sub` (channel), `psub` (pattern) and
+  `ssub` (shard-channel) counts; shard-only subscribers retain the `pubsub`
+  type and `P` flag. `CLIENT INFO` also reports `age`, `b`/`P`/`N` flags and the
+  WATCH count, using state already held by the session. `INFO clients` already reports
   `blocked_clients`. Per-client fd, idle time, last command, input/output buffer
   bytes, network bytes and allocator memory remain absent.
   **Partial (2026-11-14): bounded latency percentiles.** Enabling

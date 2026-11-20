@@ -151,11 +151,68 @@ fn client_list_reports_names_metadata_and_pubsub_state() {
         &[b"SUBSCRIBE", b"ch"],
         b">3\r\n$9\r\nsubscribe\r\n$2\r\nch\r\n:1\r\n",
     );
+    send(
+        &mut worker,
+        &[b"PSUBSCRIBE", b"news*"],
+        b">3\r\n$10\r\npsubscribe\r\n$5\r\nnews*\r\n:2\r\n",
+    );
+    send(
+        &mut worker,
+        &[b"SSUBSCRIBE", b"shard"],
+        b">3\r\n$10\r\nssubscribe\r\n$5\r\nshard\r\n:1\r\n",
+    );
     let pubsub = client_list(&mut admin, &[b"TYPE", b"pubsub"]);
     assert!(pubsub.contains(&format!("id={worker_id} ")), "{pubsub}");
     assert!(pubsub.contains("flags=P"), "{pubsub}");
-    assert!(pubsub.contains("sub=1"), "{pubsub}");
+    assert!(pubsub.contains("sub=1 psub=1 ssub=1"), "{pubsub}");
     assert_eq!(pubsub.lines().count(), 1);
+    send(&mut worker, &[b"CLIENT", b"INFO"], b"");
+    let own = String::from_utf8(bulk(&mut worker)).unwrap();
+    assert!(own.contains("sub=1 psub=1 ssub=1"), "{own}");
+
+    // Sharded-only subscribers still have the pub/sub client type and P flag,
+    // while their regular channel count stays zero.
+    let mut shard_only = connect(&server);
+    let shard_only_id = client_id(&mut shard_only);
+    send(&mut shard_only, &[b"HELLO", b"3"], b"");
+    drain_hello(&mut shard_only);
+    send(
+        &mut shard_only,
+        &[b"SSUBSCRIBE", b"shard:one"],
+        b">3\r\n$10\r\nssubscribe\r\n$9\r\nshard:one\r\n:1\r\n",
+    );
+    let shard_clients = client_list(&mut admin, &[b"TYPE", b"pubsub"]);
+    assert!(
+        shard_clients.contains(&format!("id={shard_only_id} ")),
+        "{shard_clients}"
+    );
+    assert!(
+        shard_clients.contains("flags=P db=0 sub=0 psub=0 ssub=1"),
+        "{shard_clients}"
+    );
+    let normal_clients = client_list(&mut admin, &[b"TYPE", b"normal"]);
+    assert!(!normal_clients.contains(&format!("id={shard_only_id} ")));
+    send(&mut shard_only, &[b"CLIENT", b"INFO"], b"");
+    let shard_info = String::from_utf8(bulk(&mut shard_only)).unwrap();
+    assert!(
+        shard_info.contains("flags=P sub=0 psub=0 ssub=1"),
+        "{shard_info}"
+    );
+    send(
+        &mut shard_only,
+        &[b"SUNSUBSCRIBE", b"shard:one"],
+        b">3\r\n$12\r\nsunsubscribe\r\n$9\r\nshard:one\r\n:0\r\n",
+    );
+    let shard_record = client_list(&mut admin, &[b"ID", shard_only_id.to_string().as_bytes()]);
+    assert!(
+        shard_record.contains("flags=N db=0 sub=0 psub=0 ssub=0"),
+        "{shard_record}"
+    );
+    let normal_clients = client_list(&mut admin, &[b"TYPE", b"normal"]);
+    assert!(
+        normal_clients.contains(&format!("id={shard_only_id} ")),
+        "{normal_clients}"
+    );
     server.shutdown().unwrap();
 }
 

@@ -280,8 +280,10 @@ platforms retain timeout-based fallback admission.
   the record on close. The registry shall be bounded by `max_clients` and process-local.
 - **R150 (event-driven):** When `CLIENT LIST [TYPE normal|pubsub|master|replica|slave] [ID id ...]` is
   received, the server shall return newline-delimited records for matching
-  connections with ID, peer and local addresses, name, age, N/P flags, db, live channel/pattern
-  counts, RESP mode, user and library metadata, omitting fields it does not measure.
+  connections with ID, peer and local addresses, name, age, N/P flags, db, separate live
+  channel (`sub`), pattern (`psub`) and shard-channel (`ssub`) counts, RESP mode,
+  user and library metadata, omitting fields it does not measure. A connection
+  with only shard-channel subscriptions shall still have the pub/sub type and P flag.
 - **R151 (event-driven):** When `CLIENT KILL` receives intersecting `ID`, `ADDR`,
   `LADDR`, `TYPE normal|pubsub|master|replica|slave`, `USER` and `SKIPME yes|no`
   filters, the server shall shut down matching sockets and return the count,
