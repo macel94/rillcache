@@ -993,14 +993,17 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   notifications were described as absent after implementation; `BZMPOP`,
   `SUBSTR` and AOF compaction were described as unsupported; rustls was described
   as the sole dependency exception; and multi-owner execution was described as
-  unimplemented. There is still no automated check that README/area claims match
-  tests or that open gaps are listed only in this canonical file.
+  unimplemented. `scripts/production_readiness.py --check` verifies this
+  inventory and its README links. Broader claim-to-test validation and CI
+  integration remain open.
   **Closes when:** a documentation/link/claim check runs in CI and this canonical
   file is linked from the README and indexes.
 
 - [ ] **V6. There is no production acceptance runbook.** [P1]
-  No single checklist maps the declared profile to repeatable pre-production,
-  canary, load, failure, security and rollback gates with pass/fail evidence.
+  The [acceptance runbook](production-readiness/acceptance-runbook.md) and its
+  blocker preflight now define how to collect and record profile-specific
+  evidence. Independent review and execution against a release candidate are
+  still required.
   **Closes when:** a reviewed acceptance runbook exists and has been executed
   against a release candidate.
 
