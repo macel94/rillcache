@@ -434,6 +434,14 @@ fn validate_archive(
             format!("backup journal failed replay validation: {error}"),
         )
     })?;
+    // Server startup may recover a torn tail by truncating the staged journal.
+    // An archive must validate as stored, not as a shorter recovered prefix.
+    if fs::metadata(&temporary_path.0)?.len() != expected_length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "backup journal changed length during replay; refusing a recovered prefix",
+        ));
+    }
     if let Some(output) = output_journal {
         // Validation's Journal has been dropped, so its temporary lock is gone.
         if lock_path(&temporary_path.0).exists() {
