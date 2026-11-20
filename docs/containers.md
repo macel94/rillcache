@@ -183,8 +183,27 @@ INFO, malformed/truncated/oversized replies and timeouts fail the probe without
 reflecting server payloads. Other INFO fields are permitted. A rewrite in
 progress is not itself a failure, but a reported failed last rewrite makes this
 conservative probe unhealthy even if the live journal can still accept writes. This is a conservative
-**reported-status** check only: it performs no write or fsync, cannot discover an
+**reported-status** check only: by itself it performs no write or fsync, cannot discover an
 unreported disk fault, and does not prove recovery, backup validity or an RPO/RTO.
+
+To opt in to a separate one-byte write test in the configured journal directory,
+append `--healthcheck-aof-write-probe DIR` as well as `--healthcheck-require-aof`:
+
+```sh
+/rillcache --healthcheck 127.0.0.1:6379 --healthcheck-require-aof --healthcheck-aof-write-probe /data
+```
+
+After authenticated PING and healthy INFO, the probe exclusively creates a
+process-unique temporary file in `DIR`, writes one byte, calls `sync_all`, and
+removes the file. The command fails if creation, write, sync or removal fails;
+its cleanup guard retries removal on an error path. This tests a small temporary
+write at that moment, not appending to the live journal, free capacity, future
+writability, directory-entry durability or replay/recovery. It may affect storage
+accounting/monitoring. Local filesystem operations are outside the one-second
+socket deadline and can block on a stalled filesystem. The option requires
+`--healthcheck-require-aof`; it is not enabled by the default container probe.
+Opt in only where this small filesystem side effect is acceptable.
+
 The default container probe does not require a journal; opt in explicitly only
 for deployments that expect persistence.
 

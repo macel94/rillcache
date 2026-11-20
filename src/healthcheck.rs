@@ -1,8 +1,13 @@
 //! Read-only application probe using safe std I/O and the reviewed rustls client.
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+static NEXT_AOF_PROBE_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct TlsSettings {
     config: Arc<rustls::ClientConfig>,
@@ -108,6 +113,7 @@ impl Write for ProbeStream {
     }
 }
 
+#[cfg(test)]
 pub fn check(
     address: SocketAddr,
     username: Option<&[u8]>,
@@ -125,6 +131,31 @@ pub fn check(
     )
 }
 
+pub fn check_with_aof_write_probe(
+    address: SocketAddr,
+    username: Option<&[u8]>,
+    password: Option<&[u8]>,
+    require_aof: bool,
+    aof_write_probe_directory: Option<&Path>,
+    tls: Option<TlsSettings>,
+) -> io::Result<()> {
+    if aof_write_probe_directory.is_some() && !require_aof {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "AOF write probe requires the journal-status check",
+        ));
+    }
+    check_with_timeout_and_aof_probe(
+        address,
+        username,
+        password,
+        require_aof,
+        aof_write_probe_directory,
+        tls,
+        Duration::from_secs(1),
+    )
+}
+
 fn remaining(deadline: Instant) -> io::Result<Duration> {
     deadline
         .checked_duration_since(Instant::now())
@@ -132,11 +163,24 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "health probe deadline exceeded"))
 }
 
+#[cfg(test)]
 fn check_with_timeout(
     address: SocketAddr,
     username: Option<&[u8]>,
     password: Option<&[u8]>,
     require_aof: bool,
+    tls: Option<TlsSettings>,
+    timeout: Duration,
+) -> io::Result<()> {
+    check_with_timeout_and_aof_probe(address, username, password, require_aof, None, tls, timeout)
+}
+
+fn check_with_timeout_and_aof_probe(
+    address: SocketAddr,
+    username: Option<&[u8]>,
+    password: Option<&[u8]>,
+    require_aof: bool,
+    aof_write_probe_directory: Option<&Path>,
     tls: Option<TlsSettings>,
     timeout: Duration,
 ) -> io::Result<()> {
@@ -172,7 +216,54 @@ fn check_with_timeout(
     if require_aof {
         check_persistence(&mut stream, deadline)?;
     }
+    if let Some(directory) = aof_write_probe_directory {
+        check_aof_write_probe(directory)?;
+    }
     Ok(())
+}
+
+fn check_aof_write_probe(directory: &Path) -> io::Result<()> {
+    for _ in 0..8 {
+        let id = NEXT_AOF_PROBE_ID.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!(
+            ".rillcache-aof-healthcheck-{}-{id}",
+            std::process::id()
+        ));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(aof_probe_error(error)),
+        };
+        let mut cleanup = RemoveAofProbe(Some(path.clone()));
+        let write_result = file.write_all(b"r").and_then(|()| file.sync_all());
+        drop(file);
+        let remove_result = fs::remove_file(&path);
+        if let Err(error) = write_result {
+            return Err(aof_probe_error(error));
+        }
+        remove_result.map_err(aof_probe_error)?;
+        cleanup.0 = None;
+        drop(cleanup);
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "AOF write probe could not reserve a temporary file",
+    ))
+}
+
+fn aof_probe_error(error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), "AOF write probe failed")
+}
+
+struct RemoveAofProbe(Option<PathBuf>);
+
+impl Drop for RemoveAofProbe {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn send_request(stream: &mut ProbeStream, mut request: &[u8], deadline: Instant) -> io::Result<()> {
@@ -293,6 +384,56 @@ fn validate_persistence(body: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn aof_write_probe_syncs_a_temporary_byte_and_removes_it() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "rillcache-aof-write-probe-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+
+        check_aof_write_probe(&directory).unwrap();
+
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn aof_write_probe_fails_for_a_non_directory_without_modifying_it() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "rillcache-aof-write-probe-file-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::write(&directory, b"unchanged").unwrap();
+
+        assert!(check_aof_write_probe(&directory).is_err());
+        assert_eq!(fs::read(&directory).unwrap(), b"unchanged");
+        fs::remove_file(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_aof_write_probe_without_the_journal_status_check_before_connecting() {
+        let directory = std::env::temp_dir();
+        let error = check_with_aof_write_probe(
+            "127.0.0.1:1".parse().unwrap(),
+            None,
+            None,
+            false,
+            Some(&directory),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn validates_ping_and_fragmented_pong_but_rejects_bad_or_truncated_replies() {

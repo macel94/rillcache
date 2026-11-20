@@ -702,11 +702,16 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   a bounded password file and an optional named ACL user (permitting PING-only
   probe credentials), validates AUTH and PING authorization under one socket
   deadline and keeps credentials/server error payloads out of diagnostics.
-  **Partial: opt-in journal-status probe.** `--healthcheck-require-aof` adds a
-  bounded INFO persistence check for loading=0, enabled journal and healthy last
-  write/rewrite statuses; missing/duplicate fields, reported errors, denied INFO
-  and malformed replies fail closed. Unit fault-response and all-mode CLI tests
-  cover this contract. It does not inject disk faults or prove fsync/recovery.
+  **Partial: opt-in journal-status and temporary-write probes.**
+  `--healthcheck-require-aof` adds a bounded INFO persistence check for
+  loading=0, enabled journal and healthy last write/rewrite statuses;
+  missing/duplicate fields, reported errors, denied INFO and malformed replies
+  fail closed. `--healthcheck-aof-write-probe DIR` additionally creates, writes,
+  syncs and removes a unique one-byte temporary file in the operator-selected
+  directory, after the status check. Unit fault-response and all-mode CLI tests
+  cover both contracts, including TLS. The write probe is point-in-time and may
+  block independently of the socket deadline; it does not test appending the
+  live journal, future capacity, directory-entry durability or recovery.
   **Partial: verified TLS request-service probe.** An explicit bounded PEM CA
   bundle enables TLS 1.3 with chain and DNS/IP identity verification before AUTH,
   under the shared socket deadline; there is no insecure or plaintext fallback.
@@ -714,7 +719,8 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   trust/name, malformed CA and client-certificate-required failures; a unit test
   checks the silent-handshake deadline.
   Client-certificate probes, full journal readiness and operational telemetry
-  remain open.
+  remain open. In particular, the temporary-write probe is not durability or
+  recovery validation.
   **Closes when:** a redacted, documented metrics/log/health contract exists and
   is tested for overload, persistence failure, auth failure and shutdown.
 
