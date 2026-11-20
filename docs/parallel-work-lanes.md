@@ -42,7 +42,7 @@ permanent code ownership. Pick one lane per task and record it in the PR.
 | `pubsub` | `src/engine/pubsub.rs`, `docs/pubsub.md` | publish/subscribe, notifications delivery, sharded channels |
 | `io-server` | `src/server.rs`, `src/server/pool.rs`, `src/protocol.rs`, `src/bin/**` | listener, pool, worker handoff, protocol framing |
 | `surface` | `src/engine.rs`, `src/engine/shard.rs`, `src/session.rs`, `src/engine/discovery/mod.rs`, `docs/requirements.md`, `docs/requirements/**`, `docs/README.md`, `docs/compatibility.md`, `docs/production-readiness.md`, `docs/production-readiness-gaps.md`, `docs/production-readiness/**`, `docs/sharding.md`, `README.md`, `tests/discovery.rs`, `tests/core_dispatch.rs` | cross-cutting dispatch, session state, registry and requirement indexes, keyspace routing seam, canonical production-readiness gaps |
-| `tooling` | `scripts/**`, `.github/**`, `Makefile`, `Cargo.toml`, `benchmarks/**`, `compose.yaml`, `deploy/**`, `docs/containers.md` | gates, automation, tooling, benchmark harness and container delivery |
+| `tooling` | `scripts/**`, `.github/**`, `Makefile`, `Cargo.toml`/`Cargo.lock`, `rust-toolchain.toml`, `ci/upstream/pins.json`, `benchmarks/**`, `Dockerfile`, `container/notices/**`, `compose.yaml`, `deploy/**`, `CONTRIBUTING.md`, `docs/containers.md`, `docs/upstream-ci.md` | gates, dependency maintenance, tooling, benchmark harness and container delivery |
 
 After the command registry is split into `src/engine/discovery/<family>.rs`, those
 family files belong to the matching feature lane. Only `discovery/mod.rs` stays a
