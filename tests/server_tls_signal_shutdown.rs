@@ -43,6 +43,10 @@ mod unix {
     }
 
     fn start(directory: &Path) -> (ServerProcess, SocketAddr) {
+        start_with_fsync(directory, "no")
+    }
+
+    fn start_with_fsync(directory: &Path, appendfsync: &str) -> (ServerProcess, SocketAddr) {
         let plain_listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let tls_listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let plain_address = plain_listener.local_addr().unwrap();
@@ -64,7 +68,7 @@ mod unix {
                 "--appendonly",
                 "yes",
                 "--appendfsync",
-                "no",
+                appendfsync,
                 "--dir",
                 directory.to_str().unwrap(),
                 "--max-frame-bytes",
@@ -256,7 +260,7 @@ mod unix {
             std::process::id()
         ));
         std::fs::create_dir(&directory).unwrap();
-        let (mut server, address) = start(&directory);
+        let (mut server, address) = start_with_fsync(&directory, "always");
 
         expect_ok(
             &mut connect(address),
@@ -305,6 +309,16 @@ mod unix {
         assert!(!status.success(), "forced TLS shutdown exited successfully");
         drop(pending);
         drop(server);
+        // Linux startup can reclaim the stale lock left by the forced exit.
+        #[cfg(target_os = "linux")]
+        {
+            let (mut restarted, address) = start_with_fsync(&directory, "always");
+            assert_eq!(
+                command(&mut connect(address), b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n"),
+                value
+            );
+            sigterm(&mut restarted);
+        }
         std::fs::remove_dir_all(directory).unwrap();
     }
 

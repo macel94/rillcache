@@ -281,6 +281,8 @@ mod unix {
         ));
         std::fs::create_dir(&directory).unwrap();
         let mut server_args = vec![
+            "--appendfsync",
+            "always",
             "--max-frame-bytes",
             "16777216",
             "--max-bulk-bytes",
@@ -343,6 +345,21 @@ mod unix {
 
         drop(pending);
         drop(server);
+        // Linux can reclaim the crash-stale AOF lock after the owner exits.
+        // Keep the original journal and lock in place to exercise normal startup.
+        #[cfg(target_os = "linux")]
+        {
+            let (mut restarted, address) = start_with(&directory, &server_args);
+            let mut recovery = TcpStream::connect(address).unwrap();
+            recovery
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            recovery
+                .write_all(b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n")
+                .unwrap();
+            assert_eq!(read_bulk(&mut recovery), value);
+            sigterm(&mut restarted);
+        }
         std::fs::remove_dir_all(directory).unwrap();
     }
 
