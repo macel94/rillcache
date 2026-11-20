@@ -420,11 +420,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   response and journal recovery in default and opt-in Tokio plain-TCP modes and
   over TLS. All three transports also have a second-SIGTERM test that requires
   a forced-termination log and nonzero exit while an admitted reply is unread.
-  On Linux, the Mio and Tokio forced-exit tests also restart from the unchanged
-  AOF directory and verify an acknowledged write under `appendfsync always`.
-  This does not cover forced-exit recovery over TLS, unsynced writes, or power
-  loss. The 25-second deadline outcome is separately unit-tested, not timed
-  end-to-end for each transport.
+  On Linux, the Mio, Tokio and TLS forced-exit tests also restart from the
+  unchanged AOF directory and verify an acknowledged write under `appendfsync
+  always`. This does not cover unsynced writes or power loss. The 25-second
+  deadline outcome is separately unit-tested, not timed end-to-end for each
+  transport.
   Subprocess cancellation tests leave idle, incomplete-frame, subscribed and
   blocked clients connected through successful exit, then verify after restart
   that neither an incomplete SET nor a SET queued behind BLPOP was replayed.
