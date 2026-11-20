@@ -1061,6 +1061,10 @@ impl Store {
         self.services
             .update_client_metadata(id, name, library_name, library_version, resp3, user)
     }
+    pub fn update_client_transaction_state(&self, id: u64, multi: usize, watch: usize) {
+        self.services
+            .update_client_transaction_state(id, multi, watch)
+    }
     pub fn connected_clients(&self) -> usize {
         self.services.connected_clients()
     }

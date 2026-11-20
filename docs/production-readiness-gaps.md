@@ -683,10 +683,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   **Partial (2026-11-20): bounded client subscription state.** `CLIENT INFO`
   and `CLIENT LIST` report distinct live `sub` (channel), `psub` (pattern) and
   `ssub` (shard-channel) counts; shard-only subscribers retain the `pubsub`
-  type and `P` flag. `CLIENT INFO` also reports `age`, `b`/`P`/`N` flags and the
-  WATCH count, using state already held by the session. `INFO clients` already reports
-  `blocked_clients`. Per-client fd, idle time, last command, input/output buffer
-  bytes, network bytes and allocator memory remain absent.
+  type and `P` flag. `CLIENT INFO`/`CLIENT LIST` also report `age`, `b`/`P`/`N`
+  flags, the connection file descriptor, the live MULTI queue length and the
+  WATCH count, using state already held by the session and registry. `INFO
+  clients` already reports `blocked_clients`. Per-client idle time, last command,
+  input/output buffer bytes, network bytes and allocator memory remain absent.
   **Partial (2026-11-14): bounded latency percentiles.** Enabling
   `commandstats-enabled` also records a 32-bucket logarithmic per-command
   histogram; `INFO latencystats` reports `p50`/`p99`/`p99.9` bucket upper bounds

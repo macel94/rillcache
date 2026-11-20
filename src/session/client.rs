@@ -161,6 +161,16 @@ impl Session {
             self.protocol == Protocol::Resp3,
             user.as_deref(),
         );
+        self.sync_client_transaction(store);
+    }
+
+    /// Publish the live MULTI queue length and WATCH count for `CLIENT LIST`.
+    pub(super) fn sync_client_transaction<E: Execution>(&self, store: &E) {
+        store.update_client_transaction_state(
+            self.id,
+            self.multi.as_ref().map_or(0, |multi| multi.queue.len()),
+            self.watched.tokens().len(),
+        );
     }
     pub(super) fn client<E: Execution>(
         &mut self,
@@ -355,7 +365,7 @@ impl Session {
             append_info(&mut info, b"name", self.name.as_deref());
             append_info(&mut info, b"lib-name", self.library_name.as_deref());
             append_info(&mut info, b"lib-ver", self.library_version.as_deref());
-            let (age, blocked, sub, psub, ssub, addr, laddr, resp, user) =
+            let (age, blocked, sub, psub, ssub, addr, laddr, resp, user, fd) =
                 match store.client_snapshot(self.id) {
                     Some(snapshot) => (
                         Some(snapshot.age_seconds),
@@ -367,9 +377,13 @@ impl Session {
                         Some(snapshot.laddr),
                         if snapshot.resp3 { 3 } else { 2 },
                         Some(snapshot.user),
+                        Some(snapshot.fd),
                     ),
-                    None => (None, false, 0, 0, 0, None, None, 2, None),
+                    None => (None, false, 0, 0, 0, None, None, 2, None, None),
                 };
+            if let Some(fd) = fd {
+                let _ = write!(info, " fd={fd}");
+            }
             if let Some(addr) = addr.as_deref() {
                 append_info(&mut info, b"addr", Some(addr.as_bytes()));
             }
@@ -385,8 +399,9 @@ impl Session {
             }
             flags.push(if sub + psub + ssub > 0 { 'P' } else { 'N' });
             let _ = write!(info, " flags={flags} sub={sub} psub={psub} ssub={ssub}");
+            let multi = self.multi.as_ref().map_or(0, |multi| multi.queue.len());
             let watch = self.watched.tokens().len();
-            let _ = write!(info, " watch={watch}");
+            let _ = write!(info, " multi={multi} watch={watch}");
             append_info(&mut info, b"resp", Some(resp.to_string().as_bytes()));
             if let Some(user) = user.as_deref() {
                 append_info(&mut info, b"user", Some(user));
@@ -483,16 +498,19 @@ impl Session {
             use std::fmt::Write as _;
             let _ = writeln!(
                 text,
-                "id={} addr={} laddr={} name={} age={} flags={} db=0 sub={} psub={} ssub={} resp={} user={} lib-name={} lib-ver={}",
+                "id={} addr={} laddr={} fd={} name={} age={} flags={} db=0 sub={} psub={} ssub={} multi={} watch={} resp={} user={} lib-name={} lib-ver={}",
                 snapshot.id,
                 snapshot.addr,
                 snapshot.laddr,
+                snapshot.fd,
                 name,
                 snapshot.age_seconds,
                 flags,
                 snapshot.sub,
                 snapshot.psub,
                 snapshot.ssub,
+                snapshot.multi,
+                snapshot.watch,
                 if snapshot.resp3 { 3 } else { 2 },
                 user,
                 lib_name,

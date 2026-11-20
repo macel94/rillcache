@@ -275,13 +275,17 @@ platforms retain timeout-based fallback admission.
 ## Client registry and administrative kill (S38)
 
 - **R149 (event-driven):** When a connection is accepted, the server shall register
-  its ID, peer and local addresses, creation time and control handle; it shall update name,
-  library, protocol and authenticated user after CLIENT/HELLO/AUTH/RESET and remove
-  the record on close. The registry shall be bounded by `max_clients` and process-local.
+  its ID, peer and local addresses, connection file descriptor, creation time and
+  control handle; it shall update name, library, protocol and authenticated user
+  after CLIENT/HELLO/AUTH/RESET, refresh the live MULTI queue length and WATCH
+  count after MULTI/EXEC/DISCARD/WATCH/UNWATCH and after a command is queued, and
+  remove the record on close. The registry shall be bounded by `max_clients` and
+  process-local.
 - **R150 (event-driven):** When `CLIENT LIST [TYPE normal|pubsub|master|replica|slave] [ID id ...]` is
   received, the server shall return newline-delimited records for matching
-  connections with ID, peer and local addresses, name, age, N/P flags, db, separate live
-  channel (`sub`), pattern (`psub`) and shard-channel (`ssub`) counts, RESP mode,
+  connections with ID, peer and local addresses, connection file descriptor,
+  name, age, N/P flags, db, separate live channel (`sub`), pattern (`psub`) and
+  shard-channel (`ssub`) counts, live MULTI queue length, WATCH count, RESP mode,
   user and library metadata, omitting fields it does not measure. A connection
   with only shard-channel subscriptions shall still have the pub/sub type and P flag.
 - **R151 (event-driven):** When `CLIENT KILL` receives intersecting `ID`, `ADDR`,
@@ -294,7 +298,7 @@ platforms retain timeout-based fallback admission.
   no fabricated cluster/blocked counts. All-mode tests shall cover metadata,
   RESP3/pubsub visibility, ID/TYPE filters, self protection, ID/address/legacy kills,
   socket closure, registry removal and permission gating. Documentation shall retain
-  the missing fd/idle/command/buffer/memory/network fields and cross-process view.
+  the missing idle/command/buffer/memory/network fields and cross-process view.
 
 ## Client command pause (S72)
 

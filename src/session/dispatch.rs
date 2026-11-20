@@ -239,24 +239,29 @@ impl Session {
         }
         if command.eq_ignore_ascii_case(b"MULTI") {
             self.multi(arguments, output);
+            self.sync_client_transaction(store);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"EXEC") {
             let start = output.len();
             let action = self.exec(store, arguments, output);
             self.convert_reply(start, output);
+            self.sync_client_metadata(store);
             return action;
         }
         if command.eq_ignore_ascii_case(b"DISCARD") {
             self.discard(arguments, output);
+            self.sync_client_transaction(store);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"WATCH") {
             self.watch(store, arguments, output);
+            self.sync_client_transaction(store);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"UNWATCH") {
             self.unwatch(arguments, output);
+            self.sync_client_transaction(store);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"QUIT") {
@@ -270,6 +275,7 @@ impl Session {
             self.sync_blocked(store);
         } else if self.multi.is_some() {
             self.queue(arguments, output);
+            self.sync_client_transaction(store);
             return Action::Continue;
         }
         if command.eq_ignore_ascii_case(b"MONITOR") {
