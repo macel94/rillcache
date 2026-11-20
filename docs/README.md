@@ -15,6 +15,7 @@ project's front page.
 | See the draft supported deployment profile | [Production profile](production-profile.md) |
 | Understand remaining production work | [Production readiness](production-readiness.md) |
 | Find every remaining production blocker | [Production readiness gaps](production-readiness-gaps.md) |
+| Check a release candidate before promotion | [Production acceptance runbook](production-readiness/acceptance-runbook.md) |
 | Give a coding agent repository context | [OpenWiki](../openwiki/quickstart.md) or its [published wiki](https://macel94.github.io/rillcache/) |
 
 ## Run and operate
