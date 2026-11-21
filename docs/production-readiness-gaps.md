@@ -269,9 +269,11 @@ by a reviewed decision recorded here, no production or drop-in claim is valid.
   bind; later CLI options override earlier file values. See
   [startup configuration](configuration.md). `--check-config` checks merged
   startup options without starting the server; it does not test resource opening.
-  **Remaining:** the full supported schema is not versioned, `CONFIG REWRITE`,
-  live reload/rollback and the complete runtime-mutable surface are absent, and
-  the upstream configuration language is not accepted.
+  `config-version 1` can explicitly declare the startup file format; unmarked
+  files retain version 1 behavior. A parser test checks the documented example.
+  **Remaining:** a complete defaults inventory, `CONFIG REWRITE`, live
+  reload/rollback and the complete runtime-mutable surface are absent, and the
+  upstream configuration language is not accepted.
   **Closes when:** the supported configuration schema is versioned, validated
   before bind, documented with defaults/precedence, and runtime-mutable settings
   are atomic and complete for the profile.
