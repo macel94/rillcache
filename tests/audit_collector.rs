@@ -51,6 +51,52 @@ fn collector_appends_two_datagrams_and_exits() {
     let _ = std::fs::remove_file(output);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn collector_output_failure_reports_counts_without_echoing_the_datagram() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"))
+        .args([
+            "--bind",
+            "127.0.0.1:0",
+            "--output",
+            "/dev/full",
+            "--print-address",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let address: SocketAddr = line
+        .trim()
+        .strip_prefix("listening on ")
+        .expect("collector address")
+        .parse()
+        .unwrap();
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket.send_to(b"private-audit-fixture", address).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("collector did not exit after an output failure");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let result = child.wait_with_output().unwrap();
+    assert!(!result.status.success());
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        error.lines().any(|line| line
+            == "audit collector accepted 0, rejected 0, rejected_hmac 0, output_failures 1"),
+        "{error}"
+    );
+    assert!(!error.contains("private-audit-fixture"), "{error}");
+}
+
 #[test]
 fn collector_rejects_invalid_output_configuration() {
     let result = Command::new(env!("CARGO_BIN_EXE_rillcache-audit-collector"))

@@ -222,7 +222,12 @@ fn run(options: Options) -> io::Result<()> {
                 continue;
             }
         }
-        output.append(&buffer[..length])?;
+        if let Err(error) = output.append(&buffer[..length]) {
+            eprintln!(
+                "audit collector accepted {accepted}, rejected {rejected}, rejected_hmac {rejected_hmac}, output_failures 1"
+            );
+            return Err(error);
+        }
         accepted = accepted.saturating_add(1);
         if options.max_datagrams > 0 && accepted >= options.max_datagrams {
             break;

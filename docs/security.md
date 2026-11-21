@@ -215,7 +215,11 @@ a key stores lines unverified. Verification does not authenticate sender
 identity, encrypt traffic, prevent replay, retry, reorder, deduplicate or federate
 multiple collectors; UDP loss and spoofing remain possible. The output is created
 mode-`0600` on Unix, but directory permissions and key/log custody are operator
-duties; the key is never written to the output or diagnostics.
+duties; the key is never written to the output or diagnostics. An output
+append, flush, or rotation failure exits nonzero and prints the prior counts
+with `output_failures 1`, without echoing the failed datagram. A failed write
+is not counted as accepted and may have left partial output; the summary is
+not an fsync or delivery guarantee.
 
 `ACL SAVE` writes a mode-`0600` temporary file in the same directory, fsyncs it,
 renames it over the target and fsyncs the directory (where supported); hashes are
