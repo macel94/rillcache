@@ -418,7 +418,8 @@ fn options(arguments: impl IntoIterator<Item = String>) -> Result<Options, Strin
                         let address = value
                             .parse::<SocketAddr>()
                             .map_err(|_| "--tls-bind requires a numeric IP:port address")?;
-                        if address == config.bind_addr {
+                        // Equal port-zero requests are two independent kernel binds.
+                        if address == config.bind_addr && address.port() != 0 {
                             return Err("--tls-bind must differ from --bind".into());
                         }
                         config.tls_bind_addr = Some(address);
@@ -960,6 +961,29 @@ mod tests {
             options(["--tls-bind", "127.0.0.1:6379"].map(str::to_owned)).is_err(),
             "TLS listener must differ from the plaintext listener"
         );
+    }
+
+    #[test]
+    fn tls_and_plain_cli_listeners_can_both_request_ephemeral_ports() {
+        let Options::Run(config) = options(
+            [
+                "--bind",
+                "127.0.0.1:0",
+                "--tls-bind",
+                "127.0.0.1:0",
+                "--tls-cert-file",
+                "server.pem",
+                "--tls-key-file",
+                "server.key",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap() else {
+            panic!("expected ephemeral listener config");
+        };
+        assert_eq!(config.bind_addr.port(), 0);
+        assert_eq!(config.tls_bind_addr, Some(config.bind_addr));
+        config.validate().unwrap();
     }
 
     #[test]

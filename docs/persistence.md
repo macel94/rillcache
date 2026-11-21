@@ -362,8 +362,12 @@ total and does not invent duplicate progress. `aof_rewrite_bytes_written` counts
 bytes written to the temporary file, including framing and reconciliation. It
 resets to zero when the rewrite finishes or aborts, and is omitted if AOF is
 disabled or journal status is unavailable. It does not represent durable bytes
-or a completion percentage. `aof_last_bgrewrite_status:ok|err` describes the last
-completed attempt. The final
+or a completion percentage. `aof_last_rewrite_start_usec` measures the latest
+successful rewrite setup in whole microseconds, from starting snapshot key
+collection through writing the staging header and initial record. It is omitted
+before the first successful setup and excludes later rewrite work and time spent
+waiting for the request to reach the owner. `aof_last_bgrewrite_status:ok|err`
+describes the last completed attempt. The final
 snapshot checksum is written and synced before the atomic rename. A crash before
 the rename leaves the previous journal intact; the temporary file is removed on the
 next start and never replayed. Killing the server mid-rewrite keeps every
