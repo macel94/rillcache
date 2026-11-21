@@ -77,20 +77,23 @@ Part of the [requirements and incremental delivery index](../requirements.md). R
 
 - **R313 (event-driven):** When `INFO persistence` or `INFO all` is requested, the
   server shall return a `# Persistence` block with `loading:0` and `aof_enabled`.
-  While the journal is enabled it shall also report `aof_rewrite_in_progress:0`,
-  the last rewrite and write statuses and the current file size; while disabled
-  it shall report only `aof_enabled:0`. It shall omit RDB, backlog, bio and other
-  unmeasured persistence fields rather than fabricating them.
+  While the journal is enabled it shall also report whether a cooperative
+  rewrite is in progress, the last rewrite and write statuses and the current
+  file size when known. It shall omit RDB, backlog, bio and other unmeasured
+  persistence fields rather than fabricating them.
 - **R314 (state-driven):** The reported write status shall reflect the journal's
   latched failure state, the rewrite status shall reflect the last completed
-  synchronous `BGREWRITEAOF`, and the size shall come from the open journal file.
-  Because rewrites are synchronous, `aof_rewrite_in_progress` shall remain `0`
-  and no asynchronous progress claim shall be made.
+  rewrite attempt, and the current size shall come from the open live journal.
 - **R315 (ubiquitous):** Tests shall cover disabled and enabled servers, the
   measured field set, nonempty size after a write, status after rewrite, `INFO
-  all` inclusion and every worker mode. Documentation shall retain the absence
-  of RDB, asynchronous/background rewrite, checksum, encryption, ENOSPC and
-  crash-recovery guarantees.
+  all` inclusion and every worker mode. Reported status does not guarantee
+  recovery or characterize physical storage faults.
+- **R466 (state-driven):** While a cooperative rewrite is active, the persistence
+  report shall expose the number of bytes already written to its temporary
+  file as `aof_rewrite_bytes_written`, counting successful framing and
+  reconciliation writes. The field shall be zero when the enabled journal is
+  idle and omitted if disabled or the journal cannot be inspected. It shall
+  not imply fsync completion, published file size or percentage complete.
 
 ## Journal configuration visibility and runtime fsync (S87)
 

@@ -355,8 +355,12 @@ the current `aof_rewrite_phase` (`snapshot`, `reconcile`, `sync`, `commit`, or
 `none` when idle), and stable snapshot progress as
 `aof_rewrite_keys_done`/`aof_rewrite_keys_total`. Reconciliation keys may be
 visited more than once, so the done count deliberately stops at the snapshot
-total and does not invent duplicate progress. `aof_last_bgrewrite_status:ok|err`
-describes the last completed attempt. The final
+total and does not invent duplicate progress. `aof_rewrite_bytes_written` counts
+bytes written to the temporary file, including framing and reconciliation. It
+resets to zero when the rewrite finishes or aborts, and is omitted if AOF is
+disabled or journal status is unavailable. It does not represent durable bytes
+or a completion percentage. `aof_last_bgrewrite_status:ok|err` describes the last
+completed attempt. The final
 snapshot checksum is written and synced before the atomic rename. A crash before
 the rename leaves the previous journal intact; the temporary file is removed on the
 next start and never replayed. Killing the server mid-rewrite keeps every

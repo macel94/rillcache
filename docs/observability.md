@@ -229,6 +229,7 @@ aof_rewrite_keys_done:0
 aof_rewrite_keys_total:0
 aof_last_bgrewrite_status:ok
 aof_last_write_status:ok
+aof_rewrite_bytes_written:0
 aof_current_size:1234
 ```
 
@@ -238,7 +239,12 @@ With persistence disabled only `loading:0` and `aof_enabled:0` are returned.
 cooperative rewrite change, `aof_rewrite_in_progress` reports whether a rewrite is
 currently running, `aof_rewrite_phase` reports the bounded phase, and
 `aof_rewrite_keys_done`/`aof_rewrite_keys_total` report stable snapshot progress.
-Reconciliation may revisit keys, so progress never exceeds the snapshot total.
+Reconciliation may revisit keys, so key progress never exceeds the snapshot
+total. `aof_rewrite_bytes_written` counts bytes written to the temporary file,
+including headers, integrity records and reconciliation. It resets to zero
+after completion or abort, is omitted if journal status cannot be read, and
+is not a durability or percent-complete metric. `aof_current_size` still
+describes the live journal, not the temporary file.
 RDB, backlog, bio and fork fields are omitted because they are not implemented or
 measured.
 

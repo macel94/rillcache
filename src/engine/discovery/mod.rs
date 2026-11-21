@@ -1260,6 +1260,9 @@ impl ShardExecutor {
                             "ok"
                         },
                     );
+                    if let Some(bytes) = persistence.rewrite_bytes_written {
+                        let _ = write!(text, "\r\naof_rewrite_bytes_written:{bytes}");
+                    }
                     if let Some(size) = persistence.current_size {
                         let _ = write!(text, "\r\naof_current_size:{size}");
                     }
